@@ -24,8 +24,9 @@ import java.util.TreeSet;
  * root was read at where the replay minted none ({@link #concreteReadings})
  * and which declared roots held a value computed from others where it read
  * them ({@link #derivedRoots}), the names its nodes had only in this
- * run ({@link #runSpellings}), and the occurrences it ran for their doors
- * alone ({@link #doorsOnly}).  Schema 2; a manifest of another schema is
+ * run ({@link #runSpellings}), the occurrences it ran for their doors
+ * alone ({@link #doorsOnly}), and the hand-off tasks that served a queue
+ * ({@link #servingTasks}).  Schema 2; a manifest of another schema is
  * refused.
  */
 public final class SessionManifest {
@@ -47,13 +48,14 @@ public final class SessionManifest {
     private final Set<String> derivedRoots;
     private final RunSpellings runSpellings;
     private final Set<String> doorsOnly;
+    private final Set<String> servingTasks;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
                             Map<String, Integer> unnamedEntries,
                             Map<String, Map<String, String>> readings,
                             Set<String> derived, Map<String, String> spelled,
-                            Set<String> doorsOnly) {
+                            Set<String> doorsOnly, Set<String> serving) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
@@ -72,6 +74,8 @@ public final class SessionManifest {
         this.runSpellings = RunSpellings.of(spelled);
         this.doorsOnly = Collections.unmodifiableSet(
                 new TreeSet<String>(doorsOnly));
+        this.servingTasks = Collections.unmodifiableSet(
+                new TreeSet<String>(serving));
     }
 
     /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
@@ -90,6 +94,7 @@ public final class SessionManifest {
                 Collections.<String, Map<String, String>>emptyMap(),
                 Collections.<String>emptySet(),
                 Collections.<String, String>emptyMap(),
+                Collections.<String>emptySet(),
                 Collections.<String>emptySet());
     }
 
@@ -98,7 +103,8 @@ public final class SessionManifest {
                                    Map<String, Map<String, String>> readings,
                                    Set<String> derived,
                                    Map<String, String> spelled,
-                                   Set<String> doorsOnly) {
+                                   Set<String> doorsOnly,
+                                   Set<String> serving) {
         return new SessionManifest(sessionId, role, obligationIds,
                 entries == null ? Collections.<String, Integer>emptyMap()
                         : entries,
@@ -109,7 +115,8 @@ public final class SessionManifest {
                 spelled == null ? Collections.<String, String>emptyMap()
                         : spelled,
                 doorsOnly == null ? Collections.<String>emptySet()
-                        : doorsOnly);
+                        : doorsOnly,
+                serving == null ? Collections.<String>emptySet() : serving);
     }
 
     /**
@@ -121,6 +128,22 @@ public final class SessionManifest {
      */
     public Set<String> doorsOnly() {
         return doorsOnly;
+    }
+
+    /**
+     * The hand-off tasks of this run that served a queue: the {@code
+     * ActivationRow#threadKey} of each task an executor handed to a worker
+     * of its own whose thread took work another thread started while it ran
+     * -- an update queue's item, polled by a ConcurrentUpdate client's
+     * Runner.  Held where it runs, such a task holds what is queued behind
+     * it, so its activations are held at the send that started them ({@code
+     * ActivationRow#heldWhereItRuns}).  Stated at the close: a task's rows
+     * are written at its activations' entries, before the loop's takes.
+     * None in a manifest from before this field, or of a run that did not
+     * close.
+     */
+    public Set<String> servingTasks() {
+        return servingTasks;
     }
 
     /**
@@ -207,6 +230,11 @@ public final class SessionManifest {
             doors.add(occurrence);
         }
         json.add("doorsOnly", doors);
+        JsonArray serving = new JsonArray();
+        for (String task : servingTasks) {
+            serving.add(task);
+        }
+        json.add("servingTasks", serving);
         return json;
     }
 
@@ -267,7 +295,9 @@ public final class SessionManifest {
                 manifest.obligationIds, unnamed, readings,
                 new TreeSet<String>(JsonFields.strings(json, "derivedRoots")),
                 spelled,
-                new TreeSet<String>(JsonFields.strings(json, "doorsOnly")));
+                new TreeSet<String>(JsonFields.strings(json, "doorsOnly")),
+                new TreeSet<String>(JsonFields.strings(json,
+                        "servingTasks")));
     }
 
     @Override

@@ -146,7 +146,11 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   sent every turn's heartbeat at `offerService@0/sendHeartBeat@0`, one producer endpoint for three
   turns, and the NameNode served all three under one anchor at one address.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
-  index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
+  index from its scope base followed by a frame (site, k-th start at that site) with the carrier,
+  and what the work was submitted to: the submission's receiver, woven as the hook's third argument
+  (`CausynthPipeline#fileStarts`; null for a static call), whose hand-off it records
+  (`Identity#handsOff`: a `ThreadPoolExecutor` on a `SynchronousQueue`), so a claim states its kind
+  (§10). Classes woven before that argument call a `startWork` that is gone: every tree is re-woven.
   That `k` counts starts at the site in the top level under the hop that gives the context -- the
   innermost hop carrying an anchor, else the root (`State#nextStartEvent`, `Lineage#contextToken`)
   -- not under the whole root hop: under a test's one request every poll and node start before it
@@ -860,9 +864,19 @@ order:
   (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
   a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
   its expected edges (`runtime/Confirmation`, PIPELINE.md §10): an activation held where it runs,
-  except claimed work on a consumer thread (§4's `threadKey`), which held there would hold every
-  item queued behind it: it is held at the send that started it, its anchor's producer
-  (`Confirmation#submitter`), up the chain while that send is claimed work too;
+  a task its executor handed to a worker of its own included (`ActivationRow#claimKind`
+  `HANDOFF_TASK`: a `ThreadPoolExecutor` on a `SynchronousQueue`, run on that worker, Solr's
+  Overseer command Runners), except a queued task, a queue item, a hand-off task that took work
+  another thread started on its thread -- any queue item no named start filed among it
+  (`Identity#servingTasks`, stated in the session's manifest at
+  its close: a ConcurrentUpdate client's Runner polling its update queue, the take in a callee
+  that returns) and claimed work of no stated kind (§4's `threadKey`), which held there would hold
+  every item queued behind it: it is held at the send that started it, its anchor's producer
+  (`Confirmation#submitter`), up the chain while that send is such work too, and with none an
+  `ORDER_UNHELD` names the claim's kind. A hand-off task held in place holds what it holds there:
+  an Overseer command its `LockTree` lock, so a command of an overlapping lock ordered before it
+  stays parked, and its worker the pool's room (an `AbortPolicy` pool past its maximum rejects the
+  next submission); both end at the order's timeout as an order not held in time;
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   ends at a real signal, or takes its `WAKE` slot when the slot is due and then returns no sooner
   than its own deadline (`TimedWaits#outlast`): a `WAKE` is a timeout, the recording's wait ran its

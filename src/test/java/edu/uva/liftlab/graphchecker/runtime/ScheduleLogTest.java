@@ -293,7 +293,7 @@ public class ScheduleLogTest {
                     ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
                 }
             });
-            Identity.startWork("<S: void start()>#u5", consumer);
+            Identity.startWork("<S: void start()>#u5", consumer, null);
             consumer.start();
             consumers.add(consumer);
         }
@@ -306,7 +306,7 @@ public class ScheduleLogTest {
             expected.add(ScheduleLog.contextOf(Identity.contextHere()) + "|"
                     + put + "@0");
             Object item = new Object();
-            Identity.startWork(put, item);
+            Identity.startWork(put, item, null);
             Lineage.pop(hop);
             queue.put(item);
         }
@@ -378,7 +378,7 @@ public class ScheduleLogTest {
                             "HADOOP_IPC#REQUEST");
                 }
             });
-            Identity.startWork(site, thread);
+            Identity.startWork(site, thread, null);
             started.add(thread);
         }
         // The second thread runs first: its sends are still its own 0 and 1.
@@ -433,7 +433,7 @@ public class ScheduleLogTest {
             });
             Identity.exitFrame(made);
             long utility = Identity.enterFrame("<U: void start()>", null);
-            Identity.startWork(start, thread);
+            Identity.startWork(start, thread, null);
             Identity.exitFrame(utility);
             thread.start();
             thread.join();
@@ -471,7 +471,7 @@ public class ScheduleLogTest {
             CausynthTraceRecorder.outboundExchange("HADOOP_IPC", "c-" + verb,
                     "0", "REQUEST", null, null, verb);
             final Object item = new Object();
-            Identity.startWork(offer, item);
+            Identity.startWork(offer, item, null);
             Thread sender = new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -483,7 +483,7 @@ public class ScheduleLogTest {
         }
         CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC", "c-r", "0",
                 "RESPONSE", null);
-        Identity.startWork(offer, new Object());
+        Identity.startWork(offer, new Object(), null);
         List<String> starts = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
             if (event.kind() == ScheduleEvent.Kind.START) {
@@ -525,7 +525,7 @@ public class ScheduleLogTest {
             CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
                     "c-" + fault[0], "0", "REQUEST", null, null, verb);
             Identity.doorFaulted((String) fault[0]);
-            Identity.startWork(offer, new Object());
+            Identity.startWork(offer, new Object(), null);
             expected.add(fault[0] + " " + ((Boolean) fault[1] ? offer
                     : offer + ":" + verb));
             CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC",

@@ -22,8 +22,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -53,6 +55,7 @@ public class ConfirmationTest {
     public void reset() {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
         RowRuntime.resetForTests();
+        RunNames.resetForTests();
     }
 
     /** Hands the replay a worker directory holding these two files; null
@@ -142,6 +145,66 @@ public class ConfirmationTest {
                 FocusedReplay.results("s").get(0).verdict());
         assertTrue(FocusedReplay.results("s").get(0).detail()
                 .contains("no flip was owed"));
+    }
+
+    /**
+     * A held leaf's value names each node's run-only name by the node on
+     * both sides -- the model's by its arm's run (ConfirmMain#named), what
+     * arrives by this run's -- and is compared exactly after that: the same
+     * node at another port is the model's value (NC3-reindex attempt 0000:
+     * 127.0.0.1:41564_solr against 127.0.0.1:33130_solr, both
+     * auto0/node1); another node, or any other difference, refutes; a value
+     * no spelling names is compared as it is.
+     */
+    @Test
+    public void aWireValueNamesItsNodesByEachRunsSpelling()
+            throws Exception {
+        Endpoint chosen = endpoint(PRODUCER, "XCH.1.resp.leader");
+        Endpoint leader = endpoint(ANCHOR, "XCH.1.resp.leader");
+        Endpoint url = endpoint(ANCHOR, "XCH.2.resp.url");
+        Endpoint count = endpoint(ANCHOR, "XCH.3.resp.count");
+        handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
+                + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
+                + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                + "\"focusedOccurrenceId\":\""
+                + OccurrenceAddress.parse(ANCHOR).id() + "\","
+                + "\"seedSessionId\":\"seed\",\"flip\":null,"
+                + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                + "\"answers\":{},\"rootMints\":{}}\n",
+                Arrays.asList(wire(leader, chosen, "{auto0/node1}"),
+                        wire(url, chosen, "http://{auto0/node1}/solr/c1"),
+                        wire(count, chosen, "2000")));
+        RunNames.spelled("auto0/node0", "127.0.0.1:33129_solr");
+        RunNames.spelled("auto0/node1", "127.0.0.1:33130_solr");
+        Object[][] table = {
+                // consumer, what arrived, a mismatch?
+                {leader, "127.0.0.1:33130_solr", false},
+                {leader, "127.0.0.1:33129_solr", true},
+                {leader, "127.0.0.1:33130_solr ", true},
+                // a spelling inside a longer string: the host and port
+                {url, "http://127.0.0.1:33130/solr/c1", false},
+                {url, "http://127.0.0.1:33130/solr/c2", true},
+                {url, "http://127.0.0.1:33129/solr/c1", true},
+                // no spelling names it: as it is
+                {count, "2000", false},
+                {count, "1999", true},
+        };
+        for (Object[] row : table) {
+            String mismatch = Confirmation.attached((Endpoint) row[0],
+                    chosen, (String) row[1]).mismatch;
+            assertEquals(row[1] + " -> " + mismatch, row[2],
+                    !mismatch.isEmpty());
+        }
+        assertTrue(Confirmation.attached(leader, chosen,
+                "127.0.0.1:33129_solr").mismatch.endsWith("the run delivered"
+                + " \"127.0.0.1:33129_solr\" ({auto0/node0})"));
+    }
+
+    private static String wire(Endpoint consumer, Endpoint producer,
+                               String value) {
+        return "{\"kind\":\"WIRE\",\"consumer\":\"" + consumer.id()
+                + "\",\"producer\":\"" + producer.id() + "\",\"value\":\""
+                + value + "\"}";
     }
 
     @Test
@@ -1112,10 +1175,14 @@ public class ConfirmationTest {
     }
 
     /**
-     * An ORDER on claimed work (a server pipeline's request) is held at the
-     * send that started it, up the chain of claimed work; on any other
-     * activation, where it runs; and refused where no send runs outside
-     * claimed work.
+     * An ORDER on a queued task or a queue item (a server pipeline's
+     * request) is held at the send that started it, up the chain of such
+     * work; so is one on a hand-off task that served a queue (a
+     * ConcurrentUpdate client's Runner, its session's servingTasks) and on
+     * claimed work a row from before claimKind states no kind of.  On any
+     * other activation -- a hand-off task that served none among them --
+     * it is held where it runs; and it is refused, naming the claim's kind,
+     * where no send runs where it can be held.
      */
     @Test
     public void claimedWorkIsHeldAtTheSendThatStartedIt() {
@@ -1133,40 +1200,76 @@ public class ConfirmationTest {
         OccurrenceAddress served = OccurrenceAddress.parse(
                 "zk/server0#epoch0/region/REGION.final/ctx:Anchor:"
                         + relayed.id() + "@SYNC/test/idx:<a.Final: void f()>@0");
-        // row of each occurrence: claimed, its anchor's producer
+        String none = "NONE";
+        String item = "ITEM";
+        String queued = "QUEUED_TASK";
+        String handed = "HANDOFF_TASK";
+        // a hand-off task that took other work on its thread
+        String serving = "HANDOFF_TASK serving";
+        // a row from before claimKind: a claimed key, no kind
+        String legacy = "NONE claimed";
+        // row of each occurrence: its claim, its anchor's producer
         Object[][] table = {
                 // held at the client's send, through the relaying stage
-                {served, true, relayed, prep, true, send, send},
+                {served, item, relayed, prep, item, send, send},
                 // a client thread's own activation is held where it runs
-                {client, false, null, null, false, null, null},
-                // claimed work that names no send: no hold
-                {served, true, null, null, false, null, "ORDER_UNHELD"},
+                {client, none, null, null, none, null, null},
+                // an item that names no send: no hold
+                {served, item, null, null, none, null, "ORDER_UNHELD"},
+                // a single-thread executor's task (queued) likewise
+                {served, queued, null, null, none, null, "ORDER_UNHELD"},
+                // a hand-off executor's task (an Overseer command's Runner,
+                // a turn of its own with no anchor) is held where it runs
+                {served, handed, null, null, none, null, null},
+                // a send made inside a handed-off task is held there
+                {served, item, relayed, prep, handed, null, relayed},
+                // a Runner that polled its update queue is held at its send
+                {served, serving, relayed, prep, none, null, relayed},
+                {served, serving, null, null, none, null, "ORDER_UNHELD"},
+                // and is no place to hold a send made inside it
+                {served, item, relayed, prep, serving, send, send},
+                // a claimed row of no stated kind keeps the send rule
+                {served, legacy, relayed, prep, none, null, relayed},
+                {served, legacy, null, null, none, null, "ORDER_UNHELD"},
         };
         for (Object[] row : table) {
             Map<String, ActivationRow> rows =
                     new HashMap<String, ActivationRow>();
-            put(rows, (OccurrenceAddress) row[0], (Boolean) row[1],
-                    (Endpoint) row[2]);
+            Set<String> servingTasks = new HashSet<String>();
+            put(rows, servingTasks, (OccurrenceAddress) row[0],
+                    (String) row[1], (Endpoint) row[2]);
             if (row[3] != null) {
-                put(rows, (OccurrenceAddress) row[3], (Boolean) row[4],
-                        (Endpoint) row[5]);
+                put(rows, servingTasks, (OccurrenceAddress) row[3],
+                        (String) row[4], (Endpoint) row[5]);
             }
             Object held;
             try {
                 held = Confirmation.submitter((OccurrenceAddress) row[0],
-                        rows::get);
+                        rows::get, servingTasks);
             } catch (IllegalStateException unheld) {
+                assertTrue(unheld.getMessage(), unheld.getMessage().contains(
+                        rows.get(((OccurrenceAddress) row[0]).id())
+                                .claimedAs(servingTasks)));
                 held = unheld.getMessage().split(":")[0];
             }
-            assertEquals(String.valueOf(row[0]), row[6], held);
+            assertEquals(row[0] + " " + row[1], row[6], held);
         }
     }
 
+    /** An activation row stating {@code claim} ("KIND", "KIND serving"
+     *  for a hand-off task that served a queue, "NONE claimed" for a row
+     *  from before claimKind). */
     private static void put(Map<String, ActivationRow> rows,
-                            OccurrenceAddress at, boolean claimed,
-                            Endpoint producer) {
+                            Set<String> servingTasks, OccurrenceAddress at,
+                            String claim, Endpoint producer) {
+        String[] parts = claim.split(" ");
+        ActivationRow.ClaimKind kind =
+                ActivationRow.ClaimKind.valueOf(parts[0]);
+        String threadKey = kind == ActivationRow.ClaimKind.NONE
+                && parts.length == 1 ? "main#1"
+                : ActivationRow.CLAIMED + at.id();
+        if (claim.endsWith(" serving")) servingTasks.add(threadKey);
         rows.put(at.id(), ActivationRow.of("s0", at, "", false, true,
-                claimed ? ActivationRow.CLAIMED + at.id() : "main#1",
-                producer));
+                threadKey, kind, producer));
     }
 }

@@ -258,10 +258,17 @@ public final class Confirmation {
                     + ", the run paired "
                     + (actual.isEmpty() ? "no export" : actual));
         }
-        if (chosen.value != null && !chosen.value.equals(text)) {
+        // Each side names its nodes' run-only names by the node (the model's
+        // by its arm's run, ConfirmMain#named): a node's address differs by
+        // its run's port.  Exact after that: another node, or any other
+        // difference, refutes.
+        String delivered = text == null ? null : RunNames.name(text);
+        if (chosen.value != null && !chosen.value.equals(delivered)) {
             differs.add("the model's value is \"" + chosen.value
                     + "\", the run delivered "
-                    + (text == null ? "none" : "\"" + text + "\""));
+                    + (text == null ? "none" : "\"" + text + "\""
+                            + (delivered.equals(text) ? ""
+                                    : " (" + delivered + ")")));
         }
         return new Compared(differs.isEmpty() ? ""
                 : "WIRE " + id(consumer) + ": " + String.join("; ", differs),
@@ -360,37 +367,49 @@ public final class Confirmation {
     /**
      * Where an ORDER holds an event of {@code occurrence} so that it comes
      * after what the model orders before it ({@code explore.ConfirmMain}):
-     * null where it runs, unless it runs as claimed work on a consumer
-     * thread ({@link ActivationRow#claimed}) -- a server's pipeline applying
-     * one request after another.  Held there it would hold every item
+     * null where it runs ({@link ActivationRow#heldWhereItRuns}: no claimed
+     * work, or a task its executor handed to a worker of its own that served
+     * no queue), unless it runs as a queued task, a queue item or a
+     * hand-off task that took other work on its thread ({@code
+     * servingTasks}, the session's {@code SessionManifest#servingTasks}) --
+     * a server's pipeline applying one request after another, a client's
+     * Runner polling its update queue.  Held there it would hold every item
      * queued behind it, the writer's among them, so it is held where it was
      * sent: its anchor's producer ({@link ActivationRow#anchorProducer}, the
-     * send that started the request), followed up the chain while that
-     * send is itself claimed work.  Not its claim's START, which runs on
-     * the upstream stage, a consumer too.
+     * send that started the request), followed up the chain while that send
+     * is itself such work.  Not its claim's START, which runs on the
+     * upstream stage, a consumer too.
      *
-     * @throws IllegalStateException naming the chain where no send of it
-     *         runs outside claimed work: no hold realizes the order
+     * @throws IllegalStateException naming the chain and the claim's kind
+     *         where no send of it runs where it can be held: no hold
+     *         realizes the order
      */
     public static Endpoint submitter(OccurrenceAddress occurrence,
-                                     Function<String, ActivationRow> rows) {
+                                     Function<String, ActivationRow> rows,
+                                     Set<String> servingTasks) {
         ActivationRow row = rows.apply(occurrence.id());
-        if (row == null || !row.claimed()) return null;
+        if (row == null || row.heldWhereItRuns(servingTasks)) return null;
         for (int hop = 0; hop < SUBMITTER_HOPS; hop++) {
             Endpoint send = row.anchorProducer();
             if (send == null) {
                 throw new IllegalStateException("ORDER_UNHELD: "
                         + row.occurrence().render() + " runs as claimed "
-                        + "work on a consumer thread and names no send of "
-                        + "this run that started it, so no hold realizes an "
-                        + "order on " + occurrence.render());
+                        + "work (" + row.claimedAs(servingTasks)
+                        + ") and names no send of this run that started it, "
+                        + "so no hold realizes an order on "
+                        + occurrence.render());
             }
-            row = rows.apply(send.occurrence().id());
-            if (row == null || !row.claimed()) return send;
+            ActivationRow sender = rows.apply(send.occurrence().id());
+            if (sender == null || sender.heldWhereItRuns(servingTasks)) {
+                return send;
+            }
+            row = sender;
         }
         throw new IllegalStateException("ORDER_UNHELD: past "
                 + SUBMITTER_HOPS + " sends of claimed work above "
-                + occurrence.render() + ", no send outside one");
+                + occurrence.render() + ", the last "
+                + row.occurrence().render() + " ("
+                + row.claimedAs(servingTasks) + "), no send outside one");
     }
 
     /** Whether this run is held to an order: every frame hook asks. */

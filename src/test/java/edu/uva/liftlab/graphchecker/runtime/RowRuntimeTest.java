@@ -52,6 +52,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
@@ -153,7 +157,7 @@ public class RowRuntimeTest {
         // An executor submission: the same carry, captured by the START hook
         // (both passes weave it) and taken back where the work CLAIMS it.
         final Object task = new Object();
-        Identity.startWork("<a.Pool: void submit()>#u1", task);
+        Identity.startWork("<a.Pool: void submit()>#u1", task, null);
         final AtomicReference<String> onWorker = new AtomicReference<>("");
         Thread worker = poolThreadCreatedOutsideAnyScope(new Runnable() {
             @Override
@@ -184,7 +188,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "block-report");
         final Object task = new Object();
-        Identity.startWork("<a.Queue: void enqueue(Runnable)>#u3", task);
+        Identity.startWork("<a.Queue: void enqueue(Runnable)>#u3", task, null);
         final int[] depths = new int[3];
         Thread drainer = poolThreadCreatedOutsideAnyScope(() -> {
             depths[0] = Identity.depth();
@@ -283,17 +287,20 @@ public class RowRuntimeTest {
      * the manifest counts every entry at the run's end.  So is a declared
      * source read where its occurrence ran concretely: the manifest states
      * the first reading at each occurrence, and nothing for a value the
-     * hook could not spell, and the roots found derived; a schema-1
-     * manifest states neither.
+     * hook could not spell, and the roots found derived; and the hand-off
+     * tasks that took queue items on their thread, as their rows key them
+     * (none in a manifest from before that field); a schema-1 manifest
+     * states none of it.
      */
     @Test
     public void theRunsEndStatesUnnamedEntriesAndConcreteReadings()
             throws Exception {
+        AtomicReference<String> runnerKey = new AtomicReference<>();
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
         try {
             Object connection = new Object();
-            Identity.startWork("<a.Acceptor: void run()>#u5", connection);
+            Identity.startWork("<a.Acceptor: void run()>#u5", connection, null);
             List<OccurrenceAddress> opened = new ArrayList<>();
             Thread handler = new Thread(() -> {
                 Identity.claimStart(connection);
@@ -312,6 +319,31 @@ public class RowRuntimeTest {
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
             RowRuntime.derivedRoot("ROOT.EXPIRY");
             RunNames.spelled("auto0/node1", "10.0.0.1:8983_solr");
+            // A Runner on a SynchronousQueue pool polling its update queue,
+            // its run() entering no frame (a lineage-only class): the take
+            // replaces its claim, and it served all the same.
+            Object owner = new Object();
+            RuntimeTraceContext.registerSource(owner, NN);
+            ThreadPoolExecutor scheduler = new ThreadPoolExecutor(0, 1, 1L,
+                    TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
+            Object runner = new Object();
+            Object update = new Object();
+            long request = RuntimeTraceContext.beginRequest(NN, "update");
+            Identity.startWork("<a.Client: void request()>#u3", runner,
+                    scheduler);
+            Identity.startWork("<a.Client: void request()>#u7", update,
+                    new LinkedBlockingQueue<Object>());
+            RuntimeTraceContext.endRequest(request);
+            Thread worker = new Thread(() -> {
+                long claimed = Identity.claimStart(runner);
+                runnerKey.set(ActivationRow.CLAIMED
+                        + Identity.claimedStart());
+                Identity.claimItem(update);
+                Identity.endClaim(claimed);
+            });
+            worker.start();
+            worker.join();
+            scheduler.shutdownNow();
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
@@ -345,6 +377,12 @@ public class RowRuntimeTest {
         spelled.put("10.0.0.1:8983_solr", "auto0/node1");
         spelled.put("10.0.0.1:8983", "auto0/node1");
         assertEquals(spelled, manifest.runSpellings().asMap());
+        assertEquals(Collections.singleton(runnerKey.get()),
+                manifest.servingTasks());
+        JsonObject before = manifest.toJson();
+        before.remove("servingTasks");
+        assertEquals(Collections.<String>emptySet(),
+                SessionManifest.fromJson(before).servingTasks());
         JsonObject older = manifest.toJson();
         older.addProperty("schemaVersion", 1);
         try {
@@ -594,7 +632,7 @@ public class RowRuntimeTest {
             for (int call = 0; call <= run.length; call++) {
                 Object handoff = CausynthMessagePropagation.handingOff(
                         clientId, call);
-                Identity.startWork(queue, new Object());
+                Identity.startWork(queue, new Object(), null);
                 CausynthMessagePropagation.handedOff(handoff);
             }
             RuntimeTraceContext.endRequest(reader);
@@ -2652,7 +2690,7 @@ public class RowRuntimeTest {
         // (r3: the two move tasks shared one address).
         for (Object task : tasks) {
             long submitOne = Identity.enterFrame("Pool.submitOne()#u5", null);
-            Identity.startWork("Pool.submitOne()#u9", task);
+            Identity.startWork("Pool.submitOne()#u9", task, null);
             Identity.exitFrame(submitOne);
         }
         worker.start();
@@ -2744,7 +2782,7 @@ public class RowRuntimeTest {
                         public void run() {
                         }
                     });
-            Identity.startWork("Server.start()#u31", pool[handler]);
+            Identity.startWork("Server.start()#u31", pool[handler], null);
         }
         pool[scheduled].start();
         try {
@@ -2819,7 +2857,7 @@ public class RowRuntimeTest {
         // updater is: a start made by a thread under no root hop files no
         // frame (AStartWithNoIdentityFilesNoFrameTest).
         long starting = RuntimeTraceContext.beginRequest(owner, "balance");
-        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater);
+        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater, null);
         RuntimeTraceContext.endRequest(starting);
         updater.start();
         try {
@@ -2846,7 +2884,7 @@ public class RowRuntimeTest {
                 onChild.set(Identity.atScope().render());
             }
         });
-        Identity.startWork(startSite, child);
+        Identity.startWork(startSite, child, null);
         child.start();
         try {
             child.join();

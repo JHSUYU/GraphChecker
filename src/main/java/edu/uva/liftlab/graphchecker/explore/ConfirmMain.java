@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
@@ -30,7 +31,9 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -1132,15 +1135,31 @@ public final class ConfirmMain {
                     edge.add(Confirmation.PRODUCER_QUESTION,
                             question(paired.producer(), producerSession));
                 }
-                // A held leaf: what must arrive there.
+                // A held leaf: what must arrive there, each name its nodes
+                // had only in the arm's run named by its node, as the run
+                // that compares it names what arrives (Confirmation#attached).
                 JsonObject texts = object(arm, ComposeMain.TEXTS);
                 if (texts.has(consumerId)) {
-                    edge.add("value", texts.get(consumerId));
+                    edge.add("value", named(texts.get(consumerId),
+                            producerSession.manifest()));
                 }
                 edges.add(edge);
             }
         }
         return edges;
+    }
+
+    /**
+     * A held leaf's text with each name its nodes had only in {@code
+     * manifest}'s run named by the node ({@link RunSpellings#name}: {@code
+     * 127.0.0.1:41564_solr} is {@code {auto0/node1}}); a text no spelling
+     * names, or a session that stated none, as it is.
+     */
+    static JsonElement named(JsonElement text, SessionManifest manifest) {
+        if (manifest == null || !text.isJsonPrimitive()) return text;
+        String raw = text.getAsString();
+        String named = manifest.runSpellings().name(raw);
+        return named.equals(raw) ? text : new JsonPrimitive(named);
     }
 
     /**
@@ -1205,6 +1224,9 @@ public final class ConfirmMain {
         /** Occurrence id -> the session's activation of it. */
         private final Map<String, ActivationRow> activations =
                 new LinkedHashMap<String, ActivationRow>();
+        /** The session's hand-off tasks that served a queue ({@code
+         *  SessionManifest#servingTasks}): held at their sends. */
+        private final Set<String> servingTasks;
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
@@ -1326,17 +1348,22 @@ public final class ConfirmMain {
 
         /**
          * Where {@code event} is held: before it in its own occurrence
-         * ({@link #holdBefore}), or, where that runs as claimed work on a
-         * consumer thread, at the entry of the send that started it
-         * ({@link Confirmation#submitter}, the one rule): ZooKeeper's
-         * server applies a getData on the thread that must apply the
-         * delete ordered before it, so the client's getData is held.
+         * ({@link #holdBefore}) -- also as a task its executor handed to a
+         * worker of its own that served no queue (an Overseer command's
+         * Runner) -- or, where that runs as a queued task, a queue item or a
+         * hand-off task that serves a queue (a ConcurrentUpdate client's
+         * Runner), at the entry of the send that started it ({@link
+         * Confirmation#submitter}, the one rule): ZooKeeper's server applies
+         * a getData on the thread that must apply the delete ordered before
+         * it, so the client's getData is held.  Held in place, the task
+         * holds what it holds there -- an Overseer command its task lock, a
+         * pool worker its pool's room -- until the order's timeout.
          */
         private Hold held(Endpoint event, long seq) {
             Endpoint send;
             try {
                 send = Confirmation.submitter(event.occurrence(),
-                        activations::get);
+                        activations::get, servingTasks);
             } catch (IllegalStateException unheld) {
                 throw new Refused(unheld.getMessage());
             }
@@ -1383,6 +1410,9 @@ public final class ConfirmMain {
         /** Where the session's events sat, and its writes: what an ORDER is
          *  built from ({@link #order}), with no closure. */
         private StateClosure(SessionReader session) {
+            servingTasks = session.manifest() == null
+                    ? Collections.<String>emptySet()
+                    : session.manifest().servingTasks();
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);

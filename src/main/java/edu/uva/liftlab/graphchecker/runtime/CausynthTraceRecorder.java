@@ -416,8 +416,9 @@ public final class CausynthTraceRecorder {
     }
 
     /** The recording's half of {@link RowRuntime#startWork}. */
-    public static void startWork(String startSiteId, Object carrier) {
-        RowRuntime.startWork(startSiteId, carrier);
+    public static void startWork(String startSiteId, Object carrier,
+                                 Object submittedTo) {
+        RowRuntime.startWork(startSiteId, carrier, submittedTo);
     }
 
     /** {@code event} of one gap the RECORDING states. */

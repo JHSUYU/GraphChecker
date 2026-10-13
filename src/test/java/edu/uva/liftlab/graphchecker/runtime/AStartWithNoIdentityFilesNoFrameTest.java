@@ -55,8 +55,8 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         assertTrue(Identity.contextHere().isLost());
         Object first = new Object();
         Object second = new Object();
-        Identity.startWork(ACCEPT, first);
-        Identity.startWork(ACCEPT, second);
+        Identity.startWork(ACCEPT, first, null);
+        Identity.startWork(ACCEPT, second, null);
         Function<Object, String> frame = carrier -> Identity.innermostFrame();
         assertEquals("", claimed(first, frame));
         assertEquals("", claimed(second, frame));
@@ -77,7 +77,7 @@ public class AStartWithNoIdentityFilesNoFrameTest {
     public void unnamedWorkOpensNoOccurrenceUntilAHopNamesIt()
             throws Exception {
         Object daemon = new Object();
-        Identity.startWork(ACCEPT, daemon);
+        Identity.startWork(ACCEPT, daemon, null);
         List<String> seen = claimed(daemon, carrier -> {
             List<String> said = new ArrayList<String>();
             said.add(opened("REGION.loop"));
@@ -108,7 +108,7 @@ public class AStartWithNoIdentityFilesNoFrameTest {
 
         long request = RuntimeTraceContext.beginRequest(DN, "accept");
         Object named = new Object();
-        Identity.startWork(ACCEPT, named);
+        Identity.startWork(ACCEPT, named, null);
         RuntimeTraceContext.endRequest(request);
         assertEquals("Root:CLIENT/accept#1", claimed(named, carrier -> {
             String first = opened("REGION.handshake");
@@ -129,13 +129,13 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         long hop = Lineage.push(DN.key(), Role.UNKNOWN, "accept");
         assertTrue(Identity.contextHere().isLost());
         Object filed = new Object();
-        Identity.startWork(ACCEPT, filed);
+        Identity.startWork(ACCEPT, filed, null);
         Lineage.pop(hop);
         assertEquals(ACCEPT, claimed(filed,
                 carrier -> Identity.innermostFrame()));
 
         Object unnamed = new Object();
-        Identity.startWork(ACCEPT, unnamed);
+        Identity.startWork(ACCEPT, unnamed, null);
         String[] tasks = claimed(unnamed, carrier -> {
             String first = opened("REGION.task");
             Identity.regionExit(null);

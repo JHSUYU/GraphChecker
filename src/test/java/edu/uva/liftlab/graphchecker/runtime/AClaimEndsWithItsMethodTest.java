@@ -51,8 +51,8 @@ public class AClaimEndsWithItsMethodTest {
         final Object[] wrappers = {new Object(), new Object()};
         final Object[] callables = {new Object(), new Object()};
         for (int task = 0; task < 2; task++) {
-            Identity.startWork(SUBMIT, callables[task]);
-            Identity.startWork(EXECUTE, wrappers[task]);
+            Identity.startWork(SUBMIT, callables[task], null);
+            Identity.startWork(EXECUTE, wrappers[task], null);
         }
         RuntimeTraceContext.endRequest(request);
         final String[] chains = new String[2];
@@ -81,7 +81,7 @@ public class AClaimEndsWithItsMethodTest {
         RuntimeTraceContext.registerSource(node, NODE);
         long request = RuntimeTraceContext.beginRequest(node, "put");
         Object first = new Object();
-        Identity.startWork(SEND, first);
+        Identity.startWork(SEND, first, null);
         RuntimeTraceContext.endRequest(request);
         final String[] chains = new String[4];
         Thread loop = new Thread(() -> {
@@ -94,7 +94,7 @@ public class AClaimEndsWithItsMethodTest {
                 long callback = Identity.enterFrame(
                         "<a.Registry$1: void accept(java.lang.Object)>", null);
                 Object next = new Object();
-                Identity.startWork(SEND, next);
+                Identity.startWork(SEND, next, null);
                 chains[send] = runTask(next, "<a.Conn$1: void run()>");
                 Identity.exitFrame(callback);
                 RuntimeTraceContext.endRequest(response);
@@ -119,7 +119,7 @@ public class AClaimEndsWithItsMethodTest {
         RuntimeTraceContext.registerSource(sender, OTHER);
         Object call = new Object();
         long request = RuntimeTraceContext.beginRequest(putter, "heartbeat");
-        Identity.startWork(PUT_BACK, call);
+        Identity.startWork(PUT_BACK, call, null);
         RuntimeTraceContext.endRequest(request);
         final Object[] seen = new Object[1];
         Thread consumer = new Thread(() -> {

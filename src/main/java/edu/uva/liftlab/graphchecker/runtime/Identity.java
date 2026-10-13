@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -20,6 +21,11 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
@@ -53,6 +59,13 @@ public final class Identity {
 
     /** Frame-level tokens: one per entered level, never reused. */
     private static final AtomicLong TOKENS = new AtomicLong(1L);
+
+    /**
+     * The claimed starts ({@link Start#key}) of the hand-off tasks of this
+     * run that took other work on their thread while they ran ({@link
+     * #servingTasks}): a consumer loop, not one task alone.
+     */
+    private static final Set<String> SERVING = ConcurrentHashMap.newKeySet();
 
     private Identity() {
     }
@@ -193,7 +206,12 @@ public final class Identity {
          * @param own whether this is the thread's own start, which is no
          *            claimed work: the thread orders it
          */
-        private void openStart(Start start, boolean own, boolean ranHere) {
+        private void openStart(Start start, boolean own, boolean ranHere,
+                               ClaimKind kind) {
+            boolean consumed = !own && !ranHere;
+            // Before the replacement below: a task whose run() entered no
+            // frame (a lineage-only class) looks finished to it.
+            if (consumed) serves();
             // A claim takes the place of the finished one made in the same
             // work before it (a consumer loop's previous item, and the scope
             // that item carried); any other stands under it: the work that
@@ -204,8 +222,8 @@ public final class Identity {
                 while (depth() > held.depth) levels.remove(depth());
                 closeStartsFrom(held.depth);
             }
-            starts.push(new Claim(depth(), start.key, own, !own && !ranHere,
-                    claimScope(), claimSerial++));
+            starts.push(new Claim(depth(), start.key, own, consumed,
+                    own ? ClaimKind.NONE : kind, claimScope(), claimSerial++));
             // The frames belong to the window the start was counted in.
             for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
@@ -259,6 +277,21 @@ public final class Identity {
         /** The depth of the innermost claimed start frame, or -1. */
         private int innermostStart() {
             return starts.isEmpty() ? -1 : starts.peek().depth;
+        }
+
+        /**
+         * Work another thread started is taken here: every hand-off task
+         * standing on this thread serves a queue (a ConcurrentUpdate
+         * client's Runner polling its updates), and holding it holds what is
+         * queued behind it ({@link Identity#servingTasks}).  For the task's
+         * life: a take in a callee that returned has served all the same.
+         */
+        private void serves() {
+            for (Claim standing : starts) {
+                if (standing.kind == ClaimKind.HANDOFF_TASK) {
+                    SERVING.add(standing.start);
+                }
+            }
         }
 
         /** Claims an UNNAMED start: the thread's own, or a task's here. */
@@ -587,7 +620,8 @@ public final class Identity {
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
-                Collections.<Frame>emptyList(), null, "", null, null, 0, 0);
+                Collections.<Frame>emptyList(), null, "", null, null, 0, 0,
+                false);
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
@@ -609,10 +643,17 @@ public final class Identity {
         private final WeakReference<Thread> thread;
         private final WeakReference<Level> level;
         private final int depth;
+        /**
+         * Whether the work was submitted to an executor that hands every
+         * task to a worker of its own ({@link #handsOff}): held where it
+         * runs, it holds nothing of its executor's queue behind it -- unless
+         * it serves a queue of its own ({@link #servingTasks}).
+         */
+        private final boolean handoff;
 
         private Start(List<Frame> frames, Attribution.Reference starter,
                       String key, Thread thread, Level level, int depth,
-                      int window) {
+                      int window, boolean handoff) {
             this.frames = frames;
             this.starter = starter;
             this.key = key;
@@ -620,6 +661,7 @@ public final class Identity {
             this.level = new WeakReference<Level>(level);
             this.depth = depth;
             this.window = window;
+            this.handoff = handoff;
         }
 
         /** The start's own frame: its site and k. */
@@ -659,15 +701,18 @@ public final class Identity {
          * ({@link #handoffs}).
          */
         private final boolean consumed;
+        /** What the claimed work is ({@link ClaimKind}); NONE when own. */
+        private final ClaimKind kind;
         private final long scope;
         private final long serial;
 
         private Claim(int depth, String start, boolean own, boolean consumed,
-                      long scope, long serial) {
+                      ClaimKind kind, long scope, long serial) {
             this.depth = depth;
             this.start = start;
             this.own = own;
             this.consumed = consumed;
+            this.kind = kind;
             this.scope = scope;
             this.serial = serial;
         }
@@ -710,14 +755,18 @@ public final class Identity {
         State state = CURRENT.get();
         if (!state.claimed) {
             state.claimed = true;
-            adopt(state, Thread.currentThread());
+            adopt(state, Thread.currentThread(), false);
         }
         return state;
     }
 
-    private static void adopt(State state, Object carrier) {
-        if (carrier == null || STARTS.isEmpty()) return;
-        Start start = STARTS.remove(carrier);
+    private static void adopt(State state, Object carrier, boolean item) {
+        Start start = carrier == null || STARTS.isEmpty() ? null
+                : STARTS.remove(carrier);
+        // An item no named start filed -- offered under no hop (UNNAMED), or
+        // put by code no weave reaches -- is work of a thread this one cannot
+        // tell from another's: taking it, a hand-off task serves a queue.
+        if (item && (start == null || start == Start.UNNAMED)) state.serves();
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
@@ -728,7 +777,12 @@ public final class Identity {
             state.claimUnnamed(own);
             return;
         }
-        state.openStart(start, own, !own && start.ranHere(state));
+        // A task its starter runs itself (a caller-runs rejection) is no
+        // worker's of its own: it runs inside the starter's work.
+        boolean ranHere = !own && start.ranHere(state);
+        state.openStart(start, own, ranHere, item ? ClaimKind.ITEM
+                : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
+                : ClaimKind.QUEUED_TASK);
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
@@ -760,7 +814,8 @@ public final class Identity {
      * address names, so the work opens no occurrence until a hop names it
      * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
-    public static void startWork(String startSiteId, Object carrier) {
+    public static void startWork(String startSiteId, Object carrier,
+                                 Object submittedTo) {
         String stable = JvmNames.stable(trimmed(startSiteId));
         if (stable.isEmpty() || carrier == null) return;
         if (!Lineage.named()) {
@@ -790,8 +845,29 @@ public final class Identity {
                                 + contextHere().render() + "|"
                                 + ExecutionIndex.of(frames).render(),
                         Thread.currentThread(), state.top(), state.depth(),
-                        window));
+                        window, handsOff(submittedTo)));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+    }
+
+    /**
+     * Whether {@code executor} hands every task to a worker of its own: a
+     * {@link ThreadPoolExecutor} on a {@link SynchronousQueue}, which
+     * starts a worker for each task or rejects it, never queues it.  By the
+     * queue's class, never its fill: a full bounded queue is only full at
+     * the moment it is read.  Any other executor's task is a queued one,
+     * held at the send that started it ({@code Confirmation#submitter}).
+     * A replay runs the hook paused, as every woven hook ({@code
+     * CausynthPipeline.HookCatalog#bracket}); a queue that will not say
+     * ({@code getQueue} overridden and throwing) hands nothing off.
+     */
+    private static boolean handsOff(Object executor) {
+        if (!(executor instanceof ThreadPoolExecutor)) return false;
+        try {
+            return ((ThreadPoolExecutor) executor).getQueue()
+                    instanceof SynchronousQueue;
+        } catch (RuntimeException unstated) {
+            return false;
+        }
     }
 
     /**
@@ -923,6 +999,26 @@ public final class Identity {
                 : state.starts.peek().start;
     }
 
+    /**
+     * The claimed starts ({@link #claimedStart}) of the hand-off tasks that
+     * took work another thread started -- a queue item, or a task run on
+     * their thread -- while they ran: each serves a queue, so holding it
+     * where it runs holds what is queued behind it.  A task's first row is
+     * written at its activation's entry, before the loop's first take
+     * ({@code RowRuntime#beginActivation}), so the session states them once,
+     * at its close ({@code SessionManifest#servingTasks}).
+     */
+    static Set<String> servingTasks() {
+        return Collections.unmodifiableSet(new TreeSet<String>(SERVING));
+    }
+
+    /** What the claimed work {@link #claimedStart} names is, or NONE. */
+    static ClaimKind claimKind() {
+        State state = state();
+        return state.starts.isEmpty() ? ClaimKind.NONE
+                : state.starts.peek().kind;
+    }
+
     /** Whether that reference is a claimed start, not the thread's creator. */
     static boolean adoptedStarter() {
         return state().adopted;
@@ -961,7 +1057,7 @@ public final class Identity {
         State state = state();
         ClaimScope scope = new ClaimScope(state);
         state.claimScopes.push(scope);
-        claim(state, carrier);
+        claim(state, carrier, false);
         return scope.id;
     }
 
@@ -1021,14 +1117,14 @@ public final class Identity {
      */
     static void claimItem(Object item) {
         if (item == null) return;
-        claim(state(), item);
+        claim(state(), item, true);
     }
 
-    private static void claim(State state, Object carrier) {
+    private static void claim(State state, Object carrier, boolean item) {
         state.work = carrier;
         // A task claimed here takes the place of a finished unnamed one.
         state.endUnnamedWork();
-        if (!STARTS.isEmpty()) adopt(state, carrier);
+        adopt(state, carrier, item);
     }
 
     /**
@@ -1910,6 +2006,7 @@ public final class Identity {
     public static void resetForTests() {
         CURRENT.remove();
         STARTS.clear();
+        SERVING.clear();
         CLOCK = UNAVAILABLE;
         synchronized (ENGINE_TIES) {
             ENGINE_TIES[0] = 0L;

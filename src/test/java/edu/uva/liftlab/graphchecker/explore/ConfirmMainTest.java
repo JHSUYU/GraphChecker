@@ -961,21 +961,34 @@ public class ConfirmMainTest {
     /**
      * A WIRE edge states the text the model's valuation of its leaf
      * delivers where COMPOSE stated one ({@code texts}: a value resting on
-     * no clock); another consumer of the arm is held to its producer alone.
+     * no clock), each name its nodes had only in the arm's run named by the
+     * node, the rest as it is; another consumer of the arm is held to its
+     * producer alone.
      */
     @Test
     public void aWireEdgeStatesTheModelsTextWhereComposeStatedOne()
             throws Exception {
         Path iteration = iteration();
         Endpoint other = endpoint(ANCHOR, "XCH.req.key-id");
+        Endpoint url = endpoint(ANCHOR, "XCH.req.leader-url");
         RowCodec.writeAll(SessionDir.of(iteration, "sel").attaches(),
                 Arrays.asList(AttachRow.of("sel", 20L, consumer,
                         "M_J_field_HOFF.1", "J", "2000", false, null, producer,
                         "corr-1", AttachRow.HANDLE),
                         AttachRow.of("sel", 21L, other, "M_I_field_HOFF.2",
                                 "I", "7", false, null, producer, "corr-2",
-                                AttachRow.HANDLE)),
+                                AttachRow.HANDLE),
+                        AttachRow.of("sel", 22L, url, "M_S_field_HOFF.3",
+                                "Ljava/lang/String;",
+                                "http://127.0.0.1:41564/solr", false, null,
+                                producer, "corr-3", AttachRow.HANDLE)),
                 RowCodec::writeAttach);
+        // The arm's run named node1 so.
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeManifest(sel.manifest(), RowCodec.readManifest(
+                sel.manifest()).atClose(null, null, null,
+                Collections.singletonMap("127.0.0.1:41564_solr",
+                        "auto0/node1"), null, null));
         Path claim = claim("M_J_clock.sel");
         JsonObject written = new JsonParser().parse(new String(
                 Files.readAllBytes(claim), StandardCharsets.UTF_8))
@@ -984,8 +997,10 @@ public class ConfirmMainTest {
                 .getAsJsonObject().getAsJsonArray("selectedArms").get(0)
                 .getAsJsonObject();
         arm.getAsJsonArray("attachEndpointIds").add(other.id());
+        arm.getAsJsonArray("attachEndpointIds").add(url.id());
         JsonObject texts = new JsonObject();
         texts.addProperty(consumer.id(), "2000");
+        texts.addProperty(url.id(), "http://127.0.0.1:41564/solr");
         arm.add(ComposeMain.TEXTS, texts);
         Files.write(claim, written.toString().getBytes(
                 StandardCharsets.UTF_8));
@@ -1000,9 +1015,11 @@ public class ConfirmMainTest {
                 wire.put(edge.get("consumer").getAsString(), edge);
             }
         }
-        assertEquals(2, wire.size());
+        assertEquals(3, wire.size());
         assertEquals("2000", wire.get(consumer.id()).get("value")
                 .getAsString());
+        assertEquals("http://{auto0/node1}/solr", wire.get(url.id())
+                .get("value").getAsString());
         JsonObject held = wire.get(other.id());
         assertEquals(producer.id(), held.get("producer").getAsString());
         assertTrue(held.toString(), !held.has("value"));

@@ -716,7 +716,8 @@ public class ContractTest {
         // The sender its anchor names rides along, so a reader follows the
         // causal chain past the anchor.
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
-                "task-1", true, true, "DataXceiver-7#41", export);
+                "task-1", true, true, "DataXceiver-7#41",
+                ActivationRow.ClaimKind.NONE, export);
         // The session's own event order: export, attach, write, decision,
         // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
@@ -748,6 +749,33 @@ public class ContractTest {
 
         assertEquals(activation, RowCodec.readActivation(
                 reline(RowCodec.writeActivation(activation)), new RowPool()));
+        // A claimed task states its claim's kind: how an order holds it.
+        ActivationRow handed = ActivationRow.of("s-17897-1", anchor,
+                "task-1", true, true, ActivationRow.CLAIMED + "s|k",
+                ActivationRow.ClaimKind.HANDOFF_TASK, null);
+        assertEquals(handed, RowCodec.readActivation(
+                reline(RowCodec.writeActivation(handed)), new RowPool()));
+        assertTrue(handed.heldWhereItRuns(Collections.<String>emptySet()));
+        assertFalse("a hand-off task that served a queue",
+                handed.heldWhereItRuns(Collections.singleton(
+                        handed.threadKey())));
+        // A claimed row from before claimKind reads as NONE and keeps the
+        // send rule.
+        JsonObject legacy = RowCodec.writeActivation(handed);
+        legacy.remove("claimKind");
+        ActivationRow old = RowCodec.readActivation(reline(legacy),
+                new RowPool());
+        assertEquals(ActivationRow.ClaimKind.NONE, old.claimKind());
+        assertFalse(old.heldWhereItRuns(Collections.<String>emptySet()));
+        // Claimed work is keyed by its claimed start, never by its thread.
+        try {
+            ActivationRow.of("s-17897-1", anchor, "task-1", true, true,
+                    "pool-1-thread-1#20", ActivationRow.ClaimKind.ITEM, null);
+            fail("an item keyed by its thread");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("claimed start"));
+        }
         // An activation a lightweight entry hook published carries no thread
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.

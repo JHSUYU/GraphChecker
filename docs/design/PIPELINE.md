@@ -2278,7 +2278,10 @@ selected arm states `texts`, consumer endpoint id -> the model's value of each l
 (`ComposedFamilies.BoundLeaf#held`: a delivery into the anchor) as the text that
 arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
 or a floating value), for every such leaf whose value rests on no clock through the valuation's
-selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
+selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh). CONFIRM compares it with each
+name a node had only in one run named by the node on both sides -- the arm's run's (`ConfirmMain#named`), the confirming
+run's (`Confirmation#attached`, `RunNames#name`) -- and exactly after that: a node's address differs by its run's port
+(NC3-reindex attempt 0000 was refuted on `127.0.0.1:41564_solr` against `127.0.0.1:33130_solr`, both `auto0/node1`).
 
 **Cost.** COMPOSE reads the whole corpus -- every session (`SessionReader#readAll`) and every
 obligation worker's answer with, once it published a session, its focus row (`ObligationDir#workersIn`),
@@ -2565,10 +2568,20 @@ with it is a `RUN_DEFECT`.
   (`StateClosure#exit`, `#outermost`), which the session ran at the occurrence's last recorded
   event, so a writer it ran before that is a reordered occurrence (`StateClosure#closing`); where
   that activation runs
-  as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
-  request after another, the writer's among them, would deadlock held), the entry of the send that
-  started it, its anchor's producer followed up the chain while that send is claimed work too
-  (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
+  as a queued task, a queue item, a hand-off task that served a queue or claimed work of no stated
+  kind (`ActivationRow#heldWhereItRuns` false: a server pipeline applying one request after
+  another, the writer's among them, would deadlock held), the entry of the send that started it, its
+  anchor's producer followed up the chain while that send is such work too
+  (`Confirmation#submitter`; none refuses the confirmation, `ORDER_UNHELD`, naming the claim's
+  kind); a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
+  on a `SynchronousQueue`: Solr's Overseer command Runners) holds nothing of its executor's queue
+  behind it and is held where it runs, unless the session's manifest names it in `servingTasks`
+  (it took work another thread started on its thread, any queue item no named start filed among
+  it: a ConcurrentUpdate client's Runner polling
+  its update queue). Held in place, such a task holds what it holds at the hold: an Overseer
+  command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
+  the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
+  submission); both end at the order's timeout, an order not held in time; every other
   writer of the location the held write is of before the writer or after the reader, held alike, and
   for an INITIAL the model chose every writer of the location after the reader), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their

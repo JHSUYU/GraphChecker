@@ -115,7 +115,7 @@ public class AttributionTest {
                 after.set(named == null ? "" : named.key());
             }
         });
-        Identity.startWork("<a.DataNode: void start()>#u7", server);
+        Identity.startWork("<a.DataNode: void start()>#u7", server, null);
         server.start();
         Identity.exitFrame(frame);
         Thread.sleep(100L);
@@ -160,7 +160,7 @@ public class AttributionTest {
                 long tick = RuntimeTraceContext.beginTick(new Object(),
                         "BP_SERVICE_ACTOR");
                 Object item = new Object();
-                Identity.startWork("<a.Connection: void send()>#u1", item);
+                Identity.startWork("<a.Connection: void send()>#u1", item, null);
                 queue.add(item);
                 RuntimeTraceContext.endTick(tick);
             }

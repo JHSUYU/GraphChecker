@@ -191,6 +191,9 @@ public final class RowCodec {
         json.addProperty("focused", row.focused());
         json.addProperty("instrumented", row.instrumented());
         json.addProperty("threadKey", row.threadKey());
+        if (row.claimKind() != ActivationRow.ClaimKind.NONE) {
+            json.addProperty(CLAIM_KIND, row.claimKind().name());
+        }
         if (row.anchorProducer() != null) {
             json.add(ANCHOR_PRODUCER, writeEndpoint(row.anchorProducer()));
         }
@@ -205,10 +208,14 @@ public final class RowCodec {
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "taskId"), bool(json, "focused"),
                 bool(json, "instrumented"), string(json, "threadKey"),
+                json.has(CLAIM_KIND) ? ActivationRow.ClaimKind.valueOf(
+                        string(json, CLAIM_KIND))
+                        : ActivationRow.ClaimKind.NONE,
                 producer == null ? null : readEndpoint(producer, pool));
     }
 
     private static final String ANCHOR_PRODUCER = "anchorProducer";
+    private static final String CLAIM_KIND = "claimKind";
 
     public static JsonObject writeDecision(DecisionRow row) {
         JsonObject json = row(row.sessionId(), row.seq());
