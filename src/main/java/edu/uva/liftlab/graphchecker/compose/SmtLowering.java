@@ -1494,8 +1494,9 @@ public final class SmtLowering {
                         + "corpus states this symbol", sort, javaType);
     }
 
-    /** The content leaves being lowered through their view, innermost
-     *  last, so each of a view's cases is its own leaf. */
+    /** The views whose leaves are being lowered, innermost last: within
+     *  a case of a view (its read holds that version), a leaf of the same
+     *  view is the leaf of that version's decode, its own. */
     private final List<String> viewing = new ArrayList<String>();
     /** {@link #throughView}'s answers, per leaf, Java type and sort asked:
      *  each once per memo ({@link #forget}), as a node is ({@link
@@ -1526,9 +1527,12 @@ public final class SmtLowering {
     private Term throughView(String raw, String javaType, Sort expected) {
         ViewLeaf leaf = join.viewLeaf(raw);
         if (leaf == null) return null;
-        int at = viewing.lastIndexOf(raw);
+        int at = viewing.lastIndexOf(leaf.viewKey);
         if (at >= 0) {
-            // Its own case is the leaf itself; a leaf further up is a cycle.
+            // A leaf of the view being cased is that case's own leaf (a
+            // view of ten versions was otherwise cased again through each
+            // of its other reads: every order of its versions, solr-adhoc-40
+            // SL1); one of a view further up is a cycle.
             if (at < viewing.size() - 1) viewCycles++;
             return null;
         }
@@ -1545,7 +1549,7 @@ public final class SmtLowering {
     /** {@link #throughView}'s answer, lowered. */
     private Term viewed(ViewLeaf leaf, String raw, String javaType,
                         Sort expected) {
-        viewing.add(raw);
+        viewing.add(leaf.viewKey);
         try {
             ReadRow view = null;
             for (ReadRow read : join.reads(leaf.viewKey)) {
