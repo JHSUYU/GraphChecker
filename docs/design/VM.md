@@ -625,6 +625,21 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
   (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
   its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`).
+  An envelope's top level is read off its text once: the members but the records parsed as its
+  header, each record's extent found by its brackets, up to the table.
+  Every close reads out every location touched since its entry, so an enclosing activation's
+  read-out states an inner one's locations again, mostly unchanged (SGF3-adhoc-31's seed replay listed
+  394,232 versions for 51,043 write rows). A record a page states with exactly the text the session's
+  store decoded before is filed as that decoding, not parsed, expanded or checked again
+  (`Store#importRepeatedRecords`): the store holds, per record's text up to its first `}` (a location
+  envelope's location), the latest exact text and its decoding (`SharedStateCapture.Filed`, the write
+  log record or the refusal), softly, so a collection under memory pressure only costs a decoding again.
+  A JSON object ends where its text does, so a page whose text at a record's start begins with a held
+  text holds that record; and the decoding is a function of the text and the store alone (the store
+  expands each node once and keeps it), so the held one is the one a decoding would give. A page every
+  record of which is held reads no table: the one check it no longer makes is the table's own
+  well-formedness (its schema, count and closing), safe because every row that table would define is a
+  node the records' first decoding expanded -- a page's table is the closure of what its records name.
   The table is the envelope's last member, compact, spelled `,"vmExpressionTable":{<schema,
   session, definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
   "sessionId":<s>,"expressionId":<n>,"expression":{...}}` in ascending id (`write_table`); a

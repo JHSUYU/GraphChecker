@@ -395,6 +395,17 @@ is withheld and its mints are published, as an abandoned one's are: other activa
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
 `System.exit` ends the in-process cluster (its threads and ports) with the JVM.
 
+A read-out repeats what an earlier one stated (every close reads out every location touched since its
+entry), and each event is one row, published by the first activation whose publication walks it
+(`RowRuntime#claimEvent`). A location envelope read out again unchanged is filed as the record its
+first reading decoded, shared by every activation that read it (`SharedStateCapture.Filed`, VM.md
+§8), and a publication does not walk a record an earlier publication walked whole
+(`Filed#walked`): every row and gap it can state is claimed once per session, the event index and
+the stores outside every region keep what they hold, and what else it reads only grows before the
+record exists (a mint's label is filed before its store, the READ_SITE methods at session open, a
+performer at its region entry). The record stays the activation's, for its mint stores and its
+referents (`RowPlaceholderMint#mintStores`, `RowPublication#unrowedReferent`).
+
 Every logged version a region stored is a write row (`RowPublication#writes`; a store outside
 every region has no performer, a declared input is a mint), the location's INITIAL among them,
 flagged (`WriteRow#initial`): what the location held before every write its log names -- a

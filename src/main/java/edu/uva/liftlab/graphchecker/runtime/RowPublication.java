@@ -153,6 +153,21 @@ final class RowPublication {
      * <p>Site from the VM log, index from the frame journal (IDENTITY §4).
      * A row belongs to the activation that PERFORMED the event
      * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
+     *
+     * <p>A record an earlier publication walked whole ({@link
+     * SharedStateCapture.Filed#walked}: an enclosing activation's read-out
+     * stated the location again unchanged) is not walked again: that walk
+     * adds nothing.  Every row and gap it can state is claimed once per
+     * session, first publisher wins ({@link RowRuntime#claimEvent}), the
+     * event index and the stores outside every region keep what they hold
+     * ({@link LoggedEventSites#index}, {@link RowRuntime#storedOutside}),
+     * and what else it reads only grows before the record exists: a mint's
+     * label is filed before its store ({@link RowRuntime#declaredMintLabel}),
+     * the READ_SITE methods at session open ({@link #installReadSites}), an
+     * activation's performer at its region entry, before any event of it
+     * ({@link RowRuntime#journalRegion}).  It stays in the activation's
+     * map: its mint stores and referents are this activation's question
+     * ({@link RowPlaceholderMint#mintStores}, {@link #unrowedReferent}).</p>
      */
     private static void writes(ActiveRegion active) {
         // One read node is reachable from many versions: count it once.
@@ -166,10 +181,14 @@ final class RowPublication {
         // Index every location's log first: a read node inside one value
         // reads ANOTHER location, and only its log record names the
         // activation that ran it (by event id).
-        for (JsonObject record : active.sharedStateRecords.values()) {
-            LoggedEventSites.index(record);
+        for (SharedStateCapture.Filed filed
+                : active.sharedStateRecords.values()) {
+            if (!filed.walked) LoggedEventSites.index(filed.record);
         }
-        for (JsonObject record : active.sharedStateRecords.values()) {
+        for (SharedStateCapture.Filed filed
+                : active.sharedStateRecords.values()) {
+            if (filed.walked) continue;
+            JsonObject record = filed.record;
             String locationKey = optionalString(record, "locationKey");
             LocationId location = locationId(locationKey);
             if (location == null) continue;
@@ -220,8 +239,14 @@ final class RowPublication {
             collect(mapping.get("witness"), published, seen);
         }
         // After every expression: a read one states keeps its node's row.
-        for (JsonObject record : active.sharedStateRecords.values()) {
-            loggedReads(record, published);
+        for (SharedStateCapture.Filed filed
+                : active.sharedStateRecords.values()) {
+            if (!filed.walked) loggedReads(filed.record, published);
+        }
+        // Whole: a walk a failure cut short leaves its records unwalked.
+        for (SharedStateCapture.Filed filed
+                : active.sharedStateRecords.values()) {
+            filed.walked = true;
         }
     }
 
@@ -332,17 +357,18 @@ final class RowPublication {
      * holds the version as no row.  A log the read-out did not select was
      * published by an earlier activation's.
      */
-    static String unrowedReferent(Map<String, String> refusals,
-                                  Map<String, JsonObject> records,
-                                  JsonObject version,
-                                  Map<String, String> mints) {
+    static String unrowedReferent(
+            Map<String, String> refusals,
+            Map<String, SharedStateCapture.Filed> records, JsonObject version,
+            Map<String, String> mints) {
         String key = SharedStateCapture.locationKeyOf(object(version,
                 SharedStateCapture.REFERENT_STATE));
         if (key.isEmpty()) return "";
         String refused = refusals.get(key);
         if (refused != null) return refused;
-        JsonObject record = records.get(key);
-        if (record == null) return "";
+        SharedStateCapture.Filed filed = records.get(key);
+        if (filed == null) return "";
+        JsonObject record = filed.record;
         long named = optionalLongInteger(object(version,
                 SharedStateCapture.REFERENT_STATE), "fieldVersionId", -1L);
         for (JsonElement logged : array(object(record, "envelope"),

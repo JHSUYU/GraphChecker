@@ -393,6 +393,72 @@ public class ContractTest {
         }
     }
 
+    /**
+     * A record a read-out states again unchanged is decoded once: the store
+     * hands on the decoding its first reading had, in page order, and a
+     * page whose every record it holds reads no table (here a broken one,
+     * which a page with a record to decode is refused for).  A record
+     * changed by one member is decoded again and held from then on.
+     */
+    @Test
+    public void aRepeatedRecordIsDecodedOnce() {
+        VmExpressionTable.Store store =
+                new VmExpressionTable.Store(owner -> false);
+        JsonObject first = new JsonObject();
+        first.add("value", vmReference(2));
+        JsonObject second = new JsonObject();
+        second.add("value", vmReference(1));
+        JsonObject[] definitions = {vmDefinition(1, symbol("M_I_site")),
+                vmDefinition(2, binary("==", vmReference(1),
+                        symbol("M_I_site")))};
+        String page = vmPage(new JsonObject[] {first, second}, definitions)
+                .toString();
+        int[] decodes = {0};
+        List<JsonObject> read = new ArrayList<>();
+        java.util.function.Function<com.google.gson.JsonElement, JsonObject>
+                decode = record -> {
+                    decodes[0]++;
+                    return record.getAsJsonObject();
+                };
+        JsonObject header = store.importRepeatedRecords(page, "records",
+                stated -> true, JsonObject.class, decode, read::add);
+        assertEquals(2, decodes[0]);
+        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
+        List<JsonObject> again = new ArrayList<>();
+        String broken = page.replace("\"definitionCount\":2",
+                "\"definitionCount\":3");
+        header = store.importRepeatedRecords(broken, "records",
+                stated -> true, JsonObject.class, decode, again::add);
+        assertEquals("held: decoded no more", 2, decodes[0]);
+        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
+        assertSame(read.get(0), again.get(0));
+        assertSame(read.get(1), again.get(1));
+        JsonObject changed = second.deepCopy();
+        changed.addProperty("readEventId", 7L);
+        String moved = vmPage(new JsonObject[] {first, changed},
+                definitions).toString();
+        try {
+            store.importRepeatedRecords(moved.replace(
+                    "\"definitionCount\":2", "\"definitionCount\":3"),
+                    "records", stated -> true, JsonObject.class, decode,
+                    record -> { });
+            fail("a page with a record to decode reads its table");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("count"));
+        }
+        again.clear();
+        store.importRepeatedRecords(moved, "records", stated -> true,
+                JsonObject.class, decode, again::add);
+        assertEquals("only the changed record is decoded", 3, decodes[0]);
+        assertSame(read.get(0), again.get(0));
+        assertEquals(7L, again.get(1).get("readEventId").getAsLong());
+        assertSame(read.get(0).get("value"), again.get(0).get("value"));
+        store.importRepeatedRecords(moved, "records", stated -> true,
+                JsonObject.class, decode, record -> { });
+        assertEquals(3, decodes[0]);
+    }
+
     /** A read-out page: its records, then its table, as the VM writes it. */
     private static JsonObject vmPage(JsonObject[] records,
                                      JsonObject... definitions) {

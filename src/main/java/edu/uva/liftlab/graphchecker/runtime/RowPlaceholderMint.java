@@ -383,7 +383,9 @@ final class RowPlaceholderMint {
         Map<String, List<String[]>> bySymbol =
                 new LinkedHashMap<String,
                         List<String[]>>();
-        for (JsonObject record : active.sharedStateRecords.values()) {
+        for (SharedStateCapture.Filed filed
+                : active.sharedStateRecords.values()) {
+            JsonObject record = filed.record;
             String locationKey = optionalString(record, "locationKey");
             if (locationId(locationKey) == null) continue;
             for (JsonElement element

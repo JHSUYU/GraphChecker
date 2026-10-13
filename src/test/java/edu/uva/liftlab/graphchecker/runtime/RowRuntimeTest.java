@@ -1814,8 +1814,8 @@ public class RowRuntimeTest {
                 {"rowed", ""}, {"outside", "VERSION_NOT_ROWED"},
                 {"evicted", "VERSION_NOT_RETAINED"}, {"unselected", ""}}) {
             Map<String, String> refusals = new HashMap<String, String>();
-            Map<String, JsonObject> records =
-                    new HashMap<String, JsonObject>();
+            Map<String, SharedStateCapture.Filed> records =
+                    new HashMap<String, SharedStateCapture.Filed>();
             if ("refused".equals(each[0])) {
                 refusals.put(key, (String) each[1]);
             } else if (!"unselected".equals(each[0])) {
@@ -1831,7 +1831,7 @@ public class RowRuntimeTest {
                 envelope.add("versions", versions);
                 JsonObject record = new JsonObject();
                 record.add("envelope", envelope);
-                records.put(key, record);
+                records.put(key, filed(record));
             }
             assertEquals(Arrays.toString(each), each[1],
                     RowPublication.unrowedReferent(refusals, records, version,
@@ -3271,5 +3271,10 @@ public class RowRuntimeTest {
         }
         mapping.add("witness", witness);
         return mapping;
+    }
+
+    /** A write log record as a read-out files it. */
+    private static SharedStateCapture.Filed filed(JsonObject record) {
+        return new SharedStateCapture.Filed("", record, "", 0);
     }
 }

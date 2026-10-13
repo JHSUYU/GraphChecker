@@ -334,6 +334,10 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   (SGF2 at most 2): each parent past the MIGRATE re-keys the same arm (inferred: the `expireAt` clock value in
   `Corpus#inputShape`), and its witness waited behind the round-2 planner. Packages `solr-armkey`, `solr-witfirst` (§1).
   Evidence `/bigtemp/vnr3ne/gc-out/solr-zk2/accept-Z3S-18413`.
+- **o. A read-out page's header on the closing thread (follow-up of `solr-readout`, VM):** the owner thread reads each
+  page's `complete` and `nextAfterEventId` (`SharedStateCapture#pageHeader`) by skipping every record before them with a
+  JsonReader, about 4 MB/s on the Zero interpreter (SGF3-31: ~870 MB of record text on the closing threads, with the VM
+  context held). The VM writing those two members before `locations` makes it a read of the page's head.
 
 ### 4. The last round (SGF3) and the fork
 

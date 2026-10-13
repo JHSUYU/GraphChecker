@@ -84,8 +84,10 @@ final class ActiveRegion {
     /** Exact configured-source and planned-action observations. */
     final List<JsonObject> symbolizedRows = new ArrayList<>();
     final List<JsonObject> branchMappings = new ArrayList<>();
-    /** The write log this activation read out, and its gaps. */
-    final Map<String, JsonObject> sharedStateRecords =
+    /** The write log this activation read out, and its gaps: each
+     *  location's record, shared with every activation whose read-out
+     *  stated it alike. */
+    final Map<String, SharedStateCapture.Filed> sharedStateRecords =
             new LinkedHashMap<>();
     /** The locations its read-out refused, with why. */
     final Map<String, String> sharedStateRefusals = new LinkedHashMap<>();

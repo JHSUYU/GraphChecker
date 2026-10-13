@@ -13,6 +13,7 @@ import com.google.gson.stream.JsonToken;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -24,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
@@ -116,28 +118,121 @@ public final class VmExpressionTable {
          * One VM envelope of records -- a JSON object holding one array of
          * records ({@code records}, each self-contained but for the nodes it
          * references) beside the envelope's one expression table, as a
-         * read-out page and a branch's path-condition window are -- read as a
-         * stream: never parsed whole, never copied whole.  The table comes
-         * last, so the envelope is read twice.  First every member but the
-         * records: the table's rows are read off the text, a row of a node
+         * read-out page and a branch's path-condition window are -- never
+         * parsed whole, never copied whole.  Its top level is read off the
+         * text once: the members but the records parsed as the header, each
+         * record's extent found by its brackets, up to the table, the last
+         * member.  The table's rows are read off the text, a row of a node
          * this store has expanded already skipped by its id, unscanned (its
          * expansion answers for it: a window repeats the closure of its
          * condition, a page the closure its locations share), the rest
-         * parsed, checked closed and kept; the records are counted and
-         * the rest is the header; {@code admit} is
-         * asked of the header with the count stated as {@link
-         * #RECORD_COUNT}.  Admitted, each record is then parsed, expanded
-         * against the table and handed to {@code each} in order, one at a
-         * time, outside the store's lock; a definition is let go once
-         * expanded, and the rest when the envelope ends.  An envelope with no
-         * table is a plain one read the same way.
+         * parsed, checked closed and kept; {@code admit} is asked of the
+         * header with the record count stated as {@link #RECORD_COUNT}.
+         * Admitted, each record is then parsed, expanded against the table
+         * and handed to {@code each} in order, one at a time, outside the
+         * store's lock; a definition is let go once expanded, and the rest
+         * when the envelope ends.  An envelope with no table is a plain one
+         * read the same way.
          *
          * @return the header, with the count
          */
         public JsonObject importRecords(String page, String records,
                                         Predicate<JsonObject> admit,
                                         Consumer<JsonElement> each) {
-            return rawResolver.importRecords(page, records, admit, each);
+            return rawResolver.<JsonElement>importRecords(page, records,
+                    admit, null, record -> record, each);
+        }
+
+        /**
+         * {@link #importRecords}, each record decoded by {@code decode} and
+         * its decoding handed to {@code each} -- once per text: a record
+         * whose text this store has decoded before (a location a read-out
+         * states again unchanged) is neither parsed, expanded nor decoded
+         * again, and {@code each} takes the decoding it had.  So
+         * {@code decode} must be a function of the record's text and this
+         * store alone.  A page every record of which is held reads no
+         * table: the one check it no longer makes is that table's own
+         * well-formedness, and every row it would define is a node the
+         * records' first decoding expanded (a page's table is the closure
+         * of what its records name).
+         */
+        public <T> JsonObject importRepeatedRecords(
+                String page, String records, Predicate<JsonObject> admit,
+                Class<T> decoding, Function<JsonElement, T> decode,
+                Consumer<? super T> each) {
+            return rawResolver.importRecords(page, records, admit,
+                    new Repeats<T>(repeated, decoding), decode, each);
+        }
+
+        /**
+         * The records read-out pages decoded, by their text up to its first
+         * {@code '}'} (a location envelope's location: one entry per
+         * location, the latest): the exact text and its decoding.  Held
+         * softly: a collection under memory pressure drops an entry, and
+         * the next read-out of that record decodes it again.  This store's
+         * own: a session's decodings name its nodes.
+         */
+        private final Map<String, SoftReference<Held>> repeated =
+                new HashMap<>();
+    }
+
+    /** One decoded record's exact text and its decoding. */
+    private static final class Held {
+        private final String text;
+        private final Object decoding;
+
+        private Held(String text, Object decoding) {
+            this.text = text;
+            this.decoding = decoding;
+        }
+    }
+
+    /** A store's held records, as one caller's decodings. */
+    private static final class Repeats<T> {
+        private final Map<String, SoftReference<Held>> held;
+        private final Class<T> decoding;
+
+        private Repeats(Map<String, SoftReference<Held>> held,
+                        Class<T> decoding) {
+            this.held = held;
+            this.decoding = decoding;
+        }
+
+        /** The lookup key of the record at {@code start}: its text up to
+         *  its first '}', or null. */
+        private static String key(String page, int start) {
+            int end = page.indexOf('}', start);
+            return end < 0 ? null : page.substring(start, end + 1);
+        }
+
+        /** The held record the page holds at {@code start} exactly, or
+         *  null: a JSON object ends where its text does, so a page whose
+         *  text from {@code start} begins with a held record's whole text
+         *  holds that record there. */
+        private Held at(String page, int start) {
+            String key = key(page, start);
+            if (key == null) return null;
+            SoftReference<Held> reference;
+            synchronized (held) {
+                reference = held.get(key);
+            }
+            Held record = reference == null ? null : reference.get();
+            return record != null && page.regionMatches(start, record.text,
+                    0, record.text.length()) ? record : null;
+        }
+
+        private T decoding(Held record) {
+            return decoding.cast(record.decoding);
+        }
+
+        /** Holds one decoded record, the latest of its key. */
+        private void hold(String text, T decoded) {
+            String key = key(text, 0);
+            if (key == null) return;
+            synchronized (held) {
+                held.put(key, new SoftReference<Held>(
+                        new Held(text, decoded)));
+            }
         }
     }
 
@@ -224,71 +319,205 @@ public final class VmExpressionTable {
         /** Whether a page is being read record by record. */
         private boolean streaming;
 
-        private JsonObject importRecords(String page, String records,
-                                         Predicate<JsonObject> admit,
-                                         Consumer<JsonElement> each) {
+        /**
+         * One envelope of records ({@link Store#importRecords}), its top
+         * level read off the text once: the header's members parsed, each
+         * record's extent found -- a record {@code repeats} holds by its
+         * whole text, any other by scanning it -- up to the table, the last
+         * member.  The table is read when a record is to be decoded (or
+         * there is none), then the header with its count is admitted, then
+         * the records are handed on in page order: a held one's decoding,
+         * any other parsed, expanded, decoded and held.
+         */
+        private <T> JsonObject importRecords(String page, String records,
+                                             Predicate<JsonObject> admit,
+                                             Repeats<T> repeats,
+                                             Function<JsonElement, T> decode,
+                                             Consumer<? super T> each) {
             Map<RawKey, JsonObject> table = new HashMap<>();
             Set<RawKey> supplied = new HashSet<>();
             JsonObject header = new JsonObject();
-            try {
-                int count = 0;
-                boolean tabled = false;
-                JsonReader reader = reader(page);
-                while (reader.hasNext()) {
-                    String name = reader.nextName();
-                    if (FIELD.equals(name)) {
-                        // The envelope's last member, read off the text.
-                        tabled = true;
-                        break;
-                    } else if (records.equals(name)
-                            && reader.peek() == JsonToken.BEGIN_ARRAY) {
-                        reader.beginArray();
-                        for (; reader.hasNext(); count++) reader.skipValue();
-                        reader.endArray();
-                    } else {
-                        header.add(name, JsonParser.parseReader(reader));
-                    }
-                }
-                if (tabled) readTable(page, supplied, table);
-                header.addProperty(RECORD_COUNT, count);
-                SharedExpressionTable.Dag<RawKey> dag =
-                        new SharedExpressionTable.Dag<>("VM expression",
-                                key -> table.containsKey(key)
-                                        ? table.get(key)
-                                        : supplied.contains(key)
-                                                && expanded(key)
-                                                ? CLOSED : null,
-                                RawResolver::references);
-                for (RawKey key : supplied) dag.require(key);
-                if (!admit.test(header)) return header;
-                reader = reader(page);
-                while (reader.hasNext()) {
-                    if (!records.equals(reader.nextName())
-                            || reader.peek() != JsonToken.BEGIN_ARRAY) {
-                        reader.skipValue();
-                        continue;
-                    }
-                    reader.beginArray();
-                    while (reader.hasNext()) {
-                        JsonElement record = JsonParser.parseReader(reader);
-                        // Self-contained but for the envelope's table.
-                        references(record, key -> {
-                            if (!supplied.contains(key)) {
-                                throw new IllegalArgumentException(
-                                        "missing VM expression definition: "
-                                                + key);
-                            }
-                        });
-                        each.accept(expandAgainst(table, record));
-                    }
-                    reader.endArray();
-                    // One array of records: the table after it is read.
+            // Each record's extent, and what repeats holds of it (or null).
+            List<int[]> extents = new ArrayList<>();
+            List<Held> held = new ArrayList<>();
+            boolean decodes = false;
+            int tabled = -1;
+            int at = TopLevel.open(page);
+            while (TopLevel.peek(page, at) != '}') {
+                String name = TopLevel.name(page, at);
+                int value = TopLevel.value(page, at);
+                if (FIELD.equals(name)) {
+                    // The envelope's last member, read off the text.
+                    tabled = at;
                     break;
                 }
-                return header;
-            } catch (IOException malformed) {
-                throw new IllegalArgumentException(
-                        "malformed VM read-out page", malformed);
+                if (!records.equals(name)
+                        || TopLevel.peek(page, value) != '[') {
+                    int end = TopLevel.end(page, value);
+                    header.add(name, parse(page, value, end));
+                    at = TopLevel.next(page, end, '}');
+                    continue;
+                }
+                at = TopLevel.space(page, value + 1);
+                while (TopLevel.peek(page, at) != ']') {
+                    Held record = repeats == null ? null
+                            : repeats.at(page, at);
+                    int end = record != null ? at + record.text.length()
+                            : TopLevel.end(page, at);
+                    extents.add(new int[] {at, end});
+                    held.add(record);
+                    decodes |= record == null;
+                    at = TopLevel.next(page, end, ']');
+                }
+                at = TopLevel.next(page, at + 1, '}');
+            }
+            if (tabled >= 0 && (decodes || extents.isEmpty())) {
+                // From the separator before the table's member.
+                readTable(page, Math.max(0, tabled - 1), supplied, table);
+            }
+            header.addProperty(RECORD_COUNT, extents.size());
+            SharedExpressionTable.Dag<RawKey> dag =
+                    new SharedExpressionTable.Dag<>("VM expression",
+                            key -> table.containsKey(key) ? table.get(key)
+                                    : supplied.contains(key)
+                                            && expanded(key) ? CLOSED : null,
+                            RawResolver::references);
+            // A node expanded already is closed: only the rows the table
+            // defines have a closure to check.
+            for (RawKey key : table.keySet()) dag.require(key);
+            if (!admit.test(header)) return header;
+            for (int index = 0; index < extents.size(); index++) {
+                Held record = held.get(index);
+                if (record != null) {
+                    each.accept(repeats.decoding(record));
+                    continue;
+                }
+                int[] extent = extents.get(index);
+                String text = page.substring(extent[0], extent[1]);
+                JsonElement parsed = JsonParser.parseString(text);
+                // Self-contained but for the envelope's table.
+                references(parsed, key -> {
+                    if (!supplied.contains(key)) {
+                        throw new IllegalArgumentException(
+                                "missing VM expression definition: " + key);
+                    }
+                });
+                T decoded = decode.apply(expandAgainst(table, parsed));
+                if (repeats != null) repeats.hold(text, decoded);
+                each.accept(decoded);
+            }
+            return header;
+        }
+
+        /** The JSON value at {@code [start, end)} of {@code page}. */
+        private static JsonElement parse(String page, int start, int end) {
+            return JsonParser.parseString(page.substring(start, end));
+        }
+
+        /**
+         * An envelope's top level read off its text: where each member,
+         * value and record starts and ends, nothing parsed.  A value's end
+         * is found by its brackets outside strings; a string by its first
+         * unescaped quote.  Anything else than JSON is refused.
+         */
+        private static final class TopLevel {
+            private TopLevel() {
+            }
+
+            /** The first member of the object {@code page} is, or its
+             *  closing brace. */
+            static int open(String page) {
+                int at = space(page == null ? "" : page, 0);
+                if (page == null || at >= page.length()
+                        || page.charAt(at) != '{') {
+                    throw new IllegalArgumentException(
+                            "VM read-out page must be an object");
+                }
+                return space(page, at + 1);
+            }
+
+            /** The character at {@code at}, refused past the end. */
+            static char peek(String page, int at) {
+                if (at >= page.length()) throw malformed();
+                return page.charAt(at);
+            }
+
+            /** The first non-blank at or after {@code at}. */
+            static int space(String page, int at) {
+                while (at < page.length()
+                        && Character.isWhitespace(page.charAt(at))) {
+                    at++;
+                }
+                return at;
+            }
+
+            /** The name of the member at {@code at}. */
+            static String name(String page, int at) {
+                if (peek(page, at) != '"') throw malformed();
+                int end = quote(page, at);
+                String spelled = page.substring(at + 1, end);
+                return spelled.indexOf('\\') < 0 ? spelled
+                        : parse(page, at, end + 1).getAsString();
+            }
+
+            /** Where the value of the member at {@code at} starts. */
+            static int value(String page, int at) {
+                int colon = space(page, quote(page, at) + 1);
+                if (peek(page, colon) != ':') throw malformed();
+                return space(page, colon + 1);
+            }
+
+            /** Past the value starting at {@code at}. */
+            static int end(String page, int at) {
+                char first = peek(page, at);
+                if (first == '"') return quote(page, at) + 1;
+                if (first != '{' && first != '[') {
+                    int end = at;
+                    while (end < page.length()
+                            && ",}] \t\r\n".indexOf(page.charAt(end)) < 0) {
+                        end++;
+                    }
+                    if (end == at) throw malformed();
+                    return end;
+                }
+                int depth = 0;
+                for (int index = at; index < page.length(); index++) {
+                    char c = page.charAt(index);
+                    if (c == '"') {
+                        index = quote(page, index);
+                    } else if (c == '{' || c == '[') {
+                        depth++;
+                    } else if ((c == '}' || c == ']') && --depth == 0) {
+                        return index + 1;
+                    }
+                }
+                throw malformed();
+            }
+
+            /** After a value ending at {@code end}: the next one's start,
+             *  or the {@code closer} of its object or array. */
+            static int next(String page, int end, char closer) {
+                int at = space(page, end);
+                char c = peek(page, at);
+                if (c == closer) return at;
+                if (c != ',') throw malformed();
+                return space(page, at + 1);
+            }
+
+            /** The quote closing the string opened at {@code open}. */
+            private static int quote(String page, int open) {
+                for (int at = page.indexOf('"', open + 1); at >= 0;
+                     at = page.indexOf('"', at + 1)) {
+                    int escapes = 0;
+                    while (page.charAt(at - 1 - escapes) == '\\') escapes++;
+                    if (escapes % 2 == 0) return at;
+                }
+                throw malformed();
+            }
+
+            private static IllegalArgumentException malformed() {
+                return new IllegalArgumentException(
+                        "malformed VM read-out page");
             }
         }
 
@@ -336,12 +565,24 @@ public final class VmExpressionTable {
          * were 20 MB of rows the store held, 18 s each to scan).  Fail
          * closed: a row whose id does not read as the VM spells it is
          * parsed whole, and the table must close the envelope, state its
-         * schema, its own session on every row, and its row count.
+         * schema, its own session on every row, and its row count.  It is
+         * looked for from {@code from}, where the envelope's members end.
          */
-        private void readTable(String page, Set<RawKey> supplied,
-                               Map<RawKey, JsonObject> table)
+        private void readTable(String page, int from, Set<RawKey> supplied,
+                               Map<RawKey, JsonObject> table) {
+            try {
+                readTableRows(page, from, supplied, table);
+            } catch (IOException malformed) {
+                throw new IllegalArgumentException(
+                        "malformed VM read-out page", malformed);
+            }
+        }
+
+        private void readTableRows(String page, int from,
+                                   Set<RawKey> supplied,
+                                   Map<RawKey, JsonObject> table)
                 throws IOException {
-            int start = page.indexOf(TABLE_KEY);
+            int start = page.indexOf(TABLE_KEY, from);
             int rows = start < 0 ? -1 : page.indexOf(ROWS_KEY, start);
             int end = page.length() - TABLE_END.length();
             if (rows < 0 || !page.startsWith(TABLE_END, end)) {
@@ -498,18 +739,6 @@ public final class VmExpressionTable {
                         "conflicting VM expression definition: " + key);
             }
             return key;
-        }
-
-        /** A reader at the first member of a page that is a JSON object. */
-        private static JsonReader reader(String page) throws IOException {
-            JsonReader reader = new JsonReader(new StringReader(
-                    page == null ? "" : page));
-            if (reader.peek() != JsonToken.BEGIN_OBJECT) {
-                throw new IllegalArgumentException(
-                        "VM read-out page must be an object");
-            }
-            reader.beginObject();
-            return reader;
         }
 
         @Override
