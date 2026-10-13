@@ -375,19 +375,24 @@ public final class ScheduleLog {
      * turn is after theirs, so it would wait for them (review R3: a
      * callback that fetched v9 and never published v8).  The system's own
      * publication at once ({@code atOnce}) settles this version's turn too:
-     * the fetch that made it set the watch its next notification answers,
-     * so no notification publishes this version after it (Z3Q's seed: a
-     * command's refresh published v4 on the Overseer's node before the
-     * recorded callback's turn, which stood 15 s).  A given-up slot is still
-     * taken if its event comes late.
+     * the view is at that version already, so what the turn holds back
+     * reads it as recorded, and a notification of it -- none may come, the
+     * fetch that made it having set the watch the next one answers -- re-
+     * points nothing (Z3Q's seed: a command's refresh published v4 on the
+     * Overseer's node, and the recorded callback's turn stood 15 s; Z3R's
+     * tra seed: AliasesManager's notifications of aliases.json v1 and v2
+     * came after the node's own publication and took their given-up
+     * slots).  A given-up slot is still taken if its event comes late.
      */
     public static void publicationReached(String node, String site,
                                           Set<Long> coming, boolean atOnce) {
         settleTurns(node, site, atOnce ? Settle.UP_TO : Settle.OLDER, coming,
-                "its node's " + (atOnce ? "own publication of " + site
-                        + " at once" : "publication of " + site + " reached"
-                        + " its door") + ", so this version, not on its way,"
-                        + " will never be published by a notification");
+                atOnce ? "its node put " + site + " in force at once (the"
+                        + " system's own publication), so what this turn"
+                        + " holds back reads that version already"
+                        : "its node's publication of " + site + " reached its"
+                        + " door, so this older version, not on its way, will"
+                        + " never be published");
     }
 
     /** Which open PUBLISH slots of a view {@link #settleTurns} settles. */
