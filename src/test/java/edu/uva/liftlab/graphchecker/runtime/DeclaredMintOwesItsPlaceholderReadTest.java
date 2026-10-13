@@ -145,8 +145,9 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         // The VM's write log, as the activation read it out: one version of
         // the fresh box's `value`, and its whole expression is the symbol.
         active.sharedStateRecords.put(CLOCK_CELL,
-                record(CLOCK_CELL, version(MINT_VERSION,
-                        symbolExpression(CLOCK_SYMBOL, "J"))));
+                filed(record(CLOCK_CELL,
+                        version(MINT_VERSION,
+                                symbolExpression(CLOCK_SYMBOL, "J")))));
 
         RowPlaceholderMint.roots(active, at);
         RowRuntime.closeSession();
@@ -209,8 +210,9 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                     SOURCE_FIELD, label, symbolExpression(symbol, "Z"), false,
                     "true");
             configured.sharedStateRecords.put(SOURCE_CELL,
-                    record(SOURCE_CELL, version(SOURCE_MINT_VERSION,
-                            symbolExpression(symbol, "Z"))));
+                    filed(record(SOURCE_CELL,
+                            version(SOURCE_MINT_VERSION,
+                                    symbolExpression(symbol, "Z")))));
 
             RowPlaceholderMint.roots(configured, source);
             RowRuntime.closeSession();
@@ -256,7 +258,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 version(COUNTER_MINT, symbolExpression(COUNTER_SYMBOL, "I")));
         array(record, "versions").add(version(COUNTER_WRITE,
                 integerExpression(2L)));
-        active.sharedStateRecords.put(COUNTER_CELL, record);
+        active.sharedStateRecords.put(COUNTER_CELL,
+                filed(record));
 
         RowPlaceholderMint.roots(active, at);
         RowRuntime.closeSession();
@@ -316,10 +319,15 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         // before the one that did.
         ActiveRegion bystander = region(address(
                 NODE + "/region/REGION.16ba41cf#1"));
-        bystander.sharedStateRecords.put(CLOCK_CELL, shared);
+        // One record both read out alike: the minting one's walk of it is
+        // skipped, and its placeholder still finds the store there.
+        SharedStateCapture.Filed once = filed(shared);
+        bystander.sharedStateRecords.put(CLOCK_CELL, once);
         writes(bystander);
+        assertTrue("walked whole: no later publication walks it",
+                once.walked);
         clockMint(minting);
-        minting.sharedStateRecords.put(CLOCK_CELL, shared);
+        minting.sharedStateRecords.put(CLOCK_CELL, once);
         writes(minting);
         RowPlaceholderMint.roots(minting, at);
         RowRuntime.closeSession();
@@ -385,8 +393,10 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         readFrom.add("concreteValue", stored);
         JsonObject copy = record("INSTANCE_FIELD/77#24",
                 loggedAt(version(900L + 1L, readFrom)));
-        active.sharedStateRecords.put("INSTANCE_FIELD/10#40", stamp);
-        active.sharedStateRecords.put("INSTANCE_FIELD/77#24", copy);
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#40",
+                filed(stamp));
+        active.sharedStateRecords.put("INSTANCE_FIELD/77#24",
+                filed(copy));
         writes(active);
         RowRuntime.closeSession();
 
@@ -462,8 +472,10 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         readFrom.add("concreteValue", state);
         JsonObject copy = record("INSTANCE_FIELD/77#24",
                 loggedAt(version(901L, readFrom)));
-        active.sharedStateRecords.put("INSTANCE_FIELD/10#80", log);
-        active.sharedStateRecords.put("INSTANCE_FIELD/77#24", copy);
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#80",
+                filed(log));
+        active.sharedStateRecords.put("INSTANCE_FIELD/77#24",
+                filed(copy));
         JsonObject readSite = new JsonObject();
         readSite.addProperty("kind", "STATIC_SCOPE_SITE");
         readSite.addProperty("role", "READ_SITE");
@@ -524,7 +536,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 array(log, "versions").add(logged);
             }
         }
-        active.sharedStateRecords.put("INSTANCE_FIELD/10#40", log);
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#40",
+                filed(log));
         writes(active);
         RowRuntime.closeSession();
 
@@ -750,5 +763,10 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     private SessionDir session() {
         return SessionDir.of(iteration.getRoot().toPath()
                 .resolve("iteration-0000"), RowRuntime.sessionId());
+    }
+
+    /** A write log record as a read-out files it. */
+    private static SharedStateCapture.Filed filed(JsonObject record) {
+        return new SharedStateCapture.Filed("", record, "", 0);
     }
 }

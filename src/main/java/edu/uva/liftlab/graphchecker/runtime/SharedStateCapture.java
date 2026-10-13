@@ -117,6 +117,10 @@ final class SharedStateCapture {
     private static final AtomicLong READ_OUT_NANOS = new AtomicLong();
     private static final AtomicLong DECODE_NANOS = new AtomicLong();
     private static final AtomicLong VERSIONS = new AtomicLong();
+    /** Location envelopes filed, and of them decoded (the rest were held
+     *  from an earlier read-out stating them alike). */
+    private static final AtomicLong FILED = new AtomicLong();
+    private static final AtomicLong DECODED = new AtomicLong();
 
     /** Whether any region close read out its log this session. */
     static boolean readOutsTaken() {
@@ -127,15 +131,17 @@ final class SharedStateCapture {
     static String readOutSummary() {
         return String.format(java.util.Locale.ROOT, "%d page(s), %.1f MB,"
                         + " %.1f s in the VM, %.1f s decoding, %d version(s)"
-                        + " listed",
+                        + " listed, %d location envelope(s) filed, %d of"
+                        + " them decoded",
                 READ_OUT_PAGES.get(), READ_OUT_CHARS.get() / 1e6,
                 READ_OUT_NANOS.get() / 1e9, DECODE_NANOS.get() / 1e9,
-                VERSIONS.get());
+                VERSIONS.get(), FILED.get(), DECODED.get());
     }
 
     static void resetForTests() {
         for (AtomicLong counter : new AtomicLong[] {READ_OUT_PAGES,
-                READ_OUT_CHARS, READ_OUT_NANOS, DECODE_NANOS, VERSIONS}) {
+                READ_OUT_CHARS, READ_OUT_NANOS, DECODE_NANOS, VERSIONS,
+                FILED, DECODED}) {
             counter.set(0L);
         }
     }
@@ -211,7 +217,14 @@ final class SharedStateCapture {
         }
     }
 
-    /** {@link #decodeTrackedLocations}, untimed. */
+    /**
+     * {@link #decodeTrackedLocations}, untimed.  A location envelope a
+     * read-out states again unchanged -- every activation's close reads out
+     * every location touched since its entry, so the enclosing ones state
+     * an inner one's again -- is filed as the decoding of its first reading
+     * ({@link VmExpressionTable.Store#importRepeatedRecords}), not decoded
+     * again.
+     */
     private static void decodePage(String serialized, ActiveRegion active) {
         // One page's versions share their subexpressions (one import): a
         // node scanned clean once is not scanned again.
@@ -234,14 +247,87 @@ final class SharedStateCapture {
                 return false;
             }
             return true;
-        }, element -> {
-            if (!element.isJsonObject()) {
-                refuse(MALFORMED_ENVELOPE, "",
-                        "tracked location is not an object");
-                return;
+        }, element -> decoded(element, clean), filed -> file(filed, active));
+    }
+
+    /**
+     * One location envelope as the read-out states it: its write log record,
+     * or the refusal that replaces it.  Shared by every activation whose
+     * read-out states the envelope unchanged, so it is a function of the
+     * envelope's text and the session's expression store alone (the store
+     * expands each node once and keeps it): it reads nothing an activation
+     * or the session's progress holds.
+     */
+    static final class Filed {
+        final String locationKey;
+        /** The write log record ({@link #writeLogRecord}); null when the
+         *  envelope was refused. */
+        final JsonObject record;
+        /** Why the envelope was refused; "" when filed. */
+        final String fault;
+        /** How many versions it lists. */
+        final int versions;
+        /**
+         * Whether a publication walked this record whole ({@code
+         * RowPublication#writes}): a later publication holding the same
+         * record finds nothing it did not, and walks it no more.  Read and
+         * written on the publication thread only.
+         */
+        boolean walked;
+
+        Filed(String locationKey, JsonObject record, String fault,
+              int versions) {
+            this.locationKey = locationKey;
+            this.record = record;
+            this.fault = fault;
+            this.versions = versions;
+        }
+    }
+
+    /**
+     * One location envelope's decoding ({@link Filed}): its versions
+     * checked, then reduced to its write log record.  Counted as decoded.
+     */
+    private static Filed decoded(JsonElement element,
+                                 Set<JsonElement> clean) {
+        DECODED.incrementAndGet();
+        if (!element.isJsonObject()) {
+            return new Filed("", null, "tracked location is not an object",
+                    0);
+        }
+        JsonObject envelope = element.getAsJsonObject();
+        int versions = array(envelope, "versions").size();
+        String fault = versionsFault(envelope, clean);
+        String locationKey = locationKey(envelope);
+        return fault.isEmpty()
+                ? new Filed(locationKey, writeLogRecord(locationKey,
+                envelope), "", versions)
+                : new Filed(locationKey, null, fault, versions);
+    }
+
+    /**
+     * Files one location's write log with the active region, or names the
+     * fault that replaced it (and files nothing).
+     */
+    private static void file(Filed filed, ActiveRegion active) {
+        FILED.incrementAndGet();
+        VERSIONS.addAndGet(filed.versions);
+        if (!filed.fault.isEmpty()) {
+            if (active != null && !filed.locationKey.isEmpty()) {
+                active.sharedStateRefusals.put(filed.locationKey,
+                        filed.fault);
             }
-            fileVersionsEnvelope(element.getAsJsonObject(), active, clean);
-        });
+            refuse(expressionSerializationTruncationFault(filed.fault)
+                            ? EXPRESSION_SERIALIZATION_TRUNCATED
+                            : containerBaseUnstatedFault(filed.fault)
+                            ? CONTAINER_BASE_UNSTATED
+                            : MALFORMED_ENVELOPE,
+                    filed.locationKey, filed.fault);
+            return;
+        }
+        if (active != null) {
+            active.sharedStateRecords.put(filed.locationKey, filed);
+        }
     }
 
     /** The member a read-out page holds its location envelopes in. */
@@ -249,34 +335,6 @@ final class SharedStateCapture {
 
     private static final String TRACKED_LOCATIONS_KIND =
             "SHARED_TRACKED_LOCATIONS";
-
-    /**
-     * Files one tracked location's write log with the active region, or
-     * names the fault that replaced it (and files nothing).
-     */
-    private static void fileVersionsEnvelope(JsonObject envelope,
-                                             ActiveRegion active,
-                                             Set<JsonElement> clean) {
-        VERSIONS.addAndGet(array(envelope, "versions").size());
-        String fault = versionsFault(envelope, clean);
-        String locationKey = locationKey(envelope);
-        if (!fault.isEmpty()) {
-            if (active != null && !locationKey.isEmpty()) {
-                active.sharedStateRefusals.put(locationKey, fault);
-            }
-            refuse(expressionSerializationTruncationFault(fault)
-                            ? EXPRESSION_SERIALIZATION_TRUNCATED
-                            : containerBaseUnstatedFault(fault)
-                            ? CONTAINER_BASE_UNSTATED
-                            : MALFORMED_ENVELOPE,
-                    locationKey, fault);
-            return;
-        }
-        if (active != null && !locationKey.isEmpty()) {
-            active.sharedStateRecords.put(locationKey,
-                    writeLogRecord(locationKey, envelope));
-        }
-    }
 
     /**
      * One admitted location's write log, reduced to what the rows read:

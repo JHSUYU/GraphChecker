@@ -34,6 +34,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
@@ -1224,14 +1225,16 @@ public final class ConcolicRegionRuntime {
     }
 
     /** One page of a paged VM read-out, record by record, in the store an
-     *  activation's expressions import into
-     *  ({@link VmExpressionTable.Store#importRecords}). */
-    static JsonObject decodeVmRecords(String page, String records,
-                                      ActiveRegion active,
-                                      Predicate<JsonObject> admit,
-                                      Consumer<JsonElement> each) {
-        return expressionStore(active).importRecords(page, records, admit,
-                each);
+     *  activation's expressions import into, a record that store decoded
+     *  before filed as that decoding
+     *  ({@link VmExpressionTable.Store#importRepeatedRecords}). */
+    static JsonObject decodeVmRecords(
+            String page, String records, ActiveRegion active,
+            Predicate<JsonObject> admit,
+            Function<JsonElement, SharedStateCapture.Filed> decode,
+            Consumer<SharedStateCapture.Filed> each) {
+        return expressionStore(active).importRepeatedRecords(page, records,
+                admit, SharedStateCapture.Filed.class, decode, each);
     }
 
     /** The store an activation's expressions import into. */
