@@ -10,6 +10,7 @@
   * 不收未被接纳的 ZooKeeper #32（ZooInspector 的 retry-seq-quota：contrib GUI 工具，需要自写测试，质量不够）。
   * 不收已放弃的 HDFS-2 #09（reencrypt-negative-sleep：链经过 JDK 内部的参数异常和"写的缺失"，不在当前模型内）。
   * 不要求已被 GraphChecker 检出 SAT。每个 bug 都标明 GraphChecker 的检查状态。
+  * 另收 GraphChecker 在 study 检查点上新发现、经 CONFIRM 证实的 bug（#14，solr-adhoc-38）。
 
 术语
   * 致命 guard：系统代码里最终抛出异常、或拒绝请求的那个条件分支；GraphChecker 的检查目标（target）就标在它上面。
@@ -34,6 +35,7 @@
  11  HBase      hbase-bugs-master-active-time        HBase.txt #14      已建 case（分支 hbase-startup），被两个设计问题阻塞
  12  HBase      hbase-bugs-backup-lock-reply-lost    HBase-2.txt #16    已接纳，尚未建 case（需要 HBase RPC RESPONSE 门）
  13  HBase      hbase-bugs-ns-rsgroup-removal        HBase-2.txt #01    已接纳，尚未建 case
+ 14  Solr       solr-adhoc-38                        GraphChecker 新发现 SAT 已证实（ZooKeeper 写门故障，两轮），原生复现 0/10（原因见条目）
 
 系统按 owner 的顺序推进（HDFS -> Solr -> HBase -> ZooKeeper）。当前在做 HDFS；其余系统的新 bug 会在各自轮次里建 case。
 
@@ -536,6 +538,70 @@ GraphChecker 检查：已接纳，尚未建 case
 GraphChecker 检查：已接纳，尚未建 case
   * 预期机制：把 removeRSGroup 对命名空间集合的读取 STATE 重配对到 N 插入之前。
   * 需要：自写测试作为工作负载（没有现成测试覆盖这个交错）。HBase 轮次再做。
+
+
+==========================================================================================
+14. Solr — solr-adhoc-38（study 检查点 DistributedZkUpdateProcessor.doDefensiveChecks；GraphChecker 新发现）
+   leader 的 publish(ACTIVE) 因 ZooKeeper ConnectionLoss 失败后注销自身选举，state.json 却仍记它为 ACTIVE leader，
+   此后发往该 shard 的每个更新都被拒绝（503），直到节点重启
+==========================================================================================
+
+参与的状态
+  * 本地：CloudDescriptor.isLeader（JVM 内存），ElectionContext（ZkController.electionContexts）。
+  * ZooKeeper：/collections/<c>/state.json 中该 replica 的 leader=true 与 state；/collections/<c>/leaders/<shard>/leader
+    选举注册节点；/overseer/queue 上的状态消息。
+
+因果链（Solr 8.11.4 = 我们的树 gc/solr-final*；行号为该树）
+  1. core 创建时 ZkContainer.registerInZk -> ZkController.register：赢得选举，ShardLeaderElectionContext.runLeaderProcess
+     写 leader 注册节点、经 Overseer 把 state.json 中本 replica 标为 leader，并 setLeader(true)（:264）。
+  2. register 末尾 publish(desc, ACTIVE)（ZkController:1362 -> publish:1691 -> ZkDistributedQueue.offer:328 ->
+     SolrZkClient.create）。ZkCmdExecutor 只重试 ConnectionLoss；若整个重试窗口内连接一直断续（每次尝试都 ConnectionLoss，
+     而会话未过期），create 最终抛 ConnectionLoss（某次尝试可能已写入，Overseer 照样把它标为 ACTIVE）。
+  3. register 的 catch（:1370-1371）调用 unregister -> context.cancelElection（:1763）->
+     ShardLeaderElectionContext.cancelElection:78 setLeader(false)，并删除自己的 leader 注册节点。ZkContainer.registerInZk
+     对 KeeperException 只记日志（不 publish DOWN）。state.json 没有任何写者撤销本 replica 的 leader 标记。
+  4. 致命 guard：之后的 add 到达该 core，DistributedZkUpdateProcessor.setupRequest:647 由 getLeaderRetry（state.json）判定
+     isLeader=true，doDefensiveChecks:990 读 cloudDesc.isLeader()=false，重读 5 次（每次 500 ms）后在 :1031 抛
+     SERVICE_UNAVAILABLE "ClusterState says we are the leader (...), but locally we don't think so"。
+
+为什么难以自行恢复
+  core 已退出选举；同 shard 若无其他可当选的副本（PULL 副本不参选；只有一个 NRT/TLOG 时即如此），没有人重新选举，
+  state.json 一直指向它。会话未过期，所以 OnReconnect 的 markAllAsNotLeader/重新注册不会发生。客户端重试无用
+  （SOLR-11685 在 9.4 让 SolrJ 把此错误当作暂时性错误重试，但这里不是暂时的）。只有重启节点或手工 FORCELEADER/重载能修复。
+
+触发条件的现实性
+  register 的 catch 对任何逃出 publish(ACTIVE) 的 KeeperException 都走同一条链。现实的触发是 ConnectionLoss 穿过
+  ZkCmdExecutor 的全部重试（zkClientTimeout=30 s 时 8 次尝试、约 42 s 的退避）而会话始终存活：持续断开 42 s 会让 30 s
+  会话过期（之后走 SessionExpired 的重新注册路径而自愈），所以需要连接"断续"而非"全断"（网络抖动、ZK 服务器 GC 停顿）。
+  与 09/40 的 lost-watch 候选同一类触发（终端 ConnectionLoss、会话存活）。SGF2 的 witness 用的是 OperationTimeoutException
+  （ZkCmdExecutor 不重试它，一次即逃出），但 ZooKeeper 的 Java 客户端与服务端从不产生 OPERATIONTIMEOUT（3.6.2 即 Solr 8.11 所用版本的 jar 与 3.9 源码中只有
+  KeeperException 的定义），所以现实性仍以 SC5 证实的 ConnectionLoss 世界为准；两者在 register 之后的链相同。
+
+上游 main 中仍在
+  apache/solr main（634be2a1c13）ZkController.register:1554 publish(ACTIVE)，catch :1564-1565 unregister；
+  ShardLeaderElectionContext.cancelElection:89-93 setLeader(false)；DistributedZkUpdateProcessor:1155-1158 同一 guard。
+
+先例检索（有界：ASF JIRA 关键词 + 网页搜索，2026-10-12/13）
+  同症状、不同成因：SOLR-11685（9.4，SolrJ 重试该错误）、SOLR-5952（旧 leader 的 leader 标记未清）、SOLR-3752（leader 下线时
+  清 ClusterState 中的 leader，4.0/6.0）、SOLR-5796（滚动重启后 leader 冲突）、SOLR-6763（ConnectionLoss 后选举线程残留）、
+  SOLR-6498（joinElection 中 ConnectionLoss 留下重复选举节点）、SOLR-7021（leader 不 publish ACTIVE，无法复现）；Cloudera
+  社区帖有该报错的生产实例（无结论）。未发现"赢得选举后 register 的 publish(ACTIVE) 失败 -> unregister -> state.json 残留
+  ACTIVE leader"这一路径的报告。
+
+GraphChecker 检查：SAT 已证实（两轮），原生复现 0/10（原因已查明）
+  * 轮次 SGF2-adhoc-38（最终轮，system/solr c3e446e38，树 gc/solr-final7，VM vm-force8）：SAT_CANDIDATE MARKER_FLIPPED，
+    end=(WITNESSED)，z3 sat，3 条路径中只有 path 0 可满足，CONFIRM 已证实（witness session 0aa9fc9cab2fb113-f4813d1d 即该次运行）；
+    移动的根：ZooKeeper 写门 OperationTimeoutException（SolrZkClient.create #u29，leader 的 publish(ACTIVE) offer：
+    ZkDistributedQueue.offer:328 <- ZkController.publish:1691 <- register:1362）；把它钉回记录值，整个公式 unsat（必要）。
+    无被否决的 claim；BOUNDED:pairing_flip_per_read（1 次视图读只提供 8 个较旧的解码）不影响已证实的 witness。
+  * 轮次 SC5-38（agent SC，2026-10-12，同一机制）：移动的根为 ConnectionLoss（#u17，写已落地），CONFIRM 已证实；首个 claim
+    被 CONFIRM 否决（ORDER 边未走），已按 FP 规则记录。
+  * 原生两轮都是 0/10，每次都植入成功、exit 124：cancelElection 删除了 leader 注册节点，3 个 PULL 副本的 register 在 getLeader
+    等待（leaderVoteWait + 600 s），它们的 CoreAdmin CREATE、Overseer 的 CREATE 与测试的 createCollection 一起挂到 300 s 上限；
+    CONFIRM 的重放里 PULL 副本在 cancelElection 之前读到了 leader。这是原生运行未保持的、致命锥之外的一个顺序
+    （TODO Cross-cutting "native order"）。按 study check 的标准（SAT 经 CONFIRM 证实），原生缺口具名而不隐藏。
+  * 已知残余：isLeader=false 的写在 session 中没有写行（读到的版本无写者，经 observed arm 绑定），cancelElection 很可能在
+    R4 的 doors-only 下运行。读法：analysis/solr-2026-10-12/readings/38.md、38-SGF2.md。
 
 
 ==========================================================================================
