@@ -711,7 +711,7 @@ public final class TimedWaits {
         try {
             String answered = answeredAtOnce(waitedOn, permits);
             if (answered == null) return true;
-            if (!RecordingPlant.timeoutRefused(marker, answered)) {
+            if (!RecordingPlant.plantRefused(marker, answered)) {
                 ActiveRegion active = ConcolicRegionRuntime.activeRegion();
                 RowRuntime.gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
                         marker + (active == null ? "" : " at "

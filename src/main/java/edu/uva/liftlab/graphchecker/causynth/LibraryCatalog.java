@@ -97,6 +97,10 @@ public final class LibraryCatalog {
     /** The timed waits' transport: a planted timeout only where the call
      *  could time out ({@code DoorWeave#guard}). */
     static final String TIMED_WAIT = "TIMED_WAIT";
+    /** A ZooKeeper fault kind planted only as a real expiry of the door's
+     *  session ({@code DoorWeave#guard}, {@code runtime.Sessions}). */
+    static final String SESSION_EXPIRED =
+            "org.apache.zookeeper.KeeperException$SessionExpiredException";
     /** A door's {@code sites}: woven at its method, asked only where the
      *  fetch lies on the traced data flow. */
     static final String DATA_FLOW = "DATA_FLOW";
