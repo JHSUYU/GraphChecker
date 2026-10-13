@@ -1281,7 +1281,7 @@ answer is `NOT_ADMITTED` naming the bound, its detail opening `REPLAY_BOUNDED:`
 (`ObligationResult#replayBounded`; a replay killed inside its bound, by its memory reservation or a
 signal, too): it answered nothing, of the arm or of its world, so it settles nothing and counts toward
 no world-only answer (`explore.Frontier#consume`). Its flip is asked once more; a flip whose replays were
-killed twice and that nothing else answered is held unproposed, open, never settled -- an
+killed twice and that nothing else answered (a FORCE run's too, §7.10) is held unproposed, open, never settled -- an
 `ADMISSION_GAP` row says so -- and named in the round manifest's `boundedFlips` (task, path, site,
 ordinal, the outcome asked, each killed obligation and its detail), which EMIT names as the bound
 `replay_timeout_s` (`campaign_bounds`): an UNSAT over such flips publishes as bounded, never as a clean
@@ -1700,10 +1700,16 @@ bound that cut it, §5); one that never closed
 (blocked, its activation stranded at the run's end) is decided at the session's close
 (`RowRuntime#closeSession`, `ForcedArms#unreached`). Each way the session is withdrawn, the verdict
 NOT_ADMITTED, and the exploration goes on as it would without one: a FORCED session publishes only at its
-forced target, and the corpus reads one without a forced target row as no session. `result.json` `force` states
-the last round's view (state, verdict detail, the forced flip and its verdict, read by the flip it asks --
-`ExploreMain#answersByFlip`: its id moves as sessions land -- and `seedFlipsAfterForcedFlip`, the seed
-path's flips at a site of the forcing table asked after it was answered).
+forced target, and the corpus reads one without a forced target row as no session. A FORCE replay killed
+past its bound (`REPLAY_BOUNDED:`, §7.6) decided nothing: the FORCE run is read by its flip as a flip is
+(`ForcedFlip#flip`, its row's flip, which its question names and a killed worker, its question withdrawn, is
+read by), so it is asked again, and killed twice with no forced session landed it is held unasked, its state
+`BOUNDED` and its flip named in the round's `boundedFlips` (a row marked `force`, listed as `FORCE`), which
+EMIT names as `replay_timeout_s`: no UNSAT rests unnamed on a forced replay that ran nothing. `result.json`
+`force` states the last round's view (state -- `PROPOSED`, `IN_FLIGHT`, the replay's verdict or `BOUNDED` --,
+verdict detail, the forced flip and its verdict, read by the flip it asks -- `ExploreMain#answersByFlip`: its
+id moves as sessions land -- and `seedFlipsAfterForcedFlip`, the seed path's flips at a site of the forcing
+table asked after it was answered).
 
 The session lands with role `FORCED` and is held apart (`explore.Corpus#forcedPaths`): every row of it is
 indexed under its session, so its forced path composes and is asked in its own scope, and none in a
@@ -2922,7 +2928,7 @@ recording's own is not kept apart.
    cut: `truncated` less `ceilingCut`), `region_path_closure_ceiling` (occurrences the rows connect cut
    past `ClosurePlanner.CLOSURE_CEILING`, 1024), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
    (an open arm the last round left BOUNDED, §7.1), `replay_timeout_s` (the last round's
-   `boundedFlips`: flips whose replays were killed twice, §7.6), `unplanned_input_max` (the last round's rows
+   `boundedFlips`: flips, and the FORCE run, whose replays were killed twice, §7.6, §7.10), `unplanned_input_max` (the last round's rows
    of a marker invocation past those GROW plans inputs for, §7.8) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a

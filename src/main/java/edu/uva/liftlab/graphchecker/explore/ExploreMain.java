@@ -693,7 +693,8 @@ public final class ExploreMain {
     /**
      * The flips held BOUNDED by {@code replay_timeout_s} ({@link
      * Frontier#boundedFlips}), each by the arm its workers asked (task,
-     * path, site, ordinal, the outcome asked) and the obligations whose
+     * path, site, ordinal, the outcome asked; {@code force} for the FORCE
+     * run, which asks none, {@link ForcedFlip#flip}) and the obligations whose
      * replays were killed with what killed them: what run_engine's {@code
      * campaign_bounds} names, the last round's being every one.
      */
@@ -721,6 +722,8 @@ public final class ExploreMain {
                 row.addProperty("siteId", ask.siteId());
                 row.addProperty("ordinal", ask.ordinal());
                 row.addProperty("outcome", ask.flippedOutcome());
+                // The FORCE run, which flips nothing (ForcedFlip#flip).
+                if (ask.force()) row.addProperty("force", true);
                 row.add("killed", new JsonArray());
                 rows.put(flip, row);
             }

@@ -52,7 +52,8 @@ import java.util.Set;
  * answered nothing, of the arm or of its world: it settles nothing and counts
  * toward no world-only answer.  Its flip is asked once more; a flip whose
  * replays were killed {@link #MAX_BOUNDED_REPLAYS} times and that nothing
- * else answered is held unproposed, BOUNDED by {@code replay_timeout_s} and
+ * else answered -- a FORCE run's too, by its flip ({@link ForcedFlip#flip})
+ * -- is held unproposed, BOUNDED by {@code replay_timeout_s} and
  * named ({@link #boundedFlips}, the round manifest's {@code boundedFlips},
  * run_engine's {@code campaign_bounds}), so an UNSAT over it publishes as
  * bounded, never as a clean close (solr-adhoc-38 EXZ1: 24 flips killed

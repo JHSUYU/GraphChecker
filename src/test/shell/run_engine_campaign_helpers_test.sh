@@ -256,9 +256,10 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # cut, the closure ceiling by the occurrences the rows connect cut past it; a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
-# earlier round deferred (the path bound counts the last round's); and the flips
-# whose replays were killed past replay_timeout_s twice, the last round's
-# boundedFlips (an earlier round's list is in the last's, which holds every one).
+# earlier round deferred (the path bound counts the last round's); and the flips,
+# and the FORCE run (named FORCE), whose replays were killed past replay_timeout_s
+# twice, the last round's boundedFlips (an earlier round's list is in the
+# last's, which holds every one).
 emit_fixture
 mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
   "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
@@ -272,7 +273,7 @@ jq -n '{closureCut: {occurrences: 5, keptDepth: 1}}' \
   >"${emit_iteration}/runtime_workflow_schedule_index.json"
 echo '{"truncated": 4, "boundedFlips": [{"siteId": "S#u9", "ordinal": 0, "outcome": false}]}' \
   >"${emit_iteration}/obligations-0000/explore_manifest.json"
-echo '{"truncated": 3, "ceilingCut": 1, "boundedFlips": [{"siteId": "S#u9", "ordinal": 0, "outcome": false}, {"siteId": "S#u4", "ordinal": 1, "outcome": true}]}' \
+echo '{"truncated": 3, "ceilingCut": 1, "boundedFlips": [{"siteId": "S#u9", "ordinal": 0, "outcome": false}, {"siteId": "S#u4", "ordinal": 1, "outcome": true}, {"siteId": "", "ordinal": 0, "outcome": false, "force": true}]}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     'T max-flips-per-path=4' 'T pairing-bound=8' 'REGION.T#1 loop-body-bound=8' \
@@ -306,7 +307,7 @@ jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_tasks", "region_path_closure_ceiling", "replay_timeout_s",
     "schedule_max_jobs", "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))
-  and (.bounded.detail | test("2 flip[(]s[)] whose replays were killed twice .* answered nothing, held open: S#u4#1=true, S#u9#0=false"))
+  and (.bounded.detail | test("3 flip[(]s[)] whose replays were killed twice .* answered nothing, held open: FORCE, S#u4#1=true, S#u9#0=false"))
   and (.bounded.detail | test("1 pairing hold.*VIEW_HOLD_MAX [(]3000 ms"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
