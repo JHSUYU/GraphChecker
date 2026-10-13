@@ -60,7 +60,10 @@ running out of memory, and a single case alone takes the whole cluster.
   main, GROW's planner) goes to the head's own host if it fits, else to the pool's host with the most room, charged
   at the heap it starts at; a step that waits holds its need on the best host so that host drains. A head holds room
   for its next step: its measured step need (the largest engine JVM peak x1.25, at least 1 GB; 3.4-6.4 GB measured,
-  HR1), never a fixed 8 GB; a host counts only its largest idle reservation.
+  HR1), never a fixed 8 GB; a host counts only its largest idle reservation. Every engine JVM (a head's, the served
+  planner, a solver, offline A/B's) runs at a 512 MB thread stack (`campaign_engine_stack`): lowering recurses once
+  per subterm, and a recorded term ~750 binary operations deep overflowed the default stack in an arm's key
+  (solr-adhoc-19 SC7, the planner's round 3); a stack is reserved, only the depth a walk reaches is resident.
 - **Sweeps** (`tools/adhoc/sweep.sh <snapshot> <round> <cases-file> <heads-per-host>`): one `fanout.sh` job per case,
   at most `heads-per-host` heads on each lift (2 for the HDFS group), each admitted for the room it reserves, every
   case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s by default; 10800 for a full sweep) per case is a convenience of a shared
