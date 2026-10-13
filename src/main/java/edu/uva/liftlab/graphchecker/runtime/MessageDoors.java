@@ -928,6 +928,19 @@ public final class MessageDoors {
     }
 
     /**
+     * The door a Solr tree calls before its node's view of {@code path}
+     * publishes {@code version} (ZkStateReader's updateWatchedCollection and
+     * AliasesManager#setIfNewer): true when the engine took the publication
+     * to apply later, false to publish now.  It publishes now: the view
+     * pairing's deferred publication (solr-zk2's design (a'), under review)
+     * gives it its body; until then the trees that call it run on this jar.
+     */
+    public static boolean publishing(String transport, String path,
+                                     long version, Runnable apply) {
+        return false;
+    }
+
+    /**
      * A watch's refresh of one node's view of {@code path} begins, before it
      * takes its own lock (Solr's {@code StatefulCollectionWatch#refreshAndWatch}
      * and {@code #refreshAndWatchChildren}, which decode under the
