@@ -1305,7 +1305,7 @@ public final class Composer {
     private final int maxValuations;
     private final SmtLowering lowering;
     private final List<GapRow> gaps = new ArrayList<GapRow>();
-    /** Each store content leaf a producer refused by rule settles, by its
+    /** Each store content leaf an unattested producer settles, by its
      *  symbol ({@link #arrival}): named per producer at the end, counted
      *  over the paths kept ({@link #compose}). */
     private final Map<String, Refused> settledLeaves =
@@ -1576,7 +1576,7 @@ public final class Composer {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     named.getKey(), named.getValue());
         }
-        // Every store content leaf a producer refused by rule settles on a
+        // Every store content leaf an unattested producer settles on a
         // path kept, named per producer, rule and kind (#arrival): never
         // silent.  One held past the daemon tick bound is that bound, by
         // name (run_engine.sh campaign_bounds: daemon_tick_bound).
@@ -1612,7 +1612,7 @@ public final class Composer {
                                 + " (exportedByRefusedProducer)"
                                 : "are constants of their versions"
                                 + " (constantByRefusedProducer)") + ", since"
-                                + " the closure never plans it: "
+                                + " no session attests it at their ports: "
                                 + refused.why);
             }
         }
@@ -2348,18 +2348,22 @@ public final class Composer {
     }
 
     /**
-     * The rule by which the closure refuses ever to plan the producer of a
-     * store content leaf no attested export binds, or null: a role, which no
-     * weave captures, or a daemon tick past the recording's last ({@code
+     * Why no session attests the producer of a store content leaf at its
+     * port -- the leaf is here because no attested export binds it -- or
+     * null where the leaf names no producer: a role, which no weave
+     * captures; a daemon tick past the recording's last ({@code
      * Corpus#tickPastRecording}: only a replay slower than the recording ran
-     * it).  No GROW can attest such a producer, so its own run's export at
+     * it); or none ran it instrumented where it wrote this port (which tick
+     * of a periodic writer writes a document's key is timing: solr-18413
+     * SG3C, the Overseer state update that wrote the routing rule's expireAt
+     * ran instrumented 21 times, never writing it).  Its own run's export at
      * the port settles the leaf (lead's rule (a), B-a, 2026-10-12): an
-     * expression binds it ({@link SmtLowering.Unbound#EXPORTED}); a constant
-     * expression holds it at its version's value, a constant ({@link
-     * SmtLowering.Unbound#CONSTANT}) or past the tick bound that bound by
-     * name ({@link SmtLowering.Unbound#BOUNDED}); no export that lowers
-     * leaves it HELD, an open link, as a leaf with no producer at all or
-     * one a later round could plan.
+     * expression binds it ({@link SmtLowering.Unbound#EXPORTED}, without
+     * the producer's path condition -- an over-approximation CONFIRM
+     * filters); a constant expression holds it at its version's value, a
+     * constant ({@link SmtLowering.Unbound#CONSTANT}) or past the tick bound
+     * that bound by name ({@link SmtLowering.Unbound#BOUNDED}); no export
+     * that lowers leaves it HELD, an open link, as a leaf with no producer.
      */
     private Refused refusedByRule(AttachRow attach) {
         if (attach.producer() == null
@@ -2372,11 +2376,13 @@ public final class Composer {
                     + " is a role, no region a weave captures", -1);
         }
         Corpus.TickPast tick = corpus.tickPastRecording(producer);
-        return tick == null ? null : new Refused(producer.render(),
-                "TICK_BOUND", "begun by the daemon tick " + tick, tick.last);
+        return tick == null ? new Refused(producer.render(), "UNATTESTED",
+                "no session ran it instrumented where it wrote this port", -1)
+                : new Refused(producer.render(), "TICK_BOUND",
+                "begun by the daemon tick " + tick, tick.last);
     }
 
-    /** A store content leaf's producer the closure refuses by rule
+    /** A store content leaf's producer no session attests at its port
      *  ({@link #refusedByRule}). */
     private static final class Refused {
         final String producer;

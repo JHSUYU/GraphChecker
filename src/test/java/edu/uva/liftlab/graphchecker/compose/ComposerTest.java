@@ -857,13 +857,14 @@ public class ComposerTest {
                 "M_Z_field_HOFF.k'ey"}) {
             judgedOnItsPaths(vh, "PORT.key", PRODUCER, expression, "OPEN");
         }
-        // A store content leaf whose unattested producer the closure refuses
-        // by rule settles by that producer's own export at the port (lead's
-        // rule (a), B-a): an expression binds it, a constant expression
-        // holds it as its version's constant -- past the daemon tick bound,
-        // that bound by name -- each named and no open link; with no export
-        // it stays an open link, as the same leaf of a region producer a
-        // round could plan does.
+        // A store content leaf whose producer no session attests at its port
+        // -- a role, a tick past the recording, or a region no session ran
+        // instrumented where it wrote the port (solr-18413 SG3C) -- settles
+        // by that producer's own export at the port (lead's rule (a), B-a,
+        // UNATTESTED): an expression binds it, a constant expression holds
+        // it as its version's constant -- past the daemon tick bound, that
+        // bound by name -- each named and no open link; with no export it
+        // stays an open link.
         String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
         OccurrenceAddress role = OccurrenceAddress.of(PRODUCER.node(),
                 OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
@@ -872,7 +873,9 @@ public class ComposerTest {
                 "REGION.tick", CausalContext.of(Role.of("TICK"), "", 2),
                 ExecutionIndex.empty());
         Object[][] rows = {
-            {PRODUCER, expression, "OPEN"},
+            {PRODUCER, expression, SmtLowering.Unbound.EXPORTED},
+            {PRODUCER, constant("false"), SmtLowering.Unbound.CONSTANT},
+            {PRODUCER, null, "OPEN"},
             {role, expression, SmtLowering.Unbound.EXPORTED},
             {role, constant("false"), SmtLowering.Unbound.CONSTANT},
             {role, null, "OPEN"},
@@ -6778,6 +6781,71 @@ public class ComposerTest {
         assertTrue(body, option >= 0 && option < body.indexOf("(declare-"));
     }
 
+    /**
+     * A SPLIT ELEMENT over a String no template states is Java's own, per
+     * row against {@code String#split}: the text between the i-th and the
+     * next delimiter, and defined exactly where Java's array has element i
+     * -- trailing empty strings removed ("a,," has no element 1, "a,,b" an
+     * empty one, "," none), a leading one kept, a delimiter-free s itself
+     * ("" too).  A world in which the element would not exist is none.
+     */
+    @Test
+    public void aSplitElementIsJavasOwnWhereItsArrayHasIt() {
+        Z3 solver = solver();
+        String[] inputs = {"a,b,c", "a,,", "a,,b", ",a", ",", "", "abc",
+                "a,b,,"};
+        for (String input : inputs) {
+            String[] java = input.split(",");
+            for (int index = 0; index <= 2; index++) {
+                Map<String, VmTermLowering.Sort> declared =
+                        new LinkedHashMap<String, VmTermLowering.Sort>();
+                declared.put("s", VmTermLowering.Sort.STRING);
+                SmtLowering lowering = new SmtLowering(declared);
+                lowering.begin("t", SmtLowering.NO_JOIN,
+                        ExpressionTable.empty());
+                VmTermLowering.Term element = lowering.dispatch(
+                        splitElement(vmLeaf("SymbolExpression", "s",
+                                "java/lang/String"), ",", index), null, "t");
+                List<String> texts = new ArrayList<String>(lowering.end());
+                assertTrue(lowering.openRefusals().toString(),
+                        lowering.openRefusals().isEmpty());
+                texts.add(element.text);
+                texts.add(element.precondition);
+                String query = lowering.body(texts)
+                        + "\n(assert (= s " + VmExpressionIr.quote(input)
+                        + "))\n(assert " + element.precondition + ")\n";
+                boolean exists = index < java.length;
+                String row = "\"" + input + "\".split(\",\")[" + index + "]";
+                assertEquals(row + " exists", exists ? "sat" : "unsat",
+                        solver.ask(query, Collections.<String>emptyList(),
+                                false).status());
+                if (!exists) continue;
+                assertEquals(row + " is " + java[index], "unsat", solver.ask(
+                        query + "(assert (not (= " + element.text + " "
+                                + VmExpressionIr.quote(java[index]) + ")))\n",
+                        Collections.<String>emptyList(), false).status());
+            }
+        }
+    }
+
+    /** The VM's {@code splitElement(s, d, i)} of {@code s.split(d)}. */
+    private static JsonObject splitElement(JsonObject receiver,
+                                           String delimiter, int index) {
+        JsonObject call = new JsonObject();
+        call.addProperty("_type", "MethodExpression");
+        call.addProperty("_name", "java/lang/String splitElement");
+        call.addProperty("_java_type", "Ljava/lang/String;");
+        JsonArray params = new JsonArray();
+        params.add(receiver);
+        params.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_" + delimiter,
+                "java/lang/String"));
+        params.add(integer("I", index));
+        call.add("_param_list", params);
+        call.add("_res_exp", vmLeaf("ConStringSymbolExp", "Y_L'String'_x",
+                "java/lang/String"));
+        return call;
+    }
+
     @Test
     public void everyOperatorTheLoweringWritesIsBuiltin() {
         Map<String, VmTermLowering.Sort> declared =
@@ -6801,7 +6869,7 @@ public class ComposerTest {
         for (JsonObject expression : Arrays.asList(
                 vmString("substring", s, n), vmString("charAt", s, n),
                 vmString("indexOf", s, c), vmString("lastIndexOf", s, s),
-                vmString("toString", c),
+                vmString("toString", c), splitElement(s, ",", 1),
                 binary("==", relation("INDEXED", "READ", "I",
                         relation("INDEXED", "INSERT", emptied,
                                 integer("I", 0L), n), integer("I", 0L)),
