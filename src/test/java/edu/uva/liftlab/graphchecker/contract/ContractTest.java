@@ -356,6 +356,32 @@ public class ContractTest {
                     }
                 });
         assertNotNull("a page's consumer holds no lock", meanwhile[0]);
+        // Read off the text alike (a branch window too): blanks between
+        // members, strings holding quotes, backslashes and brackets, a
+        // member before the records whose string holds a brace.
+        String compact = page.toString();
+        String table = compact.substring(compact.indexOf(
+                ",\"" + VmExpressionTable.FIELD + "\""));
+        String spelled = "{ \"kind\" : \"PA}GE ]\" ,\n \"records\" : [ "
+                + "{ \"value\" : " + vmReference(2) + " , \"note\" : "
+                + "\"a \\\"q\\\" } ] \\\\\" } ,\n"
+                + "{\"value\":" + vmReference(1) + "}\t]" + table;
+        read.clear();
+        header = store.importRecords(spelled, "records", stated -> true,
+                record -> read.add(record.getAsJsonObject()));
+        assertEquals("PA}GE ]", header.get("kind").getAsString());
+        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
+        assertEquals("a \"q\" } ] \\", read.get(0).get("note").getAsString());
+        assertSame(earlier, read.get(1).getAsJsonObject("value"));
+        int[] decodes = {0};
+        for (int pass = 0; pass < 2; pass++) {
+            store.importRepeatedRecords(spelled, "records", stated -> true,
+                    JsonObject.class, record -> {
+                        decodes[0]++;
+                        return record.getAsJsonObject();
+                    }, record -> { });
+        }
+        assertEquals("read again, held", 2, decodes[0]);
         // Refused, never read past: a record naming a node the table lacks;
         // a row spelled otherwise than the VM does (no row start the reader
         // knows: it stays in the row before it, which then holds two); a
