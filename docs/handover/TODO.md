@@ -202,6 +202,26 @@ Merged 2026-10-12/13 (lead; through `solr-int`, each merge gated; the owner's or
 - Lead: an engine JVM is charged its footprint H + H/16 + 384 MB; a stream replay its typical peak (p90 x 1.25 after
   eight); `launch-round.sh` passes CASE_TIMEOUT_SECONDS, PRUNE and CAUSYNTH_CAMPAIGN_STOP_AFTER to the heads.
 
+Merged 2026-10-13 morning (lead, through `solr-int`, each gated; SGF on 12cd346d9 found the defects they fix):
+- `solr-zk3` (Z2) f904ab427: a String cell read at REF sort is its string's reference (`string_ref`, injective, never
+  null) and reboxes to its cell -- the VM states an enum constant by its name, so `CollectionAction.get`'s symbolic-key
+  lookup made every Overseer command path self-contradictory (false UNSATs; SGF-reindex).
+- `solr-str2` (ST) c403c41a4: every String operation the VM carries with an exact SMT-LIB form (startsWith/indexOf/
+  lastIndexOf with offsets, regionMatches, compareTo, subSequence, equalsIgnoreCase against a literal); the rest refused
+  by name (VM.md's String row).
+- `solr-lockleak` (EX) ec343e291: STORE_ITEM_PRODUCER (a demanded store writer's starting items' senders are value
+  producers); the VM's base pause, image `/bigtemp/vnr3ne/vm-force8/j2sdk-image` (a doors-only occurrence's frames keep
+  their tracking, so a door in a callee decides; shadows cleared when the pause is retaken; a window outside an
+  observation bracket an ENGINE_FAULT). Both reviewed (`/bigtemp/vnr3ne/analysis/solr-2026-10-12/review-*.md`), fixed.
+  The jar refuses images before vm-force7.
+- `solr-sessions` (EX) c5ddff24a: a planted SessionExpired is a real expiry of the door's session at its server (the
+  system's expirer, `runtime.Sessions`; the Solr tree registers it), else refused by name.
+- `solr-native-charge` (EX) df3bfbd41: a native run is charged 130 % of its recording's peak; onlift never picks lift11.
+- `solr-zk4` (Z2) bfada52ac: snapshot-no-active's scope (solrj ClusterState, DocCollection, Slice, Replica) and world
+  depth 0, named BOUNDED.
+- `solr-arm39` (ST) 181d4cf3a: a message's senders are judged against the path's own world at every depth, by flips and
+  by the pins their arms carry; none compatible is UNPRODUCIBLE_ANSWER by name.
+
 ### 1. Branches in flight
 
 None of GraphChecker's: every `solr-*` branch is merged or superseded. Solr tree: `gc/solr-final6` d287b1e036 (ST) =
