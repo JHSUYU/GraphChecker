@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr stopped for a handover (2026-10-12)
+# State: HDFS finished; Solr in its final round (2026-10-13)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,37 +11,40 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr at the owner's stop (2026-10-12) -- read this first if you take over Solr
+## S. Solr: the final round SGF (lead session 2026-10-12/13) -- read this first if you take over Solr
 
-The owner stopped the Solr group again on 2026-10-12 (~14:00) for a handover to another agent ("停止所有的agent，任务。
-更新对应的文档。我要让别的coding agent接手"). Every agent and run is stopped (no GraphChecker process on any lift), every
-branch committed (unfinished work as `WIP:`), nothing pushed. The plan, in order, is [TODO.md](TODO.md) "Solr"; the
-agents' own reports are `/bigtemp/vnr3ne/analysis/solr-2026-10-11/HANDOVER-2026-10-12.md`; every case's latest evidence
-is [../STATUS.md](../STATUS.md) "Solr checks".
+The lead took the Solr group over on 2026-10-12 (/goal: all 20 cases with a right `.smt`; the 8 bug checks SAT +
+CONFIRM + native >= 1/10 by the bug's own chain; one tree on the fork). Every branch in flight is merged into
+`system/solr` (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image `/bigtemp/vnr3ne/vm-force5/j2sdk-image`) through the
+integration branch `solr-int` (worktree `/bigtemp/vnr3ne/wt/gc-solr-merge`), each merge gated (mvn + the shell test).
+The final round SGF runs from that head on the tree `gc/solr-final5`. The plan is [TODO.md](TODO.md) "Solr"; every case's
+evidence is [../STATUS.md](../STATUS.md) "Solr checks"; the lead's notes, readings and launch scripts are in
+`/bigtemp/vnr3ne/analysis/solr-2026-10-12/` (readings/, launch.sh, watch-remote.sh, live.txt).
 
-- **`system/solr` `8bd4a0cfb` + this docs commit** (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image
-  `/bigtemp/vnr3ne/vm-force5/j2sdk-image`): everything gated so far (TODO Solr §0): the study checks' engine fixes (force2,
-  Root:WAKE, D1b, admitted reach, lambda deciders), Z1 (ZooKeeper store state and provenance), the native realized order
-  (stable names, the claim's cone), the moved-member rule, the timed-wait door with GROW of unplanned invocations, the
-  GROW swap fix. Canaries on it pass native 10/10.
-- **Branches in flight, merge in this order** (TODO Solr §1): `solr-zk-doors` 9f0b81058 (READ doors + R4) is MERGED
-  (system/solr edc62b76b, 2026-10-12; canaries Z1W; a full 40 runs as LD1); then `solr-explore2` fe8c7434f (EX; left: a review
-  re-check, the offline gate and live 07/21 convergence), `solr-zk2` 7023c526b WIP (Z2; left: 18413 SAT twice, tra's final
-  SAT + native, snapshot SAT, a re-check). `solr-sg3` 2ca18a2b5 is a dry-run integration of all three plus
-  `seed_replay_time_factor=130`; the final Solr tree `gc/solr-final` 86f762adb1 is merged and built against it (2 of 17
-  workloads run natively).
-- **Bug checks:** 6 of 8 with full evidence (SAT, confirmed, native 10/10, chain read in pre-readings): 18406, 18413,
-  migrate on system/solr; overseer-lock-leak, restore-construction, reindex-cleanup on Z1's code (round IZ1 + Z1's Y11;
-  reindex needed its workload's createAlias made tolerant). tra-start-overwrite: witness claimed live and CONFIRMED on
-  `solr-zk2` (Z2N) before the swap race (fixed) took the final verdict. snapshot-no-active: workload rewritten so a stale
-  Overseer view can exist; not yet SAT.
-- **Study checks:** none final. Their guards mostly read ZooKeeper cluster-state content (Z2), and 07/21/05/31/39 need
-  EX to converge; 09 needs the timed-wait door (merged) and EX; 40 the READ doors; 13 the final tree's workarounds.
-  Expected verdicts per case: `/bigtemp/vnr3ne/analysis/solr-2026-10-11/SG3-reading-checklist.md`.
-- **Solr trees** (`~/lucene-solr-8_11`, unshallowed): `gc/solr-final` 86f762adb1 (the final tree), built from
-  `gc/solr-zk-next` 22930889c8 + `gc/solr-zk-doors-r` 2346cafecd + `gc/solr-zk2-next` b2605b6bd7 + 13's workarounds.
-  Nothing pushed to the fork yet.
-- **Briefs, designs, notes:** `/bigtemp/vnr3ne/analysis/solr-2026-10-11/` (this session), `.../solr-2026-10-08/` (before).
+- **`system/solr` holds** (TODO Solr §0): the READ doors + R4 (`solr-zk-doors`); EXPLORE's redundancy package and its
+  bound (`solr-explore2`, `solr-key6`, agent EX); ZooKeeper content and the view pairing with the deferred publication
+  (a') (`solr-zk2`, agent Z2); the solve lanes (`solr-solve`); ASCII case mapping (`solr-str`); the lead's driver fixes
+  (an engine JVM charged its footprint, a replay its typical peak; `launch-round.sh` passes the case timeout, PRUNE and
+  STOP_AFTER to the heads). The study cases' exploration bound is declared in `experiments/solr/solr-adhoc/case.sh`
+  (owner 2026-10-12: a closure too large to converge may end at a declared, named bound): world depth 0 for 07 09 10 13
+  19 21 40, 1 for 05 14 31 39, reasons and unasked counts in STATUS "Per-system surface".
+- **The Solr tree:** `gc/solr-final5` 827b46a609 (`/bigtemp/vnr3ne/wt/lucene-solr-final5`, owner agent ST; `GC_TREES=
+  /bigtemp/vnr3ne/wt/sg3e-trees`): all 17 workloads PASS natively; it carries the publication hook (a'). It goes to the
+  fork as `graphchecker/solr-checks` after SGF.
+- **Bug checks before SGF:** 18406, migrate, restore PASS on the merged code (rounds LD2, Z1W); reindex PASS (Z1W; the
+  same bug as study #04); tra PASS on int10 + final5 (Z2Z: STATE_PAIRING_FLIPPED on node1's aliases view, confirmed,
+  native 10/10 under (a')); 18413: its two CONFIRM refutations (SG3G, SG3H) fixed (the anchor's work past the path is no
+  producer, 189a797b6; another version's content rests on the view's choice, 2d07350c5), offline both corpora compose SAT
+  CLOCK_SKEW with a closed chain; lock-leak: SG3I (int7 + final4) confirmed a SessionExpired at the state writer + a long hold of node1's view,
+  native 0/10, a false positive the (a') hold bound excludes; the bug's chain (markTaskAsRunning's makePath in the queue
+  tick that starts the async Runner) was never planned (TODO Solr §3a); snapshot-no-active: decided by SGF.
+- **Study checks before SGF:** 38 SAT, confirmed, native 0/10 (named): a new-bug candidate (no JIRA for this trigger).
+  09 and 40 share one external-study bug (a watch handler drops its watch when the re-read fails past ZkCmdExecutor's
+  retries, session alive): one bug, two checks. The rest are decided by SGF under the bound policy.
+- **Agents (2026-10-13):** EX (explore2/key6), Z2 (zk2), ST (final trees, fork), SC (study 38 14 19 09 31 05; an
+  Overseer batching-wait workaround for 31/05's seed drift on a branch from final5), and a read-only lock-leak analyst.
+  Their agent briefs and rules: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/` (AGENT-RULES.md, brief-*.md).
+
 
 ## 0. The end state: two branches (owner 2026-10-06)
 
