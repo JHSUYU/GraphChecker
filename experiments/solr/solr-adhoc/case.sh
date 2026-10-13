@@ -33,3 +33,14 @@ read -r -a scope <<<"${classes}"
 if [[ "$1" == 05 ]]; then
   loop_bounds=${here}/loop-bounds-05.jsonl
 fi
+# 07's and 21's exploration bound (owner 2026-10-12: the redundant re-asks
+# fixed first, then a named bound where the size is genuine): every admitted
+# world re-asks the arms of the worlds before it, each another question, for
+# its own path decides other kept conditions (solr-adhoc-21 RX7, by round 19:
+# 2612 asks from worlds of one flip, 184 of them new arms, from 119 admitted
+# worlds).  One nesting level: a flip in a world that already holds one is
+# asked, one in a world of two flips is not, named BOUNDED
+# (region_path_max_world_depth, campaign_bounds).
+if [[ "$1" == 07 || "$1" == 21 ]]; then
+  export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1
+fi
