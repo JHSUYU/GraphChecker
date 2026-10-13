@@ -166,7 +166,12 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    whole solve share: 292 questions queued (median wait 1135 s), throughput from ~250 to ~140 verdicts/h. Now two
    lanes (PIPELINE §7.5): every question first at 60 s; one undecided goes to a hard lane at the full budget in a
    JVM of its own once nothing else waits; a question its host's solver leaves untaken 30 s goes to a JVM of its own.
-   Gate: the shell rows SOLVE-LANES*, a live solr-adhoc-10.
+   Gate: the shell rows SOLVE-LANES*, a live solr-adhoc-10. Then the memory those solvers held (SL1-10): host solvers
+   at the 16 GB engine heap grew to 6-12.5 GB resident over a live set of 0.85 GB after a full collection, one per
+   host and campaign, and filled every lift's ledger; a question's own JVM charged 512 MB was ended at its first
+   growth on a full host and its retry asked the largest host solver's 12.5 GB (OBLIGATION_UNFINISHED after 600 s).
+   Now a corpus's solvers start at 2 GB and double on an out-of-heap exit, charged their footprint, and a retry is
+   placed by its own JVM's need (PIPELINE §7.5; shell rows SOLVER-HEAP and the retry rows).
 
 ## 6. Every HDFS case alone on the ten lifts (series EX1, 2026-10-07/08)
 

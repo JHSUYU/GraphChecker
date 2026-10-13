@@ -2987,24 +2987,56 @@ names it; nothing withdrawn"
 # minutes.
 campaign_solver_idle_s=300
 
-# A solver's heap, in MB: the case's engine heap (engine_memory_mb), the heap
-# its planner and composer read the same corpus with, for the host's solver
-# as for a question's own.  A fixed 8 GB was outgrown once a closure doubled:
-# hdfs-adhoc-07 EX1 (33 planned occurrences, ~1500 sessions) had lift09's
-# solver collect garbage for an hour with 24 questions queued behind it, then
-# end in OutOfMemoryError, and 12 workers past their bound.
+# A solver's heap, in MB, for the corpus <sessions> (the host's solver and a
+# question's own JVM alike): campaign_solver_start_heap_mb until a solver of
+# it ran out of heap (-XX:+ExitOnOutOfMemoryError, exit 3), then the heap it
+# outgrew doubled, up to the case's engine heap (engine_memory_mb), as
+# engine_java grows an engine JVM; stated beside the corpus (solver_heap_mb)
+# for every host.  Its live set is the corpus it reads and the query it
+# lowers: 0.2 GB over hdfs-17897's three sessions, 5 GB over hdfs-11741 i1's
+# 175, 0.85 GB after a full collection in a solr-adhoc-10 host solver
+# (SL1-10, 2026-10-12) that the parallel collector had let grow to 6.2 GB
+# resident, and others of it to 10.6-12.5 GB, at a 16 GB heap: one per host
+# and campaign, they filled every lift's ledger.  A fixed 8 GB was outgrown
+# once a closure doubled (hdfs-adhoc-07 EX1, ~1500 sessions: an hour of
+# garbage collection with 24 questions queued, then OutOfMemoryError), which
+# the doubling meets.
+campaign_solver_start_heap_mb=2048
+
 campaign_solver_heap_mb() {
-  printf '%s\n' "${engine_memory_mb:-8192}"
+  local engine=${engine_memory_mb:-8192} heap=${campaign_solver_start_heap_mb}
+  local stated="$(dirname "${1:-.}")/solver_heap_mb"
+  [[ ! -s "${stated}" ]] || heap=$(<"${stated}")
+  (( heap <= engine )) || heap=${engine}
+  printf '%s\n' "${heap}"
 }
 
-# What a solver is charged at its start, in MB; the rest of what it holds is
-# charged as it grows (campaign_solver_jvm).  Its heap is the corpus it
-# reads and the query it lowers: 0.2 GB over hdfs-17897's three sessions,
-# 5 GB over hdfs-11741 i1's 175.  Charged its 8 GB heap at its start,
-# a solver waited minutes for room it did not use, and every question of its
-# host waited behind it (e2: the first question of a host answered after 1-5
-# minutes, the rest in a second; "one needs 8192 MB and 9474 MB stay free").
-campaign_solver_start_mb=1024
+# campaign_solver_outgrown <sessions> <heap_mb>: a solver of the corpus ran
+# out of its <heap_mb> heap; every later one starts at twice it, up to the
+# engine heap, never below what another solver already outgrew.
+campaign_solver_outgrown() {
+  local stated="$(dirname "$1")/solver_heap_mb" next=$(( 2 * $2 ))
+  (( next <= ${engine_memory_mb:-8192} )) || next=${engine_memory_mb:-8192}
+  (( next > $(campaign_solver_heap_mb "$1") )) || return 0
+  printf '%s\n' "${next}" >"${stated}.$$" && mv -f -- "${stated}.$$" "${stated}"
+}
+
+# What a solver JVM of the corpus <sessions> is charged, in MB: its heap's
+# footprint (campaign_jvm_footprint_mb), the host's solver at its start and a
+# question's own JVM alike; what it grows past that is charged as it grows
+# (campaign_solver_jvm).  Charged its 8 GB heap at its start, a solver waited
+# minutes for room it did not use (e2: "one needs 8192 MB and 9474 MB stay
+# free"); charged 1 GB while its heap was 16 GB, a host solver's growth filled
+# the ledger and a question's own JVM charged a question's 512 MB was ended at
+# its first growth on a full host (SL1-10).
+campaign_solver_need_mb() {
+  campaign_jvm_footprint_mb "$(campaign_solver_heap_mb "${1:-}")"
+}
+
+# A solver's start on a corpus no solver outgrew, in MB (what the stream
+# charges a solve on a cold host, campaign_stream_charge_mb).
+campaign_solver_start_mb=$(campaign_jvm_footprint_mb \
+  "${campaign_solver_start_heap_mb}")
 
 # What a question its host's serving solver answers is charged, in MB: its z3
 # run, a child of that solver (the solver JVM's own charge is its JVM's).
@@ -3169,17 +3201,8 @@ campaign_solver_log() {
   printf '%s/solver-%s.log\n' "$(dirname "$1")" "$(hostname -s)"
 }
 
-# The largest resident peak, in MB, a host's solver of the corpus <sessions>
-# stated so far in its log (campaign_watch_workload's "peaked at" line), 0
-# before any: what a solver of this campaign measurably holds.
-campaign_solver_measured_peak_mb() {
-  cat "$(dirname "$1")"/solver-*.log 2>/dev/null \
-    | sed -n 's/.*resident memory peaked at \([0-9]*\) MB.*/\1/p' \
-    | sort -n | tail -n 1 | grep . || printf '0\n'
-}
-
 # Starts the host's solver of the corpus <sessions> in <dir> if the host has
-# room for its start (campaign_solver_start_mb) now, and names it in
+# room for its start (campaign_solver_need_mb) now, and names it in
 # <dir>/server: the pid of the shell that runs the JVM, which ends with it.
 # Returns without waiting for it; 1, starting nothing, when the host has no
 # room now or its memory cannot be read: a start that waited for memory held
@@ -3187,20 +3210,24 @@ campaign_solver_measured_peak_mb() {
 # declaration EXPLORE and COMPOSE read: an answer is only as free as the
 # root domains behind the arm that produces it.
 campaign_start_solver() {
-  local dir=$1 sessions=$2 charge status=0
-  campaign_host_try_charge localhost "${campaign_solver_start_mb}"
+  local dir=$1 sessions=$2 charge status=0 heap need
+  heap=$(campaign_solver_heap_mb "${sessions}")
+  need=$(campaign_jvm_footprint_mb "${heap}")
+  campaign_host_try_charge localhost "${need}"
   (( status == 0 )) || return 1
   charge=${campaign_host_charge_id}
   {
     # The solver outlives the obligation that started it: it holds its
     # charge itself.
     campaign_host_keep localhost "${charge}"
-    campaign_solver_jvm "$(campaign_solver_heap_mb)" \
-      "${campaign_solver_start_mb}" "$(campaign_solver_first_ms)" \
+    status=0
+    campaign_solver_jvm "${heap}" "${need}" "$(campaign_solver_first_ms)" \
       --serve "${dir}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
-      </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || true
+      </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || status=$?
+    (( status != campaign_jvm_out_of_heap_status )) \
+      || campaign_solver_outgrown "${sessions}" "${heap}"
     campaign_host_release localhost "${charge}"
   } &
   printf '%s\n' "$!" >"${dir}/server.part"
@@ -3208,8 +3235,8 @@ campaign_start_solver() {
 }
 
 # campaign_solver_jvm <heap_mb> <charged_mb> <budget_ms> <ObligationSolverMain
-# args...>: one solver JVM at <heap_mb>, each z3 run under <budget_ms>
-# (run_java_main's, started here so its pid is
+# args...>: one solver JVM at <heap_mb>, each z3 run under <budget_ms>, ended
+# at its first out-of-heap error (exit 3) (run_java_main's, started here so its pid is
 # the JVM's own: java_bin execs java), watched until it ends
 # (campaign_watch_workload): what it grows past the <charged_mb> its host
 # holds for it is asked of the host as it grows, and a host whose real use
@@ -3224,6 +3251,7 @@ campaign_solver_jvm() {
       "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
       "-Dcausynth.system.doors=${causynth_system_doors}" \
       -cp "${graphchecker_jar}" \
+      -XX:+ExitOnOutOfMemoryError \
       edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
       --z3 "${z3_bin}" \
       --solver-timeout-ms "${budget}" \
@@ -3237,7 +3265,8 @@ campaign_solver_jvm() {
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
 # <worker> <charged_mb> <budget_ms>: the question in a solver JVM of its own
-# at the case's engine heap, its z3 runs under <budget_ms> (its lane's), its
+# at its corpus's solver heap (campaign_solver_heap_mb; out of it, exit 3, the
+# next one doubles), its z3 runs under <budget_ms> (its lane's), its
 # files straight into <worker>, its status the JVM's,
 # on this host under a charge of <charged_mb> its caller holds here: the
 # obligation's own (a solver's start) for a question whose host had no room
@@ -3246,13 +3275,16 @@ campaign_solver_jvm() {
 # (campaign_watch_workload).
 campaign_solve_obligation_alone() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local budget=$6 status=0
-  run_capturing_status campaign_solver_jvm "${engine_memory_mb:-8192}" \
+  local budget=$6 status=0 heap
+  heap=$(campaign_solver_heap_mb "${sessions}")
+  run_capturing_status campaign_solver_jvm "${heap}" \
     "${charged}" "${budget}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
     --output-dir "${worker}"
+  (( status != campaign_jvm_out_of_heap_status )) \
+    || campaign_solver_outgrown "${sessions}" "${heap}"
   return "${status}"
 }
 
@@ -3263,15 +3295,6 @@ campaign_solve_obligation_alone() {
 # 16384 MB on the one host they ran on, and were killed unanswered; 60 s left
 # hdfs-adhoc-07 HF3 five obligations unanswered beside ~120 replays).
 campaign_solver_place_patience_s=600
-
-# The least a solver asked again is charged, in MB: half a solver's heap
-# (campaign_solver_heap_mb).  What the first one held is a lower bound when
-# it was ended growing at what its host could hold, and a retry charged by it
-# was ended again the same way (hdfs-adhoc-07 HF3: 63 obligations, retries
-# charged 1024-2816 MB peaked at 1.8-3.9 GB).
-campaign_solver_retry_mb() {
-  printf '%s\n' "$(( $(campaign_solver_heap_mb) / 2 ))"
-}
 
 # campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
 # <worker> <need_mb> <budget_ms>: a question asked again of a solver of its
@@ -3340,7 +3363,7 @@ campaign_solve_obligation_placed() {
 # the first ask left undecided (campaign_solver_first_tier_ms).
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local lane=${6:-} budget outcome status=0 peak need held="" measured=0
+  local lane=${6:-} budget outcome status=0 peak need="" held="" measured=0
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -3365,35 +3388,42 @@ past ${campaign_solver_busy_patience_s}s; answered in a solver JVM of its own" ;
   esac
   if [[ "${status}" -ge 3 ]]; then
     # Answered in its own JVM at once, not after a start that waits for
-    # memory nor behind a question its host's solver is busy with.
-    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}" "${charged}" "${budget}"
+    # memory nor behind a question its host's solver is busy with: here
+    # under this start's charge when it covers that JVM's need, else placed
+    # as any start by that need (a question's charge, 512 MB, on a warm host).
+    need=$(campaign_solver_need_mb "${sessions}")
+    if (( charged >= need )); then
+      run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+        "${obligations}" "${sessions}" "${worker}" "${charged}" "${budget}"
+    else
+      run_capturing_status campaign_solve_obligation_placed \
+        "${obligation_id}" "${obligations}" "${sessions}" "${worker}" \
+        "${need}" "${budget}"
+      (( status != 4 )) || die "obligation ${obligation_id}: no host has \
+room for a solver of its own of ${need} MB within \
+${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
+    fi
   fi
   if [[ "${status}" -ne 0 ]]; then
     # A solver that ran out of heap, died, or was ended at what its host
     # could hold answered nothing about the obligation, and settles no
-    # question, whatever it left: asked once more, of a solver of its own,
-    # placed as any start by what the first one measurably held (its watched
-    # peak) with the usual margin (campaign_need_of_peak_mb), at least what
-    # the campaign's host solvers measurably held and campaign_solver_retry_mb,
-    # at most a solver's heap, on any host with that room
-    # (campaign_solve_obligation_placed).  Twice, or no host with the room:
-    # the worker did not finish (campaign_obligation_unfinished), by name,
-    # never an answer.
+    # question, whatever it left: asked once more, of a solver of its own at
+    # its corpus's solver heap (doubled if one ran out of it), placed as any
+    # start by that JVM's footprint, or by what the first one measurably held
+    # (its watched peak) with the usual margin (campaign_need_of_peak_mb)
+    # where that is more -- never by what other solvers held (SL1-10: a
+    # question that held 1.2 GB asked 12.5 GB, the largest host solver's
+    # peak, and no host had it) -- at most the footprint of the engine heap,
+    # on any host with that room (campaign_solve_obligation_placed).  Twice,
+    # or no host with the room: the worker did not finish
+    # (campaign_obligation_unfinished), by name, never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
-    # A host's solver is no JVM this worker watched: its peak is unknown,
-    # and the largest its campaign's host solvers stated stands for it.
-    # Never past a solver's heap, which no JVM of its own outgrows
-    # (EX1-adhoc-07d: an NFS error ended a 16 GB host solver and the retry
-    # asked 24576 MB, more than any lift may hold; retries charged 8 GB were
-    # ended growing to the 12-14 GB its host solvers held).
     peak=${campaign_watch_peak_mb}
-    need=$(campaign_solver_retry_mb)
-    (( peak <= 0 )) || need=$(campaign_need_of_peak_mb "${peak}")
-    measured=$(campaign_solver_measured_peak_mb "${sessions}")
-    (( need >= measured )) || need=${measured}
-    (( need >= $(campaign_solver_retry_mb) )) || need=$(campaign_solver_retry_mb)
-    (( need <= $(campaign_solver_heap_mb) )) || need=$(campaign_solver_heap_mb)
+    need=$(campaign_solver_need_mb "${sessions}")
+    (( peak <= 0 || $(campaign_need_of_peak_mb "${peak}") <= need )) \
+      || need=$(campaign_need_of_peak_mb "${peak}")
+    measured=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
+    (( need <= measured )) || need=${measured}
     held="held ${peak} MB"
     (( peak > 0 )) || held="ran in its host's solver, unwatched"
     campaign_log "obligation ${obligation_id}: its solver did not answer \
@@ -5835,7 +5865,7 @@ campaign_stream_charge_mb() {
   if [[ "${1:-}" == OBLIGATION && "${2:-cold}" == warm ]]; then
     printf '%s\n' "${campaign_question_mb}"
   elif [[ "${1:-}" == OBLIGATION || "${1:-}" == HARD ]]; then
-    printf '%s\n' "${campaign_solver_start_mb}"
+    campaign_solver_need_mb "${sessions:-}"
   else
     local need
     need=$(campaign_replay_need_mb)

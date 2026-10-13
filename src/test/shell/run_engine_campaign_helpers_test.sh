@@ -2116,19 +2116,20 @@ $(live_charges "${solver_test}/hosts")"
 
 # A question its host's solver could not answer (out of heap, died, ended at
 # what its host could hold) is no answer: it is asked once more of a solver
-# of its own, placed by what the first held -- its watched peak with the
-# usual margin, at least half a solver's heap (a peak a growing solver was
-# ended at is a lower bound) and at least the largest peak the campaign's host
-# solvers stated (measured: 6000 MB in solver-lift12.log beside the corpus);
-# half the heap for a host's solver, which no worker watched; never past the
-# heap -- on any host with the room;
+# of its own at its corpus's solver heap, placed by that JVM's footprint
+# (campaign_solver_need_mb: 2048 MB -> 2560 MB), or by what the first held --
+# its watched peak with the usual margin -- where that is more; a JVM that
+# ran out of heap (3) doubles the corpus's solver heap first (4096 MB ->
+# 4736 MB); what other solvers of the corpus held places nothing (measured:
+# 6000 MB in solver-lift12.log beside the corpus);
 # a second failure, or no host with the room, fails the worker by name -- an
 # unfinished obligation (campaign_obligation_unfinished) -- never a bare
 # NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations "answered" by an
 # OutOfMemoryError).  Neither settles its question.  A question whose host
 # had no room for its solver (3) is answered at once in a solver JVM of its
-# own, under the obligation's charge.  Per row: the case, and the need the
-# second ask is placed by.
+# own under the obligation's charge when that covers the JVM's need, else
+# placed by it (warm: a question's 512 MB).  Per row: the case, and the need
+# the second ask is placed by.
 retry_test=${test_tmp}/solver-retry
 while read -r alone retry_need; do
   mkdir -p "${retry_test}/${alone}"
@@ -2136,16 +2137,24 @@ while read -r alone retry_need; do
 resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
     >"${retry_test}/${alone}/solver-lift12.log"
   retry_status=0
+  retry_charged=${campaign_solver_start_mb}
+  [[ "${alone}" != warm ]] || retry_charged=${campaign_question_mb}
   (
     campaign_solve_obligation() {
-      [[ "${alone}" != noroom && "${alone}" != killed ]] || return 3
+      [[ "${alone}" != noroom && "${alone}" != killed && "${alone}" != heap \
+         && "${alone}" != warm ]] || return 3
       : >"$4/question.asked"
       echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "$5" == 1024 ]] || { echo "not asked at once" >&2; return 1; }
+      [[ "$5" == "${campaign_solver_start_mb}" ]] \
+        || { echo "not asked at once" >&2; return 1; }
       [[ "${alone}" != killed ]] || { campaign_watch_peak_mb=1788; return 1; }
+      if [[ "${alone}" == heap ]]; then
+        campaign_solver_outgrown "$3" "$(campaign_solver_heap_mb "$3")"
+        return 3
+      fi
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
@@ -2161,9 +2170,14 @@ resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
     campaign_obligation_worker OB.1 obligations \
-      "${retry_test}/${alone}/sessions" "${retry_test}/${alone}" 1024
+      "${retry_test}/${alone}/sessions" "${retry_test}/${alone}" \
+      "${retry_charged}"
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
+  [[ "${alone}" != heap \
+     || "$(cat "${retry_test}/heap/solver_heap_mb" 2>/dev/null)" == 4096 ]] \
+    || fail "a solver out of its 2048 MB heap did not double its corpus's \
+(${retry_test}/heap/solver_heap_mb)"
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
     || fail "a solver that failed settled a question"
   case "${alone}" in
@@ -2183,20 +2197,51 @@ resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
       || fail "the unfinished worker does not say why: \
 $(cat "${retry_test}/fails/stderr.log")" ;;
     nohost) grep -q "Error: obligation OB.1: its solver did not answer, and no \
-host has room for a solver of its own of 4096 MB (the first ran in its host's \
+host has room for a solver of its own of 2560 MB (the first ran in its host's \
 solver, unwatched).*no \
-host of the pool has 4096 MB" "${retry_test}/nohost/stderr.log" \
+host of the pool has 2560 MB" "${retry_test}/nohost/stderr.log" \
       || fail "a second ask no host could hold does not fail by name: \
 $(cat "${retry_test}/nohost/stderr.log")" ;;
   esac
 done <<'EOF_RETRY'
-answers 4096
-fails 4096
-noroom 4096
-killed 4096
-nohost 4096
-measured 6000
+answers 2560
+fails 2560
+noroom 2560
+killed 2688
+nohost 2560
+measured 2560
+heap 4736
+warm 2560
 EOF_RETRY
+
+# SOLVER-HEAP: a corpus's solvers start at campaign_solver_start_heap_mb, and
+# each out-of-heap exit doubles the next one's heap, up to the engine heap,
+# never below what another solver of the corpus already outgrew; a solver JVM
+# is charged its heap's footprint.  Per row: the engine heap, the heaps the
+# corpus's solvers ran out of, in order, and the heap and charge after.
+solver_heap_dir=${test_tmp}/solver-heap
+while IFS='|' read -r sh_engine sh_outgrown sh_heap sh_need; do
+  rm -rf -- "${solver_heap_dir}"
+  mkdir -p "${solver_heap_dir}/sessions"
+  sh_said=$(
+    engine_memory_mb=${sh_engine}
+    for sh_out in ${sh_outgrown}; do
+      campaign_solver_outgrown "${solver_heap_dir}/sessions" "${sh_out}"
+    done
+    printf '%s %s' "$(campaign_solver_heap_mb "${solver_heap_dir}/sessions")" \
+      "$(campaign_solver_need_mb "${solver_heap_dir}/sessions")"
+  )
+  [[ "${sh_said}" == "${sh_heap} ${sh_need}" ]] \
+    || fail "engine ${sh_engine}, outgrown [${sh_outgrown}]: ${sh_said}, not \
+${sh_heap} ${sh_need}"
+done <<'EOF_HEAP'
+16384||2048|2560
+16384|2048|4096|4736
+16384|2048 4096 8192|16384|17792
+6144|2048 4096|6144|6912
+1024||1024|1472
+16384|4096 2048|8192|9088
+EOF_HEAP
 
 # SOLVE-LANES-WORKER: a first ask goes to its host's solver (at the first
 # budget, campaign_solver_first_ms); one its host had no room for (3) or whose
@@ -2225,17 +2270,18 @@ while IFS='|' read -r wl_lane wl_service wl_asks; do
       printf 'alone %s at %s,' "$5" "$6" >>"$4/asked"
       lanes_answer "$4"
     }
-    campaign_obligation_worker OB.1 obligations sessions "${wl_dir}" 1024 \
-      ${wl_lane} >/dev/null 2>&1 || echo "failed,"
+    campaign_obligation_worker OB.1 obligations "${wl_dir}/sessions" \
+      "${wl_dir}" "${campaign_solver_start_mb}" ${wl_lane} >/dev/null 2>&1 \
+      || echo "failed,"
     cat "${wl_dir}/asked"
   )
   [[ "${wl_said}" == "${wl_asks}" ]] \
     || fail "lane '${wl_lane}', service ${wl_service}: ${wl_said}, not ${wl_asks}"
 done <<'EOF_LANES'
 |0|service,
-|3|service,alone 1024 at 60000,
-|5|service,alone 1024 at 60000,
-HARD|0|alone 1024 at 1800000,
+|3|service,alone 2560 at 60000,
+|5|service,alone 2560 at 60000,
+HARD|0|alone 2560 at 1800000,
 EOF_LANES
 
 # SOLVER-PLACED: a solver asked again goes to the pool's host with the most
@@ -3538,11 +3584,12 @@ exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
   # One host: its first solve is cold, charged what a solver starts at; the
   # others find its solver serving and are charged a question's z3 run.
   [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged | sort -n \
-      | paste -sd ' ' -)" == "${campaign_question_mb} \
-${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
+      | paste -sd ' ' -)" == "$(printf '%s\n' "${campaign_question_mb}" \
+      "${campaign_question_mb}" "$(campaign_solver_need_mb)" | sort -n \
+      | paste -sd ' ' -)" ]] \
     || fail "the pool's solves were charged $(cat \
       "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
-not a solver's start (${campaign_solver_start_mb} MB) for the cold one and \
+not a solver's start ($(campaign_solver_need_mb) MB) for the cold one and \
 a question's (${campaign_question_mb} MB) for the warm ones"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
@@ -3635,8 +3682,9 @@ stream_fixture stream-split
   || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
 split_round0="${stream_dir}/obligations-0000"
 [[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -n \
-    | paste -sd ' ' -)" == "${campaign_question_mb} \
-${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
+    | paste -sd ' ' -)" == "$(printf '%s\n' "${campaign_question_mb}" \
+    "${campaign_question_mb}" "$(campaign_solver_need_mb)" | sort -n \
+    | paste -sd ' ' -)" ]] \
   || fail "the solves were not charged a solver's start for the cold one and \
 a question's for the warm ones: $(cat \
     "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
@@ -4218,7 +4266,7 @@ done
   || fail "a remote split exploration did not finish: \
 $(cat "${stream_dir}/explore.log")"
 [[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
-${campaign_solver_start_mb}
+$(campaign_solver_need_mb)
 lift12 SOLVE B ${campaign_question_mb}
 lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
 generations/g0/execution_task_plan.jsonl" ]] \
