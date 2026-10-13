@@ -502,6 +502,13 @@ public final class SmtLowering {
      * stand; a name newly stated clears the memo ({@link #put}).
      */
     private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
+
+    /** A new memo ({@link #memo}), and so new view answers ({@link
+     *  #views}): both rest on the declarations that stand. */
+    private void forget() {
+        memo = new HashMap<MemoKey, Attempt<?>>();
+        views = new HashMap<String, Attempt<Term>>();
+    }
     /** The memo keys whose lowering is in progress ({@link #memoized}). */
     private final Set<MemoKey> lowering = new HashSet<MemoKey>();
     /**
@@ -1033,7 +1040,7 @@ public final class SmtLowering {
         this.scope = sessionId;
         this.join = sessionJoin;
         this.openTable = expressions;
-        this.memo = new HashMap<MemoKey, Attempt<?>>();
+        forget();
         this.still = identities();
         this.statedBases = statedBases();
     }
@@ -1487,9 +1494,20 @@ public final class SmtLowering {
                         + "corpus states this symbol", sort, javaType);
     }
 
-    /** The content leaves being lowered through their view, so each of a
-     *  view's cases is its own leaf. */
-    private final Set<String> viewing = new HashSet<String>();
+    /** The content leaves being lowered through their view, innermost
+     *  last, so each of a view's cases is its own leaf. */
+    private final List<String> viewing = new ArrayList<String>();
+    /** {@link #throughView}'s answers, per leaf, Java type and sort asked:
+     *  each once per memo ({@link #forget}), as a node is ({@link
+     *  #memoized}) -- a view's cases are leaves read through views of their
+     *  own, and lowered anew at every use they were asked once per path
+     *  through the nesting (solr-adhoc-40 SL1: 15 min in one key). */
+    private Map<String, Attempt<Term>> views =
+            new HashMap<String, Attempt<Term>>();
+    /** How many times a view's lowering met a leaf above it in {@link
+     *  #viewing} (a cycle of views): an answer reached so depends on where
+     *  it was asked, and is not kept. */
+    private int viewCycles;
 
     /**
      * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4,
@@ -1507,7 +1525,27 @@ public final class SmtLowering {
      */
     private Term throughView(String raw, String javaType, Sort expected) {
         ViewLeaf leaf = join.viewLeaf(raw);
-        if (leaf == null || !viewing.add(raw)) return null;
+        if (leaf == null) return null;
+        int at = viewing.lastIndexOf(raw);
+        if (at >= 0) {
+            // Its own case is the leaf itself; a leaf further up is a cycle.
+            if (at < viewing.size() - 1) viewCycles++;
+            return null;
+        }
+        String key = raw + SEPARATOR + javaType + SEPARATOR + expected;
+        Attempt<Term> held = views.get(key);
+        if (held != null) return commit(held);
+        int cycles = viewCycles;
+        Attempt<Term> answer = attempting(() -> viewed(leaf, raw, javaType,
+                expected));
+        if (viewCycles == cycles) views.put(key, answer);
+        return commit(answer);
+    }
+
+    /** {@link #throughView}'s answer, lowered. */
+    private Term viewed(ViewLeaf leaf, String raw, String javaType,
+                        Sort expected) {
+        viewing.add(raw);
         try {
             ReadRow view = null;
             for (ReadRow read : join.reads(leaf.viewKey)) {
@@ -1547,7 +1585,7 @@ public final class SmtLowering {
             return Term.of(shared("view_leaf__", own.sort, value), own.sort,
                     own.integralWidth, nullness, "", "true");
         } finally {
-            viewing.remove(raw);
+            viewing.remove(viewing.size() - 1);
         }
     }
 
@@ -2450,7 +2488,7 @@ public final class SmtLowering {
         if (pins.add(scope + SEPARATOR + symbol)) {
             // A read of its version lowers to it from now on
             // ({@link #pinnedSymbol}), and a memoized one did not.
-            memo = new HashMap<MemoKey, Attempt<?>>();
+            forget();
         }
     }
 
@@ -2464,7 +2502,7 @@ public final class SmtLowering {
     public void path() {
         movable.clear();
         nestedSelectors.clear();
-        memo = new HashMap<MemoKey, Attempt<?>>();
+        forget();
     }
 
     /**
@@ -2477,7 +2515,7 @@ public final class SmtLowering {
     public void movable(ReadRow read) {
         if (movable.add(scope + SEPARATOR + readKey(
                 locationKey(read.location()), read.seq()))) {
-            memo = new HashMap<MemoKey, Attempt<?>>();
+            forget();
         }
     }
 
@@ -3680,7 +3718,7 @@ public final class SmtLowering {
         if (held != null && (held.stated || held.sort != sort)) return;
         declarations.put(name, new Declared(sort, true,
                 held != null && held.inQuery));
-        memo = new HashMap<MemoKey, Attempt<?>>();
+        forget();
     }
 
     /**
@@ -3710,7 +3748,7 @@ public final class SmtLowering {
         Declared held = declarations.get(name);
         if (stated && (held == null || !held.stated)) {
             // A read of this name lowers to it from now on, not inlined.
-            memo = new HashMap<MemoKey, Attempt<?>>();
+            forget();
         }
         if (held != null && held.sort != sort) {
             String detail = held.sort + " and " + sort;
@@ -4302,7 +4340,7 @@ public final class SmtLowering {
     public Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
         return memoized(expression, expected, () -> {
-            Term value = lowered(expression, expected, origin);
+            Term value = compact(lowered(expression, expected, origin));
             if (expression != null && expression.isJsonObject()) {
                 JsonElement observed = expression.getAsJsonObject()
                         .get(VmRows.RECORDED_READING);
@@ -4315,6 +4353,45 @@ public final class SmtLowering {
             cycle(origin);
             return free(expected, IntegralWidth.NONE);
         });
+    }
+
+    /**
+     * One lowered value with each long text it carries -- its own (any sort
+     * but Bool, whose atoms the clock margin reads), its definedness, a
+     * String's nullness -- stated once as a define-fun its uses name
+     * ({@link #shared}): every use writes a term's text by value, and an
+     * operation that writes its operand's several times (a substring writes
+     * its receiver's into the result, its length twice and its definedness)
+     * grew a chain of them 3-4 fold per level (solr-adhoc-10 SL2: a parse
+     * of a handoff's string, texts of 2.6-9.6 GB, 24 GB not enough).  Past
+     * {@link #NAMED_TEXT_CHARS} a text is a name, so a chain grows by its
+     * levels, not their product.
+     */
+    private Term compact(Term value) {
+        String text = value.sort == Sort.BOOL ? value.text
+                : named("term_dag__", value.sort, value.text);
+        String nullness = named("defined_dag__", Sort.BOOL,
+                value.stringNullness);
+        String defined = named("defined_dag__", Sort.BOOL,
+                value.precondition);
+        if (text.equals(value.text) && nullness.equals(value.stringNullness)
+                && defined.equals(value.precondition)) {
+            return value;
+        }
+        return value.withText(text, nullness).withPrecondition(defined);
+    }
+
+    /** {@link #compact}: a text past this many characters is a name. */
+    static final int NAMED_TEXT_CHARS = 2048;
+
+    /** {@code text} as a define-fun's name where it is a long application
+     *  of a sort the query can define, else itself. */
+    private String named(String prefix, Sort sort, String text) {
+        if (text == null || text.length() <= NAMED_TEXT_CHARS
+                || text.charAt(0) != '(' || sort == Sort.UNKNOWN) {
+            return text;
+        }
+        return shared(prefix, sort, text);
     }
 
     private Term lowered(JsonElement expression, Sort expected,

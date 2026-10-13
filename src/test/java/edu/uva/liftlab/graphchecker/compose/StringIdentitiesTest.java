@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
 import org.junit.Test;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -127,6 +128,39 @@ public class StringIdentitiesTest {
                 assertEquals(name + ": width", row[3], term.integralWidth);
             }
         }
+    }
+
+    /**
+     * A LONG TEXT IS A NAME ({@code SmtLowering#compact}): a substring writes
+     * its receiver's text into its result, its length twice and its
+     * definedness, so forty nested substrings held by value were ~4^40
+     * (solr-adhoc-10 SL2: a parse of a handoff's string outgrew 24 GB).
+     * Past the size, a text is a define-fun the query states once: the
+     * chain's own text stays short, and what it reaches still ends at the
+     * symbol it parses.
+     */
+    @Test(timeout = 30000)
+    public void aSubstringChainNamesWhatItRepeats() {
+        JsonObject chain = S;
+        for (int level = 0; level < 40; level++) {
+            chain = string("substring", chain, integer(1));
+        }
+        SmtLowering lowering = lowering();
+        Term term = lowering.dispatch(chain, null, "test");
+        assertEquals("[]", lowering.openRefusals().toString());
+        assertTrue("the chain's text is short: " + term.text.length(),
+                term.text.length() < 4 * SmtLowering.NAMED_TEXT_CHARS);
+        assertTrue("and its definedness: " + term.precondition.length(),
+                term.precondition.length() < 4 * SmtLowering.NAMED_TEXT_CHARS);
+        StringBuilder stated = new StringBuilder();
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                Arrays.asList(term.text, term.precondition))) {
+            stated.append(declaration.render()).append('\n');
+        }
+        assertTrue("its define-funs state the substrings down to s: "
+                        + stated.length(), stated.toString().contains(
+                "(str.substr s 1 ") && stated.length()
+                < 100 * SmtLowering.NAMED_TEXT_CHARS);
     }
 
     /** §6.1: a recorded value is a literal of the sort it is read at. */

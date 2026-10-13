@@ -4122,6 +4122,136 @@ public class ComposerTest {
     }
 
     /**
+     * A VIEW'S CASES ARE LOWERED ONCE ({@code SmtLowering#throughView}): each
+     * case of a view is a leaf read through a view of its own, here twenty
+     * levels deep and two cases a level, so lowered anew at every use it
+     * was asked once per path through the nesting, 2^20 times (solr-adhoc-40
+     * SL1: one arm's key 15 min in it); once per memo it is forty, and the
+     * leaves at the bottom are still what the guard reaches.
+     */
+    @Test(timeout = 30000)
+    public void aNestedViewIsLoweredOnce() {
+        final int depth = 20;
+        final String port = "SOLR_ZK#CONTENT:|x#|y";
+        Endpoint at = Endpoint.of(ANCHOR, "guard#VIEW", at("guard#1", 0), 0);
+        final Map<String, LocationId> views =
+                new LinkedHashMap<String, LocationId>();
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        for (int level = 0; level <= depth; level++) {
+            for (String side : new String[] {"a", "b"}) {
+                declared.put(side + level, VmTermLowering.Sort.STRING);
+                declared.put("V_" + side + level, VmTermLowering.Sort.INT);
+                views.put(side + level, LocationId.of(
+                        edu.uva.liftlab.graphchecker.contract.LocationKind.VIEW,
+                        "SOLR_ZK@case/dn0", "/" + side + "/" + level));
+            }
+        }
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
+            /** The leaf whose view a location is, or null. */
+            private String leafOf(String location) {
+                for (Map.Entry<String, LocationId> view : views.entrySet()) {
+                    if (SmtLowering.locationKey(view.getValue())
+                            .equals(location)) {
+                        return view.getKey();
+                    }
+                }
+                return null;
+            }
+
+            @Override
+            public com.google.gson.JsonElement writeExpression(
+                    String location, long version) {
+                return null;
+            }
+
+            @Override
+            public List<WriteRow> writes(String location) {
+                String leaf = leafOf(location);
+                if (leaf == null) return none.writes(location);
+                LocationId view = views.get(leaf);
+                return Arrays.asList(WriteRow.of("t", 2L, at, view, 3L, "",
+                        "J"), WriteRow.of("t", 3L, at, view, 4L, "", "J"),
+                        WriteRow.of("t", 4L, at, view, 5L, "", "J"));
+            }
+
+            @Override
+            public List<ReadRow> reads(String location) {
+                String leaf = leafOf(location);
+                return leaf == null ? none.reads(location)
+                        : Collections.singletonList(ReadRow.of("t", 9L, at,
+                        views.get(leaf), 5L, "V_" + leaf, "J", "5"));
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String location, long version) {
+                return none.readSymbols(location, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return true;
+            }
+
+            @Override
+            public boolean repaired(String location, long readEvent) {
+                return leafOf(location) != null;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return true;
+            }
+
+            @Override
+            public SmtLowering.ViewLeaf viewLeaf(String symbol) {
+                return views.containsKey(symbol)
+                        && Integer.parseInt(symbol.substring(1)) < depth
+                        ? new SmtLowering.ViewLeaf(SmtLowering.locationKey(
+                        views.get(symbol)), 5L, port) : null;
+            }
+
+            @Override
+            public String viewLeafAt(String viewKey, long version,
+                                     String leafPort) {
+                String leaf = leafOf(viewKey);
+                if (leaf == null || !port.equals(leafPort)) return null;
+                int level = Integer.parseInt(leaf.substring(1));
+                return version == 5L ? leaf : version == 3L
+                        ? "a" + (level + 1) : version == 4L
+                        ? "b" + (level + 1) : null;
+            }
+        };
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", join, ExpressionTable.empty());
+        String text = lowering.dispatch(vmString("equals",
+                vmLeaf("SymbolExpression", "a0", "Ljava/lang/String;"),
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_down",
+                        "java/lang/String")),
+                VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        StringBuilder declarations = new StringBuilder();
+        int named = 0;
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                Collections.singletonList(text))) {
+            declarations.append(declaration.render()).append('\n');
+            if (declaration.name.startsWith("view_leaf__")) named++;
+        }
+        assertTrue(text, text.contains("view_leaf__"));
+        assertEquals(declarations.toString(), 2 * depth - 1, named);
+        assertTrue("the leaves at the bottom", declarations.toString()
+                .contains("a" + depth) && declarations.toString()
+                .contains("b" + depth));
+    }
+
+    /**
      * A String a map answers is null where its cell is the null cell (a key
      * never put, a value stored null), so {@code get(k) != null} is a
      * condition over the state, never refused for an unknown nullness.

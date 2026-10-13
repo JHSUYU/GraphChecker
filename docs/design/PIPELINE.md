@@ -1021,7 +1021,12 @@ Java's, `(set-option :encoding bmp)` (`VmTermLowering#JAVA_CHARS`: every charact
 unit), so a `charAt` is a char wherever its definedness (`0 <= i < length`, on its path) holds and no
 query bounds the characters it reads (an unguarded range per `charAt` held every index below its
 string's length on every path: solr-bugs-snapshot-no-active Z2K, 13,188 lines, 44 of 46 MB,
-undecided; with the alphabet, sat in 1.8 s). A symbol no rule binds
+undecided; with the alphabet, sat in 1.8 s). A lowered text past 2048 characters -- a value's of
+any sort but Bool (whose atoms the clock margin reads), a definedness, a String's nullness -- is a
+`define-fun` the query states once and every use names (`SmtLowering#compact`, as container
+subterms and view leaves are): an operation writes its operand's text by value, a substring its
+receiver's four times, so a chain of them grew fourfold per level (solr-adhoc-10 SL2: a parse of a
+handoff's string, texts of 2.6-9.6 GB). A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
 none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
 variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a
