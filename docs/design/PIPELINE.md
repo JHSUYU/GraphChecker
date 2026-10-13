@@ -1475,18 +1475,23 @@ kept beside the round (`grown_plan.jsonl`) -- the iteration's plan and the seed 
 links from then on, and the generation before keeps its own inode for whatever runs on it -- and
 INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
-`<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
+`<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
+ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session
+and, for the re-run and the swap, the one its queue entry carries): an obligation asked again under its id
+has a worker in each round that asked it, and either may be the exposing one (SGF3-adhoc-21: the first
+ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region). Until every
 re-run has returned, no obligation's solve runs that started before them and no witness's
 confirmation is queued, runs or waits for its verdict, no solve starts and no round is planned (a
 REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
 corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
 with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
 (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). Then
-each re-run SWAPS in (`campaign_stream_swap`): the exposing session moves to
+each re-run SWAPS in (`campaign_stream_swap`): the exposing session (that session alone: another ask's
+session of the obligation stays) moves to
 `<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
 renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
-through a name it cached), its session lands, and its verdict replaces the obligation's row in
-`obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
+through a name it cached), its session lands, and its verdict replaces the exposing ask's row in
+`obligation_results.jsonl` (another ask's row of the obligation stays). The queue stays first and in flight: the round after the swap gets it as
 `--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
 obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no
@@ -1785,7 +1790,10 @@ row, an engine defect (RUN_DEFECT), never a bound (`RestsOn#cut`). Before, such 
 arm: solr-adhoc-19 SG2b's u9 (`!inFlightCreations.add`, taken toward the throw before the cut) became
 the CONFLICT throw "Already creating", and 19's and 21's UNSATs rested on that wrong arm. The seed
 always, a focused session only when all its own verdicts are
-`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
+`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING, and so is a verdict the row of the
+worker that landed the session states differently (`Corpus#waveVerdict`, by session: an obligation asked again
+under its id has a session per ask, SGF3-bugs-snapshot-no-active's first NOT_ADMITTED, its re-ask's ADMITTED,
+each its own). No target row at all --
 the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
 `ADMISSION_GAP` naming the first refusal. Beside them, each forced path (§7.10) is admitted, in its own scope;
 its forced path condition is asserted on its own path alone, never on another's, since its constants are the

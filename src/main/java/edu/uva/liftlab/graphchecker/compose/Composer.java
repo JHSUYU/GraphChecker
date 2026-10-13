@@ -1432,12 +1432,13 @@ public final class Composer {
                             + "whole: " + session.incomplete());
         }
 
-        // A verdict is the session's own row; the wave's aggregate copy is
-        // checked against it, and a disagreement is BLOCKING.
+        // A verdict is the session's own row; the wave's aggregate copy (the
+        // row of the worker that landed this session) is checked against it,
+        // and a disagreement is BLOCKING.
         for (SessionReader session : corpus.sessions()) {
             for (ObligationResult settled : session.obligations()) {
-                ObligationResult wave =
-                        corpus.waveVerdict(settled.obligationId());
+                ObligationResult wave = corpus.waveVerdict(
+                        session.sessionId(), settled.obligationId());
                 if (wave == null || wave.verdict() == settled.verdict()) {
                     continue;
                 }
