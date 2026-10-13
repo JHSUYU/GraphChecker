@@ -1909,7 +1909,7 @@ public final class Composer {
             viewVersions.remove(version);
         }
         for (String version : composedFamilies.closeViewVersions(ordinal,
-                session, viewVersions, interactionIds, familyTerms)) {
+                viewVersions, interactionIds, familyTerms)) {
             unpaired.put(version, "no session of this corpus can send what"
                     + " the view holds at this version");
         }

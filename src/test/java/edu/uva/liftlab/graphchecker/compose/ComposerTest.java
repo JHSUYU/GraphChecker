@@ -507,17 +507,17 @@ public class ComposerTest {
         }
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
-        // TWO arms: neither run was held to a flip, so each is a
-        // delivery the other's path could have received (PIPELINE §8),
-        // and each arm carries its own replay's valuation.
-        assertEquals(2, armed.families().get(0).arms().size());
+        // ONE arm on each path: the other run's carries its replay's
+        // value of the marker, which the path's own run read otherwise,
+        // so it is no sender there (PIPELINE §8).
+        assertEquals(1, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
             assertTrue("an arm carries the delivering replay's valuation "
                             + "of the varied root its expression never "
                             + "names: " + arm.guardRoots(),
                     arm.guardRoots().contains(MARKER_ROOT));
         }
-        assertTrue("both replays' values are in the two arms",
+        assertTrue("both replays' values are in the two paths' arms",
                 armed.body().contains("(= " + MARKER + " true)")
                         && armed.body().contains(
                         "(= " + MARKER + " false)"));
@@ -3868,11 +3868,11 @@ public class ComposerTest {
 
     /**
      * AN ARM NOT CHOSEN IMPOSES NOTHING (hdfs-11741 m1): s1's delivery rests
-     * on what upstream handed it in s1's world, the marker set, and that
-     * nested family holds under s1's arm alone.  Under the path selector it
-     * held on the seed's path too, whose anchor decided on the marker unset,
-     * and no world of that path was left.  {path's session, assertion,
-     * answer}; "nested" is the nested family's arm on the seed's path.
+     * on what upstream handed it in s1's run, and that nested family holds
+     * under s1's arm alone.  Under the path selector it held on the seed's
+     * path too, whose anchor decided on the value the seed delivered, and no
+     * world of that path was left.  {path's session, assertion, answer};
+     * "nested" is the nested family's arm on the seed's path.
      */
     @Test
     public void aNestedFamilyHoldsOnlyUnderTheArmThatNeedsIt()
@@ -3891,7 +3891,6 @@ public class ComposerTest {
             Session session = new Session(iteration, each, flip);
             session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                     flip, true);
-            session.marker(String.valueOf(flip));
             if (flip) {
                 session.activation(UPSTREAM, "thread#"
                         + UPSTREAM.regionId(), true, true);
@@ -3905,12 +3904,16 @@ public class ComposerTest {
                 session.decision(PRODUCER, "nn#u1", true,
                         "EXPR.0000000000000f02");
             }
-            session.expression("EXPR.0000000000000f03", constant("true"));
-            session.export(producer, "EXPR.0000000000000f03", 2L, "true");
-            session.attach(consumer, "vh", "true", producer);
-            session.expression("EXPR.0000000000000f04", symbol(MARKER, "Z"));
-            session.decision(ANCHOR, "dn#u1", flip, "EXPR.0000000000000f04");
-            session.target("vh", true, true);
+            String delivered = flip ? "2" : "1";
+            session.expression("EXPR.0000000000000f03", integer("I",
+                    Long.parseLong(delivered)));
+            session.export(producer, "EXPR.0000000000000f03", "I", 2L,
+                    delivered);
+            session.attach(consumer, "vh", "I", delivered, producer);
+            session.expression("EXPR.0000000000000f04", binary("==",
+                    symbol("vh", "I"), integer("I", 1L)));
+            session.decision(ANCHOR, "dn#u1", !flip, "EXPR.0000000000000f04");
+            session.target("true", false, true);
             session.write();
         }
         Composer.Composition composition = compose(iteration, 8);
@@ -7954,45 +7957,142 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 16. A message's arms are the runs whose world is compatible with
-    //     the path's (PIPELINE §8).
+    // 16. A message's arms are the runs the path's own world admits
+    //     (PIPELINE §8).
     // ------------------------------------------------------------------
 
+    /**
+     * Every run delivers m, its arm guarded by its replay's value of every
+     * varied root it ran, and every path carries its own run's: a run is a
+     * sender on a path whose run ran none of those roots at another value.
+     * {run, marker, b ("" where the run did not mint it), delivered}.
+     */
     @Test
-    public void aMessageBindsToEveryCompatibleWorld() throws Exception {
+    public void aMessageBindsToEveryRunItsPathsWorldAdmits()
+            throws Exception {
         Path iteration = folder.newFolder("worlds").toPath();
         Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
                 at("attach#1", 0), 0);
-        // Four runs, all attesting their own delivery: the seed (no
-        // flip), one held to flip A, one to flip B, and one to B that
-        // inherited A.
-        for (String[] each : new String[][]{{"s0", "10"}, {"s1", "20"},
-                {"s2", "30"}, {"s3", "40"}}) {
-            Session session = new Session(iteration, each[0],
-                    !"s0".equals(each[0]));
+        String[][] runs = {{"s0", "false", "false", "10"},
+                {"s1", "true", "false", "20"}, {"s2", "false", "true", "30"},
+                {"s3", "true", "true", "40"}, {"s4", "false", "", "50"}};
+        for (String[] run : runs) {
+            Session session = new Session(iteration, run[0],
+                    !"s0".equals(run[0]));
             session.activation(PRODUCER);
-            session.marker("false");
+            session.marker(run[1]);
+            if (!run[2].isEmpty()) {
+                session.root(PRODUCER, "ROOT.B", "marker_b",
+                        RootKind.MARKER, run[2]);
+            }
             session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
+                    Long.parseLong(run[3])));
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
-            session.export(producer, "EXPR.v1.id", 1L, each[1]);
-            session.attach(consumer, "vh", "I", each[1], producer);
+            session.export(producer, "EXPR.v1.id", 1L, run[3]);
+            session.attach(consumer, "vh", "I", run[3], producer);
             session.target("true", false, true);
             session.write();
         }
-        Map<String, String> none = Collections.emptyMap();
-        obligation(iteration, "s1", none, "a#u1",
-                Collections.<String>emptyList());
-        obligation(iteration, "s2", none, "b#u1",
-                Collections.<String>emptyList());
-        obligation(iteration, "s3", none, "b#u1",
-                Collections.singletonList("a#u1"));
 
         Composer.Composition composition = compose(iteration, 4);
-        assertEquals(4, composition.disjuncts().size());
+        assertEquals(5, composition.disjuncts().size());
+        Map<String, Set<String>> armsOf = armsByPath(composition);
+        String[][] expected = {{"s0", "s0", "s4"}, {"s1", "s1"},
+                {"s2", "s2", "s4"}, {"s3", "s3"}, {"s4", "s0", "s2", "s4"}};
+        for (String[] row : expected) {
+            assertEquals("the senders on " + row[0] + "'s path",
+                    new LinkedHashSet<String>(Arrays.asList(row).subList(1,
+                            row.length)), armsOf.get(row[0]));
+        }
+        for (Family family : composition.families()) {
+            assertEquals("the manifest states the arms the last path "
+                    + "built: " + family, 3, family.arms().size());
+        }
+    }
+
+    /**
+     * A RUN WHOSE OWN DELIVERY STATES NO WHY TAKES NO DELIVERY ITS WORLD
+     * EXCLUDES, AT ANY DEPTH (solr-adhoc-39 SP6-39).  s1 faulted the marker,
+     * and its producer ran concretely.  Depth 1: the seed's delivery of m
+     * holds under the marker unset.  Depth 2: s2, which never ran the
+     * marker, delivers m, but only the seed states why upstream sent what
+     * s2's producer was handed -- under the marker unset.  Judged by flip
+     * sets against the seed's (none) or against s2's world, those arms were
+     * the only ones on s1's path, which they made unsat with its own run,
+     * and the composition blocked; judged by their pins against s1's own
+     * world, s1's path is refused by name, and the seed's path still takes
+     * s2's delivery and its own upstream.  {run, marker ("" none), upstream
+     * instrumented, producer instrumented}.
+     */
+    @Test
+    public void aRunsWorldExcludesTheDeliveriesThatPinItsFlipAtAnyDepth()
+            throws Exception {
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up",
+                at("export#1", 0), 0);
+        Endpoint handed = Endpoint.of(PRODUCER, "PORT.up",
+                at("attach#1", 0), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#2", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#2", 0), 0);
+        String[][][] corpora = {
+                {{"s0", "false", "true", "true"},
+                        {"s1", "true", "false", "false"}},
+                {{"s0", "false", "true", "false"},
+                        {"s1", "true", "false", "false"},
+                        {"s2", "", "false", "true"}}};
+        List<String> wrong = new ArrayList<String>();
+        for (int depth = 1; depth <= corpora.length; depth++) {
+            Path iteration = folder.newFolder("excluded-" + depth).toPath();
+            for (String[] run : corpora[depth - 1]) {
+                boolean explored = !"s0".equals(run[0]);
+                Session session = new Session(iteration, run[0], explored);
+                session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                        explored, "true".equals(run[2]));
+                session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                        explored, "true".equals(run[3]));
+                if (!run[1].isEmpty()) session.marker(run[1]);
+                session.expression("EXPR.v1.up", constant("false"));
+                session.expression("EXPR.v1.forward", symbol("vh_up", "Z"));
+                session.export(upstream, "EXPR.v1.up", 1L, "false");
+                session.attach(handed, "vh_up", "false", upstream);
+                if ("true".equals(run[3])) {
+                    session.decision(PRODUCER, "nn#u1",
+                            "(or vh_up (not vh_up))");
+                }
+                session.export(producer, "EXPR.v1.forward", 2L, "false");
+                session.attach(consumer, "vh", "false", producer);
+                session.target("vh", false, true);
+                session.write();
+            }
+            Composer.Composition composition = compose(iteration, 4);
+            String row = "depth " + depth + ": ";
+            Set<String> paths = new LinkedHashSet<String>();
+            for (Composer.Disjunct disjunct : composition.disjuncts()) {
+                paths.add(disjunct.path().sessionId);
+            }
+            if (paths.contains("s1")) wrong.add(row + "s1's path stands");
+            if (!says(composition.gaps(), GapKind.UNPRODUCIBLE_ANSWER,
+                    "compatible with this path's")) {
+                wrong.add(row + "no refusal names the world");
+            }
+            if (!paths.contains("s0")) wrong.add(row + "the seed's path fell");
+            if (depth == 2 && !new LinkedHashSet<String>(Arrays.asList("s0",
+                    "s2")).equals(armsByPath(composition).get("s0"))) {
+                wrong.add(row + "the seed's path takes "
+                        + armsByPath(composition).get("s0")
+                        + ", not s2's delivery nesting its own upstream's");
+            }
+        }
+        assertTrue(wrong.toString(), wrong.isEmpty());
+    }
+
+    /** Path session -> the sessions of the arms its families offer. */
+    private static Map<String, Set<String>> armsByPath(
+            Composer.Composition composition) {
         Map<String, String> ofPath = new LinkedHashMap<String, String>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             ofPath.put(ordinal(disjunct.selector()),
@@ -8001,30 +8101,11 @@ public class ComposerTest {
         Map<String, Set<String>> armsOf =
                 new LinkedHashMap<String, Set<String>>();
         for (String selector : composition.armSelectors()) {
-            String path = ofPath.get(ordinal(selector));
-            if (!armsOf.containsKey(path)) {
-                armsOf.put(path, new LinkedHashSet<String>());
-            }
-            armsOf.get(path).add(composition.arm(selector).sessionId());
+            armsOf.computeIfAbsent(ofPath.get(ordinal(selector)),
+                    key -> new LinkedHashSet<String>())
+                    .add(composition.arm(selector).sessionId());
         }
-        // One flip set contains the other: the seed's empty world is
-        // compatible with every run and every run with it; A and B are
-        // incomparable; {A, B} contains both.
-        assertEquals("the seed's path takes any run's delivery",
-                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
-                        "s3")), armsOf.get("s0"));
-        assertEquals("a path under A never takes a delivery made under B "
-                        + "alone", new LinkedHashSet<String>(
-                        Arrays.asList("s0", "s1", "s3")), armsOf.get("s1"));
-        assertEquals(new LinkedHashSet<String>(
-                Arrays.asList("s0", "s2", "s3")), armsOf.get("s2"));
-        assertEquals("and the path under both takes every delivery",
-                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
-                        "s3")), armsOf.get("s3"));
-        for (Family family : composition.families()) {
-            assertEquals("the manifest states the arms the last path "
-                    + "built: " + family, 4, family.arms().size());
-        }
+        return armsOf;
     }
 
     /**
@@ -8119,9 +8200,9 @@ public class ComposerTest {
 
     /**
      * A PATH'S FAMILIES ARE ALL OR NOTHING.  s1 received message m, which
-     * s0 and s2 could also have sent, and message n, which only s3 states
-     * why it sent -- in a world (flip b) no path under s1's (flip a) takes a
-     * delivery from.  So s1's path is refused at n, after m's family was
+     * s0 and s2 sent too, and message n, which only s3 states why it sent
+     * -- under the marker unset, which s1's own run read set, so no
+     * delivery of s3's is one on s1's path.  So s1's path is refused at n, after m's family was
      * closed, and s2's path is composed at the ordinal s1 left free: m's
      * family is named there again, once, and nothing of s1's stays
      * (hdfs-17899-bug1 r1: 18 names defined twice, and z3 answered the query
@@ -8136,7 +8217,7 @@ public class ComposerTest {
         for (String id : new String[] {"s0", "s1", "s2", "s3"}) {
             Session session = new Session(iteration, id, !"s0".equals(id));
             session.activation(PRODUCER);
-            session.marker("false");
+            session.marker(String.valueOf("s1".equals(id)));
             session.expression("EXPR.v1.id", integer("I", 10L));
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
