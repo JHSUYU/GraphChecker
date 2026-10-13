@@ -85,7 +85,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `engine_memory_mb`, `stream_shared_pool` (false) | the pool's hosts, the most heap a head JVM is given and a solver asked again, whether the exploration shares its hosts' replay slots with the other sharing explorations (§7.7; a sweep's cases) |
 | `campaign_stop_after` | empty, `SEED` or `IMPORT` |
-| `reproduce_runs`* (10), `reproduce_time_factor`* (3), `reproduce_min_s`* (300) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload, at least `reproduce_min_s` (§10b) |
+| `reproduce_runs`* (10), `reproduce_time_factor`* (3), `reproduce_min_s`* (300), `reproduce_charge_pct`* (130) | how many native reproduction runs, each one's wall clock as a multiple of the recording's workload, at least `reproduce_min_s`, and each one's memory charge in percent of the recording's peak (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
 
@@ -2764,8 +2764,11 @@ Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reaso
 - a recording that measured no peak resident memory to charge a run with.
 
 `reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
-charged the recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the
-trace directory, and holds each run to it as to any charge) wherever there is room until it
+charged `reproduce_charge_pct` (130) percent of the recording's peak resident memory (`execute.sh`
+states it as `workload_rss_mb` in the trace directory, and holds each run to that charge as to any:
+a native run's own peak scatters around the recording's, at most 1.27x it over 110 runs, and ten
+charged at 100 % outgrew their host's ceiling together, so its next growth was refused and the run
+ended -- LL5-lock-leak, 4 of 10) wherever there is room until it
 returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
 times the recording's own workload, at least `reproduce_min_s` (300: a short recording says
 little of how long ten runs at once on a busy cluster take -- hdfs-17960's 8 s recording gave 24 s,

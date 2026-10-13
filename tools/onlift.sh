@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # onlift.sh [-g min-free-gb] [-h host] <command...>: runs the command in the
-# current directory on the least loaded host of LIFTS (pick-lift.sh), or on
-# the named host, with JAVA_HOME/PATH set for the Java 8 + Maven toolchain.
+# current directory on the least loaded host of LIFTS (pick-lift.sh; never
+# lift11, the control host, unless LIFTS names it), or on the named host,
+# with JAVA_HOME/PATH set for the Java 8 + Maven toolchain.
 # Use it for mvn, the shell test, tree and VM builds, offline stages and
 # anything heavy; the current directory must be on storage every host mounts.
 #

@@ -1103,7 +1103,9 @@ done
 # given, since a short recording says little of ten runs at once.
 # 55: `view_hold_max_ms`, a pairing hold's realism bound in recorded time
 # (runtime.Confirmation#publishing, campaign_view_hold_max).
-[[ "$(print_normalized_config | wc -l)" -eq 55 ]] \
+# 56: `reproduce_charge_pct` joined it: a native run's memory charge, in
+# percent of the recording's peak (110 native runs peaked at most 1.27x it).
+[[ "$(print_normalized_config | wc -l)" -eq 56 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1359,8 +1361,9 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 # REPRODUCE-1: a confirmed witness's native runs, all at once, each a head
 # step placed where there is room (here: the head's own host, which has it)
-# and charged the recording's peak memory until it returns, naming the host
-# it ran on, bounded by
+# and charged reproduce_charge_pct of the recording's peak memory -- in its
+# placement and in the charge its watcher holds it to -- until it returns,
+# naming the host it ran on, bounded by
 # reproduce_time_factor times the recording's workload, at least
 # reproduce_min_s, and answering for
 # itself, per row of the plant, off its trace's plant rows; reproduce.json
@@ -1396,6 +1399,7 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     reproduce_runs=5
     reproduce_time_factor=3
     reproduce_min_s=75
+    reproduce_charge_pct=130
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
     # ConfirmMain --plant, holding the confirmed session's order: a root,
@@ -1475,10 +1479,10 @@ ${confirmed}"; return 1; }
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
   [[ "${repro_expected}" != *'"runs":5'* \
       || "$(cut -d' ' -f1-3 "${repro_dir}/bounds" | sort -u)" \
-        == "75 ${repro_rss} 37500" ]] \
+        == "75 $(( repro_rss * 130 / 100 )) 37500" ]] \
     || fail "a native run was not bounded by reproduce_min_s=75 over 3 x the \
 recording's 20 s, its orders held at most half of it, and held to its \
-${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
+charge, 130 % of the recording's ${repro_rss} MB: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":5'* \
       || "$(jq -c '[.unapplied[].why]' \
         "${repro_dir}/final/reproduce/run-3/answer.json")" \
