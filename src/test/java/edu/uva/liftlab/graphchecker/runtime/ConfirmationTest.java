@@ -491,7 +491,8 @@ public class ConfirmationTest {
     /** {@link Confirmation#publishing} on {@link #NODE}, with no scope. */
     private static boolean publishing(LocationId view, long version,
                                       OccurrenceAddress at, Runnable apply) {
-        return Confirmation.publishing(view, version, at, NODE, null, apply);
+        return Confirmation.publishing(view, version, at, NODE, null, apply,
+                null);
     }
 
     /** Waits for {@code applied} to hold {@code count} publications. */

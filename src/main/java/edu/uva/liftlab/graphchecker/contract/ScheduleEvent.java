@@ -83,7 +83,19 @@ public final class ScheduleEvent extends Value {
          * interrupter's events order it) and never turned into a timeout in
          * the replay; only a WAKE ends a held wait by virtual time.
          */
-        INTERRUPT
+        INTERRUPT,
+        /**
+         * A node's store notification put a version of its view in force
+         * ({@code runtime.MessageDoors#publishing}): its context the node's
+         * {@code |VIEW} stance, its site {@link #published}, the first of each
+         * version.  A watch callback's own events are free (its receipt is
+         * unawaited), so without it a replay published a version when its
+         * timing had it -- under the VM after a reader the recording ran
+         * after it (SGF2 snapshot-no-active: CREATESNAPSHOT read v7, the
+         * recording v8).  Held, it is taken by the node's publisher, never on
+         * the callback's thread ({@code runtime.Confirmation#publishing}).
+         */
+        PUBLISH
     }
 
     private final long seq;
@@ -153,6 +165,13 @@ public final class ScheduleEvent extends Value {
     public static String written(String transport, String location) {
         return (transport == null ? "" : transport) + ":"
                 + (location == null ? "" : location);
+    }
+
+    /** A PUBLISH's site: the store's transport, the view's path and the
+     *  version put in force. */
+    public static String published(String transport, String path,
+                                   long version) {
+        return written(transport, path) + "@" + version;
     }
 
     /** What two runs compare an event by: kind, context, site (not k). */

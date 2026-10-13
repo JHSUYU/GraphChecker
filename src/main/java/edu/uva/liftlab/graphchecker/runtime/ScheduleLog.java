@@ -319,6 +319,40 @@ public final class ScheduleLog {
         }
     }
 
+    /**
+     * A node's view's stance ({@link ScheduleEvent.Kind#PUBLISH}): its own
+     * context, {@code <node>|VIEW}, in no region -- a publication is no
+     * work of the callback that made it, whose context is free.
+     */
+    public static Stance viewStance(String node) {
+        return new Stance(trimmed(node) + "|VIEW", "");
+    }
+
+    /**
+     * Whether {@code kind} at {@code site}, standing at {@code at}, would be
+     * admitted now: no order held, no slot of it, or its slot due.  Asked
+     * without waiting, so the thread that cannot wait (a watch callback
+     * holding its collection's refresh lock) hands the event to one that
+     * can ({@code Confirmation#publishing}).
+     */
+    public static boolean dueNow(ScheduleEvent.Kind kind, String site,
+                                 Stance at) {
+        if (kind == null || !RecordingWindow.opened()) return true;
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadOrderLocked();
+                if (!holds) return true;
+                Pending event = pending(kind, site, "", at);
+                if (event == null) return true;
+                int slot = slotOf(event);
+                return slot < 0 || !heldKind(slot) || dueLocked(slot);
+            }
+        } finally {
+            unmute();
+        }
+    }
+
     /** Where an event on this thread would stand now, or null outside the
      *  window or any attributable context. */
     public static Stance stanceHere() {

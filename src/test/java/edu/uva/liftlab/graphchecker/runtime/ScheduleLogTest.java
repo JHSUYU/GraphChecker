@@ -7,6 +7,8 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
@@ -544,6 +546,75 @@ public class ScheduleLogTest {
         assertFalse(ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 "HADOOP_IPC#REQUEST"));
         assertEquals(Collections.singletonList("x"), sites());
+    }
+
+    /**
+     * A NODE'S VIEW PUBLICATION IS AN EVENT OF ITS OWN (PUBLISH; SGF2
+     * snapshot-no-active: the seed replay published v8 after the
+     * CREATESNAPSHOT read the recording ran after it): it stands at the
+     * node's |VIEW stance, whatever free callback made it, and holds its
+     * place -- what the recording made after it waits for it.  A
+     * notification's publication whose turn is not due is handed to the
+     * node's publisher, which takes the turn and then applies; the callback
+     * goes on at once (it holds its collection's refresh lock).
+     */
+    @Test
+    public void aViewsPublicationIsHeldAtItsPlaceByTheNodesPublisher()
+            throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = "auto0/node0#epoch0";
+        String path = "/collections/c/state.json";
+        String site = ScheduleEvent.published("SOLR_ZK", path, 8L);
+        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.PUBLISH,
+                        viewNode + "|VIEW", site, 0, ""),
+                event(ScheduleEvent.Kind.SEND, "after")),
+                Collections.<ScheduleEvent>emptyList());
+        ScheduleLog.Stance stance = ScheduleLog.viewStance(viewNode);
+        assertFalse("behind the SEND the recording made first",
+                ScheduleLog.dueNow(ScheduleEvent.Kind.PUBLISH, site, stance));
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@" + viewNode, path);
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        long started = System.nanoTime();
+        assertTrue("handed to the node's publisher", Confirmation.publishing(
+                view, 8L, null, viewNode, null, () -> applied.add("v8"),
+                site));
+        assertTrue("the callback goes on at once", TimeUnit.NANOSECONDS
+                .toMillis(System.nanoTime() - started) < 200L);
+        Thread after = observer(ScheduleEvent.Kind.SEND, "after");
+        Thread.sleep(200L);
+        assertTrue("nothing applied before its turn: " + applied,
+                applied.isEmpty());
+        assertTrue("nothing written past the frontier: " + sites(),
+                sites().isEmpty());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        after.join(5000L);
+        assertFalse("after waits for the publication, then goes",
+                after.isAlive());
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (applied.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+        assertEquals(Arrays.asList("v8"), applied);
+        assertEquals(Arrays.asList("before", site, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+
+        // Recorded where no order holds: published at once, the event
+        // written at the node's view stance.
+        restart();
+        Confirmation.resetForTests();
+        String next = ScheduleEvent.published("SOLR_ZK", path, 9L);
+        assertFalse("no order: published at once", Confirmation.publishing(
+                view, 9L, null, viewNode, null, () -> applied.add("v9"),
+                next));
+        List<ScheduleEvent> recorded = events();
+        assertEquals(1, recorded.size());
+        assertEquals(ScheduleEvent.Kind.PUBLISH, recorded.get(0).kind());
+        assertEquals(viewNode + "|VIEW", recorded.get(0).context());
+        assertEquals(next, recorded.get(0).site());
     }
 
     @Test

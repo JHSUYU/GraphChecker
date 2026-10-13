@@ -405,3 +405,10 @@ stack. Today a case declares the classes that build its view (solr-18413: `Clust
 fix: the adapter's decode bracket (`MessageDoors.decoded` / `jsonRead` of a fetch) opens a tracking activation, so every
 decoded product's derived fields carry their expressions whatever the case's scope -- a VM/runtime change (a shadow
 stack on a role thread, its writes attributed to the decoding occurrence) with an identity design first.
+
+**A view's write at its publication (agent Z2 2026-10-13, deferred from PUBLISH).** A node's VIEW write is stated at
+the decode (`MessageDoors#decode`), while what a read observes is the object its node published, which a pairing's
+hold or a PUBLISH turn may defer past it: the row order and the observed version can disagree (SGF2
+snapshot-no-active: v8's VIEW write before a read that observed v7). Stating the write at the publication (the
+door's synchronous publish, the publisher's apply; the decode only for a view no door publishes) aligns them; it
+moves every pairing's VIEW rows, so it is an identity change of its own, with a gate over the Solr pairing cases.

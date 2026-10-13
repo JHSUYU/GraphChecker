@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.io.IOException;
@@ -588,14 +589,18 @@ public final class Confirmation {
         /** Its apply has begun (guarded by {@link #LOCK}): a supersession
          *  can no longer stop it ({@link #superseded}). */
         boolean running;
+        /** The PUBLISH turn its publisher takes before it applies, or null
+         *  ({@link ScheduleEvent.Kind#PUBLISH}). */
+        final String turn;
 
         Deferred(long version, Runnable apply, List<ViewHold> holds,
-                 String node, Object scope) {
+                 String node, Object scope, String turn) {
             this.version = version;
             this.apply = apply;
             this.holds = holds;
             this.node = node;
             this.scope = scope;
+            this.turn = turn;
         }
     }
 
@@ -641,48 +646,68 @@ public final class Confirmation {
      */
     static boolean publishing(LocationId view, long version,
                               OccurrenceAddress at, String node,
-                              Object scope, Runnable apply) {
+                              Object scope, Runnable apply, String turn) {
         if (view == null || apply == null) return false;
         load();
         String key = viewKey(view);
         String queued = queueKey(view);
         String here = contextKey(at);
+        // Its PUBLISH turn, when the order holds one not yet due, waits on
+        // the node's publisher, never on this thread: a watch callback holds
+        // its collection's refresh lock here.  Asked before this class's
+        // lock, as ScheduleLog takes its own.
+        ScheduleLog.Stance stance = turn == null ? null
+                : ScheduleLog.viewStance(node);
+        boolean turnWaits = turn != null && !ScheduleLog.dueNow(
+                ScheduleEvent.Kind.PUBLISH, turn, stance);
+        boolean deferred;
         synchronized (LOCK) {
             blockedApplies();
             List<ViewHold> holding = new ArrayList<ViewHold>();
+            boolean own = false;
             for (ViewHold hold : VIEW_HOLDS) {
                 if (hold.ended() || !hold.view.equals(key)) continue;
                 if (hold.readerContext.equals(here)) {
-                    superseded(queued, version);
-                    return false;
+                    own = true;
+                    break;
                 }
                 if (version > hold.above) holding.add(hold);
             }
+            if (own) {
+                superseded(queued, version);
+                holding.clear();
+            }
             List<Deferred> queue = DEFERRED.get(queued);
-            if (holding.isEmpty() && (queue == null || queue.isEmpty())) {
-                return false;
+            deferred = !holding.isEmpty() || turnWaits
+                    || !own && queue != null && !queue.isEmpty();
+            if (deferred) {
+                if (!holding.isEmpty()) FocusedReplay.worldActed();
+                long now = System.nanoTime();
+                for (ViewHold hold : holding) {
+                    if (hold.firstDeferred == 0L) hold.firstDeferred = now;
+                    planted(RecordingPlant.HOLDING, hold.label(),
+                            Collections.singleton(hold.waitsFor()));
+                }
+                DEFERRED.computeIfAbsent(queued,
+                        unused -> new ArrayList<Deferred>())
+                        .add(new Deferred(version, apply, holding, node,
+                                scope, turn));
+                Thread publisher = PUBLISHERS.get(node);
+                if (publisher == null || !publisher.isAlive()) {
+                    publisher = new Thread(() -> publish(node),
+                            "causynth-view-publisher-" + node);
+                    publisher.setDaemon(true);
+                    PUBLISHERS.put(node, publisher);
+                    publisher.start();
+                }
+                LOCK.notifyAll();
             }
-            FocusedReplay.worldActed();
-            long now = System.nanoTime();
-            for (ViewHold hold : holding) {
-                if (hold.firstDeferred == 0L) hold.firstDeferred = now;
-                planted(RecordingPlant.HOLDING, hold.label(),
-                        Collections.singleton(hold.waitsFor()));
-            }
-            DEFERRED.computeIfAbsent(queued,
-                    unused -> new ArrayList<Deferred>())
-                    .add(new Deferred(version, apply, holding, node, scope));
-            Thread publisher = PUBLISHERS.get(node);
-            if (publisher == null || !publisher.isAlive()) {
-                publisher = new Thread(() -> publish(node),
-                        "causynth-view-publisher-" + node);
-                publisher.setDaemon(true);
-                PUBLISHERS.put(node, publisher);
-                publisher.start();
-            }
-            LOCK.notifyAll();
-            return true;
         }
+        // Due now (or no order holds one): taken here, without a wait.
+        if (!deferred && turn != null) {
+            ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, turn, "", stance);
+        }
+        return deferred;
     }
 
     /**
@@ -909,6 +934,13 @@ public final class Confirmation {
     /** One deferred publication applied, under its notification's scope;
      *  what the system's code throws in it is the system's failure, named. */
     private static void apply(String view, Deferred deferred) {
+        // Its PUBLISH turn first, outside the lock: the order holds it until
+        // what the recording made before it has run, the watchdog letting a
+        // turn that never comes go by name (ScheduleLog).
+        if (deferred.turn != null) {
+            ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, deferred.turn, "",
+                    ScheduleLog.viewStance(deferred.node));
+        }
         synchronized (LOCK) {
             List<Deferred> queue = DEFERRED.get(view);
             if (queue == null || !queue.contains(deferred)) {

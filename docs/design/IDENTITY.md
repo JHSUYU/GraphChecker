@@ -668,7 +668,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `WRITE` (a shared store's write taking its turn before
 the store's call, §7.2), `READ` (a store read's turn, at a location a `WRITE` of the order wrote), `RECV`, `WAKE` (a timed wait's timeout; a tick's
-begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
+begin), `END` (a tick's end), `INTERRUPT`, `PUBLISH` (a store notification put a version of a node's view in force, `MessageDoors#publishing`: at the node's own `<node>|VIEW` stance, site `<transport>:<path>@<version>`, the first of each version -- a watch callback's own events are free, its receipt unawaited, so without it a replay published a version when its timing had it, under the VM after a reader the recording ran after it, SGF2 snapshot-no-active; held, it is taken by the node's publisher, never on the callback's thread, which holds its collection's refresh lock: `Confirmation#publishing` hands a publication whose turn is not due (`ScheduleLog#dueNow`) to the publisher, which takes the turn before it applies; a pairing's hold wins, the prefix cut before the first decode past the paired version leaving every `PUBLISH` after it unheld). A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
 the turn is vacant is that first step), its `END` only if its `WAKE` was: a turn that makes no event
