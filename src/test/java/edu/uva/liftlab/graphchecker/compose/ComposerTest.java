@@ -77,6 +77,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -1431,6 +1432,176 @@ public class ComposerTest {
     // ------------------------------------------------------------------
     // 4. A handoff whose delivery is itself a handoff is closed.
     // ------------------------------------------------------------------
+
+    /**
+     * THE PATH ENDS AT ITS THROW (Composer#leftPath; solr-18413 SG3G/SG3H:
+     * an arm of the seed's Overseer rested on the REMOVEROUTINGRULE message
+     * the anchor offers on the branch the path's fatal arm rules out).  The
+     * seed s0 is the path: its anchor decides a#u1 true and reads vh, which
+     * the producer sends.  In s1 the producer forwards what it was handed,
+     * per row, by:
+     * <ul>
+     *   <li>LEFT: the anchor, after it decided a#u1 false -- work the path
+     *       never runs.  The handed message has no arm left, so s1's arm
+     *       rests on nothing and leaves the path's family; each exclusion is
+     *       named.</li>
+     *   <li>OTHER: another occurrence (another thread), at a seq after s1's
+     *       a#u1 -- never ordered against the anchor's decisions: kept.</li>
+     *   <li>BEFORE: the anchor, before it decided a#u1 -- the stretch the
+     *       path shares: kept.</li>
+     *   <li>UNDECIDED: the anchor in a run that decided nothing the path
+     *       decided: kept.</li>
+     * </ul>
+     */
+    @Test
+    public void theAnchorsWorkPastThePathIsNoProducerForIt()
+            throws Exception {
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up",
+                at("attach#1", 0), 0);
+        for (String row : new String[] {"LEFT", "OTHER", "BEFORE",
+                "UNDECIDED"}) {
+            Path iteration = folder.newFolder("past-" + row).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.activation(PRODUCER);
+            seed.marker("false");
+            seed.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+            seed.decision(ANCHOR, "a#u1", true, "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            seed.export(producer, "EXPR.v1.marker", 1L, "false");
+            seed.attach(consumer, "vh", "false", producer);
+            seed.target("vh", false, true);
+            seed.write();
+
+            Session other = new Session(iteration, "s1", true);
+            other.activation(PRODUCER);
+            other.activation(UPSTREAM);
+            other.marker("false");
+            other.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+            other.expression("EXPR.v1.forward", symbol("vh_up", "Z"));
+            Endpoint sender = Endpoint.of("OTHER".equals(row) ? UPSTREAM
+                    : ANCHOR, "PORT.up", at("export#1", 0), 0);
+            if ("BEFORE".equals(row)) {
+                other.export(sender, "EXPR.v1.marker", 1L, "false");
+            }
+            if (!"UNDECIDED".equals(row)) {
+                other.decision(ANCHOR, "a#u1", false, "(or " + MARKER
+                        + " (not " + MARKER + "))");
+            }
+            if (!"BEFORE".equals(row)) {
+                other.export(sender, "EXPR.v1.marker", 1L, "false");
+            }
+            other.attach(forwarded, "vh_up", "false", sender);
+            other.decision(PRODUCER, "nn#u1", "(or vh_up (not vh_up))");
+            other.export(producer, "EXPR.v1.forward", 2L, "false");
+            other.attach(consumer, "vh", "false", producer);
+            other.target("vh", false, true);
+            other.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            String seedPath = null;
+            for (Composer.Disjunct disjunct : composition.disjuncts()) {
+                if ("s0".equals(disjunct.path().sessionId)) {
+                    seedPath = disjunct.selector();
+                }
+            }
+            assertNotNull(row + ": the seed's path stands: "
+                    + composition.gaps(), seedPath);
+            String ordinal = seedPath.split("__")[1];
+            String s1Arm = "message_arm__" + ordinal + "__"
+                    + ArtifactIO.digest(consumer.id() + "|s1", 12);
+            boolean named = false;
+            for (GapRow gap : composition.gaps()) {
+                named |= gap.kind() == GapKind.ADMISSION_GAP
+                        && gap.subject().endsWith(" of s1")
+                        && gap.detail().contains("left this path at a#u1#1");
+            }
+            if ("LEFT".equals(row)) {
+                assertFalse("s1's arm rests on the anchor's work past the"
+                        + " path: " + composition.body(),
+                        composition.body().contains(s1Arm));
+                assertTrue("and the exclusion is named: "
+                        + composition.gaps(), named);
+            } else {
+                assertTrue(row + ": s1's arm stays: " + composition.body(),
+                        composition.body().contains(s1Arm));
+                assertFalse(row + ": nothing is named", named);
+            }
+        }
+    }
+
+    /**
+     * A STATE arm by the same rule: the anchor's write in the path's own
+     * session after its fatal decision, an alternative writer of a
+     * concurrent reader's read, is the anchor's healthy continuation, never
+     * run on the path; its write before it, the one the reader observed, is
+     * a producer.
+     */
+    @Test
+    public void theAnchorsWritePastItsFatalDecisionIsNoWriterForThePath()
+            throws Exception {
+        OccurrenceAddress reader = occurrence("case/dn0",
+                "REGION.heartbeat", CausalContext.of(
+                        Role.of("HEARTBEAT_TICK"), "", 1),
+                frame("Heartbeat#run#9", 0));
+        // An anchor whose causal context the rows place (a tick), so the
+        // reader and it are HB-concurrent (Arms#concurrent).
+        OccurrenceAddress target = occurrence("case/dn0", "REGION.target",
+                CausalContext.of(Role.of("SCANNER_TICK"), "", 1),
+                frame("Scanner#run#3", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        Endpoint read = Endpoint.of(reader, "Heartbeat#get#5:READ",
+                at("r#1", 0), 0);
+        for (boolean past : new boolean[] {false, true}) {
+            Path iteration = folder.newFolder("past-state-" + past).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = target;
+            session.activation(target);
+            session.activation(reader);
+            session.expression("EXPR.v1.a", symbol(MARKER, "Z"));
+            session.decision(target, "a#u1", true, "(or " + MARKER
+                    + " (not " + MARKER + "))");
+            Endpoint write = Endpoint.of(target, "Target#put#4:WRITE",
+                    at("w#1", 0), 0);
+            // Before: the anchor's write is the one the reader observed.
+            // Past: another writer's is, and the anchor writes after its
+            // fatal decision, concurrent with the reader.
+            session.write(past ? Endpoint.of(UPSTREAM,
+                    "KeyManager#put#3:WRITE", at("w#1", 0), 0) : write,
+                    keys, 1L, "EXPR.v1.a");
+            session.read(read, keys, 1L, "read_k", "false");
+            session.target("read_k", false, true);
+            long fatal = session.seq;
+            if (past) session.write(write, keys, 2L, "EXPR.v1.a");
+            session.write();
+
+            Corpus corpus = Corpus.read(iteration, null);
+            Composer.PathEnd end = new Composer.PathEnd("s0",
+                    corpus.path("s0", target).decisions, fatal);
+            String why = "";
+            boolean offered = false;
+            for (edu.uva.liftlab.graphchecker.smt.Arms.Arm arm
+                    : new edu.uva.liftlab.graphchecker.smt.Arms(corpus)
+                    .stateArms(read, "s0", SmtLowering.locationKey(keys),
+                            1L, true)) {
+                if (!target.id().equals(arm.producer().id())) continue;
+                offered = true;
+                why = end.left(corpus, target, arm);
+            }
+            assertTrue(past + ": the concurrent reader is offered the"
+                    + " anchor's write", offered);
+            if (past) {
+                assertTrue("after its fatal decision: no writer, named: "
+                        + why, why != null && why.contains(
+                        "after the path's fatal decision"));
+            } else {
+                assertNull("before it: a writer", why);
+            }
+        }
+    }
 
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {

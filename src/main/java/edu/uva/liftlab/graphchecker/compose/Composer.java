@@ -1651,6 +1651,7 @@ public final class Composer {
         boolean symbolicWay = decided.symbolicWay;
         long cutoff = decided.cutoff;
         String fatalTerm = decided.fatalTerm;
+        pathEnd = new PathEnd(session, path.decisions, cutoff);
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
@@ -4007,6 +4008,107 @@ public final class Composer {
     /** Whether a name is an exclusion of a model CONFIRM refuted. */
     static boolean excludesAModel(String name) {
         return name != null && name.startsWith(REFUTED_CLAIM);
+    }
+
+    /**
+     * THE PATH ENDS AT ITS THROW (design 2026-10-12, solr-18413 SG3G/SG3H):
+     * the path's anchor occurrence runs the path's decisions up to its fatal
+     * decision -- the target decision it throws at, or the guard it leaves
+     * the way at -- and no further.  An arm whose producer is the anchor
+     * occurrence is no producer for the path where, in its own session, it
+     * was delivered after the anchor's last decision at a site and turn the
+     * path also decided ({@code site#ordinal}) when that decision left the
+     * path (another arm) or is the path's fatal decision itself; in the
+     * path's own session, after its fatal decision.  Only the anchor's own
+     * rows are ordered, by program order against its own decisions (one
+     * occurrence, one thread of work): a producer of any other occurrence is
+     * never excluded by where its rows stand (no recorded-order pruning),
+     * and leaves only where every arm of a message it was handed is the
+     * anchor's work past the path (the nested rule, UNPRODUCIBLE_ANSWER).
+     * Where the arm's session never decided at a site and turn the path
+     * decided before the delivery, nothing says it left: it stays.
+     *
+     * @return why the arm is no producer for the path, or null
+     */
+    String leftPath(Arms.Arm arm) {
+        PathEnd end = pathEnd;
+        return end == null ? null : end.left(corpus, anchor, arm);
+    }
+
+    /** The path being composed, as {@link #leftPath} reads it. */
+    private PathEnd pathEnd;
+
+    /** Where one path's anchor occurrence runs ({@link #leftPath}). */
+    static final class PathEnd {
+        final String session;
+        /** The seq of its fatal decision, Long.MAX_VALUE where it states
+         *  none (it stopped on the way). */
+        final long cutoff;
+        /** site#ordinal -> the arm the path took there, up to its fatal
+         *  decision. */
+        final Map<String, Boolean> taken = new HashMap<String, Boolean>();
+        /** The site#ordinal of its fatal decision. */
+        final Set<String> fatal = new LinkedHashSet<String>();
+
+        /** One path of {@code session} with these decisions of its anchor
+         *  occurrence, whose fatal decision stands at {@code cutoff}. */
+        PathEnd(String session, List<DecisionRow> decisions, long cutoff) {
+            this.session = session;
+            this.cutoff = cutoff;
+            for (DecisionRow decision : decisions) {
+                if (decision.seq() > cutoff) continue;
+                taken.put(key(decision), decision.outcome());
+                if (decision.seq() == cutoff) fatal.add(key(decision));
+            }
+        }
+
+        static String key(DecisionRow decision) {
+            return decision.siteId() + "#" + decision.ordinal();
+        }
+
+        /** {@link Composer#leftPath} for the path whose anchor occurrence
+         *  is {@code anchor}. */
+        String left(Corpus corpus, OccurrenceAddress anchor, Arms.Arm arm) {
+            if (arm.producer() == null
+                    || !anchor.id().equals(arm.producer().id())) {
+                return null;
+            }
+            long delivered = arm.deliveredAt();
+            if (arm.sessionId().equals(session)) {
+                return cutoff != Long.MAX_VALUE && delivered > cutoff
+                        ? "delivered by the anchor occurrence after the"
+                        + " path's fatal decision (seq " + cutoff + "),"
+                        + " where the path throws: no producer for this path"
+                        : null;
+            }
+            Corpus.RecordedPath ran = corpus.path(arm.sessionId(), anchor);
+            if (ran == null) return null;
+            DecisionRow last = null;
+            for (DecisionRow decision : ran.decisions) {
+                if (decision.seq() >= delivered
+                        || !taken.containsKey(key(decision))
+                        || last != null && last.seq() > decision.seq()) {
+                    continue;
+                }
+                last = decision;
+            }
+            if (last == null) return null;
+            String at = key(last);
+            if (fatal.contains(at)) {
+                return "delivered by the anchor occurrence after its"
+                        + " decision at " + at + ", the path's fatal"
+                        + " decision, past which the path throws: no"
+                        + " producer for this path";
+            }
+            if (taken.get(at) != last.outcome()) {
+                return "delivered by the anchor occurrence after it left"
+                        + " this path at " + at + " (" + last.outcome()
+                        + " where the path took " + taken.get(at) + "; the"
+                        + " path throws at its fatal decision): no producer"
+                        + " for this path";
+            }
+            return null;
+        }
     }
 
     void gap(GapKind kind, GapClass cls, String subject,

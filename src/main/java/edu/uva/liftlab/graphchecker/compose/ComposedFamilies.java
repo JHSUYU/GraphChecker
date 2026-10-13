@@ -620,7 +620,7 @@ final class ComposedFamilies {
                 for (Arms.Arm arm : arms.armsAt(slot, attach.symbol(),
                         attach.sessionId())) {
                     if (replacing.contains(arm.sessionId())) continue;
-                    if (arm.producer() == null) continue;
+                    if (arm.producer() == null || leftPath(arm)) continue;
                     if (!arm.attested()) {
                         noteUnattested(arm, "that run is no option for this "
                                 + "message, because the arm states what was "
@@ -643,6 +643,25 @@ final class ComposedFamilies {
                     depth)) {
                 return false;
             }
+        }
+        return true;
+    }
+
+    /** Arms named as the anchor's work past the path, per path. */
+    private final Set<String> leftNamed = new LinkedHashSet<String>();
+
+    /**
+     * Whether an arm is the anchor occurrence's work past the path being
+     * closed ({@link Composer#leftPath}), named once per path and arm: it is
+     * no producer here, at any depth, a WIRE arm or a STATE one.
+     */
+    private boolean leftPath(Arms.Arm arm) {
+        String why = composer.leftPath(arm);
+        if (why == null) return false;
+        if (leftNamed.add(path + "|" + arm.slotId() + "|"
+                + arm.sessionId())) {
+            composer.gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    arm.slotId() + " of " + arm.sessionId(), why);
         }
         return true;
     }
@@ -1574,7 +1593,7 @@ final class ComposedFamilies {
             for (Arms.Arm arm : arms.stateArms(first.endpoint(), session,
                     location.key, first.observedVersion(), named)) {
                 if (replacing.contains(arm.sessionId())
-                        || arm.producer() == null
+                        || arm.producer() == null || leftPath(arm)
                         || !seenByAll(reader, session, location.key,
                         versions, arm.write())) {
                     continue;

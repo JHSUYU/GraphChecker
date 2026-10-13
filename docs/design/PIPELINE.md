@@ -1785,6 +1785,20 @@ out. A refused arm, or one whose body equals an earlier arm's (it rests on the s
 takes back what it stated (`ComposedFamilies#rollback`), its `concrete[]` rows included
 (`SmtLowering#unboundRollback`): a row is the arm's only while the arm is in the formula, one per
 value and arm. A message no session can send drops the path.
+THE PATH ENDS AT ITS THROW (`Composer#leftPath`, a WIRE arm at every depth and a STATE arm alike):
+the path's anchor occurrence runs the path's decisions up to its fatal decision -- the target
+decision, or the guard it leaves the way at -- and no further, so an arm whose producer is the anchor
+occurrence is no producer for the path where it was delivered, in its own session, after the
+anchor's last decision at a site and turn the path also decided (`site#ordinal`) when that decision
+took another arm than the path's or is the path's fatal decision; in the path's own session, after
+its fatal decision. Each such arm is named (`ADMISSION_GAP` DIAGNOSTIC, subject `<slot> of
+<session>`), never dropped silently; what was handed only such work -- solr-18413 SG3G/SG3H: the
+seed's Overseer write after REMOVEROUTINGRULE, which the anchor offers on the branch the path's fatal
+arm rules out (DistributedZkUpdateProcessor:950-960 against :925 -> :934) -- has a nested message no
+session can send, so its arm is refused by the rule above. Only the anchor's own rows are ordered,
+by program order against its own decisions: no producer of another occurrence is excluded by where
+its rows stand (a writer on another thread keeps its arm whatever its seq), and a run that decided
+nothing the path decided before the delivery says nothing: the arm stays.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
