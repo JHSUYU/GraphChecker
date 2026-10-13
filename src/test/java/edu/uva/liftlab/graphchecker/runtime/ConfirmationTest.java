@@ -599,8 +599,11 @@ public class ConfirmationTest {
      * A publication is deferred only on a thread delivering a store's
      * notification, for the whole callback -- after it read the version that
      * caused it too --, outside a refresh the system asked for
-     * (MessageDoors#publishing): a forced refresh's, or one on a thread
-     * that delivers none, publishes at once.
+     * (MessageDoors#publishing): a forced refresh's -- or a refresh the
+     * system makes inside a callback and reads right after on its thread,
+     * Solr's StateWatcher#refreshAndWatch() and AliasesManager#update(),
+     * bracketed the same way --, or one on a thread that delivers none,
+     * publishes at once.
      */
     @Test
     public void onlyANotificationsPublicationIsDeferred() throws Exception {
@@ -846,6 +849,68 @@ public class ConfirmationTest {
         } finally {
             blocked.countDown();
             System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
+        }
+    }
+
+    /**
+     * A view's deferred publications queue per path, not per store life
+     * (review re-check 2026-10-12): the collection removed and created
+     * again, the new life's publication follows the old life's deferred
+     * version and removal, so the node ends with the new collection's
+     * state, not without one.
+     */
+    @Test
+    public void aRecreatedViewsPublicationFollowsTheOldLifesQueue()
+            throws Exception {
+        LocationId old = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json");
+        LocationId recreated = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json#2");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        handed("", Collections.singletonList(viewHold(old, 1L, reader,
+                until, null)));
+        List<Long> applied = new ArrayList<Long>();
+        assertTrue(publishing(old, 5L, decoder, publication(applied, 5L)));
+        assertTrue(publishing(old, -1L, decoder, publication(applied, -1L)));
+        assertTrue("the new life's follows",
+                publishing(recreated, 0L, decoder, publication(applied, 0L)));
+        Thread.sleep(100L);
+        assertTrue(applied.toString(), applied.isEmpty());
+        Confirmation.exited(until);
+        awaitApplied(applied, 3);
+        assertEquals(Arrays.asList(5L, -1L, 0L), applied);
+        assertEquals(Confirmation.queueKey(old),
+                Confirmation.queueKey(recreated));
+    }
+
+    /**
+     * A window's measure states whether its run ended inside it: a closed
+     * window is the workload's whole, one a run ended inside (a replay
+     * halted at its witness) is marked cut, which the campaign names.
+     */
+    @Test
+    public void aWindowItsRunEndedInsideIsMarkedCut() throws Exception {
+        Path file = folder.newFile("window_ms").toPath();
+        System.setProperty(RecordingWindow.WINDOW_MS_FILE, file.toString());
+        try {
+            for (boolean closes : new boolean[] {true, false}) {
+                RecordingWindow.reset();
+                RecordingWindow.open();
+                if (closes) {
+                    RecordingWindow.close();
+                } else {
+                    RecordingWindow.measured();
+                }
+                String stated = new String(Files.readAllBytes(file),
+                        StandardCharsets.UTF_8).trim();
+                assertTrue(stated, closes ? stated.matches("[0-9]+")
+                        : stated.matches("[0-9]+\t" + RecordingWindow.CUT));
+            }
+        } finally {
+            System.clearProperty(RecordingWindow.WINDOW_MS_FILE);
+            RecordingWindow.reset();
         }
     }
 

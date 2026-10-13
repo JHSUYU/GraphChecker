@@ -80,15 +80,19 @@ final class RecordingWindow {
 
     /** Whether the window's duration was stated. */
     private static boolean stated;
+    /** What marks a window the run ended inside ({@link #measured}). */
+    static final String CUT = "cut";
 
     /**
      * States the window's wall duration, once, to {@link #WINDOW_MS_FILE}
      * when named: from its open to its close, or -- a run that ends inside
-     * it, a replay halted after its selected result -- to now.  Every exit
-     * path of a run calls it ({@code ConcolicResultPublisher
-     * #publishRunTotals}, the recording's shutdown); a run that never
-     * opened its window states nothing, and the campaign fails by name
-     * (run_engine.sh campaign_view_hold_max).
+     * it (a replay halted at its witness or after its selected result) --
+     * to now, marked {@value #CUT}: a cut window measured only part of the
+     * workload's, which the campaign names (run_engine.sh
+     * campaign_view_hold_max).  Every exit path of a run calls it ({@code
+     * ConcolicResultPublisher#publishRunTotals}, the recording's shutdown);
+     * a run that never opened its window states nothing, and the campaign
+     * fails by name.
      */
     static synchronized void measured() {
         String file = System.getProperty(WINDOW_MS_FILE, "");
@@ -97,7 +101,7 @@ final class RecordingWindow {
         long millis = (System.nanoTime() - openedNanos) / 1_000_000L;
         try {
             java.nio.file.Files.write(java.nio.file.Paths.get(file),
-                    (millis + "\n").getBytes(
+                    (millis + (closed ? "" : "\t" + CUT) + "\n").getBytes(
                             java.nio.charset.StandardCharsets.UTF_8));
         } catch (java.io.IOException | RuntimeException unwritten) {
             // Unwritten, the campaign fails by name when it reads it.
@@ -105,8 +109,9 @@ final class RecordingWindow {
     }
 
     /** Test seam: a fixture that models a run before its window. */
-    static void reset() {
+    static synchronized void reset() {
         index = 0;
         closed = false;
+        stated = false;
     }
 }

@@ -582,6 +582,9 @@ public final class Confirmation {
         final String node;
         /** The scope the notification ran in, entered for its apply. */
         final Object scope;
+        /** Its apply has begun (guarded by {@link #LOCK}): a supersession
+         *  can no longer stop it ({@link #superseded}). */
+        boolean running;
 
         Deferred(long version, Runnable apply, List<ViewHold> holds,
                  String node, Object scope) {
@@ -593,8 +596,8 @@ public final class Confirmation {
         }
     }
 
-    /** View key -> its deferred publications, in the order they came:
-     *  applied in that order ({@link #publish}). */
+    /** A view's queue key ({@link #queueKey}) -> its deferred publications,
+     *  in the order they came: applied in that order ({@link #publish}). */
     private static final Map<String, List<Deferred>> DEFERRED =
             new LinkedHashMap<String, List<Deferred>>();
     /** Node -> the one thread applying its deferred publications. */
@@ -612,7 +615,7 @@ public final class Confirmation {
      * of its {@code view} -- make the decode the readers on the node see
      * ({@code MessageDoors#publishing}: Solr's {@code
      * ZkStateReader#updateWatchedCollection}, {@code
-     * StatefulCollectionWatch#refreshAndWatchChildren} and {@code
+     * ZkStateReader.StateWatcher#refreshAndWatchChildren} and {@code
      * AliasesManager#setIfNewer}) -- on a thread delivering a store's
      * notification, outside a refresh the system asked for, at {@code at}.
      * Where a pairing holds that view below this version and the thread is
@@ -639,6 +642,7 @@ public final class Confirmation {
         if (view == null || apply == null) return false;
         load();
         String key = viewKey(view);
+        String queued = queueKey(view);
         String here = contextKey(at);
         synchronized (LOCK) {
             blockedApplies();
@@ -646,12 +650,12 @@ public final class Confirmation {
             for (ViewHold hold : VIEW_HOLDS) {
                 if (hold.ended() || !hold.view.equals(key)) continue;
                 if (hold.readerContext.equals(here)) {
-                    superseded(key, version);
+                    superseded(queued, version);
                     return false;
                 }
                 if (version > hold.above) holding.add(hold);
             }
-            List<Deferred> queue = DEFERRED.get(key);
+            List<Deferred> queue = DEFERRED.get(queued);
             if (holding.isEmpty() && (queue == null || queue.isEmpty())) {
                 return false;
             }
@@ -662,7 +666,8 @@ public final class Confirmation {
                 planted(RecordingPlant.HOLDING, hold.label(),
                         Collections.singleton(hold.waitsFor()));
             }
-            DEFERRED.computeIfAbsent(key, unused -> new ArrayList<Deferred>())
+            DEFERRED.computeIfAbsent(queued,
+                    unused -> new ArrayList<Deferred>())
                     .add(new Deferred(version, apply, holding, node, scope));
             Thread publisher = PUBLISHERS.get(node);
             if (publisher == null || !publisher.isAlive()) {
@@ -691,8 +696,21 @@ public final class Confirmation {
     static void published(LocationId view, long version) {
         if (view == null) return;
         synchronized (LOCK) {
-            superseded(viewKey(view), version);
+            superseded(queueKey(view), version);
         }
+    }
+
+    /**
+     * The key a view's deferred publications queue under: its {@link
+     * #viewKey} without the store life its path is in ({@code
+     * MessageDoors#life}, {@code #<n>}).  A system's view is per path, not
+     * per life (Solr's per collection): a recreated collection's publication
+     * follows the deferred ones of the collection it replaces, a removal
+     * among them included, or it would apply before them and they after it
+     * (review re-check 2026-10-12).
+     */
+    static String queueKey(LocationId view) {
+        return viewKey(view).replaceFirst("#[0-9]+$", "");
     }
 
     /** {@link #published}, guarded by {@link #LOCK}. */
@@ -704,14 +722,29 @@ public final class Confirmation {
             if (queue.get(i).version == -1L) dropped = i + 1;
         }
         if (dropped == 0) return;
-        queue.subList(0, dropped).clear();
+        List<Deferred> superseded = queue.subList(0, dropped);
+        int running = 0;
+        for (Deferred deferred : superseded) {
+            if (deferred.running) running++;
+        }
+        superseded.clear();
         if (queue.isEmpty()) DEFERRED.remove(key);
+        String publication = version == -1L ? "a removal"
+                : "version " + version;
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, key,
-                "the system published this view at once ("
-                        + (version == -1L ? "a removal" : "version " + version)
+                "the system published this view at once (" + publication
                         + ") over " + dropped + " deferred publication(s) of"
                         + " it ending in a removal or older than one: they"
                         + " are dropped, superseded");
+        if (running > 0) {
+            // Its apply has begun outside the lock and cannot be stopped;
+            // the system's own locks order it against this publication.
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, key,
+                    "one superseded publication was already being applied"
+                            + " when the system published " + publication
+                            + " at once: it may land after that"
+                            + " publication");
+        }
         LOCK.notifyAll();
     }
 
@@ -802,6 +835,13 @@ public final class Confirmation {
      *  what the system's code throws in it is the system's failure, named. */
     private static void apply(String view, Deferred deferred) {
         synchronized (LOCK) {
+            List<Deferred> queue = DEFERRED.get(view);
+            if (queue == null || !queue.contains(deferred)) {
+                // Superseded after it was found due (#superseded): never
+                // applied.
+                return;
+            }
+            deferred.running = true;
             APPLYING.put(deferred.node,
                     new Object[] {System.nanoTime(), view});
         }

@@ -903,7 +903,7 @@ public final class MessageDoors {
     /**
      * The blocking hold's door, which the Solr trees before the publication
      * hold call before a watch's refresh lock ({@code
-     * StatefulCollectionWatch#refreshAndWatch}): it holds nothing now --
+     * ZkStateReader.StateWatcher#refreshAndWatch}): it holds nothing now --
      * a hold defers the node's publication instead ({@link #publishing}) --
      * and goes with its two calls once every tree carries the publication
      * hook (zk2-publication-hold.ZkStateReader.diff; external-callers.txt).
@@ -915,7 +915,7 @@ public final class MessageDoors {
      * A node is about to PUBLISH version {@code version} of its view of
      * {@code path} -- make the decode the readers on the node see (Solr's
      * {@code ZkStateReader#updateWatchedCollection}, {@code
-     * StatefulCollectionWatch#refreshAndWatchChildren}, {@code
+     * ZkStateReader.StateWatcher#refreshAndWatchChildren}, {@code
      * AliasesManager#setIfNewer}); -1 for a removal, -2 for an update of
      * the same version (per-replica states) -- and {@code
      * apply} publishes it, under the locks the system's own publication

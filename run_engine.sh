@@ -2607,26 +2607,36 @@ campaign_seed_charge_factor=2
 # directory, ${causynth_output_dir}/runtime; the seed replay's in its worker
 # directory), rounded up, at least 1.  Whole runs would not do: setup and
 # sleeps outside the window dominate them (SG3B tra: SEED 143 s, the seed
-# replay 101 s).  Written once, as "<S>\t<wall ms>", to view_hold_max.tsv in
-# the campaign's directory, where every replay -- obligation workers,
+# replay 101 s).  Written once, as "<S>\t<wall ms>\t<the cut windows>", to
+# view_hold_max.tsv in the campaign's directory, where every replay -- obligation workers,
 # CONFIRM -- finds it above its worker (campaign_view_hold_wall_ms) and
 # result.json states it (viewHoldMax).  A window with no duration stated
 # fails the campaign by name: no bound is guessed.
 campaign_view_hold_max() {
-  local iteration_dir=$1 recorded replayed slowdown
+  local iteration_dir=$1 recorded replayed slowdown cut_window=""
   local recorded_file="${causynth_output_dir}/runtime/window_ms"
   local replayed_file="${iteration_dir}/seed-result/focused/window_ms"
   recorded=$(cat "${recorded_file}" 2>/dev/null) || recorded=""
   replayed=$(cat "${replayed_file}" 2>/dev/null) || replayed=""
-  [[ "${recorded}" =~ ^[1-9][0-9]*$ && "${replayed}" =~ ^[0-9]+$ ]] \
+  [[ "${recorded%$'\t'cut}" =~ ^[1-9][0-9]*$ \
+      && "${replayed%$'\t'cut}" =~ ^[0-9]+$ ]] \
     || campaign_fail REPLAY VIEW_HOLD_MAX "${iteration_dir}" "the recording's \
 or the seed replay's window stated no duration (${recorded_file}: \
 '${recorded}', ${replayed_file}: '${replayed}'), so the view hold's bound \
 cannot be scaled to this VM's slowdown"
+  # A window its run ended inside (runtime.RecordingWindow#measured: a
+  # replay halted at its witness) measured part of the workload's: the
+  # slowdown is still the ratio, named as resting on a cut window.
+  [[ "${recorded}" != *$'\t'cut ]] || cut_window="recording"
+  [[ "${replayed}" != *$'\t'cut ]] || cut_window="${cut_window:+${cut_window},}seed-replay"
+  recorded=${recorded%$'\t'cut} replayed=${replayed%$'\t'cut}
   slowdown=$(( (replayed + recorded - 1) / recorded ))
   (( slowdown >= 1 )) || slowdown=1
-  printf '%s\t%s\n' "${slowdown}" "$(( view_hold_max_ms * slowdown ))" \
-    >"$(dirname "${iteration_dir}")/view_hold_max.tsv"
+  [[ -z "${cut_window}" ]] || echo "[campaign] view_hold_max: the ${cut_window} window was \
+cut (its run ended inside it), so the slowdown ${slowdown} rests on part of \
+the workload's window" >&2
+  printf '%s\t%s\t%s\n' "${slowdown}" "$(( view_hold_max_ms * slowdown ))" \
+    "${cut_window}" >"$(dirname "${iteration_dir}")/view_hold_max.tsv"
 }
 
 # The view hold's bound in wall ms for the replay working in <worker>: the
@@ -7511,7 +7521,7 @@ campaign_emit() {
   # The view hold's bound the replays ran under (campaign_view_hold_max).
   local view_hold="null" held_tsv="$(dirname "${iteration_dir}")/view_hold_max.tsv"
   [[ ! -s "${held_tsv}" ]] || view_hold=$(awk -F'\t' -v recorded="${view_hold_max_ms}" \
-    '{printf "{\"recordedMs\":%d,\"slowdown\":%d,\"wallMs\":%d}", recorded, $1, $2}' \
+    '{printf "{\"recordedMs\":%d,\"slowdown\":%d,\"wallMs\":%d,\"cutWindow\":\"%s\"}", recorded, $1, $2, $3}' \
     "${held_tsv}")
   jq -n \
     --argjson provenance "${campaign_provenance}" \

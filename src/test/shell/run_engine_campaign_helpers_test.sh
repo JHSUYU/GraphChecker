@@ -310,26 +310,35 @@ $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.l
 # VM's slowdown S -- the seed replay's window over the recording's, rounded
 # up (campaign_view_hold_max) --, written to view_hold_max.tsv beside the
 # iteration, where every replay below it finds it
-# (campaign_view_hold_wall_ms).  A window that stated no duration fails the
+# (campaign_view_hold_wall_ms).  A window its run ended inside (marked cut)
+# is named in the file and the log; one that stated no duration fails the
 # campaign by name: no bound is guessed.
 view_hold_root="${test_tmp}/view-hold"
 view_hold_iteration="${view_hold_root}/schedule/iteration-0000"
-for missing in none recording seed; do
+for missing in none cut recording seed; do
   rm -rf "${view_hold_root}"
   mkdir -p "${view_hold_root}/causynth/runtime" \
     "${view_hold_iteration}/seed-result/focused"
   [[ "${missing}" == recording ]] \
     || echo 1000 >"${view_hold_root}/causynth/runtime/window_ms"
   [[ "${missing}" == seed ]] \
-    || echo 2500 >"${view_hold_iteration}/seed-result/focused/window_ms"
+    || printf '2500%s\n' "$([[ "${missing}" != cut ]] || printf '\tcut')" \
+      >"${view_hold_iteration}/seed-result/focused/window_ms"
   view_hold_status=0
   ( causynth_output_dir="${view_hold_root}/causynth" view_hold_max_ms=3000
     campaign_view_hold_max "${view_hold_iteration}" ) \
     2>"${view_hold_root}/err.log" || view_hold_status=$?
-  if [[ "${missing}" == none ]]; then
+  if [[ "${missing}" == cut ]]; then
     (( view_hold_status == 0 )) \
       && [[ "$(<"${view_hold_root}/schedule/view_hold_max.tsv")" \
-        == $'3\t9000' ]] \
+        == $'3\t9000\tseed-replay' ]] \
+      && grep -q 'the seed-replay window was cut' "${view_hold_root}/err.log" \
+      || fail "a cut seed replay window was not named: \
+$(cat "${view_hold_root}/schedule/view_hold_max.tsv" "${view_hold_root}/err.log" 2>&1)"
+  elif [[ "${missing}" == none ]]; then
+    (( view_hold_status == 0 )) \
+      && [[ "$(<"${view_hold_root}/schedule/view_hold_max.tsv")" \
+        == $'3\t9000\t' ]] \
       && [[ "$(campaign_view_hold_wall_ms \
         "${view_hold_iteration}/obligations-0000/worker")" == 9000 ]] \
       || fail "the view hold's bound was not VIEW_HOLD_MAX times S: \
