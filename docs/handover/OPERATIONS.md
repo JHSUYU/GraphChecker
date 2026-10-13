@@ -212,6 +212,11 @@ Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
   stages wait for ledger room in `ab_place`, and dozens of waiters jammed NFS on lift11 (2026-10-06).
 - A corpus recorded before a row-contract change cannot feed the candidate side: gate against rounds recorded by
   this body (EX1, `PRUNE=0`, holds every case's recording and corpus; 07's run is `accept-EX1-adhoc-07e`).
+- Every engine JVM of a gate gets the case's system doors file (`-Dcausynth.system.doors`), as `run_java_main` gives
+  it: it says which views the system publishes (`LibraryCatalog#publishedView`), which decides PLAN's, EXPLORE's,
+  COMPOSE's and CONFIRM's held views. Until 2026-10-13 only SEED.static got it, so a Solr gate's later stages held no
+  node view and composed no state family at one: SGF3-bugs-snapshot-no-active's two BLOCKING view rows did not
+  reproduce offline.
 
 ## 7. Reading a campaign, and debugging
 

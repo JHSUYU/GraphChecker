@@ -133,8 +133,11 @@ ab_heap() {
 }
 
 # ab_java <stage-dir> <heap-mb> <classpath> <main> [args...]: one engine JVM
-# through the case's java_bin as run_java_main starts it (the loop bound;
-# then ab_props), in the stage directory, bounded, on the host ab_place
+# through the case's java_bin as run_java_main starts it (the loop bound, the
+# system's own doors file -- which views its system publishes,
+# LibraryCatalog#publishedView, decides COMPOSE's and CONFIRM's held views:
+# without it a Solr COMPOSE offered no node view a version choice -- then
+# ab_props), in the stage directory, bounded, on the host ab_place
 # charged its heap on (every path it reads and writes is shared); its exit,
 # wall time, peak RSS and host go to <stage-dir>/status.
 ab_props=()
@@ -146,6 +149,7 @@ ab_java() {
     /usr/bin/time -f '%e %M' -o "${dir}/time.txt"
     "${ab_java_bin}" "${campaign_engine_stack}"
     "-Dcausynth.loop.default.bound=${ab_loop_bound}"
+    "-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)"
     "${ab_props[@]}" -cp "${cp}" "${main}" "$@")
   ab_place "${heap}"
   if campaign_host_is_local "${ab_placed_host}"; then
@@ -291,9 +295,6 @@ ab_stage_seed_static() {
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
   mkdir -p "${out}" "${grown}"
   IFS=: read -r -a roots <<<"$(ab_cfg causynth_lineage_roots)"
-  # The system's own doors replace the catalog's, in the door step as in
-  # the static pass (run_engine.sh run_java_main, do_analyze).
-  ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
   pass=(
     "-Dcausynth.output.dir=${out}"
     "-Dcausynth.target.spec=$(ab_cfg causynth_target_spec)"
@@ -321,7 +322,7 @@ ab_stage_seed_static() {
       -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes" \
       || break
     ab_seed_wall "${dir}"
-    ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
+    ab_props=()
     chosen=$(grep -c . "${out}/io_doors.jsonl" 2>/dev/null || true)
     if (( ${chosen:-0} > doors )); then
       doors=${chosen}
