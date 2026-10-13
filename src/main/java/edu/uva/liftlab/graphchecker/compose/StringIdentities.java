@@ -375,7 +375,7 @@ public final class StringIdentities {
      * backslash and one character neither a letter nor a digit; never a
      * surrogate.  Null for any other regex.
      */
-    private static Character literalDelimiter(String regex) {
+    static Character literalDelimiter(String regex) {
         char c;
         if (regex.length() == 1 && ".$|()[{^?*+\\".indexOf(regex.charAt(0))
                 < 0) {
@@ -445,13 +445,13 @@ public final class StringIdentities {
     }
 
     /** The String this node is exactly a constant of, or null. */
-    private static String stringLiteral(JsonElement node) {
+    static String stringLiteral(JsonElement node) {
         return VmExpressionIr.exactStringLiteral(node,
                 type -> JavaSmtSorts.sortOfJava(type) == Sort.STRING);
     }
 
     /** The int this node is exactly a constant of, or null. */
-    private static Integer intLiteral(JsonElement node) {
+    static Integer intLiteral(JsonElement node) {
         String value = VmExpressionIr.exactStringLiteral(node,
                 type -> "I".equals(JavaPrimitiveSmtSemantics
                         .javaTypeDescriptor(type)));

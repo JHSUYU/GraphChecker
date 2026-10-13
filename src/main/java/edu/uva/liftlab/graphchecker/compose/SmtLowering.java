@@ -4350,8 +4350,7 @@ public final class SmtLowering {
             JsonElement element = StringIdentities.splitElement(expression);
             return element != null
                     ? dispatch(element, null, origin + ":split-element")
-                    : refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
-                    "java/lang/String.splitElement", Sort.STRING);
+                    : splitElement(array(expression, "_param_list"), origin);
         }
         Term result = dispatch(expression.get("_res_exp"), null, origin);
         return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
@@ -5049,6 +5048,78 @@ public final class SmtLowering {
                 "(<= " + end + " " + length + ")"));
         return Term.nonNullString("(str.substr " + receiver.text + " " + begin
                 + " (- " + end + " " + begin + "))", defined);
+    }
+
+    /** The largest index {@link #splitElement} lowers an element at. */
+    static final int SPLIT_MAX = 8;
+
+    /**
+     * Element {@code i} of {@code s.split(d)} -- the VM's {@code
+     * splitElement(s, d, i)} -- where {@code d} is one literal character
+     * Java splits by its fast path ({@code StringIdentities#literalDelimiter})
+     * and {@code i} a constant at most {@link #SPLIT_MAX}, as Java answers
+     * it: the text after the i-th d (from the start for i = 0) up to the
+     * next d or the end, by nested {@code str.indexof}.  Defined exactly
+     * where Java's array has that element: a delimiter-free s is {s} itself
+     * ("" is {""}), element 0 alone; otherwise split(d), its limit 0,
+     * removes the TRAILING empty strings, so element i exists iff the i-th d
+     * is there (i = 0 aside) and some element at i or after is non-empty --
+     * the text from its start to the end is not d's alone ("a,," has no
+     * element 1, "a,,b" an empty one, ",a" keeps its leading empty
+     * element, "," has none).  A world in which it would not exist is no
+     * world of this term.  The template rule ({@code
+     * StringIdentities#splitElement}) is asked first: exact over literal
+     * pieces, it states no positions.
+     */
+    private Term splitElement(JsonArray params, String origin) {
+        if (params.size() != 3) {
+            return codecGap("splitElement", "ARITY", origin, Sort.STRING);
+        }
+        String regex = StringIdentities.stringLiteral(params.get(1));
+        Character delimiter = regex == null ? null
+                : StringIdentities.literalDelimiter(regex);
+        Integer index = StringIdentities.intLiteral(params.get(2));
+        if (delimiter == null || index == null || index < 0
+                || index > SPLIT_MAX) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    "java/lang/String.splitElement", Sort.STRING);
+        }
+        Term receiver = dispatch(params.get(0), null,
+                origin + ":splitElement:receiver");
+        if (receiver.sort != Sort.STRING) {
+            return codecGap("splitElement", "NON_STRING_PARAMETER", origin,
+                    Sort.STRING);
+        }
+        if (nullnessUnknown(Collections.singletonList(receiver))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    "splitElement", Sort.STRING);
+        }
+        String s = receiver.text;
+        String d = VmExpressionIr.quote(String.valueOf(delimiter));
+        // Where the k-th d stands, k = 1 .. i+1; -1 where there is none.
+        List<String> at = new ArrayList<String>();
+        at.add("(- 1)");
+        for (int k = 1; k <= index + 1; k++) {
+            String previous = at.get(k - 1);
+            at.add(k == 1 ? "(str.indexof " + s + " " + d + " 0)"
+                    : "(ite (< " + previous + " 0) (- 1) (str.indexof " + s
+                    + " " + d + " (+ " + previous + " 1)))");
+        }
+        String length = "(str.len " + s + ")";
+        String begin = index == 0 ? "0" : "(+ " + at.get(index) + " 1)";
+        String next = at.get(index + 1);
+        String end = "(ite (< " + next + " 0) " + length + " " + next + ")";
+        String rest = "(str.substr " + s + " " + begin + " (- " + length
+                + " " + begin + "))";
+        String exists = "(ite (< " + at.get(1) + " 0) "
+                + (index == 0 ? "true" : "false") + " " + and(Arrays.asList(
+                index == 0 ? "true" : "(>= " + at.get(index) + " 0)",
+                "(not (str.in_re " + rest + " (re.* (str.to_re " + d
+                        + "))))")) + ")";
+        return Term.nonNullString("(str.substr " + s + " " + begin + " (- "
+                + end + " " + begin + "))", and(Arrays.asList(
+                stringDefinedness(Collections.singletonList(receiver),
+                        Collections.<Term>emptyList()), exists)));
     }
 
     /**
