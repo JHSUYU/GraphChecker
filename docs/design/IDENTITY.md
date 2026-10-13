@@ -860,9 +860,12 @@ order:
   (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
   a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
   its expected edges (`runtime/Confirmation`, PIPELINE.md §10): an activation held where it runs,
-  except claimed work on a consumer thread (§4's `threadKey`), which held there would hold every
-  item queued behind it: it is held at the send that started it, its anchor's producer
-  (`Confirmation#submitter`), up the chain while that send is claimed work too;
+  a task its executor handed to a worker of its own included (`ActivationRow#claimKind`
+  `HANDOFF_TASK`: a `ThreadPoolExecutor` whose queue had no room at the submission, Solr's Overseer
+  command Runners), except a queued task or a queue item on a consumer thread (§4's `threadKey`),
+  which held there would hold every item queued behind it: it is held at the send that started it,
+  its anchor's producer (`Confirmation#submitter`), up the chain while that send is such work too,
+  and with none an `ORDER_UNHELD` names the claim's kind;
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   ends at a real signal, or takes its `WAKE` slot when the slot is due and then returns no sooner
   than its own deadline (`TimedWaits#outlast`): a `WAKE` is a timeout, the recording's wait ran its

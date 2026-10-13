@@ -740,8 +740,9 @@ public final class ConcolicRegionRuntime {
      * executor submit, fork).  Nothing is pushed on the starter; the started
      * work claims the frame ({@link #claimStart}).
      */
-    public static void startWork(String startSiteId, Object carrier) {
-        RowRuntime.startWork(startSiteId, carrier);
+    public static void startWork(String startSiteId, Object carrier,
+                                 Object submittedTo) {
+        RowRuntime.startWork(startSiteId, carrier, submittedTo);
     }
 
     /**

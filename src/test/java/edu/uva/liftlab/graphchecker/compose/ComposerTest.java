@@ -9995,7 +9995,8 @@ public class ComposerTest {
         void activation(OccurrenceAddress at, Endpoint anchorProducer) {
             activations.add(ActivationRow.of(id, at,
                     explored ? "task-flip" : "task-seed", explored, true,
-                    "thread#" + at.regionId(), anchorProducer));
+                    "thread#" + at.regionId(), ActivationRow.ClaimKind.NONE,
+                    anchorProducer));
         }
 
         void marker(String recorded) {

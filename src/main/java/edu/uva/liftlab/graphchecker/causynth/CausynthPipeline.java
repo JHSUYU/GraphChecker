@@ -1748,8 +1748,17 @@ public final class CausynthPipeline {
                         }
                         Value carrier = objectArg(body, carried, before);
                         if (carrier instanceof NullConstant) continue;
+                        // What the work was submitted to (an executor's
+                        // hand-off decides how a claim of it is held:
+                        // Identity#handsOff): the call's receiver, never a
+                        // constructor's (not yet initialized before it).
+                        InvokeExpr call = stmt.getInvokeExpr();
+                        Value submittedTo = call instanceof InstanceInvokeExpr
+                                && !"<init>".equals(call.getMethodRef().name())
+                                ? ((InstanceInvokeExpr) call).getBase()
+                                : NullConstant.v();
                         refs.bracket(before, Hook.START_WORK,
-                                StringConstant.v(site), carrier);
+                                StringConstant.v(site), carrier, submittedTo);
                         started++;
                     }
                     if (started > 0) {
@@ -3906,7 +3915,7 @@ public final class CausynthPipeline {
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");
             return add(Hook.START_WORK, owner, "startWork", VoidType.v(),
-                    string, object)
+                    string, object, object)
                     .add(Hook.CLAIM_START, owner, "claimStart", LongType.v(),
                             object)
                     .add(Hook.END_CLAIM, owner, "endClaim", VoidType.v(),

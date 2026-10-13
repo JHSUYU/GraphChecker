@@ -153,7 +153,7 @@ public class RowRuntimeTest {
         // An executor submission: the same carry, captured by the START hook
         // (both passes weave it) and taken back where the work CLAIMS it.
         final Object task = new Object();
-        Identity.startWork("<a.Pool: void submit()>#u1", task);
+        Identity.startWork("<a.Pool: void submit()>#u1", task, null);
         final AtomicReference<String> onWorker = new AtomicReference<>("");
         Thread worker = poolThreadCreatedOutsideAnyScope(new Runnable() {
             @Override
@@ -184,7 +184,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "block-report");
         final Object task = new Object();
-        Identity.startWork("<a.Queue: void enqueue(Runnable)>#u3", task);
+        Identity.startWork("<a.Queue: void enqueue(Runnable)>#u3", task, null);
         final int[] depths = new int[3];
         Thread drainer = poolThreadCreatedOutsideAnyScope(() -> {
             depths[0] = Identity.depth();
@@ -293,7 +293,7 @@ public class RowRuntimeTest {
         RecordingWindow.open();
         try {
             Object connection = new Object();
-            Identity.startWork("<a.Acceptor: void run()>#u5", connection);
+            Identity.startWork("<a.Acceptor: void run()>#u5", connection, null);
             List<OccurrenceAddress> opened = new ArrayList<>();
             Thread handler = new Thread(() -> {
                 Identity.claimStart(connection);
@@ -594,7 +594,7 @@ public class RowRuntimeTest {
             for (int call = 0; call <= run.length; call++) {
                 Object handoff = CausynthMessagePropagation.handingOff(
                         clientId, call);
-                Identity.startWork(queue, new Object());
+                Identity.startWork(queue, new Object(), null);
                 CausynthMessagePropagation.handedOff(handoff);
             }
             RuntimeTraceContext.endRequest(reader);
@@ -2652,7 +2652,7 @@ public class RowRuntimeTest {
         // (r3: the two move tasks shared one address).
         for (Object task : tasks) {
             long submitOne = Identity.enterFrame("Pool.submitOne()#u5", null);
-            Identity.startWork("Pool.submitOne()#u9", task);
+            Identity.startWork("Pool.submitOne()#u9", task, null);
             Identity.exitFrame(submitOne);
         }
         worker.start();
@@ -2744,7 +2744,7 @@ public class RowRuntimeTest {
                         public void run() {
                         }
                     });
-            Identity.startWork("Server.start()#u31", pool[handler]);
+            Identity.startWork("Server.start()#u31", pool[handler], null);
         }
         pool[scheduled].start();
         try {
@@ -2819,7 +2819,7 @@ public class RowRuntimeTest {
         // updater is: a start made by a thread under no root hop files no
         // frame (AStartWithNoIdentityFilesNoFrameTest).
         long starting = RuntimeTraceContext.beginRequest(owner, "balance");
-        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater);
+        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater, null);
         RuntimeTraceContext.endRequest(starting);
         updater.start();
         try {
@@ -2846,7 +2846,7 @@ public class RowRuntimeTest {
                 onChild.set(Identity.atScope().render());
             }
         });
-        Identity.startWork(startSite, child);
+        Identity.startWork(startSite, child, null);
         child.start();
         try {
             child.join();

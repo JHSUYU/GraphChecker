@@ -188,7 +188,7 @@ public final class RowRuntime {
             session.activation(ActivationRow.of(sessionId(), address,
                     trimmed(taskId), FocusedReplay.focused(taskId,
                             address), true, threadKey(),
-                    anchorProducer(address)));
+                    Identity.claimKind(), anchorProducer(address)));
             if (address.lineageLost()) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, address.render(),
@@ -225,7 +225,8 @@ public final class RowRuntime {
         if (AMBIENT.putIfAbsent(address.id(), Boolean.TRUE) != null) return;
         // Not an instrumented region, so it has no decisions to find.
         session.activation(ActivationRow.of(sessionId(), address, "", false,
-                false, threadKey(), anchorProducer(address)));
+                false, threadKey(), Identity.claimKind(),
+                anchorProducer(address)));
     }
 
     /** The endpoint that sent the message this address's anchor names,
@@ -1076,10 +1077,11 @@ public final class RowRuntime {
      * fork) for the started work to claim (IDENTITY §3).  The start
      * happens either way; a frame that cannot be filed is a stated gap.
      */
-    public static void startWork(String startSiteId, Object carrier) {
+    public static void startWork(String startSiteId, Object carrier,
+                                 Object submittedTo) {
         String site = trimmed(startSiteId);
         try {
-            Identity.startWork(site, carrier);
+            Identity.startWork(site, carrier, submittedTo);
         } catch (Throwable unnamed) {
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     firstNonBlank(site, carrier == null ? ""

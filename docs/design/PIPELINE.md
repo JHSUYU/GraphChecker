@@ -2563,10 +2563,13 @@ with it is a `RUN_DEFECT`.
   (`StateClosure#exit`, `#outermost`), which the session ran at the occurrence's last recorded
   event, so a writer it ran before that is a reordered occurrence (`StateClosure#closing`); where
   that activation runs
-  as claimed work on a consumer thread (`ActivationRow#claimed`: a server pipeline applying one
-  request after another, the writer's among them, would deadlock held), the entry of the send that
-  started it, its anchor's producer followed up the chain while that send is claimed work too
-  (`Confirmation#submitter`; none outside one refuses the confirmation, `ORDER_UNHELD`); every other
+  as a queued task or a queue item on a consumer thread (`ActivationRow#claimKind`, not
+  `HANDOFF_TASK`: a server pipeline applying one request after another, the writer's among them,
+  would deadlock held), the entry of the send that started it, its anchor's producer followed up the
+  chain while that send is such work too (`Confirmation#submitter`; none refuses the confirmation,
+  `ORDER_UNHELD`, naming the claim's kind); a task its executor handed to a worker of its own
+  (`HANDOFF_TASK`, an executor whose queue had no room at the submission: Solr's Overseer command
+  Runners on a SynchronousQueue) holds nothing behind it and is held where it runs; every other
   writer of the location the held write is of before the writer or after the reader, held alike, and
   for an INITIAL the model chose every writer of the location after the reader), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their

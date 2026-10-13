@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -20,6 +21,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
@@ -193,7 +195,8 @@ public final class Identity {
          * @param own whether this is the thread's own start, which is no
          *            claimed work: the thread orders it
          */
-        private void openStart(Start start, boolean own, boolean ranHere) {
+        private void openStart(Start start, boolean own, boolean ranHere,
+                               ClaimKind kind) {
             // A claim takes the place of the finished one made in the same
             // work before it (a consumer loop's previous item, and the scope
             // that item carried); any other stands under it: the work that
@@ -205,7 +208,7 @@ public final class Identity {
                 closeStartsFrom(held.depth);
             }
             starts.push(new Claim(depth(), start.key, own, !own && !ranHere,
-                    claimScope(), claimSerial++));
+                    own ? ClaimKind.NONE : kind, claimScope(), claimSerial++));
             // The frames belong to the window the start was counted in.
             for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
@@ -587,7 +590,8 @@ public final class Identity {
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
-                Collections.<Frame>emptyList(), null, "", null, null, 0, 0);
+                Collections.<Frame>emptyList(), null, "", null, null, 0, 0,
+                false);
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
@@ -609,10 +613,16 @@ public final class Identity {
         private final WeakReference<Thread> thread;
         private final WeakReference<Level> level;
         private final int depth;
+        /**
+         * Whether the work was submitted to an executor that hands every
+         * task to a worker of its own ({@link #handsOff}): held where it
+         * runs, it holds nothing queued behind it.
+         */
+        private final boolean handoff;
 
         private Start(List<Frame> frames, Attribution.Reference starter,
                       String key, Thread thread, Level level, int depth,
-                      int window) {
+                      int window, boolean handoff) {
             this.frames = frames;
             this.starter = starter;
             this.key = key;
@@ -620,6 +630,7 @@ public final class Identity {
             this.level = new WeakReference<Level>(level);
             this.depth = depth;
             this.window = window;
+            this.handoff = handoff;
         }
 
         /** The start's own frame: its site and k. */
@@ -659,15 +670,18 @@ public final class Identity {
          * ({@link #handoffs}).
          */
         private final boolean consumed;
+        /** What the claimed work is ({@link ClaimKind}); NONE when own. */
+        private final ClaimKind kind;
         private final long scope;
         private final long serial;
 
         private Claim(int depth, String start, boolean own, boolean consumed,
-                      long scope, long serial) {
+                      ClaimKind kind, long scope, long serial) {
             this.depth = depth;
             this.start = start;
             this.own = own;
             this.consumed = consumed;
+            this.kind = kind;
             this.scope = scope;
             this.serial = serial;
         }
@@ -710,12 +724,12 @@ public final class Identity {
         State state = CURRENT.get();
         if (!state.claimed) {
             state.claimed = true;
-            adopt(state, Thread.currentThread());
+            adopt(state, Thread.currentThread(), false);
         }
         return state;
     }
 
-    private static void adopt(State state, Object carrier) {
+    private static void adopt(State state, Object carrier, boolean item) {
         if (carrier == null || STARTS.isEmpty()) return;
         Start start = STARTS.remove(carrier);
         if (start == null) return;
@@ -728,7 +742,9 @@ public final class Identity {
             state.claimUnnamed(own);
             return;
         }
-        state.openStart(start, own, !own && start.ranHere(state));
+        state.openStart(start, own, !own && start.ranHere(state),
+                item ? ClaimKind.ITEM : start.handoff ? ClaimKind.HANDOFF_TASK
+                        : ClaimKind.QUEUED_TASK);
         state.starter = start.starter;
         state.adopted = true;
         // The starter's scope comes with the work; it closes when the start
@@ -760,7 +776,8 @@ public final class Identity {
      * address names, so the work opens no occurrence until a hop names it
      * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
-    public static void startWork(String startSiteId, Object carrier) {
+    public static void startWork(String startSiteId, Object carrier,
+                                 Object submittedTo) {
         String stable = JvmNames.stable(trimmed(startSiteId));
         if (stable.isEmpty() || carrier == null) return;
         if (!Lineage.named()) {
@@ -790,8 +807,25 @@ public final class Identity {
                                 + contextHere().render() + "|"
                                 + ExecutionIndex.of(frames).render(),
                         Thread.currentThread(), state.top(), state.depth(),
-                        window));
+                        window, handsOff(submittedTo)));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+    }
+
+    /**
+     * Whether {@code executor} hands every task to a worker of its own: a
+     * {@link ThreadPoolExecutor} whose queue holds nothing more at the
+     * submission (a SynchronousQueue, or any queue with no remaining
+     * capacity: the executor then starts a worker for the task or rejects
+     * it, never queues it).  Read as the engine's own work, never program
+     * state ({@link ConcolicVmBroker#asEngineWork}).
+     */
+    private static boolean handsOff(Object executor) {
+        if (!(executor instanceof ThreadPoolExecutor)) return false;
+        boolean[] handoff = {false};
+        ConcolicVmBroker.asEngineWork(() -> handoff[0] =
+                ((ThreadPoolExecutor) executor).getQueue()
+                        .remainingCapacity() == 0);
+        return handoff[0];
     }
 
     /**
@@ -923,6 +957,13 @@ public final class Identity {
                 : state.starts.peek().start;
     }
 
+    /** What the claimed work {@link #claimedStart} names is, or NONE. */
+    static ClaimKind claimKind() {
+        State state = state();
+        return state.starts.isEmpty() ? ClaimKind.NONE
+                : state.starts.peek().kind;
+    }
+
     /** Whether that reference is a claimed start, not the thread's creator. */
     static boolean adoptedStarter() {
         return state().adopted;
@@ -961,7 +1002,7 @@ public final class Identity {
         State state = state();
         ClaimScope scope = new ClaimScope(state);
         state.claimScopes.push(scope);
-        claim(state, carrier);
+        claim(state, carrier, false);
         return scope.id;
     }
 
@@ -1021,14 +1062,14 @@ public final class Identity {
      */
     static void claimItem(Object item) {
         if (item == null) return;
-        claim(state(), item);
+        claim(state(), item, true);
     }
 
-    private static void claim(State state, Object carrier) {
+    private static void claim(State state, Object carrier, boolean item) {
         state.work = carrier;
         // A task claimed here takes the place of a finished unnamed one.
         state.endUnnamedWork();
-        if (!STARTS.isEmpty()) adopt(state, carrier);
+        if (!STARTS.isEmpty()) adopt(state, carrier, item);
     }
 
     /**

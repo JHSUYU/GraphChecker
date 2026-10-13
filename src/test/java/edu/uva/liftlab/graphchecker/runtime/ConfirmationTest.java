@@ -1041,10 +1041,11 @@ public class ConfirmationTest {
     }
 
     /**
-     * An ORDER on claimed work (a server pipeline's request) is held at the
-     * send that started it, up the chain of claimed work; on any other
-     * activation, where it runs; and refused where no send runs outside
-     * claimed work.
+     * An ORDER on a queued task or a queue item (a server pipeline's
+     * request) is held at the send that started it, up the chain of such
+     * work; on any other activation -- a task its executor handed to a
+     * worker of its own among them -- where it runs; and refused, naming
+     * the claim's kind, where no send runs where it can be held.
      */
     @Test
     public void claimedWorkIsHeldAtTheSendThatStartedIt() {
@@ -1062,40 +1063,53 @@ public class ConfirmationTest {
         OccurrenceAddress served = OccurrenceAddress.parse(
                 "zk/server0#epoch0/region/REGION.final/ctx:Anchor:"
                         + relayed.id() + "@SYNC/test/idx:<a.Final: void f()>@0");
-        // row of each occurrence: claimed, its anchor's producer
+        ActivationRow.ClaimKind none = ActivationRow.ClaimKind.NONE;
+        ActivationRow.ClaimKind item = ActivationRow.ClaimKind.ITEM;
+        ActivationRow.ClaimKind queued = ActivationRow.ClaimKind.QUEUED_TASK;
+        ActivationRow.ClaimKind handed = ActivationRow.ClaimKind.HANDOFF_TASK;
+        // row of each occurrence: its claim's kind, its anchor's producer
         Object[][] table = {
                 // held at the client's send, through the relaying stage
-                {served, true, relayed, prep, true, send, send},
+                {served, item, relayed, prep, item, send, send},
                 // a client thread's own activation is held where it runs
-                {client, false, null, null, false, null, null},
-                // claimed work that names no send: no hold
-                {served, true, null, null, false, null, "ORDER_UNHELD"},
+                {client, none, null, null, none, null, null},
+                // an item that names no send: no hold
+                {served, item, null, null, none, null, "ORDER_UNHELD"},
+                // a single-thread executor's task (queued) likewise
+                {served, queued, null, null, none, null, "ORDER_UNHELD"},
+                // a hand-off executor's task (an Overseer command's Runner,
+                // a turn of its own with no anchor) is held where it runs
+                {served, handed, null, null, none, null, null},
+                // a send made inside a handed-off task is held there
+                {served, item, relayed, prep, handed, null, relayed},
         };
         for (Object[] row : table) {
             Map<String, ActivationRow> rows =
                     new HashMap<String, ActivationRow>();
-            put(rows, (OccurrenceAddress) row[0], (Boolean) row[1],
-                    (Endpoint) row[2]);
+            put(rows, (OccurrenceAddress) row[0],
+                    (ActivationRow.ClaimKind) row[1], (Endpoint) row[2]);
             if (row[3] != null) {
-                put(rows, (OccurrenceAddress) row[3], (Boolean) row[4],
-                        (Endpoint) row[5]);
+                put(rows, (OccurrenceAddress) row[3],
+                        (ActivationRow.ClaimKind) row[4], (Endpoint) row[5]);
             }
             Object held;
             try {
                 held = Confirmation.submitter((OccurrenceAddress) row[0],
                         rows::get);
             } catch (IllegalStateException unheld) {
+                assertTrue(unheld.getMessage(), unheld.getMessage().contains(
+                        ((ActivationRow.ClaimKind) row[1]).description()));
                 held = unheld.getMessage().split(":")[0];
             }
-            assertEquals(String.valueOf(row[0]), row[6], held);
+            assertEquals(row[0] + " " + row[1], row[6], held);
         }
     }
 
     private static void put(Map<String, ActivationRow> rows,
-                            OccurrenceAddress at, boolean claimed,
-                            Endpoint producer) {
+                            OccurrenceAddress at,
+                            ActivationRow.ClaimKind kind, Endpoint producer) {
         rows.put(at.id(), ActivationRow.of("s0", at, "", false, true,
-                claimed ? ActivationRow.CLAIMED + at.id() : "main#1",
-                producer));
+                kind == ActivationRow.ClaimKind.NONE ? "main#1"
+                        : ActivationRow.CLAIMED + at.id(), kind, producer));
     }
 }

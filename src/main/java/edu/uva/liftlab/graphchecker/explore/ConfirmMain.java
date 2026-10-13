@@ -1326,11 +1326,13 @@ public final class ConfirmMain {
 
         /**
          * Where {@code event} is held: before it in its own occurrence
-         * ({@link #holdBefore}), or, where that runs as claimed work on a
-         * consumer thread, at the entry of the send that started it
-         * ({@link Confirmation#submitter}, the one rule): ZooKeeper's
-         * server applies a getData on the thread that must apply the
-         * delete ordered before it, so the client's getData is held.
+         * ({@link #holdBefore}) -- also as a task its executor handed to a
+         * worker of its own (an Overseer command's Runner) -- or, where that
+         * runs as a queued task or a queue item on a consumer thread, at the
+         * entry of the send that started it ({@link Confirmation#submitter},
+         * the one rule): ZooKeeper's server applies a getData on the thread
+         * that must apply the delete ordered before it, so the client's
+         * getData is held.
          */
         private Hold held(Endpoint event, long seq) {
             Endpoint send;

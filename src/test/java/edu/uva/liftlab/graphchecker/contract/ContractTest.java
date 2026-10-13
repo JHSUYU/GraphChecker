@@ -716,7 +716,8 @@ public class ContractTest {
         // The sender its anchor names rides along, so a reader follows the
         // causal chain past the anchor.
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
-                "task-1", true, true, "DataXceiver-7#41", export);
+                "task-1", true, true, "DataXceiver-7#41",
+                ActivationRow.ClaimKind.NONE, export);
         // The session's own event order: export, attach, write, decision,
         // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
@@ -748,6 +749,12 @@ public class ContractTest {
 
         assertEquals(activation, RowCodec.readActivation(
                 reline(RowCodec.writeActivation(activation)), new RowPool()));
+        // A claimed task states its claim's kind: how an order holds it.
+        ActivationRow handed = ActivationRow.of("s-17897-1", anchor,
+                "task-1", true, true, ActivationRow.CLAIMED + "s|k",
+                ActivationRow.ClaimKind.HANDOFF_TASK, null);
+        assertEquals(handed, RowCodec.readActivation(
+                reline(RowCodec.writeActivation(handed)), new RowPool()));
         // An activation a lightweight entry hook published carries no thread
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.

@@ -68,7 +68,7 @@ public class AWindowOpenedInACallKeepsItsEntriesApartTest {
         Object[] items = {new Object(), new Object()};
         for (int report = 0; report < items.length; report++) {
             long op = Identity.enterFrame(RUN_OP, null);
-            Identity.startWork(ENQUEUE, items[report]);
+            Identity.startWork(ENQUEUE, items[report], null);
             if (report == 0 && window == Window.DURING) RecordingWindow.open();
             Identity.exitFrame(op);
             if (report == 0 && window == Window.AFTER) RecordingWindow.open();

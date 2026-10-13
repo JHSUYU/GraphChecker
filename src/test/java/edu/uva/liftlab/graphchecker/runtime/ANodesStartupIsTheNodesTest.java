@@ -188,7 +188,7 @@ public class ANodesStartupIsTheNodesTest {
             node.set(resolved == null ? "" : resolved.key());
         });
         if (started) {
-            Identity.startWork("<a.Cluster: void startup()>#u3", thread);
+            Identity.startWork("<a.Cluster: void startup()>#u3", thread, null);
         }
         thread.start();
         thread.join(5000L);
