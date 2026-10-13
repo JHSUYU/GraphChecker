@@ -109,6 +109,20 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static final String STORE_WRITER_ADMISSION = "STORE_WRITER_V1";
     /**
+     * {@code admissionBasis} of an activation carried because it sent an
+     * item a store writer of {@link #STORE_WRITER_ADMISSION} applied: the
+     * version rests on the item's content -- a key the item removed as much
+     * as a value it set (solr-bugs-overseer-lock-leak: the async
+     * MODIFYCOLLECTION's {@code readOnly=""} removes the property from
+     * state.json v8, so no content leaf of it reaches the reader) -- so it
+     * contributes a value, and the doors of the message that started it are
+     * asked as a value's ({@link RecordedMessages#sendersOf}): the Overseer
+     * queue tick that took in the task, whose markTaskAsRunning ZooKeeper
+     * door decides whether the task's Runner ever offers that item.
+     */
+    private static final String STORE_ITEM_PRODUCER_ADMISSION =
+            "STORE_ITEM_PRODUCER_V1";
+    /**
      * {@code admissionBasis} of an activation carried because it fetched a
      * version the question's target read through an object that fetch's
      * decode registered ({@link RecordedStore#fetchesOf}): its store read's
@@ -1201,14 +1215,17 @@ public final class RuntimeSelectedRegionFinalizer {
      * rests on that version, and on every earlier version of its location
      * ({@link RecordedStore#writersUpTo}).  Each occurrence that made one is
      * admitted where it is an activation (a role -- an updater turn that ran
-     * no woven region -- is passed through, never planned), and the doors
-     * of the message each served, the queue item an updater turn took in
-     * ({@code MessageDoors#consumed}), are admitted where they read a fault
-     * marker ({@link #CONTROL_PRODUCER_ADMISSION}): a fault there decides
-     * whether the version was ever written (solr-bugs-restore-construction:
-     * the client's add reads the shards' state its ZkStateReader parsed; the
-     * ACTIVE that state holds was written by the Overseer's state updater
-     * for the item RestoreCmd offered after its RESTORECORE requests).
+     * no woven region -- is passed through, never planned).  The message
+     * each served, the queue item an updater turn took in ({@code
+     * MessageDoors#consumed}), is what it applied: the occurrence that sent
+     * it contributes the version's value ({@link
+     * #STORE_ITEM_PRODUCER_ADMISSION}), and the message's other doors are
+     * admitted where they read a fault marker ({@link
+     * #CONTROL_PRODUCER_ADMISSION}): a fault there decides whether the
+     * version was ever written (solr-bugs-restore-construction: the client's
+     * add reads the shards' state its ZkStateReader parsed; the ACTIVE that
+     * state holds was written by the Overseer's state updater for the item
+     * RestoreCmd offered after its RESTORECORE requests).
      */
     private static void crossStore(StaticProgram program, DemandWalk walk,
                                    StaticScopeMap scopeMap,
@@ -1239,6 +1256,14 @@ public final class RuntimeSelectedRegionFinalizer {
                     if (program.activations.containsKey(writer)
                             && !walk.excluded.contains(writer)) {
                         walk.admitValue(writer, depth, STORE_WRITER_ADMISSION);
+                    }
+                    for (String sender : messages.sendersOf(
+                            OccurrenceAddress.parse(writer))) {
+                        String held = byId.get(sender);
+                        if (held != null && !walk.excluded.contains(held)) {
+                            walk.admitValue(held, depth + 1,
+                                    STORE_ITEM_PRODUCER_ADMISSION);
+                        }
                     }
                     for (String door : doorsOf(messages, program,
                             OccurrenceAddress.parse(writer))) {

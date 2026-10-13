@@ -96,6 +96,22 @@ final class RecordedMessages {
     }
 
     /**
+     * The occurrence ids that sent the messages that started {@code
+     * occurrence}: what a store writer's turn applied came from them
+     * ({@code RuntimeSelectedRegionFinalizer#STORE_ITEM_PRODUCER_ADMISSION}).
+     */
+    Set<String> sendersOf(OccurrenceAddress occurrence) {
+        Set<String> found = new LinkedHashSet<>();
+        for (String endpoint : startedBy(occurrence)) {
+            String sender = senders.get(endpoint);
+            if (sender != null && !sender.equals(occurrence.id())) {
+                found.add(sender);
+            }
+        }
+        return found;
+    }
+
+    /**
      * The stances of the turns whose every occurrence holds a door of the
      * message that started {@code occurrence}: the turn that sent it --
      * whatever it ran before the send, on any of its threads, a fault of

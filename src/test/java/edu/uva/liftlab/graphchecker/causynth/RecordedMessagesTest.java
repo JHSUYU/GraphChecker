@@ -101,6 +101,9 @@ public class RecordedMessagesTest {
         OccurrenceAddress flush = OccurrenceAddress.parse(
                 "s/n2#epoch0/region/REGION.w/ctx:Root:QUEUE#4/idx:");
         assertEquals(set("sender", "second sender"), messages.doorsOf(flush));
+        // What it applied came from each item's sender, never its takers.
+        assertEquals(set("sender", "second sender"),
+                messages.sendersOf(flush));
         assertEquals(set("s/n2#epoch0|Root:QUEUE#4",
                 "s/n0#epoch0|Root:CLIENT/hb#1",
                 "s/n0#epoch0|Root:CLIENT/hb#2"),

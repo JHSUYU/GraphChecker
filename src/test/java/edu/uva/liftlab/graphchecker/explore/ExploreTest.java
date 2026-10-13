@@ -7311,6 +7311,115 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A STORE WRITER'S ITEM SENDER IS A VALUE ({@code
+     * ClosurePlanner#STORE_ITEM_PRODUCER}): the Overseer's state updater
+     * wrote the state.json version the anchor read by applying the item the
+     * task's Runner offered, so the version rests on the item's content (a
+     * key it removed as much as a value it set:
+     * solr-bugs-overseer-lock-leak's readOnly=""), and the doors of the
+     * Runner's own item are asked -- the queue turn's markTaskAsRunning --
+     * once: the item's submitter, a door of the Runner's item, is a control
+     * producer whose own message is no question.
+     */
+    @Test
+    public void aStoreWritersItemSenderIsAValue() throws Exception {
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/c/state.json");
+        OccurrenceAddress client = occurrence("solr-case/node1",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Processor#add#1");
+        OccurrenceAddress updater = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 1),
+                "Updater#run#1");
+        CausalContext runnerTurn = CausalContext.of(Role.of("OVERSEER_TASK"),
+                "", 1);
+        OccurrenceAddress runner = occurrence("solr-case/node0",
+                "REGION.task", runnerTurn, "Runner#offer#1");
+        OccurrenceAddress sibling = occurrence("solr-case/node0",
+                "REGION.sib", runnerTurn, "Runner#sib#1");
+        OccurrenceAddress marking = occurrence("solr-case/node0",
+                "REGION.mark", CausalContext.of(
+                        Role.of("OVERSEER_TASK_QUEUE"), "", 1),
+                "Queue#mark#1");
+        OccurrenceAddress submitter = occurrence("solr-case/node0",
+                "REGION.submit", CausalContext.of(Role.of("REQUEST"), "", 1),
+                "Handler#submit#1");
+        OccurrenceAddress front = occurrence("solr-case/node0",
+                "REGION.front", CausalContext.of(Role.of("FRONT"), "", 1),
+                "Front#take#1");
+        Path iteration = tree.newFolder("item-sender").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(client, false);
+        seed.activation(updater, false, true, "updater");
+        Object[][] doors = {{runner, "runner", "Run#u2"},
+            {sibling, "runner", "Sib#u5"}, {marking, "queue", "Mark#u3"},
+            {submitter, "request", "Sub#u4"}, {front, "front", "Front#u7"}};
+        for (Object[] door : doors) {
+            OccurrenceAddress at = (OccurrenceAddress) door[0];
+            String site = (String) door[2];
+            seed.activation(at, false, true, (String) door[1]);
+            seed.root(at, "CASE." + site, "M_" + site.replace("#", "_"),
+                    RootKind.MARKER, "false", null, null, true);
+            seed.decision(at, site, 1, false, "M_" + site.replace("#", "_"));
+        }
+        seed.write(at(updater, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "Updater#run#1"), state, 1L, "", "[B");
+        seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state, 1L,
+                "S_c1", null);
+        seed.target(client, "Guard#u8#1", "false");
+        seed.flush();
+        List<JsonObject> schedule = new ArrayList<JsonObject>();
+        Object[][] events = {
+            // the request's message, taken in at the front turn's root and
+            // the submitter's
+            {ScheduleEvent.Kind.RECV, front, "", "e-req"},
+            {ScheduleEvent.Kind.RECV, submitter, "", "e-req"},
+            // the task item: submitted, taken in by the queue turn and the
+            // Runner's at their roots
+            {ScheduleEvent.Kind.SEND, submitter, submitter.id(), "e-task"},
+            {ScheduleEvent.Kind.RECV, marking, "", "e-task"},
+            {ScheduleEvent.Kind.RECV, runner, "", "e-task"},
+            // the state item the Runner offered, the updater's turn took in
+            {ScheduleEvent.Kind.SEND, runner, runner.id(), "e-state"},
+            {ScheduleEvent.Kind.RECV, updater, "", "e-state"},
+        };
+        long seq = 1L;
+        for (Object[] event : events) {
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(seq++,
+                    (ScheduleEvent.Kind) event[0], ContextShape.Stance.of(
+                            (OccurrenceAddress) event[1]).render(),
+                    "SOLR_ZK#REQUEST", 0, (String) event[2],
+                    (String) event[3])));
+        }
+        RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                schedule);
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"), scopeSite(StaticScopeMap.PROVENANCE_SITE, "",
+                "Processor#ro#u1", "Processor#ro", "<P: boolean readOnly>",
+                "<P: boolean readOnly>", ""));
+        Path out = tree.newFolder("item-sender-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1", null,
+                results, wave, 0);
+        Object[][] rows = {
+            {"Run#u2", true, "the item's sender, a value"},
+            {"Mark#u3", true, "the queue turn, a door of the sender's item"},
+            {"Sub#u4", true, "the item's submitter, a door of it"},
+            {"Sib#u5", true,
+                    "the sender's turn, a door of the state item it sent"},
+            {"Front#u7", false,
+                    "a door of a control producer's own message"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[2], row[1],
+                    named(obligations(wave), (String) row[0]) != null);
+        }
+    }
+
     /** A phi whose expression names its own read (ConcreteAnchor case). */
     private static final String NAMES_ITS_READ = "EXPR.00000000000000a7";
 

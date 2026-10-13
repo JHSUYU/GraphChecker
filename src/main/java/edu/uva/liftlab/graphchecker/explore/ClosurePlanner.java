@@ -88,6 +88,9 @@ public final class ClosurePlanner {
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
     /** Sent the message a member served. */
     public static final String CONTROL_PRODUCER = "CONTROL_PRODUCER";
+    /** Sent an item a member that wrote a demanded store version applied
+     *  ({@link #doorsOf}): the version rests on its content. */
+    public static final String STORE_ITEM_PRODUCER = "STORE_ITEM_PRODUCER";
     /** Fetched, on a target's data flow, a store location a member read
      *  ({@link #storeFetches}). */
     public static final String STORE_FETCH = "STORE_FETCH";
@@ -716,6 +719,7 @@ public final class ClosurePlanner {
      *  static candidate's -- not only the doors of a message or a fetch. */
     static boolean valueDemand(String why) {
         return CLOSURE_MEMBER.equals(why)
+                || STORE_ITEM_PRODUCER.equals(why)
                 || STATIC_CANDIDATE_WRITER.equals(why)
                 || STATIC_CANDIDATE_PRODUCER.equals(why);
     }
@@ -815,6 +819,9 @@ public final class ClosurePlanner {
          *  #valueDemand}), not only its doors: kept apart from {@link #why},
          *  which says whether the rows connect it. */
         private boolean value;
+        /** Whether it wrote a store version a demand read ({@link
+         *  #wrote}): the senders of what it applied produce that value. */
+        private boolean storeWriter;
         private boolean dirty;
 
         private Demand(OccurrenceAddress occurrence, String why,
@@ -852,6 +859,10 @@ public final class ClosurePlanner {
             }
             if (other.value && !value) {
                 value = true;
+                grew = true;
+            }
+            if (other.storeWriter && !storeWriter) {
+                storeWriter = true;
                 grew = true;
             }
             return grew;
@@ -1134,7 +1145,13 @@ public final class ClosurePlanner {
      *  it reads no marker), a role, or a captured one that decided no
      *  fault -- has nothing that decides the message: one DIAGNOSTIC row,
      *  never a member, never waited for.  Only a value's occurrence asks:
-     *  a control producer's own message is not followed. */
+     *  a control producer's own message is not followed.  The sender of the
+     *  message that started a store writer ({@link Demand#storeWriter})
+     *  joins as a value ({@link #STORE_ITEM_PRODUCER}): the writer applied
+     *  its item, so the version rests on the item's content, a key it
+     *  removed as much as a value it set, and the doors of the sender's own
+     *  message are asked in turn -- once: the sender's cells are not
+     *  demanded. */
     private static void controlProducer(Walk walk, Demand demand,
                                         List<Demand> next) {
         Corpus corpus = walk.corpus;
@@ -1166,9 +1183,17 @@ public final class ClosurePlanner {
                             + " hold no door of message " + endpoint
                             + " that started it: they are what it started"));
         }
+        OccurrenceAddress sender = corpus.senderOf(endpoint);
         for (OccurrenceAddress door : doors) {
             if (door.equals(demand.occurrence)) continue;
-            if (walk.faulted(door)) {
+            // What a store writer applied came from the message's sender: a
+            // value, whose own message's doors are asked in turn
+            // (solr-bugs-overseer-lock-leak: the Runner's item removes
+            // readOnly from state.json v8; the queue tick's markTaskAsRunning
+            // door decides whether the Runner runs).
+            if (demand.storeWriter && door.equals(sender)) {
+                next.add(new Demand(door, STORE_ITEM_PRODUCER, false));
+            } else if (walk.faulted(door)) {
                 next.add(new Demand(door, CONTROL_PRODUCER, false));
             } else if (walk.faultless.add(door.id())) {
                 walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
@@ -1609,8 +1634,10 @@ public final class ClosurePlanner {
      *  decided it. */
     private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
         if (write.initial()) return;
-        into.add(writer(walk, write));
+        Demand writer = writer(walk, write);
+        into.add(writer);
         if (write.location().kind() == LocationKind.STORE) {
+            writer.storeWriter = true;
             earlierVersions(walk, write, into);
         }
     }
