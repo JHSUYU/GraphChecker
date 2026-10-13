@@ -104,6 +104,7 @@ void ThreadContext::push_region(const char *region_id, const char *task_id) {
   RegionFrame *frame = new RegionFrame();
   frame->region_id = region_id == NULL ? "" : region_id;
   frame->task_id = task_id == NULL ? "" : task_id;
+  frame->root_frame_index = _s_stack.program_entry_index();
   _region_stack.push_back(frame);
 }
 
@@ -741,13 +742,27 @@ int ThreadContext::pause_path_condition_recording() {
 }
 
 int ThreadContext::resume_path_condition_recording() {
-  if (_path_condition_pause_depth > 0) {
+  // An observation resume never releases the base pause: with no
+  // observation level standing above it, it is refused and counted on the
+  // innermost region, whose summary states it (refusedObservationResumes).
+  if (_path_condition_pause_depth > _base_pause_depth) {
     --_path_condition_pause_depth;
+  } else if (_path_condition_pause_depth > 0 && !_region_stack.empty()) {
+    ++_region_stack.back()->refused_resumes;
   }
   return _path_condition_pause_depth;
 }
 
 int ThreadContext::pause_base_recording() {
+  // Retaking the base pause ends a door window.  Its door's test consumed
+  // what it computed, and under a pause the interpreter updates no frame
+  // slot, so a slot written since holds a stale shadow a later window would
+  // read as a term.  The innermost region's frames -- its root and every
+  // frame above it, never one below -- start concrete again.
+  if (!_region_stack.empty()) {
+    _s_stack.clear_tracking_frames_from(
+        _region_stack.back()->root_frame_index);
+  }
   ++_base_pause_depth;
   return pause_path_condition_recording();
 }
@@ -755,7 +770,18 @@ int ThreadContext::pause_base_recording() {
 int ThreadContext::resume_base_recording() {
   if (_base_pause_depth == 0) return _path_condition_pause_depth;
   --_base_pause_depth;
-  return resume_path_condition_recording();
+  if (_path_condition_pause_depth > 0) --_path_condition_pause_depth;
+  return _path_condition_pause_depth;
+}
+
+int ThreadContext::lift_pauses() {
+  int depth = _path_condition_pause_depth;
+  _path_condition_pause_depth = 0;
+  return depth;
+}
+
+void ThreadContext::restore_pauses(int depth) {
+  _path_condition_pause_depth = depth;
 }
 
 #endif

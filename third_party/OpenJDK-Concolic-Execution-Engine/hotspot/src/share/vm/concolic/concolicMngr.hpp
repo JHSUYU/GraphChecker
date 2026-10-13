@@ -380,18 +380,20 @@ public:
   // propagates now (can_do_concolic), or only the base pause stands.  A
   // frame pushed under an observation pause never tracks.
   inline static bool can_track_pushed_frame() {
-    return can_do_concolic()
-        || (ctx && !ctx->is_aborted() && ctx->base_paused_only()
-            && !ctx->is_symbolizing_method()
-            && ctx->symbolic_tracking_enabled());
+    return ctx && !ctx->is_aborted()
+        && (ctx->path_condition_pause_depth() == 0
+            || ctx->base_paused_only())
+        && !ctx->is_symbolizing_method()
+        && ctx->symbolic_tracking_enabled();
   }
 
   // Explicit System.symbolize* calls remain valid inside a paused Java
   // bookkeeping subtree.  The native entry frame itself is pushed while the
-  // pause is active and is therefore deliberately marked non-tracking; do
-  // not reject the explicit VM operation based on that frame-local flag.
-  // Its native implementation temporarily enables PC recording only while
-  // the VM mutates symbolic state, then restores the caller's pause depth.
+  // pause is active -- non-tracking under an observation pause, a concrete
+  // boundary under the base pause alone -- so do not reject the explicit VM
+  // operation based on that frame-local flag.  Its native implementation
+  // lifts every pause only while the VM mutates symbolic state, then
+  // restores the caller's depth exactly (ThreadContext::lift_pauses).
   inline static bool can_explicitly_symbolize() {
     return ctx && !ctx->is_aborted() && !ctx->is_symbolizing_method();
   }

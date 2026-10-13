@@ -346,10 +346,7 @@ jlong ConcolicMngr::attachExpression(
   // Same contract as the other explicit input APIs: this VM operation is
   // valid inside a paused bookkeeping subtree, so lift the pause only while
   // the symbolic state is mutated and then restore the caller's depth.
-  int pause_depth = ctx->path_condition_pause_depth();
-  while (ctx->path_condition_pause_depth() > 0) {
-    ctx->resume_path_condition_recording();
-  }
+  int pause_depth = ctx->lift_pauses();
   // A scalar/reference leaf lives in the exact destination field shadow.  A
   // container leaf instead names the contents of the reconstructed referent:
   // attach that state to the receiver's actual array/container oop so its
@@ -401,9 +398,7 @@ jlong ConcolicMngr::attachExpression(
         attached, guard, SharedFieldVersions::VERSION_WRITE);
   }
   ctx->set_pc_admitted(true);
-  for (int index = 0; index < pause_depth; ++index) {
-    ctx->pause_path_condition_recording();
-  }
+  ctx->restore_pauses(pause_depth);
   if (attach_event_out != NULL) *attach_event_out = attach_event;
   return leaf.export_event_id;
 }

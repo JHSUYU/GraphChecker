@@ -2,10 +2,13 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "concolic/shadow/shadowStack.hpp"
+#include "memory/resourceArea.hpp"
+#include "oops/method.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/thread.hpp"
 
 #include <algorithm>
+#include <string.h>
 
 ShadowStack::ShadowStack(JavaThread *jt)
     : _next_reflection_token(0), _reflection_ret_exp(NULL) {
@@ -56,6 +59,35 @@ const ZeroFrame *ShadowStack::marker_owner_frame() const {
     }
   }
   return NULL;
+}
+
+int ShadowStack::program_entry_index() const {
+  for (int index = (int) _s_frames.size() - 1; index >= 0; --index) {
+    const ZeroFrame *frame = _s_frames[index]->get_zero_frame();
+    if (frame == NULL || !frame->is_interpreter_frame()) continue;
+    Method *method = frame->as_interpreter_frame()->interpreter_state()
+        ->method();
+    if (method == NULL || method->is_native()) continue;
+    ResourceMark rm;
+    const char *holder = method->method_holder()->name()->as_C_string();
+    if (strncmp(holder, "edu/uva/liftlab/graphchecker/", 29) == 0
+        || strncmp(holder, "sun/reflect/", 12) == 0
+        || strncmp(holder, "java/lang/reflect/", 18) == 0) {
+      continue;
+    }
+    return index;
+  }
+  return -1;
+}
+
+void ShadowStack::clear_tracking_frames_from(int index) {
+  if (index < 0) return;
+  for (size_t at = (size_t) index; at < _s_frames.size(); ++at) {
+    ShadowFrame *frame = _s_frames[at];
+    if (!frame->symbolic_tracking_enabled()) continue;
+    frame->get_local_tbl().clear_all();
+    frame->get_opr_stack().clear_all();
+  }
 }
 
 bool ShadowStack::is_current_frame(const ZeroFrame *frame) const {
@@ -201,9 +233,9 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
 
   // Observation helpers entered while concolic propagation is paused still
   // need a structural frame so push/pop remains balanced.  Their values are
-  // deliberately not copied back into the symbolic caller state; nor are a
-  // frame's pushed under the base pause, which ran paused but where a door
-  // decided (its shadow is stale there).
+  // deliberately not copied back into the symbolic caller state; nor are
+  // those of a frame pushed under the base pause, which ran paused around
+  // its door windows (its shadow is stale there).
   if (s_frame->concrete_boundary()) {
     if (callee_frame->is_interpreter_frame()) {
       interpreterState callee_istate =

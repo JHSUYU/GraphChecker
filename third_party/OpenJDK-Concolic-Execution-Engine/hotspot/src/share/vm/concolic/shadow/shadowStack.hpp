@@ -67,6 +67,18 @@ public:
   }
 
   const ZeroFrame *marker_owner_frame() const;
+
+  /**
+   * The index of the program frame that called into the engine: the
+   * topmost frame below every native frame and every frame of the engine's
+   * own classes and of reflection on top of the stack -- a region's root,
+   * asked at its start (ThreadContext::push_region).  -1 when none.
+   */
+  int program_entry_index() const;
+
+  /** Clears the local and operand tables of every tracking frame from
+   *  `index` up (ThreadContext::pause_base_recording); none for -1. */
+  void clear_tracking_frames_from(int index);
   bool is_current_frame(const ZeroFrame *frame) const;
 
   /**

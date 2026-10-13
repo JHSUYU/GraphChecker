@@ -89,7 +89,21 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   `SolrZkClient#makePath` retry lambda, reached through the unwoven `ZkCmdExecutor#retryOperation` --
   records its branch once the door window lifts the base pause there. A frame pushed while recording is
   paused, of either kind, is a concrete boundary (`ShadowFrame::concrete_boundary`): it takes no expression
-  from its caller and hands none back.
+  from its caller and hands none back. Paused, the interpreter updates no frame slot, so a slot a window
+  set and the pause then overwrote holds a stale shadow: retaking the base pause (a window's close, an
+  occurrence's entry) clears the local and operand tables of every tracking frame of the innermost region,
+  its root -- the program frame that called into the engine to start it
+  (`ShadowStack::program_entry_index`) -- and every frame above it, never one below
+  (`ThreadContext::pause_base_recording`): outside a window no frame of a doors-only occurrence carries an
+  expression, inside one only what that window computed. The depth never drops below the base pause: an
+  observation resume with no observation pause above it is refused and counted on the innermost region
+  (`refusedObservationResumes` in the region summary, beside `basePauseDepth`; the runtime names it an
+  `ENGINE_FAULT`), and an explicit input operation (`symbolize*`, an attach) lifts every pause while it
+  mutates symbolic state and restores the depth it found exactly (`ThreadContext::lift_pauses`). THE RULE
+  the engine keeps: every hook that opens a door window runs inside a woven observation bracket, so the
+  hook's own frames are pushed under both pauses and never track; the runtime refuses a window asked for
+  outside one (`ConcolicRegionRuntime#openDoorWindow`, an `ENGINE_FAULT`), and closes an open window inside
+  the next hook's bracket (`#pauseObservation`).
 
 ## 3. Propagation through bytecode
 
@@ -753,6 +767,10 @@ callee's branch, a branch recording is paused at and a switch unforced, §2); `R
 and switches on a constant `valueOf` chose by a symbolic name, tests it in an `EnumSet`, keys a map and a set
 that hold plain constants with it, compares it with another enum class, with null and through a tracked read,
 and reads an enum with a static array of its own type in ordinal order (§3, §4); `RegionBasePauseCalleeSmoke`
-decides a door in a callee pushed under the base pause through a helper frame, records nothing for the same
-callee under an observation pause, and hands no expression back across the base-paused frame (§2). No smoke test covers the
+decides a door in a callee pushed under the base pause through a helper frame (the door's input in the path
+condition), runs production's sequence (the base pause, a hook's observation bracket over it, the base lifted
+in the hook: the hook's frame never tracks, the program frame decides), hands no expression back across a
+base-paused frame whose result slot holds one and takes none in, reads no stale shadow in a second window of
+one frame, records nothing for a callee under an observation pause, refuses an observation resume that would
+release the base pause, and restores the depth a symbolize found (§2). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.
