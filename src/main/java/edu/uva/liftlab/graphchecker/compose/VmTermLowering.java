@@ -352,6 +352,13 @@ public final class VmTermLowering {
                     stringReferenceOrigin, value);
         }
 
+        /** The same value under another text (a name it is defined as),
+         *  every Java-level fact kept. */
+        public Term withText(String value, String nullness) {
+            return new Term(value, sort, integralWidth, nullness,
+                    stringReferenceOrigin, precondition);
+        }
+
         public boolean isZero() {
             return "0".equals(text) || "(- 0)".equals(text);
         }

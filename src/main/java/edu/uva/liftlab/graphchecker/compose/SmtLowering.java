@@ -4302,7 +4302,7 @@ public final class SmtLowering {
     public Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
         return memoized(expression, expected, () -> {
-            Term value = lowered(expression, expected, origin);
+            Term value = compact(lowered(expression, expected, origin));
             if (expression != null && expression.isJsonObject()) {
                 JsonElement observed = expression.getAsJsonObject()
                         .get(VmRows.RECORDED_READING);
@@ -4315,6 +4315,45 @@ public final class SmtLowering {
             cycle(origin);
             return free(expected, IntegralWidth.NONE);
         });
+    }
+
+    /**
+     * One lowered value with each long text it carries -- its own (any sort
+     * but Bool, whose atoms the clock margin reads), its definedness, a
+     * String's nullness -- stated once as a define-fun its uses name
+     * ({@link #shared}): every use writes a term's text by value, and an
+     * operation that writes its operand's several times (a substring writes
+     * its receiver's into the result, its length twice and its definedness)
+     * grew a chain of them 3-4 fold per level (solr-adhoc-10 SL2: a parse
+     * of a handoff's string, texts of 2.6-9.6 GB, 24 GB not enough).  Past
+     * {@link #NAMED_TEXT_CHARS} a text is a name, so a chain grows by its
+     * levels, not their product.
+     */
+    private Term compact(Term value) {
+        String text = value.sort == Sort.BOOL ? value.text
+                : named("term_dag__", value.sort, value.text);
+        String nullness = named("defined_dag__", Sort.BOOL,
+                value.stringNullness);
+        String defined = named("defined_dag__", Sort.BOOL,
+                value.precondition);
+        if (text.equals(value.text) && nullness.equals(value.stringNullness)
+                && defined.equals(value.precondition)) {
+            return value;
+        }
+        return value.withText(text, nullness).withPrecondition(defined);
+    }
+
+    /** {@link #compact}: a text past this many characters is a name. */
+    static final int NAMED_TEXT_CHARS = 2048;
+
+    /** {@code text} as a define-fun's name where it is a long application
+     *  of a sort the query can define, else itself. */
+    private String named(String prefix, Sort sort, String text) {
+        if (text == null || text.length() <= NAMED_TEXT_CHARS
+                || text.charAt(0) != '(' || sort == Sort.UNKNOWN) {
+            return text;
+        }
+        return shared(prefix, sort, text);
     }
 
     private Term lowered(JsonElement expression, Sort expected,

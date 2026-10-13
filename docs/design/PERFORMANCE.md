@@ -64,6 +64,8 @@ running out of memory, and a single case alone takes the whole cluster.
   planner, a solver, offline A/B's) runs at a 512 MB thread stack (`campaign_engine_stack`): lowering recurses once
   per subterm, and a recorded term ~750 binary operations deep overflowed the default stack in an arm's key
   (solr-adhoc-19 SC7, the planner's round 3); a stack is reserved, only the depth a walk reaches is resident.
+  A lowered text past 2048 characters is a `define-fun` its uses name (`SmtLowering#compact`): a nested substring
+  chain held by value outgrew a 24 GB solver heap (solr-adhoc-10 SL2).
 - **Sweeps** (`tools/adhoc/sweep.sh <snapshot> <round> <cases-file> <heads-per-host>`): one `fanout.sh` job per case,
   at most `heads-per-host` heads on each lift (2 for the HDFS group), each admitted for the room it reserves, every
   case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s by default; 10800 for a full sweep) per case is a convenience of a shared
