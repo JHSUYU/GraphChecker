@@ -214,7 +214,7 @@ public class ComposerTest {
         // is refused by name and blocks, instead of being read off the
         // answers as if an undecided valuation.
         ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
-                new Z3(erroringSolver(), 30000L));
+                new Z3(erroringSolver(), 30000L, 8192));
         assertEquals("an error is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, errored.claim().kind());
         assertTrue("and it is named and blocking",
@@ -229,7 +229,7 @@ public class ComposerTest {
         // as a bare state=unknown with nothing to route: named, BLOCKING,
         // and carrying the fragment z3 named.
         ClaimPolicy.Decision undecided = ClaimPolicy.decide(composition,
-                new Z3(undecidingSolver(), 30000L));
+                new Z3(undecidingSolver(), 30000L, 8192));
         assertEquals("an undecided valuation is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, undecided.claim().kind());
         assertTrue("it blocks, and the row names the valuation",
@@ -247,7 +247,7 @@ public class ComposerTest {
         // quantifiers: the answer is the line after the warning.
         assertEquals("a warning is not the verdict", ClaimKind.MARKER_FLIPPED,
                 ClaimPolicy.decide(composition, new Z3(warningSolver(),
-                        30000L)).claim().kind());
+                        30000L, 8192)).claim().kind());
 
         // 1b. The same claim where the marker reaches the target only
         // through CONTROL dependence -- 17960's shape.  The marker gates a
@@ -2139,7 +2139,7 @@ public class ComposerTest {
         };
         for (Object[] row : rows) {
             try (Disjunction asks = new Disjunction(composition,
-                    new Z3(script, 30000L))) {
+                    new Z3(script, 30000L, 8192))) {
                 if ("self-check".equals(row[0])) {
                     asks.selfCheck();
                 } else if (row[0] != null) {
@@ -9985,7 +9985,7 @@ public class ComposerTest {
         Path z3 = z3();
         Assume.assumeTrue("z3 is not on this machine",
                 Files.isExecutable(z3) || !z3.isAbsolute());
-        return new Z3(z3, 30000L);
+        return new Z3(z3, 30000L, 8192);
     }
 
     private static Path z3() {

@@ -962,7 +962,8 @@ public final class ObligationFactory {
      * @param answered the questions this iteration's workers settled
      */
     public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
-                                long timeoutMillis, String given,
+                                long timeoutMillis, int z3RoomMb,
+                                String given,
                                 Map<String, ObligationDir.Answer> answered) {
         if (candidate.pairing()) {
             return PairingFlip.solve(corpus, candidate, given, answered);
@@ -1041,7 +1042,7 @@ public final class ObligationFactory {
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
-        Z3 solver = new Z3(z3, budget);
+        Z3 solver = new Z3(z3, budget, z3RoomMb);
         Z3.Answer answer = solver.ask(built.smt2, built.modelSymbols, false);
         // The query as asked (body plus the driver's question), for the
         // artifact.
@@ -1053,6 +1054,17 @@ public final class ObligationFactory {
                             + "unexplored sibling, not a closed one"));
             return refused(candidate, Verdict.NOT_ADMITTED,
                     "SOLVER_TIMEOUT after " + budget + "ms", query, gaps,
+                    question, false);
+        }
+        // At its memory cap: no verdict, by name, as a timeout is (its
+        // campaign asks it again with a larger cap, in the hard lane).
+        if (answer.memOut()) {
+            gaps.add(GapRow.of(candidate.path.sessionId,
+                    GapKind.SOLVER_MEMOUT, GapClass.DIAGNOSTIC, id,
+                    answer.reason() + ": the flip is an unexplored sibling,"
+                            + " not a closed one"));
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    "SOLVER_MEMOUT at " + solver.capMb() + " MB", query, gaps,
                     question, false);
         }
         // Neither sat nor unsat (error/unknown) is no verdict: refused by name,

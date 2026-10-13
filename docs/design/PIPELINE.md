@@ -1070,11 +1070,23 @@ z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM th
 running z3 processes with it (a shutdown hook), every z3 is started under `setpriv --pdeathsig
 KILL` (`Z3#DIES_WITH_ITS_DRIVER`), so the kernel kills it when the JVM thread that started it is
 gone however the JVM ended (a KILL runs no hook), and each z3 also carries its own hard timeout ten
-seconds past that budget (`-T`, `Z3#hardTimeout`), for a driver that hangs. A run starts only while
-its host's `MemAvailable`, less what this JVM's running z3s may still grow to (each up to the most
-any of them has held) and two such z3s for the new run, is at least the share
-`CAUSYNTH_HOST_MAX_USED_PCT` keeps free (`Z3#enter`; a JVM with no run in flight starts one anyway):
-sixteen z3s of hdfs-11741 m1's paths, a GB each beside the composer's 15 GB, took a host to 82 %. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+seconds past that budget (`-T`, `Z3#hardTimeout`), for a driver that hangs. EVERY z3 RUNS UNDER A
+MEMORY CAP its JVM's charge covers: a JVM that starts z3 is told its z3 room R (`--z3-room-mb`,
+required; `smt.Z3.Room`) and charged its footprint and R; each of its z3s holds a slot of R and starts
+under z3's own `memory_max_size` at the slot less 64 MB (`Z3#MISSED_MB`: what z3's accounting does not
+count; on 4.14.1 a capped z3 stayed within its cap at 1-2 GB and 12-20 MB past it at caps of tens of
+MB, and stops printing `(error "out of memory")`, exit 101), and a run starts only while its two
+slots fit in what R has free (`Room#take`, so a run alone always does). A z3 at its cap is the answer
+`memout` (`Answer#memOut`): undecided by name, as a timeout is, never sat or unsat and no error of the
+query (an error voids a composition's claim), its reason the cap it hit. A solver's R is a question's
+(`campaign_question_mb`, 1152 MB: its two engines 512 MB each), in the hard lane
+`campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at its cap is NOT_ADMITTED
+`SOLVER_MEMOUT` (a DIAGNOSTIC row of that kind) and asked again in the hard lane, as a first-lane
+timeout is, and one at the hard lane's cap too is named as a timeout there is
+(`solver_timeouts.jsonl`, `campaign_solver_timeouts`). Uncharged, a composer's z3 grew to 10.9 GB in
+20 minutes beside its 8.9 GB charge (SGF3-adhoc-13, lift12: swap full, load 110, sshd a minute late);
+the admission this replaces read the host's `MemAvailable` against a guess of what the JVM's z3s may
+grow to, charging nothing. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
@@ -1349,9 +1361,10 @@ every `campaign_host_renew_s` (10 s) by a process of its own while the shell tha
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
 leases old is deleted. Every start states its measured need, with no default. A solve on a host
 where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
-(`campaign_question_mb`, 512 MB: the serving solver's JVM is charged on its own, §7.5; HI1/HI2's z3
-runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host -- and a hard-lane ask -- what a
-solver JVM of its corpus needs (`campaign_solver_need_mb`, 2.5 GB at the start heap: its question is
+(`campaign_question_mb`, 1152 MB, the room its two capped z3s run in: the serving solver's JVM is
+charged on its own, §7.5; HI1/HI2's z3 runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host
+-- and a hard-lane ask -- what a solver JVM of its corpus needs (`campaign_solver_need_mb`, its
+footprint and its z3 room, 3.6 GB at the start heap, the hard lane's 6.6 GB: its question is
 answered in a JVM of its own under that charge when its host has no room for its solver; a question
 whose start's charge does not cover that need, a warm one, is placed by it instead, never ended at
 its first growth: SL1-10's were, at 512 MB on full hosts), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
@@ -2397,8 +2410,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    same disjunction under more pins (hdfs-11741 i1: 24 of its 31 whole asks ran their 60 s
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
-   second each alone). Path by path, the paths are asked 8 at a time (`PATH_ASKS`, 16 z3
-   processes), in their order, and answer in that order: the first sat path's answer (the asks
+   second each alone); one that stops at its memory cap goes path by path too. Path by path, the
+   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 1 GB slot of the composer's
+   z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3s held 0.1-1 GB), so an 8 GB room runs four at
+   once, the rest waiting for a slot; the valuations, asked four at a time (`PARALLEL_ASKS`), ask
+   their whole disjunctions in slots of an eighth of the room (`Disjunction#asking`, `Z3#shared`),
+   and a lone ask -- the formula's, a refinement's, a path asked alone -- in half of it each engine.
+   A composer's room is the least of 8192 MB and what the host's ceiling leaves beside its footprint
+   (`campaign_z3_room_mb`; charged with it, `campaign_jvm_charge_mb`). The paths answer in their
+   order: the first sat path's answer (the asks
    after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
    `Composition#ownRun`): its own session's arm of each message the path received and each state

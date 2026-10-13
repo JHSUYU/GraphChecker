@@ -101,6 +101,9 @@ public enum GapKind {
     ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */
     SOLVER_TIMEOUT,
+    /** The solver stopped at the memory cap its JVM's charge held for it
+     *  ({@code smt.Z3}), with no answer. */
+    SOLVER_MEMOUT,
     /**
      * An activation closed at a different execution-index depth than it
      * opened at.  BLOCKING: frames are identity (IDENTITY §3), so a leaked

@@ -438,9 +438,12 @@ public final class ClaimPolicy {
             this.asks = asks;
             this.gaps = gaps;
             selfContradictory(composition, asks, gaps);
+            // Asked PARALLEL_ASKS at a time: each whole ask's z3s in a
+            // slot of the composer's z3 room shared that many ways.
+            Disjunction together = asks.asking(PARALLEL_ASKS);
             outcomes = new ArrayList<Outcome>(inParallel(
                     composition.valuations(), valuation -> outcome(
-                            composition, asks, valuation,
+                            composition, together, valuation,
                             Collections.<String>emptyList(),
                             valuation.ordinal() == 0)));
             for (Outcome outcome : outcomes) {
@@ -922,8 +925,10 @@ public final class ClaimPolicy {
      * How many valuations are asked at once (hdfs-17899-bug2: 128 valuations
      * one at a time held COMPOSE for hours while the head's other cores sat
      * idle): four whole asks, eight z3 processes, two per ask (one per
-     * arithmetic engine, {@code Z3#run}); a valuation asked path by path
-     * asks its paths on the composition's pool ({@link Disjunction}).
+     * arithmetic engine, {@code Z3#run}), each in a slot of an eighth of the
+     * composer's z3 room ({@code Disjunction#asking}); a valuation asked
+     * path by path asks its paths on the composition's pool ({@link
+     * Disjunction}).
      */
     static final int PARALLEL_ASKS = 4;
 

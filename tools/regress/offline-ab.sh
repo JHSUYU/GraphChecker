@@ -144,14 +144,17 @@ ab_props=()
 ab_java() {
   local dir=$1 heap=$2 cp=$3 main=$4 code=0 wall rss
   shift 4
+  # A main that starts z3 is told its z3 room and charged it beside its
+  # heap, as the campaign charges it (run_engine.sh campaign_z3_room_mb).
   local -a run=(env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}"
     timeout -k 30 "${AB_STAGE_TIMEOUT_S}"
     /usr/bin/time -f '%e %M' -o "${dir}/time.txt"
     "${ab_java_bin}" "${campaign_engine_stack}"
     "-Dcausynth.loop.default.bound=${ab_loop_bound}"
     "-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)"
-    "${ab_props[@]}" -cp "${cp}" "${main}" "$@")
-  ab_place "${heap}"
+    "${ab_props[@]}" -cp "${cp}" "${main}" "$@"
+    $(campaign_z3_room_args "${main}" "${heap}"))
+  ab_place "$(( heap + $(campaign_z3_room_mb "${main}" "${heap}") ))"
   if campaign_host_is_local "${ab_placed_host}"; then
     (cd "${dir}" && "${run[@]}") \
       >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?

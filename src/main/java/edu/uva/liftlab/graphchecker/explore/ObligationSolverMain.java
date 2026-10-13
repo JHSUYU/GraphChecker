@@ -41,6 +41,9 @@ import java.util.List;
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the round was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
+ *   --z3-room-mb &lt;n&gt;         what the JVM's charge holds for its z3
+ *                             processes, a question's two engines half
+ *                             each ({@code smt.Z3}); required
  *   one obligation:
  *   --obligations &lt;file&gt;      the round's obligations.jsonl
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
@@ -76,11 +79,17 @@ public final class ObligationSolverMain {
         Path z3 = Paths.get(options.value("z3", "z3"));
         long timeoutMillis = options.number("solver-timeout-ms",
                 Z3.DEFAULT_TIMEOUT_MILLIS);
+        int z3RoomMb = (int) options.number("z3-room-mb", 0L);
+        if (z3RoomMb <= 0) {
+            throw new IllegalArgumentException("--z3-room-mb is required: "
+                    + "what this JVM's charge holds for its z3 processes");
+        }
         Path serve = options.path("serve");
         if (serve != null) {
             Service.serve(serve,
                     options.number("idle-seconds", 0L) * 1000L,
-                    answerer(sessions, rootDomains, z3, timeoutMillis));
+                    answerer(sessions, rootDomains, z3, timeoutMillis,
+                            z3RoomMb));
             return;
         }
         Path obligations = options.path("obligations");
@@ -92,7 +101,7 @@ public final class ObligationSolverMain {
         }
         JsonObject result = solve(Corpus.read(iteration, rootDomains),
                 iteration, obligations, obligationId, out, z3,
-                timeoutMillis);
+                timeoutMillis, z3RoomMb);
         System.out.println(ExploreMain.pretty(result));
     }
 
@@ -109,7 +118,8 @@ public final class ObligationSolverMain {
      */
     private static Service.Answerer answerer(Path sessions,
                                                    Path rootDomains, Path z3,
-                                                   long timeoutMillis) {
+                                                   long timeoutMillis,
+                                                   int z3RoomMb) {
         Path iteration = sessions.getParent();
         return new Service.Answerer() {
             private List<String> read;
@@ -129,7 +139,7 @@ public final class ObligationSolverMain {
                 solve(corpus, iteration, Paths.get(JsonFields
                         .primitiveString(question, "obligations")),
                         JsonFields.primitiveString(question, "obligationId"),
-                        out, z3, timeoutMillis);
+                        out, z3, timeoutMillis, z3RoomMb);
             }
         };
     }
@@ -153,7 +163,8 @@ public final class ObligationSolverMain {
      *  iteration} and writes every artifact of it. */
     public static JsonObject solve(Corpus corpus, Path iteration,
                                    Path obligations, String obligationId,
-                                   Path out, Path z3, long timeoutMillis)
+                                   Path out, Path z3, long timeoutMillis,
+                                   int z3RoomMb)
             throws IOException {
         Files.createDirectories(out);
         Obligation proposal = null;
@@ -194,7 +205,7 @@ public final class ObligationSolverMain {
                 : declared.render()) + "\nplan " + (Files.isRegularFile(plan)
                 ? ArtifactIO.sha256(plan) : "");
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
-                candidate, z3, timeoutMillis, given,
+                candidate, z3, timeoutMillis, z3RoomMb, given,
                 ObligationDir.answered(iteration));
         if (!outcome.issued()) {
             JsonObject published = publish(out, proposal, outcome.result,

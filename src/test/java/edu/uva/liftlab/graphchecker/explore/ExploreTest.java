@@ -6972,7 +6972,8 @@ public class ExploreTest {
         Path worker = out.resolve(name);
         ObligationSolverMain.solve(Corpus.read(iteration, domains),
                 iteration, waveDir.resolve("obligations.jsonl"),
-                proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
+                proposal.obligationId(), worker, Paths.get("z3"), 10_000L,
+                1152);
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.resolve("obligation_result.jsonl"),
                 RowCodec::readObligationResult);

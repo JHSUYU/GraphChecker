@@ -47,6 +47,8 @@ import java.util.Map;
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
+ *   --z3-room-mb &lt;n&gt;     what the JVM's charge holds for its z3
+ *                          processes ({@code smt.Z3}); required
  * </pre>
  *
  * <p>Parsed by {@link LongOptions}.  Every outcome, failures included, is written as a claim with its gaps,
@@ -84,7 +86,8 @@ public final class ComposeMain {
                 / (1024 * 1024) + " MB body and " + composition.valuations()
                 .size() + " valuation(s), in " + seconds(lowered - started)
                 + " s; deciding");
-        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
+        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis,
+                arguments.z3RoomMb);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
         long decided = System.nanoTime();
@@ -562,6 +565,8 @@ public final class ComposeMain {
         /** Null: {@link Z3}'s own default. */
         final Path z3;
         final long timeoutMillis;
+        /** What the JVM's charge holds for its z3 processes. */
+        final int z3RoomMb;
 
         private Arguments(LongOptions options) {
             Path sessions = options.path("sessions");
@@ -577,6 +582,7 @@ public final class ComposeMain {
             z3 = options.path("z3");
             timeoutMillis = integer(options.value("solver-timeout-ms", null),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
+            z3RoomMb = integer(options.value("z3-room-mb", null), 0);
         }
 
         static Arguments parse(String[] argv) {
@@ -592,6 +598,11 @@ public final class ComposeMain {
             if (arguments.output == null || arguments.manifest == null) {
                 throw new IllegalArgumentException(
                         "--output and --manifest are required");
+            }
+            if (arguments.z3RoomMb <= 0) {
+                throw new IllegalArgumentException("--z3-room-mb is required:"
+                        + " what this JVM's charge holds for its z3"
+                        + " processes");
             }
             // Fail closed: without the map no reference write is known to
             // rest on the decisions that built its referent.
