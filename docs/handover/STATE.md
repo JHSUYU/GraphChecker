@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr stopped for a handover (2026-10-13)
+# State: HDFS finished; Solr in its last round (2026-10-13)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,43 +11,30 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: stopped for a handover (2026-10-13 ~13:00) -- read this first if you take over Solr
+## S. Solr: the last round SGF3 (2026-10-13 afternoon) -- read this first if you take over Solr
 
-The owner stopped the Solr group on 2026-10-13 for a handover to another coding agent ("等 z2, sc, ex 完成，就停止一切
-正在做的任务，然后更新所有的对应文档。别的coding agent能从这些文档快速接手"). Every agent finished or committed its
-item and stopped; no GraphChecker process runs on any lift; nothing uncommitted. Read, in order: this section, TODO.md
-"Solr" (§1 the four branches to merge and their gates, §3 open problems, §4 the last round and the fork), STATUS.md
-"Solr checks" (a current-evidence table first, then each case's history), and the handover reports
-`/bigtemp/vnr3ne/analysis/solr-2026-10-12/HANDOVER-2026-10-13.md` (lead + agents ST, Z2, EX, SC: heads, gates, next
-steps, what to keep, gotchas).
+A new lead took over from the 2026-10-13 handover (owner /goal: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/GOAL-next-agent.md`).
+Read, in order: this section, TODO.md "Solr" (§0 what is merged, §1 the branches in flight, §3 open problems, §4 the last
+round and the fork), STATUS.md "Solr checks" (a current-evidence table, then each case's row), the handover reports
+`/bigtemp/vnr3ne/analysis/solr-2026-10-12/HANDOVER-2026-10-13.md`, and the readings in `.../solr-2026-10-12/readings/`.
 
-- **Code.** `system/solr` (worktree `/bigtemp/vnr3ne/wt/gc-solr`) holds everything merged and gated through 2026-10-13
-  midday (TODO Solr §0): the 2026-10-12 handover's three branches (zk-doors -> explore2 -> zk2) and every general fix
-  found since -- string_ref (enum containers), String operations, STORE_ITEM_PRODUCER + the VM base pause (image
-  `/bigtemp/vnr3ne/vm-force8/j2sdk-image`; the jar refuses older images), a planted SessionExpired as a real expiry,
-  per-path sender compatibility, the native charge, ZooKeeper faults ConnectionLoss/SessionExpired only, the planner's
-  caching. `solr-int` (`/bigtemp/vnr3ne/wt/gc-solr-merge`) equals it. Four branches wait, in merge order: `solr-zk5`
-  bb2a20b30 (Z2: PUBLISH schedule events, leaf sorts, unheld views, the full FP rule), `solr-native-claim` 7c376da8e and
-  `solr-confirm-spell` e2605ff19 (SC: native holds of hand-off tasks; CONFIRM by node spellings), `solr-replaybound`
-  bdc347713 (EX: a killed replay never settles a flip). Each has its review/gate state and what is left in TODO §1.
-- **Tree.** `gc/solr-final9` 0ce3deafed (`/bigtemp/vnr3ne/wt/lucene-solr-final9`, `GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`;
-  17/17 natives, 20 cases valid). The fork `JHSUYU/solr` `graphchecker/solr-checks` is final5 827b46a609 (verified from a
-  fresh clone); it fast-forwards to final9 after the last round (SSH push; ST's section).
-- **Bug checks (8).** PASS on the merged code with native 10/10: 18406, 18413, migrate, restore, tra (round SGF2) and
-  lock-leak (EXZ1 on final9, by #50's realistic ConnectionLoss past the retries in markTaskAsRunning). reindex: #04's
-  chain confirmed, native 10/10 with SC's claimed-work hold (NC1). snapshot-no-active: the seed now follows the recording
-  (solr-zk5); #16's realizable flip has yet to run to a witness. All 8 rerun in the last round on the final code.
-- **Study checks (12).** 38 is SAT confirmed twice and a new bug (docs/checks/new-bugs.txt #14); on final9 its recorded
-  interleaving hid the witness (TODO §3l). The other 11 have no final verdict yet: SGF2 ended 21 (RUN_DEFECT) and 13
-  (MISSING) at their budgets and was stopped for the rest. Exploration bound policy: `experiments/solr/solr-adhoc/case.sh`
-  (depth 0 for 07 09 10 13 19 21 40, 1 for 05 14 31 39; owner 2026-10-12: a genuinely large closure may end at a named
-  bound).
-- **Next.** TODO Solr §1 (merge four branches with their owed gates, 18413 on solr-zk5 first) -> §4 (SGF3: all 20 on
-  system/solr + final9 + vm-force8, read every `.smt` into STATUS) -> the fork fast-forward and fresh-clone check.
-- **Tools.** Launch: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/launch.sh` (one campaign per call, head chosen, never
-  lift11; defaults final9 + vm-force8). Watch: `watch-remote.sh` on lift06 over `live.txt`. Verify:
-  `tools/rounds/round-verify.sh <round>`. Stop: `tools/rounds/stop-run.sh <suffix>` with the run's GC_OUT.
-
+- **Code.** `system/solr` (worktree `/bigtemp/vnr3ne/wt/gc-solr`) = `solr-int` (`/bigtemp/vnr3ne/wt/gc-solr-merge`):
+  everything of TODO Solr §0, including the 2026-10-13 afternoon merges (solr-zk5, solr-native-claim + solr-confirm-spell,
+  solr-replaybound, solr-forcebound). In flight: `solr-armkey` (KY), `solr-witfirst` (WF), TODO §1.
+- **Tree.** `gc/solr-final9` 0ce3deafed (`/bigtemp/vnr3ne/wt/lucene-solr-final9`, `GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
+  = the fork's `JHSUYU/solr` `graphchecker/solr-checks` (fast-forwarded 2026-10-13, verified from a fresh clone: 17/17
+  workloads, 20/20 valid). VM `/bigtemp/vnr3ne/vm-force8/j2sdk-image`.
+- **Hosts.** lift02-05 added by the owner (2026-10-13); lift01 lacks `/bigtemp`. lift11 stays the control host.
+- **Bug checks (8).** SGF3 PASS, read into STATUS: 18406, migrate, restore, tra, lock-leak (confirmed; native 10/10, 9/10
+  for restore). Running: 18413, reindex, snapshot-no-active.
+- **Study checks (12).** All twelve running in SGF3 on sgf3b (07 with 21600 s, the rest 14400 s); 38 is SAT confirmed in
+  SC5/SGF2 (new-bugs #14).
+- **Next.** Read each finished `.smt` into STATUS; merge solr-armkey/solr-witfirst after their gates if they land, and
+  rerun the cases they change; new-bugs.txt for a confirmed lost watch (09/40).
+- **Tools.** Launch: `.../solr-2026-10-12/launch.sh` (one campaign; thirteen hosts) or `.../solr-2026-10-13/launch-batch.sh`
+  (several, shared pool). Status: `.../solr-2026-10-13/st.sh <suffix...>`. Watch: `watch-remote.sh` on lift06 over
+  `live.txt` (wrapped in `timeout 1780` under a Monitor). Verify: `tools/rounds/round-verify.sh SGF3`. Stop:
+  `tools/rounds/stop-run.sh <suffix>` with the run's GC_OUT.
 
 ## 0. The end state: two branches (owner 2026-10-06)
 

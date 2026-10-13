@@ -7,7 +7,7 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 
 | what | where / how |
 | --- | --- |
-| hosts | `lift06`…`lift15` (ten), 48 cores and 30 GB each. All ten are used for every fan-out (obligations, rounds, sweeps, builds). `lift11` is the owner's interactive machine: it is a **worker but never a campaign head** (`launch-round.sh` enforces it). Never blow up a host's memory: every start goes through the host ledger (below). |
+| hosts | `lift06`…`lift15` (ten) and, since 2026-10-13 (owner), `lift02`…`lift05`, 48 cores and 30 GB each (`lift01` is not usable: `/bigtemp` does not mount there; `lift02` and `lift03` cannot reach `lift15` over ssh, "No route to host", so they are workers, never heads: a head must reach every host of its list, PREFLIGHT refuses the run otherwise). All are used for every fan-out (obligations, rounds, sweeps, builds); a campaign's hosts are its `LIFTS`/`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` at launch (`analysis/solr-2026-10-12/launch.sh` names all thirteen). `lift11` is the owner's interactive machine: it is a **worker but never a campaign head** (`launch-round.sh` enforces it). Never blow up a host's memory: every start goes through the host ledger (below). |
 | home | `/u/vnr3ne` is NFS-shared by all lifts, **100 GB quota** (it has been full twice). Keep bulk data off it. |
 | bulk storage | `/bigtemp/vnr3ne` (NFS pool, automounted on every lift, owner-approved): round outputs `gc-out/`, VM images `vm-*/`, specs, analyses, gate outputs `ab/`, helper scripts `bin/`, agent worktrees `wt/`. `test -w` does not trigger the automount; `ls` it first. |
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |

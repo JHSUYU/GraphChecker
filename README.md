@@ -21,7 +21,7 @@ defaulted.
 
 The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
 长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". **A lead or agent that takes over keeps
-`lift06`-`lift15` full at all times; nothing waits in series except on a real dependency.** How the last leads did it
+`lift06`-`lift15` (and, since 2026-10-13, `lift02`-`lift05`) full at all times; nothing waits in series except on a real dependency.** How the last leads did it
 (details and lessons: [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
 
 1. **Inside one case:** every obligation (a solve, then a replay), GROW re-run, CONFIRM and native reproduction is a
@@ -57,9 +57,9 @@ ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest
 engine change); nothing goes to `main`. The remote keeps `main`, `system/hdfs` and `system/hdfs1`; the Hadoop fork keeps
 the four trees the cases read (`graphchecker/*`, STATE §3). Everything a run of the 46 cases needs is on those
 branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
-checkouts) and runs the series. **Solr is in progress** on `system/solr` (from `system/hdfs1`), stopped by the owner for a handover on 2026-10-13:
+checkouts) and runs the series. **Solr is in its last round** (SGF3, 2026-10-13) on `system/solr` (from `system/hdfs1`):
 [docs/handover/STATE.md](docs/handover/STATE.md) §S says where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
-"Solr" what is left in order (four branches to merge, the last round SGF3, the fork fast-forward).
+"Solr" what is merged, what is in flight and the last round; STATUS "Solr checks" each case's reading.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
