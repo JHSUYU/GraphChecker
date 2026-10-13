@@ -804,8 +804,9 @@ public class ScheduleLogTest {
      * so the thread goes, its lock is released and the publication lands --
      * not after the order's timeout, a misread then.  An apply that
      * computes, or waits past the grace on a lock a thread the order does
-     * not hold owns (review R2a), holds its turn until it is in force: what
-     * comes after it sees it.
+     * not hold owns (review R2a) -- one merely entering the order's own lock
+     * too (R2b) -- holds its turn until it is in force: what comes after it
+     * sees it.
      */
     @Test(timeout = 40000L)
     public void anApplyGivesItsTurnOnlyWhenTheOrderHoldsWhatItWaitsOn()
@@ -912,6 +913,41 @@ public class ScheduleLogTest {
         assertTrue("a lock no turn holds is waited out: what comes after"
                 + " sees the publication", sawApplied[0]);
         assertEquals(Arrays.asList("before", v8, "after"), sites());
+
+        // Its owner, waiting on no turn, keeps entering the order's own lock
+        // (review R2b): blocked there on the watchdog, which is no cycle.
+        restart();
+        Confirmation.resetForTests();
+        applied.clear();
+        enforce(order, Collections.<ScheduleEvent>emptyList());
+        CountDownLatch entering = new CountDownLatch(1);
+        Thread asking = new Thread(() -> {
+            synchronized (busy) {
+                entering.countDown();
+                long until = System.nanoTime()
+                        + TimeUnit.MILLISECONDS.toNanos(1500L);
+                while (System.nanoTime() < until) ScheduleLog.waitsNoMore();
+            }
+        });
+        asking.start();
+        entering.await();
+        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
+                () -> {
+                    synchronized (busy) {
+                        applied.add("v8");
+                    }
+                }, v8));
+        sawApplied[0] = false;
+        Thread last = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawApplied[0] = !applied.isEmpty();
+        });
+        last.start();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        last.join(10000L);
+        assertFalse(last.isAlive());
+        assertTrue("an owner entering the order's lock is no cycle",
+                sawApplied[0]);
     }
 
     /** Asserts {@code event} returns without a stall. */

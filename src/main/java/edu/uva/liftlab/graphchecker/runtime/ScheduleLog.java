@@ -669,19 +669,29 @@ public final class ScheduleLog {
      * The lock {@code publisher} waits on as its owner chain names it, when
      * an owner on that chain -- the lock's, or the lock that owner waits
      * on's, a few hops -- is a thread waiting for its turn ({@link
-     * #WAITERS}); else null: no lock with an owner, or an owner the order
-     * does not hold.
+     * #WAITERS}), the publisher aside; else null: no lock with an owner, an
+     * owner the order does not hold, or a hop through this class's own
+     * {@link #LOCK} -- a thread merely entering it waits on the watchdog
+     * that holds it, itself a waiter, which is no cycle (review R2b).  A
+     * Solr lock the watchdog's own thread owns while it waits for its turn
+     * is one: that waiter runs the watchdog on its asks.
      */
     private static String heldByTheOrderLocked(Thread publisher) {
         Set<Long> waiting = new HashSet<Long>();
         for (Thread thread : WAITERS.keySet()) waiting.add(thread.getId());
+        waiting.remove(publisher.getId());
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        int order = System.identityHashCode(LOCK);
         StringBuilder chain = new StringBuilder();
         Set<Long> seen = new HashSet<Long>();
         long id = publisher.getId();
         for (int hop = 0; hop < OWNER_HOPS && seen.add(id); hop++) {
             ThreadInfo info = threads.getThreadInfo(id);
-            if (info == null || info.getLockOwnerId() < 0L) return null;
+            if (info == null || info.getLockOwnerId() < 0L
+                    || info.getLockInfo() == null
+                    || info.getLockInfo().getIdentityHashCode() == order) {
+                return null;
+            }
             chain.append(chain.length() == 0 ? "" : ", which waits on ")
                     .append(info.getLockName()).append(" held by \"")
                     .append(info.getLockOwnerName()).append('"');
