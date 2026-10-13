@@ -1662,19 +1662,22 @@ forced world's and asserting them in another world could make a real witness UNS
   states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
   the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
   body holds it, none on the path's own) -- a String arrival held at its text (`Composer#arrived`)
-  --, except a store content leaf (`contract.ContentPort`) whose producer the closure refuses by
-  rule (a role, which no weave captures; a daemon tick past the recording's last,
-  `Corpus#tickPastRecording`; `Composer#refusedByRule`): that producer's own export at the port in
-  the leaf's run (`Composer#delivery`) settles it. An expression binds it, the leaf stated as the
+  --, except a store content leaf (`contract.ContentPort`) whose producer no session attests at its
+  port (`Composer#refusedByRule`): a role, which no weave captures (`ROLE`); a daemon tick past the
+  recording's last, `Corpus#tickPastRecording` (`TICK_BOUND`); or a region no session ran instrumented
+  where it wrote that port (`UNATTESTED`: which tick of a periodic writer writes a document's key is
+  timing -- solr-18413 SG3C's Overseer state update that wrote the routing rule's `expireAt` ran
+  instrumented 21 times, never writing it): that producer's own export at the port in the leaf's run
+  (`Composer#delivery`) settles it. An expression binds it, the leaf stated as the
   export (several: one of them) with what its lowering requires and each handoff it names taken by
   this same rule -- the producer's path condition is not stated, an over-approximation CONFIRM
   filters -- named `EXPORTED`; a constant expression holds it at its received value, named
-  `CONSTANT` for a role, and `BOUNDED` past the tick bound, a named bound the case rests on (a
+  `CONSTANT` (a role, or unattested), and `BOUNDED` past the tick bound, a named bound the case rests on (a
   DIAGNOSTIC `<producer> daemon-tick-bound=<last>` row, `run_engine.sh campaign_bounds`:
   `daemon_tick_bound`). These three are no open link of a chain (`SmtLowering#settled`, `Cone`;
   `cone.py`'s `exportedByRefusedProducer`, `constantByRefusedProducer`, `boundedByTick`), one
   DIAGNOSTIC per producer, rule and kind counts the leaves on the paths kept. No export that lowers
-  leaves it HELD and open, as a leaf with no producer, or one a round could plan; one whose producer is attested and no
+  leaves it HELD and open, as a leaf with no producer; one whose producer is attested and no
   export of it lowers, or whose row states a value the lowering places nowhere, is FREE, named:
   nothing pins it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it

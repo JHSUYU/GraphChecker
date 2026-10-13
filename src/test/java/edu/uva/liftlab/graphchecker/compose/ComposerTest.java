@@ -857,13 +857,14 @@ public class ComposerTest {
                 "M_Z_field_HOFF.k'ey"}) {
             judgedOnItsPaths(vh, "PORT.key", PRODUCER, expression, "OPEN");
         }
-        // A store content leaf whose unattested producer the closure refuses
-        // by rule settles by that producer's own export at the port (lead's
-        // rule (a), B-a): an expression binds it, a constant expression
-        // holds it as its version's constant -- past the daemon tick bound,
-        // that bound by name -- each named and no open link; with no export
-        // it stays an open link, as the same leaf of a region producer a
-        // round could plan does.
+        // A store content leaf whose producer no session attests at its port
+        // -- a role, a tick past the recording, or a region no session ran
+        // instrumented where it wrote the port (solr-18413 SG3C) -- settles
+        // by that producer's own export at the port (lead's rule (a), B-a,
+        // UNATTESTED): an expression binds it, a constant expression holds
+        // it as its version's constant -- past the daemon tick bound, that
+        // bound by name -- each named and no open link; with no export it
+        // stays an open link.
         String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
         OccurrenceAddress role = OccurrenceAddress.of(PRODUCER.node(),
                 OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
@@ -872,7 +873,9 @@ public class ComposerTest {
                 "REGION.tick", CausalContext.of(Role.of("TICK"), "", 2),
                 ExecutionIndex.empty());
         Object[][] rows = {
-            {PRODUCER, expression, "OPEN"},
+            {PRODUCER, expression, SmtLowering.Unbound.EXPORTED},
+            {PRODUCER, constant("false"), SmtLowering.Unbound.CONSTANT},
+            {PRODUCER, null, "OPEN"},
             {role, expression, SmtLowering.Unbound.EXPORTED},
             {role, constant("false"), SmtLowering.Unbound.CONSTANT},
             {role, null, "OPEN"},

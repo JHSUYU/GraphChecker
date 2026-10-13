@@ -1500,7 +1500,8 @@ mints by its own text, unpaired. At most
 `CONTENT_BOUND:<port>` and the rest crosses as constants. A writer's export of a leaf is the VM's
 expression of it imported through the VM's expression store (`StoreContent#export`, as `WireExport`
 imports a message field's), never its raw answer, whose nodes are references. A leaf whose producer
-the closure refuses by rule is settled in COMPOSE by that producer's own export (PIPELINE §8): bound
+no session attests at its port (a role, a tick past the recording, or a region no session ran
+instrumented where it wrote it) is settled in COMPOSE by that producer's own export (PIPELINE §8): bound
 by its expression (`EXPORTED`), or held at its version's value where the export is a constant
 (`CONSTANT`; `BOUNDED` past the daemon tick bound), open where there is none. A
 wave's answer for a leaf's attach is

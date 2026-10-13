@@ -31,7 +31,7 @@ Two facts are published for report.py, which gates on both:
                 claim): a SAT's other paths' unbound variables are reported in
                 unboundOffWitness, never hidden, and gate nothing.  COMPOSE
                 names the same set (compose.Cone, the claim's openChain).
-                A store content leaf a producer refused by rule settles is
+                A store content leaf an unattested producer settles is
                 no open link, listed by how: constantByRefusedProducer,
                 exportedByRefusedProducer, boundedByTick (concrete[] kinds
                 CONSTANT, EXPORTED, BOUNDED).
@@ -178,8 +178,8 @@ def main():
     # A SAT stands on its witness's path; an UNSAT on every path.
     sat = result.get('claim') == 'SAT_CANDIDATE' and bool(selector)
     out['unboundOffWitness'] = []
-    # A store content leaf a producer the closure refuses by rule settles
-    # (compose.Composer#refusedByRule, SmtLowering#settled): concrete[] kind
+    # A store content leaf a producer no session attests at its port
+    # settles (compose.Composer#refusedByRule, SmtLowering#settled): concrete[] kind
     # CONSTANT (its export a constant), EXPORTED (bound by its export) or
     # BOUNDED (held past the daemon tick bound): named, and no open link.
     path_of = {p.get('selector', ''): p.get('pathId', '')
