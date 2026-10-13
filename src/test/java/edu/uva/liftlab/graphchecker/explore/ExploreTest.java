@@ -2522,6 +2522,8 @@ public class ExploreTest {
             {"s-told-5", new int[] {0}, null, 0, "5", ""},
             {"s-told-5-store", new int[] {0}, null, 0, "5", "store"},
             {"s-told-7", new int[] {0}, null, 0, "7", ""},
+            {"s-task-store-1", new int[] {0}, null, 0, null, "", 1},
+            {"s-task-store-2", new int[] {0}, null, 0, null, "", 2},
         };
         for (Object[] row : sessions) {
             Session session = new Session(iteration, (String) row[0]);
@@ -2547,6 +2549,15 @@ public class ExploreTest {
                 session.attach(at(PRODUCER, props, "ZkRead#3"), "M_FED",
                         "3", null);
                 session.attach(told, "M_TOLD", (String) row[4], ROTATED);
+            }
+            // The task's own reads of the store, from one export or two.
+            for (int read = 0; row.length > 6 && read < (Integer) row[6];
+                 read++) {
+                session.attach(at(TARGET, props, "ZkRead#7"),
+                        "M_PROPS_" + read, "x", Endpoint.of(PRODUCER,
+                                props, ExecutionIndex.of(
+                                        Collections.singletonList(Frame.of(
+                                                "ZkWrite#2", read))), 0));
             }
             if (!"".equals(row[5])) {
                 // READER, writing nothing the guard reads: it read the
@@ -2587,6 +2598,11 @@ public class ExploreTest {
                     "a store reader writing nothing the guard reads, "
                             + "telling the task 5 against 7 where the "
                             + "guard reads"},
+            {"s-task-store-1", "s-task-store-2", true,
+                    "the task's own store read of one version against two, "
+                            + "the guard stating neither"},
+            {"s-one", "s-task-store-1", true,
+                    "the task's own store read the guard does not state"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], corpus.inputShape(

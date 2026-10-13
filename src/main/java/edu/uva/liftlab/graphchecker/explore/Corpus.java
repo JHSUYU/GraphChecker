@@ -688,8 +688,11 @@ public final class Corpus implements Arms.Rows {
      * the cause (keying by upstream flips asks one question per flip
      * combination).
      *
-     * <p>Covers the occurrence -- whether it ran, its distinct (handoff
-     * site, producer) pairs ({@link #handoffs}), and each handoff the query
+     * <p>Covers the occurrence -- whether it ran, its distinct MESSAGE
+     * (handoff site, producer) pairs ({@link #handoffs}; what it read of a
+     * store is a read, named where the query states it: solr-adhoc-19 SC9,
+     * which fields of which state.json versions the task read re-keyed 660
+     * of one round's 3722 ids), and each handoff the query
      * STATES (a symbol of {@code stated}: the guard's term, then its kept
      * conditions') by what binds it there ({@link #handoffName}: its
      * producer's arms, or its pinned arrival), the guard's in the order it
@@ -773,7 +776,7 @@ public final class Corpus implements Arms.Rows {
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
-                .append(handoffs(sessionId, occurrence, true)).append(guard)
+                .append(handoffs(sessionId, occurrence, false)).append(guard)
                 .append(kept);
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(numbered(text.toString(),

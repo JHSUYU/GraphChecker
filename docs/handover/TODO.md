@@ -235,6 +235,12 @@ BLOCKING at the fixed point.
   7ca7ab71`), needs Z2's legacyCloud leaf; (2) the lost watch (§2) via 40/09.
 - **h. 31 and 39:** seeds match with Root:WAKE; the frontier-side turn drift (25-38 % of their stall time) is open and was
   not approved; never run whole (they grow like 07/21 -> EX).
+- **i. Producer-conjunct pruning in the flip query (after the group; lead 2026-10-12):** `FlipQuery#arm` asserts a
+  handoff producer's whole path condition, so an arm's key names it whole (`Corpus#handoffName`) and one guard's arm
+  is another question in every upstream world (solr-adhoc-19 SC9 r13: task 71938aad931ea266's arms, 32 ids each, fold
+  to 7 or 1 without the stated handoffs). Keeping only the producer conjuncts that share variables with the delivered
+  term or the guard (as `Independence#ofGuard` does for the guard's own) would make those one question; a query design
+  change, not a key fix.
 
 ### 4. The final round (SG3) and the fork
 
