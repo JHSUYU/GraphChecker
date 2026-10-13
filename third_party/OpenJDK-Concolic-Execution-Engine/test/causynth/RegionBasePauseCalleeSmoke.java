@@ -184,10 +184,10 @@ public final class RegionBasePauseCalleeSmoke {
         Door door = new Door();
         start("argument-boundary");
         System.symbolizeField(door, "value", "param_value");
-        int value = door.value;
-        System.pauseConcolicBase();
         long[] marker = new long[1];
-        branchOnParameter(value, marker);
+        // The argument is loaded unpaused, so its operand slot holds
+        // param_value; the base pause is taken before the call is made.
+        branchOnParameter(door.value, pauseBaseAnd(marker));
         System.resumeConcolicBase();
         String events = System.getConcolicBranchEvents();
         String path = System.getPathCondition();
@@ -199,6 +199,11 @@ public final class RegionBasePauseCalleeSmoke {
         check(!has(path, "param_value"),
                 "a paused callee's parameter reached the path: " + path);
         check(has(finished, "\"pathConditionPauseDepth\":0"), finished);
+    }
+
+    private static long[] pauseBaseAnd(long[] marker) {
+        System.pauseConcolicBase();
+        return marker;
     }
 
     private static void branchOnParameter(int parameter, long[] marker) {
