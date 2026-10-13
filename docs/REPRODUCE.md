@@ -171,7 +171,7 @@ with the adapter, every case's target marker and the bug checks' workloads.
    the checkout's jar (`experiments/solr/build.sh`), and runs every case's workload once natively under its seed
    (`experiments/solr/system.sh` `solr_seed`), one Ant run each: a case's classpath is read off its workload's junit4
    report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
-   `MISSING` (the script fails). On `gc/solr-final3` (2026-10-12) all 17 workloads of the 20 cases passed (05 and 07
+   `MISSING` (the script fails). On `gc/solr-final4` (2026-10-12) all 17 workloads of the 20 cases passed (05 and 07
    share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
    each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
    experiments/solr/<case dir> <arg> validate` found every case's configuration valid. After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
