@@ -768,12 +768,20 @@ arrive in any order; a poll, a request or a watch callback that wrote the same v
 or under renumbered ids, delivered one world), a member's handoffs its distinct (attach site,
 producer) pairs (`Corpus#handoffs`: hdfs-11741's distinct exports stay apart, the same field re-read
 four or three times is one world; a ZK sequential node's ten-digit counter is numbered by first
-appearance, `Corpus#sequences`, so `qn-0000000000` and `qn-0000000001` name alike), and none that delivered the query nothing: no
-handoff, no write at the guard's locations. A member that only wrote state the region reads
+appearance, `Corpus#sequences`, so `qn-0000000000` and `qn-0000000001` name alike), each a MESSAGE:
+what a member read of a store (a content port, `contract/ContentPort`) is a read, named wherever it
+reaches the query, and a member with neither a message handoff nor a write at the guard's locations
+is no line (solr-adhoc-19 SC6: members that read cluster state and wrote nothing the guard reads,
+present in some worlds only, 32 ids of one arm; hdfs-11741's addKeys, fed keys by messages, stays a
+line though the guard rests on none of its writes: the arm consumes them after the flip). The
+handoffs the query states -- the guard's in its order, its kept conditions' as a set -- are named
+by what binds them (`Corpus#handoffName`), so a member delivering the task another value there
+re-keys with no line. A member that only wrote state the region reads
 elsewhere is no conjunct of the query, and a world that changed it is reached by nesting from the
 answer's session (§7.5), as an inherited prefix is (solr-adhoc-21 RX4: such lines -- a state watcher
 or a client STATUS that ran in one replay only -- re-keyed half the re-asks). Known limits (STATUS
-open defect 64): a member's write the recording states at no write site re-keys no arm; the
+open defect 64): a member's write the recording states at no write site re-keys no arm, nor does
+a member's store read that reaches the query by no read or handoff it states; the
 downstream of a schedule variant (a member that ran in one replay of a world only) is not asked
 again: schedules are not worlds. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it

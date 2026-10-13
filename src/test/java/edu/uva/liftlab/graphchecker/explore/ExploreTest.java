@@ -116,6 +116,9 @@ public class ExploreTest {
                     CausalContext.of(Role.of("BALANCER"), "", 1),
                     "o.a.h.h.b.Balancer#run#3");
     /** The map addKeys writes and the target reads: one location, one node. */
+    /** {@code Corpus#inputShape} of a guard stating no handoff. */
+    private static final List<String> NONE_STATED =
+            Collections.<String>emptyList();
     private static final LocationId ALL_KEYS =
             LocationId.of(LocationKind.MAP, "21", "allKeys");
     private static final Endpoint ROTATED = at(PRODUCER,
@@ -1758,8 +1761,10 @@ public class ExploreTest {
                 SmtLowering.locationKey(qop));
         assertEquals("the factor is a set: the order the corpus lists it in "
                         + "moves as sessions land",
-                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
-                corpus.inputShape("s-more", TARGET, reversed, qopKey));
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey,
+                        NONE_STATED),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey,
+                        NONE_STATED));
         // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
@@ -1779,9 +1784,11 @@ public class ExploreTest {
         assertEquals("who delivered is a set: the order replies arrive in "
                         + "is a race",
                 racedCorpus.inputShape("s-ab", TARGET,
-                        Collections.singletonList(WRITER), qopKey),
+                        Collections.singletonList(WRITER), qopKey,
+                        NONE_STATED),
                 racedCorpus.inputShape("s-ba", TARGET,
-                        Collections.singletonList(WRITER), qopKey));
+                        Collections.singletonList(WRITER), qopKey,
+                        NONE_STATED));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
@@ -2386,7 +2393,8 @@ public class ExploreTest {
         Set<String> guard = Collections.singleton(
                 SmtLowering.locationKey(ALL_KEYS));
         Set<String> none = Collections.<String>emptySet();
-        String once = corpus.inputShape("s-one", TARGET, polls, guard);
+        String once = corpus.inputShape("s-one", TARGET, polls, guard,
+                NONE_STATED);
         Object[][] rows = {
             // session, with location set, same key as s-one under it, why
             {"s-three", guard, true, "the same value three times"},
@@ -2401,12 +2409,12 @@ public class ExploreTest {
             @SuppressWarnings("unchecked")
             Set<String> locations = (Set<String>) row[1];
             assertEquals((String) row[3], row[2], corpus.inputShape(
-                    "s-one", TARGET, polls, locations).equals(
+                    "s-one", TARGET, polls, locations, NONE_STATED).equals(
                     corpus.inputShape((String) row[0], TARGET, polls,
-                            locations)));
+                            locations, NONE_STATED)));
         }
         assertEquals("the polls of s-one as s-one", once,
-                corpus.inputShape("s-one", TARGET, polls, guard));
+                corpus.inputShape("s-one", TARGET, polls, guard, NONE_STATED));
         Object[][] unlowered = {
             {"s-u7", "s-u9", false,
                     "a term the query cannot state, pinned to 7 against 9"},
@@ -2417,9 +2425,9 @@ public class ExploreTest {
         };
         for (Object[] row : unlowered) {
             assertEquals((String) row[3], row[2], corpus.inputShape(
-                    (String) row[0], TARGET, polls, guard).equals(
+                    (String) row[0], TARGET, polls, guard, NONE_STATED).equals(
                     corpus.inputShape((String) row[1], TARGET, polls,
-                            guard)));
+                            guard, NONE_STATED)));
         }
         // Members started by messages no row names: their shape has an
         // unknown hop, which tells nothing apart, so each keeps its address.
@@ -2446,40 +2454,63 @@ public class ExploreTest {
         }
         Corpus unknownCorpus = Corpus.read(unknown, null);
         assertFalse("two members of an unknown hop are not one class",
-                unknownCorpus.inputShape("s-one", TARGET, unnamed, guard)
+                unknownCorpus.inputShape("s-one", TARGET, unnamed, guard,
+                        NONE_STATED)
                         .equals(unknownCorpus.inputShape("s-two", TARGET,
-                                unnamed, guard)));
+                                unnamed, guard, NONE_STATED)));
     }
 
     /**
      * WHAT FED A MEMBER, BY SEMANTIC COUNTS ({@code Corpus#handoffs}): each
      * distinct (handoff site, producer) once -- hdfs-11741's five keys
-     * against four are five distinct exports against four, while a content
-     * field read again four or three times is one delivery, and a queue's
-     * first item is one whatever its sequential counter (solr-adhoc-19 SC6:
-     * qn-0000000000 in one world, qn-0000000001 in another); two producers
-     * of one site are two.
+     * against four are five distinct exports against four to addKeys, the
+     * writer of the map the guard reads, while a content field read again
+     * four or three times is one delivery, and a queue's first item is one
+     * whatever its sequential counter (solr-adhoc-19 SC6: qn-0000000000 in
+     * one world, qn-0000000001 in another); two producers of one site are
+     * two.  And WHOSE: a member is a line where it wrote where the query
+     * reads or a MESSAGE fed it (what the arm consumes after the flip:
+     * hdfs-11741); what it read of a store (a content port) is a read,
+     * named wherever it reaches the query -- a member that only read the
+     * store and wrote nothing the guard reads, present in one world only,
+     * keys alike (solr-adhoc-19 SC6) -- while a handoff the guard states is
+     * named by what binds it, so a member delivering the task another value
+     * there re-keys through it.
      */
     @Test
     public void aMemberIsFedByDistinctSitesAndProducers() throws Exception {
         Path iteration = tree.newFolder("fed-by").toPath();
         String queue = "SOLR_ZK#CONTENT:|overseer|queue|qn-000000000";
+        String props = "SOLR_ZK#CONTENT:|clusterprops.json#|legacyCloud";
+        Endpoint told = at(TARGET, "XCH.resp.told", "Told#1");
         // session, the exports of PRODUCER WRITER takes in (by index; -1 a
-        // SIDECAR one), the content site it reads (null: none) and how often
+        // SIDECAR one), the content site it reads (null: none) and how
+        // often, what PRODUCER told the task (null: nothing), and how READER
+        // ran ("": not at all, "store": reading the store, "message": fed
+        // by SIDECAR)
         Object[][] sessions = {
-            {"s-five", new int[] {0, 1, 2, 3, 4}, null, 0},
-            {"s-four", new int[] {0, 1, 2, 3}, null, 0},
-            {"s-again-4", new int[] {0, 0, 0, 0}, null, 0},
-            {"s-again-3", new int[] {0, 0, 0}, null, 0},
-            {"s-qn0", new int[] {}, queue + "0#|name", 1},
-            {"s-qn1", new int[] {}, queue + "1#|name", 2},
-            {"s-one", new int[] {0}, null, 0},
-            {"s-two", new int[] {0, -1}, null, 0},
+            {"s-five", new int[] {0, 1, 2, 3, 4}, null, 0, null, ""},
+            {"s-four", new int[] {0, 1, 2, 3}, null, 0, null, ""},
+            {"s-again-4", new int[] {0, 0, 0, 0}, null, 0, null, ""},
+            {"s-again-3", new int[] {0, 0, 0}, null, 0, null, ""},
+            {"s-qn0", new int[] {}, queue + "0#|name", 1, null, ""},
+            {"s-qn1", new int[] {}, queue + "1#|name", 2, null, ""},
+            {"s-one", new int[] {0}, null, 0, null, ""},
+            {"s-two", new int[] {0, -1}, null, 0, null, ""},
+            {"s-five-store", new int[] {0, 1, 2, 3, 4}, null, 0, null,
+                    "store"},
+            {"s-five-message", new int[] {0, 1, 2, 3, 4}, null, 0, null,
+                    "message"},
+            {"s-told-5", new int[] {0}, null, 0, "5", ""},
+            {"s-told-5-store", new int[] {0}, null, 0, "5", "store"},
+            {"s-told-7", new int[] {0}, null, 0, "7", ""},
         };
         for (Object[] row : sessions) {
             Session session = new Session(iteration, (String) row[0]);
             session.activation(TARGET, false);
             session.activation(WRITER, false);
+            session.constant("e.stored", "1");
+            session.write(STORED, ALL_KEYS, 5L, "e.stored");
             for (int k : (int[]) row[1]) {
                 Endpoint producer = k < 0 ? SENT : Endpoint.of(PRODUCER,
                         "XCH.resp.block-key-id", ExecutionIndex.of(
@@ -2491,30 +2522,62 @@ public class ExploreTest {
                 session.attach(at(WRITER, (String) row[2], "ZkRead#3"),
                         "M_CONTENT_" + read, "x", null);
             }
+            if (row[4] != null) {
+                // PRODUCER, which read the store and writes nothing the
+                // guard reads, tells the task a value its guard reads.
+                session.activation(PRODUCER, false);
+                session.attach(at(PRODUCER, props, "ZkRead#3"), "M_FED",
+                        "3", null);
+                session.attach(told, "M_TOLD", (String) row[4], ROTATED);
+            }
+            if (!"".equals(row[5])) {
+                // READER, writing nothing the guard reads: it read the
+                // store, or SIDECAR's message fed it.
+                session.activation(READER, false);
+                if ("store".equals(row[5])) {
+                    session.attach(at(READER, props, "ZkRead#3"),
+                            "M_TOKEN", "9", null);
+                } else {
+                    session.attach(RECEIVED, "M_TOKEN", "9", SENT);
+                }
+            }
             session.flush();
         }
         Corpus corpus = Corpus.read(iteration, null);
-        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
-        Set<String> none = Collections.<String>emptySet();
+        List<OccurrenceAddress> factor = Arrays.asList(WRITER, PRODUCER,
+                READER);
+        Set<String> guard = Collections.singleton(
+                SmtLowering.locationKey(ALL_KEYS));
+        List<String> stated = Collections.singletonList("(> M_TOLD 3)");
         Object[][] rows = {
-            {"s-five", "s-four", false, "five distinct exports against four"},
+            {"s-five", "s-four", false,
+                    "five distinct exports against four to the writer"},
             {"s-again-4", "s-again-3", true,
                     "one export read four times against three"},
             {"s-again-4", "s-one", true, "read again against read once"},
             {"s-qn0", "s-qn1", true,
                     "the first queue item at another counter, read again"},
             {"s-one", "s-two", false, "two producers of one site"},
+            {"s-five", "s-five-store", true,
+                    "a member in one world only that read the store and "
+                            + "writes nothing the guard reads"},
+            {"s-five", "s-five-message", false,
+                    "a member in one world only that a message fed"},
+            {"s-told-5", "s-told-5-store", true,
+                    "the store reader beside a value the guard states"},
+            {"s-told-5", "s-told-7", false,
+                    "a store reader writing nothing the guard reads, "
+                            + "telling the task 5 against 7 where the "
+                            + "guard reads"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], corpus.inputShape(
-                    (String) row[0], TARGET, factor, none).equals(
+                    (String) row[0], TARGET, factor, guard, stated).equals(
                     corpus.inputShape((String) row[1], TARGET, factor,
-                            none)));
+                            guard, stated)));
         }
     }
 
-    /** What the guard at {@code siteId} depends on in one session's path of
-     *  the task ({@link ObligationFactory#dependence}). */
     private static String dependence(Corpus corpus, Task task,
                                      String sessionId, String siteId)
             throws IOException {
