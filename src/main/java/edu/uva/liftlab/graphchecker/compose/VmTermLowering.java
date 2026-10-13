@@ -229,6 +229,32 @@ public final class VmTermLowering {
                     + " (str.from_int i)))";
 
     /**
+     * Java's {@code String.toLowerCase}/{@code toUpperCase} over ASCII:
+     * each character of {@code s} in turn, A-Z to a-z (a-z to A-Z), every
+     * other character itself.  A recursion z3 unfolds (its
+     * {@code str.replace_all} over a symbolic receiver answers unknown).
+     * Exact only where every character is ASCII, the lowering's
+     * definedness ({@code SmtLowering#asciiCase}).
+     */
+    public static final String JAVA_ASCII_LOWER = asciiCase("java_ascii_lower",
+            65, 90, "+");
+
+    /** {@link #JAVA_ASCII_LOWER}'s other direction. */
+    public static final String JAVA_ASCII_UPPER = asciiCase("java_ascii_upper",
+            97, 122, "-");
+
+    private static String asciiCase(String name, int from, int to,
+                                    String shift) {
+        String code = "(str.to_code (str.at s 0))";
+        return "(define-fun-rec " + name + " ((s String)) String"
+                + " (ite (= s \"\") \"\""
+                + " (str.++ (ite (and (<= " + from + " " + code + ") (<= "
+                + code + " " + to + ")) (str.from_code (" + shift + " "
+                + code + " 32)) (str.at s 0))"
+                + " (" + name + " (str.substr s 1 (- (str.len s) 1))))))";
+    }
+
+    /**
      * z3's alphabet as Java's: every character of every String a query
      * names is a UTF-16 code unit, U+0000..U+FFFF, which every Java String
      * is made of, so a {@code charAt} is a char wherever it is defined and no

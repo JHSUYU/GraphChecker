@@ -4222,6 +4222,8 @@ public final class SmtLowering {
         // (SmtNames#reachedPreamble), and an integral's String.valueOf is
         // lowered through it.
         lines.add(VmTermLowering.JAVA_INT_TO_STRING);
+        lines.add(VmTermLowering.JAVA_ASCII_LOWER);
+        lines.add(VmTermLowering.JAVA_ASCII_UPPER);
         lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
         lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
         return lines;
@@ -4988,9 +4990,10 @@ public final class SmtLowering {
         }
         if ("toUpperCase".equals(operation)
                 || "toLowerCase".equals(operation)) {
-            Term converted = convertedConstant(params,
-                    "toUpperCase".equals(operation), origin);
-            if (converted != null) return converted;
+            boolean upper = "toUpperCase".equals(operation);
+            Term converted = convertedConstant(params, upper, origin);
+            return converted != null ? converted
+                    : asciiCase(params, upper, origin);
         }
         if ("trim".equals(operation)) {
             return trim(params, origin);
@@ -5117,6 +5120,30 @@ public final class SmtLowering {
 
     /** How many trims this lowering has named. */
     private int trims;
+
+    /**
+     * String.toLowerCase()/toUpperCase() and their Locale overloads (the
+     * VM's operation names no Locale): the ASCII mapping
+     * ({@link VmTermLowering#JAVA_ASCII_LOWER}), defined where every
+     * character of the receiver is ASCII.  Outside it Java maps by Unicode
+     * (and a locale's rules), so a world with a non-ASCII receiver is
+     * none, never a wrong value.  Inside it every locale but Turkish,
+     * Azeri and Lithuanian maps alike (Turkish and Azeri send 'I' to a
+     * dotless i, 'i' to a dotted I); a Solr or Lucene source converts with
+     * an explicit Locale.ROOT or ENGLISH, its build forbidding the
+     * default-locale forms (forbidden-apis).
+     */
+    private Term asciiCase(JsonArray params, boolean upper, String origin) {
+        String operation = upper ? "toUpperCase" : "toLowerCase";
+        StringParameters strings = stringParameters(params, 1, operation,
+                origin, Sort.STRING);
+        if (strings.terms == null) return strings.refusal;
+        String text = strings.terms.get(0).text;
+        return Term.nonNullString("(" + (upper ? "java_ascii_upper"
+                        : "java_ascii_lower") + " " + text + ")",
+                and(Arrays.asList(strings.defined, "(str.in_re " + text
+                        + " (re.* (re.range \"\\u{0}\" \"\\u{7f}\")))")));
+    }
 
     /** String.substring(b) and (b, e), defined where Java does not throw:
      *  0 <= b <= e <= length. */
