@@ -79,7 +79,11 @@ case "${1:?usage: case.sh <bug>}" in
   # from the snapshot (non-incremental, the path that reads it).  The
   # witness: the Overseer's view of the added replica not ACTIVE yet at
   # CREATESNAPSHOT.  The target: the backup's search for a live replica with
-  # the snapshot, the window's only one.
+  # the snapshot, the window's only one.  The chain starts at the Overseer's
+  # decode of state.json, so the scope holds the classes that build the view
+  # (as solr-18413's): outside every region Replica.<init> derives its state
+  # with no VM model running, and CreateSnapshotCmd's ACTIVE test decided
+  # concretely in every occurrence (SGF, 168 of 168).
   snapshot-no-active)
     test_class=org.apache.solr.cloud.TestCausynthSnapshotBackup
     test_method=backupFromASnapshotAfterItsLeaderIsGone
@@ -89,7 +93,11 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/cloud/api/collections/BackupCmd
       core:org/apache/solr/core/snapshots/SolrSnapshotManager
       core:org/apache/solr/core/snapshots/CollectionSnapshotMetaData
-      solrj:org/apache/solr/common/cloud/ZkStateReader)
+      solrj:org/apache/solr/common/cloud/ZkStateReader
+      solrj:org/apache/solr/common/cloud/ClusterState
+      solrj:org/apache/solr/common/cloud/DocCollection
+      solrj:org/apache/solr/common/cloud/Slice
+      solrj:org/apache/solr/common/cloud/Replica)
     ;;
   # Bug study #26: a RESTORE into a new collection marks its shards
   # CONSTRUCTION and ACTIVE only at its end; a retry into the collection it
