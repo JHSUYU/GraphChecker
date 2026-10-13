@@ -226,7 +226,17 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 - **b. 18413:** both SG3G/SG3H refutations fixed (§0, Z2); CONFIRM watch: a seed arm with a Lost-context consumer and arms
   whose sites carry queue sequence names (qn-...) can shift identity between runs.
 - **c. Seed drift of 31 and 05:** give-ups at the Overseer's `peekElements` WAKE turns (k counts every wake, a timing
-  count); SC's batching-wait experiment (§1); otherwise the frontier-side rule, not approved.
+  count). SC's experiment (2026-10-13, int11): `gc/solr-sc3` f10c988eed = `gc/solr-final5` + the batching wait 0 in an
+  automatic cluster (`Overseer$ClusterStateUpdater#run`'s `peekElements(1000, 100, ...)` after a message; final4/final5
+  already carry the idle wait that never times out, which alone moved nothing: 05 158 -> 163, 31 18 -> 23 give-ups by the
+  same slots). With both, 05's recorded wake turns 51 -> 39 and its seed ended at 47 give-ups (SC12-05), against 158-163
+  by the same slot (~2,200 of ~4,800; SC8-05, SC10-05). 31 is not helped: recorded wake turns 52 -> 15, yet 19 give-ups by
+  slot 327 as before (signal wakes, still counted by k), then 64 by slot 527 on its test client's polling reads (`READ
+  /clusterstate.json#100, #101 ... @ client0`, 16 s each; SC12-31). Not in the final tree (lead 2026-10-13): SGF runs on
+  one tree, final5; the patch changes the Overseer loop every bug check goes through; 05 already closed on final5-era trees
+  with more give-ups (SF3 UNSAT_CLOSED in 3991 s). Kept as `gc/solr-sc3` f10c988eed for a revisit if SGF-05's seed fails
+  or blows its budget on drift. Otherwise the frontier-side rule, not approved. Evidence `/bigtemp/vnr3ne/gc-out/solr-sc`
+  (accept-SC8-05, SC10-05, SC12-05, SC7-31, SC10-31, SC12-31).
 - **d. New-bug candidates:** 38 (SAT confirmed, native 0/10 named: native order beyond the fatal cone); the lost watch
   (§2); 19's stale cluster-property view at core creation if SGF confirms it. Each: realism, JIRA, STATUS,
   docs/checks/new-bugs.txt.
