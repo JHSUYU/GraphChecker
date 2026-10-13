@@ -1006,7 +1006,10 @@ public final class ObligationFactory {
         // Frontier#consume).
         if (earlier != null && earlier.result.refutation() == null
                 && !earlier.result.worldUnrefuted()) {
-            String detail = "question " + question + " was settled "
+            // A refusal at the arm is the arm's, under whichever id asks.
+            String detail = (earlier.result.armRefusal() != null
+                    ? ObligationResult.ARM_REFUSED + ": " : "")
+                    + "question " + question + " was settled "
                     + earlier.result.verdict() + " by obligation "
                     + earlier.obligationId
                     + (earlier.result.sessionId().isEmpty() ? ""
@@ -1032,8 +1035,9 @@ public final class ObligationFactory {
         }
         if (!built.ok()) {
             return refused(candidate, Verdict.NOT_ADMITTED,
-                    "the query was refused: " + built.refusal, "", gaps,
-                    question);
+                    (built.armRefused ? ObligationResult.ARM_REFUSED + ": "
+                            : "") + "the query was refused: "
+                            + built.refusal, "", gaps, question);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;

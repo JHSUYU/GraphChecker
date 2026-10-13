@@ -6696,7 +6696,10 @@ campaign_open_arms() {
        detail: ("the open arm \(.siteId)=\(.outcome) of \(.anchor) was left"
          + " out of phi by the runs that reached it, and its flip (asked at"
          + " \(.asked | join(", "))) came to no verdict on \(.paths.UNANSWERED)"
-         + " path(s): no run took the arm, so no UNSAT closes over it")}' \
+         + " path(s): no run took the arm, so no UNSAT closes over it"
+         + (if ((.refused // []) | length) > 0
+            then "; its query was refused at the arm: \(.refused | join("; "))"
+            else "" end))}' \
     "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 

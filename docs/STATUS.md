@@ -450,9 +450,14 @@ Correctness:
     (`ObligationResult#settlesArm`, lead's rule 2026-10-12): ADMITTED, UNSAT, or a NOT_ADMITTED whose
     replay ran its world as asked and never reached the decision (`WORLD_RAN:`); any other
     NOT_ADMITTED -- its world not run (a root not minted, an inherited flip not taken, a refusal, a
-    stall, a killed or unfinished worker) or its query refused -- settles only its own flip, once a
-    second one of it lands (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's world never
-    minted its inherited root, and its NOT_ADMITTED closed the arm for every world). An arm is keyed
+    stall, a killed or unfinished worker) or its query refused for what the world holds -- settles
+    only its own flip, once a second one of it lands (solr-bugs-tra-start-overwrite SG3A: the one
+    pairing flip's world never minted its inherited root, and its NOT_ADMITTED closed the arm for
+    every world). A refusal at the arm settles it as UNSAT does (`ARM_REFUSED:`, lead 2026-10-12): the
+    flipped predicate names what its session declares nowhere or lowers to what the query cannot
+    state, or reaches no variable and rests on versions no row wrote -- causes the key names
+    (solr-adhoc-21 RX7: 1615 of 2101 answers were such refusals asked again in every world; SC7-19
+    26 of 75); the arm stays open by name, its refusal on its row. An arm is keyed
     by its effect at the task (its own path and input shape, never the inherited flips' prefixes,
     `ObligationFactory#dependence`), so a reduced world's faithful NOT_ADMITTED stands for the parent
     world's arm: a joint world whose reduced half ran and never reached the decision is not asked

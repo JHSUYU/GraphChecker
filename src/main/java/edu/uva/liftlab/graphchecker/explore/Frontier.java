@@ -89,6 +89,10 @@ public final class Frontier {
     /** Arms a round answered, for the manifest histogram. */
     private final Map<String, Verdict> answered =
             new LinkedHashMap<String, Verdict>();
+    /** arm key -> the refusal that settled it at the arm ({@code
+     *  ObligationResult#ARM_REFUSED}): an open arm names it. */
+    private final Map<String, String> armRefusals =
+            new LinkedHashMap<String, String>();
     /** Arms a recorded path already took. */
     private final Set<String> recorded = new LinkedHashSet<String>();
     /** arm key -> proposing task, this round. */
@@ -168,8 +172,13 @@ public final class Frontier {
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
             if (!result.settlesArm()) continue;
+            String refusal = result.armRefusal();
+            if (refusal != null) {
+                armRefusals.putIfAbsent(result.obligationId(), refusal);
+            }
             settle(result.obligationId(), "arm already answered "
-                    + result.verdict() + " by an earlier round"
+                    + result.verdict() + (refusal == null ? ""
+                    : " (" + refusal + ")") + " by an earlier round"
                     + (result.sessionId().isEmpty() ? ""
                     : " (session " + result.sessionId() + ")")
                     + ": an arm is owed once per planned occurrence, and this "
@@ -210,6 +219,11 @@ public final class Frontier {
     /** What a round answered for this arm, by its id, or null. */
     public Verdict verdict(String obligationId) {
         return answered.get(obligationId);
+    }
+
+    /** The refusal that settled this arm at the arm, or null. */
+    public String armRefusal(String obligationId) {
+        return armRefusals.get(obligationId);
     }
 
     /** Whether this arm, by its id, is queued or running. */
