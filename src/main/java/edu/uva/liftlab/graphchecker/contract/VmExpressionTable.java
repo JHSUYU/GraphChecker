@@ -151,52 +151,89 @@ public final class VmExpressionTable {
          * again, and {@code each} takes the decoding it had.  So
          * {@code decode} must be a function of the record's text and this
          * store alone.  A page every record of which is held reads no
-         * table: the one check it no longer makes is that table's own
-         * well-formedness, and every row it would define is a node the
-         * records' first decoding expanded (a page's table is the closure
-         * of what its records name).
+         * table: it no longer checks that table's well-formedness (schema,
+         * count, closing), its rows' shape, nor registers and closure-checks
+         * the rows not yet expanded -- there are none: every row it would
+         * define is a node the records' first decoding expanded (a page's
+         * table is the closure of what its records name).  Nor is a held
+         * record checked for a node the page's table lacks ("missing VM
+         * expression definition"): its first decoding was, against its own
+         * page's table.
          */
         public <T> JsonObject importRepeatedRecords(
                 String page, String records, Predicate<JsonObject> admit,
                 Class<T> decoding, Function<JsonElement, T> decode,
                 Consumer<? super T> each) {
             return rawResolver.importRecords(page, records, admit,
-                    new Repeats<T>(repeated, decoding), decode, each);
+                    repeats(decoding), decode, each);
         }
 
         /**
-         * The records read-out pages decoded, by their text up to its first
-         * {@code '}'} (a location envelope's location: one entry per
-         * location, the latest): the exact text and its decoding.  Held
-         * softly: a collection under memory pressure drops an entry, and
-         * the next read-out of that record decodes it again.  This store's
-         * own: a session's decodings name its nodes.
+         * The records read-out pages decoded, one memo per decoding type
+         * ({@link Repeats}): a memo holds the decodings of its own type
+         * only.  This store's own: a session's decodings name its nodes.
          */
-        private final Map<String, SoftReference<Held>> repeated =
-                new HashMap<>();
+        private final Map<Class<?>, Repeats<?>> repeated = new HashMap<>();
+
+        private <T> Repeats<T> repeats(Class<T> decoding) {
+            synchronized (repeated) {
+                Repeats<?> held = repeated.get(decoding);
+                if (held == null) {
+                    held = new Repeats<T>();
+                    repeated.put(decoding, held);
+                }
+                // Keyed by its decoding type: it holds that type only.
+                @SuppressWarnings("unchecked")
+                Repeats<T> typed = (Repeats<T>) held;
+                return typed;
+            }
+        }
+
+        /**
+         * What the held records cost: how many are held, the chars of their
+         * text, and how many the collector cleared (each one decoded again
+         * if it is read out again).
+         */
+        public String repeatedSummary() {
+            long[] total = new long[3];
+            synchronized (repeated) {
+                for (Repeats<?> held : repeated.values()) {
+                    long[] tally = held.tally();
+                    for (int index = 0; index < total.length; index++) {
+                        total[index] += tally[index];
+                    }
+                }
+            }
+            return String.format(java.util.Locale.ROOT, "%d record(s) held,"
+                            + " %.1f M chars of their text, %d cleared by the"
+                            + " collector", total[0], total[1] / 1e6,
+                    total[2]);
+        }
     }
 
     /** One decoded record's exact text and its decoding. */
-    private static final class Held {
+    private static final class Held<T> {
         private final String text;
-        private final Object decoding;
+        private final T decoding;
 
-        private Held(String text, Object decoding) {
+        private Held(String text, T decoding) {
             this.text = text;
             this.decoding = decoding;
         }
     }
 
-    /** A store's held records, as one caller's decodings. */
+    /**
+     * A store's held records of one decoding type, by their text up to its
+     * first {@code '}'} (a location envelope's location: one entry per
+     * location, the latest): the exact text and its decoding.  Held softly:
+     * a collection under memory pressure drops an entry, and the next
+     * read-out of that record decodes it again.
+     */
     private static final class Repeats<T> {
-        private final Map<String, SoftReference<Held>> held;
-        private final Class<T> decoding;
-
-        private Repeats(Map<String, SoftReference<Held>> held,
-                        Class<T> decoding) {
-            this.held = held;
-            this.decoding = decoding;
-        }
+        private final Map<String, SoftReference<Held<T>>> held =
+                new HashMap<>();
+        /** Entries a lookup found cleared, and let go. */
+        private long cleared;
 
         /** The lookup key of the record at {@code start}: its text up to
          *  its first '}', or null. */
@@ -209,20 +246,20 @@ public final class VmExpressionTable {
          *  null: a JSON object ends where its text does, so a page whose
          *  text from {@code start} begins with a held record's whole text
          *  holds that record there. */
-        private Held at(String page, int start) {
+        private Held<T> at(String page, int start) {
             String key = key(page, start);
             if (key == null) return null;
-            SoftReference<Held> reference;
+            Held<T> record;
             synchronized (held) {
-                reference = held.get(key);
+                SoftReference<Held<T>> reference = held.get(key);
+                record = reference == null ? null : reference.get();
+                if (reference != null && record == null) {
+                    cleared++;
+                    held.remove(key);
+                }
             }
-            Held record = reference == null ? null : reference.get();
             return record != null && page.regionMatches(start, record.text,
                     0, record.text.length()) ? record : null;
-        }
-
-        private T decoding(Held record) {
-            return decoding.cast(record.decoding);
         }
 
         /** Holds one decoded record, the latest of its key. */
@@ -230,9 +267,27 @@ public final class VmExpressionTable {
             String key = key(text, 0);
             if (key == null) return;
             synchronized (held) {
-                held.put(key, new SoftReference<Held>(
-                        new Held(text, decoded)));
+                held.put(key, new SoftReference<Held<T>>(
+                        new Held<T>(text, decoded)));
             }
+        }
+
+        /** {records held, chars of their text, entries cleared}. */
+        private long[] tally() {
+            long[] tally = {0L, 0L, 0L};
+            synchronized (held) {
+                tally[2] = cleared;
+                for (SoftReference<Held<T>> reference : held.values()) {
+                    Held<T> record = reference.get();
+                    if (record == null) {
+                        tally[2]++;
+                    } else {
+                        tally[0]++;
+                        tally[1] += record.text.length();
+                    }
+                }
+            }
+            return tally;
         }
     }
 
@@ -339,7 +394,7 @@ public final class VmExpressionTable {
             JsonObject header = new JsonObject();
             // Each record's extent, and what repeats holds of it (or null).
             List<int[]> extents = new ArrayList<>();
-            List<Held> held = new ArrayList<>();
+            List<Held<T>> held = new ArrayList<>();
             boolean decodes = false;
             int tabled = -1;
             int at = TopLevel.open(page);
@@ -360,7 +415,7 @@ public final class VmExpressionTable {
                 }
                 at = TopLevel.space(page, value + 1);
                 while (TopLevel.peek(page, at) != ']') {
-                    Held record = repeats == null ? null
+                    Held<T> record = repeats == null ? null
                             : repeats.at(page, at);
                     int end = record != null ? at + record.text.length()
                             : TopLevel.end(page, at);
@@ -387,9 +442,9 @@ public final class VmExpressionTable {
             for (RawKey key : table.keySet()) dag.require(key);
             if (!admit.test(header)) return header;
             for (int index = 0; index < extents.size(); index++) {
-                Held record = held.get(index);
+                Held<T> record = held.get(index);
                 if (record != null) {
-                    each.accept(repeats.decoding(record));
+                    each.accept(record.decoding);
                     continue;
                 }
                 int[] extent = extents.get(index);

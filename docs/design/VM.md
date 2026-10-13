@@ -636,10 +636,16 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   log record or the refusal), softly, so a collection under memory pressure only costs a decoding again.
   A JSON object ends where its text does, so a page whose text at a record's start begins with a held
   text holds that record; and the decoding is a function of the text and the store alone (the store
-  expands each node once and keeps it), so the held one is the one a decoding would give. A page every
-  record of which is held reads no table: the one check it no longer makes is the table's own
-  well-formedness (its schema, count and closing), safe because every row that table would define is a
-  node the records' first decoding expanded -- a page's table is the closure of what its records name.
+  expands each node once and keeps it), so the held one is the one a decoding would give. One memo per
+  decoding type; the session's read-out line states what it holds (records, chars of their text, entries
+  the collector cleared). A page every record of which is held reads no table, so it no longer makes the
+  table's checks: its well-formedness (schema, count, closing), its rows' shape, and the fingerprint
+  registration and closure check of rows not yet expanded -- safe because there are none: every row that
+  table would define is a node the records' first decoding expanded (a page's table is the closure of
+  what its records name). A held record is not checked for a node the page's table lacks ("missing VM
+  expression definition"): its first decoding was, against its own page's table. A run that checked all
+  of this on SGF3-31's whole seed (RO1, PERFORMANCE §3) found every held record decoding alike and every
+  row of the all-held pages' tables a node already expanded.
   The table is the envelope's last member, compact, spelled `,"vmExpressionTable":{<schema,
   session, definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
   "sessionId":<s>,"expressionId":<n>,"expression":{...}}` in ascending id (`write_table`); a
