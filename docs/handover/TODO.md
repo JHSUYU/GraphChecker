@@ -224,8 +224,9 @@ Merged 2026-10-13 morning (lead, through `solr-int`, each gated; SGF on 12cd346d
 
 ### 1. Branches in flight
 
-None of GraphChecker's: every `solr-*` branch is merged or superseded. Solr tree: `gc/solr-final6` d287b1e036 (ST) =
-final5 + SC's Overseer batching wait 2fc60518c6 + Z2's snapshot-no-active search as loops; SGF2 runs on it.
+None of GraphChecker's: every `solr-*` branch is merged or superseded. Solr tree: `gc/solr-final7` b707106739 (ST) =
+final5 + SC's Overseer batching wait 2fc60518c6 + Z2's snapshot-no-active search as loops d287b1e036 (`gc/solr-final6`)
++ EX's planted session expiry b707106739; SGF2 runs on it.
 
 ### 2. ZooKeeper READ doors (owner priority 2026-10-09)
 
