@@ -55,6 +55,9 @@ cd ~/GraphChecker
 tools/onlift.sh -g 10 bash -c 'mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
 ```
 
+`onlift.sh` never picks `lift11` (the control host) unless `LIFTS` names it: with `LIFTS` unset,
+`tools/pick-lift.sh` drops it from `gc-env.sh`'s default list, where it stays a campaign's worker.
+
 Keep `-o` (offline): `~/.m2` is shared over NFS. `mvn package` also builds the `hadoop-shim`
 classifier jar from `src/shim/java`, which the HDFS trees call. A snapshot needs all three jars in
 `target/` (`-jar-with-dependencies`, `-hadoop-shim`, plain).
@@ -86,6 +89,11 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
+- REPRODUCE's native runs are charged `reproduce_charge_pct` (130) percent of the recording's peak resident
+  memory (`run_engine.sh` `campaign_reproduce_one`): a native run's own peak scatters around the recording's
+  (110 runs: 32 above it, the largest 1.27x), and ten charged at 100 % on one host outgrew its 70 % ceiling
+  together, so the watcher refused the next one's growth and ended it (LL5-lock-leak: 4 of 10 on lift13, ended
+  by `campaign_watch_workload`, not the OOM killer).
 - Every replay after a campaign's seed replay (obligations, GROW re-runs, CONFIRM) is charged the
   campaign's measured need (`run_engine.sh` `campaign_replay_need_mb`): the largest resident peak
   its replays stated so far (`workload_rss_mb` in each worker directory; the seed replay's first)

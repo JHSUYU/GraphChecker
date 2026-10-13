@@ -138,9 +138,11 @@ every tool call starts a shell there.
 - Diagnose before blaming NFS: `timeout 20 stat <path>` for each mount (`/u/vnr3ne`, `/bigtemp`, `/sw`) on the slow host
   and on two others. On 2026-10-12 NFS answered in 2-9 ms from every other lift under ten campaigns; a git checkout
   per lift was not needed.
-- Nothing heavy and no polling on lift11: builds, tests and offline gates go through `tools/onlift.sh` (it picks
-  another lift); each agent keeps at most ONE background waiter, polling from another lift at >= 60 s; campaigns
-  launched while sessions run on lift11 leave it out of `LIFTS` (below).
+- Nothing heavy and no polling on lift11: builds, tests and offline gates go through `tools/onlift.sh`, which
+  never picks lift11 unless `LIFTS` names it (`tools/pick-lift.sh` drops it from the default list when `LIFTS` is
+  unset; 2026-10-13, an `mvn` build landed there with `LIFTS` unset); each agent keeps at most ONE background
+  waiter, polling from another lift at >= 60 s; campaigns launched while sessions run on lift11 leave it out of
+  `LIFTS` (below).
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
 `LIFTS`:

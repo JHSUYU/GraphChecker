@@ -156,6 +156,14 @@ workflow_config_keys=(
   "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
   "reproduce_time_factor CAUSYNTH_REPRODUCE_TIME_FACTOR krp 3"
   "reproduce_min_s CAUSYNTH_REPRODUCE_MIN_S krp 300"
+  # A native run's charge, in percent of the recording's peak resident
+  # memory: its own peak scatters around the recording's -- of 110 native
+  # runs of the Solr rounds SGF, LL* and SC1* (2026-10-13), 32 peaked above
+  # it, 13 by over 10 %, the largest at 1.27x -- and ten run at once, so
+  # charged at 100 % they outgrew the ledger's promise together, put their
+  # host past its ceiling, and its next growth was refused and the run ended
+  # (LL5-lock-leak: 4 of 10 on lift13, at about 580 MB of a 568 MB charge).
+  "reproduce_charge_pct CAUSYNTH_REPRODUCE_CHARGE_PCT krp 130"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -743,7 +751,8 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       recording_max_trace_mb schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound reproduce_runs \
-      reproduce_time_factor reproduce_min_s campaign_budget_s \
+      reproduce_time_factor reproduce_min_s reproduce_charge_pct \
+      campaign_budget_s \
       campaign_reserve_s \
       campaign_max_claims; do
     require_positive_integer "${key}"
@@ -7300,8 +7309,9 @@ has no room for another claim"
 # target's guards for their fatal arm at the claim's anchor
 # (explore.ConfirmMain --plant, the code that wrote CONFIRM's world;
 # runtime.RecordingPlant, runtime.PlantAgent).  reproduce_runs runs, all at
-# once, each a head step charged the recording's measured peak resident
-# memory wherever there is room (campaign_reproduce_one) and bounded by
+# once, each a head step charged reproduce_charge_pct percent of the
+# recording's measured peak resident memory wherever there is room
+# (campaign_reproduce_one) and bounded by
 # campaign_reproduce_bound; a run ends as
 # soon as the planted world takes the fatal arm at the anchor, its one
 # question answered.  Each run states its answer itself
@@ -7324,6 +7334,7 @@ has no room for another claim"
 campaign_reproduce() {
   local iteration_dir=$1
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
+  local charge
   local confirmed
   local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
@@ -7359,13 +7370,15 @@ campaign_reproduce() {
     return 0
   fi
   bound=$(campaign_reproduce_bound)
+  charge=$(( campaign_recorded_workload_rss_mb * reproduce_charge_pct / 100 ))
   campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
-charged ${campaign_recorded_workload_rss_mb} MB and bounded by ${bound}s \
-(reproduce_time_factor=${reproduce_time_factor} x the recording's \
+charged ${charge} MB (reproduce_charge_pct=${reproduce_charge_pct} of the \
+recording's ${campaign_recorded_workload_rss_mb} MB peak) and bounded by \
+${bound}s (reproduce_time_factor=${reproduce_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
   for ((run = 0; run < reproduce_runs; run++)); do
     campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
-      "${dir}/plant.jsonl" &
+      "${dir}/plant.jsonl" "${charge}" &
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do
@@ -7409,17 +7422,18 @@ campaign_confirmed_session() {
   printf '%s\n' "${campaign_final}/confirm/sessions/${id:-none}"
 }
 
-# One native run of REPRODUCE into <run>: a head step charged the
-# recording's peak memory, wherever there is room (campaign_head_charged),
-# and released as it returns.  A run placed on a
+# One native run of REPRODUCE into <run>: a head step charged <charge_mb>
+# (reproduce_charge_pct of the recording's peak), wherever there is room
+# (campaign_head_charged), the charge its watcher holds it to, and released
+# as it returns.  A run placed on a
 # peer has its answer waited for until the shared home shows it here
 # (campaign_await_visible); one that never shows states none.
 campaign_reproduce_one() {
-  local run=$1 bound=$2 plant=$3
+  local run=$1 bound=$2 plant=$3 charge=$4
   mkdir -p "${run}"
-  campaign_head_charged "${campaign_recorded_workload_rss_mb}" \
+  campaign_head_charged "${charge}" \
     campaign_reproduce_run "${analysis_classes_dir}" \
-    "${run}" "${bound}" "${plant}" "${campaign_recorded_workload_rss_mb}" \
+    "${run}" "${bound}" "${plant}" "${charge}" \
     || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \
 logs are in ${run}"
   campaign_host_is_local "${campaign_placed_host}" \
