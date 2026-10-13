@@ -173,7 +173,7 @@ with the adapter, every case's target marker and the bug checks' workloads.
    report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
    `MISSING` (the script fails). The tree's hooks call the engine's `MessageDoors` (the view publication:
    `publishing`, `refreshStarting`, `refreshEnded`), so it is built against, and runs on, the jar of the same
-   `system/solr` checkout. On `gc/solr-final5` (827b46a609, 2026-10-12) all 17 workloads of the 20 cases passed (05 and 07
+   `system/solr` checkout. On `gc/solr-final6` (d287b1e036, 2026-10-13; engine solr-int 4bd83afbd) all 17 workloads of the 20 cases passed (05 and 07
    share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
    each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
    experiments/solr/<case dir> <arg> validate` found every case's configuration valid. After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
