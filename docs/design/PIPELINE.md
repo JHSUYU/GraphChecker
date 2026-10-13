@@ -2107,7 +2107,17 @@ cell where it is empty and no member required; `POLL` is the queue without its h
 where its size is a stated nonzero literal, itself where it is 0, and refused by name over no
 stated size (`ContainerRelation:INDEXED:POLL:unstated-size`). A String a map
 answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
-(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A value the lowering hands
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A cell a map answers where a
+reference is asked (the one unboxing at REF) is an object's reference, the null cell, or a String --
+one stored in an Object-valued map, and an enum constant, which the VM states by its name (a
+`ConStringSymbolExp` of type String: the put side cannot tell the two, `SmtLowering#boxed` boxes by
+sort) --, whose reference is its `string_ref`: one per String (its inverse `ref_string` is stated for
+each String the query names, quantifier-free), never null. A String compared with a reference (an enum
+constant against a map's answer) takes the same reference, and a reference read out of a cell boxes
+back to that very cell (`SmtLowering#cellOf`: `commandMap.get(action)` after `actions.get(op)` finds
+the name it was keyed by). solr-bugs-reindex-cleanup SGF: CollectionAction's actions map, read
+through SC's `toLowerCase` as a VRef, contradicted every path through `CollectionAction.get`.
+A value the lowering hands
 the codec keeps what it stated (`SmtLowering#codecTerm`): a String its nullness (a recorded String is
 not null; hdfs ad-hoc `FinalizeCommand.blockPoolId` read off the command list reached `equals` as of
 unknown nullness), and an answer per candidate object is null where its case's is, of unknown

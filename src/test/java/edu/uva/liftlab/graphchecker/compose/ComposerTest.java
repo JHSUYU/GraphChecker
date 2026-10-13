@@ -4668,6 +4668,90 @@ public class ComposerTest {
      * condition over the state, never refused for an unknown nullness.
      */
     /**
+     * A STRING CELL READ AS A REFERENCE IS ITS STRING'S REFERENCE
+     * (ContainerStateModel#unboxValue; solr-bugs-reindex-cleanup SGF): the VM
+     * states an enum constant by its name, so CollectionAction's actions map
+     * holds Strings, and {@code CollectionAction.get(op)} --
+     * {@code actions.get(op.toLowerCase())} -- answers one where a reference
+     * is asked.  Read as a VRef every path through it contradicted itself;
+     * read as its string_ref the lookup decides by the key: present it is a
+     * reference, never null, absent it is null, and two different names
+     * are two references, so comparing with the wrong constant is unsat;
+     * as a key into a map keyed by the constants it finds its entry.  Per
+     * row: op, the comparison, sat?
+     */
+    @Test
+    public void aStringCellReadAsAReferenceIsItsStringsReference()
+            throws Exception {
+        JsonObject actions = relation("ASSOCIATIVE", "CLEAR",
+                "java/util/HashMap", null);
+        for (String name : new String[] {"REINDEXCOLLECTION", "CREATE"}) {
+            actions = relation("ASSOCIATIVE", "PUT", "L", actions,
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_"
+                            + name.toLowerCase(), "java/lang/String"),
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_" + name,
+                            "java/lang/String"));
+        }
+        JsonObject action = relation("ASSOCIATIVE", "READ", "L", actions,
+                vmString("toLowerCase", vmLeaf("SymbolExpression", "op",
+                        "java/lang/String")));
+        JsonObject create = vmLeaf("ConStringSymbolExp", "Y_L'String'_CREATE",
+                "java/lang/String");
+        // commandMap.get(action): keyed by the constants, the names again; the
+        // reference read out of a cell boxes back to that cell.
+        JsonObject commands = relation("ASSOCIATIVE", "PUT", "L",
+                relation("ASSOCIATIVE", "CLEAR", "java/util/HashMap", null),
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_REINDEXCOLLECTION",
+                        "java/lang/String"),
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_reindexCmd",
+                        "java/lang/String"));
+        JsonObject command = relation("ASSOCIATIVE", "READ", "L", commands,
+                action);
+        Object[][] rows = {
+                {"REINDEXCOLLECTION", binary("!=", command, vmNull()), true},
+                {"CREATE", binary("!=", command, vmNull()), false},
+                {"REINDEXCOLLECTION", binary("!=", action, vmNull()), true},
+                {"REINDEXCOLLECTION", binary("==", action, vmNull()), false},
+                {"NONSENSE", binary("==", action, vmNull()), true},
+                {"NONSENSE", binary("!=", action, vmNull()), false},
+                {"REINDEXCOLLECTION", binary("==", action, create), false},
+                {"CREATE", binary("==", action, create), true},
+        };
+        Z3 solver = solver();
+        for (Object[] row : rows) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("op", VmTermLowering.Sort.STRING);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+            String text = lowering.dispatch((JsonObject) row[1],
+                    VmTermLowering.Sort.BOOL, "test").text;
+            assertTrue(row[0] + " " + text + ": " + lowering.openRefusals(),
+                    lowering.openRefusals().isEmpty());
+            List<String> conditions = lowering.end();
+            List<String> texts = new ArrayList<String>(conditions);
+            texts.add(text);
+            StringBuilder query = new StringBuilder();
+            for (String line : lowering.preambleLines()) {
+                query.append(line).append('\n');
+            }
+            for (SmtLowering.Declaration declaration
+                    : lowering.reachedBy(texts)) {
+                query.append(declaration.render()).append('\n');
+            }
+            for (String asserted : texts) {
+                query.append("(assert ").append(asserted).append(")\n");
+            }
+            query.append("(assert (= op \"").append(row[0]).append("\"))\n");
+            Z3.Answer answer = solver.ask(query.toString(),
+                    Collections.<String>emptyList(), false);
+            assertEquals(row[0] + " " + text + ": " + answer, row[2],
+                    answer.sat());
+            assertTrue(row[0] + ": decided " + answer, answer.decided());
+        }
+    }
+
+    /**
      * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4): a
      * guard over the leaf h5 the view's decode of version 5 minted is,
      * where a read of the view stands that a family may re-pair, the leaf of
