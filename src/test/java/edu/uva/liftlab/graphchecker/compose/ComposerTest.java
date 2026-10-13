@@ -4119,6 +4119,139 @@ public class ComposerTest {
     }
 
     /**
+     * A VIEW IS CASED ONCE PER READ ({@code SmtLowering#throughView}): one
+     * node's view read at nine versions by nine reads (solr-adhoc-40 SL1:
+     * ten), a guard over the leaf of version 5 is the ite over the view's
+     * versions of the read that observed it, each case the plain leaf of
+     * that version's decode -- not cased again through the read that
+     * observed that version (every order of the nine, 9!) -- while two
+     * guards over two reads' leaves each case their own read.
+     */
+    @Test(timeout = 30000)
+    public void aViewIsCasedOncePerRead() {
+        final int versions = 9;
+        LocationId view = LocationId.of(
+                edu.uva.liftlab.graphchecker.contract.LocationKind.VIEW,
+                "SOLR_ZK@case/dn0", "/collections/c/state.json");
+        final String key = SmtLowering.locationKey(view);
+        final String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c";
+        Endpoint at = Endpoint.of(ANCHOR, "guard#VIEW", at("guard#1", 0), 0);
+        final List<WriteRow> writes = new ArrayList<WriteRow>();
+        final List<ReadRow> reads = new ArrayList<ReadRow>();
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        for (int version = 1; version <= versions; version++) {
+            writes.add(WriteRow.of("t", version, at, view, version, "", "J"));
+            reads.add(ReadRow.of("t", 100L + version, at, view, version,
+                    "V_r" + version, "J", "" + version));
+            declared.put("h" + version, VmTermLowering.Sort.STRING);
+            declared.put("V_r" + version, VmTermLowering.Sort.INT);
+        }
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
+            @Override
+            public com.google.gson.JsonElement writeExpression(
+                    String location, long version) {
+                return null;
+            }
+
+            @Override
+            public List<WriteRow> writes(String location) {
+                return key.equals(location) ? writes : none.writes(location);
+            }
+
+            @Override
+            public List<ReadRow> reads(String location) {
+                return key.equals(location) ? reads : none.reads(location);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String location, long version) {
+                return none.readSymbols(location, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return true;
+            }
+
+            @Override
+            public boolean repaired(String location, long readEvent) {
+                return key.equals(location);
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return true;
+            }
+
+            @Override
+            public SmtLowering.ViewLeaf viewLeaf(String symbol) {
+                return symbol.matches("h[0-9]+") ? new SmtLowering.ViewLeaf(
+                        key, Long.parseLong(symbol.substring(1)), port)
+                        : null;
+            }
+
+            @Override
+            public String viewLeafAt(String viewKey, long version,
+                                     String leafPort) {
+                return key.equals(viewKey) && port.equals(leafPort)
+                        ? "h" + version : null;
+            }
+        };
+        // guard leaves, then the view_leaf define-funs the guard states
+        Object[][] rows = {
+            {new String[] {"h5"}, 1},
+            {new String[] {"h5", "h7"}, 2},
+            {new String[] {"h7", "h5"}, 2},
+        };
+        List<Set<String>> meanings = new ArrayList<Set<String>>();
+        for (Object[] row : rows) {
+            String[] leaves = (String[]) row[0];
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", join, ExpressionTable.empty());
+            List<String> texts = new ArrayList<String>();
+            for (String leaf : leaves) {
+                texts.add(lowering.dispatch(vmString("equals",
+                        vmLeaf("SymbolExpression", leaf,
+                                "Ljava/lang/String;"),
+                        vmLeaf("ConStringSymbolExp", "Y_L'String'_down",
+                                "java/lang/String")),
+                        VmTermLowering.Sort.BOOL, "test").text);
+            }
+            lowering.end();
+            List<String> cased = new ArrayList<String>();
+            for (SmtLowering.Declaration declaration
+                    : lowering.reachedBy(texts)) {
+                if (declaration.name.startsWith("view_leaf__")) {
+                    cased.add(declaration.body);
+                }
+            }
+            assertEquals(cased.toString(), row[1], cased.size());
+            for (int index = 0; index < leaves.length; index++) {
+                // Its own read's ite over every version's plain leaf.
+                String body = cased.get(index);
+                assertTrue(body, body.contains("V_r" + leaves[index]
+                        .substring(1)));
+                for (int version = 1; version <= versions; version++) {
+                    assertTrue(body, body.contains("h" + version));
+                }
+            }
+            if (leaves.length == 2) {
+                meanings.add(new java.util.TreeSet<String>(cased));
+            }
+        }
+        assertEquals("r5 -> r7 -> r5 means one thing whichever is entered "
+                + "first", meanings.get(0), meanings.get(1));
+    }
+
+    /**
      * A VIEW'S CASES ARE LOWERED ONCE ({@code SmtLowering#throughView}): each
      * case of a view is a leaf read through a view of its own, here twenty
      * levels deep and two cases a level, so lowered anew at every use it

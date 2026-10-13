@@ -1926,7 +1926,11 @@ VIEW instead (`LocationKind.VIEW`, the reading node and the store path), whose w
 node's decodes: where a read of it a family may re-pair stands in the path, a content leaf's attach
 symbol of that view lowers as `(ite (= view v_1) leaf_1 ... leaf)`, the leaf of each decode of the
 node that took it in, defined only where the view is one of them (`#perCandidate`); with no such read
-it is its own.
+it is its own. Each case is the plain leaf of that version's decode, what its writer's export binds:
+a leaf of the view being cased is never cased again through the read that observed its version
+(another reader's choice, not part of what the decode produced; solr-adhoc-40 SL1, one view read at
+ten versions, was cased through every order of them), while two reads of one view, each a guard's,
+each choose their own case; a view's answer is kept per leaf once per memo.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
