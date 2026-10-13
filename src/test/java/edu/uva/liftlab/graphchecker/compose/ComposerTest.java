@@ -4799,6 +4799,131 @@ public class ComposerTest {
     }
 
     /**
+     * What a view's case lowered rests on its choice only while it is the
+     * case's alone (SmtLowering#viewGuarded): a leaf read through its own
+     * view inside another view's case, then read directly -- its view's
+     * answer lowered once and taken again (the view memo) --, is the path's
+     * own, its view's read and all, and only its own other versions rest on
+     * their choices.  Two views: a0's case of version 3 is a1, itself a leaf
+     * read through the view of a1, whose case of version 3 is a2.
+     */
+    @Test
+    public void aLeafLoweredInACaseAndThenDirectlyIsThePaths() {
+        final String port = "SOLR_ZK#CONTENT:|x#|y";
+        Endpoint at = Endpoint.of(ANCHOR, "guard#VIEW", at("guard#1", 0), 0);
+        final Map<String, LocationId> views =
+                new LinkedHashMap<String, LocationId>();
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        for (String leaf : new String[] {"a0", "a1", "a2"}) {
+            declared.put(leaf, VmTermLowering.Sort.STRING);
+            declared.put("V_" + leaf, VmTermLowering.Sort.INT);
+            views.put(leaf, LocationId.of(
+                    edu.uva.liftlab.graphchecker.contract.LocationKind.VIEW,
+                    "SOLR_ZK@case/dn0", "/" + leaf));
+        }
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
+            private String leafOf(String location) {
+                for (Map.Entry<String, LocationId> view : views.entrySet()) {
+                    if (SmtLowering.locationKey(view.getValue())
+                            .equals(location)) {
+                        return view.getKey();
+                    }
+                }
+                return null;
+            }
+
+            @Override
+            public com.google.gson.JsonElement writeExpression(
+                    String location, long version) {
+                return null;
+            }
+
+            @Override
+            public List<WriteRow> writes(String location) {
+                String leaf = leafOf(location);
+                if (leaf == null) return none.writes(location);
+                LocationId view = views.get(leaf);
+                return Arrays.asList(WriteRow.of("t", 2L, at, view, 3L, "",
+                        "J"), WriteRow.of("t", 4L, at, view, 5L, "", "J"));
+            }
+
+            @Override
+            public List<ReadRow> reads(String location) {
+                String leaf = leafOf(location);
+                return leaf == null ? none.reads(location)
+                        : Collections.singletonList(ReadRow.of("t", 9L, at,
+                        views.get(leaf), 5L, "V_" + leaf, "J", "5"));
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String location, long version) {
+                return none.readSymbols(location, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return true;
+            }
+
+            @Override
+            public boolean repaired(String location, long readEvent) {
+                return leafOf(location) != null;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return true;
+            }
+
+            @Override
+            public SmtLowering.ViewLeaf viewLeaf(String symbol) {
+                return "a0".equals(symbol) || "a1".equals(symbol)
+                        ? new SmtLowering.ViewLeaf(SmtLowering.locationKey(
+                        views.get(symbol)), 5L, port) : null;
+            }
+
+            @Override
+            public String viewLeafAt(String viewKey, long version,
+                                     String leafPort) {
+                String leaf = leafOf(viewKey);
+                if (leaf == null || !port.equals(leafPort)) return null;
+                return version == 5L ? leaf : version == 3L
+                        ? "a" + (Integer.parseInt(leaf.substring(1)) + 1)
+                        : null;
+            }
+        };
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", join, ExpressionTable.empty());
+        for (String leaf : new String[] {"a0", "a1"}) {
+            lowering.dispatch(vmString("equals", vmLeaf("SymbolExpression",
+                    leaf, "Ljava/lang/String;"), vmLeaf("ConStringSymbolExp",
+                    "Y_L'String'_down", "java/lang/String")),
+                    VmTermLowering.Sort.BOOL, "test");
+            if ("a0".equals(leaf)) {
+                assertTrue("lowered in a0's case of 3, a1's view's read"
+                        + " rests on that choice: " + lowering.viewGuarded(),
+                        lowering.viewGuarded().containsKey("V_a1"));
+            }
+        }
+        lowering.end();
+        Map<String, Set<String>> guarded = lowering.viewGuarded();
+        assertFalse("a1, read directly, is the path's: " + guarded,
+                guarded.containsKey("a1"));
+        assertFalse("and so is its view's read: " + guarded,
+                guarded.containsKey("V_a1"));
+        assertTrue("its own other version rests on its choice: " + guarded,
+                guarded.containsKey("a2"));
+    }
+
+    /**
      * A constant Enum.valueOf chose from a name, read from a slot no row
      * gives the version a value (an object a decode built outside every
      * region, solr-18413 Z2O: Slice.state from state.json's leaf), compared
