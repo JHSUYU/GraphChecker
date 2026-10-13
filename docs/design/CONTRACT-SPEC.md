@@ -260,7 +260,10 @@ field=<f> <subject>`.
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
   producer, selector, value?, producerQuestion?}` (`value`: the text a held leaf -- a delivery into
-  the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
+  the anchor -- must receive, the arm's `texts` in the claim, each name its nodes had only in the arm's run named by the
+  node (`{auto0/node1}`, the arm session's `runSpellings`, `ConfirmMain#named`); the run names what arrives by its own
+  spellings and compares exactly after that (`Confirmation#attached`): another node or any other difference refutes;
+  `producerQuestion
   {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
   session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
   `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`; a `mint` row is compared by its writer

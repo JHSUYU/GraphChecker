@@ -2276,7 +2276,10 @@ selected arm states `texts`, consumer endpoint id -> the model's value of each l
 (`ComposedFamilies.BoundLeaf#held`: a delivery into the anchor) as the text that
 arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
 or a floating value), for every such leaf whose value rests on no clock through the valuation's
-selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
+selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh). CONFIRM compares it with each
+name a node had only in one run named by the node on both sides -- the arm's run's (`ConfirmMain#named`), the confirming
+run's (`Confirmation#attached`, `RunNames#name`) -- and exactly after that: a node's address differs by its run's port
+(NC3-reindex attempt 0000 was refuted on `127.0.0.1:41564_solr` against `127.0.0.1:33130_solr`, both `auto0/node1`).
 
 **Cost.** COMPOSE reads the whole corpus -- every session (`SessionReader#readAll`) and every
 obligation worker's answer with, once it published a session, its focus row (`ObligationDir#workersIn`),

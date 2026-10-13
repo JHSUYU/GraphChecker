@@ -48,6 +48,12 @@ final class RunNames {
         return new Keyed(keyed, RunSpellings.unnamed(keyed));
     }
 
+    /** {@code text} with each spelling stated so far named by its node
+     *  ({@link RunSpellings#name}). */
+    static String name(String text) {
+        return spellings.name(text);
+    }
+
     /** Spelling -> node, every one stated so far. */
     static Map<String, String> stated() {
         return spellings.asMap();

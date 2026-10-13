@@ -250,10 +250,17 @@ public final class Confirmation {
                     + ", the run paired "
                     + (actual.isEmpty() ? "no export" : actual));
         }
-        if (chosen.value != null && !chosen.value.equals(text)) {
+        // Each side names its nodes' run-only names by the node (the model's
+        // by its arm's run, ConfirmMain#named): a node's address differs by
+        // its run's port.  Exact after that: another node, or any other
+        // difference, refutes.
+        String delivered = text == null ? null : RunNames.name(text);
+        if (chosen.value != null && !chosen.value.equals(delivered)) {
             differs.add("the model's value is \"" + chosen.value
                     + "\", the run delivered "
-                    + (text == null ? "none" : "\"" + text + "\""));
+                    + (text == null ? "none" : "\"" + text + "\""
+                            + (delivered.equals(text) ? ""
+                                    : " (" + delivered + ")")));
         }
         return new Compared(differs.isEmpty() ? ""
                 : "WIRE " + id(consumer) + ": " + String.join("; ", differs),

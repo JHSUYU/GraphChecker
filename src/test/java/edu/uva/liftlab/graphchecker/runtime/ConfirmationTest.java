@@ -55,6 +55,7 @@ public class ConfirmationTest {
     public void reset() {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
         RowRuntime.resetForTests();
+        RunNames.resetForTests();
     }
 
     /** Hands the replay a worker directory holding these two files; null
@@ -144,6 +145,66 @@ public class ConfirmationTest {
                 FocusedReplay.results("s").get(0).verdict());
         assertTrue(FocusedReplay.results("s").get(0).detail()
                 .contains("no flip was owed"));
+    }
+
+    /**
+     * A held leaf's value names each node's run-only name by the node on
+     * both sides -- the model's by its arm's run (ConfirmMain#named), what
+     * arrives by this run's -- and is compared exactly after that: the same
+     * node at another port is the model's value (NC3-reindex attempt 0000:
+     * 127.0.0.1:41564_solr against 127.0.0.1:33130_solr, both
+     * auto0/node1); another node, or any other difference, refutes; a value
+     * no spelling names is compared as it is.
+     */
+    @Test
+    public void aWireValueNamesItsNodesByEachRunsSpelling()
+            throws Exception {
+        Endpoint chosen = endpoint(PRODUCER, "XCH.1.resp.leader");
+        Endpoint leader = endpoint(ANCHOR, "XCH.1.resp.leader");
+        Endpoint url = endpoint(ANCHOR, "XCH.2.resp.url");
+        Endpoint count = endpoint(ANCHOR, "XCH.3.resp.count");
+        handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
+                + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
+                + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
+                + "\"focusedOccurrenceId\":\""
+                + OccurrenceAddress.parse(ANCHOR).id() + "\","
+                + "\"seedSessionId\":\"seed\",\"flip\":null,"
+                + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                + "\"answers\":{},\"rootMints\":{}}\n",
+                Arrays.asList(wire(leader, chosen, "{auto0/node1}"),
+                        wire(url, chosen, "http://{auto0/node1}/solr/c1"),
+                        wire(count, chosen, "2000")));
+        RunNames.spelled("auto0/node0", "127.0.0.1:33129_solr");
+        RunNames.spelled("auto0/node1", "127.0.0.1:33130_solr");
+        Object[][] table = {
+                // consumer, what arrived, a mismatch?
+                {leader, "127.0.0.1:33130_solr", false},
+                {leader, "127.0.0.1:33129_solr", true},
+                {leader, "127.0.0.1:33130_solr ", true},
+                // a spelling inside a longer string: the host and port
+                {url, "http://127.0.0.1:33130/solr/c1", false},
+                {url, "http://127.0.0.1:33130/solr/c2", true},
+                {url, "http://127.0.0.1:33129/solr/c1", true},
+                // no spelling names it: as it is
+                {count, "2000", false},
+                {count, "1999", true},
+        };
+        for (Object[] row : table) {
+            String mismatch = Confirmation.attached((Endpoint) row[0],
+                    chosen, (String) row[1]).mismatch;
+            assertEquals(row[1] + " -> " + mismatch, row[2],
+                    !mismatch.isEmpty());
+        }
+        assertTrue(Confirmation.attached(leader, chosen,
+                "127.0.0.1:33129_solr").mismatch.endsWith("the run delivered"
+                + " \"127.0.0.1:33129_solr\" ({auto0/node0})"));
+    }
+
+    private static String wire(Endpoint consumer, Endpoint producer,
+                               String value) {
+        return "{\"kind\":\"WIRE\",\"consumer\":\"" + consumer.id()
+                + "\",\"producer\":\"" + producer.id() + "\",\"value\":\""
+                + value + "\"}";
     }
 
     @Test

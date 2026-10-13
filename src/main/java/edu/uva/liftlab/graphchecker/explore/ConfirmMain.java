@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
@@ -30,7 +31,9 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -1132,15 +1135,31 @@ public final class ConfirmMain {
                     edge.add(Confirmation.PRODUCER_QUESTION,
                             question(paired.producer(), producerSession));
                 }
-                // A held leaf: what must arrive there.
+                // A held leaf: what must arrive there, each name its nodes
+                // had only in the arm's run named by its node, as the run
+                // that compares it names what arrives (Confirmation#attached).
                 JsonObject texts = object(arm, ComposeMain.TEXTS);
                 if (texts.has(consumerId)) {
-                    edge.add("value", texts.get(consumerId));
+                    edge.add("value", named(texts.get(consumerId),
+                            producerSession.manifest()));
                 }
                 edges.add(edge);
             }
         }
         return edges;
+    }
+
+    /**
+     * A held leaf's text with each name its nodes had only in {@code
+     * manifest}'s run named by the node ({@link RunSpellings#name}: {@code
+     * 127.0.0.1:41564_solr} is {@code {auto0/node1}}); a text no spelling
+     * names, or a session that stated none, as it is.
+     */
+    static JsonElement named(JsonElement text, SessionManifest manifest) {
+        if (manifest == null || !text.isJsonPrimitive()) return text;
+        String raw = text.getAsString();
+        String named = manifest.runSpellings().name(raw);
+        return named.equals(raw) ? text : new JsonPrimitive(named);
     }
 
     /**
