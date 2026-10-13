@@ -303,6 +303,9 @@ public final class Arms {
      */
     private final Map<String, Set<String>> symbolsByExpression =
             new HashMap<String, Set<String>>();
+    /** {@link #rootGuards}, per session. */
+    private final Map<String, List<RootGuard>> rootGuards =
+            new ConcurrentHashMap<String, List<RootGuard>>();
 
     public Arms(Rows rows) {
         this.rows = rows;
@@ -334,6 +337,24 @@ public final class Arms {
      * @param symbol the consumer's own variable for this slot
      */
     public List<Arm> armsAt(Interaction slot, String symbol, String scope) {
+        return armsAt(slot, symbol, scope, null);
+    }
+
+    /**
+     * {@link #armsAt} of one session's own run alone: the arms its own
+     * pairings name, in the same order -- a handoff's name in an arm's key
+     * ({@code Corpus#handoffName}) states only these, and asking every
+     * session's arms of a slot to keep one's was quadratic in the sessions
+     * (Z3D snapshot-no-active round 2, 239 sessions: 56% of a 30 min plan).
+     */
+    public List<Arm> ownArmsAt(Interaction slot, String symbol,
+                               String session) {
+        return armsAt(slot, symbol, session, session);
+    }
+
+    /** {@code only}: the session whose pairings alone count, or null. */
+    private List<Arm> armsAt(Interaction slot, String symbol, String scope,
+                             String only) {
         List<Arm> arms = new ArrayList<Arm>();
         List<AttachRow> attaches = new ArrayList<AttachRow>(
                 rows.attachesOf(slot));
@@ -342,6 +363,7 @@ public final class Arms {
             // Selection (IDENTITY §4): only a run whose OWN pairing named
             // this consumer; the guard and the attestation are the arm's own.
             String session = paired.sessionId();
+            if (only != null && !only.equals(session)) continue;
             List<ExportRow> own = rows.ownExportsOf(session, slot.producer());
             for (List<ExportRow> exports : Arrays.asList(
                     rows.exportsOf(slot.producer()), own)) {
@@ -701,41 +723,21 @@ public final class Arms {
         Map<String, String> guard = new LinkedHashMap<String, String>();
         Map<String, RootMintRow> guardMints =
                 new LinkedHashMap<String, RootMintRow>();
-        for (Map.Entry<String, List<RootMintRow>> entry
-                : rows.roots().entrySet()) {
-            RootMintRow row = rows.ranRoot(entry.getKey(), session);
-            if (row == null) {
+        for (RootGuard root : rootGuards(session)) {
+            if (root.ran == null) {
                 // Refuse, never emit unguarded -- an empty guard would
                 // admit the arm under every valuation of this root.
-                if (names(symbols, entry.getValue())) {
-                    refusals.add(slotId + "|" + session + "|"
-                            + entry.getKey());
+                if (!Collections.disjoint(symbols, root.minted)) {
+                    refusals.add(slotId + "|" + session + "|" + root.rootId);
                     return null;
                 }
                 continue;
             }
-            // Never a clock: its reads are in the prefix already, and pinning
-            // it would close every skew witness resting on this arm.
-            if (row.kind() == RootKind.CLOCK) continue;
-            // Varied roots too, not only the expression's: the arm exists
-            // only under the valuation its replay ran.  A root the replay
-            // read and minted none, varied or not, whatever the delivery's
-            // row-level closure says: the literals it delivers may be
-            // computed from the reading through state no row tracks, and no
-            // term says how they move (hdfs-17967-pathA F2b: DataNodes
-            // exported the data-encryption key's id, the serial their block
-            // keys came with, from instrumented occurrences with no read
-            // row; guarded only where the closure reached the NameNode's
-            // tick, the refuted claim came back).
-            if (rows.root(entry.getKey(), session) != null
-                    && !rows.varied(entry.getKey())
-                    && !symbols.contains(row.symbol())) {
+            if (root.ifNamed && !symbols.contains(root.ran.symbol())) {
                 continue;
             }
-            String value = rows.rootValue(session, entry.getKey());
-            if (value == null || value.isEmpty()) continue;
-            guard.put(row.symbol(), value);
-            guardMints.put(row.symbol(), row);
+            guard.put(root.ran.symbol(), root.value);
+            guardMints.put(root.ran.symbol(), root.ran);
         }
         Set<String> nested = new LinkedHashSet<String>();
         for (String named : symbols) {
@@ -750,19 +752,78 @@ public final class Arms {
                 write, attach);
     }
 
-    /**
-     * Whether an expression's symbols name one root, under any spelling the
-     * corpus minted it with.
-     */
-    private static boolean names(Set<String> symbols,
-                                 List<RootMintRow> minted) {
-        if (minted == null) return false;
-        for (RootMintRow row : minted) {
-            if (row.symbol() != null && symbols.contains(row.symbol())) {
-                return true;
-            }
+    /** One root as one session's arms are guarded on it ({@link #arm}). */
+    private static final class RootGuard {
+        final String rootId;
+        /** The mint row naming the root the session ran, or null: an arm
+         *  whose symbols name the root is then refused. */
+        final RootMintRow ran;
+        /** {@code ran} null: every spelling the corpus minted the root
+         *  with. */
+        final Set<String> minted;
+        /** Whether an arm takes it only where its symbols name it. */
+        final boolean ifNamed;
+        /** What the session ran it at ({@link Rows#rootValue}). */
+        final String value;
+
+        RootGuard(String rootId, RootMintRow ran, Set<String> minted,
+                  boolean ifNamed, String value) {
+            this.rootId = rootId;
+            this.ran = ran;
+            this.minted = minted;
+            this.ifNamed = ifNamed;
+            this.value = value;
         }
-        return false;
+    }
+
+    /**
+     * What one session's arms take from each root, in {@link Rows#roots}
+     * order, but what turns on the arm's own symbols: once per session (the
+     * rows never change).  Asked per arm and per root, these lookups were
+     * the most of a planning round (Z3D snapshot-no-active round 2: 303
+     * roots, each minted by most of 239 sessions under one spelling).
+     */
+    private List<RootGuard> rootGuards(String session) {
+        List<RootGuard> held = rootGuards.get(session);
+        if (held != null) return held;
+        List<RootGuard> guards = new ArrayList<RootGuard>();
+        for (Map.Entry<String, List<RootMintRow>> entry
+                : rows.roots().entrySet()) {
+            String rootId = entry.getKey();
+            RootMintRow row = rows.ranRoot(rootId, session);
+            if (row == null) {
+                Set<String> minted = new HashSet<String>();
+                for (RootMintRow mint : entry.getValue()) {
+                    if (mint.symbol() != null) minted.add(mint.symbol());
+                }
+                if (!minted.isEmpty()) {
+                    guards.add(new RootGuard(rootId, null, minted, false,
+                            null));
+                }
+                continue;
+            }
+            // Never a clock: its reads are in the prefix already, and pinning
+            // it would close every skew witness resting on this arm.
+            if (row.kind() == RootKind.CLOCK) continue;
+            String value = rows.rootValue(session, rootId);
+            if (value == null || value.isEmpty()) continue;
+            // Varied roots too, not only the expression's: the arm exists
+            // only under the valuation its replay ran.  A root the replay
+            // read and minted none, varied or not, whatever the delivery's
+            // row-level closure says: the literals it delivers may be
+            // computed from the reading through state no row tracks, and no
+            // term says how they move (hdfs-17967-pathA F2b: DataNodes
+            // exported the data-encryption key's id, the serial their block
+            // keys came with, from instrumented occurrences with no read
+            // row; guarded only where the closure reached the NameNode's
+            // tick, the refuted claim came back).
+            guards.add(new RootGuard(rootId, row, null,
+                    rows.root(rootId, session) != null
+                            && !rows.varied(rootId), value));
+        }
+        guards = Collections.unmodifiableList(guards);
+        rootGuards.put(session, guards);
+        return guards;
     }
 
     /**

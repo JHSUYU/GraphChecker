@@ -804,12 +804,20 @@ public final class ClosurePlanner {
     private static final class Demand {
         private final OccurrenceAddress occurrence;
         /** session|expressionRef of values this occurrence contributed. */
-        private final Set<String> contributed = new LinkedHashSet<String>();
+        private Set<String> contributed = new LinkedHashSet<String>();
         /** Session -> the seq of the last value this occurrence contributed
          *  there: where the prefix its deliveries rest on ends ({@link
          *  #demanded}). */
-        private final Map<String, Long> cutoffs =
-                new LinkedHashMap<String, Long>();
+        private Map<String, Long> cutoffs = new LinkedHashMap<String, Long>();
+        /** Whether {@link #contributed} and {@link #cutoffs} are still a
+         *  {@link Contribution}'s, copied before this demand changes them. */
+        private boolean shared;
+        /** The contributions every value of which this demand holds. */
+        private final Set<Contribution> holds =
+                Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<Contribution, Boolean>());
+        /** The contribution this demand's values are exactly, or null. */
+        private Contribution exactly;
         private final Set<String> flipSites = new LinkedHashSet<String>();
         /** The symbols of a concrete anchor's predicate reads ({@link
          *  #concrete}); none on any other demand. */
@@ -833,6 +841,25 @@ public final class ClosurePlanner {
             this.anchor = anchor;
         }
 
+        /** A demand whose values are exactly {@code values}'s. */
+        private Demand(OccurrenceAddress occurrence, String why,
+                       Contribution values) {
+            this(occurrence, why, false);
+            contributed = values.contributed;
+            cutoffs = values.cutoffs;
+            shared = true;
+            holds.add(values);
+            exactly = values;
+        }
+
+        /** Its own values, before it changes them. */
+        private void own() {
+            if (!shared) return;
+            contributed = new LinkedHashSet<String>(contributed);
+            cutoffs = new LinkedHashMap<String, Long>(cutoffs);
+            shared = false;
+        }
+
         /**
          * Folds another reason to demand this occurrence: {@code
          * CLOSURE_MEMBER} wins over every other reason, any reason the rows
@@ -848,9 +875,19 @@ public final class ClosurePlanner {
          * @return whether this demand grew
          */
         private boolean absorb(Demand other) {
-            boolean grew = contributed.addAll(other.contributed);
-            for (Map.Entry<String, Long> cutoff : other.cutoffs.entrySet()) {
-                grew |= contributes(cutoff.getKey(), cutoff.getValue());
+            boolean grew = false;
+            // Values it holds already add nothing: one producer's every
+            // delivery, paired again by each session's attach of it (Z3D
+            // snapshot-no-active round 2: 239 sessions).
+            if (other.exactly == null || !holds.contains(other.exactly)) {
+                own();
+                grew = contributed.addAll(other.contributed);
+                for (Map.Entry<String, Long> cutoff
+                        : other.cutoffs.entrySet()) {
+                    grew |= contributes(cutoff.getKey(), cutoff.getValue());
+                }
+                if (grew) exactly = null;
+                holds.addAll(other.holds);
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
@@ -877,7 +914,10 @@ public final class ClosurePlanner {
          *  session, at its seq. */
         private void contributes(String sessionId, String expressionRef,
                                  long seq) {
-            contributed.add(sessionId + "|" + expressionRef);
+            own();
+            if (contributed.add(sessionId + "|" + expressionRef)) {
+                exactly = null;
+            }
             contributes(sessionId, seq);
         }
 
@@ -885,7 +925,9 @@ public final class ClosurePlanner {
         private boolean contributes(String sessionId, long seq) {
             Long held = cutoffs.get(sessionId);
             if (held != null && held.longValue() >= seq) return false;
+            own();
             cutoffs.put(sessionId, seq);
+            exactly = null;
             return true;
         }
 
@@ -898,6 +940,19 @@ public final class ClosurePlanner {
                 }
             }
             return refs;
+        }
+    }
+
+    /** What every delivery of one producer endpoint contributes, in every
+     *  session ({@link #producers}): built once per walk, shared by each
+     *  demand paired with it until that demand changes its values. */
+    private static final class Contribution {
+        private final Set<String> contributed;
+        private final Map<String, Long> cutoffs;
+
+        private Contribution(Demand built) {
+            this.contributed = Collections.unmodifiableSet(built.contributed);
+            this.cutoffs = Collections.unmodifiableMap(built.cutoffs);
         }
     }
 
@@ -952,6 +1007,9 @@ public final class ClosurePlanner {
                 new HashMap<String, List<OccurrenceAddress>>();
         private final Map<String, GroupReads> groupReads =
                 new HashMap<String, GroupReads>();
+        /** producer endpoint id -> {@link #contribution}. */
+        private final Map<String, Contribution> contributions =
+                new HashMap<String, Contribution>();
 
         private Walk(Corpus corpus, StaticScopeMap map,
                      OccurrenceAddress anchor) {
@@ -965,6 +1023,22 @@ public final class ClosurePlanner {
         private boolean faulted(OccurrenceAddress occurrence) {
             return faults.computeIfAbsent(occurrence.id(),
                     id -> !corpus.faultSites(occurrence).isEmpty());
+        }
+
+        /** What every session's exports at one producer endpoint
+         *  contribute, in their order: once per walk. */
+        private Contribution contribution(Endpoint producer) {
+            Contribution held = contributions.get(producer.id());
+            if (held != null) return held;
+            Demand built = new Demand(producer.occurrence(), CLOSURE_MEMBER,
+                    false);
+            for (ExportRow export : corpus.exportsOf(producer)) {
+                built.contributes(export.sessionId(), export.expressionRef(),
+                        export.seq());
+            }
+            held = new Contribution(built);
+            contributions.put(producer.id(), held);
+            return held;
         }
 
         /** The occurrence and its state-connected factor: one symbolic
@@ -1445,13 +1519,8 @@ public final class ClosurePlanner {
         } else {
             crossCheck(attach, walk.gaps);
             Demand paired = new Demand(attach.producer().occurrence(),
-                    CLOSURE_MEMBER, false);
+                    CLOSURE_MEMBER, walk.contribution(attach.producer()));
             paired.flipSites.addAll(guards);
-            for (ExportRow export : walk.corpus.exportsOf(
-                    attach.producer())) {
-                paired.contributes(export.sessionId(),
-                        export.expressionRef(), export.seq());
-            }
             into.add(paired);
         }
         // N2: null (unpaired) means every node.

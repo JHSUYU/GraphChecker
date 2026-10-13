@@ -37,13 +37,19 @@ public final class ContentPort {
 
     /** The port a site spells, or null for no content port. */
     public static Parsed parse(String site) {
-        int mark = site == null ? -1 : site.indexOf(MARK);
-        if (mark <= 0) return null;
+        if (!is(site)) return null;
+        int mark = site.indexOf(MARK);
         String rest = site.substring(mark + MARK.length());
         int cut = rest.indexOf('#');
-        if (cut < 0) return null;
         return new Parsed(site.substring(0, mark),
                 path(rest.substring(0, cut)), path(rest.substring(cut + 1)));
+    }
+
+    /** Whether a site spells a content port ({@link #parse} not null),
+     *  without decoding it. */
+    public static boolean is(String site) {
+        int mark = site == null ? -1 : site.indexOf(MARK);
+        return mark > 0 && site.indexOf('#', mark + MARK.length()) >= 0;
     }
 
     /** The half a view accessor's read stands at ({@link #viewed}). */
@@ -63,12 +69,19 @@ public final class ContentPort {
         return site != null && site.indexOf(VIEWED) > 0;
     }
 
+    // Java 8's String.replace(CharSequence, CharSequence) compiles a
+    // pattern per call: only where there is something to escape.
     private static String site(String path) {
+        if (path.indexOf('%') < 0 && path.indexOf('|') < 0
+                && path.indexOf('@') < 0) {
+            return path.replace('/', '|');
+        }
         return path.replace("%", "%25").replace("|", "%7C")
                 .replace("@", "%40").replace('/', '|');
     }
 
     private static String path(String site) {
+        if (site.indexOf('%') < 0) return site.replace('|', '/');
         return site.replace('|', '/').replace("%40", "@")
                 .replace("%7C", "|").replace("%25", "%");
     }

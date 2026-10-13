@@ -61,6 +61,17 @@ public class StoreContentTest {
         assertEquals("/collection_metadata/t/router.start@x|y%",
                 parsed.pointer);
         assertNull(ContentPort.parse("SOLR_ZK#WRITE:.aliases.json"));
+        // Plain or escaped, a port is one ContentPort.is tells without
+        // decoding it, and only a port is.
+        String plain = StoreContent.port("SOLR_ZK", "/clusterstate.json",
+                "/c/shards");
+        assertEquals("/c/shards", ContentPort.parse(plain).pointer);
+        for (String site : Arrays.asList(port, plain,
+                "SOLR_ZK#WRITE:.aliases.json", "#CONTENT:|a#|b",
+                "SOLR_ZK#CONTENT:|a", "", null)) {
+            assertEquals(String.valueOf(site), ContentPort.parse(site) != null,
+                    ContentPort.is(site));
+        }
     }
 
     @Test

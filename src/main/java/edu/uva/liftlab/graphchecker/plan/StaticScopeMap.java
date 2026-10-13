@@ -24,6 +24,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1828,10 +1829,27 @@ public final class StaticScopeMap {
         return ofRole(WRITE_SITE, site -> site.carrier.equals(carrier));
     }
 
-    /** Every static export site feeding one declared port. */
+    /** Every static export site feeding one declared port, in publication
+     *  order. */
     public List<Site> exportsOf(String portId) {
-        return ofRole(EXPORT_SITE, site -> site.portId.equals(portId));
+        if (portId == null) return new ArrayList<Site>();
+        Map<String, List<Site>> byPort = exportsByPort;
+        if (byPort == null) {
+            byPort = new HashMap<String, List<Site>>();
+            for (Site site : ofRole(EXPORT_SITE, site -> true)) {
+                byPort.computeIfAbsent(site.portId,
+                        key -> new ArrayList<Site>()).add(site);
+            }
+            exportsByPort = byPort;
+        }
+        return new ArrayList<Site>(byPort.getOrDefault(portId,
+                Collections.<Site>emptyList()));
     }
+
+    /** {@link #exportsOf}'s index: the closure asks it for every demanded
+     *  attach, and a scan of every site per ask was 3.6% of a planning
+     *  round (Z3D snapshot-no-active round 2). */
+    private volatile Map<String, List<Site>> exportsByPort;
 
     /**
      * Every access of a tracked cell ({@link #READ_SITE}), each observed
