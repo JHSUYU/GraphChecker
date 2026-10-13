@@ -512,6 +512,18 @@ down on the waiting thread before the await). A native run answers a FAULT row a
 call), so a latch's wait itself stays out of the weave's timed waits and runs on the wall clock
 (IDENTITY limits).
 
+**A planted SessionExpired is a real expiry.** A ZooKeeper door's `SessionExpiredException` arm asks
+the system's expirer after the marker's test (`DoorWeave#guard`, `runtime.Sessions#expires`, run as
+engine work): it expires the session of the door's owner -- the client whose method holds the door --
+at its server, which deletes the session's ephemeral nodes, and only then does the door throw; every
+later operation on that handle fails by itself and the client reconnects with a new session (Solr's
+`ConnectionManager`, `ZkController` re-registering its live node and elections). Planted on one call
+of a live session instead, the exception reaches a world no ZooKeeper does: Solr's Overseer exits its
+loop while its node's session, and the leader node no other node may take, live on
+(solr-bugs-overseer-lock-leak LL4). A system with no expirer, or one that knows no session of the
+owner, refuses the plant as an impossible timeout is refused (a replay's BLOCKING
+`ASSIGNMENT_UNPLANTED`, a native run's `PLANT_UNWRITTEN`); the call's own result stands.
+
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
 store door after the store hook. Where a system's own hook follows the library's call, the

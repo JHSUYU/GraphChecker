@@ -48,7 +48,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *   PIPELINE §7.8); otherwise, and always without a plant, its recorded
  *   polarity {@code false}.  A timed wait's planted timeout the program
  *   could not have reached (its latch already open, ...) is refused there,
- *   {@link #UNWRITTEN} ({@link #timeoutRefused}).  A {@code true} answer is a door fault
+ *   {@link #UNWRITTEN} ({@link #plantRefused}); so is a planted session expiry
+ *   no expirer can make real ({@code Sessions#expires}).  A {@code true} answer is a door fault
  *   for the thread's identity as in a replay ({@link Identity#doorFaulted}).</li>
  *   <li>{@code ROOT HOOK {rootId, occurrence, value}}: a tree's symbolize
  *   hook of that root writes the value into the field it names
@@ -179,7 +180,7 @@ public final class RecordingPlant {
     private static final Map<String, Integer> INVOCATIONS =
             new ConcurrentHashMap<String, Integer>();
     /** The FAULT row the thread's last marker call answered true, with its
-     *  name and occurrence ({@link #timeoutRefused}). */
+     *  name and occurrence ({@link #plantRefused}). */
     private static final ThreadLocal<Object[]> ANSWERED =
             new ThreadLocal<Object[]>();
 
@@ -365,13 +366,14 @@ public final class RecordingPlant {
     }
 
     /**
-     * A planted timed-wait timeout the program could not have reached at the
-     * call it was planted for ({@code TimedWaits#timesOut}, {@code why}):
-     * the FAULT row the thread's marker call just answered is stated
-     * {@link #UNWRITTEN}, so the run plants no model -- the world is
+     * A planted fault the program could not have reached at the call it was
+     * planted for -- a timed wait's timeout ({@code TimedWaits#timesOut}), a
+     * session expiry no expirer made real ({@code Sessions#expires}) --
+     * ({@code why}): the FAULT row the thread's marker call just answered is
+     * stated {@link #UNWRITTEN}, so the run plants no model -- the world is
      * impossible.  False outside a plant, where a replay names it instead.
      */
-    static boolean timeoutRefused(String name, String why) {
+    static boolean plantRefused(String name, String why) {
         if (!PLANTING) return false;
         Object[] answered = ANSWERED.get();
         ANSWERED.remove();

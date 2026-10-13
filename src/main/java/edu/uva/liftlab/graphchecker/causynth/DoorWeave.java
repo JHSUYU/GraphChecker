@@ -222,7 +222,7 @@ final class DoorWeave {
                 makeSymbolic(), StringConstant.v(door.name()))));
         units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
                 IntConstant.v(0)), call));
-        units.addAll(guard(body, door, door.name(), call, call));
+        units.addAll(guard(body, door, null, door.name(), call, call));
         units.add(jimple.newAssignStmt(call.getLeftOp(),
                 door.result == LibraryCatalog.Result.NULL ? NullConstant.v()
                         : call.getLeftOp().getType() instanceof LongType
@@ -610,7 +610,8 @@ final class DoorWeave {
     }
 
     /** {@code if (marker) throw new kind("..")}, falling to {@code next};
-     *  a timed wait's with its guard after the marker's test. */
+     *  a timed wait's and a session expiry's with its guard after the
+     *  marker's test. */
     private static List<Unit> fault(Body body, LibraryCatalog.Door door,
                                     String kind, Unit next, Stmt site) {
         String name = door.name();
@@ -636,7 +637,7 @@ final class DoorWeave {
                 makeSymbolic, StringConstant.v(marker))));
         units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
                 IntConstant.v(0)), next));
-        units.addAll(guard(body, door, marker, site, next));
+        units.addAll(guard(body, door, kind, marker, site, next));
         units.add(jimple.newAssignStmt(failure,
                 jimple.newNewExpr(RefType.v(kind))));
         units.add(jimple.newInvokeStmt(parameters.isEmpty()
@@ -648,16 +649,28 @@ final class DoorWeave {
     }
 
     /**
-     * A timed wait's planted timeout only where the real call could time out
+     * A planted fault only where it is real, after the marker's test, so a
+     * world the program cannot reach is refused by name where it is planted
+     * (CONFIRM, a native run) and never taken; none for any other door.
+     * A timed wait's timeout only where the real call could time out
      * ({@code runtime.TimedWaits#timesOut}: not a latch already open, a
      * future already done, a queue holding an element, a lock or permits at
      * hand, an interrupted thread): {@code g = timesOut(receiver, permits,
-     * marker); if g == 0 goto call}, after the marker's test, so a world the
-     * program cannot reach is refused by name where it is planted (CONFIRM,
-     * a native run) and never taken; none for any other door.
+     * marker); if g == 0 goto call}.  A SessionExpired only as a real
+     * expiry of the door's session at its server ({@code runtime.Sessions
+     * #expires}, through the system's expirer): {@code g = expires(owner,
+     * marker); if g == 0 goto next}, its owner the door method's receiver
+     * (the client whose session the door's call uses).  Planted on one call
+     * of a live session, Overseer.run's SessionExpired catch let a task
+     * processor die while its node's session and leader node lived on --
+     * a world no ZooKeeper reaches (solr-bugs-overseer-lock-leak LL4).
      */
     private static List<Unit> guard(Body body, LibraryCatalog.Door door,
-                                    String marker, Stmt call, Unit to) {
+                                     String kind, String marker, Stmt call,
+                                     Unit to) {
+        if (LibraryCatalog.SESSION_EXPIRED.equals(kind)) {
+            return expiry(body, marker, call, to);
+        }
         if (!LibraryCatalog.TIMED_WAIT.equals(door.transport)) {
             return Collections.emptyList();
         }
@@ -679,22 +692,54 @@ final class DoorWeave {
         return units;
     }
 
+    /** {@link #guard}'s session expiry: {@code g = expires(owner, marker);
+     *  if g == 0 goto to}. */
+    private static List<Unit> expiry(Body body, String marker, Stmt call,
+                                     Unit to) {
+        InvokeExpr invoke = call.containsInvokeExpr() ? call.getInvokeExpr()
+                : null;
+        Value owner = !body.getMethod().isStatic() ? body.getThisLocal()
+                : invoke instanceof InstanceInvokeExpr
+                ? ((InstanceInvokeExpr) invoke).getBase() : NullConstant.v();
+        Local taken = CausynthPipeline.newTraceLocal(body, BooleanType.v(),
+                "$expires");
+        Jimple jimple = Jimple.v();
+        List<Unit> units = new ArrayList<Unit>();
+        units.add(jimple.newAssignStmt(taken, jimple.newStaticInvokeExpr(
+                Scene.v().makeMethodRef(CausynthPipeline.phantomClass(
+                        SESSIONS_CLASS), GUARD_EXPIRES, Arrays.asList(
+                        RefType.v("java.lang.Object"),
+                        RefType.v("java.lang.String")), BooleanType.v(),
+                        true), owner, StringConstant.v(marker))));
+        units.add(jimple.newIfStmt(jimple.newEqExpr(taken, IntConstant.v(0)),
+                to));
+        return units;
+    }
+
+    /** The runtime class of a planted session expiry's guard. */
+    static final String SESSIONS_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.Sessions";
+    private static final String GUARD_TIMES_OUT = "timesOut";
+    private static final String GUARD_EXPIRES = "expires";
+    private static final List<String> GUARDS = Arrays.asList(GUARD_TIMES_OUT,
+            GUARD_EXPIRES);
+
     private static SootMethodRef timesOut() {
         return Scene.v().makeMethodRef(CausynthPipeline.phantomClass(
-                WorkStartSites.TIMED_WAITS_CLASS), "timesOut", Arrays.asList(
+                WorkStartSites.TIMED_WAITS_CLASS), GUARD_TIMES_OUT, Arrays.asList(
                 RefType.v("java.lang.Object"), IntType.v(),
                 RefType.v("java.lang.String")), BooleanType.v(), true);
     }
 
     /** {@code test}, or the marker's test before it where {@code test} is a
-     *  timed wait's guard ({@link #guard}): {@code g = timesOut(..); if g ==
-     *  0}. */
+     *  guard ({@link #guard}): {@code g = timesOut(..)} or {@code g =
+     *  expires(..)}, {@code if g == 0}. */
     private static Unit markerTest(soot.util.Chain<Unit> units, Unit test) {
         Unit assigned = test == null ? null : units.getPredOf(test);
         if (!(test instanceof IfStmt) || !(assigned instanceof AssignStmt)
                 || !(((AssignStmt) assigned).getRightOp()
                 instanceof StaticInvokeExpr)
-                || !"timesOut".equals(((StaticInvokeExpr) ((AssignStmt)
+                || !GUARDS.contains(((StaticInvokeExpr) ((AssignStmt)
                 assigned).getRightOp()).getMethodRef().getName())) {
             return test;
         }
