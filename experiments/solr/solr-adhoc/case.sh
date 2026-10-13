@@ -33,15 +33,23 @@ read -r -a scope <<<"${classes}"
 if [[ "$1" == 05 ]]; then
   loop_bounds=${here}/loop-bounds-05.jsonl
 fi
-# 07's, 19's and 21's exploration bound (owner 2026-10-12: the redundant
-# re-asks fixed first, then a named bound where the size is genuine): every
-# admitted world re-asks the arms of the worlds before it, each another
-# question, for its own path decides other kept conditions and its producers'
-# paths other conditions (solr-adhoc-21 RX7, by round 19: 2612 asks from
-# worlds of one flip, 184 of them new arms, from 119 admitted worlds;
-# solr-adhoc-19 SC9 r13: 3722 asks over 1013 arms).  One nesting level: a
-# flip in a world that already holds one is asked, one in a world of two
-# flips is not, named BOUNDED (region_path_max_world_depth, campaign_bounds).
-if [[ "$1" == 07 || "$1" == 19 || "$1" == 21 ]]; then
-  export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1
-fi
+# The study checks' exploration bound (owner 2026-10-12: every case ends in
+# its budget -- fixed point, witness, or a declared named bound -- once the
+# redundant re-asks are fixed).  What grows past a budget is the arms asked
+# again in every world of one flip, each another question as the query is
+# built (its own kept conditions, its handoffs' producer paths): of the
+# asks cut from one-flip worlds 88-99 % were arms asked before (SC9-19 r13
+# 590 new of 3722, SC10-09 r2-3 244 of 3539, SL1-40 r5 10 of 3661, SP5-13
+# r7-8 29 of 2276, RX7-21 184 of 2612, RX8-21 r1-6 123 of 1214 in 24 min).
+# Depth 0 -- a flip is asked from the seed's paths only, the flip's own
+# replay its witness -- where that growth is measured or the case is of the
+# routed-alias family, and each expected mechanism is one flip there (09 a
+# TIMED_WAIT fault, 19 a pairing flip on a stale view, 40 a READ-door fault
+# asked at round 0); depth 1 where the case forces its arm (05, 14: the
+# forced world's arms) or one-flip worlds have not grown (31, 39).  Named
+# BOUNDED (region_path_max_world_depth, campaign_bounds); what stays
+# unasked is every flip in a world of more flips than that.
+case "$1" in
+  07|09|10|13|19|21|40) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
+  05|14|31|39) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
+esac
