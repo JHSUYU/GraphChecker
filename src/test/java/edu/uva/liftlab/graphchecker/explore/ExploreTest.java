@@ -396,6 +396,73 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A session's own arms of a slot ({@code Arms#ownArmsAt}: what a
+     * handoff's name in an arm's key states) are its arms among every
+     * session's ({@code Arms#armsAt}), in order, each guarded by its own
+     * symbols on the roots its session ran: an arm naming a root its session
+     * never ran is refused, its sibling naming none is not, and a minted
+     * root no session varied guards only the arm that names it -- asked
+     * once or again (the guards are held per session).
+     */
+    @Test
+    public void aSessionsOwnArmsAreGuardedByTheirOwnSymbols()
+            throws Exception {
+        Path iteration = tree.newFolder("own-arms").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.root(PRODUCER, "CASE.A", "M_A", RootKind.INTEGRAL, "1", "0",
+                "10", true);
+        seed.constant("e.seed.const", "1");
+        seed.symbolic("e.seed.named", "M_A");
+        seed.export(ROTATED, "e.seed.const", 11L, "1");
+        seed.export(ROTATED, "e.seed.named", 12L, "1");
+        seed.attach(DELIVERED, "M_HOFF_KEY", "1", ROTATED);
+        seed.flush();
+        Session other = new Session(iteration, "s-other");
+        other.activation(WRITER, false);
+        other.activation(PRODUCER, false);
+        other.constant("e.other.const", "2");
+        other.symbolic("e.other.named", "M_A");
+        other.export(ROTATED, "e.other.const", 13L, "2");
+        other.export(ROTATED, "e.other.named", 14L, "2");
+        other.attach(DELIVERED, "M_HOFF_KEY", "2", ROTATED);
+        other.flush();
+
+        Corpus corpus = Corpus.read(iteration, null);
+        Arms arms = corpus.arms();
+        Interaction slot = Interaction.of(InteractionKind.WIRE, ROTATED,
+                DELIVERED);
+        List<String> expected = Arrays.asList("s-other e.other.const {}",
+                "s-seed e.seed.const {}", "s-seed e.seed.named {M_A=1}");
+        for (int ask = 0; ask < 2; ask++) {
+            List<String> all = new ArrayList<String>();
+            for (Arms.Arm arm : arms.armsAt(slot, "M_HOFF_KEY", "s-seed")) {
+                all.add(arm.sessionId() + " " + arm.expressionRef() + " "
+                        + arm.guard());
+            }
+            assertEquals("ask " + ask, expected, all);
+            assertEquals("ask " + ask, Collections.singleton(slot.id()
+                    + "|s-other|CASE.A"), arms.drainRefusals());
+            for (String session : Arrays.asList("s-seed", "s-other")) {
+                List<String> own = new ArrayList<String>();
+                for (Arms.Arm arm : arms.ownArmsAt(slot, "M_HOFF_KEY",
+                        session)) {
+                    own.add(arm.sessionId() + " " + arm.expressionRef()
+                            + " " + arm.guard());
+                }
+                List<String> its = new ArrayList<String>();
+                for (String arm : all) {
+                    if (arm.startsWith(session + " ")) its.add(arm);
+                }
+                assertEquals(session + ", ask " + ask, its, own);
+            }
+            assertEquals("ask " + ask, Collections.singleton(slot.id()
+                    + "|s-other|CASE.A"), arms.drainRefusals());
+        }
+    }
+
     private static Set<String> sessionsOf(List<? extends Object> rows) {
         Set<String> sessions = new LinkedHashSet<String>();
         for (Object row : rows) {

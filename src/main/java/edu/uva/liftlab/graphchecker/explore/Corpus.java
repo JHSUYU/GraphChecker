@@ -868,10 +868,12 @@ public final class Corpus implements Arms.Rows {
     private Set<String> handoffs(String sessionId,
                                  OccurrenceAddress occurrence,
                                  boolean stores) {
+        String key = sessionId + "|" + occurrence.id() + "|" + stores;
+        Set<String> held = handoffsOf.get(key);
+        if (held != null) return held;
         Set<String> fed = new TreeSet<String>(BY_SHAPE);
         for (AttachRow attach : attachesOn(sessionId, occurrence)) {
-            if (!stores && ContentPort.parse(attach.endpoint().site())
-                    != null) {
+            if (!stores && ContentPort.is(attach.endpoint().site())) {
                 continue;
             }
             Endpoint producer = attach.producer();
@@ -883,8 +885,16 @@ public final class Corpus implements Arms.Rows {
                     + handle("export", producer.id()));
             fed.add(sequences(attach.endpoint().site()) + from);
         }
+        fed = Collections.unmodifiableSet(fed);
+        handoffsOf.put(key, fed);
         return fed;
     }
+
+    /** {@link #handoffs}, once per session, occurrence and {@code stores}:
+     *  every arm's key asks its task's members again (a corpus does not
+     *  change once read). */
+    private final Map<String, Set<String>> handoffsOf =
+            new ConcurrentHashMap<String, Set<String>>();
 
     /** A ZooKeeper sequential node's name: a name, a dash or underscore,
      *  and ten digits ({@code qn-0000000003}, {@code n_0000000001}). */
@@ -1501,7 +1511,7 @@ public final class Corpus implements Arms.Rows {
     /**
      * A handoff as its flip query binds it ({@code FlipQuery#handoff}): by
      * its port and the arms of its own run that deliver it ({@link
-     * Arms#wireArms}) and that the query states ({@code FlipQuery#arm}: an
+     * Arms#ownArmsAt}) and that the query states ({@code FlipQuery#arm}: an
      * arm whose term does not lower, names what the query cannot declare or
      * is malformed is dropped), each by its producer's class, the export's
      * site, its canonical delivered term, its path condition's predicates
@@ -1514,14 +1524,9 @@ public final class Corpus implements Arms.Rows {
         if (attach.producer() != null) {
             String sessionId = attach.sessionId();
             SmtLowering lowering = lowering(sessionId);
-            for (Arms.Arm arm : arms().wireArms(Interaction.of(
+            for (Arms.Arm arm : arms().ownArmsAt(Interaction.of(
                     InteractionKind.WIRE, attach.producer(),
                     attach.endpoint()), attach.symbol(), sessionId)) {
-                if (!arm.sessionId().equals(sessionId)
-                        || !arm.symbol().isEmpty()
-                        && !arm.symbol().equals(attach.symbol())) {
-                    continue;
-                }
                 SmtLowering.Lowered lowered = lowering == null ? null
                         : lowering.lower(arm.expressionRef());
                 if (lowered == null || !lowered.ok()

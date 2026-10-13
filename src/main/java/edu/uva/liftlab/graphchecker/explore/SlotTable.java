@@ -19,7 +19,6 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
-import com.google.gson.JsonObject;
 
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
@@ -148,7 +147,21 @@ public final class SlotTable {
     private final Map<String, Slot> ownChainOf = new HashMap<String, Slot>();
     /** What this table changed since it was read or last written, in
      *  order: the rows of the round that writes it ({@link #write}). */
-    private final List<JsonObject> changes = new ArrayList<JsonObject>();
+    private final List<Change> changes = new ArrayList<Change>();
+
+    /** One row of {@link #changes}: a slot, and whether it opened or
+     *  dropped -- its JSON is made only as {@link #write} writes it (Z3D
+     *  snapshot-no-active round 2: 298,913 slots held as JSON were a
+     *  third of the planner's old generation). */
+    private static final class Change {
+        final Slot slot;
+        final String kind;
+
+        Change(Slot slot, String kind) {
+            this.slot = slot;
+            this.kind = kind;
+        }
+    }
     private boolean stated;
 
     SlotTable() {
@@ -189,12 +202,14 @@ public final class SlotTable {
         for (Path file : files) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
-            for (JsonObject row : RowCodec.readAll(file, json -> json)) {
-                Slot slot = ExploreCodec.readSlot(row);
-                if (DROPPED.equals(JsonFields.optionalString(row, "kind"))) {
-                    table.byInteraction.remove(key(slot));
+            // Each line read into its slot as it is parsed.
+            for (Change change : RowCodec.readAll(file, row -> new Change(
+                    ExploreCodec.readSlot(row),
+                    JsonFields.optionalString(row, "kind")))) {
+                if (DROPPED.equals(change.kind)) {
+                    table.byInteraction.remove(key(change.slot));
                 } else {
-                    table.byInteraction.put(key(slot), slot);
+                    table.byInteraction.put(key(change.slot), change.slot);
                 }
             }
         }
@@ -219,7 +234,8 @@ public final class SlotTable {
     /** Writes what this table changed as one round's rows into that
      *  round's directory; the table holds no change after. */
     public void write(Path roundDir) throws IOException {
-        RowCodec.writeJsonl(roundDir.resolve(FILE), changes);
+        RowCodec.writeAll(roundDir.resolve(FILE), changes,
+                change -> ExploreCodec.writeSlot(change.slot, change.kind));
         changes.clear();
     }
 
@@ -239,7 +255,7 @@ public final class SlotTable {
      *  round ({@link #write}).  {@code answered}: as {@link #index}. */
     private void open(Slot slot, boolean answered) {
         byInteraction.put(key(slot), slot);
-        changes.add(ExploreCodec.writeSlot(slot, OPENED));
+        changes.add(new Change(slot, OPENED));
         index(slot, answered);
     }
 
@@ -284,7 +300,7 @@ public final class SlotTable {
             Set<String> answered = answeredIn.get(slot.openedBySession);
             if (answered == null) {
                 held.remove();
-                changes.add(ExploreCodec.writeSlot(slot, DROPPED));
+                changes.add(new Change(slot, DROPPED));
                 continue;
             }
             index(slot, slot.kind == InteractionKind.WIRE && answered.contains(

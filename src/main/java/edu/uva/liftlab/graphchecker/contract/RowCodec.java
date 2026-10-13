@@ -621,15 +621,32 @@ public final class RowCodec {
 
     // ---- files ---------------------------------------------------------
 
-    /** Writes one kind's file: one object per line, nothing else in it. */
+    /** Writes one kind's file: one object per line, nothing else in it,
+     *  each row's object made as its line is written, never all held. */
     public static <T> void writeAll(Path file, List<T> rows,
                                     Function<T, JsonObject> writer)
             throws IOException {
-        List<JsonObject> objects = new ArrayList<>(rows.size());
-        for (T row : rows) {
-            objects.add(writer.apply(row));
+        // Whole or not at all: a JVM ended mid-write (a planner past its
+        // heap, run again at twice it) leaves the last whole file.  CC3-07:
+        // the rerun read the half a dead planner wrote of slots.jsonl, and
+        // the exploration's every later round failed on it.
+        Path parent = file.toAbsolutePath().getParent();
+        Files.createDirectories(parent);
+        Path partial = Files.createTempFile(parent,
+                file.getFileName().toString(), ".partial");
+        try {
+            try (BufferedWriter out = Files.newBufferedWriter(partial,
+                    StandardCharsets.UTF_8)) {
+                for (T row : rows) {
+                    out.write(toLine(writer.apply(row)));
+                    out.write("\n");
+                }
+            }
+            Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } finally {
+            Files.deleteIfExists(partial);
         }
-        writeJsonl(file, objects);
     }
 
     /** Reads one kind's file; a file that is not there is no rows. */
@@ -653,27 +670,7 @@ public final class RowCodec {
 
     public static void writeJsonl(Path file, List<JsonObject> rows)
             throws IOException {
-        // Whole or not at all: a JVM ended mid-write (a planner past its
-        // heap, run again at twice it) leaves the last whole file.  CC3-07:
-        // the rerun read the half a dead planner wrote of slots.jsonl, and
-        // the exploration's every later round failed on it.
-        Path parent = file.toAbsolutePath().getParent();
-        Files.createDirectories(parent);
-        Path partial = Files.createTempFile(parent,
-                file.getFileName().toString(), ".partial");
-        try {
-            try (BufferedWriter out = Files.newBufferedWriter(partial,
-                    StandardCharsets.UTF_8)) {
-                for (JsonObject row : rows) {
-                    out.write(toLine(row));
-                    out.write("\n");
-                }
-            }
-            Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } finally {
-            Files.deleteIfExists(partial);
-        }
+        writeAll(file, rows, row -> row);
     }
 
     /** Every line of a JSONL file, their strings shared ({@link RowPool}). */
