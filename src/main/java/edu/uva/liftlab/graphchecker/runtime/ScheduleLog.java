@@ -325,7 +325,8 @@ public final class ScheduleLog {
      * work of the callback that made it, whose context is free.
      */
     public static Stance viewStance(String node) {
-        return new Stance(trimmed(node) + "|VIEW", "");
+        return new Stance(trimmed(node) + "|"
+                + ContextShape.Stance.VIEW_STANCE, "");
     }
 
     /**
@@ -347,6 +348,79 @@ public final class ScheduleLog {
                 if (event == null) return true;
                 int slot = slotOf(event);
                 return slot < 0 || !heldKind(slot) || dueLocked(slot);
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * A node put {@code site}'s version of a view in force (a notification's
+     * publication or the system's own): its open PUBLISH slots of that view
+     * at an older version will never come -- a node publishes a version at
+     * most once, never an older one after a newer -- so each is given up at
+     * once, by name, rather than by the watchdog at the frontier's cost.  A
+     * given-up slot is still taken if its event comes late.
+     */
+    public static void publishedPast(String node, String site) {
+        settleTurns(node, site, true, "its node put " + site + " in force,"
+                + " so this older version of the view will never be"
+                + " published");
+    }
+
+    /**
+     * A PUBLISH turn its publication will not take ({@code why}: superseded
+     * before it applied, or put in force at once in a pairing world), given
+     * up now by name.
+     */
+    public static void turnNotTaken(String node, String site, String why) {
+        settleTurns(node, site, false, why);
+    }
+
+    /** {@link #publishedPast} ({@code older}: every open PUBLISH slot of
+     *  the view at a version below {@code site}'s) and {@link #turnNotTaken}
+     *  (its own slot). */
+    private static void settleTurns(String node, String site, boolean older,
+                                    String why) {
+        if (node == null || site == null || !RecordingWindow.opened()) return;
+        int at = site.lastIndexOf('@');
+        if (at < 0) return;
+        String view = site.substring(0, at + 1);
+        long version;
+        try {
+            version = Long.parseLong(site.substring(at + 1));
+        } catch (NumberFormatException none) {
+            return;
+        }
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadOrderLocked();
+                List<Integer> slots = BY_CONTEXT.get(trimmed(node) + "|"
+                        + ContextShape.Stance.VIEW_STANCE);
+                if (slots == null) return;
+                boolean moved = false;
+                for (int slot : slots) {
+                    ScheduleEvent event = order.get(slot);
+                    if (state[slot] != OPEN
+                            || event.kind() != ScheduleEvent.Kind.PUBLISH
+                            || !event.site().startsWith(view)) {
+                        continue;
+                    }
+                    long held;
+                    try {
+                        held = Long.parseLong(event.site().substring(
+                                view.length()));
+                    } catch (NumberFormatException none) {
+                        continue;
+                    }
+                    if (older ? held >= version : held != version) continue;
+                    giveUpLocked(slot);
+                    stateLocked("schedule-publish-settled#" + slot,
+                            event.render() + " given up: " + why);
+                    moved = true;
+                }
+                if (moved) settleLocked();
             }
         } finally {
             unmute();

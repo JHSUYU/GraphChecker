@@ -1101,9 +1101,10 @@ final class ComposedFamilies {
                 if (out.arm.attach() != null) {
                     bind(session, out.arm, delivered, leaves);
                 }
+                String sent = sentType(session, out.arm.expressionRef());
                 for (String symbol : out.symbols) {
                     if (symbol == null || symbol.isEmpty()) continue;
-                    String received = received(symbol, delivered);
+                    String received = received(symbol, delivered, sent);
                     if (received == null) return false;
                     conjuncts.add(received);
                     if (out.arm.write() != null) {
@@ -1950,9 +1951,10 @@ final class ComposedFamilies {
      * ({@link SmtLowering#leafEquals}).  Null, refused by name, for a pair
      * no rendering relates: that run's delivery is no value of this read.
      */
-    private String received(String symbol, Term delivered) {
+    private String received(String symbol, Term delivered, String sent) {
         VmTermLowering.Sort parsed = JavaSmtSorts.sortOfSymbol(symbol);
-        String equation = lowering.leafEquals(symbol, parsed, delivered);
+        String equation = lowering.leafEquals(symbol, parsed, symbol,
+                delivered, sent);
         if (equation == null) {
             lowering.leafRefused(symbol, parsed, delivered.sort);
             return null;
@@ -1960,6 +1962,15 @@ final class ComposedFamilies {
         lowering.declareStated(symbol, parsed == null ? delivered.sort
                 : parsed);
         return equation;
+    }
+
+    /** The Java type the VM states an arm's delivered expression has, or
+     *  "" ({@link SmtLowering#leafEquals}: a char renders as itself). */
+    private String sentType(String session, String expressionRef) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null || expressionRef == null) return "";
+        return VmTermLowering.expressionJavaType(
+                reader.expressions().expression(expressionRef));
     }
 
     /**
@@ -1982,9 +1993,10 @@ final class ComposedFamilies {
                 stated = false;
                 break;
             }
+            String sent = sentType(session, out.arm.expressionRef());
             for (String symbol : out.symbols) {
                 if (symbol == null || symbol.isEmpty()) continue;
-                String received = received(symbol, value);
+                String received = received(symbol, value, sent);
                 if (received == null) {
                     stated = false;
                     break;

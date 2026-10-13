@@ -87,6 +87,8 @@ public class ScheduleLogTest {
     @After
     public void tearDown() {
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
+        System.clearProperty(FocusedReplay.PLAN_PROPERTY);
+        Confirmation.resetForTests();
         ScheduleLog.resetForTests();
         if (request != 0L) RuntimeTraceContext.endRequest(request);
     }
@@ -583,7 +585,12 @@ public class ScheduleLogTest {
                 site));
         assertTrue("the callback goes on at once", TimeUnit.NANOSECONDS
                 .toMillis(System.nanoTime() - started) < 200L);
-        Thread after = observer(ScheduleEvent.Kind.SEND, "after");
+        boolean[] sawApplied = new boolean[1];
+        Thread after = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawApplied[0] = applied.contains("v8");
+        });
+        after.start();
         Thread.sleep(200L);
         assertTrue("nothing applied before its turn: " + applied,
                 applied.isEmpty());
@@ -598,6 +605,8 @@ public class ScheduleLogTest {
             Thread.sleep(20L);
         }
         assertEquals(Arrays.asList("v8"), applied);
+        assertTrue("the successor is let go only once v8 is in force",
+                sawApplied[0]);
         assertEquals(Arrays.asList("before", site, "after"), sites());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 0 given up"));
@@ -615,6 +624,166 @@ public class ScheduleLogTest {
         assertEquals(ScheduleEvent.Kind.PUBLISH, recorded.get(0).kind());
         assertEquals(viewNode + "|VIEW", recorded.get(0).context());
         assertEquals(next, recorded.get(0).site());
+    }
+
+    /**
+     * THE PUBLISHER NEVER BLOCKS ON A TURN (review B2): two views of one
+     * node arrive in the reverse of their recorded order -- X@8's callback
+     * first, behind the SEND the recording made first, then Y@3's, whose
+     * slot came before X's -- and each applies at its own turn, Y then X,
+     * with nothing given up.  Blocking on X's turn, the one publisher held
+     * Y's slot until the watchdog gave the run's open slots up.
+     */
+    @Test
+    public void twoViewsOfANodeApplyEachAtItsOwnTurn() throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = "auto0/node0#epoch0";
+        String y = ScheduleEvent.published("SOLR_ZK", "/y.json", 3L);
+        String x = ScheduleEvent.published("SOLR_ZK", "/x.json", 8L);
+        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
+                publish(viewNode, y), publish(viewNode, x)),
+                Collections.<ScheduleEvent>emptyList());
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        assertTrue(Confirmation.publishing(view(viewNode, "/x.json"), 8L,
+                null, viewNode, null, () -> applied.add("x"), x));
+        assertTrue(Confirmation.publishing(view(viewNode, "/y.json"), 3L,
+                null, viewNode, null, () -> applied.add("y"), y));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        awaitSize(applied, 2);
+        assertEquals(Arrays.asList("y", "x"), applied);
+        assertEquals(Arrays.asList("before", y, x), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+    }
+
+    /**
+     * A VERSION A NODE NEVER PUBLISHES (review S2): once the node put v8 in
+     * force, its open PUBLISH of v7 will never come -- given up at once, by
+     * name, and what the recording made after it goes without a stall.
+     */
+    @Test
+    public void anOlderVersionsTurnIsGivenUpOnceANewerIsInForce()
+            throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = "auto0/node0#epoch0";
+        String v7 = ScheduleEvent.published("SOLR_ZK", "/c.json", 7L);
+        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
+        enforce(Arrays.asList(publish(viewNode, v7),
+                event(ScheduleEvent.Kind.SEND, "after")),
+                Collections.<ScheduleEvent>emptyList());
+        assertFalse("v8 holds no slot: in force at once",
+                Confirmation.publishing(view(viewNode, "/c.json"), 8L, null,
+                        viewNode, null, () -> { }, v8));
+        long started = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        assertTrue("no stall", TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started) < 500L);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    /**
+     * A TURN-DEFERRED PUBLICATION SUPERSEDED BEFORE IT APPLIED (review S3):
+     * its turn is given up by name, not left to the watchdog.
+     */
+    @Test
+    public void aSupersededPublicationsTurnIsSettled() throws Exception {
+        Confirmation.resetForTests();
+        handHold(view("auto0/node9#epoch0", "/other.json"), 0L, "", "", "u");
+        String viewNode = "auto0/node0#epoch0";
+        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
+        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
+                publish(viewNode, v8), event(ScheduleEvent.Kind.SEND,
+                        "after")), Collections.<ScheduleEvent>emptyList());
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        assertTrue(Confirmation.publishing(view(viewNode, "/c.json"), 8L,
+                null, viewNode, null, () -> applied.add("v8"), v8));
+        // The system's own removal at once drops what was deferred.
+        Confirmation.published(view(viewNode, "/c.json"), -1L, null,
+                "a removal at once");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        long started = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        assertTrue("no stall", TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started) < 500L);
+        Thread.sleep(100L);
+        assertTrue(applied.toString(), applied.isEmpty());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    /**
+     * A HOLD AND A TURN ON ONE PUBLICATION (review S9c): held past the paired
+     * version, its turn due once the SEND before it ran, it applies only
+     * when the hold ends, then takes its turn.  And the paired version's own
+     * publication (S4) is put in force at once, whatever its turn, which is
+     * given up by name: the reader past the cut is held by nothing.
+     */
+    @Test
+    public void aHoldWinsOverATurnAndThePairedVersionGoesAtOnce()
+            throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = "auto0/node0#epoch0";
+        LocationId view = view(viewNode, "/c.json");
+        String until = "u-reader";
+        handHold(view, 7L, "auto0/node1#epoch0|Root:OVERSEER_TASK#3", "r",
+                until);
+        String v7 = ScheduleEvent.published("SOLR_ZK", "/c.json", 7L);
+        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
+        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
+                publish(viewNode, v7), publish(viewNode, v8)),
+                Collections.<ScheduleEvent>emptyList());
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        assertFalse("the paired version: in force at once",
+                Confirmation.publishing(view, 7L, null, viewNode, null,
+                        () -> applied.add("v7"), v7));
+        assertTrue("past it: held", Confirmation.publishing(view, 8L, null,
+                viewNode, null, () -> applied.add("v8"), v8));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        Thread.sleep(200L);
+        assertTrue("the hold stands: " + applied, applied.isEmpty());
+        Confirmation.exited(until);
+        awaitSize(applied, 1);
+        assertEquals(Arrays.asList("v8"), applied);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    private static ScheduleEvent publish(String node, String site) {
+        return ScheduleEvent.of(0L, ScheduleEvent.Kind.PUBLISH,
+                node + "|VIEW", site, 0, "");
+    }
+
+    private static LocationId view(String node, String path) {
+        return LocationId.of(LocationKind.VIEW, "SOLR_ZK@" + node, path);
+    }
+
+    /** Hands this JVM's replay one VIEW_HOLD row (Confirmation's edges). */
+    private static void handHold(LocationId view, long above,
+                                 String readerContext, String reader,
+                                 String until) throws java.io.IOException {
+        Path worker = Files.createTempDirectory("schedule-hold");
+        Files.write(worker.resolve("focused_task.jsonl"), new byte[0]);
+        Files.write(worker.resolve(Confirmation.FILE), ("{\"kind\":"
+                + "\"VIEW_HOLD\",\"view\":\"" + Confirmation.viewKey(view)
+                + "\",\"above\":" + above + ",\"readerContext\":\""
+                + readerContext + "\",\"reader\":\"" + reader
+                + "\",\"until\":\"" + until + "\"}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        Path plan = worker.resolve("execution_task_plan.jsonl");
+        Files.write(plan, new byte[0]);
+        System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
+    }
+
+    private static void awaitSize(List<String> list, int size)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (list.size() < size && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
     }
 
     @Test

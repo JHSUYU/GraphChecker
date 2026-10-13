@@ -2534,8 +2534,11 @@ public final class Composer {
                     conditions);
             if (delivered == null) continue;
             String received = lowering.leafEquals(attach.symbol(), sort,
-                    delivered);
-            if (received == null) continue;
+                    attach.javaType(), delivered, export.javaType());
+            if (received == null) {
+                lowering.leafRefused(attach.symbol(), sort, delivered.sort);
+                continue;
+            }
             SessionReader reader = corpus.session(export.sessionId());
             Set<String> symbols = new LinkedHashSet<String>();
             Arms.symbolsIn(reader.expressions().expression(
@@ -2573,10 +2576,14 @@ public final class Composer {
         for (ExportRow export : attested) {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
-            if (delivered == null || lowering.leafEquals(attach.symbol(),
-                    parsed, delivered) == null) {
+            if (delivered == null) continue;
+            if (lowering.leafEquals(attach.symbol(), parsed,
+                    attach.javaType(), delivered, export.javaType()) == null) {
+                lowering.leafRefused(attach.symbol(), parsed,
+                        delivered.sort);
                 continue;
             }
+            // A read no type states (VALUE) takes the value's sort.
             lowering.declareStated(attach.symbol(), parsed == Sort.VALUE
                     ? delivered.sort : parsed);
             return true;

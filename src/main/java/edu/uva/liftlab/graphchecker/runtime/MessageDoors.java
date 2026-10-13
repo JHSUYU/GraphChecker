@@ -961,15 +961,31 @@ public final class MessageDoors {
                         decoder);
                 if (!delivering) {
                     Confirmation.published(view, version, at, why);
+                    // In force at once: older versions of the view will never
+                    // be published on this node (ScheduleLog#publishedPast).
+                    if (version >= 0L) {
+                        ScheduleLog.publishedPast(decoder,
+                                ScheduleEvent.published(trimmed(transport),
+                                        life, version));
+                    }
                     return false;
                 }
                 return Confirmation.publishing(view, version, at, decoder,
                         CausynthTraceRecorder.captureScope(), apply,
-                        publishTurn(transport, path, version, decoder));
+                        publishTurn(transport, life, version, decoder));
             } finally {
                 resume(paused);
             }
         });
+    }
+
+    /** A view's PUBLISH site at {@code version}: its store location, the
+     *  path in its store life, as {@link #publishTurn} spells it. */
+    static String publishedSite(LocationId view, long version) {
+        String owner = view.owner();
+        int at = owner.indexOf('@');
+        return ScheduleEvent.published(at < 0 ? owner
+                : owner.substring(0, at), view.slot(), version);
     }
 
     /** The (node, path, version) publications that took their turn. */

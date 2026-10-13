@@ -3865,6 +3865,73 @@ public class ComposerTest {
     }
 
     /**
+     * EACH LEAF LIFT IS JAVA'S OWN (review S7/S9): a reader's symbol at the
+     * sort its read parsed, bound to what a writer sent at another, is
+     * exactly that sort's parse or rendering of it -- Boolean.parseBoolean
+     * ("TRUE" too), Boolean.toString, Integer.toString of a negative, and
+     * Integer.parseInt with its sign and leading zeros ("+7", "007", "-0");
+     * a String no parse accepts binds no value, and a char, which renders
+     * as itself, is no lift at all (null: the caller refuses it by name).
+     */
+    @Test
+    public void eachLeafLiftIsJavasOwnParseOrRendering() {
+        // reader sort, reader type, sent, sent type, the reader's value
+        // (null: no value binds it)
+        Object[][] rows = {
+                {"BOOL", "Z", "\"true\"", "java/lang/String", "true"},
+                {"BOOL", "Z", "\"TRUE\"", "java/lang/String", "true"},
+                {"BOOL", "Z", "\"yes\"", "java/lang/String", "false"},
+                {"STRING", "java/lang/String", "true", "Z", "\"true\""},
+                {"STRING", "java/lang/String", "(- 7)", "I", "\"-7\""},
+                {"INT", "I", "\"+7\"", "java/lang/String", "7"},
+                {"INT", "I", "\"007\"", "java/lang/String", "7"},
+                {"INT", "I", "\"-0\"", "java/lang/String", "0"},
+                {"INT", "I", "\"-12\"", "java/lang/String", "(- 12)"},
+                {"INT", "I", "\"7a\"", "java/lang/String", null},
+        };
+        Z3 solver = solver();
+        for (Object[] row : rows) {
+            VmTermLowering.Sort reader = VmTermLowering.Sort.valueOf(
+                    (String) row[0]);
+            VmTermLowering.Sort sentSort = JavaSmtSorts.sortOfJava(
+                    (String) row[3]);
+            SmtLowering lowering = new SmtLowering(
+                    new LinkedHashMap<String, VmTermLowering.Sort>());
+            String equation = lowering.leafEquals("v", reader,
+                    (String) row[1], VmTermLowering.Term.of((String) row[2],
+                            sentSort), (String) row[3]);
+            assertNotNull(Arrays.toString(row), equation);
+            StringBuilder query = new StringBuilder();
+            for (String line : lowering.preambleLines()) {
+                query.append(line).append('\n');
+            }
+            query.append("(declare-const v ").append(reader == VmTermLowering
+                    .Sort.STRING ? "String" : reader == VmTermLowering.Sort
+                    .BOOL ? "Bool" : "Int").append(")\n");
+            query.append("(assert ").append(equation).append(")\n");
+            Z3.Answer bound = solver.ask(query.toString(),
+                    Collections.<String>emptyList(), false);
+            assertEquals(Arrays.toString(row) + " " + equation,
+                    row[4] != null, bound.sat());
+            if (row[4] == null) continue;
+            query.append("(assert (not (= v ").append(row[4]).append(")))\n");
+            Z3.Answer other = solver.ask(query.toString(),
+                    Collections.<String>emptyList(), false);
+            assertTrue(Arrays.toString(row) + ": exactly " + row[4] + " "
+                    + other, other.unsat());
+        }
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        assertNull("a char renders as itself: no lift", lowering.leafEquals(
+                "v", VmTermLowering.Sort.STRING, "java/lang/String",
+                VmTermLowering.Term.of("65", VmTermLowering.Sort.INT), "C"));
+        assertNull("no rendering relates a float", lowering.leafEquals("v",
+                VmTermLowering.Sort.STRING, "java/lang/String",
+                VmTermLowering.Term.of("x", VmTermLowering.Sort.FLOAT64),
+                "D"));
+    }
+
+    /**
      * A HANDOFF AN ARM'S CLOSURE READS IS BOUND LIKE ONE ITS DELIVERY NAMES
      * (hdfs-11741 r8: the balancer's block-key expiry): the producer decided
      * over a value it was handed before it sent the marker, and the flip

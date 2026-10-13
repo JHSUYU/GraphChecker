@@ -61,10 +61,23 @@ public final class JavaSmtSorts {
         if (rest.startsWith("L'")) {
             int close = rest.indexOf('\'', 2);
             if (close < 0) return null;
-            return sortOfJava("java/lang/" + rest.substring(2, close));
+            String named = rest.substring(2, close);
+            return sortOfJava(named.indexOf('/') >= 0 ? named
+                    : "java/lang/" + named);
         }
         if (rest.length() < 2 || rest.charAt(1) != '_') return null;
         return sortOfJava(rest.substring(0, 1));
+    }
+
+    /** Whether a Java type or a VM symbol's name ({@code M_C_...}) is a
+     *  char, which renders as itself and not as its code. */
+    public static boolean isChar(String typeOrSymbol) {
+        if (typeOrSymbol == null) return false;
+        String type = typeOrSymbol.replace('.', '/');
+        return type.startsWith("M_C_") || "C".equals(type)
+                || "char".equals(type) || "java/lang/Character".equals(type)
+                || "Ljava/lang/Character;".equals(type)
+                || type.startsWith("M_L'Character'_");
     }
 
     /** The sort one JVM cast descriptor denotes. */

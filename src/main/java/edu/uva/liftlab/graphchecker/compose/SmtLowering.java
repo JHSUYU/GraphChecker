@@ -3828,26 +3828,49 @@ public final class SmtLowering {
      * java_int_to_string}) either way.  Never a second free name.  Any other
      * pair, null: the caller refuses it by name.
      */
-    public String leafEquals(String symbol, Sort symbolSort, Term delivered) {
+    public String leafEquals(String symbol, Sort symbolSort,
+                             String symbolJavaType, Term delivered,
+                             String sentJavaType) {
         Sort sent = delivered.sort;
-        if (symbolSort == null || symbolSort == sent) {
+        if (symbolSort == null || symbolSort == Sort.VALUE
+                || symbolSort == sent) {
             return "(= " + symbol + " " + delivered.text + ")";
         }
+        // A char renders as itself, not its code: no lift relates it.
+        if (JavaSmtSorts.isChar(symbolJavaType)
+                || JavaSmtSorts.isChar(sentJavaType)) {
+            return null;
+        }
+        String d = delivered.text;
         if (symbolSort == Sort.BOOL && sent == Sort.STRING) {
-            return "(= " + symbol + " (= (java_ascii_lower "
-                    + delivered.text + ") \"true\"))";
+            // Boolean.parseBoolean: "true" ignoring case.
+            return "(= " + symbol + " (str.in_re " + d + " (re.++"
+                    + " (re.union (str.to_re \"t\") (str.to_re \"T\"))"
+                    + " (re.union (str.to_re \"r\") (str.to_re \"R\"))"
+                    + " (re.union (str.to_re \"u\") (str.to_re \"U\"))"
+                    + " (re.union (str.to_re \"e\") (str.to_re \"E\")))))";
         }
         if (symbolSort == Sort.STRING && sent == Sort.BOOL) {
-            return "(= " + symbol + " (ite " + delivered.text
-                    + " \"true\" \"false\"))";
+            return "(= " + symbol + " (ite " + d + " \"true\" \"false\"))";
         }
         if (symbolSort == Sort.STRING && sent == Sort.INT) {
-            return "(= " + symbol + " (java_int_to_string " + delivered.text
-                    + "))";
+            return "(= " + symbol + " (java_int_to_string " + d + "))";
         }
         if (symbolSort == Sort.INT && sent == Sort.STRING) {
-            return "(= (java_int_to_string " + symbol + ") " + delivered.text
-                    + ")";
+            // Integer.parseInt / Long.parseLong: an optional sign, then ASCII
+            // digits, leading zeros allowed ("+7", "007", "-0"); a String no
+            // parse accepts is no value of this read.  The width's overflow
+            // stays over-approximate.
+            String digits = "(str.substr " + d + " 1 (- (str.len " + d
+                    + ") 1))";
+            return "(and (str.in_re " + d + " (re.++ (re.opt (re.union"
+                    + " (str.to_re \"+\") (str.to_re \"-\")))"
+                    + " (re.+ (re.range \"0\" \"9\"))))"
+                    + " (= " + symbol + " (ite (= (str.at " + d + " 0) \"-\")"
+                    + " (- (str.to_int " + digits + "))"
+                    + " (ite (= (str.at " + d + " 0) \"+\")"
+                    + " (str.to_int " + digits + ") (str.to_int " + d
+                    + ")))))";
         }
         return null;
     }

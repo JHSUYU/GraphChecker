@@ -658,9 +658,10 @@ public final class Confirmation {
         // lock, as ScheduleLog takes its own.
         ScheduleLog.Stance stance = turn == null ? null
                 : ScheduleLog.viewStance(node);
-        boolean turnWaits = turn != null && !ScheduleLog.dueNow(
+        boolean due = turn == null || ScheduleLog.dueNow(
                 ScheduleEvent.Kind.PUBLISH, turn, stance);
         boolean deferred;
+        boolean exempt = false;
         synchronized (LOCK) {
             blockedApplies();
             List<ViewHold> holding = new ArrayList<ViewHold>();
@@ -671,14 +672,25 @@ public final class Confirmation {
                     own = true;
                     break;
                 }
-                if (version > hold.above) holding.add(hold);
+                if (version > hold.above) {
+                    holding.add(hold);
+                } else {
+                    // The paired version, or one before it: the pairing
+                    // world puts it in force at once, whatever its turn --
+                    // the reader past the cut is held by nothing, and would
+                    // read the version before it.
+                    exempt = true;
+                }
             }
             if (own) {
+                // The reader's own work: the hold never defers it, nor does
+                // its turn (the reader sees its own work's decode).
                 superseded(queued, version);
                 holding.clear();
+                exempt = true;
             }
             List<Deferred> queue = DEFERRED.get(queued);
-            deferred = !holding.isEmpty() || turnWaits
+            deferred = !holding.isEmpty() || turn != null && !due && !exempt
                     || !own && queue != null && !queue.isEmpty();
             if (deferred) {
                 if (!holding.isEmpty()) FocusedReplay.worldActed();
@@ -703,9 +715,24 @@ public final class Confirmation {
                 LOCK.notifyAll();
             }
         }
-        // Due now (or no order holds one): taken here, without a wait.
         if (!deferred && turn != null) {
-            ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, turn, "", stance);
+            if (due) {
+                // Due now (or no order holds one): taken here, without a
+                // wait; the caller puts it in force right after (the window
+                // between: a successor the turn lets go may run before the
+                // caller's own publish has finished).
+                ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, turn, "",
+                        stance);
+            } else {
+                ScheduleLog.turnNotTaken(node, turn, "a pairing world puts"
+                        + " this version in force at once, ahead of its"
+                        + " recorded turn (the paired version, or the"
+                        + " reader's own work's)");
+            }
+        }
+        if (!deferred && version >= 0L) {
+            ScheduleLog.publishedPast(node, MessageDoors.publishedSite(view,
+                    version));
         }
         return deferred;
     }
@@ -826,6 +853,14 @@ public final class Confirmation {
         int running = 0;
         for (Deferred deferred : superseded) {
             if (deferred.running) running++;
+            // Its turn will not be taken: settled now, by name, not left to
+            // the watchdog (ScheduleLog#turnNotTaken; ScheduleLog never takes
+            // this class's lock).
+            if (deferred.turn != null && !deferred.running) {
+                ScheduleLog.turnNotTaken(deferred.node, deferred.turn,
+                        "superseded before it applied by the system's own"
+                                + " publication at once");
+            }
         }
         superseded.clear();
         if (queue.isEmpty()) DEFERRED.remove(key);
@@ -916,7 +951,31 @@ public final class Confirmation {
                     continue;
                 }
             }
+            // A head whose PUBLISH turn is not due waits, and only its own
+            // view with it: the publisher never blocks on a turn, so another
+            // view's due head is never stuck behind it -- a cross-view turn
+            // cycle on one publisher (review B2: Y@3's slot before X@8's,
+            // X's callback first).  Asked outside this class's lock.
+            List<Object[]> ready = new ArrayList<Object[]>();
             for (Object[] item : due) {
+                Deferred deferred = (Deferred) item[1];
+                if (deferred.turn == null || ScheduleLog.dueNow(
+                        ScheduleEvent.Kind.PUBLISH, deferred.turn,
+                        ScheduleLog.viewStance(deferred.node))) {
+                    ready.add(item);
+                }
+            }
+            if (ready.isEmpty()) {
+                synchronized (LOCK) {
+                    try {
+                        LOCK.wait(TURN_POLL_MS);
+                    } catch (InterruptedException interrupted) {
+                        // Never ended by an interrupt: the queue would wait.
+                    }
+                }
+                continue;
+            }
+            for (Object[] item : ready) {
                 try {
                     apply((String) item[0], (Deferred) item[1]);
                 } catch (RuntimeException | Error fault) {
@@ -931,16 +990,13 @@ public final class Confirmation {
         }
     }
 
+    /** How often, in ms, a publisher whose due heads all wait on their
+     *  PUBLISH turns asks again. */
+    private static final long TURN_POLL_MS = 50L;
+
     /** One deferred publication applied, under its notification's scope;
      *  what the system's code throws in it is the system's failure, named. */
     private static void apply(String view, Deferred deferred) {
-        // Its PUBLISH turn first, outside the lock: the order holds it until
-        // what the recording made before it has run, the watchdog letting a
-        // turn that never comes go by name (ScheduleLog).
-        if (deferred.turn != null) {
-            ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, deferred.turn, "",
-                    ScheduleLog.viewStance(deferred.node));
-        }
         synchronized (LOCK) {
             List<Deferred> queue = DEFERRED.get(view);
             if (queue == null || !queue.contains(deferred)) {
@@ -965,6 +1021,17 @@ public final class Confirmation {
                             + " failure, as on its notification's thread");
         } finally {
             MessageDoors.exitCarriedScope(scope);
+            // Its PUBLISH turn once it is in force, so nothing the order lets
+            // go after it reads past it; due already (#publish asked), so
+            // taken without a wait.  Older versions of the view will never
+            // come (ScheduleLog#publishedPast).
+            if (deferred.turn != null) {
+                ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, deferred.turn,
+                        "", ScheduleLog.viewStance(deferred.node));
+            }
+            if (deferred.version >= 0L && deferred.turn != null) {
+                ScheduleLog.publishedPast(deferred.node, deferred.turn);
+            }
             synchronized (LOCK) {
                 APPLYING.remove(deferred.node);
                 // Left at its queue's head while it applied: a publication
