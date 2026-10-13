@@ -1,13 +1,22 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
@@ -23,7 +32,10 @@ import static org.junit.Assert.assertTrue;
  * alone and with the path condition paused from its start to its close, but
  * for each door decision and each mutation of a tracked container at a named
  * site: the pause lifted there, restored at the next hook, released at the
- * close.  The VM is a recorder of the pause calls it is asked.
+ * close.  The pause is the VM's base pause ({@code System.pauseConcolicBase}),
+ * under which a frame the program pushes keeps its tracking, so a door in a
+ * callee decides; a hook's own pause stays the observation pause.  The VM is
+ * a recorder of the pause calls it is asked.
  */
 public class DoorsOnlyRuntimeTest {
     private static final String METHOD = "<a.B: void run(int)>";
@@ -33,6 +45,8 @@ public class DoorsOnlyRuntimeTest {
     public static final class Vm {
         static int pauses;
         static int resumes;
+        static int basePauses;
+        static int baseResumes;
         static final List<Boolean> observed = new ArrayList<>();
 
         public static void pause() {
@@ -43,11 +57,22 @@ public class DoorsOnlyRuntimeTest {
             resumes++;
         }
 
+        public static void pauseBase() {
+            basePauses++;
+        }
+
+        public static void resumeBase() {
+            baseResumes++;
+        }
+
         public static long observe(Object container, boolean afterMutation) {
             observed.add(afterMutation);
             return 0L;
         }
     }
+
+    @Rule
+    public final TemporaryFolder session = new TemporaryFolder();
 
     private Long token;
 
@@ -55,10 +80,15 @@ public class DoorsOnlyRuntimeTest {
     public void installVm() throws Exception {
         Vm.pauses = 0;
         Vm.resumes = 0;
+        Vm.basePauses = 0;
+        Vm.baseResumes = 0;
         Vm.observed.clear();
+        RowRuntime.resetForTests();
         ConcolicVmBroker broker = new ConcolicVmBroker();
         set(broker, "pausePathCondition", Vm.class.getMethod("pause"));
         set(broker, "resumePathCondition", Vm.class.getMethod("resume"));
+        set(broker, "pauseBase", Vm.class.getMethod("pauseBase"));
+        set(broker, "resumeBase", Vm.class.getMethod("resumeBase"));
         set(broker, "observeContainer", Vm.class.getMethod("observe",
                 Object.class, boolean.class));
         engineApi().set(null, broker);
@@ -73,6 +103,7 @@ public class DoorsOnlyRuntimeTest {
         }
         threadLocal("DOOR_WINDOW").remove();
         threadLocal("OBSERVATION_PAUSE_DEPTH").remove();
+        RowRuntime.resetForTests();
     }
 
     /** The hook after a container mutation on a thread outside every region
@@ -83,7 +114,8 @@ public class DoorsOnlyRuntimeTest {
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_AFTER_MUTATION);
         assertEquals("[true]", Vm.observed.toString());
-        assertEquals(0, Vm.pauses + Vm.resumes);
+        assertEquals(0, Vm.pauses + Vm.resumes + Vm.basePauses
+                + Vm.baseResumes);
     }
 
     /** A doors-only task keeps its door markers' inputs alone and reads no
@@ -101,21 +133,27 @@ public class DoorsOnlyRuntimeTest {
         assertEquals(1, task.symbolize.size());
         assertEquals("FAULT:SOLR_HTTP:SEND", task.symbolize.get(0).marker);
         ActiveRegion active = region(task);
-        // The entry hook's bracket ends: the base pause is taken there.
+        // The entry hook's bracket ends: the base pause is taken there, as
+        // the VM's base pause; the hook's own is an observation pause.
         ConcolicRegionRuntime.pauseObservation();
         ConcolicRegionRuntime.resumeObservation();
         assertTrue(active.basePaused);
-        assertEquals(2, Vm.pauses);
+        assertEquals(1, Vm.basePauses);
+        assertEquals(1, Vm.pauses);
         assertEquals(1, Vm.resumes);
 
         ConcolicRegionRuntime.observeTrackedContainer("s", MAP,
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_READ);
-        assertEquals("a read stays paused", 1, Vm.resumes);
+        assertEquals("a read stays paused", 0, Vm.baseResumes);
+        // The mutation's hook runs in its woven bracket, which leaves the
+        // window open past its end.
+        ConcolicRegionRuntime.pauseObservation();
         ConcolicRegionRuntime.observeTrackedContainer("s", MAP,
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_BEFORE_MUTATION);
-        assertEquals("a mutation runs hooked", 2, Vm.resumes);
+        ConcolicRegionRuntime.resumeObservation();
+        assertEquals("a mutation runs hooked", 1, Vm.baseResumes);
         assertFalse(active.basePaused);
 
         ConcolicRegionRuntime.pauseObservation();
@@ -139,7 +177,100 @@ public class DoorsOnlyRuntimeTest {
         ConcolicRegionRuntime.resumeObservation();
         assertFalse("a closed occurrence holds no pause", active.basePaused);
         assertEquals("balanced", 0, Vm.resumes - Vm.pauses);
+        assertEquals("the base pause balanced", 3, Vm.basePauses);
+        assertEquals(3, Vm.baseResumes);
         assertEquals("[false, false]", Vm.observed.toString());
+    }
+
+    /**
+     * THE RULE: a door window opens only inside a woven observation bracket,
+     * where the hook's own frames never track; asked for outside one it is
+     * not opened, and the engine fault is named.  An activation in which the
+     * VM refused an observation resume that found no observation pause
+     * above the base pause is named too: its brackets went unbalanced.
+     */
+    @Test
+    public void aWindowOutsideEveryBracketAndARefusedResumeAreNamed()
+            throws Exception {
+        openSession();
+        ActiveRegion active = region(new ConcolicTaskPlan.RuntimeTask(
+                task()));
+        active.basePaused = true;
+        ConcolicRegionRuntime.openDoorWindow(active);
+        assertTrue("not opened", active.basePaused);
+        assertEquals(0, Vm.baseResumes);
+        com.google.gson.JsonObject summary = new com.google.gson.JsonObject();
+        summary.addProperty("refusedObservationResumes", 0);
+        ConcolicRegionRuntime.refusedResumes(active, summary);
+        summary.addProperty("refusedObservationResumes", 2);
+        ConcolicRegionRuntime.refusedResumes(active, summary);
+        List<GapRow> named = gaps();
+        assertEquals(2, named.size());
+        for (GapRow gap : named) {
+            assertEquals(GapKind.ENGINE_FAULT, gap.kind());
+            assertEquals(GapClass.BLOCKING, gap.cls());
+        }
+        assertTrue(named.get(0).detail().contains("outside every woven"));
+        assertTrue(named.get(1).detail().startsWith("2 observation"));
+    }
+
+    /**
+     * A woven branch the VM gives no event while its occurrence records
+     * there -- its frame does not track -- is named once, never silent: a
+     * door there would decide nothing and EXPLORE find its occurrence
+     * faultless.  Under the base pause the occurrence records nothing, so
+     * there the VM owes no event and nothing is named.
+     */
+    @Test
+    public void aBranchTheVmGivesNoEventWhileRecordingIsNamed()
+            throws Exception {
+        openSession();
+        ActiveRegion active = region(new ConcolicTaskPlan.RuntimeTask(
+                task()));
+        active.pathRecordingStarted = true;
+        Class<?> decision = Class.forName("edu.uva.liftlab.graphchecker"
+                + ".runtime.BranchObservation$BranchDecision");
+        Method binary = decision.getDeclaredMethod("binary", boolean.class);
+        binary.setAccessible(true);
+        Method observe = BranchObservation.class.getDeclaredMethod("observe",
+                decision, long.class, long.class, String.class, int.class,
+                String.class);
+        observe.setAccessible(true);
+
+        active.basePaused = true;
+        long paused = BranchObservation.prepare(METHOD, 9, "x == 0");
+        assertTrue(paused > 0L);
+        observe.invoke(null, binary.invoke(null, true), paused, 0L, METHOD,
+                9, "x == 0");
+        assertTrue("paused, the VM owes no event", gaps().isEmpty());
+
+        active.basePaused = false;
+        long door = BranchObservation.prepare(METHOD, 11, "$fault14 == 0");
+        observe.invoke(null, binary.invoke(null, true), door, 0L, METHOD,
+                11, "$fault14 == 0");
+        List<GapRow> named = gaps();
+        assertEquals(1, named.size());
+        assertEquals(GapKind.UNATTESTED_ARM, named.get(0).kind());
+        assertEquals(GapClass.DIAGNOSTIC, named.get(0).cls());
+        assertEquals(METHOD + "#u11", named.get(0).subject());
+        assertTrue("and no row states an arm", active.branchMappings
+                .isEmpty());
+    }
+
+    /** Opens the session the gap rows are published into. */
+    private void openSession() throws Exception {
+        Path results = session.getRoot().toPath().resolve("iteration-0000")
+                .resolve("seed-result")
+                .resolve("concolic_region_results.jsonl");
+        Files.createDirectories(results.getParent());
+        RowRuntime.configure(results);
+    }
+
+    private List<GapRow> gaps() throws Exception {
+        return RowCodec.readAll(SessionDir.of(
+                        session.getRoot().toPath().resolve("iteration-0000"),
+                        RowRuntime.sessionId()).gaps(),
+                RowCodec::readGap);
     }
 
     private ActiveRegion region(ConcolicTaskPlan.RuntimeTask task)

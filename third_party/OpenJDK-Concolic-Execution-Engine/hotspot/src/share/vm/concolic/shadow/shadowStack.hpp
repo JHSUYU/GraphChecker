@@ -67,6 +67,18 @@ public:
   }
 
   const ZeroFrame *marker_owner_frame() const;
+
+  /**
+   * The index of the program frame that called into the engine: the
+   * topmost frame below every native frame and every frame of the engine's
+   * own classes and of reflection on top of the stack -- a region's root,
+   * asked at its start (ThreadContext::push_region).  -1 when none.
+   */
+  int program_entry_index() const;
+
+  /** Clears the local and operand tables of every tracking frame from
+   *  `index` up (ThreadContext::pause_base_recording); none for -1. */
+  void clear_tracking_frames_from(int index);
   bool is_current_frame(const ZeroFrame *frame) const;
 
   /**
@@ -79,8 +91,13 @@ public:
     return *_s_frames.at(size - 1 - index);
   }
 
+  /**
+   * `symbolic_tracking_enabled`: whether the callee may track (with its
+   * caller's); `concrete_boundary`: recording is paused at the push, so the
+   * callee takes no expression from its caller and hands none back.
+   */
   void push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
-            bool symbolic_tracking_enabled);
+            bool symbolic_tracking_enabled, bool concrete_boundary);
 
   void pop(ZeroFrame *zero_frame);
 

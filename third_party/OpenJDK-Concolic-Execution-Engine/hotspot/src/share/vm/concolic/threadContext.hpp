@@ -75,8 +75,17 @@ private:
     // region's summary states them and the runtime files each as a
     // DIAGNOSTIC gap.
     std::vector<std::pair<std::string, std::string> > model_gaps;
+    // The shadow-stack index of the program frame that started this region
+    // -- the occurrence's root, the frame below the engine's own at the
+    // start (ShadowStack::program_entry_index); -1 when none stood there.
+    // Retaking the base pause clears the frames from it up, never below.
+    int root_frame_index;
+    // Observation resumes refused while this region was innermost: none
+    // stood above the base pause (resume_path_condition_recording).
+    int refused_resumes;
 
-    RegionFrame() : enter_event_id(0), branch_events_read(0) {}
+    RegionFrame() : enter_event_id(0), branch_events_read(0),
+                    root_frame_index(-1), refused_resumes(0) {}
     ~RegionFrame() {
       branch_path_condition.gc();
     }
@@ -101,6 +110,12 @@ private:
   // which temporarily toggles _path_condition_enabled around library code.
   bool _path_condition_admitted;
   int _path_condition_pause_depth;
+  // How much of _path_condition_pause_depth is the base pause a doors-only
+  // occurrence holds from its start to its close (pause_base_recording).
+  // Paused, it is a pause as any other; but a frame pushed under it alone
+  // keeps its tracking flag (ShadowStack::push), so a door decided in a
+  // callee frame records once the occurrence lifts it there.
+  int _base_pause_depth;
   // Once the Java stack that existed at region start has completely
   // unwound, there is no sound caller frame onto which symbolic values can
   // be rebased.  Keep the context allocated only long enough for a caller to
@@ -294,6 +309,27 @@ public:
   int resume_path_condition_recording();
   inline int path_condition_pause_depth() const {
     return _path_condition_pause_depth;
+  }
+  // The base pause: one pause level, counted apart too (_base_pause_depth).
+  // Taking it ends a door window: the frames of the innermost region, its
+  // root and every frame above it, are cleared (see the .cpp).
+  int pause_base_recording();
+  int resume_base_recording();
+  inline int base_pause_depth() const { return _base_pause_depth; }
+  // Whether the pause standing is the base pause alone: no observation
+  // pause (a hook's bracket) above it.
+  inline bool base_paused_only() const {
+    return _base_pause_depth > 0
+        && _path_condition_pause_depth == _base_pause_depth;
+  }
+  // An explicit VM input operation (symbolize, attach) inside a paused
+  // subtree lifts every pause while it mutates symbolic state and restores
+  // the depth it found, exactly: never by resuming level by level, which
+  // stops at the base pause.
+  int lift_pauses();
+  void restore_pauses(int depth);
+  inline int refused_resumes() const {
+    return _region_stack.empty() ? 0 : _region_stack.back()->refused_resumes;
   }
 
 public:

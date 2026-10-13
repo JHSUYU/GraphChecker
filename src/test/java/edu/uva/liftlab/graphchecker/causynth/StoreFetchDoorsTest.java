@@ -144,13 +144,16 @@ public class StoreFetchDoorsTest {
 
     /** A planned occurrence whose final basis is a door's -- a control
      *  producer's or a store fetch's -- is doors-only; one a value rule
-     *  moved, or a target, is not. */
+     *  moved (a store item's sender, a wire's producer), or a target, is
+     *  not. */
     @Test
     public void aDoorOccurrenceIsPlannedDoorsOnly() {
         Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
         String[][] rows = {{"cp", "CONTROL_PRODUCER_V1"},
                 {"fetch", "STORE_FETCH_V1"},
                 {"writer", "SHARED_LOCATION_DEMAND_V1"},
+                {"item", "STORE_ITEM_PRODUCER_V1"},
+                {"wire", "WIRE_PRODUCER_V1"},
                 {"root", "ROOT_RELEVANT_V1"}, {"target", ""}};
         for (String[] row : rows) {
             Map<String, Object> activation = new LinkedHashMap<>();
@@ -163,8 +166,8 @@ public class StoreFetchDoorsTest {
         assertEquals(2, RuntimeSelectedRegionFinalizer.stateDoorsOnly(
                 instances, instances.keySet()));
         for (String[] row : rows) {
-            assertEquals(row[0], row[1].endsWith("PRODUCER_V1")
-                    || row[1].startsWith("STORE_FETCH"), instances.get(row[0])
+            assertEquals(row[0], row[1].equals("CONTROL_PRODUCER_V1")
+                    || row[1].equals("STORE_FETCH_V1"), instances.get(row[0])
                     .containsKey(RuntimeSelectedRegionFinalizer.DOORS_ONLY));
         }
     }

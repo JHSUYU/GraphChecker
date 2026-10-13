@@ -97,10 +97,18 @@ public class RecordedMessagesTest {
                         "", "e1"),
                 ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
                         "s/n2#epoch0|Root:QUEUE#4", "SOLR_ZK#REQUEST", 0,
-                        "", "e3")));
+                        "", "e3"),
+                // an occurrence that took e1 in too: a door, no sender
+                ScheduleEvent.of(4, ScheduleEvent.Kind.RECV,
+                        "s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb",
+                        "HADOOP_IPC#REQUEST", 0, "receiver", "e1")));
         OccurrenceAddress flush = OccurrenceAddress.parse(
                 "s/n2#epoch0/region/REGION.w/ctx:Root:QUEUE#4/idx:");
-        assertEquals(set("sender", "second sender"), messages.doorsOf(flush));
+        assertEquals(set("sender", "second sender", "receiver"),
+                messages.doorsOf(flush));
+        // What it applied came from each item's sender, never its takers.
+        assertEquals(set("sender", "second sender"),
+                messages.sendersOf(flush));
         assertEquals(set("s/n2#epoch0|Root:QUEUE#4",
                 "s/n0#epoch0|Root:CLIENT/hb#1",
                 "s/n0#epoch0|Root:CLIENT/hb#2"),

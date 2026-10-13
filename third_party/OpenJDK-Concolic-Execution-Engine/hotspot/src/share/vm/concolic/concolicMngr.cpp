@@ -723,6 +723,13 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.Bool(ctx != NULL && ctx->path_condition_pause_depth() > 0);
   writer.Key("pathConditionPauseDepth");
   writer.Int(ctx == NULL ? 0 : ctx->path_condition_pause_depth());
+  // How much of that depth is a doors-only occurrence's base pause, and how
+  // many observation resumes found no observation pause above it (each
+  // refused: it would have released the base pause).
+  writer.Key("basePauseDepth");
+  writer.Int(ctx == NULL ? 0 : ctx->base_pause_depth());
+  writer.Key("refusedObservationResumes");
+  writer.Int(ctx == NULL ? 0 : ctx->refused_resumes());
   writer.Key("pathCondition");
   // Do not serialize the whole thread path here.  A large system thread may
   // execute millions of irrelevant conditions before a selected region
@@ -809,6 +816,18 @@ void ConcolicMngr::resumePathConditionRecording() {
   }
 }
 
+void ConcolicMngr::pauseBaseRecording() {
+  if (has_active_context()) {
+    ctx->pause_base_recording();
+  }
+}
+
+void ConcolicMngr::resumeBaseRecording() {
+  if (has_active_context()) {
+    ctx->resume_base_recording();
+  }
+}
+
 jlong ConcolicMngr::endConcolic() {
   if (!ctx) {
     tty->print_cr("Warning: corrupted concolic execution thread state, is startConcolicRegion() invoked properly?");
@@ -830,14 +849,9 @@ void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
   if (can_explicitly_symbolize()) {
     // The symbolizer opens the path-condition gate once it mints: a refused
     // mint (a JVM-wide object) opens nothing.
-    int pause_depth = ctx->path_condition_pause_depth();
-    while (ctx->path_condition_pause_depth() > 0) {
-      ctx->resume_path_condition_recording();
-    }
+    int pause_depth = ctx->lift_pauses();
     ctx->symbolize(handle, prefix);
-    for (int index = 0; index < pause_depth; ++index) {
-      ctx->pause_path_condition_recording();
-    }
+    ctx->restore_pauses(pause_depth);
   } else {
     tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolicRegion() before symbolize");
   }
@@ -849,16 +863,11 @@ void ConcolicMngr::symbolizeField(Handle handle, const char* field_name,
   if (can_explicitly_symbolize()) {
     // The symbolizer opens the path-condition gate once it mints: a refused
     // mint (a JVM-wide object) opens nothing.
-    int pause_depth = ctx->path_condition_pause_depth();
-    while (ctx->path_condition_pause_depth() > 0) {
-      ctx->resume_path_condition_recording();
-    }
+    int pause_depth = ctx->lift_pauses();
     ctx->symbolize_field(handle,
         field_name == NULL ? "" : std::string(field_name),
         prefix == NULL ? "" : std::string(prefix));
-    for (int index = 0; index < pause_depth; ++index) {
-      ctx->pause_path_condition_recording();
-    }
+    ctx->restore_pauses(pause_depth);
   } else {
     tty->print_cr("Warning: symbolizeField called without an active context");
   }
@@ -875,16 +884,11 @@ void ConcolicMngr::symbolizeExactField(
       && prefix != NULL && prefix[0] != '\0') {
     // The symbolizer opens the path-condition gate once it mints: a refused
     // mint (a JVM-wide object) opens nothing.
-    int pause_depth = ctx->path_condition_pause_depth();
-    while (ctx->path_condition_pause_depth() > 0) {
-      ctx->resume_path_condition_recording();
-    }
+    int pause_depth = ctx->lift_pauses();
     ctx->symbolize_exact_field(
         owner, std::string(declaring_class), std::string(field_name),
         std::string(descriptor), std::string(prefix));
-    for (int index = 0; index < pause_depth; ++index) {
-      ctx->pause_path_condition_recording();
-    }
+    ctx->restore_pauses(pause_depth);
   } else {
     tty->print_cr(
         "Warning: symbolizeExactField called without an eligible field");

@@ -270,6 +270,8 @@ SUNWprivate_1.1 {
                 JVM_GetPcStr;
                 JVM_PauseConcolicPathCondition;
                 JVM_ResumeConcolicPathCondition;
+                JVM_PauseConcolicBase;
+                JVM_ResumeConcolicBase;
                 JVM_MarkConcolicBranch;
                 JVM_ForceNextConcolicBranch;
                 JVM_GetConcolicBranchEvents;

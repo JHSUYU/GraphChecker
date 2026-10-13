@@ -7311,6 +7311,193 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A STORE WRITER'S ITEM SENDER IS A VALUE ({@code
+     * ClosurePlanner#STORE_ITEM_PRODUCER}): the Overseer's state updater
+     * wrote the state.json version the anchor read by applying the item the
+     * task's Runner offered, so the version rests on the item's content (a
+     * key it removed as much as a value it set:
+     * solr-bugs-overseer-lock-leak's readOnly=""), and the doors of the
+     * Runner's own item are asked -- the queue turn's markTaskAsRunning --
+     * once: the item's submitter, a door of the Runner's item, is a control
+     * producer whose own message is no question.  So is the writer of an
+     * earlier version the read version rests on, though the read could
+     * never have seen it (made under construction): PLAN's writers up to
+     * the version read.
+     */
+    @Test
+    public void aStoreWritersItemSenderIsAValue() throws Exception {
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/c/state.json");
+        OccurrenceAddress client = occurrence("solr-case/node1",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Processor#add#1");
+        OccurrenceAddress updater = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 1),
+                "Updater#run#1");
+        CausalContext runnerTurn = CausalContext.of(Role.of("OVERSEER_TASK"),
+                "", 1);
+        OccurrenceAddress runner = occurrence("solr-case/node0",
+                "REGION.task", runnerTurn, "Runner#offer#1");
+        OccurrenceAddress sibling = occurrence("solr-case/node0",
+                "REGION.sib", runnerTurn, "Runner#sib#1");
+        OccurrenceAddress marking = occurrence("solr-case/node0",
+                "REGION.mark", CausalContext.of(
+                        Role.of("OVERSEER_TASK_QUEUE"), "", 1),
+                "Queue#mark#1");
+        OccurrenceAddress submitter = occurrence("solr-case/node0",
+                "REGION.submit", CausalContext.of(Role.of("REQUEST"), "", 1),
+                "Handler#submit#1");
+        OccurrenceAddress front = occurrence("solr-case/node0",
+                "REGION.front", CausalContext.of(Role.of("FRONT"), "", 1),
+                "Front#take#1");
+        // The earlier version's writer, its item's sender, and the queue
+        // turn that took in that sender's own item.
+        OccurrenceAddress setup = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 2),
+                "Updater#setup#1");
+        OccurrenceAddress earlierRunner = occurrence("solr-case/node0",
+                "REGION.task", CausalContext.of(Role.of("OVERSEER_TASK"), "",
+                        2), "Runner#offer#2");
+        OccurrenceAddress earlierMarking = occurrence("solr-case/node0",
+                "REGION.mark", CausalContext.of(
+                        Role.of("OVERSEER_TASK_QUEUE"), "", 2),
+                "Queue#mark#2");
+        Path iteration = tree.newFolder("item-sender").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(client, false);
+        seed.activation(updater, false, true, "updater");
+        seed.activation(setup, false, true, "updater");
+        Object[][] doors = {{runner, "runner", "Run#u2"},
+            {sibling, "runner", "Sib#u5"}, {marking, "queue", "Mark#u3"},
+            {submitter, "request", "Sub#u4"}, {front, "front", "Front#u7"},
+            {earlierRunner, "runner", "Run0#u9"},
+            {earlierMarking, "queue", "Mark0#u10"}};
+        for (Object[] door : doors) {
+            OccurrenceAddress at = (OccurrenceAddress) door[0];
+            String site = (String) door[2];
+            seed.activation(at, false, true, (String) door[1]);
+            seed.root(at, "CASE." + site, "M_" + site.replace("#", "_"),
+                    RootKind.MARKER, "false", null, null, true);
+            seed.decision(at, site, 1, false, "M_" + site.replace("#", "_"));
+        }
+        seed.write(at(setup, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "<a.Setup: void <init>()>"), state, 1L, "", "[B");
+        seed.write(at(updater, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "Updater#run#1"), state, 2L, "", "[B");
+        seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state, 2L,
+                "S_c1", null);
+        seed.target(client, "Guard#u8#1", "false");
+        seed.flush();
+        List<JsonObject> schedule = new ArrayList<JsonObject>();
+        Object[][] events = {
+            // the request's message, taken in at the front turn's root and
+            // the submitter's
+            {ScheduleEvent.Kind.RECV, front, "", "e-req"},
+            {ScheduleEvent.Kind.RECV, submitter, "", "e-req"},
+            // the task item: submitted, taken in by the queue turn and the
+            // Runner's at their roots
+            {ScheduleEvent.Kind.SEND, submitter, submitter.id(), "e-task"},
+            {ScheduleEvent.Kind.RECV, marking, "", "e-task"},
+            {ScheduleEvent.Kind.RECV, runner, "", "e-task"},
+            // the state item the Runner offered, the updater's turn took in
+            {ScheduleEvent.Kind.SEND, runner, runner.id(), "e-state"},
+            {ScheduleEvent.Kind.RECV, updater, "", "e-state"},
+            // the earlier version's: its writer applied the item the
+            // earlier Runner offered, which ran the task the earlier queue
+            // turn took in
+            {ScheduleEvent.Kind.RECV, earlierMarking, "", "e-task0"},
+            {ScheduleEvent.Kind.RECV, earlierRunner, "", "e-task0"},
+            {ScheduleEvent.Kind.SEND, earlierRunner, earlierRunner.id(),
+                    "e-state0"},
+            {ScheduleEvent.Kind.RECV, setup, "", "e-state0"},
+        };
+        long seq = 1L;
+        for (Object[] event : events) {
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(seq++,
+                    (ScheduleEvent.Kind) event[0], ContextShape.Stance.of(
+                            (OccurrenceAddress) event[1]).render(),
+                    "SOLR_ZK#REQUEST", 0, (String) event[2],
+                    (String) event[3])));
+        }
+        RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                schedule);
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"), scopeSite(StaticScopeMap.PROVENANCE_SITE, "",
+                "Processor#ro#u1", "Processor#ro", "<P: boolean readOnly>",
+                "<P: boolean readOnly>", ""));
+        Path out = tree.newFolder("item-sender-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1", null,
+                results, wave, 0);
+        Object[][] rows = {
+            {"Run#u2", true, "the item's sender, a value"},
+            {"Mark#u3", true, "the queue turn, a door of the sender's item"},
+            {"Sub#u4", true, "the item's submitter, a door of it"},
+            {"Sib#u5", true,
+                    "the sender's turn, a door of the state item it sent"},
+            {"Front#u7", false,
+                    "a door of a control producer's own message"},
+            {"Run0#u9", true, "the earlier version's item sender"},
+            {"Mark0#u10", true,
+                    "a door of the earlier sender's own item, a value's"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[2], row[1],
+                    named(obligations(wave), (String) row[0]) != null);
+        }
+    }
+
+    /**
+     * A VALUE REASON OUTRANKS A DOOR'S ({@code ClosurePlanner.Demand
+     * #absorb}): a control producer later reached as a store item's sender
+     * is that sender, in either order, as PLAN states it; a member stays a
+     * member; and a reason the rows connect is never replaced by a static
+     * one, which wants the value all the same.
+     */
+    @Test
+    public void aValueReasonOutranksADoorsReason() throws Exception {
+        String[][] rows = {
+            {ClosurePlanner.CONTROL_PRODUCER, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.STORE_ITEM_PRODUCER, ClosurePlanner.CONTROL_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.STORE_FETCH, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.CLOSURE_MEMBER, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.CLOSURE_MEMBER, "true"},
+            {ClosurePlanner.CONTROL_PRODUCER,
+                    ClosurePlanner.STATIC_CANDIDATE_WRITER,
+                    ClosurePlanner.CONTROL_PRODUCER, "true"},
+        };
+        Class<?> shape = Class.forName(
+                "edu.uva.liftlab.graphchecker.explore.ClosurePlanner$Demand");
+        java.lang.reflect.Constructor<?> make = shape.getDeclaredConstructor(
+                OccurrenceAddress.class, String.class, boolean.class);
+        make.setAccessible(true);
+        java.lang.reflect.Method absorb = shape.getDeclaredMethod("absorb",
+                shape);
+        absorb.setAccessible(true);
+        java.lang.reflect.Field why = shape.getDeclaredField("why");
+        why.setAccessible(true);
+        java.lang.reflect.Field value = shape.getDeclaredField("value");
+        value.setAccessible(true);
+        OccurrenceAddress at = occurrence("solr-case/node0", "REGION.task",
+                CausalContext.of(Role.of("OVERSEER_TASK"), "", 1),
+                "Runner#offer#1");
+        for (String[] row : rows) {
+            Object held = make.newInstance(at, row[0], false);
+            absorb.invoke(held, make.newInstance(at, row[1], false));
+            assertEquals(row[0] + " then " + row[1], row[2], why.get(held));
+            assertEquals(row[0] + " then " + row[1],
+                    Boolean.valueOf(row[3]), value.get(held));
+        }
+    }
+
     /** A phi whose expression names its own read (ConcreteAnchor case). */
     private static final String NAMES_ITS_READ = "EXPR.00000000000000a7";
 

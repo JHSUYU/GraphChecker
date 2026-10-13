@@ -104,15 +104,17 @@ public final class ConcolicRegionRuntime {
      * mutes this layer's own bookkeeping (pair with {@link
      * #resumeObservation} in a finally): unmuted, GraphChecker's control
      * flow over symbolized objects lands in the workload's path condition.
+     * An open door window closes inside the bracket, so the engine's frames
+     * that close it run paused.
      */
     public static void pauseObservation() {
-        closeDoorWindow();
         OBSERVATION_PAUSE_DEPTH.set(OBSERVATION_PAUSE_DEPTH.get() + 1);
         try {
             engine().pausePathCondition();
         } catch (Throwable ignored) {
             // A missing/inactive engine is already handled by the region hook.
         }
+        closeDoorWindow();
     }
 
     /** {@link #observeTrackedContainer}'s phases: before a mutation of the
@@ -131,7 +133,11 @@ public final class ConcolicRegionRuntime {
     /**
      * A doors-only occurrence ({@code RuntimeTask#doorsOnly}) runs with its
      * path condition paused from its start to its close ({@link
-     * #holdBasePause}), but for its door decisions: its marker's mint lifts
+     * #holdBasePause}: the VM's base pause, {@code
+     * ConcolicVmBroker#pauseBase}, under which a frame the program pushes
+     * keeps its tracking, so a door in a callee -- Solr's {@code
+     * SolrZkClient#makePath} retry lambda -- decides as one in the root
+     * frame does), but for its door decisions: its marker's mint lifts
      * the pause (called inside the mint's
      * hook, whose own pause still stands), so the woven test of the marker
      * records its decision, and the next hook on the thread restores it
@@ -146,8 +152,23 @@ public final class ConcolicRegionRuntime {
      */
     static void openDoorWindow(ActiveRegion active) {
         if (!active.activation.doorsOnly || !active.basePaused) return;
+        // THE RULE (VM.md §2): a window opens only inside a woven observation
+        // bracket.  A frame pushed under the base pause alone tracks once the
+        // pause lifts in it; under the bracket the hook's own frames were
+        // pushed under both pauses and never track, so the engine's control
+        // flow never reaches the workload's path condition.
+        if (OBSERVATION_PAUSE_DEPTH.get() == 0) {
+            RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING,
+                    firstNonBlank(active.address(),
+                            Long.toString(active.token)),
+                    "a door window was asked for outside every woven"
+                            + " observation bracket, where the engine's own"
+                            + " frames would track: it is not opened, so"
+                            + " this door decides nothing");
+            return;
+        }
         try {
-            engine().resumePathCondition();
+            engine().resumeBase();
             active.basePaused = false;
             DOOR_WINDOW.set(active);
         } catch (Throwable ignored) {
@@ -161,7 +182,7 @@ public final class ConcolicRegionRuntime {
         if (open == null) return;
         DOOR_WINDOW.remove();
         try {
-            engine().pausePathCondition();
+            engine().pauseBase();
             open.basePaused = true;
         } catch (Throwable ignored) {
             // No region to pause: nothing is recorded either.
@@ -173,9 +194,9 @@ public final class ConcolicRegionRuntime {
     private static void releaseBasePause(ActiveRegion active) {
         if (DOOR_WINDOW.get() == active) DOOR_WINDOW.remove();
         if (!active.basePaused) return;
-        active.basePaused = false;
         try {
-            engine().resumePathCondition();
+            engine().resumeBase();
+            active.basePaused = false;
         } catch (Throwable ignored) {
             // Resume is harmless when no region is active.
         }
@@ -209,7 +230,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         try {
-            engine().pausePathCondition();
+            engine().pauseBase();
             active.basePaused = true;
         } catch (Throwable ignored) {
             // No region to pause: nothing is recorded either.
@@ -259,6 +280,16 @@ public final class ConcolicRegionRuntime {
      */
     static ActiveRegion observingActiveRegion() {
         return OBSERVATION_PAUSE_DEPTH.get() > 0 ? null : activeRegion();
+    }
+
+    /**
+     * Whether {@code active} records the program's branch running now: no
+     * hook's bracket is open and no doors-only base pause stands
+     * ({@code BranchObservation#prepare}).
+     */
+    static boolean recordsHere(ActiveRegion active) {
+        return OBSERVATION_PAUSE_DEPTH.get() == 0
+                && !(active.activation.doorsOnly && active.basePaused);
     }
 
     /**
@@ -1714,6 +1745,24 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Names an activation during which an observation resume found no
+     * observation pause above the base pause (the VM refused it, {@code
+     * refusedObservationResumes}): the engine's brackets went unbalanced, so
+     * a pause it meant to hold is not the one standing.  BLOCKING.
+     */
+    static void refusedResumes(ActiveRegion active, JsonObject summary) {
+        long refused = JsonFields.optionalLongInteger(summary,
+                "refusedObservationResumes", 0L);
+        if (refused <= 0L) return;
+        RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING,
+                firstNonBlank(active.address(), Long.toString(active.token)),
+                refused + " observation resume(s) in this activation found"
+                        + " no observation pause above the base pause; the VM"
+                        + " refused each, so the engine's pause brackets are"
+                        + " unbalanced here");
+    }
+
+    /**
      * What a VM model ran on the run's own values though symbolic content
      * reached it (VM.md §4: a stream pipeline it could not state), each a
      * DIAGNOSTIC gap named by the model's reason and the call's site, so a
@@ -1776,11 +1825,12 @@ public final class ConcolicRegionRuntime {
             }
             // What the summary states that is read; the rest is skipped.
             JsonObject summary = members(api.finish(), "aborted",
-                    "abortReason", "modelGaps");
+                    "abortReason", "modelGaps", "refusedObservationResumes");
             engineFinished = true;
             if (publishRows && summary != null) {
                 aborted(active, summary);
                 modelGaps(active, summary);
+                refusedResumes(active, summary);
             }
             // Symbolic values flow back to the caller, so open its gate too.
             if (enclosingRegion != null && active.pathRecordingStarted) {

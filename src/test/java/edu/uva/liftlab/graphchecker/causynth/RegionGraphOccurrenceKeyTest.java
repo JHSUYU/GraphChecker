@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -300,6 +301,116 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         assertEquals(Collections.singletonList("REGION.loop 1"), fixed);
+    }
+
+    /**
+     * A STORE WRITER'S ITEM SENDER IS A VALUE (PLAN's {@code crossStore},
+     * {@code STORE_ITEM_PRODUCER_V1}): the target read a store version
+     * through an object a fetch decoded; the turn that wrote that version
+     * applied the item another occurrence sent, so the sender is planned for
+     * its value, though it reads no fault -- where the item's other doors
+     * are planned only where they read one.  A turn standing on no message
+     * has no sender.
+     */
+    @Test
+    public void aStoreWritersItemSenderIsPlannedForItsValue()
+            throws Exception {
+        String readOnly = "<ex.Coll: boolean readOnly>";
+        Object[][] activations = {
+            // name, node, region, role, owners of readOnly
+            {"target", "wl/n1#epoch0", "REGION.check", "CLIENT", 41},
+            {"writer", "wl/n0#epoch0", "REGION.side", "UPDATER", 0},
+            {"sender", "wl/n0#epoch0", "REGION.grow", "RUNNER", 0},
+            {"taker", "wl/n0#epoch0", "REGION.loop", "QUEUE", 0},
+        };
+        List<Map<String, Object>> instances = new ArrayList<>();
+        Map<String, OccurrenceAddress> named = new LinkedHashMap<>();
+        for (int index = 0; index < activations.length; index++) {
+            Object[] row = activations[index];
+            OccurrenceAddress address = OccurrenceAddress.of(
+                    NodeId.parse((String) row[1]), (String) row[2],
+                    CausalContext.of(Role.of((String) row[3]), "", 1),
+                    ExecutionIndex.empty());
+            named.put((String) row[0], address);
+            String method = "REGION.check".equals(row[2]) ? CHECK
+                    : "REGION.side".equals(row[2]) ? SIDE
+                    : "REGION.grow".equals(row[2]) ? GROW : LOOP;
+            Map<String, Object> activation = row(
+                    "kind", "RUNTIME_REGION_ACTIVATION",
+                    "regionId", row[2],
+                    "rootCallId", (long) index + 1,
+                    "occurrenceAddress", address.render(),
+                    "selection", "REGION.check".equals(row[2])
+                            ? "EXCEPTION_CONTEXT" : "STATE_CONTEXT",
+                    "callIds", Collections.singletonList((long) index + 1),
+                    "observedMethods", Collections.singletonList(method));
+            if ((Integer) row[4] != 0) {
+                activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
+                        Collections.singletonMap(readOnly,
+                                Collections.singleton(row[4])));
+            }
+            instances.add(activation);
+        }
+        JsonObject provenance = new JsonObject();
+        provenance.addProperty("schemaVersion", 1);
+        provenance.addProperty("kind", StaticScopeMap.SITE_KIND);
+        provenance.addProperty("role", StaticScopeMap.PROVENANCE_SITE);
+        provenance.addProperty("regionId", "");
+        provenance.addProperty("siteId", CHECK + "#u2");
+        provenance.addProperty("vmSite", CHECK);
+        provenance.addProperty("cell", readOnly);
+        provenance.addProperty("carrier", readOnly);
+        provenance.addProperty("portId", "");
+        provenance.add("guards", new JsonArray());
+        // The writer's turn took in the sender's item at its root, and so
+        // did the queue taker's: both its doors, only the sender a value.
+        List<ScheduleEvent> schedule = Arrays.asList(
+                ScheduleEvent.of(1, ScheduleEvent.Kind.SEND,
+                        stance(named.get("sender")), "SOLR_ZK#REQUEST", 0,
+                        named.get("sender").id(), "e-state"),
+                ScheduleEvent.of(2, ScheduleEvent.Kind.RECV,
+                        stance(named.get("taker")), "SOLR_ZK#REQUEST", 0,
+                        "", "e-state"),
+                ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
+                        stance(named.get("writer")), "SOLR_ZK#REQUEST", 0,
+                        "", "e-state"));
+        RecordedStore store = new RecordedStore(Arrays.asList(
+                RecordedStore.Event.written("SOLR_ZK", "/c/state.json", 6L,
+                        named.get("writer").render(), 4L),
+                RecordedStore.Event.decoded("SOLR_ZK", "/c/state.json", 6L,
+                        new int[]{41}, "", 5L)));
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
+                        walkSkeletons(), "test", Arrays.asList(CHECK, SIDE,
+                                GROW, LOOP), instances,
+                        Collections.singletonList(row("kind", "BRANCH",
+                                "eventSeq", 7L, "method", CHECK,
+                                "callId", 1L, "siteId", CHECK + "#u5",
+                                "outcome", Boolean.TRUE)),
+                        walkScopeMap(provenance),
+                        RuntimeWorkflowDiscovery.FIRST, schedule, store,
+                        new RecordedAccesses.Builder().build(),
+                        new RecordedHeap.Builder().build());
+        List<String> planned = new ArrayList<>();
+        for (Map<String, Object> region : closure.regions) {
+            for (Object occurrence
+                    : (List<?>) region.get("runtimeOccurrenceIds")) {
+                for (Map.Entry<String, OccurrenceAddress> each
+                        : named.entrySet()) {
+                    if (each.getValue().render().equals(occurrence)) {
+                        planned.add(each.getKey());
+                    }
+                }
+            }
+        }
+        Collections.sort(planned);
+        assertEquals("the sender for its value; the taker, reading no"
+                + " fault, not", Arrays.asList("sender", "target", "writer"),
+                planned);
+    }
+
+    private static String stance(OccurrenceAddress occurrence) {
+        return ContextShape.Stance.of(occurrence).render();
     }
 
     /**

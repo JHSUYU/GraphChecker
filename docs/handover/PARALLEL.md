@@ -148,7 +148,7 @@ every tool call starts a shell there.
 cd ~/gc-run/<snap> && env -u BASH_ENV \
   LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
   CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
-  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force5/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force8/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
 ```
 `CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a

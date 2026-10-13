@@ -4,12 +4,15 @@
 #include "runtime/frame.inline.hpp"
 
 ShadowFrame::ShadowFrame(frame &fr)
-    : _zero_frame(fr.zeroframe()), _symbolic_tracking_enabled(true) {}
+    : _zero_frame(fr.zeroframe()), _symbolic_tracking_enabled(true),
+      _concrete_boundary(false) {}
 
 ShadowFrame::ShadowFrame(const ZeroFrame *zero_frame,
-                         bool symbolic_tracking_enabled)
+                         bool symbolic_tracking_enabled,
+                         bool concrete_boundary)
     : _zero_frame(zero_frame),
-      _symbolic_tracking_enabled(symbolic_tracking_enabled) {}
+      _symbolic_tracking_enabled(symbolic_tracking_enabled),
+      _concrete_boundary(concrete_boundary) {}
 
 void ShadowFrame::copy() {
   if (_zero_frame->is_interpreter_frame()) {
