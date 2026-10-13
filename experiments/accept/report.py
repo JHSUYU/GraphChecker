@@ -252,9 +252,9 @@ gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
 withheld = result.get("accepted") is not True
 # CONFIRM (PIPELINE §10): SAT says the model satisfies the formula, the
 # confirmation replay says whether the program agrees.  EMIT copies
-# confirm.json into result.json: a refuted claim is SAT_UNCONFIRMED, one
-# whose confirmation published no verdict RUN_DEFECT; a result with no
-# confirmation at all is not confirmed.
+# confirm.json into result.json: a claim it did not confirm -- refuted, or
+# decided by no replay -- is SAT_UNCONFIRMED; a result with no confirmation
+# at all is not confirmed.
 confirmation = result.get("confirmation") or {}
 confirmed = confirmation.get("confirmed") is True
 # WHICH mechanism the composition concluded, and the condition it rests on.
@@ -706,8 +706,9 @@ if cone:
 
 if refuted:
     out += ["## Refuted claims", "",
-            "Models CONFIRM ran and disagreed with, each excluded from every"
-            " composition after it (result.json refutedClaims).", ""]
+            "Models CONFIRM did not confirm (refuted, or undecided: no replay"
+            " decided them), each excluded from every composition after it"
+            " (result.json refutedClaims).", ""]
     for row in refuted:
         model = row.get("model") or {}
         out.append("* **%s** on path `%s`, moving %s -- %s"

@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -21,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -699,6 +701,9 @@ final class ComposedFamilies {
 
     /** Arms named as the anchor's work past the path, per path. */
     private final Set<String> leftNamed = new LinkedHashSet<String>();
+    /** The views no hook publishes already named ({@code
+     *  StateFamilies#heldView}). */
+    private final Set<String> unheldNamed = new LinkedHashSet<String>();
 
     /**
      * Whether an arm is the anchor occurrence's work past the path being
@@ -1686,7 +1691,8 @@ final class ComposedFamilies {
                 named &= !read.unnamedWriter();
             }
             for (Arms.Arm arm : arms.stateArms(first.endpoint(), session,
-                    location.key, first.observedVersion(), named)) {
+                    location.key, first.observedVersion(),
+                    named && heldView(first))) {
                 if (replacing.contains(arm.sessionId())
                         || arm.producer() == null || leftPath(arm)
                         || !seenByAll(reader, session, location.key,
@@ -1704,6 +1710,36 @@ final class ComposedFamilies {
                 found.add(arm);
             }
             return found;
+        }
+
+        /**
+         * Whether a read may pair with another write of its location: any
+         * but a node's VIEW no publication hook publishes (no PUBLISHED_VIEW
+         * of it, {@code Confirmation#hookPublishes}) -- no hold can defer it,
+         * so no run pairs its read otherwise (PairingFlip's ADMISSION_GAP,
+         * CONFIRM's PAIRING_UNHELD for the same views): it stays at the
+         * version it observed, named once per location (Z3Q
+         * snapshot-no-active: a claim paired the Overseer's read of a
+         * snapshot's metadata, a direct fetch's decode, and CONFIRM refused
+         * it).
+         */
+        private boolean heldView(ReadRow read) {
+            if (read.location() == null
+                    || read.location().kind() != LocationKind.VIEW
+                    || Confirmation.hookPublishes(read.location())) {
+                return true;
+            }
+            String view = SmtLowering.locationKey(read.location());
+            if (unheldNamed.add(view)) {
+                composer.gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, view,
+                        "no publication hook publishes " + read.location()
+                                + " (its system states no PUBLISHED_VIEW of"
+                                + " it), so no hold can defer it: its read"
+                                + " stays at the version it observed, "
+                                + read.observedVersion()
+                                + ", no version choice");
+            }
+            return false;
         }
 
         /**

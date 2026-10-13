@@ -94,6 +94,23 @@ import static org.junit.Assert.assertTrue;
  * a formula that was satisfiable all along.</p>
  */
 public class ComposerTest {
+    /** A system declaring Solr's published views (PUBLISHED_VIEW): a read
+     *  of any other view offers no version choice
+     *  (ComposedFamilies#heldView). */
+    @org.junit.Before
+    public void publishedViews() {
+        System.setProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS, java.nio.file.Paths.get("src",
+                "test", "resources", "published-views.jsonl")
+                .toAbsolutePath().toString());
+    }
+
+    @org.junit.After
+    public void noSystemDoors() {
+        System.clearProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS);
+    }
+
 
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
@@ -1621,6 +1638,10 @@ public class ComposerTest {
      *       2))}, named;</li>
      *   <li>TWO: versions 2 and 3 both have senders: both stay alternatives,
      *       each under its own choice.</li>
+     *   <li>UNHELD: the view is one no publication hook publishes (no
+     *       PUBLISHED_VIEW: a snapshot's metadata, Z3Q snapshot-no-active):
+     *       no hold can defer it, so its read offers no version choice --
+     *       it stays at the version it observed, named.</li>
      * </ul>
      */
     @Test
@@ -1629,11 +1650,14 @@ public class ComposerTest {
         OccurrenceAddress target = occurrence("case/dn0", "REGION.target",
                 CausalContext.of(Role.of("SCANNER_TICK"), "", 1),
                 frame("Scanner#run#3", 0));
-        LocationId view = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@" + target.node().render(),
-                "/collections/c/state.json");
-        String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c|state";
-        for (String row : new String[] {"SENT", "UNSENDABLE", "TWO"}) {
+        for (String row : new String[] {"SENT", "UNSENDABLE", "TWO",
+                "UNHELD"}) {
+            String path = "UNHELD".equals(row) ? "/snapshots/c/c-M"
+                    : "/collections/c/state.json";
+            LocationId view = LocationId.of(LocationKind.VIEW,
+                    "SOLR_ZK@" + target.node().render(), path);
+            String port = "SOLR_ZK#CONTENT:" + path.replace('/', '|')
+                    + "#|c|state";
             Path iteration = folder.newFolder("versions-" + row).toPath();
             Session session = new Session(iteration, "s0", false);
             session.occurrence = target;
@@ -1656,11 +1680,10 @@ public class ComposerTest {
                     at("export#1", 0), 0);
             session.export(sent1, "EXPR.v1.marker", 1L, "true");
             session.attach(Endpoint.of(decoders[1], port, at("d#1", 0), 0),
-                    "h1", "Z", "true", sent1,
-                    "/collections/c/state.json@1");
+                    "h1", "Z", "true", sent1, path + "@1");
             session.writes.add(WriteRow.of("s0", ++session.seq,
-                    Endpoint.of(decoders[1], "SOLR_ZK#DECODED:/collections/"
-                            + "c/state.json", at("d#1", 0), 0), view, 1L,
+                    Endpoint.of(decoders[1], "SOLR_ZK#DECODED:" + path,
+                            at("d#1", 0), 0), view, 1L,
                     "EXPR.view.1", "J"));
             session.read(Endpoint.of(target, "guard#VIEW", at("g#1", 0), 0),
                     view, 1L, "V_r", "J", "1");
@@ -1674,11 +1697,10 @@ public class ComposerTest {
                 session.export(sender, "EXPR.v1.marker", version, "true");
                 session.attach(Endpoint.of(decoders[version], port,
                         at("d#1", 0), 0), "h" + version, "Z", "true",
-                        sender, "/collections/c/state.json@" + version);
+                        sender, path + "@" + version);
                 session.writes.add(WriteRow.of("s0", ++session.seq,
                         Endpoint.of(decoders[version], "SOLR_ZK#DECODED:"
-                                + "/collections/c/state.json",
-                                at("d#1", 0), 0), view, version,
+                                + path, at("d#1", 0), 0), view, version,
                         "EXPR.view." + version, "J"));
             }
             session.write();
@@ -1688,8 +1710,20 @@ public class ComposerTest {
             String body = composition.body();
             assertEquals(row + ": the path stands: " + composition.gaps(),
                     1, composition.disjuncts().size());
+            String pinned = "(= V_r 1))) :named path_fatal__0";
+            if ("UNHELD".equals(row)) {
+                assertTrue("no version choice of a view no hook publishes:"
+                        + " its read is held at the version it observed: "
+                        + body, body.contains(pinned));
+                assertTrue("named: " + composition.gaps(), says(
+                        composition.gaps(), GapKind.ADMISSION_GAP,
+                        "its read stays at the version it observed, 1"));
+                continue;
+            }
             assertTrue(row + ": the leaf reads through the view: " + body,
                     body.contains("view_leaf__"));
+            assertFalse(row + ": a family chooses the read's version: "
+                    + body, body.contains(pinned));
             boolean named = false;
             for (GapRow gap : composition.gaps()) {
                 named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
