@@ -685,8 +685,9 @@ Scale and robustness:
     publication does not walk a record an earlier one walked whole (`Filed#walked`, PIPELINE
     "A read-out repeats"). A session's close prints what its read-outs cost (`Causynth read-outs:` pages,
     MB, the VM's seconds on the closing threads, the publication thread's seconds decoding, the
-    versions listed, the location envelopes filed and how many of them were decoded;
-    `SharedStateCapture#readOutSummary`).
+    versions listed, the location envelopes filed and how many of them were decoded, and what the
+    store holds for read-outs to come: its records, the chars of their text, the entries the
+    collector cleared; `SharedStateCapture#readOutSummary`, `VmExpressionTable.Store#repeatedSummary`).
     A VM window (vm-force6, c71ab25a3: an activation's earlier versions as metadata only) saved under
     20 % on solr-18413 (913 -> 730 MB read out, decoding 2746 -> 2281 s, seed 3456 -> 3478 s) and lost a
     stranded activation's 199 writes on solr-18406: reverted (lead, 2026-10-11); vm-force5 stays the

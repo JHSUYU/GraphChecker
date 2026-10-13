@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.RowInvariants;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
@@ -572,6 +573,74 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 .getDeclaredMethod("writes", ActiveRegion.class);
         publish.setAccessible(true);
         publish.invoke(null, active);
+    }
+
+    /**
+     * A refused envelope read out again unchanged is held as its refusal,
+     * decoded once: every activation whose read-out states it still files
+     * the location as refused and defers the gap with its own read-out
+     * ({@code SharedStateCapture#file}), so neither depends on which
+     * activation read it first.
+     */
+    @Test
+    public void aHeldRefusalIsFiledWithEveryActivation() throws Exception {
+        VmExpressionTable.Store store =
+                ConcolicRegionRuntime.workloadExpressionStore;
+        // Before the activations, which take the session's store.
+        ConcolicRegionRuntime.workloadExpressionStore =
+                new VmExpressionTable.Store(owner -> false);
+        SharedStateCapture.resetForTests();
+        try {
+            String refused = "{\"schemaVersion\":2,\"kind\":"
+                    + "\"SHARED_FIELD_VERSIONS\",\"sessionId\":1,\"selected\":"
+                    + "false,\"location\":{\"ownerSymRid\":10,\"slot\":40,"
+                    + "\"locationKind\":\"INSTANCE_FIELD\"},"
+                    + "\"writerSetComplete\":true,\"versions\":[],"
+                    + "\"readLogTruncated\":false,\"reads\":[],"
+                    + "\"serializationTruncated\":false}";
+            String page = "{\"schemaVersion\":1,\"kind\":"
+                    + "\"SHARED_TRACKED_LOCATIONS\",\"sessionId\":1,"
+                    + "\"locations\":[" + refused + "],\"locationCount\":1,"
+                    + "\"complete\":true,\"nextAfterEventId\":0,"
+                    + "\"vmExpressionTable\":{\"schemaVersion\":1,\"kind\":\""
+                    + VmExpressionTable.KIND + "\",\"authority\":\""
+                    + VmExpressionTable.AUTHORITY + "\",\"sessionId\":1,"
+                    + "\"definitionCount\":0,\"definitions\":[]}}";
+            java.lang.reflect.Field decoding = SharedStateCapture.class
+                    .getDeclaredField("DECODING");
+            decoding.setAccessible(true);
+            java.lang.reflect.Method decode = SharedStateCapture.class
+                    .getDeclaredMethod("decodeTrackedLocations",
+                            String.class, ActiveRegion.class);
+            decode.setAccessible(true);
+            for (ActiveRegion active : new ActiveRegion[] {
+                    region(address()),
+                    region(address(NODE + "/region/REGION.16ba41cf#1"))}) {
+                List<Runnable> deferred = new ArrayList<Runnable>();
+                @SuppressWarnings("unchecked")
+                ThreadLocal<List<Runnable>> filing =
+                        (ThreadLocal<List<Runnable>>) decoding.get(null);
+                filing.set(deferred);
+                try {
+                    decode.invoke(null, page, active);
+                } finally {
+                    filing.remove();
+                }
+                assertEquals("its gap, with this read-out", 1,
+                        deferred.size());
+                assertEquals("location was never selected as a carrier",
+                        active.sharedStateRefusals.get(
+                                "INSTANCE_FIELD/10#40"));
+                assertTrue(active.sharedStateRecords.isEmpty());
+            }
+            String summary = SharedStateCapture.readOutSummary();
+            assertTrue(summary, summary.contains(
+                    "2 location envelope(s) filed, 1 of them decoded"));
+            assertTrue(summary, summary.contains("1 record(s) held"));
+        } finally {
+            ConcolicRegionRuntime.workloadExpressionStore = store;
+            SharedStateCapture.resetForTests();
+        }
     }
 
     private ActiveRegion region(OccurrenceAddress at) throws Exception {

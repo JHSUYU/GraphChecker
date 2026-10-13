@@ -127,15 +127,18 @@ final class SharedStateCapture {
         return READ_OUT_PAGES.get() > 0L;
     }
 
-    /** One line: what the session's read-outs cost (closeSession). */
+    /** One line: what the session's read-outs cost (closeSession), the
+     *  records its store holds for read-outs to come among it. */
     static String readOutSummary() {
         return String.format(java.util.Locale.ROOT, "%d page(s), %.1f MB,"
                         + " %.1f s in the VM, %.1f s decoding, %d version(s)"
                         + " listed, %d location envelope(s) filed, %d of"
-                        + " them decoded",
+                        + " them decoded; ",
                 READ_OUT_PAGES.get(), READ_OUT_CHARS.get() / 1e6,
                 READ_OUT_NANOS.get() / 1e9, DECODE_NANOS.get() / 1e9,
-                VERSIONS.get(), FILED.get(), DECODED.get());
+                VERSIONS.get(), FILED.get(), DECODED.get())
+                + ConcolicRegionRuntime.workloadExpressionStore
+                .repeatedSummary();
     }
 
     static void resetForTests() {
