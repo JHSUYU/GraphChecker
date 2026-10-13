@@ -5283,7 +5283,10 @@ public class ComposerTest {
      * it opened, on its node under its causal context, is the turn's
      * ({@code Corpus#rolePrefix}: round SG3B tra's getAliases() read): on
      * the fatal path by what the turn wrote; one under another context is
-     * not.
+     * not.  Where the fatal term names no read (tra's client timer), the
+     * anchor's own read of the version the turn wrote puts the pairing on
+     * the fatal path (WROTE, as ANCHOR reads an anchor's read); its read of
+     * a version another occurrence wrote does not.
      */
     @Test
     public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOneNamedOrNot()
@@ -5313,26 +5316,33 @@ public class ComposerTest {
                 frame("Handler#run#3", 0));
         // planted?, a guard names the view?, the decode of 2 has an arm?,
         // the turn writes what the anchor reads?, who reads the view, the
-        // claim
+        // fatal term names the anchor's read?, the claim
         Object[][] table = {
-                {true, true, true, true, turn,
+                {true, true, true, true, turn, true,
                         ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, true, true, true, turn, ClaimKind.FORMULA_SAT},
-                {true, false, true, true, turn,
+                {false, true, true, true, turn, true, ClaimKind.FORMULA_SAT},
+                {true, false, true, true, turn, true,
                         ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, false, true, true, turn, ClaimKind.FORMULA_SAT},
-                {true, false, false, true, turn,
+                {false, false, true, true, turn, true, ClaimKind.FORMULA_SAT},
+                {true, false, false, true, turn, true,
                         ClaimKind.STATE_PAIRING_FLIPPED},
                 // Unnamed, and its work wrote nothing the fatal reads: off
                 // the fatal path, no pairing claim (the formula's own).
-                {true, false, true, false, turn, ClaimKind.FORMULA_SAT},
+                {true, false, true, false, turn, true, ClaimKind.FORMULA_SAT},
                 // The turn's role prefix reads the view: the turn's read.
-                {true, false, true, true, prefix,
+                {true, false, true, true, prefix, true,
                         ClaimKind.STATE_PAIRING_FLIPPED},
                 // Role work under another context is no prefix of it.
                 {true, false, true, true, OccurrenceAddress.of(turn.node(),
                         OccurrenceAddress.ROLE_REGION + "SOLR_HTTP",
-                        elsewhere.context(), ExecutionIndex.empty()),
+                        elsewhere.context(), ExecutionIndex.empty()), true,
+                        ClaimKind.FORMULA_SAT},
+                // The fatal term is a timer: the anchor's read of what the
+                // turn wrote puts the pairing on the fatal path; of what
+                // another occurrence wrote, not.
+                {true, false, true, true, turn, false,
+                        ClaimKind.STATE_PAIRING_FLIPPED},
+                {true, false, true, false, turn, false,
                         ClaimKind.FORMULA_SAT},
         };
         for (Object[] row : table) {
@@ -5341,10 +5351,11 @@ public class ComposerTest {
             boolean again = (Boolean) row[2];
             boolean onPath = (Boolean) row[3];
             OccurrenceAddress reader = (OccurrenceAddress) row[4];
+            boolean direct = (Boolean) row[5];
             Endpoint guard = Endpoint.of(reader,
                     "SOLR_ZK#VIEWED:/aliases.json", at("g#1", 0), 0);
             Path iteration = folder.newFolder("view-planted-" + planted + "-"
-                    + named + "-" + again + "-" + onPath + "-"
+                    + named + "-" + again + "-" + onPath + "-" + direct + "-"
                     + reader.regionId() + reader.context().render()
                     .hashCode()).toPath();
             for (boolean explored : new boolean[]{false, true}) {
@@ -5405,8 +5416,27 @@ public class ComposerTest {
                 excluded.addProperty("readEventId", session.read(asking, list,
                         listed, "INSTANCE_FIELD/1#88@v" + listed + "@" + id,
                         "I", explored ? "7" : "0"));
+                JsonObject fatal = excluded;
+                if (!direct) {
+                    // A timer the anchor reads, set elsewhere: the fatal
+                    // term names it and no read of the list.
+                    LocationId timer = LocationId.of(LocationKind.INSTANCE,
+                            "1", "99");
+                    session.write(Endpoint.of(elsewhere, "Timer#set#2:WRITE",
+                            at("t#1", 0), 0), timer, 5L, explored
+                            ? "EXPR.0000000000000007"
+                            : "EXPR.0000000000000000");
+                    fatal = read("INSTANCE_FIELD", 1L, 99L, 5L, "I");
+                    fatal.getAsJsonObject("observedVersion").add("expression",
+                            integer("I", explored ? 7L : 0L));
+                    fatal.addProperty("readEventId", session.read(
+                            Endpoint.of(writer, "Timer#now#6:READ",
+                                    at("c#1", 0), 0), timer, 5L,
+                            "INSTANCE_FIELD/1#99@v5@" + id, "I",
+                            explored ? "7" : "0"));
+                }
                 session.expression("EXPR.0000000000000060",
-                        binary("==", excluded, integer("I", 7L)));
+                        binary("==", fatal, integer("I", 7L)));
                 session.target("EXPR.0000000000000060", explored, true);
                 session.write();
             }
@@ -5422,8 +5452,8 @@ public class ComposerTest {
             String detail = "planted " + planted + ", named " + named
                     + ", again " + again + ", on path " + onPath + ": "
                     + decision.claim().gaps() + "\n" + composition.body();
-            assertEquals(detail, row[5], decision.claim().kind());
-            if (row[5] != ClaimKind.STATE_PAIRING_FLIPPED) continue;
+            assertEquals(detail, row[6], decision.claim().kind());
+            if (row[6] != ClaimKind.STATE_PAIRING_FLIPPED) continue;
             if (decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED
                     && !named) {
                 // The clause that puts the pairing on the fatal path is in
