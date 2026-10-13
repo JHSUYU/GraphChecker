@@ -3299,7 +3299,7 @@ attempted after A's refutation: $(cat "${stream_dir}/exploration.json")"
 # STREAM-WITFIRST: A WITNESS WAITS FOR NO ROUND (PIPELINE §7.9).  A round
 # plans in its own lane, over inputs frozen as it started, so a witness that
 # returns while a round plans lands, is gated and is attempted at once: W
-# returns while round 1 -- its planner six seconds long -- plans over the
+# returns while round 1 -- its planner ten seconds long -- plans over the
 # corpus landed before it (A's session, not W's); W's attempt starts while
 # round 1 plans, and, accepted, ends the exploration: round 1, never taken,
 # leaves the iteration for explore-reaped/ (roundDropped, roundDue), its
@@ -3315,7 +3315,7 @@ stream_fixture stream-witfirst
       0) stream_propose "$2" A W ;;
       1)
         date +%s.%N >"${stream_dir}/round-1-started-at"
-        sleep 6
+        sleep 10
         date +%s.%N >"${stream_dir}/round-1-ended-at" ;;
     esac
   }
@@ -3338,7 +3338,7 @@ $(cat "${stream_dir}/explore.log")"
     && -s "${stream_dir}/attempt-started-at" ]] \
   && awk -v r="$(cat "${stream_dir}/round-1-started-at")" \
     -v a="$(head -n 1 "${stream_dir}/attempt-started-at")" \
-    'BEGIN{exit !(a > r && a < r + 6)}' \
+    'BEGIN{exit !(a > r && a < r + 10)}' \
   && [[ ! -e "${stream_dir}/round-1-ended-at" ]] \
   || fail "STREAM-WITFIRST: the witness's attempt waited for the round: \
 $(cat "${stream_dir}/round-1-started-at" "${stream_dir}/attempt-started-at" \
