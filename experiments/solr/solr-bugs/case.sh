@@ -80,10 +80,13 @@ case "${1:?usage: case.sh <bug>}" in
   # witness: the Overseer's view of the added replica not ACTIVE yet at
   # CREATESNAPSHOT.  The target: the backup's search for a live replica with
   # the snapshot, the window's only one.  The chain starts at the Overseer's
-  # decode of state.json, so the scope holds the classes that build the view
-  # (as solr-18413's): outside every region Replica.<init> derives its state
-  # with no VM model running, and CreateSnapshotCmd's ACTIVE test decided
-  # concretely in every occurrence (SGF, 168 of 168).
+  # view of a replica's state, so the scope holds Replica, whose constructor
+  # derives that state from the decoded leaf: outside every region it runs
+  # with no VM model, and CreateSnapshotCmd's ACTIVE test decided concretely
+  # in every occurrence (SGF, 168 of 168).  Not the decode's other classes
+  # (ClusterState, DocCollection, Slice, as solr-18413 declares): their lookup
+  # and construction paths are no part of this chain and multiplied round 1's
+  # obligations 1700-fold (round Z2T: 3384 against 2).
   snapshot-no-active)
     test_class=org.apache.solr.cloud.TestCausynthSnapshotBackup
     test_method=backupFromASnapshotAfterItsLeaderIsGone
@@ -94,9 +97,6 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/core/snapshots/SolrSnapshotManager
       core:org/apache/solr/core/snapshots/CollectionSnapshotMetaData
       solrj:org/apache/solr/common/cloud/ZkStateReader
-      solrj:org/apache/solr/common/cloud/ClusterState
-      solrj:org/apache/solr/common/cloud/DocCollection
-      solrj:org/apache/solr/common/cloud/Slice
       solrj:org/apache/solr/common/cloud/Replica)
     ;;
   # Bug study #26: a RESTORE into a new collection marks its shards

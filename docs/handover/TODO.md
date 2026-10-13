@@ -365,7 +365,7 @@ timeout -- that a flip may ask and CONFIRM holds by an ORDER row. Needed for the
 `/bigtemp/vnr3ne/analysis/solr-2026-10-12/design-z2-f2-decoded-state.md`).** A decode outside every region keeps its
 minted leaves' symbols in the parsed tree, but a field the system derives from one there (`Replica.<init>`'s
 `State.getState(String.valueOf(..).toUpperCase())`) is a plain constant: no VM model runs without the region's shadow
-stack. Today a case declares the classes that build its view (solr-18413, solr-bugs-snapshot-no-active). The general
+stack. Today a case declares the classes that build its view (solr-18413: `ClusterState`, `DocCollection`, `Slice`; solr-bugs-snapshot-no-active: `Replica` alone, the decode's other classes having multiplied its round 1 1700-fold). The general
 fix: the adapter's decode bracket (`MessageDoors.decoded` / `jsonRead` of a fetch) opens a tracking activation, so every
 decoded product's derived fields carry their expressions whatever the case's scope -- a VM/runtime change (a shadow
 stack on a role thread, its writes attributed to the decoding occurrence) with an identity design first.
