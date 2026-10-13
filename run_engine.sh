@@ -5663,11 +5663,11 @@ campaign_stream_end() {
   local -a dropped=() confirms=() withdrawn=() dropped_reruns=()
   for pid in "${!stream_jobs[@]}"; do
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
-    dropped+=("${kind} ${round} ${id}")
+    dropped+=("${kind} ${round} ${id} ${session}")
   done
   for entry in "${stream_pending[@]}"; do
     read -r kind round id host status session <<<"${entry}"
-    dropped+=("${kind} ${round} ${id}")
+    dropped+=("${kind} ${round} ${id} ${session}")
   done
   campaign_stream_drop
   for entry in "${stream_hard[@]}"; do
@@ -5676,13 +5676,13 @@ campaign_stream_end() {
   done
   stream_hard=()
   for entry in "${stream_queue[@]}"; do
-    read -r kind round id _ <<<"${entry}"
+    read -r kind round id session <<<"${entry}"
     case "${kind}" in
       CONFIRM) confirms+=("${id}") ;;
       REPLAY) dropped+=("${kind} ${round} ${id}") ;;
       # A GROW re-run never run: its exposing round's growth and the
       # obligations it holds are owed.
-      RERUN) dropped_reruns+=("${round} ${id}") ;;
+      RERUN) dropped_reruns+=("${round} ${id} ${session}") ;;
     esac
   done
   stream_queue=()
@@ -5691,20 +5691,20 @@ campaign_stream_end() {
   # campaign_stream_swap_due): the exposing session stays in the corpus.
   # Either's directory, with what it staged, leaves its worker.
   for entry in "${stream_swaps[@]}"; do
-    read -r round id _ <<<"${entry}"
-    dropped_reruns+=("${round} ${id}")
+    read -r round id session _ <<<"${entry}"
+    dropped_reruns+=("${round} ${id} ${session}")
   done
   stream_swaps=()
   for entry in "${dropped_reruns[@]}"; do
-    read -r round id <<<"${entry}"
+    read -r round id session <<<"${entry}"
     stream_reruns_dropped+=("${id}")
     mkdir -p "${campaign_root}/explore-reaped/${round}"
-    mv -- "$(campaign_stream_rerun_dir "${round}" "${id}")" \
+    mv -- "$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")" \
       "${campaign_root}/explore-reaped/${round}/${id}"
   done
   campaign_stream_reap
   for entry in "${dropped[@]}"; do
-    read -r kind round id <<<"${entry}"
+    read -r kind round id session <<<"${entry}"
     if [[ "${kind}" == CONFIRM ]]; then
       confirms+=("${id}")
       continue
@@ -5712,7 +5712,7 @@ campaign_stream_end() {
     stream_reaped+=("${id}")
     dir="${iteration_dir}/${round}/${id}"
     [[ "${kind}" != RERUN ]] \
-      || dir=$(campaign_stream_rerun_dir "${round}" "${id}")
+      || dir=$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
   done
@@ -6076,7 +6076,7 @@ campaign_stream_start() {
       work=("$(dirname "${worker}")" "${classes}" "${plan}" \
         "${stream_admitted_mb}" "${need}") ;;
     RERUN)
-      worker=$(campaign_stream_rerun_dir "${round}" "${id}")
+      worker=$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")
       work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
   esac
@@ -6416,7 +6416,7 @@ whole; generation g${stream_generation} weaves nothing new"
   fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
-      "${obligation_id}") || exit 1
+      "${obligation_id}" "${session}") || exit 1
     rerun="${worker}/grow-$(basename "${round_dir}")/${obligation_id}"
     mkdir -p "$(dirname "${rerun}")"
     mkdir "${rerun}" || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
@@ -6440,11 +6440,12 @@ ${obligation_id} ${session}"
   (( rerun_count > 0 )) || stream_dirty=1
 }
 
-# The directory one exposing obligation's re-run for <round> runs in.
+# The directory the re-run for <round> of the obligation whose replay
+# landed <session> runs in.
 campaign_stream_rerun_dir() {
-  local round=$1 obligation_id=$2 worker
+  local round=$1 obligation_id=$2 session=$3 worker
   worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
-    "${obligation_id}") || exit 1
+    "${obligation_id}" "${session}") || exit 1
   printf '%s/grow-%s/%s\n' "${worker}" "${round}" "${obligation_id}"
 }
 
@@ -6467,11 +6468,11 @@ campaign_stream_rerun_dir() {
 # row); a deleted one fails stale and the client looks the name up again,
 # as campaign_write_whole relies on.
 campaign_stream_swap() {
-  local swap round id session status worker rerun aside file
+  local swap round id exposing status worker rerun aside file session
   for swap in "${stream_swaps[@]}"; do
-    read -r round id session status <<<"${swap}"
-    worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}") \
-      || exit 1
+    read -r round id exposing status <<<"${swap}"
+    worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}" \
+      "${exposing}") || exit 1
     rerun="${worker}/grow-${round}/${id}"
     [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
       "the re-run of ${id} did not finish (exit ${status})"
@@ -6481,8 +6482,8 @@ campaign_stream_swap() {
     campaign_withdraw_sessions "${id}" "${sessions}" "${aside}/sessions" \
       "it exposed a region that is woven now, and the re-run's session \
 stands in its place"
-    [[ ! -e "${sessions}/${session}" ]] || campaign_fail EXPLORE CAMPAIGN \
-      "${sessions}/${session}" "the exposing session ${session} does not \
+    [[ ! -e "${sessions}/${exposing}" ]] || campaign_fail EXPLORE CAMPAIGN \
+      "${sessions}/${exposing}" "the exposing session ${exposing} does not \
 name obligation ${id}, so it was not withdrawn from the corpus"
     # The question the exposing replay settled was asked of the plan before
     # this generation, and goes aside with its answer.
@@ -6500,32 +6501,42 @@ name obligation ${id}, so it was not withdrawn from the corpus"
     session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl")
     [[ -z "${session}" ]] \
       || stream_staged+=("${worker} ${rerun}/sessions ${session}")
-    campaign_record_rerun "${iteration_dir}" "${id}" "${results}"
+    campaign_record_rerun "${worker}" "${id}" "${exposing}" "${results}"
   done
   stream_hold=$((stream_hold - ${#stream_swaps[@]}))
   stream_swaps=()
   stream_dirty=1
 }
 
-# The obligation worker directory of one obligation, with its focus row.
+# The worker directory of the ask of <obligation> whose replay landed
+# <session> (its answer names it until a swap replaces it), with its focus
+# row.  An obligation asked again under its id has a worker in each round
+# that asked it, and either may be the exposing one (SGF3-adhoc-21:
+# obligations-0000's worker found no host for its solver, the re-ask in
+# obligations-0004 exposed a region, and GROW failed on "no one worker").
 campaign_obligation_worker_dir() {
-  local iteration_dir=$1 obligation_id=$2 worker
-  worker=$(find "${iteration_dir}" -mindepth 2 -maxdepth 2 -type d \
-    -path "*/obligations-*/${obligation_id}" | LC_ALL=C sort)
-  [[ -n "${worker}" && "${worker}" != *$'\n'* \
-      && -s "${worker}/focused_task.jsonl" ]] \
-    || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
-      "the exposing obligation ${obligation_id} has no one worker with a \
-focus row: ${worker:-none}"
-  printf '%s\n' "${worker}"
+  local iteration_dir=$1 obligation_id=$2 session=$3 worker="" found=""
+  for worker in "${iteration_dir}"/obligations-*/"${obligation_id}"; do
+    [[ -n "${session}" && -s "${worker}/focused_task.jsonl" \
+        && "$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl" \
+          2>/dev/null)" == "${session}" ]] || continue
+    [[ -z "${found}" ]] || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
+      "two workers of obligation ${obligation_id} name session ${session}: \
+${found} ${worker}"
+    found=${worker}
+  done
+  [[ -n "${found}" ]] || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
+    "no worker of the exposing obligation ${obligation_id} with a focus row \
+landed session ${session:-(none)}"
+  printf '%s\n' "${found}"
 }
 
-# A re-run's verdict replaces the obligation's row in the ledger.
+# A re-run's verdict replaces, in the ledger, the row of the ask whose
+# replay landed <exposing>; another ask's row of the obligation stays.
 campaign_record_rerun() {
-  local iteration_dir=$1 obligation_id=$2 results=$3 worker
-  worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
-    "${obligation_id}") || exit 1
-  jq -c --arg id "${obligation_id}" 'select(.obligationId != $id)' \
+  local worker=$1 obligation_id=$2 exposing=$3 results=$4
+  jq -c --arg id "${obligation_id}" --arg session "${exposing}" \
+    'select(.obligationId != $id or .sessionId != $session)' \
     "${results}" >"${results}.tmp"
   cat "${worker}/obligation_result.jsonl" >>"${results}.tmp"
   mv -- "${results}.tmp" "${results}"

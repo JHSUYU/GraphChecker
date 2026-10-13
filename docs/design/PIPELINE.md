@@ -1475,7 +1475,11 @@ kept beside the round (`grown_plan.jsonl`) -- the iteration's plan and the seed 
 links from then on, and the generation before keeps its own inode for whatever runs on it -- and
 INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
-`<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
+`<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
+ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session
+and, for the re-run and the swap, the one its queue entry carries): an obligation asked again under its id
+has a worker in each round that asked it, and either may be the exposing one (SGF3-adhoc-21: the first
+ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region). Until every
 re-run has returned, no obligation's solve runs that started before them and no witness's
 confirmation is queued, runs or waits for its verdict, no solve starts and no round is planned (a
 REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
@@ -1485,8 +1489,8 @@ with them dropped, their directories to `explore-reaped/` and the corpus exactly
 each re-run SWAPS in (`campaign_stream_swap`): the exposing session moves to
 `<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
 renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
-through a name it cached), its session lands, and its verdict replaces the obligation's row in
-`obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
+through a name it cached), its session lands, and its verdict replaces the exposing ask's row in
+`obligation_results.jsonl` (another ask's row of the obligation stays). The queue stays first and in flight: the round after the swap gets it as
 `--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
 obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no

@@ -5077,6 +5077,73 @@ $(cat "${stream_dir}/exploration.json")"
 $(cat "${stream_dir}/exploration.json")"
   fi
 done
+
+# GROW-REASK: an obligation asked again under its id has a worker in each
+# round that asked it; GROW re-runs, and swaps, the one whose replay landed
+# the exposing session, whichever round it is in (SGF3-adhoc-21: the first
+# ask's worker found no host for its solver, the re-ask exposed a region,
+# and GROW failed on "no one worker").  The other ask's worker and its
+# ledger row stay as they were.
+while IFS='|' read -r reask_case reask_exposing reask_other; do
+  reask_dir="${test_tmp}/grow-reask-${reask_case}"
+  reask_iteration="${reask_dir}/iteration-0000"
+  reask_sessions="${reask_iteration}/sessions"
+  reask_results="${reask_iteration}/obligation_results.jsonl"
+  reask_worker="${reask_iteration}/${reask_exposing}/OB.r"
+  reask_rerun="${reask_worker}/grow-obligations-0009/OB.r"
+  mkdir -p "${reask_iteration}/${reask_other}/OB.r" "${reask_rerun}" \
+    "${reask_sessions}/SESSION.exposing" "${reask_rerun}/sessions/SESSION.regrown"
+  # The other ask: a world-only answer with no session (its focus row
+  # stated, as a solved ask's is).
+  printf '{"taskId":"TASK.seed"}\n' \
+    >"${reask_iteration}/${reask_other}/OB.r/focused_task.jsonl"
+  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId:
+    "OB.r", verdict: "NOT_ADMITTED", sessionId: "", detail: "unfinished"}' \
+    | tee "${reask_iteration}/${reask_other}/OB.r/obligation_result.jsonl" \
+    >"${reask_results}"
+  printf '{"taskId":"TASK.seed"}\n' >"${reask_worker}/focused_task.jsonl"
+  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId:
+    "OB.r", verdict: "ADMITTED", sessionId: "SESSION.exposing",
+    detail: "took the arm"}' \
+    | tee "${reask_worker}/obligation_result.jsonl" >>"${reask_results}"
+  jq -n -c '{sessionId: "SESSION.exposing", obligationIds: ["OB.r"]}' \
+    >"${reask_sessions}/SESSION.exposing/manifest.json"
+  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId:
+    "OB.r", verdict: "UNSAT", sessionId: "SESSION.regrown",
+    detail: "re-run"}' >"${reask_rerun}/obligation_result.jsonl"
+  (
+    iteration_dir=${reask_iteration}
+    sessions=${reask_sessions}
+    results=${reask_results}
+    [[ "$(campaign_stream_rerun_dir obligations-0009 OB.r SESSION.exposing)" \
+        == "${reask_rerun}" ]] \
+      || fail "GROW-REASK ${reask_case}: the re-run is not the exposing \
+ask's"
+    stream_swaps=("obligations-0009 OB.r SESSION.exposing 0")
+    stream_staged=()
+    stream_hold=1
+    campaign_stream_swap
+    printf '%s\n' "${stream_staged[@]}" >"${reask_dir}/staged.txt"
+  ) </dev/null >"${reask_dir}/swap.log" 2>&1 \
+    || fail "GROW-REASK ${reask_case}: the swap failed: \
+$(cat "${reask_dir}/swap.log")"
+  [[ "$(jq -r .sessionId "${reask_worker}/obligation_result.jsonl")" \
+        == SESSION.regrown \
+      && -s "${reask_worker}/before-obligations-0009/sessions/SESSION.exposing/manifest.json" \
+      && ! -e "${reask_sessions}/SESSION.exposing" \
+      && "$(cat "${reask_dir}/staged.txt")" \
+        == "${reask_worker} ${reask_rerun}/sessions SESSION.regrown" \
+      && "$(jq -r .detail \
+        "${reask_iteration}/${reask_other}/OB.r/obligation_result.jsonl")" \
+        == unfinished \
+      && "$(jq -s -c 'map([.verdict, .sessionId])' "${reask_results}")" \
+        == '[["NOT_ADMITTED",""],["UNSAT","SESSION.regrown"]]' ]] \
+    || fail "GROW-REASK ${reask_case}: the exposing ask was not the one \
+swapped: $(cat "${reask_results}") $(cat "${reask_dir}/swap.log")"
+done <<'EOF'
+later|obligations-0004|obligations-0000
+earlier|obligations-0000|obligations-0004
+EOF
 reset_config
 
 # CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
