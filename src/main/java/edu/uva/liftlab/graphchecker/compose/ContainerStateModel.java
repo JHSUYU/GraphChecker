@@ -54,6 +54,27 @@ public final class ContainerStateModel {
                 + " (VString (valueString String)))))";
     }
 
+    /**
+     * The reference a String has where a reference is asked of it
+     * ({@link #unboxValue}, a String compared with a reference): {@code
+     * (string_ref s)}, whose facts ({@link #stringRefFacts}) make it never
+     * null and one per String.
+     */
+    public static String stringRef(String string) {
+        return "(string_ref " + string + ")";
+    }
+
+    /**
+     * What a String's reference is, stated for the String the query names
+     * (quantifier-free): its inverse gives the String back, so two different
+     * Strings are two references, and it is not null.
+     */
+    public static String stringRefFacts(String string) {
+        String ref = stringRef(string);
+        return "(and (= (ref_string " + ref + ") " + string + ") (not (= "
+                + ref + " nullRef)))";
+    }
+
     public static String boxIntegral(String value, String javaType) {
         String constructor = integralValuePart(javaType, true);
         return constructor.isEmpty() ? "" : "(" + constructor + " "
@@ -160,6 +181,10 @@ public final class ContainerStateModel {
                         + " (assoc_position (Array Value Int))))))",
                 "(declare-fun indexed_state_of (Ref) IndexedState)",
                 "(declare-fun assoc_state_of (Ref) AssocState)",
+                // A String cell's reference and its inverse
+                // (#stringRef).
+                "(declare-fun string_ref (String) Ref)",
+                "(declare-fun ref_string (Ref) String)",
                 "(define-fun indexed_read ((s IndexedState) (i Int)) Value"
                         + " (select (indexed_elements s) i))",
                 "(define-fun indexed_write ((s IndexedState) (i Int)"
@@ -277,6 +302,22 @@ public final class ContainerStateModel {
                            Host host) {
         if (value == null || value.sort != Sort.VALUE) return value;
         String kind = valueKind(javaType);
+        if (cellSort == Sort.REF) {
+            // A reference cell holds an object's reference, the null cell,
+            // or a String: a String stored in an Object-valued container, and
+            // an enum constant, which the VM states by its name (a
+            // ConStringSymbolExp of type String: CollectionAction's actions
+            // map, solr-bugs-reindex-cleanup SGF, whose every path read a
+            // VString cell as a VRef and contradicted itself).  A String's
+            // reference is its string_ref: never null, one per String.
+            String string = "(valueString " + value.text + ")";
+            host.require("(or ((_ is VRef) " + value.text + ") ((_ is VString) "
+                    + value.text + "))");
+            host.require("(=> ((_ is VString) " + value.text + ") "
+                    + stringRefFacts(string) + ")");
+            return new Term("(ite ((_ is VRef) " + value.text + ") (valueRef "
+                    + value.text + ") " + stringRef(string) + ")", Sort.REF);
+        }
         if (cellSort == Sort.STRING) {
             // A String a container answers may be null (a value stored
             // null): the cell is a String or the null cell, and says which.
@@ -295,9 +336,6 @@ public final class ContainerStateModel {
         }
         if (cellSort == Sort.BOOL) {
             return new Term("(valueBool " + value.text + ")", Sort.BOOL);
-        }
-        if (cellSort == Sort.REF) {
-            return new Term("(valueRef " + value.text + ")", Sort.REF);
         }
         if (cellSort == Sort.FLOAT32) {
             return new Term("(valueFloat " + value.text + ")", Sort.FLOAT32);

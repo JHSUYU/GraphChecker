@@ -3614,7 +3614,13 @@ public final class SmtLowering {
                 Term value = dispatch(expression, JavaSmtSorts.sortOfJava(
                         javaType).containerState() ? Sort.REF : null,
                         origin + ":container-value");
-                String boxed = boxed(value, javaType);
+                // A reference read out of a cell boxes back to that cell: a
+                // String's reference (ContainerStateModel#unboxValue) is the
+                // String it was stored as, an enum's the name the VM stored
+                // (commandMap.get(action) after actions.get(op), whose keys
+                // are the names).
+                String cell = cellOf.get(value.text);
+                String boxed = cell != null ? cell : boxed(value, javaType);
                 if (boxed.isEmpty()) {
                     // Name both the declared type and the lowered shape.
                     refuse(CUT + ":CannotBox:" + javaType,
@@ -3632,9 +3638,16 @@ public final class SmtLowering {
             @Override
             public ContainerSmtCodec.Term unbox(
                     ContainerSmtCodec.Term value, String javaType) {
-                return name(ContainerStateModel.unboxValue(value, javaType,
-                        VmTermLowering.unboxedCellSort(
-                                JavaSmtSorts.sortOfJava(javaType)), this));
+                ContainerSmtCodec.Term unboxed = name(
+                        ContainerStateModel.unboxValue(value, javaType,
+                                VmTermLowering.unboxedCellSort(
+                                        JavaSmtSorts.sortOfJava(javaType)),
+                                this));
+                if (unboxed != null && value != null
+                        && unboxed.sort == ContainerSmtCodec.Sort.REF) {
+                    cellOf.put(unboxed.text, value.text);
+                }
+                return unboxed;
             }
 
             @Override
@@ -3732,6 +3745,9 @@ public final class SmtLowering {
             default: return "";
         }
     }
+
+    /** A reference unboxed from a cell -> that cell ({@code box}). */
+    private final Map<String, String> cellOf = new HashMap<String, String>();
 
     /** One container subterm, lowered once and referenced by name. */
     private static final class SharedTerm {
@@ -4748,6 +4764,31 @@ public final class SmtLowering {
             return result("!=".equals(operator)
                     ? "(not " + string.stringNullness + ")"
                     : string.stringNullness, Sort.BOOL, left, right);
+        }
+        if (equality && (left.sort == Sort.REF && right.sort == Sort.STRING
+                || left.sort == Sort.STRING && right.sort == Sort.REF)
+                && !left.isNullReference() && !right.isNullReference()) {
+            // A String met where a reference is compared: an enum constant,
+            // which the VM states by its name (action ==
+            // CollectionAction.REINDEXCOLLECTION against a map's answer).
+            // Its reference is its string_ref, as a String cell's is
+            // (ContainerStateModel#unboxValue); a String that may be null
+            // has none.
+            Term string = left.sort == Sort.STRING ? left : right;
+            if (!"false".equals(string.stringNullness)) {
+                return refuse(Reason.BINARY_SORT_CONFLICT, origin,
+                        operator + ":REF!=STRING (a String that may be null)",
+                        Sort.BOOL);
+            }
+            sideCondition(ContainerStateModel.stringRefFacts(string.text));
+            Term ref = Term.of(ContainerStateModel.stringRef(string.text),
+                    Sort.REF);
+            if (left == string) {
+                left = ref;
+            } else {
+                right = ref;
+            }
+            return equality(expression, operator, left, right, origin);
         }
         if (left.sort != right.sort && equality
                 && (left.isNullReference() || right.isNullReference())) {
