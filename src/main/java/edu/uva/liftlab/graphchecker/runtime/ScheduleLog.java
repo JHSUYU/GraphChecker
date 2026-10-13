@@ -529,13 +529,13 @@ public final class ScheduleLog {
      * A PUBLISH whose apply runs on its node's publisher, its turn due: the
      * turn is taken once the publication is in force ({@link
      * #publicationInForce}), so nothing the order lets go after it reads
-     * past it (review S1) -- unless the apply waits on something rather
-     * than computes while it stands at the frontier, past {@link
-     * #PUBLISH_GRACE_MS}: the system's own locks it takes (Solr's
-     * collection refresh lock, the reader's update lock) may be held by a
-     * thread the order holds behind it (a forced refresh's READ behind the
-     * WRITE behind this slot), so the watchdog takes the turn on its behalf,
-     * named, and the order moves (review R2; {@link #inFlightLocked}).
+     * past it (review S1) -- unless the apply waits, past {@link
+     * #PUBLISH_GRACE_MS} at the frontier, on a lock whose owner the order
+     * holds: the system's own locks it takes (Solr's collection refresh
+     * lock, the reader's update lock) may be held by a thread waiting for
+     * its turn behind this slot (a forced refresh's READ behind the WRITE
+     * behind it), so the watchdog takes the turn on its behalf, named, and
+     * the order moves (review R2, R2a; {@link #inFlightLocked}).
      */
     static final class Publication {
         private final Pending event;
@@ -615,14 +615,19 @@ public final class ScheduleLog {
      * The watchdog's first look ({@link #watchdogLocked}): a PUBLISH's apply
      * in flight at the frontier.  Its publisher is an engine thread, whose
      * CPU no look counts, so it is looked at here: computing, it holds the
-     * order as any owner of the frontier at work does (true: nothing else is
-     * done), up to {@link #CEILING} timeouts; waiting on something past
-     * {@link #PUBLISH_GRACE_MS} -- under half its time on CPU or in the
-     * collectors since the last look -- its turn is taken for it, the event
-     * written now and named, and the publication lands when its apply ends
-     * (review R2).  What the watchdog answers then (true: it settled the
-     * turn; false: nothing yet), or null where no apply stands there, or
-     * past the ceiling, and the watchdog looks on as for any frontier.
+     * order as any owner of the frontier at work does (false: nothing else
+     * is done), up to {@link #CEILING} timeouts.  Waiting past {@link
+     * #PUBLISH_GRACE_MS} -- under half its time on CPU or in the collectors
+     * since the last look -- on a lock whose owner, or that owner's own
+     * lock's, waits for a turn ({@link #heldByTheOrderLocked}): a cycle
+     * through the order, so its turn is taken for it, the event written now
+     * and named, and the publication lands when its apply ends (true;
+     * review R2).  Waiting on anything else -- a lock a thread the order
+     * does not hold owns (a VM-slow thread, a callback decoding the next
+     * version), a wait no owner states -- it is as computing: taken early,
+     * what comes after it would read the version before it (review R2a).
+     * Null where no apply stands there, or past the ceiling, and the
+     * watchdog looks on as for any frontier.
      */
     private static Boolean inFlightLocked(long now) {
         Publication applying = IN_FLIGHT.get(firstBlocking);
@@ -637,7 +642,9 @@ public final class ScheduleLog {
             applying.lookedAt = now;
             applying.cpuLooked = cpu;
             applying.collectedLooked = collected;
-            if (2L * busy < span) {
+            String cycle = 2L * busy < span
+                    ? heldByTheOrderLocked(applying.publisher) : null;
+            if (cycle != null) {
                 applying.taken = true;
                 IN_FLIGHT.remove(applying.slot);
                 takeLocked(applying.slot);
@@ -645,12 +652,10 @@ public final class ScheduleLog {
                 stateLocked("schedule-publish-blocked#" + applying.slot,
                         applying.event.render() + " at slot " + applying.slot
                                 + ": its apply on "
-                                + applying.publisher.getName() + " waited on"
-                                + " something, not computing, " + span
-                                + " ms of the " + (now - applying.began)
-                                + " ms it ran at the frontier (a lock the"
-                                + " system's publication takes may be held by"
-                                + " a thread the order holds behind it): its"
+                                + applying.publisher.getName() + " waited, "
+                                + span + " ms of the " + (now - applying.began)
+                                + " ms it ran at the frontier, on " + cycle
+                                + ", which waits for its turn behind it: its"
                                 + " turn is taken now, and the publication"
                                 + " lands when the apply ends");
                 return Boolean.TRUE;
@@ -659,6 +664,35 @@ public final class ScheduleLog {
         return now - applying.began < CEILING * timeoutMillis()
                 ? Boolean.FALSE : null;
     }
+
+    /**
+     * The lock {@code publisher} waits on as its owner chain names it, when
+     * an owner on that chain -- the lock's, or the lock that owner waits
+     * on's, a few hops -- is a thread waiting for its turn ({@link
+     * #WAITERS}); else null: no lock with an owner, or an owner the order
+     * does not hold.
+     */
+    private static String heldByTheOrderLocked(Thread publisher) {
+        Set<Long> waiting = new HashSet<Long>();
+        for (Thread thread : WAITERS.keySet()) waiting.add(thread.getId());
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        StringBuilder chain = new StringBuilder();
+        Set<Long> seen = new HashSet<Long>();
+        long id = publisher.getId();
+        for (int hop = 0; hop < OWNER_HOPS && seen.add(id); hop++) {
+            ThreadInfo info = threads.getThreadInfo(id);
+            if (info == null || info.getLockOwnerId() < 0L) return null;
+            chain.append(chain.length() == 0 ? "" : ", which waits on ")
+                    .append(info.getLockName()).append(" held by \"")
+                    .append(info.getLockOwnerName()).append('"');
+            id = info.getLockOwnerId();
+            if (waiting.contains(id)) return chain.toString();
+        }
+        return null;
+    }
+
+    /** How far {@link #heldByTheOrderLocked} follows lock owners. */
+    private static final int OWNER_HOPS = 8;
 
     /** A thread's CPU time in ns, or -1 where the JVM states none. */
     private static long cpuOf(Thread thread) {

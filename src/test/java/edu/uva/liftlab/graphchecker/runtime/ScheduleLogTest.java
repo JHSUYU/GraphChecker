@@ -803,11 +803,12 @@ public class ScheduleLogTest {
      * waiting at a store turn).  Its turn is taken for it a grace in, named,
      * so the thread goes, its lock is released and the publication lands --
      * not after the order's timeout, a misread then.  An apply that
-     * computes holds its turn until it is in force: what comes after it
-     * sees it.
+     * computes, or waits past the grace on a lock a thread the order does
+     * not hold owns (review R2a), holds its turn until it is in force: what
+     * comes after it sees it.
      */
-    @Test(timeout = 30000L)
-    public void anApplyWaitingOnTheOrderGivesItsTurnAndOneComputingKeepsIt()
+    @Test(timeout = 40000L)
+    public void anApplyGivesItsTurnOnlyWhenTheOrderHoldsWhatItWaitsOn()
             throws Exception {
         String viewNode = "auto0/node0#epoch0";
         LocationId view = view(viewNode, "/c.json");
@@ -873,6 +874,44 @@ public class ScheduleLogTest {
         assertFalse(after.isAlive());
         assertTrue("what comes after a computing apply sees it",
                 sawApplied[0]);
+
+        // A free thread -- no turn awaited -- holds the apply's lock 1.5 s.
+        restart();
+        Confirmation.resetForTests();
+        applied.clear();
+        enforce(order, Collections.<ScheduleEvent>emptyList());
+        Object busy = new Object();
+        CountDownLatch held = new CountDownLatch(1);
+        Thread free = new Thread(() -> {
+            synchronized (busy) {
+                held.countDown();
+                try {
+                    Thread.sleep(1500L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        free.start();
+        held.await();
+        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
+                () -> {
+                    synchronized (busy) {
+                        applied.add("v8");
+                    }
+                }, v8));
+        sawApplied[0] = false;
+        Thread next = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawApplied[0] = !applied.isEmpty();
+        });
+        next.start();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        next.join(10000L);
+        assertFalse(next.isAlive());
+        assertTrue("a lock no turn holds is waited out: what comes after"
+                + " sees the publication", sawApplied[0]);
+        assertEquals(Arrays.asList("before", v8, "after"), sites());
     }
 
     /** Asserts {@code event} returns without a stall. */
