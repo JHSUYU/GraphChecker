@@ -1018,7 +1018,8 @@ conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. 
 when the query declares it, a `let` binds it, the fixed preamble states it, or it is a theory
 operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads with, which lists every
 operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
-`str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them, the
+`str.from_code`, `str.to_code`, `str.in_re`, `re.*`, `re.range` of `String.trim`, `re.union` and `re.++`
+of `equalsIgnoreCase` against a literal among them, the
 preamble's `java_ascii_lower`/`java_ascii_upper` of `String.toLowerCase`/`toUpperCase` (VM.md, String row),
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. The preamble states z3's alphabet as

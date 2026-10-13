@@ -196,6 +196,9 @@ Merged 2026-10-12/13 (lead; through `solr-int`, each merge gated; the owner's or
 - `solr-solve`: the solve's two lanes, a busy solver's question withdrawn after 30 s; host solvers start at 2 GB and
   double on exit 3; one-question and retry JVMs charged their footprint.
 - `solr-str`: String.toLowerCase/toUpperCase lowered exactly over ASCII.
+- `solr-str2`: every String arity the VM emits with an exact SMT-LIB form z3 decides: `startsWith(p, off)` (39's
+  59 refused paths), `indexOf`/`lastIndexOf` with a from index and code points, `regionMatches`, `compareTo`,
+  `subSequence`, `equalsIgnoreCase` with a literal side; the rest refused by name (VM.md, String row).
 - Lead: an engine JVM is charged its footprint H + H/16 + 384 MB; a stream replay its typical peak (p90 x 1.25 after
   eight); `launch-round.sh` passes CASE_TIMEOUT_SECONDS, PRUNE and CAUSYNTH_CAMPAIGN_STOP_AFTER to the heads.
 

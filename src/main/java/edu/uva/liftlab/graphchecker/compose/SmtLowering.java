@@ -49,6 +49,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -5080,6 +5081,7 @@ public final class SmtLowering {
                         : codecGap(operation, "NON_BOOLEAN_RENDERING", origin,
                         Sort.BOOL);
             }
+            return equalsIgnoreCase(params, negated, origin);
         }
         if ("isEmpty".equals(operation)) {
             StringParameters strings = stringParameters(params, 1,
@@ -5104,15 +5106,23 @@ public final class SmtLowering {
             return length;
         }
         if ("charAt".equals(operation) || "indexOf".equals(operation)
-                || "lastIndexOf".equals(operation)) {
+                || "lastIndexOf".equals(operation)
+                || "compareTo".equals(operation)) {
             if (negated) {
                 return codecGap(operation, "NEGATED_VALUE_OPERATION", origin,
                         Sort.INT);
             }
-            return stringPosition(operation, params, origin);
+            return "compareTo".equals(operation) ? compareTo(params, origin)
+                    : stringPosition(operation, params, origin);
         }
         if ("equals".equals(operation)) {
             return stringEquals(params, negated, origin);
+        }
+        if ("startsWith".equals(operation) && params.size() == 3) {
+            return startsWithAt(params, negated, origin);
+        }
+        if ("regionMatches".equals(operation)) {
+            return regionMatches(params, negated, origin);
         }
         if ("contains".equals(operation) || "startsWith".equals(operation)
                 || "endsWith".equals(operation)) {
@@ -5150,7 +5160,8 @@ public final class SmtLowering {
             return Term.nonNullString(result.append(')').toString(),
                     strings.defined);
         }
-        if ("substring".equals(operation)) {
+        if ("substring".equals(operation)
+                || "subSequence".equals(operation)) {
             return substring(params, origin);
         }
         if ("toUpperCase".equals(operation)
@@ -5310,8 +5321,93 @@ public final class SmtLowering {
                         + " (re.* (re.range \"\\u{0}\" \"\\u{7f}\")))")));
     }
 
-    /** String.substring(b) and (b, e), defined where Java does not throw:
-     *  0 <= b <= e <= length. */
+    /**
+     * s.equalsIgnoreCase(t) where one side is a literal L: false for a null
+     * t, else whether the other side is, char by char, one Java takes for
+     * L's ({@link #ignoringCase}) -- a regular membership z3 decides.  With
+     * no literal side it is a named gap: both sides symbolic need a
+     * per-char case relation no term without recursion states.
+     */
+    private Term equalsIgnoreCase(JsonArray params, boolean negated,
+                                  String origin) {
+        String operation = "equalsIgnoreCase";
+        if (params.size() != 2) {
+            return codecGap(operation, "ARITY", origin, Sort.BOOL);
+        }
+        Term receiver = dispatch(params.get(0), null,
+                origin + ":" + operation + ":parameter0");
+        Term argument = dispatch(params.get(1), null,
+                origin + ":" + operation + ":parameter1");
+        if (receiver.sort != Sort.STRING) {
+            return codecGap(operation, "NON_STRING_PARAMETER", origin,
+                    Sort.BOOL);
+        }
+        if (nullnessUnknown(Collections.singletonList(receiver))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    operation + ":0", Sort.BOOL);
+        }
+        String defined = stringDefinedness(Collections.singletonList(
+                receiver), Collections.singletonList(argument));
+        if (argument.isNullReference()) {
+            return booleanStringResult("false", negated, defined);
+        }
+        if (argument.sort != Sort.STRING) {
+            return codecGap(operation, "ARGUMENT_DYNAMIC_TYPE_UNMODELED",
+                    origin, Sort.BOOL);
+        }
+        if (argument.stringNullness.isEmpty()) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    operation + ":1", Sort.BOOL);
+        }
+        String literal = StringIdentities.stringLiteral(params.get(1));
+        String other = receiver.text;
+        if (literal == null) {
+            literal = StringIdentities.stringLiteral(params.get(0));
+            other = argument.text;
+        }
+        if (literal == null) {
+            return codecGap(operation, "NO_LITERAL_SIDE", origin, Sort.BOOL);
+        }
+        List<String> chars = new ArrayList<String>();
+        for (char one : literal.toCharArray()) chars.add(ignoringCase(one));
+        String pattern = chars.isEmpty() ? "(str.to_re \"\")"
+                : chars.size() == 1 ? chars.get(0)
+                : "(re.++ " + String.join(" ", chars) + ")";
+        return booleanStringResult(and(Arrays.asList(stringNonNull(argument),
+                "(str.in_re " + other + " " + pattern + ")")), negated,
+                defined);
+    }
+
+    /**
+     * Every char String.regionMatches(true, ..) takes for this one -- the
+     * same char, the same upper case, or the same lower case of the upper
+     * case -- as a regular expression over z3's alphabet, Java's chars.
+     * The case tables are this JVM's, Java 8's as the VM's are: "i" takes
+     * U+0130 and U+0131, "k" the Kelvin sign U+212A, "s" the long s U+017F.
+     */
+    private static String ignoringCase(char one) {
+        return IGNORING_CASE.computeIfAbsent(one, key -> {
+            char upper = Character.toUpperCase(one);
+            char lower = Character.toLowerCase(upper);
+            List<String> taken = new ArrayList<String>();
+            for (int code = 0; code <= Character.MAX_VALUE; code++) {
+                char other = Character.toUpperCase((char) code);
+                if (code == one || other == upper
+                        || Character.toLowerCase(other) == lower) {
+                    taken.add("(str.to_re \"\\u{"
+                            + Integer.toHexString(code) + "}\")");
+                }
+            }
+            return taken.size() == 1 ? taken.get(0)
+                    : "(re.union " + String.join(" ", taken) + ")";
+        });
+    }
+
+    private static final Map<Character, String> IGNORING_CASE =
+            new ConcurrentHashMap<Character, String>();
+
+    /** String.substring(b), substring(b, e) and subSequence(b, e), defined
+     *  where Java does not throw: 0 <= b <= e <= length. */
     private Term substring(JsonArray params, String origin) {
         if (params.size() != 2 && params.size() != 3) {
             return codecGap("substring", "ARITY", origin, Sort.STRING);
@@ -5420,23 +5516,29 @@ public final class SmtLowering {
     }
 
     /**
-     * charAt(i), indexOf(x) and lastIndexOf(x), x a char or a String, as
-     * Java answers them.  z3 has no last index: it is a fresh k that only
-     * the last occurrence satisfies -- x at k and none after it, -1 and none
-     * at all, or the length for an empty x.
+     * charAt(i); indexOf(x) and indexOf(x, from); lastIndexOf(x) and
+     * lastIndexOf(x, from) -- x a String or a code point -- as Java answers
+     * them.  indexOf searches from max(from, 0), and past the end finds
+     * only an empty x, at the length.  lastIndexOf finds the last x that
+     * starts at most min(from, length - |x|) (from absent: the length), and
+     * none for a negative from.  A code point is its UTF-16 text
+     * ({@link #codePoint}); an invalid one is found nowhere.
      */
     private Term stringPosition(String operation, JsonArray params,
                                 String origin) {
-        if (params.size() != 2) {
+        boolean charAt = "charAt".equals(operation);
+        if (params.size() != 2 && (charAt || params.size() != 3)) {
             return codecGap(operation, "ARITY", origin, Sort.INT);
         }
         Term receiver = dispatch(params.get(0), null,
                 origin + ":" + operation + ":receiver");
         Term argument = dispatch(params.get(1), null,
                 origin + ":" + operation + ":argument");
+        Term from = params.size() == 3 ? dispatch(params.get(2), Sort.INT,
+                origin + ":" + operation + ":from") : null;
         if (receiver.sort != Sort.STRING || (argument.sort != Sort.INT
-                && ("charAt".equals(operation)
-                || argument.sort != Sort.STRING))) {
+                && (charAt || argument.sort != Sort.STRING))
+                || from != null && from.sort != Sort.INT) {
             return codecGap(operation, "PARAMETER_SORT", origin, Sort.INT);
         }
         if (nullnessUnknown(Arrays.asList(receiver, argument))) {
@@ -5445,7 +5547,7 @@ public final class SmtLowering {
         }
         String text = receiver.text;
         String length = "(str.len " + text + ")";
-        if ("charAt".equals(operation)) {
+        if (charAt) {
             String index = argument.text;
             // A char wherever it is defined: z3's alphabet is Java's
             // (VmTermLowering#JAVA_CHARS).
@@ -5458,30 +5560,128 @@ public final class SmtLowering {
                             "(< " + index + " " + length + ")")));
         }
         boolean character = argument.sort == Sort.INT;
-        String needle = character ? "(str.from_code " + argument.text + ")"
-                : argument.text;
-        String defined = character
-                ? stringDefinedness(Collections.singletonList(receiver),
-                        Collections.singletonList(argument))
-                : stringDefinedness(Arrays.asList(receiver, argument),
-                        Collections.<Term>emptyList());
-        if ("indexOf".equals(operation)) {
-            return definedResult("(str.indexof " + text + " " + needle
-                    + " 0)", Sort.INT, IntegralWidth.JAVA_INT, defined);
-        }
+        String needle = character ? codePoint(argument.text) : argument.text;
+        List<Term> evaluated = new ArrayList<Term>();
+        if (character) evaluated.add(argument);
+        if (from != null) evaluated.add(from);
+        String defined = stringDefinedness(character
+                ? Collections.singletonList(receiver)
+                : Arrays.asList(receiver, argument), evaluated);
+        String found = "indexOf".equals(operation)
+                ? firstIndex(text, needle, from)
+                : lastIndex(text, needle, from);
+        String valid = character ? validCodePoint(argument.text) : "true";
+        return definedResult("true".equals(valid) ? found
+                        : "(ite " + valid + " " + found + " (- 1))", Sort.INT,
+                IntegralWidth.JAVA_INT, defined);
+    }
+
+    /** Java's String.indexOf(x, from): from below 0 searches from 0, past
+     *  the length finds an empty x at the length and else nothing. */
+    private static String firstIndex(String text, String needle, Term from) {
+        if (from == null) return "(str.indexof " + text + " " + needle + " 0)";
+        String length = "(str.len " + text + ")";
+        return "(ite (< " + length + " " + from.text + ") (ite (= " + needle
+                + " \"\") " + length + " (- 1)) (str.indexof " + text + " "
+                + needle + " (ite (< " + from.text + " 0) 0 " + from.text
+                + ")))";
+    }
+
+    /**
+     * Java's String.lastIndexOf(x, from), from absent the length: z3 has no
+     * last index, so it is a fresh k only the answer satisfies -- -1 for a
+     * negative from; the start bound min(from, length - |x|) for an empty x;
+     * -1 where no x starts in 0 .. that bound; else the x starting there
+     * with none after it up to the bound.
+     */
+    private String lastIndex(String text, String needle, Term from) {
         String last = symbols.mint("last_index_of__",
                 scope + "#" + lastIndexes++, 10);
         declare(last, Sort.INT);
-        sideCondition("(or (and (= " + needle + " \"\") (= " + last + " "
-                + length + ")) (and (not (= " + needle + " \"\")) (= "
-                + last + " (- 1)) (not (str.contains " + text + " " + needle
-                + "))) (and (not (= " + needle + " \"\")) (<= 0 " + last
-                + ") (= (str.substr " + text + " " + last + " (str.len "
-                + needle + ")) " + needle + ") (not (str.contains (str.substr "
-                + text + " (+ " + last + " 1) " + length + ") " + needle
-                + "))))");
-        return definedResult(last, Sort.INT, IntegralWidth.JAVA_INT, defined);
+        String size = "(str.len " + needle + ")";
+        String right = "(- (str.len " + text + ") " + size + ")";
+        String bound = from == null ? right : "(ite (< " + from.text + " "
+                + right + ") " + from.text + " " + right + ")";
+        String reached = from == null ? "true" : "(<= 0 " + from.text + ")";
+        sideCondition(or(Arrays.asList(
+                from == null ? "false" : "(and (< " + from.text + " 0) (= "
+                        + last + " (- 1)))",
+                and(Arrays.asList(reached, "(= " + size + " 0)", "(= " + last
+                        + " " + bound + ")")),
+                and(Arrays.asList(reached, "(< 0 " + size + ")", "(= " + last
+                        + " (- 1))", "(or (< " + bound + " 0) (not "
+                        + "(str.contains (str.substr " + text + " 0 (+ "
+                        + bound + " " + size + ")) " + needle + ")))")),
+                and(Arrays.asList(reached, "(< 0 " + size + ")", "(<= 0 "
+                        + last + ")", "(<= " + last + " " + bound + ")",
+                        "(= (str.substr " + text + " " + last + " " + size
+                                + ") " + needle + ")",
+                        "(not (str.contains (str.substr " + text + " (+ "
+                                + last + " 1) (- (+ " + bound + " " + size
+                                + ") (+ " + last + " 1))) " + needle
+                                + "))")))));
+        return last;
     }
+
+    /**
+     * Code point c's UTF-16 text, as Java's indexOf(int)/lastIndexOf(int)
+     * search for it: one char below U+10000, else its surrogate pair
+     * (Character.highSurrogate/lowSurrogate).  Where c is no code point
+     * the text is no matter: {@link #validCodePoint} answers -1 there.
+     */
+    private static String codePoint(String c) {
+        if (c.matches("[0-9]+") && Long.parseLong(c) < 65536L) {
+            return "(str.from_code " + c + ")";
+        }
+        String offset = "(- " + c + " 65536)";
+        return "(ite (< " + c + " 65536) (str.from_code " + c + ") (str.++ "
+                + "(str.from_code (+ 55296 (div " + offset + " 1024))) "
+                + "(str.from_code (+ 56320 (mod " + offset + " 1024)))))";
+    }
+
+    /** Whether c is a code point, 0 .. U+10FFFF: Java finds no other. */
+    private static String validCodePoint(String c) {
+        if (c.matches("[0-9]+")) {
+            return Long.parseLong(c) <= 1114111L ? "true" : "false";
+        }
+        return VmTermLowering.integralRange("0", c, "1114111");
+    }
+
+    /**
+     * s.compareTo(t), as Java answers it: at the first index k where the
+     * two differ, the difference of their chars there; where none differs
+     * within the shorter, the difference of their lengths.  z3 has no
+     * first difference: it is a fresh k only that index (or the shorter
+     * length) satisfies.
+     */
+    private Term compareTo(JsonArray params, String origin) {
+        StringParameters strings = stringParameters(params, 2, "compareTo",
+                origin, Sort.INT);
+        if (strings.terms == null) return strings.refusal;
+        String one = strings.terms.get(0).text;
+        String other = strings.terms.get(1).text;
+        String oneLength = "(str.len " + one + ")";
+        String otherLength = "(str.len " + other + ")";
+        String shorter = "(ite (<= " + oneLength + " " + otherLength + ") "
+                + oneLength + " " + otherLength + ")";
+        String at = symbols.mint("compare_at__", scope + "#" + comparisons++,
+                10);
+        declare(at, Sort.INT);
+        String oneChar = "(str.at " + one + " " + at + ")";
+        String otherChar = "(str.at " + other + " " + at + ")";
+        sideCondition(and(Arrays.asList("(<= 0 " + at + ")", "(<= " + at
+                        + " " + shorter + ")", "(= (str.substr " + one + " 0 " + at
+                        + ") (str.substr " + other + " 0 " + at + "))",
+                "(or (= " + at + " " + shorter + ") (not (= " + oneChar + " "
+                        + otherChar + ")))")));
+        return definedResult("(ite (= " + at + " " + shorter + ") (- "
+                        + oneLength + " " + otherLength + ") (- (str.to_code "
+                        + oneChar + ") (str.to_code " + otherChar + ")))",
+                Sort.INT, IntegralWidth.JAVA_INT, strings.defined);
+    }
+
+    /** How many first differences this lowering has named. */
+    private int comparisons;
 
     /** How many last indexes this lowering has named. */
     private int lastIndexes;
@@ -5540,6 +5740,84 @@ public final class SmtLowering {
         return booleanStringResult(predicate, negated, stringDefinedness(
                 Collections.singletonList(receiver),
                 Collections.singletonList(argument)));
+    }
+
+    /**
+     * s.startsWith(p, off), as Java answers it: false for an offset below 0
+     * or past length - |p|, else whether p stands at off -- an empty p at
+     * every offset 0 .. length.
+     */
+    private Term startsWithAt(JsonArray params, boolean negated,
+                              String origin) {
+        JsonArray strings = new JsonArray();
+        strings.add(params.get(0));
+        strings.add(params.get(1));
+        StringParameters both = stringParameters(strings, 2, "startsWith",
+                origin, Sort.BOOL);
+        if (both.terms == null) return both.refusal;
+        Term offset = dispatch(params.get(2), Sort.INT,
+                origin + ":startsWith:offset");
+        if (offset.sort != Sort.INT) {
+            return codecGap("startsWith", "NON_INT_PARAMETER", origin,
+                    Sort.BOOL);
+        }
+        String text = both.terms.get(0).text;
+        String length = "(str.len " + text + ")";
+        String at = offset.text;
+        return booleanStringResult(and(Arrays.asList("(<= 0 " + at + ")",
+                "(<= " + at + " " + length + ")", "(str.prefixof "
+                        + both.terms.get(1).text + " (str.substr " + text + " "
+                        + at + " (- " + length + " " + at + ")))")), negated,
+                and(Arrays.asList(both.defined, offset.precondition)));
+    }
+
+    /**
+     * s.regionMatches(to, t, oo, n), and the ignoreCase form whose flag is
+     * the constant false, as Java answers it: false for a negative offset or
+     * a region of n chars past either end, else whether the n chars at to
+     * and at oo are the same (none, n <= 0, always are).  A flag that may be
+     * true compares by Unicode's case tables: a named gap.
+     */
+    private Term regionMatches(JsonArray params, boolean negated,
+                               String origin) {
+        String operation = "regionMatches";
+        int first = params.size() - 4;
+        if (first != 1 && first != 2) {
+            return codecGap(operation, "ARITY", origin, Sort.BOOL);
+        }
+        if (first == 2 && !"false".equals(dispatch(params.get(1), null,
+                origin + ":" + operation + ":ignoreCase").text)) {
+            return codecGap(operation, "IGNORE_CASE", origin, Sort.BOOL);
+        }
+        JsonArray strings = new JsonArray();
+        strings.add(params.get(0));
+        strings.add(params.get(first + 1));
+        StringParameters both = stringParameters(strings, 2, operation,
+                origin, Sort.BOOL);
+        if (both.terms == null) return both.refusal;
+        List<Term> ints = new ArrayList<Term>();
+        for (int index : new int[] {first, first + 2, first + 3}) {
+            Term value = dispatch(params.get(index), Sort.INT,
+                    origin + ":" + operation + ":parameter" + index);
+            if (value.sort != Sort.INT) {
+                return codecGap(operation, "NON_INT_PARAMETER", origin,
+                        Sort.BOOL);
+            }
+            ints.add(value);
+        }
+        String one = both.terms.get(0).text;
+        String other = both.terms.get(1).text;
+        String at = ints.get(0).text;
+        String otherAt = ints.get(1).text;
+        String count = ints.get(2).text;
+        return booleanStringResult(and(Arrays.asList("(<= 0 " + at + ")",
+                "(<= 0 " + otherAt + ")", "(<= " + at + " (- (str.len " + one
+                        + ") " + count + "))", "(<= " + otherAt
+                        + " (- (str.len " + other + ") " + count + "))",
+                "(or (<= " + count + " 0) (= (str.substr " + one + " " + at
+                        + " " + count + ") (str.substr " + other + " "
+                        + otherAt + " " + count + ")))")), negated,
+                stringDefinedness(both.terms, ints));
     }
 
     /**
