@@ -43,8 +43,9 @@ evidence is [../STATUS.md](../STATUS.md) "Solr checks"; the lead's notes, readin
   retries, session alive): one bug, two checks. The rest are decided by SGF under the bound policy.
 - **2026-10-13 morning:** SGF on 12cd346d9 passed 18406, 18413, migrate, restore and tra (native 10/10 each) and exposed
   the defects merged since (TODO Solr §0, "Merged 2026-10-13 morning"); the study runs and reindex were stopped for
-  them. Lock-leak passes by #50's chain on the merged code (LL5: OperationTimeout at the queue tick's makePath, native
-  10/10). The final round is SGF2: `system/solr` + `gc/solr-final7` b707106739 (`/bigtemp/vnr3ne/wt/lucene-solr-final7`,
+  them. Lock-leak passed by #50's chain on the merged code (LL5: OperationTimeout at the queue tick's makePath, native
+  10/10) -- a kind the 3.6.2 client never raises, no kind since `solr-ztimeout`: on `gc/solr-final9` its witness is to
+  be a ConnectionLoss past the retries at `create`'s door (TODO Solr §3a). The final round is SGF2: `system/solr` + `gc/solr-final7` b707106739 (`/bigtemp/vnr3ne/wt/lucene-solr-final7`,
   GC_TREES `/bigtemp/vnr3ne/wt/sg3f-trees`; final5 + three tree patches: the Overseer's state-queue waits,
   snapshot-no-active's search loop, the session expirer) + `/bigtemp/vnr3ne/vm-force8/j2sdk-image`, all 20 cases;
   snapshot-no-active on `gc/solr-final8` 7845c97bb1 (final7 + its workload order, GC_TREES `sg3g-trees`), the fork's tree.

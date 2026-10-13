@@ -537,17 +537,22 @@ Moved out of the library, the door would leave every other call of its method do
 other method of the hook method's class family (its nested classes and lambdas included) that calls
 the door method itself -- through a subclass's reference too -- it is woven at each first call of
 the hook it reaches by control flow, forward for a door after its hook, backward for one before it
-(`DoorWeave#moved`, `LibraryCatalog.Door#relocated`):
-Solr's `SolrZkClient#makePath` creates each node itself, its retry lambda included, and without it
-solr-bugs-overseer-lock-leak's `OperationTimeout` at `DistributedMap#put` could not be flipped. A door
+(`DoorWeave#moved`, `LibraryCatalog.Door#relocated`): a system method making the door call itself
+(Solr's `SolrZkClient#makePath` did, before it made each node by `create`) would carry none. A door
 method that calls the hook method itself (Solr's HTTP/2 request parsing its response) carries the door
 in every call of it, so none is moved. A direct call that reaches no hook call or several, or is made
 outside the hook's class family, carries no door and is named, DIAGNOSTIC `DOOR_UNPLACED` in the
 catalog gaps: `SolrZkClient#create`'s own retry lambda is one, covered by the door after the hook call
-`create` makes once the retry returns. So a fault injected in `create` is not retried, while one in
-`makePath`'s retry lambda is, as `ZkCmdExecutor` retries a real `ConnectionLoss`; the retry's second
-store bracket is a write the recording did not make, which waits for the next write at its location
-at most a stall (IDENTITY §8). The library door is not kept for these calls instead: it is woven
+`create` makes once the retry returns. So every Solr ZooKeeper door stands at the retry boundary,
+outside `ZkCmdExecutor#retryOperation`: a planted `ConnectionLoss` escapes past the retries, as a
+flapping connection's does with the session alive -- decided once, one root per call, with no backoff
+run and no attempt the recording lacks. `makePath` makes each of its nodes by `create` (the tree's
+`makepath-create-tree.patch`): its hooks sat in its retry lambda, where a planted `ConnectionLoss` was
+retried and met `NodeExists`. The transient world -- one `ConnectionLoss` retried, then `NodeExists` --
+is planted nowhere (TODO: a general in-retry door). `OperationTimeoutException` is no ZooKeeper kind:
+the 3.6.2 client never raises it (only `KeeperException`'s own classes name it), and `RequestTimeout`
+only with `zookeeper.request.timeout` > 0, which Solr does not set. The library door is not kept for
+these calls instead: it is woven
 inside the door method, where it would fire for the hook method's call too, before the hook, and
 break the pairing the hook keeps.
 Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`

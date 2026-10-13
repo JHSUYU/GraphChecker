@@ -54,7 +54,8 @@ case "${1:?usage: case.sh <bug>}" in
     ;;
   # Bug study #50: the Overseer takes a collection's lock for a task, then
   # writes its async id to the running map; only NodeExists or an interrupt
-  # gives the lock back, so a ZooKeeper OperationTimeout there leaks it and
+  # gives the lock back, so a ZooKeeper ConnectionLoss past ZkCmdExecutor's
+  # retries there (a flapping connection, the session alive) leaks it and
   # the task never runs.  The workload turns a collection read-only, turns it
   # back with an asynchronous request, waits a bounded number of status
   # requests, and adds.  The witness: that fault on the running-map write.

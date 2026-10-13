@@ -379,11 +379,10 @@ public final class LibraryCatalog {
      * {@code before} -- the system's own message or store hook, instead of
      * at its library anchor; and, in every other method of {@code method}'s
      * class family, at the call of the hook that a call of the door method
-     * there reaches by control flow, after it or before it (Solr's {@code
-     * SolrZkClient#makePath} creates each node itself, its retry lambda
-     * included; with the door moved out of {@code ZooKeeper#create}, those
-     * creates had none, and solr-bugs-overseer-lock-leak's {@code
-     * OperationTimeout} at {@code DistributedMap#put} could not be flipped).
+     * there reaches by control flow, after it or before it (with the door
+     * moved out of {@code ZooKeeper#create}, a system method making the
+     * call itself would carry none: Solr's {@code SolrZkClient#makePath}
+     * did, before it made each node by {@code create}).
      * A store read's door goes before its hook: a read that fails never
      * reaches the server, so it registers no watch.  It states where the
      * hook sits, nothing else: the door's kinds are the catalog's, and a

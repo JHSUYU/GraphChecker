@@ -164,8 +164,8 @@ public class FaultPropagationTest {
      * also a door at every other direct call of the door method in that
      * class family -- through a subclass's reference, in a retry lambda --
      * after the hook call the door call reaches by control flow, its markers
-     * woven right after that call: makePath's creates
-     * (solr-bugs-overseer-lock-leak's {@code DistributedMap#put}) had none.
+     * woven right after that call: a makePath creating its nodes itself
+     * would have none.
      * A call no hook call follows (create's own retry lambda, whose hook its
      * caller makes) or one outside the family carries none, and is named.
      */
@@ -178,7 +178,7 @@ public class FaultPropagationTest {
         SootClass throwable = library("java.lang.Throwable", object, 0);
         SootClass exception = library("java.lang.Exception", throwable, 0);
         for (String kind : new String[]{"ConnectionLossException",
-                "SessionExpiredException", "OperationTimeoutException"}) {
+                "SessionExpiredException"}) {
             method(library("org.apache.zookeeper.KeeperException$" + kind,
                     exception, 0), "<init>", Collections.<Type>emptyList(),
                     VoidType.v(), 0);
@@ -273,8 +273,7 @@ public class FaultPropagationTest {
             {"the woven markers, the catalog's kinds in order",
                 "[FAULT:ZOOKEEPER:WRITE:KeeperException$ConnectionLoss"
                         + "Exception, FAULT:ZOOKEEPER:WRITE:KeeperException$"
-                        + "SessionExpiredException, FAULT:ZOOKEEPER:WRITE:"
-                        + "KeeperException$OperationTimeoutException]",
+                        + "SessionExpiredException]",
                 after.toString()},
             {"right after the hook call", true, DoorWeave.isWoven(
                 makePath.getActiveBody().getUnits().getSuccOf(hooked))}};

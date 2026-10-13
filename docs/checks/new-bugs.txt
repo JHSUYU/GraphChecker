@@ -300,7 +300,7 @@ GraphChecker 检查：已接纳，尚未建 case
   1. 公开请求（例如异步 MODIFYCOLLECTION(readOnly=false)）已被接收：异步 ID 已预留、任务入队，客户端拿到 HTTP 200。
   2. Overseer 为任务取得集合锁，在 markTaskAsRunning 里 runningTasks.add 之后写 runningMap.put
      -> DistributedMap.put -> SolrZkClient.makePath。
-  3. 这次 ZooKeeper 写最终失败（ConnectionLoss 的终端失败，或 OperationTimeout）：ZkCmdExecutor.retryOperation 只重试
+  3. 这次 ZooKeeper 写最终失败（ConnectionLoss 穿过全部重试：连接断续、会话存活）：ZkCmdExecutor.retryOperation 只重试
      ConnectionLoss；能解锁的异常分支只有 NodeExists / Interrupted。外层 catch(KeeperException) 只记日志并继续循环：
      LockTree 锁和 runningTasks 泄漏；该任务被排除在之后的每次 peek 之外，永远不会运行。
   4. 致命 guard：
@@ -317,11 +317,12 @@ GraphChecker 检查：已接纳，尚未建 case
 
 我们的树（Solr 8.11）中的核对
   OverseerTaskProcessor :301-325 取锁，markTaskAsRunning :480-492；makePath(failOnExists=false, retryOnConnLoss=true) 对
-  重试 create 时的 NodeExists 会吸收成 setData，那不是本 bug；本 bug 需要 OperationTimeoutException 这类会逃出的故障。
-  GraphChecker 的 ZOOKEEPER 门已包含 OperationTimeoutException 这一故障种类。
+  重试 create 时的 NodeExists 会吸收成 setData，那不是本 bug；本 bug 需要穿过全部重试而逃出的 ConnectionLoss。
+  GraphChecker 的 ZOOKEEPER 门都在重试边界之外（makePath 经 create 建每个节点，makepath-create-tree.patch），植入的
+  ConnectionLoss 即穿过重试；OperationTimeout 不是故障种类（3.6.2 客户端从不产生）。
 
 GraphChecker 检查：已接纳，尚未建 case
-  * 预期机制：ZooKeeper 写门上的 FAULT（OperationTimeout）。Solr 轮次再做。
+  * 预期机制：ZooKeeper 写门上的 FAULT（穿过重试的 ConnectionLoss）。Solr 轮次再做。
 
 
 ==========================================================================================
@@ -576,6 +577,7 @@ GraphChecker 检查：已接纳，尚未建 case
   与 09/40 的 lost-watch 候选同一类触发（终端 ConnectionLoss、会话存活）。SGF2 的 witness 用的是 OperationTimeoutException
   （ZkCmdExecutor 不重试它，一次即逃出），但 ZooKeeper 的 Java 客户端与服务端从不产生 OPERATIONTIMEOUT（3.6.2 即 Solr 8.11 所用版本的 jar 与 3.9 源码中只有
   KeeperException 的定义），所以现实性仍以 SC5 证实的 ConnectionLoss 世界为准；两者在 register 之后的链相同。
+  OperationTimeout 自 solr-ztimeout 起不再是故障种类：在 gc/solr-final9 上 38 的 witness 应为 create 边界门上的 ConnectionLoss。
 
 上游 main 中仍在
   apache/solr main（634be2a1c13）ZkController.register:1554 publish(ACTIVE)，catch :1564-1565 unregister；
