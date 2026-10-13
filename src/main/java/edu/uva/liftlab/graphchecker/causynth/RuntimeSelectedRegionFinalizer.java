@@ -114,11 +114,13 @@ public final class RuntimeSelectedRegionFinalizer {
      * version rests on the item's content -- a key the item removed as much
      * as a value it set (solr-bugs-overseer-lock-leak: the async
      * MODIFYCOLLECTION's {@code readOnly=""} removes the property from
-     * state.json v8, so no content leaf of it reaches the reader) -- so it
-     * contributes a value, and the doors of the message that started it are
-     * asked as a value's ({@link RecordedMessages#sendersOf}): the Overseer
-     * queue tick that took in the task, whose markTaskAsRunning ZooKeeper
-     * door decides whether the task's Runner ever offers that item.
+     * state.json v6, so no content leaf of it reaches the reader) -- so it
+     * contributes a value ({@link RecordedMessages#sendersOf}), and the
+     * doors of the message that started it are asked as a value's, where
+     * they read a fault ({@link #admitRelevantRoots}' served loop): the
+     * Overseer queue tick that took in the task, whose markTaskAsRunning
+     * ZooKeeper door decides whether the task's Runner ever offers that
+     * item.
      */
     private static final String STORE_ITEM_PRODUCER_ADMISSION =
             "STORE_ITEM_PRODUCER_V1";

@@ -684,15 +684,17 @@ are counted, never dropped silently: `concreteAnchors` states how many
   is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. A control producer contributes no
   value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
   six hops of request and queue-item doors behind the store writers' items doubled the plan).
-  One door is a value: the SENDER of a message that started an occurrence that wrote a demanded
-  store version (`ClosurePlanner#STORE_ITEM_PRODUCER`; PLAN's `STORE_ITEM_PRODUCER_V1`,
-  `RuntimeSelectedRegionFinalizer#crossStore`, `RecordedMessages#sendersOf`): the writer applied its
-  item, so the version rests on the item's content, a key it removed as much as a value it set, which
-  no content leaf carries to the reader (solr-bugs-overseer-lock-leak: the async MODIFYCOLLECTION's
-  `readOnly=""` removes the property from state.json v8); so the doors of the sender's own message
-  are asked in turn -- the Overseer queue turn that took the task in, whose markTaskAsRunning door
-  decides whether the task's Runner runs -- once: the sender's cells are not demanded, and those
-  doors are control producers.
+  One door is a value: the SENDER of a message that started the writer of a store version a demand
+  read, or of an earlier version of its location that one rests on (`ClosurePlanner#STORE_ITEM_PRODUCER`,
+  `#writer`; PLAN's `STORE_ITEM_PRODUCER_V1`, `RuntimeSelectedRegionFinalizer#crossStore`, every writer
+  up to the version a target read, `RecordedMessages#sendersOf`): the writer applied its item, so the
+  version rests on the item's content, a key it removed as much as a value it set, which no content
+  leaf carries to the reader (solr-bugs-overseer-lock-leak: the async MODIFYCOLLECTION's
+  `readOnly=""` removes the property from state.json v6); so the doors of the message that started
+  the sender are asked in turn -- the Overseer queue turn that took the task in, whose
+  markTaskAsRunning door decides whether the task's Runner runs -- once: the sender's cells are not
+  demanded, and those doors are control producers. A demand reached both as a door and as a sender
+  is the sender (`Demand#absorb`: a connected value reason outranks a door's).
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
