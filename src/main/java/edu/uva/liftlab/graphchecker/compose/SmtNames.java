@@ -60,6 +60,8 @@ public final class SmtNames {
             List<String> lines = new ArrayList<String>(
                     VmTermLowering.preamble());
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
+            lines.add(VmTermLowering.JAVA_ASCII_LOWER);
+            lines.add(VmTermLowering.JAVA_ASCII_UPPER);
             lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
             lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
             for (String line : lines) {
@@ -126,7 +128,8 @@ public final class SmtNames {
                     "IndexedState", "FloatingPoint", "RoundingMode",
                     "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
                     "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
-                    "java_int_to_string", "indexed_state_of",
+                    "java_int_to_string", "java_ascii_lower",
+                    "java_ascii_upper", "indexed_state_of",
                     "assoc_state_of", "indexed_read", "indexed_write",
                     "indexed_append", "indexed_insert", "indexed_remove",
                     "indexed_contains", "indexed_size", "indexed_elements",

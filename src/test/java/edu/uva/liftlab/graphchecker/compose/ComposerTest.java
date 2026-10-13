@@ -71,6 +71,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -7091,6 +7092,54 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * String.toLowerCase/toUpperCase over a String no constant names, per
+     * row against Java's (Locale.ROOT): mixed case, digits and punctuation,
+     * "", each ASCII; a receiver with a non-ASCII character is no world
+     * (Java's mapping there is Unicode's), never a wrong value.
+     */
+    @Test
+    public void aCaseConversionIsJavasOwnOverAscii() {
+        Z3 solver = solver();
+        String[] inputs = {"time", "Routed_Alias-2", "ABC xyz 09 @[`{", "",
+                "\u00e9t\u00e9", "Stra\u00dfe"};
+        for (String input : inputs) {
+            boolean ascii = input.chars().allMatch(c -> c < 128);
+            for (boolean upper : new boolean[] {false, true}) {
+                Map<String, VmTermLowering.Sort> declared =
+                        new LinkedHashMap<String, VmTermLowering.Sort>();
+                declared.put("s", VmTermLowering.Sort.STRING);
+                SmtLowering lowering = new SmtLowering(declared);
+                lowering.begin("t", SmtLowering.NO_JOIN,
+                        ExpressionTable.empty());
+                VmTermLowering.Term converted = lowering.dispatch(vmString(
+                        upper ? "toUpperCase" : "toLowerCase", vmLeaf(
+                                "SymbolExpression", "s", "java/lang/String")),
+                        null, "t");
+                List<String> texts = new ArrayList<String>(lowering.end());
+                assertTrue(lowering.openRefusals().toString(),
+                        lowering.openRefusals().isEmpty());
+                texts.add(converted.text);
+                texts.add(converted.precondition);
+                String query = lowering.body(texts)
+                        + "\n(assert (= s " + VmExpressionIr.quote(input)
+                        + "))\n(assert " + converted.precondition + ")\n";
+                String java = upper ? input.toUpperCase(Locale.ROOT)
+                        : input.toLowerCase(Locale.ROOT);
+                String row = "\"" + input + "\"." + (upper ? "toUpperCase"
+                        : "toLowerCase") + "(Locale.ROOT)";
+                assertEquals(row + " is lowered", ascii ? "sat" : "unsat",
+                        solver.ask(query, Collections.<String>emptyList(),
+                                false).status());
+                if (!ascii) continue;
+                assertEquals(row + " is " + java, "unsat", solver.ask(
+                        query + "(assert (not (= " + converted.text + " "
+                                + VmExpressionIr.quote(java) + ")))\n",
+                        Collections.<String>emptyList(), false).status());
+            }
+        }
+    }
+
     /** The VM's {@code splitElement(s, d, i)} of {@code s.split(d)}. */
     private static JsonObject splitElement(JsonObject receiver,
                                            String delimiter, int index) {
@@ -7133,6 +7182,7 @@ public class ComposerTest {
                 vmString("substring", s, n), vmString("charAt", s, n),
                 vmString("indexOf", s, c), vmString("lastIndexOf", s, s),
                 vmString("toString", c), splitElement(s, ",", 1),
+                vmString("toLowerCase", s), vmString("toUpperCase", s),
                 binary("==", relation("INDEXED", "READ", "I",
                         relation("INDEXED", "INSERT", emptied,
                                 integer("I", 0L), n), integer("I", 0L)),
