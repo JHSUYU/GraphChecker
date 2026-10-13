@@ -62,11 +62,6 @@ public final class MessageDoors {
      *  inside the window or before it ({@link #decode}). */
     private static final Set<String> REPOINTED =
             ConcurrentHashMap.newKeySet();
-    /** The newest version of each location a write filed ({@link
-     *  #filedVersion}), by transport and the location named with its life
-     *  ({@link #life}): how far a refresh can reach ({@link #refreshing}). */
-    private static final Map<String, Long> NEWEST =
-            new ConcurrentHashMap<String, Long>();
     /**
      * The writes to a shared store in flight ({@link #storing}), by
      * transport and token.  Guarded by itself; every {@link #storeEnded}
@@ -98,9 +93,6 @@ public final class MessageDoors {
     private static final class Write {
         private final Thread thread;
         private final String location;
-        /** Whether its version is filed ({@link #filedVersion}): no longer
-         *  one more a refresh can reach.  Guarded by {@link #STORING}. */
-        private boolean filed;
         /** Whether {@link #stored} registered it: past its store's call,
          *  filing ({@link #FILING_WAIT_MS}). */
         private final boolean filing;
@@ -768,7 +760,6 @@ public final class MessageDoors {
         long version = version(key);
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
-        filedVersion(transport, location(key), path, version);
         String node = RuntimeTraceContext.ownedSource(owner).key();
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
                 Identity.currentOccurrence(node));
@@ -782,28 +773,6 @@ public final class MessageDoors {
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
-    }
-
-    /**
-     * This thread's write filed {@code version} of {@code location} ({@code
-     * path}: named with its life): the newest a refresh of that life
-     * reaches, and the writes this thread has in flight there are no longer
-     * one more -- in one step under {@link #STORING}, so no refresh counts
-     * one write as filed and in flight ({@link #refreshing}).
-     */
-    private static void filedVersion(String transport, String location,
-                                     String path, long version) {
-        synchronized (STORING) {
-            NEWEST.merge(transport + "\n" + path, version, Math::max);
-            Map<Long, Write> writes = STORING.get(transport);
-            if (writes == null) return;
-            for (Write write : writes.values()) {
-                if (write.thread == Thread.currentThread()
-                        && write.makes(location)) {
-                    write.filed = true;
-                }
-            }
-        }
     }
 
     /**
@@ -884,12 +853,12 @@ public final class MessageDoors {
         filed(trimmed(transport), trimmed(key));
         String path = life(transport, location(key), version, false);
         LocationId store = storeLocation(transport, path);
-        // The decode re-points its node's view (LocationKind.VIEW) once the
-        // system takes it: a pairing's hold waits here first
-        // (Confirmation#decoding), then the view's write is stated.  A
-        // version its node decoded before -- a watcher's and a fetch's parse
-        // of one version, or one decoded before the window opened --
-        // re-points nothing: one write of a view per version, the first.
+        // The decode re-points its node's view (LocationKind.VIEW): the
+        // view's write is stated here, a pairing's hold deferring only the
+        // system's publication of it (#publishing).  A version its node
+        // decoded before -- a watcher's and a fetch's parse of one version,
+        // or one decoded before the window opened -- re-points nothing: one
+        // write of a view per version, the first.
         String node = nodeHere();
         OccurrenceAddress here = Identity.currentOccurrence(node);
         String decoder = decoderNode(here, node);
@@ -899,11 +868,6 @@ public final class MessageDoors {
         boolean repoints = view != null && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
                         + version);
-        // A system's own refresh reads the store as it stands
-        // (#refreshStarting): no hold waits on it.
-        if (repoints && REFRESHING.get() == 0) {
-            Confirmation.decoding(view, version, here);
-        }
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
         // The decode runs on the fetching thread right after the read: the
@@ -928,48 +892,48 @@ public final class MessageDoors {
     }
 
     /**
-     * A watch's refresh of one node's view of {@code path} begins, before it
-     * takes its own lock (Solr's {@code StatefulCollectionWatch#refreshAndWatch}
-     * and {@code #refreshAndWatchChildren}, which decode under the
-     * collection's refresh lock): a pairing's hold of that view waits here,
-     * as a decode of the newest version the refresh can reach would ({@code
-     * Confirmation#decoding}), so a held refresh never holds a lock the
-     * reader's own work may need.  That is the newest version a write filed
-     * there and one more per write in flight at it (a store's version counts
-     * its writes); a refresh that can reach no version past the paired one
-     * goes on (round Z2O: past every version while a write was in flight, a
-     * collection's creation held its node's watch for the order's timeout).
+     * The blocking hold's door, which the Solr trees before the publication
+     * hold call before a watch's refresh lock ({@code
+     * StatefulCollectionWatch#refreshAndWatch}): it holds nothing now --
+     * a hold defers the node's publication instead ({@link #publishing}) --
+     * and goes with its two calls once every tree carries the publication
+     * hook (zk2-publication-hold.ZkStateReader.diff; external-callers.txt).
      */
     public static void refreshing(String transport, String path) {
-        boolean paused = false;
-        try {
-            paused = pause();
-            String node = nodeHere();
-            OccurrenceAddress at = Identity.currentOccurrence(node);
-            String location = trimmed(path);
-            // The view a decode here re-points (#decode): the path's life
-            // now, at the node #decoderNode names.
-            String life = life(transport, location, 0L, false);
-            // Each write of the location makes the next version (a store's
-            // version counts its writes): the newest filed in this life, and
-            // one more per thread with a write in flight there unfiled.
-            long reach;
-            synchronized (STORING) {
-                Set<Thread> writers = new HashSet<Thread>();
-                for (Write write : inFlight(transport, location,
-                        Thread.currentThread()).values()) {
-                    if (!write.filed) writers.add(write.thread);
-                }
-                reach = NEWEST.getOrDefault(transport + "\n" + life, -1L)
-                        + writers.size();
+    }
+
+    /**
+     * A node is about to PUBLISH version {@code version} of its view of
+     * {@code path} -- make the decode the readers on the node see (Solr's
+     * {@code ZkStateReader#updateWatchedCollection}, {@code
+     * AliasesManager#setIfNewer}) -- and {@code apply} publishes it, under
+     * the locks the system's own publication takes.  On a thread delivering
+     * a store's notification ({@link #notified}), outside a refresh the
+     * system asked for ({@link #refreshStarting}), a pairing's hold of the
+     * view may defer it ({@code Confirmation#publishing}): the thread goes
+     * on, the node's readers keep the version they had, and the publication
+     * applies later in version order.  A synchronous publication -- a
+     * forced refresh, a fetch on the reader's own thread, the node's own
+     * write -- is never deferred.
+     *
+     * @return whether it was deferred: the caller then publishes nothing
+     */
+    public static boolean publishing(String transport, String path,
+                                     long version, Runnable apply) {
+        if (NOTIFIED.get() == null || REFRESHING.get() != 0) return false;
+        return guarded("publishing", path, Boolean.FALSE, () -> {
+            boolean paused = pause();
+            try {
+                String node = nodeHere();
+                OccurrenceAddress at = Identity.currentOccurrence(node);
+                String life = life(transport, trimmed(path), version, false);
+                LocationId view = viewOf(storeLocation(transport, life),
+                        decoderNode(at, node));
+                return Confirmation.publishing(view, version, at, apply);
+            } finally {
+                resume(paused);
             }
-            Confirmation.decoding(viewOf(storeLocation(transport, life),
-                    decoderNode(at, node)), reach, at);
-        } catch (RuntimeException fault) {
-            doorFault("refreshing " + path, fault);
-        } finally {
-            resume(paused);
-        }
+        });
     }
 
     /**
@@ -986,12 +950,12 @@ public final class MessageDoors {
      * ZkStateReader#forceUpdateCollection}, {@code
      * #forciblyRefreshAllClusterStateSlow}, a lazy collection's {@code
      * LazyCollectionRef#get}): it reads the store as it stands, as its
-     * caller asked, so no pairing's hold waits on its decodes -- a refresh
-     * on the program's way (the Overseer applying a RefreshCollectionMessage,
-     * a leader's prep-recovery) held for the reader's work would hold that
-     * work too (round Z2N: every snapshot-no-active pairing gave way at the
-     * timeout); a refresh that brings a version past the paired one leaves
-     * the pairing untaken.  Ends at {@link #refreshEnded}.
+     * caller asked, so no pairing's hold defers what it publishes ({@link
+     * #publishing}), even on a notification's thread -- a refresh on the
+     * program's way (the Overseer applying a RefreshCollectionMessage, a
+     * leader's prep-recovery) is no slow event thread; one that publishes a
+     * version past the paired one leaves the pairing untaken.  Ends at
+     * {@link #refreshEnded}.
      *
      * @return the token {@link #refreshEnded} takes
      */
@@ -1188,6 +1152,9 @@ public final class MessageDoors {
      *             each an occurrence of its own
      */
     public static void notified(String kind, Runnable callback) {
+        // In order: a publication this thread deferred applies before its
+        // next notification runs (Confirmation#awaitDeferred).
+        guarded("notified", kind, Confirmation::awaitDeferred);
         NOTIFIED.set(trimmed(kind));
         try {
             callback.run();

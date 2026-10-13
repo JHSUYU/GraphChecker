@@ -25,8 +25,18 @@ final class RecordingWindow {
      * workload JVM of its run (experiments/lib/execute.sh).
      */
     static final String DECLARED = "causynth.recording.window";
+    /**
+     * The JVM property naming the file the window's wall duration, in ms,
+     * is written to when it closes (experiments/lib/execute.sh: the
+     * recording's trace directory, a replay's worker directory): the
+     * campaign's measured slowdown of the VM over the recording is the
+     * ratio of the two ({@code run_engine.sh campaign_view_hold_max},
+     * {@code Confirmation#VIEW_HOLD_MAX_PROPERTY}).
+     */
+    static final String WINDOW_MS_FILE = "causynth.window.ms.file";
     private static volatile int index;
     private static volatile boolean closed;
+    private static volatile long openedNanos;
 
     private RecordingWindow() {
     }
@@ -58,11 +68,24 @@ final class RecordingWindow {
     static void open() {
         index++;
         closed = false;
+        openedNanos = System.nanoTime();
     }
 
-    /** The workload's test is over: what runs after is its teardown. */
+    /** The workload's test is over: what runs after is its teardown.  The
+     *  window's wall duration goes to {@link #WINDOW_MS_FILE}, if named. */
     static void close() {
         closed = true;
+        String file = System.getProperty(WINDOW_MS_FILE, "");
+        if (file.isEmpty() || index == 0) return;
+        long millis = (System.nanoTime() - openedNanos) / 1_000_000L;
+        try {
+            java.nio.file.Files.write(java.nio.file.Paths.get(file),
+                    (millis + "\n").getBytes(
+                            java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.io.IOException | RuntimeException unwritten) {
+            // A window with no duration stated: the campaign scales no
+            // bound by it and says so (run_engine.sh).
+        }
     }
 
     /** Test seam: a fixture that models a run before its window. */

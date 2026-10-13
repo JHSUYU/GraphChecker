@@ -6,6 +6,8 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -131,7 +133,7 @@ public final class Confirmation {
             new HashMap<String, Integer>();
     /** The activations that have exited. */
     private static final Set<String> EXITED = new HashSet<String>();
-    /** The view holds this run is held to ({@link #decoding}). */
+    /** The view holds this run is held to ({@link #publishing}). */
     private static final List<ViewHold> VIEW_HOLDS = new ArrayList<ViewHold>();
     /** The order stalls: what the model ordered and this run could not. */
     private static final List<String> UNREALIZED = new ArrayList<String>();
@@ -461,13 +463,14 @@ public final class Confirmation {
     /**
      * One VIEW_HOLD row ({@code explore.ConfirmMain#stateEdges}): a pairing
      * holds a read of a node's view to that node's decode of version {@code
-     * above}, so the node's decodes of the view past it wait while the work
-     * that read it runs, except that work's own ({@code readerContext}: its
-     * node and causal context): until the reader's occurrence exits ({@code
-     * until}), or -- a read in role work, which no hook closes -- until the
-     * first region that work opens after the read ({@code reader}) has
-     * closed (a routed alias captures its view in the request's role work
-     * and writes it in a store door's region), in the run as it goes.
+     * above}, so the node's publications of the view past it are deferred
+     * ({@link #publishing}) while the work that read it runs, except that
+     * work's own ({@code readerContext}: its node and causal context): until
+     * the reader's occurrence exits ({@code until}), or -- a read in role
+     * work, which no hook closes -- until the first region that work opens
+     * after the read ({@code reader}) has closed (a routed alias captures its
+     * view in the request's role work and writes it in a store door's
+     * region), in the run as it goes; at most VIEW_HOLD_MAX.
      */
     private static final class ViewHold {
         final String view;
@@ -517,19 +520,78 @@ public final class Confirmation {
     }
 
     /**
-     * THE DECODE HOLD: a node's decode of {@code version} of its {@code
-     * view}, at {@code at}, before the system re-points the view to it
-     * ({@code MessageDoors#decoded}), in a replay, a CONFIRM run and a
-     * native reproduction alike.  It waits while a hold names the view below
-     * this version and its {@code until} activation has not exited -- never
-     * in the reader's own work --, at most {@link #ORDER_TIMEOUT_PROPERTY};
-     * past it the decode goes on and the hold is unrealized by name (the run
-     * is no model of the pairing: CONFIRM_MISMATCH, PAIRING_UNTAKEN), every
-     * other hold of a native run giving way with it.
+     * How long, in wall ms of this JVM, a view hold may defer a node's
+     * publication of its view past the first publication it deferred: the
+     * realism bound VIEW_HOLD_MAX, 3000 ms of RECORDED time -- a busy
+     * store-event thread, not a lost watch -- times this run's measured
+     * slowdown over the recording (run_engine.sh campaign_view_hold_max: a
+     * native run's is 3000, a replay's 3000 times the seed replay's window
+     * over the recording's).  It exceeds a reader's own timed poll
+     * (Solr's {@code OverseerTaskProcessor} polls its queue every 2000 ms),
+     * so a reader that reaches its read through its own work does within it.
      */
-    static void decoding(LocationId view, long version,
-                         OccurrenceAddress at) {
-        if (view == null) return;
+    public static final String VIEW_HOLD_MAX_PROPERTY =
+            "causynth.view.hold.max.ms";
+    /** VIEW_HOLD_MAX in recorded ms: the property's default, a native run's
+     *  value. */
+    public static final long VIEW_HOLD_MAX_MS = 3000L;
+
+    /** One publication of a node's view a hold deferred ({@link
+     *  #publishing}). */
+    private static final class Deferred {
+        final long version;
+        final Runnable apply;
+        final Thread thread;
+        final List<ViewHold> holds;
+
+        Deferred(long version, Runnable apply, Thread thread,
+                 List<ViewHold> holds) {
+            this.version = version;
+            this.apply = apply;
+            this.thread = thread;
+            this.holds = holds;
+        }
+    }
+
+    /** View key -> its deferred publications, by version: applied in that
+     *  order ({@link #publisher}). */
+    private static final Map<String, java.util.TreeMap<Long, Deferred>>
+            DEFERRED = new LinkedHashMap<String,
+            java.util.TreeMap<Long, Deferred>>();
+    /** View key -> when its first still-deferred publication was deferred
+     *  (System.nanoTime): what {@link #VIEW_HOLD_MAX_PROPERTY} counts from. */
+    private static final Map<String, Long> DEFERRED_SINCE =
+            new HashMap<String, Long>();
+    /** The publications being applied now: deferred still, for {@link
+     *  #awaitDeferred}, but no longer the publisher's to take. */
+    private static final Set<Deferred> APPLYING = new HashSet<Deferred>();
+    /** The one thread applying deferred publications, started on demand. */
+    private static Thread publisher;
+
+    /**
+     * THE PUBLICATION HOLD (a'): a node is about to publish version {@code
+     * version} of its {@code view} -- make the decode the readers on the
+     * node see ({@code MessageDoors#publishing}: Solr's
+     * {@code ZkStateReader#updateWatchedCollection} and {@code
+     * AliasesManager#setIfNewer}) -- on a thread delivering a store's
+     * notification, outside a refresh the system asked for, at {@code at}.
+     * Where a pairing holds that view below this version and the thread is
+     * not the reader's own work, the publication is deferred: {@code apply}
+     * runs later, on {@link #publisher}, in version order, once every hold
+     * it waits for has ended -- the reader's occurrence exited, or its role
+     * read's work closed a region -- or VIEW_HOLD_MAX passed, past which
+     * the hold gives way by name (a CONFIRM_MISMATCH, the bound named:
+     * {@code <view> view-hold-max=3000}).  The thread goes on: every reader
+     * on the node keeps the version it had, as behind a slow store-event
+     * thread, and the thread's next notification waits for this one's
+     * publication first ({@link #awaitDeferred}).  In a replay, a CONFIRM
+     * run and a native reproduction alike.
+     *
+     * @return whether the publication was deferred; false: publish now
+     */
+    static boolean publishing(LocationId view, long version,
+                              OccurrenceAddress at, Runnable apply) {
+        if (view == null || apply == null) return false;
         load();
         String key = viewKey(view);
         String here = contextKey(at);
@@ -542,58 +604,183 @@ public final class Confirmation {
                     holding.add(hold);
                 }
             }
-            if (holding.isEmpty()) return;
+            if (holding.isEmpty()) return false;
             FocusedReplay.worldActed();
+            java.util.TreeMap<Long, Deferred> queue = DEFERRED.computeIfAbsent(
+                    key, unused -> new java.util.TreeMap<Long, Deferred>());
+            if (queue.isEmpty()) DEFERRED_SINCE.put(key, System.nanoTime());
+            // One publication per version: a later one of it is the same.
+            queue.put(version, new Deferred(version, apply,
+                    Thread.currentThread(), holding));
             for (ViewHold hold : holding) {
                 planted(RecordingPlant.HOLDING, hold.label(),
                         Collections.singleton(hold.waitsFor()));
             }
-            long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
-                    ORDER_TIMEOUT_MS);
-            long deadline = System.currentTimeMillis() + timeout;
-            while (true) {
-                List<ViewHold> open = new ArrayList<ViewHold>();
-                for (ViewHold hold : holding) {
-                    if (!hold.ended()) open.add(hold);
-                }
-                if (open.isEmpty()) {
-                    for (ViewHold hold : holding) {
-                        if (!hold.gaveWay) {
-                            planted(RecordingPlant.APPLIED, hold.label(),
-                                    Collections.singleton(hold.waitsFor()));
-                        }
-                    }
-                    return;
-                }
-                if (RecordingPlant.orderGaveWay()) return;
-                long left = deadline - System.currentTimeMillis();
-                if (left <= 0L) {
-                    for (ViewHold hold : open) {
-                        // One unrealized hold is the run's answer; the
-                        // decodes after it go on.
-                        hold.gaveWay = true;
-                        UNREALIZED.add(hold.label() + ": the decode of"
-                                + " version " + version + " waited " + timeout
-                                + " ms for " + hold.waitsFor() + " to exit,"
-                                + " which it did not, so this program cannot"
-                                + " realize the pairing");
-                        planted(RecordingPlant.UNHELD, hold.label(),
-                                Collections.singleton(hold.waitsFor()));
-                    }
-                    if (RecordingPlant.planting()) RecordingPlant.gaveWay();
-                    return;
-                }
+            if (publisher == null) {
+                publisher = new Thread(Confirmation::publish,
+                        "causynth-view-publisher");
+                publisher.setDaemon(true);
+                publisher.start();
+            }
+            LOCK.notifyAll();
+            return true;
+        }
+    }
+
+    /**
+     * THE IN-ORDER RULE: a thread that deferred a publication delivers its
+     * next store notification only after that publication applied ({@code
+     * MessageDoors#notified}), as a slow event thread would: no later event
+     * on it runs before the deferred one.  Bounded as the deferral is.
+     */
+    static void awaitDeferred() {
+        Thread self = Thread.currentThread();
+        synchronized (LOCK) {
+            if (DEFERRED.isEmpty() && APPLYING.isEmpty()) return;
+            long bound = viewHoldMaxNanos() + 1_000_000_000L;
+            long deadline = System.nanoTime() + bound;
+            while (deferredBy(self)) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0L) return;
                 try {
-                    LOCK.wait(Math.min(left, 200L));
+                    LOCK.wait(Math.max(1L, Math.min(200L,
+                            left / 1_000_000L)));
                 } catch (InterruptedException interrupted) {
-                    // A shutdown ended the wait: the read the pairing asks
-                    // is the STATE edge's to judge at the close.
-                    Thread.currentThread().interrupt();
+                    self.interrupt();
                     return;
                 }
             }
         }
     }
+
+    /** Whether {@code thread} deferred a publication not yet applied.
+     *  Guarded by {@link #LOCK}. */
+    private static boolean deferredBy(Thread thread) {
+        for (Deferred applying : APPLYING) {
+            if (applying.thread == thread) return true;
+        }
+        for (java.util.TreeMap<Long, Deferred> queue : DEFERRED.values()) {
+            for (Deferred deferred : queue.values()) {
+                if (deferred.thread == thread) return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@link #VIEW_HOLD_MAX_PROPERTY} in nanoseconds. */
+    private static long viewHoldMaxNanos() {
+        return Long.getLong(VIEW_HOLD_MAX_PROPERTY, VIEW_HOLD_MAX_MS)
+                * 1_000_000L;
+    }
+
+    /**
+     * The publisher: applies each view's deferred publications in version
+     * order, the prefix whose holds have all ended, or the whole queue once
+     * VIEW_HOLD_MAX passed since its first, its open holds giving way by
+     * name.  Applied outside {@link #LOCK}: {@code apply} takes the
+     * system's own locks, as the notification thread would have.
+     */
+    private static void publish() {
+        while (true) {
+            List<Deferred> due = new ArrayList<Deferred>();
+            synchronized (LOCK) {
+                long now = System.nanoTime();
+                long wait = 200L;
+                for (java.util.Iterator<Map.Entry<String,
+                        java.util.TreeMap<Long, Deferred>>> views =
+                        DEFERRED.entrySet().iterator(); views.hasNext();) {
+                    Map.Entry<String, java.util.TreeMap<Long, Deferred>> view =
+                            views.next();
+                    java.util.TreeMap<Long, Deferred> queue = view.getValue();
+                    long since = DEFERRED_SINCE.getOrDefault(view.getKey(),
+                            now);
+                    boolean over = now - since >= viewHoldMaxNanos()
+                            || RecordingPlant.orderGaveWay();
+                    while (!queue.isEmpty()) {
+                        Deferred first = queue.firstEntry().getValue();
+                        boolean open = false;
+                        for (ViewHold hold : first.holds) {
+                            open |= !hold.ended();
+                        }
+                        if (open && !over) break;
+                        if (open) gaveWay(first, view.getKey());
+                        queue.pollFirstEntry();
+                        APPLYING.add(first);
+                        due.add(first);
+                    }
+                    if (queue.isEmpty()) {
+                        views.remove();
+                        DEFERRED_SINCE.remove(view.getKey());
+                    } else {
+                        long left = (since + viewHoldMaxNanos() - now)
+                                / 1_000_000L;
+                        wait = Math.max(1L, Math.min(wait, left));
+                    }
+                }
+                if (due.isEmpty()) {
+                    try {
+                        LOCK.wait(wait);
+                    } catch (InterruptedException interrupted) {
+                        return;
+                    }
+                    continue;
+                }
+            }
+            for (Deferred deferred : due) {
+                try {
+                    deferred.apply.run();
+                } catch (RuntimeException | Error fault) {
+                    RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING,
+                            "VIEW_HOLD publication",
+                            "the deferred publication of version "
+                                    + deferred.version + " threw " + fault
+                                    + ": the node's view was not published");
+                }
+                synchronized (LOCK) {
+                    APPLYING.remove(deferred);
+                    for (ViewHold hold : deferred.holds) {
+                        if (!hold.gaveWay) {
+                            planted(RecordingPlant.APPLIED, hold.label(),
+                                    Collections.singleton(hold.waitsFor()));
+                        }
+                    }
+                    LOCK.notifyAll();
+                }
+            }
+        }
+    }
+
+    /**
+     * A deferral's open holds give way at VIEW_HOLD_MAX: unrealized by name
+     * (the run is no model of the pairing: CONFIRM_MISMATCH,
+     * PAIRING_UNTAKEN), the bound named for the case's {@code bounded}
+     * (run_engine.sh campaign_bounds: {@code view_hold_max}), every other
+     * hold of a native run giving way with it.  Guarded by {@link #LOCK}.
+     */
+    private static void gaveWay(Deferred deferred, String view) {
+        for (ViewHold hold : deferred.holds) {
+            if (hold.ended()) continue;
+            hold.gaveWay = true;
+            UNREALIZED.add(hold.label() + ": the publication of version "
+                    + deferred.version + " was deferred VIEW_HOLD_MAX ("
+                    + VIEW_HOLD_MAX_MS + " ms of recorded time, "
+                    + viewHoldMaxNanos() / 1_000_000L + " ms here) for "
+                    + hold.waitsFor() + ", which did not end, so this program"
+                    + " cannot realize the pairing");
+            planted(RecordingPlant.UNHELD, hold.label(),
+                    Collections.singleton(hold.waitsFor()));
+            RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                    view + " " + VIEW_HOLD_MAX + "=" + VIEW_HOLD_MAX_MS,
+                    "a pairing's hold of this view gave way: the reader "
+                            + hold.reader + " had not read within "
+                            + VIEW_HOLD_MAX_MS + " ms of recorded time of"
+                            + " the publication it deferred");
+        }
+        if (RecordingPlant.planting()) RecordingPlant.gaveWay();
+    }
+
+    /** The bound's name in a gap's subject (run_engine.sh campaign_bounds). */
+    static final String VIEW_HOLD_MAX = "view-hold-max";
 
     /**
      * A region closed ({@code Identity#regionExit}, {@code #hopClosed}): a
@@ -975,6 +1162,9 @@ public final class Confirmation {
             EXITED.clear();
             OVERDUE.clear();
             UNREALIZED.clear();
+            DEFERRED.clear();
+            DEFERRED_SINCE.clear();
+            APPLYING.clear();
             WAITING.clear();
             ENDED_WAITING.clear();
             RAN_ON.clear();

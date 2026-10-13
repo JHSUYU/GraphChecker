@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -17,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -460,226 +462,211 @@ public class ConfirmationTest {
         }
     }
 
+    /** One VIEW_HOLD row over {@code view} past {@code above}, its reader
+     *  the work of {@code reader}, held until {@code until} exits. */
+    private static String viewHold(LocationId view, long above,
+                                   OccurrenceAddress reader, String until,
+                                   String readerEndpoint) {
+        return "{\"kind\":\"VIEW_HOLD\",\"view\":\""
+                + Confirmation.viewKey(view) + "\",\"above\":" + above + ","
+                + "\"readerContext\":\"" + Confirmation.contextKey(reader)
+                + "\"," + (readerEndpoint == null ? ""
+                : "\"reader\":\"" + readerEndpoint + "\",")
+                + "\"until\":\"" + until + "\"}";
+    }
+
+    /** A publication that counts itself applied ({@code applied}). */
+    private static Runnable publication(List<Long> applied, long version) {
+        return () -> {
+            synchronized (applied) {
+                applied.add(version);
+                applied.notifyAll();
+            }
+        };
+    }
+
+    /** Waits for {@code applied} to hold {@code count} publications. */
+    private static void awaitApplied(List<Long> applied, int count)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000L;
+        synchronized (applied) {
+            while (applied.size() < count
+                    && System.currentTimeMillis() < deadline) {
+                applied.wait(50L);
+            }
+        }
+    }
+
     /**
-     * THE DECODE HOLD: a pairing holds a node's decodes of a view past the
-     * paired version until the reader's work's region exits; the reader's
-     * own work's decodes are never held, a decode at or below the version
-     * is not either, and a hold whose region never exits is unrealized by
-     * name once the decode waited out the order's timeout.
+     * THE PUBLICATION HOLD (a'), per row: a node's publication of a view
+     * past the paired version is deferred until the reader's region exits,
+     * then applied, every one in version order; one at or below the
+     * version, or the reader's own work's, is not; the thread goes on.  A
+     * hold whose reader never comes gives way at VIEW_HOLD_MAX, named: the
+     * queue applies and the pairing is a mismatch.
      */
     @Test
-    public void aViewsLaterDecodeWaitsForTheReadersRegionAndAnUnendedHoldIsAMismatch()
+    public void aViewsLaterPublicationIsDeferredUntilTheReadersRegionExits()
             throws Exception {
         LocationId view = LocationId.of(LocationKind.VIEW,
                 "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
         OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
         OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
         String until = Endpoint.activation(reader, ExecutionIndex.empty());
-        String row = "{\"kind\":\"VIEW_HOLD\",\"view\":\""
-                + Confirmation.viewKey(view) + "\",\"above\":1,"
-                + "\"readerContext\":\"" + Confirmation.contextKey(reader)
-                + "\",\"until\":\"" + until + "\"}";
-        handed("", Collections.singletonList(row));
-        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
-        try {
-            long[] decoded = new long[1];
-            Thread watch = new Thread(() -> {
-                Confirmation.decoding(view, 2L, decoder);
-                decoded[0] = System.nanoTime();
-            });
-            watch.start();
-            // Not held: the paired version itself, and the reader's own.
-            Confirmation.decoding(view, 1L, decoder);
-            Confirmation.decoding(view, 3L, reader);
-            Thread.sleep(100L);
-            long exited = System.nanoTime();
-            Confirmation.exited(until);
-            watch.join(5000L);
-            assertTrue("the decode went on only after the reader's region"
-                    + " exited", decoded[0] >= exited);
-            assertTrue(Confirmation.close().isEmpty());
-        } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-        }
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        List<Long> applied = new ArrayList<Long>();
+        // Deferred: past the version, on another work's thread; the
+        // caller goes on at once.
+        long started = System.nanoTime();
+        assertTrue(Confirmation.publishing(view, 3L, decoder,
+                publication(applied, 3L)));
+        assertTrue(Confirmation.publishing(view, 2L, decoder,
+                publication(applied, 2L)));
+        assertTrue("the thread goes on",
+                System.nanoTime() - started < 200_000_000L);
+        // Not deferred: the paired version, and the reader's own work.
+        assertFalse(Confirmation.publishing(view, 1L, decoder,
+                publication(applied, 1L)));
+        assertFalse(Confirmation.publishing(view, 4L, reader,
+                publication(applied, 4L)));
+        Thread.sleep(100L);
+        assertTrue("nothing applied while the reader runs: " + applied,
+                applied.isEmpty());
+        Confirmation.exited(until);
+        awaitApplied(applied, 2);
+        assertEquals("applied in version order at the reader's exit",
+                Arrays.asList(2L, 3L), applied);
+        assertTrue(Confirmation.close().isEmpty());
+
         Confirmation.resetForTests();
-        handed("", Collections.singletonList(row));
-        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "100");
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        System.setProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY, "200");
         try {
-            Confirmation.decoding(view, 2L, decoder);
-            List<String> mismatches = Confirmation.close();
-            assertEquals(1, mismatches.size());
-            assertTrue(mismatches.get(0), mismatches.get(0)
-                    .startsWith("VIEW_HOLD " + Confirmation.viewKey(view)));
-        } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-        }
-    }
-
-    /**
-     * A VIEW_HOLD is released by the region exit Identity reports: a run held
-     * to view holds alone reports exits (it orders), so the decode waits
-     * exactly until the reader's region closes, never the order's timeout.
-     */
-    @Test
-    public void aViewHoldIsReleasedByTheRegionExitIdentityReports()
-            throws Exception {
-        RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        Lineage.resetForTests();
-        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
-                "auto0/node0", 0);
-        long hop = RuntimeTraceContext.beginRequest(node, "read");
-        try {
-            OccurrenceAddress reader = Identity.occurrence(node.key(),
-                    "REGION.reader", true);
-            LocationId view = LocationId.of(LocationKind.VIEW,
-                    "SOLR_ZK@" + node.key(), "/aliases.json");
-            Confirmation.resetForTests();
-            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                    + "\"above\":1,\"readerContext\":\""
-                    + Confirmation.contextKey(reader) + "\",\"until\":\""
-                    + Endpoint.activation(reader, ExecutionIndex.empty())
-                    + "\"}"));
-            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "5000");
-            assertTrue("a run held to a view hold orders",
-                    Confirmation.ordering());
-            OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
-            long[] decoded = new long[1];
-            Thread watch = new Thread(() -> {
-                Confirmation.decoding(view, 2L, decoder);
-                decoded[0] = System.nanoTime();
-            });
-            watch.start();
-            Thread.sleep(100L);
-            long exited = System.nanoTime();
-            Identity.regionExit(null);
-            watch.join(4000L);
-            assertTrue("the decode went on at the region's exit",
-                    decoded[0] >= exited && !watch.isAlive());
-            assertTrue(Confirmation.close().isEmpty());
-        } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-            RuntimeTraceContext.endRequest(hop);
-            Identity.resetForTests();
-        }
-    }
-
-    /**
-     * The system's own refresh reads the store as it stands
-     * (MessageDoors#refreshStarting): a pairing's hold does not wait on its
-     * decode, while a watch's decode of the same version waits for the
-     * reader's region (round Z2N: holding the Overseer's refresh held the
-     * reader's work too, and every pairing gave way at the timeout).
-     */
-    @Test
-    public void aSystemsOwnRefreshIsNotHeldWhileAWatchsDecodeIs()
-            throws Exception {
-        RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        Lineage.resetForTests();
-        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
-                "auto0/node0", 0);
-        LocationId[] view = new LocationId[1];
-        java.util.concurrent.CountDownLatch held =
-                new java.util.concurrent.CountDownLatch(1);
-        long[] took = new long[2];
-        // The decoding thread starts before the reader's request, so its
-        // work is its own, under its own request.
-        Thread refresh = new Thread(() -> {
-            long watch = RuntimeTraceContext.beginRequest(node, "refresh");
-            try {
-                held.await();
-                long token = MessageDoors.refreshStarting();
-                long started = System.nanoTime();
-                try {
-                    MessageDoors.decoded("SOLR_ZK", "/refresh/aliases.json@2",
-                            new Object());
-                } finally {
-                    MessageDoors.refreshEnded(token);
-                }
-                took[0] = System.nanoTime() - started;
-                started = System.nanoTime();
-                MessageDoors.decoded("SOLR_ZK", "/refresh/aliases.json@3",
-                        new Object());
-                took[1] = System.nanoTime() - started;
-            } catch (InterruptedException stopped) {
-                Thread.currentThread().interrupt();
-            } finally {
-                RuntimeTraceContext.endRequest(watch);
-            }
-        });
-        refresh.start();
-        long hop = RuntimeTraceContext.beginRequest(node, "read");
-        try {
-            OccurrenceAddress reader = Identity.occurrence(node.key(),
-                    "REGION.reader", true);
-            view[0] = MessageDoors.viewOf(MessageDoors.storeLocation(
-                    "SOLR_ZK", "/refresh/aliases.json"), reader);
-            Confirmation.resetForTests();
-            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                    + "\"view\":\"" + Confirmation.viewKey(view[0]) + "\","
-                    + "\"above\":1,\"readerContext\":\""
-                    + Confirmation.contextKey(reader) + "\",\"until\":\""
-                    + Endpoint.activation(reader, ExecutionIndex.empty())
-                    + "\"}"));
-            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
-            held.countDown();
-            refresh.join(5000L);
-            assertTrue("the refresh's decode went on at once: " + took[0],
-                    took[0] < 200_000_000L);
-            assertTrue("the watch's decode waited for the reader's region: "
-                    + took[1], took[1] >= 250_000_000L);
+            List<Long> late = new ArrayList<Long>();
+            assertTrue(Confirmation.publishing(view, 2L, decoder,
+                    publication(late, 2L)));
+            awaitApplied(late, 1);
+            assertEquals("applied at VIEW_HOLD_MAX", Arrays.asList(2L), late);
             List<String> mismatches = Confirmation.close();
             assertEquals(mismatches.toString(), 1, mismatches.size());
+            assertTrue(mismatches.get(0), mismatches.get(0)
+                    .startsWith("VIEW_HOLD " + Confirmation.viewKey(view))
+                    && mismatches.get(0).contains("VIEW_HOLD_MAX"));
         } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-            RuntimeTraceContext.endRequest(hop);
-            Identity.resetForTests();
+            System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
         }
     }
 
     /**
-     * A watch's refresh is held as a decode of the newest version it can
-     * reach: the newest a write filed at the location, one more per write
-     * in flight there.  None past the paired version: it goes on; a write in
-     * flight that would make one: it waits (round Z2O: held as reaching past
-     * every version, a collection's creation held its node's watch for the
-     * order's timeout).
+     * A deferred publication applied after a later synchronous one (a
+     * forced refresh published version 3 while 2 waited) publishes nothing
+     * older over it: the system's own compare (Solr's CAS on the znode
+     * version, {@code setIfNewer}) holds the newest, and the engine applies
+     * the queue as it stands.
      */
     @Test
-    public void aWatchsRefreshIsHeldOnlyWhereItCanReachPastThePairing()
+    public void aDeferredPublicationNeverRegressesALaterSynchronousOne()
             throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/state.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        java.util.concurrent.atomic.AtomicLong published =
+                new java.util.concurrent.atomic.AtomicLong(1L);
+        List<Long> applied = new ArrayList<Long>();
+        assertTrue(Confirmation.publishing(view, 2L, decoder, () -> {
+            published.accumulateAndGet(2L, Math::max);
+            publication(applied, 2L).run();
+        }));
+        // The forced refresh: synchronous, never deferred (MessageDoors).
+        published.accumulateAndGet(3L, Math::max);
+        Confirmation.exited(until);
+        awaitApplied(applied, 1);
+        assertEquals("the newest stands", 3L, published.get());
+    }
+
+    /**
+     * THE IN-ORDER RULE: a thread that deferred a publication runs its next
+     * store notification only once that publication applied -- no later
+     * event on it runs first -- and a thread that deferred nothing is not
+     * held.
+     */
+    @Test
+    public void aThreadsNextNotificationWaitsForItsDeferredPublication()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/state.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        List<Long> applied = new ArrayList<Long>();
+        long[] next = new long[1];
+        java.util.concurrent.CountDownLatch deferred =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread events = new Thread(() -> {
+            Confirmation.publishing(view, 2L, decoder,
+                    publication(applied, 2L));
+            deferred.countDown();
+            MessageDoors.notified("Watcher", () -> next[0] = System.nanoTime());
+        });
+        events.start();
+        deferred.await();
+        long otherStarted = System.nanoTime();
+        MessageDoors.notified("Watcher", () -> { });
+        assertTrue("another thread's notification is not held",
+                System.nanoTime() - otherStarted < 200_000_000L);
+        Thread.sleep(150L);
+        assertTrue("the next event waits", events.isAlive());
+        long exited = System.nanoTime();
+        Confirmation.exited(until);
+        events.join(5000L);
+        assertTrue("it ran after the deferred publication applied",
+                !events.isAlive() && next[0] >= exited
+                        && applied.equals(Arrays.asList(2L)));
+    }
+
+    /**
+     * A publication is deferred only on a thread delivering a store's
+     * notification, outside a refresh the system asked for
+     * (MessageDoors#publishing): a forced refresh's, or one on a thread
+     * that delivers none, publishes at once.
+     */
+    @Test
+    public void onlyANotificationsPublicationIsDeferred() throws Exception {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
         Lineage.resetForTests();
         SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
                 "auto0/node0", 0);
-        Object owner = new Object();
-        RuntimeTraceContext.registerSource(owner, node);
         java.util.concurrent.CountDownLatch held =
                 new java.util.concurrent.CountDownLatch(1);
-        long[] took = new long[2];
+        boolean[] answered = new boolean[3];
+        // The watch thread starts before the reader's request, so its work
+        // is its own, under its own request.
         Thread watch = new Thread(() -> {
             long scope = RuntimeTraceContext.beginRequest(node, "watch");
             try {
                 held.await();
-                long started = System.nanoTime();
-                MessageDoors.refreshing("SOLR_ZK", "/reach/state.json");
-                took[0] = System.nanoTime() - started;
-                long write = MessageDoors.storing("SOLR_ZK",
-                        "/reach/state.json");
-                Thread refresh = new Thread(() -> {
-                    long inner = RuntimeTraceContext.beginRequest(node,
-                            "watch2");
-                    long begun = System.nanoTime();
-                    MessageDoors.refreshing("SOLR_ZK", "/reach/state.json");
-                    took[1] = System.nanoTime() - begun;
-                    RuntimeTraceContext.endRequest(inner);
+                answered[0] = MessageDoors.publishing("SOLR_ZK",
+                            "/notified/state.json", 2L, () -> { });
+                MessageDoors.notified("Watcher", () -> {
+                    long token = MessageDoors.refreshStarting();
+                    try {
+                        answered[1] = MessageDoors.publishing("SOLR_ZK",
+                                "/notified/state.json", 2L, () -> { });
+                    } finally {
+                        MessageDoors.refreshEnded(token);
+                    }
+                    answered[2] = MessageDoors.publishing("SOLR_ZK",
+                            "/notified/state.json", 2L, () -> { });
                 });
-                refresh.start();
-                refresh.join(5000L);
-                MessageDoors.storeEnded("SOLR_ZK", write);
             } catch (InterruptedException stopped) {
                 Thread.currentThread().interrupt();
             } finally {
@@ -687,110 +674,22 @@ public class ConfirmationTest {
             }
         });
         watch.start();
-        for (int version = 0; version <= 3; version++) {
-            MessageDoors.stored("SOLR_ZK", "/reach/state.json@" + version,
-                    owner, null);
-        }
         long hop = RuntimeTraceContext.beginRequest(node, "read");
         try {
             OccurrenceAddress reader = Identity.occurrence(node.key(),
                     "REGION.reader", true);
             LocationId view = MessageDoors.viewOf(MessageDoors.storeLocation(
-                    "SOLR_ZK", "/reach/state.json"), reader);
+                    "SOLR_ZK", "/notified/state.json"), reader);
             Confirmation.resetForTests();
-            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                    + "\"above\":3,\"readerContext\":\""
-                    + Confirmation.contextKey(reader) + "\",\"until\":\""
-                    + Endpoint.activation(reader, ExecutionIndex.empty())
-                    + "\"}"));
-            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+            handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                    Endpoint.activation(reader, ExecutionIndex.empty()),
+                    null)));
             held.countDown();
             watch.join(5000L);
-            assertTrue("reaching version 3 at most, it went on: " + took[0],
-                    took[0] < 200_000_000L);
-            assertTrue("with a write in flight it could reach 4, and waited: "
-                    + took[1], took[1] >= 250_000_000L);
+            assertFalse("no notification: published at once", answered[0]);
+            assertFalse("a forced refresh: published at once", answered[1]);
+            assertTrue("a notification's: deferred", answered[2]);
         } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-            RuntimeTraceContext.endRequest(hop);
-            Identity.resetForTests();
-        }
-    }
-
-    /**
-     * A write that filed its version is no longer one more a refresh can
-     * reach, though its adapter's bracket has not ended (review re-check M6:
-     * counted filed and in flight, a refresh reaching the paired version
-     * only was held as reaching past it).
-     */
-    @Test
-    public void aFiledWriteIsNotAlsoInFlight() throws Exception {
-        RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        Lineage.resetForTests();
-        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
-                "auto0/node0", 0);
-        Object owner = new Object();
-        RuntimeTraceContext.registerSource(owner, node);
-        for (int version = 0; version <= 3; version++) {
-            MessageDoors.stored("SOLR_ZK", "/filed/state.json@" + version,
-                    owner, null);
-        }
-        java.util.concurrent.CountDownLatch filed =
-                new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.CountDownLatch refreshed =
-                new java.util.concurrent.CountDownLatch(1);
-        Thread writer = new Thread(() -> {
-            long write = MessageDoors.storing("SOLR_ZK", "/filed/state.json");
-            try {
-                MessageDoors.stored("SOLR_ZK", "/filed/state.json@4", owner,
-                        null);
-                filed.countDown();
-                refreshed.await();
-            } catch (InterruptedException stopped) {
-                Thread.currentThread().interrupt();
-            } finally {
-                MessageDoors.storeEnded("SOLR_ZK", write);
-            }
-        });
-        long[] took = new long[1];
-        Thread watch = new Thread(() -> {
-            long scope = RuntimeTraceContext.beginRequest(node, "watch");
-            try {
-                filed.await();
-                long started = System.nanoTime();
-                MessageDoors.refreshing("SOLR_ZK", "/filed/state.json");
-                took[0] = System.nanoTime() - started;
-            } catch (InterruptedException stopped) {
-                Thread.currentThread().interrupt();
-            } finally {
-                refreshed.countDown();
-                RuntimeTraceContext.endRequest(scope);
-            }
-        });
-        long hop = RuntimeTraceContext.beginRequest(node, "read");
-        try {
-            OccurrenceAddress reader = Identity.occurrence(node.key(),
-                    "REGION.reader", true);
-            LocationId view = MessageDoors.viewOf(MessageDoors.storeLocation(
-                    "SOLR_ZK", "/filed/state.json"), reader);
-            Confirmation.resetForTests();
-            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                    + "\"above\":4,\"readerContext\":\""
-                    + Confirmation.contextKey(reader) + "\",\"until\":\""
-                    + Endpoint.activation(reader, ExecutionIndex.empty())
-                    + "\"}"));
-            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
-            writer.start();
-            watch.start();
-            watch.join(5000L);
-            writer.join(5000L);
-            assertTrue("version 4 filed, none in flight: it went on: "
-                    + took[0], took[0] < 200_000_000L);
-        } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
             RuntimeTraceContext.endRequest(hop);
             Identity.resetForTests();
         }
@@ -812,33 +711,20 @@ public class ConfirmationTest {
         read = Endpoint.of(role, read.site(), ExecutionIndex.empty(), 0);
         LocationId view = LocationId.of(LocationKind.VIEW,
                 "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
-        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                + "\"above\":1,\"readerContext\":\""
-                + Confirmation.contextKey(role) + "\",\"reader\":\""
-                + Confirmation.id(read) + "\",\"until\":\"\"}"));
-        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "3000");
-        try {
-            OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
-            long[] decoded = new long[1];
-            Thread watch = new Thread(() -> {
-                Confirmation.decoding(view, 2L, decoder);
-                decoded[0] = System.nanoTime();
-            });
-            watch.start();
-            Confirmation.regionClosed(region);
-            Thread.sleep(100L);
-            assertTrue("a region closing before the read ends nothing",
-                    watch.isAlive());
-            Confirmation.read(read, view, 1L, ReadRow.UNKNOWN_VERSION);
-            long closed = System.nanoTime();
-            Confirmation.regionClosed(region);
-            watch.join(2000L);
-            assertTrue("released at the region's close after the read",
-                    !watch.isAlive() && decoded[0] >= closed);
-        } finally {
-            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-        }
+        handed("", Collections.singletonList(viewHold(view, 1L, role, "",
+                Confirmation.id(read))));
+        List<Long> applied = new ArrayList<Long>();
+        assertTrue(Confirmation.publishing(view, 2L,
+                OccurrenceAddress.parse(MINT), publication(applied, 2L)));
+        Confirmation.regionClosed(region);
+        Thread.sleep(100L);
+        assertTrue("a region closing before the read ends nothing",
+                applied.isEmpty());
+        Confirmation.read(read, view, 1L, ReadRow.UNKNOWN_VERSION);
+        Confirmation.regionClosed(region);
+        awaitApplied(applied, 1);
+        assertEquals("released at the region's close after the read",
+                Arrays.asList(2L), applied);
     }
 
     /**

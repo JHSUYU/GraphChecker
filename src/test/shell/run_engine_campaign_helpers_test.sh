@@ -249,7 +249,8 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # bound that cut the anchor's occurrence on the way to the throw too
 # (COMPOSE's loop-body-bound row, RestsOn#decided), a store content leaf
 # held past the daemon tick bound (COMPOSE's daemon-tick-bound row,
-# Composer#arrival), and the invocations of
+# Composer#arrival), a pairing hold that gave way past VIEW_HOLD_MAX (a
+# replay's view-hold-max row, Confirmation#gaveWay), and the invocations of
 # one marker past those GROW plans inputs for (unplanned-input-max); a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
@@ -271,7 +272,7 @@ echo '{"truncated": 2}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     'T max-flips-per-path=4' 'T pairing-bound=8' 'REGION.T#1 loop-body-bound=8' \
-    'REGION.P#2 daemon-tick-bound=5'; do
+    'REGION.P#2 daemon-tick-bound=5' 'VIEW/SOLR_ZK@n0#/a.json view-hold-max=3000'; do
   jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
@@ -291,7 +292,7 @@ run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
     "pairing_flip_per_read", "loop_body_bound", "daemon_tick_bound",
-    "unplanned_input_max",
+    "view_hold_max", "unplanned_input_max",
     "region_path_max_tasks", "schedule_max_jobs", "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
   "${campaign_final}/result.json" >/dev/null \
@@ -1007,7 +1008,9 @@ done
 # shared pool, and each exploration sizes its share from its measured need.
 # 54: `reproduce_min_s` joined it: the least wall clock a native run is
 # given, since a short recording says little of ten runs at once.
-[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
+# 55: `view_hold_max_ms`, a pairing hold's realism bound in recorded time
+# (runtime.Confirmation#publishing, campaign_view_hold_max).
+[[ "$(print_normalized_config | wc -l)" -eq 55 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and

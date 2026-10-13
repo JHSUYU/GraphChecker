@@ -42,9 +42,18 @@ else
 fi
 
 # The case's window, the same in the recording and every replay
-# (case-env.sh recording_window; runtime.RecordingWindow#atStartup).
+# (case-env.sh recording_window; runtime.RecordingWindow#atStartup), and
+# where its wall duration goes when it closes: beside workload_rss_mb, the
+# campaign's measure of the VM's slowdown over the recording (run_engine.sh
+# campaign_view_hold_max).
 [[ -z ${recording_window} ]] \
   || properties+=("-Dcausynth.recording.window=${recording_window}")
+properties+=("-Dcausynth.window.ms.file=${trace:-${work}}/window_ms")
+# A view hold's realism bound in this JVM's wall ms (runtime.Confirmation
+# #VIEW_HOLD_MAX_PROPERTY): a replay's scaled by that slowdown, a native
+# run's VIEW_HOLD_MAX itself.
+[[ -z ${CAUSYNTH_VIEW_HOLD_MAX_MS:-} ]] \
+  || properties+=("-Dcausynth.view.hold.max.ms=${CAUSYNTH_VIEW_HOLD_MAX_MS}")
 
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 
