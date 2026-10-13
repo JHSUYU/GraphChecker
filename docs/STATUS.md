@@ -94,12 +94,30 @@ remain, each named where it applies:
 
 ## Solr checks: each case's `.smt`, read by hand (lead, 2026-10-08 on; branch, round, verdict, reading)
 
-The 20 cases of the Solr group (TODO "Solr"), on the tree `lucene-solr-checks` (`graphchecker/solr-checks`). A row is
-final once its `.smt` was read against Solr 8.11.4 (CHECKING §2); "open" names what is left. State at the owner's stop
-(2026-10-12): the branches named are in TODO "Solr" §1 (merge order); no row is final for the group yet (SG3 decides).
-Bug checks with full evidence (SAT, confirmed, native 10/10): 18406, 18413, migrate, lock-leak, restore, reindex; tra
-confirmed live, final verdict owed; snapshot not yet SAT; no study row final. Rounds and their outputs:
-`/bigtemp/vnr3ne/gc-out/solr` (SC*, SG*), agents' rounds in `/bigtemp/vnr3ne/gc-out/solr-*`.
+The 20 cases of the Solr group (TODO "Solr"). A row is final once its `.smt` was read against Solr 8.11.4 (CHECKING §2)
+on the final code; the final round (SGF3, TODO Solr §4) has not run yet, so no row is final. State at the owner's stop
+(2026-10-13, ~13:00); per-round drafts with the chain read against the tree are in
+`/bigtemp/vnr3ne/analysis/solr-2026-10-12/readings/<case>-SGF2.md` (and `reindex-SGF2R.md`, `lock-leak-SG3I.md`).
+Rounds: the lead's `/bigtemp/vnr3ne/gc-out/solr` (SGF-*, SGF2-*, SGF2R-*), agents' `gc-out/solr-zt` (EX: EXZ1-*),
+`gc-out/solr-zk2` (Z2: Z3*), `gc-out/solr-sc` (SC: NC*), `gc-out/solr-sg3` (ST).
+
+Latest evidence per case (the detailed rows below are each case's history):
+
+| case | latest | verdict | open |
+| --- | --- | --- | --- |
+| solr-18406 | SGF2 (system/solr c3e446e38, final7, vm-force8); Z3S on solr-zk5 | SAT CLOCK_SKEW, confirmed, native 10/10 (both) | SGF3 on the final code |
+| solr-18413 | SGF2 | SAT CLOCK_SKEW, confirmed, native 10/10 (round-verify's 300 s z3 on the exported file timed out; COMPOSE decided path by path) | SGF3; Z3S-18413 on solr-zk5 stopped by the owner's stop |
+| solr-bugs-migrate-buffer-leak | SGF2 | SAT MARKER_FLIPPED (SocketTimeout on the first MIGRATE's REQUESTBUFFERUPDATES response), confirmed, native 10/10 | SGF3 |
+| solr-bugs-restore-construction | SGF2; LL5 (real session expiry) | SAT MARKER_FLIPPED (SessionExpired at the state updater's setData, Overseer failover), confirmed, native 10/10 | SGF3 |
+| solr-bugs-tra-start-overwrite | SGF2; Z3R on solr-zk5 | SAT STATE_PAIRING_FLIPPED (node1's stale aliases view), confirmed, native 10/10 (both) | SGF3 |
+| solr-bugs-overseer-lock-leak | EXZ1 (system/solr edef0a1f5, final9) | SAT MARKER_FLIPPED by #50's chain: ConnectionLoss past the retries at `SolrZkClient.create` in markTaskAsRunning (queue tick); confirmed, native 10/10 | SGF3 (SGF2's PASS used OperationTimeout, which ZooKeeper 3.6.2 never raises) |
+| solr-bugs-reindex-cleanup | SGF2R; NC1 (solr-native-claim 67233f0cb) | SAT MARKER_FLIPPED by #04's chain (the client's DELETEALIAS fails, the abort's cleanup is refused), confirmed; native 0 runs in SGF2R (ORDER_UNHELD on claimed Overseer work), 10/10 on NC1 | merge solr-native-claim + solr-confirm-spell (a false CONFIRM refusal on node address spellings), SGF3 |
+| solr-bugs-snapshot-no-active | Z3Q on solr-zk5 | RUN_DEFECT at budget: the seed follows the recording (PUBLISH events); #16's realizable flip (node0's view at v7) was cancelled at the budget; the final claim paired an unheld view (fixed: bb2a20b30) | merge solr-zk5, SGF3 |
+| solr-adhoc-38 | SC5, SGF2; EXZ1 (final9) | SAT confirmed twice, native 0/10 (the PULL replicas' getLeader hang), new-bugs #14; EXZ1: UNSAT_CLOSED over 24 flips that timed out twice (REPLAY_BOUNDED defect, EX) | merge solr-replaybound, SGF3 |
+| solr-adhoc-21 | SGF2 | RUN_DEFECT at budget (14218 s): BLOCKING UNSTATED_VALUE, PATH_SELF_CONTRADICTORY, ADMISSION_GAP; UNBOUND 8 (before the leaf-sort fix) | SGF3 |
+| solr-adhoc-13 | SGF2 | MISSING: the budget ran out in COMPOSE (14400 s) | SGF3 (plancost merged) |
+| solr-adhoc-05, 07, 09, 10, 14, 19, 40 | SGF2 | stopped by the lead to free the pool for the gates (no verdict) | SGF3 |
+| solr-adhoc-31, 39 | SP6-39 (int10) | 39: all paths refused on a String overload (fixed, solr-str2); then the seed path's self-check timed out (z3) | SGF3 |
 
 | case | branch, round | verdict | reading |
 | --- | --- | --- | --- |
