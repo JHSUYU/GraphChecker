@@ -1546,6 +1546,13 @@ $(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
     || fail "a run that broke the confirmed order reproduced, or does not \
 name the order: $(cat "${repro_dir}/final/reproduce/run-4/answer.json")"
   [[ "${repro_expected}" != *'"runs":5'* \
+      || "$(jq -c '[.control, .atAnchor, .reproduced]' \
+        "${repro_dir}/final/reproduce/control/run-1/answer.json" \
+        "${repro_dir}/final/reproduce/run-1/answer.json" | tr -d '\n')" \
+        == '[true,true,false][false,true,true]' ]] \
+    || fail "a control run reproduced, or does not say it is one: \
+$(cat "${repro_dir}/final/reproduce/control/run-1/answer.json")"
+  [[ "${repro_expected}" != *'"runs":5'* \
       || "$(awk '$4 < 1' "${repro_dir}/bounds")" == "" ]] \
     || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":5'* \
@@ -1556,9 +1563,9 @@ name the order: $(cat "${repro_dir}/final/reproduce/run-4/answer.json")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":5,"planted":1,"fatal":4,"atAnchor":3,"reproduced":1,"unheld":2,"unheldLate":1,"unheldMissing":1,"holding":1,"reason":"","control":{"runs":5,"fatal":1,"atAnchor":1}}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock","control":{"runs":0,"fatal":0,"atAnchor":0}}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with","control":{"runs":0,"fatal":0,"atAnchor":0}}
+0|2048|{"runs":5,"planted":1,"fatal":4,"atAnchor":3,"reproduced":1,"unheld":2,"unheldLate":1,"unheldMissing":1,"holding":1,"reason":"","control":{"runs":5,"fatal":1,"atAnchor":1,"reason":""}}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock","control":{"runs":0,"fatal":0,"atAnchor":0,"reason":""}}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with","control":{"runs":0,"fatal":0,"atAnchor":0,"reason":""}}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target
@@ -5936,8 +5943,9 @@ reset_config
 # RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE
 # (the last planner round, which reads the same corpus, standing for one not
 # yet run), CONFIRM as long as the longest CONFIRM (the seed's REPLAY
-# standing for one), REPRODUCE its bound (reproduce_time_factor times the
-# recorded workload, at least reproduce_min_s), never less than
+# standing for one), REPRODUCE two of its bounds (reproduce_time_factor
+# times the recorded workload, at least reproduce_min_s: its runs, then the
+# controls queued behind them), never less than
 # campaign_reserve_s.  HG4's hdfs-11741 lost its
 # EMIT to the case timeout when it owed COMPOSE and CONFIRM alone; HR1's
 # hdfs-adhoc-07 had the floor's 600 s for its first COMPOSE; SL1's
@@ -5965,11 +5973,11 @@ reserve_case() {
     || fail "RESERVE-1 $1: the reserve is ${got} s, not $6 s"
 }
 reserve_case composed 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
-  '0:400' 20 10 280
-reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 10 300
+  '0:400' 20 10 310
+reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 10 330
 reserve_case floor 'REPLAY\t30000\n' '' 100 0 100
-reserve_case slow-seed 'REPLAY\t1409000\n' '0:60' 20 30 1619
-reserve_case native-floor 'REPLAY\t30000\n' '' 20 5 60
+reserve_case slow-seed 'REPLAY\t1409000\n' '0:60' 20 30 1709
+reserve_case native-floor 'REPLAY\t30000\n' '' 20 5 90
 unset -f reserve_case
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.
