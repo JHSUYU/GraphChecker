@@ -551,13 +551,11 @@ public class ConfirmationTest {
     /** The node every test publication is made on. */
     private static final String NODE = "hdfs/dn0#epoch0";
 
-    /** Whether {@link Confirmation#publishing} on {@link #NODE}, with no
-     *  scope and no turn, deferred the publication to the node's publisher
-     *  (else the caller publishes it). */
+    /** {@link Confirmation#publishing} on {@link #NODE}, with no scope. */
     private static boolean publishing(LocationId view, long version,
                                       OccurrenceAddress at, Runnable apply) {
         return Confirmation.publishing(view, version, at, NODE, null, apply,
-                null) == Confirmation.PUBLISHER;
+                null);
     }
 
     /** Waits for {@code applied} to hold {@code count} publications. */

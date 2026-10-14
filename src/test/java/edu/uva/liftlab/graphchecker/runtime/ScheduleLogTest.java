@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonObject;
@@ -610,9 +611,9 @@ public class ScheduleLogTest {
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 0 given up"));
 
-        // Recorded where no order holds: put in force by the door at once,
-        // the event written at the node's view stance once it is in force --
-        // after what its apply made, as a replay then takes it.
+        // Recorded where no order holds: published at once, the event
+        // written at the node's view stance once it is in force, when the
+        // callback ends -- after what its publish made, as a replay takes it.
         restart();
         Confirmation.resetForTests();
         String next = ScheduleEvent.published("SOLR_ZK", path, 9L);
@@ -626,11 +627,11 @@ public class ScheduleLogTest {
     }
 
     /**
-     * A DUE PUBLICATION IS PUT IN FORCE BY ITS DOOR, ITS TURN TAKEN AFTER
+     * A DUE PUBLICATION'S TURN IS TAKEN ONCE ITS CALLBACK HAS PUBLISHED IT
      * (SGF3 snapshot-no-active: node0's v8 turn was taken at the callback's
      * door, and the Overseer's task read the cluster state before the
      * callback's constructState): what the order lets go after the turn
-     * sees the publication.  An apply on the notification's own thread that
+     * sees the publication.  A publish on the notification's own thread that
      * waits on a lock owned by a thread waiting for its turn behind it has
      * its turn taken for it a grace in (review R2), as a publisher's does.
      */
@@ -654,7 +655,7 @@ public class ScheduleLogTest {
         });
         after.start();
         Thread.sleep(100L);
-        assertFalse("due at the door: put in force there", door(view, 8L,
+        assertFalse("due at the door: its caller publishes", door(view, 8L,
                 viewNode, () -> {
                     try {
                         Thread.sleep(300L);
@@ -700,6 +701,85 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList("v8"), applied);
         assertEquals("one PUBLISH, written when its turn was taken for it",
                 Arrays.asList(v8, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+    }
+
+    /**
+     * THE DOOR ITSELF, in its callback ({@code MessageDoors#notified},
+     * {@code #publishing}): a publication due at its door is published by
+     * the caller, its turn taken when the callback ends -- one that throws
+     * after its publish included, the throw the system's, going on -- and a
+     * deferred publication whose apply throws still takes its turn on the
+     * node's publisher (review NIT7).
+     */
+    @Test(timeout = 30000L)
+    public void aNotificationsTurnIsSettledWhenItsCallbackEndsAThrowIncluded()
+            throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = NODE.key();
+        String path = "/collections/settled/state.json";
+        String v3 = ScheduleEvent.published("SOLR_ZK",
+                MessageDoors.storeLocation("SOLR_ZK", path).slot(), 3L);
+        enforce(Arrays.asList(publish(viewNode, v3),
+                event(ScheduleEvent.Kind.SEND, "after")),
+                Collections.<ScheduleEvent>emptyList());
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        boolean[] sawApplied = new boolean[1];
+        Thread after = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawApplied[0] = applied.contains("v3");
+        });
+        after.start();
+        Thread.sleep(100L);
+        boolean[] deferred = new boolean[] {true};
+        IllegalStateException thrown = null;
+        try {
+            MessageDoors.notified("Watcher", () -> {
+                deferred[0] = MessageDoors.publishing("SOLR_ZK", path, 3L,
+                        () -> applied.add("on the publisher"));
+                try {
+                    Thread.sleep(300L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                applied.add("v3");
+                throw new IllegalStateException("the system's own failure");
+            });
+        } catch (IllegalStateException system) {
+            thrown = system;
+        }
+        assertFalse("due at its door: the caller publishes", deferred[0]);
+        assertNotNull("the callback's throw goes on", thrown);
+        after.join(5000L);
+        assertFalse(after.isAlive());
+        assertTrue("let go only once the callback ended", sawApplied[0]);
+        assertEquals(Arrays.asList(v3, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+
+        restart();
+        Confirmation.resetForTests();
+        applied.clear();
+        String v4 = ScheduleEvent.published("SOLR_ZK",
+                MessageDoors.storeLocation("SOLR_ZK", path).slot(), 4L);
+        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
+                publish(viewNode, v4), event(ScheduleEvent.Kind.SEND,
+                        "after")), Collections.<ScheduleEvent>emptyList());
+        assertTrue("not due: handed to the publisher", door(
+                view(viewNode, path), 4L, viewNode, () -> {
+                    applied.add("v4");
+                    throw new IllegalStateException("thrown in the apply");
+                }, v4));
+        Thread next = new Thread(() -> ScheduleLog.observe(
+                ScheduleEvent.Kind.SEND, "after"));
+        next.start();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        next.join(5000L);
+        assertFalse(next.isAlive());
+        assertEquals(Arrays.asList("v4"), applied);
+        assertEquals(Arrays.asList("before", v4, "after"), sites());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 0 given up"));
     }
@@ -1083,7 +1163,7 @@ public class ScheduleLogTest {
                 new ArrayList<String>());
         assertFalse("the paired version: in force at once",
                 door(view, 7L, viewNode, () -> applied.add("v7"), v7));
-        assertEquals("applied by its door, its turn given up after it",
+        assertEquals("published by its caller, its turn given up after it",
                 Arrays.asList("v7"), applied);
         assertTrue("past it: held", door(view, 8L, viewNode,
                 () -> applied.add("v8"), v8));
@@ -1098,23 +1178,24 @@ public class ScheduleLogTest {
     }
 
     /**
-     * A notification's publication at its node's door, as {@code
-     * MessageDoors#publishing} runs it: the door's step ({@code
-     * Confirmation#publishing}) once its pause ends, or the caller's own
-     * publish where the door returns none.
+     * A notification's publication at its node's door, as a store
+     * notification's callback makes it ({@code MessageDoors#notified},
+     * {@code #publishing}): deferred to the node's publisher, or published by
+     * the caller, its turn settled when the callback ends.
      *
      * @return whether it was deferred to the node's publisher
      */
     private static boolean door(LocationId view, long version, String node,
                                 Runnable apply, String turn) {
-        Runnable step = Confirmation.publishing(view, version, null, node,
-                null, apply, turn);
-        if (step == null) {
-            apply.run();
-            return false;
+        int callback = Confirmation.notificationBegins();
+        try {
+            boolean deferred = Confirmation.publishing(view, version, null,
+                    node, null, apply, turn);
+            if (!deferred) apply.run();
+            return deferred;
+        } finally {
+            Confirmation.notificationEnded(callback);
         }
-        step.run();
-        return step == Confirmation.PUBLISHER;
     }
 
     private static ScheduleEvent publish(String node, String site) {

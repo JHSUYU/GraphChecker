@@ -531,8 +531,9 @@ public final class ScheduleLog {
     }
 
     /**
-     * A PUBLISH whose apply runs, its turn due -- on the notification's own
-     * thread or its node's publisher ({@code Confirmation#inForce}): the
+     * A PUBLISH whose publication runs, its turn due -- published by the
+     * notification's caller or applied by its node's publisher ({@code
+     * Confirmation#begin}, {@code #settle}): the
      * turn is taken once the publication is in force ({@link
      * #publicationInForce}), so nothing the order lets go after it reads
      * past it (review S1; SGF3 snapshot-no-active) -- unless the apply
@@ -578,8 +579,8 @@ public final class ScheduleLog {
             new HashMap<Integer, Publication>();
 
     /**
-     * This thread begins the apply of {@code site}'s publication on {@code
-     * node}, its turn due ({@code Confirmation#inForce}): the in-flight
+     * This thread begins {@code site}'s publication on {@code node}, its turn
+     * due ({@code Confirmation#begin}): the in-flight
      * publication whose turn {@link #publicationInForce} takes, or null
      * where no slot holds it.
      */
@@ -610,9 +611,14 @@ public final class ScheduleLog {
     public static void publicationInForce(Publication applying, String node,
                                           String site) {
         if (applying != null) {
-            synchronized (LOCK) {
-                IN_FLIGHT.remove(applying.slot, applying);
-                if (applying.taken) return;
+            mute();
+            try {
+                synchronized (LOCK) {
+                    IN_FLIGHT.remove(applying.slot, applying);
+                    if (applying.taken) return;
+                }
+            } finally {
+                unmute();
             }
         }
         observe(ScheduleEvent.Kind.PUBLISH, site, "", viewStance(node));
