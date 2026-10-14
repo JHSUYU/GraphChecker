@@ -85,9 +85,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *     of a region in {@code regions} ({@link HandoffMint#answerNatively}),
  *     the answer written at the endpoint's leaf.</li>
  *   </ul></li>
- *   <li>{@code ORDER {before, after}}: CONFIRM's own row, held as a CONFIRM
- *   run holds it ({@link Confirmation}, which reads this file in a planted
- *   run); and {@code ORDER {scope: EVENT, before, after}}, an edge of the
+ *   <li>{@code ORDER {before, after}}: CONFIRM's own row of what the model
+ *   chose or the world's pairings -- not one only a read's own join needs,
+ *   the confirmed session's history, which a native run makes on its own
+ *   timing ({@code explore.ConfirmMain#writePlant}) -- held as a CONFIRM run
+ *   holds it ({@link Confirmation}, which reads this file in a planted run);
+ *   and {@code ORDER {scope: EVENT, before, after}}, an edge of the
  *   order the session CONFIRM saw ran in from the moved roots on, two schedule
  *   events by kind, context, site and k, held at the event's admission
  *   ({@code ScheduleLog#holdRealizedLocked}).  Held, the row is applied; one

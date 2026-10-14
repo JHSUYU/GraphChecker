@@ -2868,10 +2868,18 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   nobody;
 - an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
   port's call-return capture and the regions declaring it IN;
-- CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10: the join
-  closure's at the locations the fatal rests on, and those holding the pairings the world plants --
-  an INITIAL pairing holds every other writer of the location after the read), each pair once, and
-  its `VIEW_HOLD` rows, each once, which the native run holds as CONFIRM does, deferring the node's
+- CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10) of what the model
+  chose -- a read it chose a writer for, at the locations the fatal rests on, with every other
+  writer of the location around it -- and those holding the pairings the world plants (an INITIAL
+  pairing holds every other writer of the location after the read), each pair once; not a row only
+  a read's own join needs (`ConfirmMain.Witness#history`): that is the confirmed session's history,
+  which a native run makes on its own timing and by its own paths (HV1
+  solr-bugs-snapshot-no-active: 178 of its 179 rows were joins, most ordering
+  `ZkStateReader.collectionWatches`' writers and readers; natively a `waitForState` took its fast path and registered no watcher, or
+  another watch notification decoded the state, and the first row waiting for an activation that
+  never came released every hold, 0/10); CONFIRM still holds and compares them. And its
+  `VIEW_HOLD` rows, a join's too (a hold defers a publication and waits for no event to come), each
+  once, which the native run holds as CONFIRM does, deferring the node's
   publication (`Confirmation#publishing`, each stated held, applied or unheld, at most VIEW_HOLD_MAX); a pairing at a placeholder (a mint
   read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
   plant's summary counts them (`placeholderPairings`);

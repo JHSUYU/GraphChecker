@@ -244,6 +244,25 @@ public class ConfirmMainTest {
         return file;
     }
 
+    /** The claim's model, choosing {@code writer}'s write for
+     *  {@code reader}'s read: a writer arm as the composer spells it -- the
+     *  writer's OCCURRENCE; the interaction it fills is what names the
+     *  write. */
+    private static void chose(Path claim, Endpoint writer, Endpoint reader)
+            throws Exception {
+        JsonObject document = ExploreCodec.readObject(claim);
+        JsonObject arm = new JsonObject();
+        arm.addProperty("selector", "writer_arm__1__w");
+        arm.addProperty("groupId", writer.occurrence().id());
+        JsonArray fills = new JsonArray();
+        fills.add(Interaction.of(InteractionKind.STATE, writer, reader).id());
+        arm.add("interactionIds", fills);
+        document.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                .getAsJsonArray("selectedArms").add(arm);
+        Files.write(claim, document.toString()
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
     private Path manifest() throws Exception {
         return manifest("INSTANCE/1#40", "INSTANCE/8#16", "MAP/20#-3",
                 "MAP/30#-3");
@@ -311,25 +330,7 @@ public class ConfirmMainTest {
                 RowCodec::writeRead);
         for (boolean chosen : new boolean[]{false, true}) {
             Path claim = claim("FAULT:IPC", "true");
-            if (chosen) {
-                JsonObject document = JsonParser.parseString(new String(
-                        Files.readAllBytes(claim), StandardCharsets.UTF_8))
-                        .getAsJsonObject();
-                JsonObject arm = new JsonObject();
-                arm.addProperty("selector", "writer_arm__1__w");
-                // As the composer spells it: the writer's OCCURRENCE; the
-                // interaction it fills is what names the write.
-                arm.addProperty("groupId", writer.occurrence().id());
-                JsonArray fills = new JsonArray();
-                fills.add(Interaction.of(InteractionKind.STATE, writer,
-                        reader).id());
-                arm.add("interactionIds", fills);
-                document.getAsJsonArray("valuations").get(1)
-                        .getAsJsonObject().getAsJsonArray("selectedArms")
-                        .add(arm);
-                Files.write(claim, document.toString()
-                        .getBytes(StandardCharsets.UTF_8));
-            }
+            if (chosen) chose(claim, writer, reader);
             Path out = folder.newFolder("outside-" + chosen).toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
             JsonObject state = null;
@@ -427,22 +428,7 @@ public class ConfirmMainTest {
                     {older, "PAIRING_UNHELD: read " + viewed.id()}};
             for (Object[] row : table) {
                 Path claim = claim("FAULT:IPC", "true");
-                if (row[0] != null) {
-                    JsonObject document = ExploreCodec.readObject(claim);
-                    JsonObject arm = new JsonObject();
-                    arm.addProperty("selector", "writer_arm__1__w");
-                    arm.addProperty("groupId",
-                            ((Endpoint) row[0]).occurrence().id());
-                    JsonArray fills = new JsonArray();
-                    fills.add(Interaction.of(InteractionKind.STATE,
-                            (Endpoint) row[0], viewed).id());
-                    arm.add("interactionIds", fills);
-                    document.getAsJsonArray("valuations").get(1)
-                            .getAsJsonObject().getAsJsonArray("selectedArms")
-                            .add(arm);
-                    Files.write(claim, document.toString()
-                            .getBytes(StandardCharsets.UTF_8));
-                }
+                if (row[0] != null) chose(claim, (Endpoint) row[0], viewed);
                 Path out = folder.newFolder().toPath();
                 try {
                     ConfirmMain.write(iteration, claim,
@@ -1331,9 +1317,14 @@ public class ConfirmMainTest {
     /**
      * A native run's plant is CONFIRM's world: a ROOT per root it assigns
      * (here a tree hook's, at the occurrence the recording mints it at), the
-     * ORDER rows CONFIRM holds, TARGET rows at the anchor, each numbered.  A
-     * world the recording weave cannot plant is refused by name: a clock
-     * skew, a root of no plantable category, or nothing at all.
+     * ORDER rows CONFIRM holds for what the model chose, TARGET rows at the
+     * anchor, each numbered.  A read the model chose no writer for is held
+     * by CONFIRM to the write it joined, its rows the same as if the model
+     * had chosen that write; the plant holds none of them: the run's own
+     * history, which a native run makes by its own paths (HV1
+     * snapshot-no-active, 0/10).  A world the recording weave cannot plant
+     * is refused by name: a clock skew, a root of no plantable category, or
+     * nothing at all.
      */
     @Test
     public void aNativePlantIsConfirmsWorld() throws Exception {
@@ -1359,15 +1350,17 @@ public class ConfirmMainTest {
         Files.write(scopeMap, Collections.singletonList(site.toString()),
                 StandardCharsets.UTF_8);
         // The world, the claim's moved root and its value, then the plant's
-        // first ROOT row; null: refused; "": no ROOT row.
+        // first ROOT row; null: refused.
         Object[][] worlds = {
                 {"{}", "HDFS.SERIAL", "119981", "ROOT HOOK HDFS.SERIAL "
                         + mint.id() + " 119981"},
                 {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", "119981", null},
                 // A marker no plan input calls: no site to answer at.
                 {"{}", "M_Z_fault", "119981", null},
-                // A marker at false is the run as recorded: never planted.
-                {"{}", "M_Z_fault", "false", ""},
+                // A marker at false is the run as recorded: never planted,
+                // and with the model choosing nothing the world plants
+                // nothing: refused.
+                {"{}", "M_Z_fault", "false", null},
         };
         for (Object[] row : worlds) {
             JsonObject planted = world.deepCopy();
@@ -1389,40 +1382,39 @@ public class ConfirmMainTest {
                 continue;
             }
             List<JsonObject> rows = RowCodec.readJsonl(plant);
-            if ("".equals(row[3])) {
-                for (JsonObject planted2 : rows) {
-                    assertFalse(Arrays.toString(row) + ": " + planted2,
-                            "ROOT".equals(planted2.get("kind").getAsString()));
-                }
-                continue;
-            }
             JsonObject root = rows.get(0);
             assertEquals(row[3], root.get("kind").getAsString() + " "
                     + root.get("category").getAsString() + " "
                     + root.get("rootId").getAsString() + " "
                     + root.get("occurrence").getAsString() + " "
                     + root.get("value").getAsString());
-            // CONFIRM's own ORDER rows, as its replay is held to them.
+            // CONFIRM's own ORDER rows, as its replay is held to them: the
+            // same whether the model chose the write the read joined or not.
             Path out = folder.newFolder().toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
+            List<JsonObject> edges = RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE));
             List<JsonObject> orders = new ArrayList<JsonObject>();
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges) {
                 if ("ORDER".equals(edge.get("kind").getAsString())) {
                     orders.add(edge);
                 }
             }
             assertFalse("the closure orders nothing", orders.isEmpty());
-            List<JsonObject> held = new ArrayList<JsonObject>();
-            for (JsonObject planted2 : rows) {
-                if (!"ORDER".equals(planted2.get("kind").getAsString())) {
-                    continue;
-                }
-                JsonObject order = planted2.deepCopy();
-                order.remove("row");
-                held.add(order);
-            }
-            assertEquals(orders, held);
+            assertEquals("the join's rows are the plant's none",
+                    Collections.<JsonObject>emptyList(), ordersOf(rows));
+            Path chosen = claim((String) row[1], (String) row[2]);
+            chose(chosen, writer, reader);
+            Path outChosen = folder.newFolder().toPath();
+            ConfirmMain.write(iteration, chosen, manifest(), outChosen);
+            assertEquals("CONFIRM's edges", edges, RowCodec.readJsonl(
+                    outChosen.resolve(Confirmation.FILE)));
+            Path plantChosen = folder.newFile().toPath();
+            ConfirmMain.writePlant(iteration, chosen, manifest(), scopeMap,
+                    iteration.resolve("sessions").resolve("sel"),
+                    plantChosen);
+            assertEquals("what the model chose is planted", orders,
+                    ordersOf(RowCodec.readJsonl(plantChosen)));
             JsonObject target = rows.get(rows.size() - 1);
             assertEquals("TARGET " + anchor.id() + " false",
                     target.get("kind").getAsString() + " "
@@ -1432,6 +1424,18 @@ public class ConfirmMainTest {
                 assertEquals(index, rows.get(index).get("row").getAsInt());
             }
         }
+    }
+
+    /** A plant's ORDER rows, without their row numbers. */
+    private static List<JsonObject> ordersOf(List<JsonObject> rows) {
+        List<JsonObject> held = new ArrayList<JsonObject>();
+        for (JsonObject row : rows) {
+            if (!"ORDER".equals(row.get("kind").getAsString())) continue;
+            JsonObject order = row.deepCopy();
+            order.remove("row");
+            held.add(order);
+        }
+        return held;
     }
 
     /**
