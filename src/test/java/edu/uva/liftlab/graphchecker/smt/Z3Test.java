@@ -432,6 +432,34 @@ public class Z3Test {
     }
 
     /**
+     * TWO ENGINES THAT DECIDE ONE RUN DIFFERENTLY ARE AN ERROR, NEVER A
+     * VERDICT: engine 6 says unsat at once, engine 2 sat after 0.3 s; the
+     * verdict's run takes engine 6's unsat, its core's run, within the
+     * preferred engine's grace, has both.  The ask is undecided and the
+     * disagreement named among the solver's errors.
+     */
+    @Test
+    public void twoEnginesThatDifferAreAnErrorNeverAVerdict()
+            throws IOException {
+        Path script = folder.newFile("z3-split").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'smt.arith.solver 2)'*) sleep 0.3; echo sat ;;",
+                "  *get-unsat-core*) echo unsat; echo '(c)' ;;",
+                "  *) echo unsat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3 solver = new Z3(script, 3000L, 8192);
+        Z3.Answer answer = solver.ask("(assert true)\n",
+                Collections.<String>emptyList(), true);
+        assertTrue(answer.toString(), !answer.decided()
+                && answer.status().startsWith(Z3.DISAGREE));
+        assertTrue(solver.errors().toString(),
+                solver.errors().toString().contains("engines disagree"));
+    }
+
+    /**
      * A QUERY'S OWN ARITHMETIC OPTION IS REPLACED AS IT STREAMS to an
      * engine, however the writes split it; text that only resembles one
      * passes unchanged.  {query, what engine 6 reads}.

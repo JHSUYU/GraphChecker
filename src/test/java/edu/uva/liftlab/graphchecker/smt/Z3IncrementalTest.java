@@ -91,13 +91,17 @@ public class Z3IncrementalTest {
      * after it are asked of a fresh one: the fixture z3 runs out of memory
      * where a scope says so -- on its check, its model or its core -- as
      * both engines do.  A memout is undecided, a sat whose model was cut
-     * too; an unsat whose core was cut stands, its core unknown.
+     * too; an unsat whose core was cut stands, its core unknown.  A z3
+     * that ran out of memory after answering others asks the question
+     * again of a fresh one, once ({@code agedoom}: only a z3 that answered
+     * before runs out).
      * {scope, symbols, core wanted, status, values, core known}.
      */
     @Test
     public void aZ3ThatEndsMidQuestionAnswersItNothing() throws IOException {
         Object[][] rows = {
                 {"; unsat", "", false, "unsat", "{}", false},
+                {"; agedoom", "", false, "unsat", "{}", false},
                 {"; oom", "", false, "memout", "{}", false},
                 {"; sat", "x", false, "sat", "{x=1}", false},
                 {"; sat ; modelcut", "x", false, "memout", "{}", false},
@@ -159,65 +163,152 @@ public class Z3IncrementalTest {
                 Arrays.asList("start", "start"), Files.readAllLines(log));
     }
 
+    /**
+     * A SIGNAL THAT LANDS LATE IS NO ANSWER: engine 2 refutes a scope in
+     * half a second, engine 6, deaf to the SIGINT that cancels its check,
+     * answers after 1.5 s, and the signal lands later -- on its next check,
+     * unknown and "canceled", or between checks, ending it as z3 ends.
+     * Either next question is asked once more, and engine 6, which alone
+     * decides it, does; it is started again only where the signal ended
+     * it.
+     */
+    @Test
+    public void aSignalThatLandsLateIsNoAnswer() throws IOException {
+        Path log = folder.newFile("stray.log").toPath();
+        Z3 solver = new Z3(fake(log), 30000L, 4096);
+        String[][] rows = {{"; deaf", "unsat"}, {"; only6", "sat"},
+                {"; deafdie", "unsat"}, {"; only6", "sat"}};
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"))) {
+            for (String[] row : rows) {
+                assertEquals(Arrays.toString(row), row[1], scopes.ask(
+                        output -> output.write(row[0] + "\n"), null, false,
+                        0L).status());
+            }
+        }
+        assertEquals("two z3s, engine 6's started again once",
+                3, Files.readAllLines(log).size());
+        assertTrue(solver.errors().toString(), solver.errors().isEmpty());
+    }
+
+    /**
+     * TWO DECIDED ANSWERS THAT DIFFER ARE AN ERROR, NEVER A VERDICT: engine
+     * 6 says unsat at once and engine 2, within its grace, sat with its
+     * model; and a question unsat untracked is sat asked for its core.
+     * Each is undecided and named among the solver's errors, which refuse
+     * a claim over it by name.
+     */
+    @Test
+    public void twoAnswersThatDifferAreAnErrorNeverAVerdict()
+            throws IOException {
+        Z3 solver = new Z3(fake(), 30000L, 4096);
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"))) {
+            Z3.Answer engines = scopes.ask(output -> output.write(
+                    "; split\n"), Collections.singletonList("x"), false, 0L);
+            assertTrue(engines.toString(), !engines.decided()
+                    && engines.status().startsWith(Z3.DISAGREE));
+            Z3.Answer core = scopes.ask(output -> output.write(
+                    "; splitcore\n"), null, true, 0L);
+            assertTrue(core.toString(), !core.decided()
+                    && core.status().startsWith(Z3.DISAGREE));
+        }
+        assertEquals(solver.errors().toString(), 2, solver.errors().size());
+    }
+
     private Path fake() throws IOException {
         return fake(folder.newFile("unused.log").toPath());
     }
 
     /**
-     * A z3 answering scopes as their {@code ; <word>} comments say:
-     * {@code oom} runs out of memory on the check, {@code modelcut} on its
-     * model, {@code corecut} on its core; {@code slow} searches a minute
-     * under engine 6 unless SIGINT cancels it, a second under engine 2,
-     * then unsat; {@code late2} searches a minute under engine 2 unless
-     * SIGINT cancels it, and is sat at once under engine 6; {@code only6}
-     * is sat under engine 6, unknown under 2;
-     * else {@code sat} ({@code ((x 1))}) or unsat (core {@code (c)}).  Each
-     * start logged.
+     * A z3 answering scopes as their {@code ; <word>} comments say, and a
+     * SIGINT as z3 does: inside a check it ends the check, unknown,
+     * "canceled"; anywhere else it ends z3.  {@code oom} runs out of
+     * memory on the check, {@code agedoom} on a z3 that answered a check
+     * before, {@code modelcut} on its model, {@code corecut} on its core;
+     * {@code slow} searches a minute under engine 6 unless cancelled, a
+     * second under engine 2, then unsat; {@code late2} searches a minute
+     * under engine 2 unless cancelled, under engine 6 0.3 s, then sat;
+     * {@code only6} is sat under engine 6, unknown under 2; {@code deaf}
+     * and {@code deafdie} search 1.5 s under engine 6 deaf to SIGINT, then
+     * unsat (0.5 s under 2), and the signal lands later: on the next check,
+     * cancelling it, or (deafdie) on the next scope, ending z3;
+     * {@code split} is unsat under 6 at once, sat under 2 after 0.2 s;
+     * {@code splitcore} unsat untracked, sat tracking; else {@code sat}
+     * ({@code ((x 1))}) or unsat (core {@code (c)}), engine 6 searching
+     * 0.3 s first.  Each start logged.
      */
     private Path fake(Path log) throws IOException {
         Path script = folder.newFile("z3-scoped.py").toPath();
         Files.write(script, Arrays.asList("#!/usr/bin/env python3",
-                "import signal, sys, time",
+                "import os, signal, sys, time",
                 "class Cancelled(Exception): pass",
-                "solving = False; pending = False",
+                "solving = False; deaf = None; stray = None",
                 "def cancel(signum, frame):",
-                "    global pending",
+                "    global stray",
+                "    if deaf: stray = deaf; return",
                 "    if solving: raise Cancelled()",
-                "    pending = True",
+                "    os._exit(1)",
                 "signal.signal(signal.SIGINT, cancel)",
                 "with open('" + log + "', 'a') as starts: starts.write("
                         + "'start\\n')",
-                "engine = '2'; text = ''; scope = ''; verdict = ''",
+                "engine = '2'; tracking = False; answered = 0",
+                "text = ''; scope = ''; verdict = ''; reason = ''",
                 "def say(line):",
                 "    sys.stdout.write(line + '\\n'); sys.stdout.flush()",
                 "def oom():",
                 "    say('(error \"out of memory\")'); sys.exit(101)",
+                "def search(seconds):",
+                "    global solving, reason",
+                "    solving = True",
+                "    try:",
+                "        time.sleep(seconds); return True",
+                "    except Cancelled:",
+                "        reason = 'canceled'; return False",
+                "    finally: solving = False",
                 "while True:",
                 "    line = sys.stdin.readline()",
                 "    if not line: break",
                 "    said = line.strip()",
                 "    if said.startswith('(set-option :smt.arith.solver '):",
                 "        engine = said.split(' ')[-1].rstrip(')')",
-                "    if said == '(push 1)': scope = ''",
+                "    if said == '(set-option :produce-unsat-cores true)':",
+                "        tracking = True",
+                "    if said == '(push 1)':",
+                "        scope = ''",
+                "        if stray == 'die': os._exit(1)",
                 "    if not said.startswith('(echo \"'):",
                 "        text += line; scope += line; continue",
                 "    if '(check-sat)' in text:",
+                "        reason = 'incomplete'",
                 "        if '; oom' in scope: oom()",
-                "        if ('; slow' in scope and engine == '6')"
+                "        if '; agedoom' in scope and answered > 0: oom()",
+                "        answered += 1",
+                "        if stray == 'cancel':",
+                "            stray = None; verdict = 'unknown'; reason = 'canceled'",
+                "        elif ('; slow' in scope and engine == '6')"
                         + " or ('; late2' in scope and engine == '2'):",
-                "            solving = True",
-                "            try:",
-                "                if pending: raise Cancelled()",
-                "                time.sleep(60); verdict = 'sat'",
-                "            except Cancelled: verdict = 'unknown'",
-                "            finally: solving = False",
+                "            verdict = 'sat' if search(60) else 'unknown'",
+                "        elif '; deaf' in scope and engine == '6':",
+                "            deaf = 'die' if '; deafdie' in scope else 'cancel'",
+                "            time.sleep(1.5); deaf = None; verdict = 'unsat'",
+                "        elif '; deaf' in scope:",
+                "            time.sleep(0.5); verdict = 'unsat'",
                 "        elif '; slow' in scope:",
                 "            time.sleep(1); verdict = 'unsat'",
-                "        elif '; only6' in scope or '; late2' in scope:",
+                "        elif '; late2' in scope:",
+                "            verdict = 'sat' if search(0.3) else 'unknown'",
+                "        elif '; only6' in scope:",
                 "            verdict = 'sat' if engine == '6' else 'unknown'",
+                "        elif '; splitcore' in scope:",
+                "            verdict = 'sat' if tracking else 'unsat'",
+                "        elif '; split' in scope:",
+                "            if engine == '2': time.sleep(0.2)",
+                "            verdict = 'sat' if engine == '2' else 'unsat'",
+                "        elif engine == '6' and not search(0.3):",
+                "            verdict = 'unknown'",
                 "        else:",
                 "            verdict = 'sat' if '; sat' in scope else 'unsat'",
-                "        pending = False",
                 "        say(verdict)",
                 "    elif '(get-value' in text:",
                 "        if '; modelcut' in scope: oom()",
@@ -226,8 +317,7 @@ public class Z3IncrementalTest {
                 "        if '; corecut' in scope: oom()",
                 "        say('(c)')",
                 "    elif '(get-info' in text:",
-                "        say('(:reason-unknown \"' + ('canceled' if verdict"
-                        + " == 'unknown' else 'incomplete') + '\")')",
+                "        say('(:reason-unknown \"' + reason + '\")')",
                 "    say(said[len('(echo \"'):-2])",
                 "    text = ''"), StandardCharsets.UTF_8);
         assertTrue(script.toFile().setExecutable(true));

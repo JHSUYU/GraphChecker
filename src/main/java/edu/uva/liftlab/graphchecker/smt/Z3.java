@@ -477,14 +477,22 @@ public final class Z3 {
                     Collections.<String>emptyList(), false, "out of memory at"
                     + " its cap of " + capMb() + " MB (memory_max_size)");
         }
+        // Its engines disagreeing: undecided, named among its errors.
+        if (status.startsWith(DISAGREE)) return undecided(status);
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
             // Its model cut by a shared slot's cap: that run once more
             // alone, never the verdict again (a verdict with no model
             // selects no path).
-            values = parseValues(payload("", query,
-                    valueCommand(modelSymbols)));
+            String printed = payload("", query, valueCommand(modelSymbols));
+            if (firstLine(printed).startsWith(DISAGREE)) {
+                return undecided(firstLine(printed));
+            }
+            if ("unsat".equals(firstLine(printed))) {
+                return disagree("its verdict sat, its model's run unsat");
+            }
+            values = parseValues(printed);
         }
         List<String> core = Collections.emptyList();
         boolean coreKnown = false;
@@ -495,6 +503,12 @@ public final class Z3 {
             // asked again for a core, nor undecided for want of one.
             String printed = payload(CORE_TRACKING, query,
                     "(check-sat)\n(get-unsat-core)\n");
+            if (firstLine(printed).startsWith(DISAGREE)) {
+                return undecided(firstLine(printed));
+            }
+            if ("sat".equals(firstLine(printed))) {
+                return disagree("its verdict unsat, its core's run sat");
+            }
             coreKnown = "unsat".equals(firstLine(printed))
                     && answerBlock(printed, true) != null;
             if (coreKnown) core = parseCore(printed);
@@ -507,6 +521,27 @@ public final class Z3 {
                     "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
         return new Answer(status, values, core, coreKnown, reason);
+    }
+
+    /** How a contradiction between two runs or engines of one question
+     *  starts ({@link #disagree}). */
+    static final String DISAGREE = "(error \"engines disagree: ";
+
+    /**
+     * Two decided answers to one question that differ -- its two engines
+     * in one run, or its verdict's run and its model's or core's: an error
+     * ({@link #errors}, which refuses the claim by name) and an undecided
+     * answer, never a verdict.
+     */
+    private Answer disagree(String how) {
+        String error = DISAGREE + how + "\")";
+        noteError(error);
+        return undecided(error);
+    }
+
+    private static Answer undecided(String status) {
+        return new Answer(status, Collections.<String, String>emptyMap(),
+                Collections.<String>emptyList(), false, "");
     }
 
     /**
@@ -716,7 +751,8 @@ public final class Z3 {
      * decided and the preferred one has not within its grace -- at once
      * where {@code suffix} asks no model and no core
      * ({@link #PREFERRED_GRACE_MILLIS}); when neither decides, the
-     * preferred engine's.
+     * preferred engine's.  Both decided, differing: an {@code (error ...)}
+     * that names them ({@link #DISAGREE}), never either verdict.
      */
     private static String race(Process[] engines,
                                List<AtomicReference<String>> read,
@@ -729,13 +765,16 @@ public final class Z3 {
             while (true) {
                 String preferred = finished(engines[0], read.get(0),
                         readers.get(0));
-                if (preferred != null && decided(preferred, suffix)) {
-                    return preferred;
-                }
                 String other = finished(engines[1], read.get(1),
                         readers.get(1));
+                boolean otherDecides = other != null
+                        && decided(other, suffix);
+                if (preferred != null && decided(preferred, suffix)) {
+                    return otherDecides ? agreed(preferred, other)
+                            : preferred;
+                }
                 long now = System.nanoTime();
-                if (other != null && decided(other, suffix)) {
+                if (otherDecides) {
                     if (otherDecidedAt == 0L) otherDecidedAt = now;
                     long took = otherDecidedAt - started;
                     long grace = Math.max(took, TimeUnit.MILLISECONDS
@@ -756,6 +795,16 @@ public final class Z3 {
             Thread.currentThread().interrupt();
             return TIMEOUT;
         }
+    }
+
+    /** {@code preferred}, where {@code other} decided the same; else an
+     *  error naming both verdicts ({@link #DISAGREE}). */
+    private static String agreed(String preferred, String other) {
+        String one = firstLine(preferred);
+        String two = firstLine(other);
+        return one.equals(two) ? preferred : DISAGREE + "engine "
+                + ARITHMETIC[0] + " " + one + ", engine " + ARITHMETIC[1]
+                + " " + two + " in one run\")";
     }
 
     /** What an engine printed once it ended and its output is read, else

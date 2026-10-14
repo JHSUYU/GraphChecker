@@ -65,10 +65,12 @@ import java.util.function.Function;
  *       there is the path's refutation under every valuation agreeing on
  *       them, so each path is asked once per distinct projection, not once
  *       per valuation (SGF6-bugs-snapshot-no-active 0001: 141 paths, 128
- *       valuations).  Sat or undecided there, the whole valuation decides:
- *       an unsat is only ever read off a subset of the assertions asked, and
- *       a memout or timeout is never one.  A path's own run is asked so
- *       too, its refutations remembered apart.</li>
+ *       valuations); that first try takes at most a quarter of the path's
+ *       budget ({@link #PROJECTED_SHARE}).  Sat or undecided there, the
+ *       whole valuation decides, within the whole budget: an unsat is only
+ *       ever read off a subset of the assertions asked, and a memout or
+ *       timeout is never one.  A path's own run is asked so too, its
+ *       refutations remembered apart.</li>
  * </ul>
  *
  * <p>Selectors are never asserted together: two contradict the partition.
@@ -84,6 +86,17 @@ final class Disjunction implements AutoCloseable {
     /** Budget of a path's ask in its own run ({@link #pathAsk}), at most
      *  the solver's. */
     static final long OWN_RUN_BUDGET_MS = 600000L;
+
+    /**
+     * A path's question under the pins its question names
+     * ({@link #projected}) takes at most this share of the path's budget,
+     * one in this many; the question under every pin keeps the whole
+     * budget of its own.  Its projected roots follow only the commands
+     * every path shares that name two or more of them, so the projection
+     * can leave out a pin it needs and be sat or undecided where the
+     * whole question is unsat: it is a first try, never the path's budget.
+     */
+    static final int PROJECTED_SHARE = 4;
 
     /** Budget of a path's self-refutation run: decides a path, scans them
      *  all. */
@@ -376,10 +389,11 @@ final class Disjunction implements AutoCloseable {
     /**
      * One path asked free under {@code assertions} within
      * {@code budgetMillis} ({@code <= 0}: the solver's): first under the
-     * pins of the roots its question names ({@link #projected}), whose unsat
-     * refutes it under every valuation agreeing on them; sat or undecided
-     * there, under them all.  Its unsat is remembered under what it was
-     * asked under.
+     * pins of the roots its question names ({@link #projected}), within its
+     * {@link #PROJECTED_SHARE}, whose unsat refutes it under every valuation
+     * agreeing on them; sat or undecided there, under them all, within the
+     * whole budget.  Its unsat is remembered under what it was asked
+     * under.
      */
     private Z3.Answer pathAnswer(String selector, List<String> assertions,
                                  List<String> asked, boolean wantCore,
@@ -387,11 +401,11 @@ final class Disjunction implements AutoCloseable {
         long budget = budgetMillis > 0L
                 ? Math.min(budgetMillis, solver.timeoutMillis())
                 : solver.timeoutMillis();
-        long deadline = System.currentTimeMillis() + budget;
         List<String> fewer = projected(selector, assertions);
         if (fewer.size() < assertions.size()) {
             Z3.Answer first = scopes.ask(composition.scopeQuery(selector,
-                    fewer), Collections.<String>emptyList(), wantCore, budget);
+                    fewer), Collections.<String>emptyList(), wantCore,
+                    Math.max(1L, budget / PROJECTED_SHARE));
             if (first.unsat()) {
                 remember(selector, new HashSet<String>(fewer), first,
                         wantCore && first.coreKnown());
@@ -399,8 +413,7 @@ final class Disjunction implements AutoCloseable {
             }
         }
         Z3.Answer answer = scopes.ask(composition.scopeQuery(selector,
-                assertions), asked, wantCore, Math.max(1L,
-                deadline - System.currentTimeMillis()));
+                assertions), asked, wantCore, budget);
         if (answer.unsat()) {
             remember(selector, new HashSet<String>(assertions), answer,
                     wantCore && answer.coreKnown());
@@ -427,10 +440,10 @@ final class Disjunction implements AutoCloseable {
      * The path asked in its own run ({@code Composition#ownRun}) within
      * {@link #OWN_RUN_BUDGET_MS} and {@code budget}; null where it has none,
      * or where it was found unsat under a subset of these pins already.
-     * First under the pins its question names ({@link #projected}): unsat
-     * there is remembered for every valuation agreeing on them; sat there,
-     * its model is asked under them all; undecided, it answers so (its
-     * free ask follows).
+     * First under the pins its question names ({@link #projected}), within
+     * its {@link #PROJECTED_SHARE}: unsat there is remembered for every
+     * valuation agreeing on them; sat or undecided there, it is asked under
+     * them all, within the whole budget.
      */
     private Z3.Answer ownRun(String selector, List<String> assertions,
                              List<String> asked, long budget) {
@@ -447,12 +460,12 @@ final class Disjunction implements AutoCloseable {
             List<String> held = new ArrayList<String>(fewer);
             held.addAll(own);
             Z3.Answer first = scopes.ask(composition.scopeQuery(selector,
-                    held), Collections.<String>emptyList(), false, runBudget);
+                    held), Collections.<String>emptyList(), false,
+                    Math.max(1L, runBudget / PROJECTED_SHARE));
             if (first.unsat()) {
                 ownRefuted(selector, new HashSet<String>(fewer));
                 return first;
             }
-            if (!first.sat()) return first;
         }
         List<String> held = new ArrayList<String>(assertions);
         held.addAll(own);

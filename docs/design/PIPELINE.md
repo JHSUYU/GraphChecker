@@ -2508,8 +2508,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    z3 ends a `check-sat` and reads on (anywhere else SIGINT ends it: started afresh). Undecided is
    never a verdict -- a timeout (z3's `:timeout`, or silent 10 s past it: that z3 ended), an
    `unknown`, a z3 at its cap -- and a z3 that ends mid-question answers it nothing: the questions
-   after it go to a fresh one, and one that ended on an earlier question before reaching this one
-   asks it again, once. A sat whose model its cap cut is undecided, an unsat whose core it cut stands
+   after it go to a fresh one. A question is asked once more where its z3 ended before reaching it,
+   ran out of memory after answering others, or had a SIGINT meant for an earlier check still to land
+   (sent as that check ended, it cancels the next check or, outside a check, ends z3); a cancelled
+   check that shows no verdict within 10 s ends its z3, and a question's silence counts from its send.
+   Two decided answers to one question that differ -- its engines' in one run or race, or its verdict's
+   and its model's or core's -- are an error (`Z3#DISAGREE`, the claim refused by name) and the
+   question undecided. A sat whose model its cap cut is undecided, an unsat whose core it cut stands
    with its core unknown. A core is asked again of a second pair started tracking (`Z3#CORE_TRACKING`
    slows every question). The paths' questions are put 8 at a time (`PATH_ASKS`) and asked in order,
    one at a time; a pair holds the composer's whole z3 room while it lives, half each engine (a 2269
@@ -2545,7 +2550,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    those alone (`Disjunction#projected`), a subset of the valuation's assertions: unsat there, it is
    remembered so and refutes the path under every valuation agreeing on them, so a path is asked once
    per distinct projection, not once per valuation; sat or undecided there, the whole valuation
-   decides (its own run's undecided answers so, its free ask following). An unsat is only ever read
+   decides, in its own run too, within the whole budget: the first try takes at most a quarter of it
+   (`Disjunction#PROJECTED_SHARE`), since its roots follow only the shared commands naming two or more
+   of them and it can leave out a pin the path needs. An unsat is only ever read
    off a subset of the assertions asked, and a memout or a timeout is never one. A path's question is
    the body without the commands another path's selector guards (`(assert (=> <selector> ...))`,
    vacuous once the partition forces that selector false), its own selector asserted: the shared

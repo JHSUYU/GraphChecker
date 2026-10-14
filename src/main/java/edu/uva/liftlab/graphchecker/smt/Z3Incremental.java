@@ -58,10 +58,18 @@ import java.util.concurrent.TimeUnit;
  * timeout ({@code :timeout}, or no answer {@link #SILENCE_MARGIN_MS} past
  * it: that z3 ended), an {@code unknown}, a z3 at its cap ({@link
  * Z3#MEMOUT}).  A z3 that ends mid-question answers it nothing, and the
- * questions after it are asked of a fresh one; one that ended on an
- * earlier question before reaching this one asks it again, once.  A sat
- * whose model its cap cut is undecided; an unsat whose core it cut stands,
- * its core unknown, as {@link Z3#ask}'s does.</p>
+ * questions after it are asked of a fresh one.  A question is asked once
+ * more where its z3 ended before reaching it, where it ran out of memory
+ * after answering others, and where a SIGINT meant for an earlier check
+ * was still to land -- one sent as that check ended cancels the next check
+ * ("canceled") or, outside a check, ends z3.  A cancelled check no verdict
+ * of which comes within {@link #SILENCE_MARGIN_MS} ends its z3; a
+ * question's own silence is counted from when it is sent.  A sat whose
+ * model its cap cut is undecided; an unsat whose core it cut stands, its
+ * core unknown, as {@link Z3#ask}'s does.  Two decided answers to one
+ * question that differ -- its engines', or its verdict's and its core's
+ * -- are an error of the solver's, refusing the claim by name, and the
+ * question undecided: a scope that leaked is never a verdict.</p>
  *
  * <p>A core needs z3 to track named assertions from its start, which slows
  * every question ({@link Z3#CORE_TRACKING}): as {@link Z3#ask} asks its
@@ -89,6 +97,15 @@ public final class Z3Incremental implements AutoCloseable {
     /** A scoped z3's own clock ({@code Z3#hardTimeout}) where its solver
      *  names no deadline: one that runs out is started afresh. */
     static final long UNBOUNDED_LIFE_MS = 3_600_000L;
+
+    /**
+     * How long a check still running when its race ends -- or a cancelled
+     * one whose start is read only later -- may still show its verdict
+     * before it is signalled: one that ended just then is idle when the
+     * signal comes, and the signal ends that z3 (the fixture of
+     * {@code Z3IncrementalTest}: a loser's instant unknown not yet read).
+     */
+    static final long CANCEL_GRACE_MILLIS = 50L;
 
     /** How often a driver looks at a question's asker and at its room. */
     private static final long POLL_MILLIS = 200L;
@@ -153,6 +170,12 @@ public final class Z3Incremental implements AutoCloseable {
         // unsat, its core unknown (Z3#ask).
         Z3.Answer core = tracked.ask(scope, Collections.<String>emptyList(),
                 solver.timeoutMillis(), deadlineNanos);
+        if (core.sat()) {
+            // The same question sat tracking: a contradiction, refused by
+            // name, never a refutation reused.
+            return disagree("unsat untracked, sat tracking");
+        }
+        if (core.status().startsWith(Z3.DISAGREE)) return core;
         boolean known = core.unsat() && core.coreKnown();
         return new Z3.Answer("unsat", Collections.<String, String>emptyMap(),
                 known ? core.core() : Collections.<String>emptyList(), known,
@@ -169,6 +192,18 @@ public final class Z3Incremental implements AutoCloseable {
     /** The slot each scoped z3 holds: half the room. */
     private int slotMb() {
         return solver.room().mb / Z3.ARITHMETIC.length;
+    }
+
+    /**
+     * Two decided answers to one question that differ: an error of the
+     * solver's ({@code Z3#errors}, which refuses the claim by name) and an
+     * undecided answer -- a scope leak or a solver fault is never a
+     * verdict, let alone a refutation reused.
+     */
+    private Z3.Answer disagree(String how) {
+        String error = Z3.DISAGREE + "a scoped question, " + how + "\")";
+        solver.noteError(error);
+        return bare(error, "");
     }
 
     private static Z3.Answer bare(String status, String reason) {
@@ -306,8 +341,9 @@ public final class Z3Incremental implements AutoCloseable {
         boolean cancelled;
         /** Between its began and verdict marks: in {@code check-sat}. */
         boolean solving;
-        /** {@link System#nanoTime} past which its z3 is silent too long; 0:
-         *  not yet solving. */
+        /** {@link System#nanoTime} past which its z3 is silent too long:
+         *  its budget and a margin from when it was sent, then from its
+         *  check's start and from each payload asked. */
         long silentUntil;
         boolean retried;
         String verdict;
@@ -467,7 +503,8 @@ public final class Z3Incremental implements AutoCloseable {
          * other took, at least {@link Z3#PREFERRED_GRACE_MILLIS} -- at once
          * where the question asks no model and no core, whose verdict is the
          * same whichever engine gives it ({@code Z3#race}); neither
-         * deciding, the preferred one's.  Its turns still running are
+         * deciding, the preferred one's.  Both decided and differing:
+         * neither ({@link #disagree}).  Its turns still running are
          * cancelled, and every scope popped.
          */
         private Z3.Answer race(Question question, long budget, long started)
@@ -517,14 +554,39 @@ public final class Z3Incremental implements AutoCloseable {
                     }
                 }
             } finally {
-                // A verdict printed just now is no check to cancel.
+                // A verdict printed just now, or in a moment, is no check to
+                // cancel.
                 drain();
+                long until = System.nanoTime() + TimeUnit.MILLISECONDS
+                        .toNanos(CANCEL_GRACE_MILLIS);
+                while (solving() && System.nanoTime() - until < 0L) {
+                    Line line = printed.poll(5L, TimeUnit.MILLISECONDS);
+                    if (line != null) line.engine.take(line);
+                }
                 for (Engine engine : engines) engine.endTurn();
             }
             if (winner == null) return bare(Z3.TIMEOUT, "");
+            if (turns[0].decided && turns[1].decided && !turns[0].answer
+                    .status().equals(turns[1].answer.status())) {
+                return disagree("engine " + engines[0].arithmetic + " "
+                        + turns[0].answer.status() + ", engine "
+                        + engines[1].arithmetic + " "
+                        + turns[1].answer.status());
+            }
             answeredBy = winner == turns[0] ? engines[0].arithmetic
                     : engines[1].arithmetic;
             return winner.answer;
+        }
+
+        /** Whether an engine's turn is in its check, unanswered. */
+        private boolean solving() {
+            for (Engine engine : engines) {
+                if (engine.turn != null && !engine.turn.done()
+                        && engine.turn.solving) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** Every line printed so far, taken. */
@@ -581,6 +643,28 @@ public final class Z3Incremental implements AutoCloseable {
         private final List<String> collected = new ArrayList<String>();
         /** This question's turn, until the race ends. */
         private Turn turn;
+        /** The checks its z3 ran to an answer: one that ran out of memory
+         *  after some is asked again of a fresh z3, once. */
+        private int answered;
+        /**
+         * A SIGINT sent for a cancelled check that may not have ended it:
+         * one that ended before the signal came leaves the signal to a
+         * later question -- whose check it cancels, or, landing outside a
+         * check, the z3 -- so a question that dies or answers "canceled"
+         * meanwhile is asked again, once.  Cleared once the signalled check
+         * answers unknown, or a later one decides.
+         */
+        private boolean interruptOutstanding;
+        private Turn signalled;
+        /** The last check signalled and not yet answered, and when its z3
+         *  is stopped if it has not answered by then. */
+        private Turn cancelling;
+        private long cancelDeadline;
+        /** A cancelled check its z3 reached after its race ended, signalled
+         *  at this time unless its verdict shows first
+         *  ({@link #CANCEL_GRACE_MILLIS}); 0: none. */
+        private Turn signalTurn;
+        private long signalDue;
 
         Engine(Pair pair, int arithmetic) {
             this.pair = pair;
@@ -600,6 +684,7 @@ public final class Z3Incremental implements AutoCloseable {
         }
 
         private void send(Turn asked) {
+            asked.bound();
             Mark began = mark(Role.BEGAN, asked);
             Mark verdict = mark(Role.VERDICT, asked);
             send("(push 1)\n(set-option :timeout " + asked.budgetMillis
@@ -629,6 +714,13 @@ public final class Z3Incremental implements AutoCloseable {
                     + born + "), reading the shared part");
             expected.clear();
             collected.clear();
+            answered = 0;
+            interruptOutstanding = false;
+            signalled = null;
+            cancelling = null;
+            cancelDeadline = 0L;
+            signalTurn = null;
+            signalDue = 0L;
             Thread reader = new Thread(() -> {
                 try (BufferedReader output = new BufferedReader(
                         new InputStreamReader(started.getInputStream(),
@@ -724,11 +816,29 @@ public final class Z3Incremental implements AutoCloseable {
                 case BEGAN:
                     of.solving = true;
                     of.bound();
-                    if (of.cancelled) interrupt();
+                    if (of.cancelled) {
+                        // Read late, its check may have ended already:
+                        // signalled only if no verdict shows in its grace.
+                        signalTurn = of;
+                        signalDue = System.nanoTime() + TimeUnit.MILLISECONDS
+                                .toNanos(CANCEL_GRACE_MILLIS);
+                    }
                     return;
                 case VERDICT:
                     of.solving = false;
-                    if (!of.cancelled) verdict(of, lines);
+                    if (of.cancelled) {
+                        answered++;
+                        if (of == cancelling) cancelDeadline = 0L;
+                        if (of == signalTurn) signalDue = 0L;
+                        // Unknown: the signal ended it; decided, it ended
+                        // first and the signal is still to land.
+                        if (of == signalled && !"sat".equals(first(lines))
+                                && !"unsat".equals(first(lines))) {
+                            interruptOutstanding = false;
+                        }
+                        return;
+                    }
+                    verdict(of, lines);
                     return;
                 case PAYLOAD:
                     if (!of.cancelled) payload(of, lines);
@@ -741,9 +851,13 @@ public final class Z3Incremental implements AutoCloseable {
         private void verdict(Turn of, List<String> lines) {
             String status = first(lines);
             of.verdict = status;
-            if (Z3.MEMOUT.equals(status)) {
-                of.end(memOut(), false);
-            } else if ("sat".equals(status)) {
+            // At its cap z3 ends: ended() answers, or asks again.
+            if (Z3.MEMOUT.equals(status)) return;
+            answered++;
+            if ("sat".equals(status) || "unsat".equals(status)) {
+                interruptOutstanding = false;
+            }
+            if ("sat".equals(status)) {
                 if (pair.tracking || of.question.symbols.isEmpty()) {
                     of.end(bare("sat", ""), true);
                 } else {
@@ -767,27 +881,46 @@ public final class Z3Incremental implements AutoCloseable {
          *  timeout's ({@code :timeout}, a cancel) read as Z3's timeout. */
         private void payload(Turn of, List<String> lines) {
             String text = of.verdict + "\n" + String.join("\n", lines);
-            boolean cut = memOut(lines);
-            boolean listed = Z3.payload(text);
             if ("sat".equals(of.verdict)) {
-                if (cut && !listed) {
-                    of.end(memOut(), false);
-                } else {
-                    of.end(new Z3.Answer("sat", Z3.parseValues(text),
-                            Collections.<String>emptyList(), false, ""), true);
-                }
+                of.end(new Z3.Answer("sat", Z3.parseValues(text),
+                        Collections.<String>emptyList(), false, ""), true);
             } else if ("unsat".equals(of.verdict)) {
-                boolean known = listed && Z3.answerBlock(text, true) != null;
+                boolean known = Z3.payload(text)
+                        && Z3.answerBlock(text, true) != null;
                 of.end(new Z3.Answer("unsat",
                         Collections.<String, String>emptyMap(),
                         known ? Z3.parseCore(text)
                                 : Collections.<String>emptyList(), known,
-                        ""), !cut || listed);
+                        ""), true);
             } else {
                 String reason = Z3.parseReason(text);
+                if (reason.contains("canceled") && interruptOutstanding
+                        && !of.retried) {
+                    // A signal meant for a check before it.
+                    again(of);
+                    return;
+                }
                 of.end(reason.contains("timeout") || reason.contains("canceled")
                         ? bare(Z3.TIMEOUT, "")
                         : bare(of.verdict, reason), false);
+            }
+        }
+
+        /** {@code of} asked once more: of this z3, its scope popped first,
+         *  or of a fresh one. */
+        private void again(Turn of) {
+            of.retried = true;
+            of.verdict = null;
+            of.solving = false;
+            interruptOutstanding = false;
+            if (process != null) {
+                Mark popped = mark(Role.POPPED, null);
+                send("(pop 1)\n", null, echo(popped));
+                send(of);
+            } else if (start()) {
+                send(of);
+            } else {
+                of.end(bare("error a scoped z3 did not start", ""), false);
             }
         }
 
@@ -805,21 +938,24 @@ public final class Z3Incremental implements AutoCloseable {
         /**
          * Its z3 ended: its turn, open, answers nothing -- a memout where its
          * cap ended it, an unsat whose core it cut with its core unknown --
-         * unless it ended before reaching this question, which is then asked
-         * once more of a fresh z3 (one that ended reading the shared part
-         * would end again).
+         * unless it is asked once more of a fresh z3: where its z3 ended
+         * before reaching it, where a signal meant for an earlier check was
+         * outstanding, or where its z3 ran out of memory after answering
+         * others (one that ended reading the shared part would end again).
          */
         private void ended() {
-            boolean memOut = memOut(collected);
-            Mark head = expected.peekFirst();
             Turn of = turn;
+            boolean memOut = memOut(collected)
+                    || (of != null && Z3.MEMOUT.equals(of.verdict));
+            Mark head = expected.peekFirst();
+            boolean stray = interruptOutstanding;
+            boolean aged = answered > 0;
             stop();
             if (of == null || of.done() || of.cancelled) return;
             boolean before = head != null && head.turn != of
                     && head.role != Role.STARTUP;
-            if (before && !of.retried && start()) {
-                of.retried = true;
-                send(of);
+            if ((before || stray || (memOut && aged)) && !of.retried) {
+                again(of);
                 return;
             }
             if ("unsat".equals(of.verdict)) {
@@ -832,11 +968,28 @@ public final class Z3Incremental implements AutoCloseable {
             }
         }
 
-        /** Its turn silent past its budget and margin: its z3 ended. */
+        /**
+         * Its z3 ended where it is silent too long: a cancelled check no
+         * verdict of which came within {@link #SILENCE_MARGIN_MS} -- the
+         * open turn behind it asked once more of a fresh z3 -- or its own
+         * turn past its budget and margin, a timeout.
+         */
         void silent(long now) {
             Turn of = turn;
+            if (process == null) return;
+            if (signalDue != 0L && now - signalDue >= 0L) {
+                signalDue = 0L;
+                if (signalTurn.solving) interrupt(signalTurn);
+            }
+            if (cancelDeadline != 0L && now - cancelDeadline >= 0L) {
+                stop();
+                if (of != null && !of.done() && !of.retried) {
+                    again(of);
+                    return;
+                }
+            }
             if (of == null || of.done() || process == null
-                    || of.silentUntil == 0L || now - of.silentUntil < 0L) {
+                    || now - of.silentUntil < 0L) {
                 return;
             }
             stop();
@@ -851,7 +1004,7 @@ public final class Z3Incremental implements AutoCloseable {
             if (of == null) return;
             if (!of.done()) {
                 of.cancelled = true;
-                if (of.solving) interrupt();
+                if (of.solving) interrupt(of);
             }
             if (process != null) {
                 Mark popped = mark(Role.POPPED, null);
@@ -860,14 +1013,21 @@ public final class Z3Incremental implements AutoCloseable {
         }
 
         /**
-         * SIGINT: z3 ends the check it runs and reads on.  Never its z3
-         * ended here: what it printed after this check -- a later question's
-         * answer, its end -- is still to be read.  A z3 gone already ends by
-         * its own output; one no signal reached (no process id) runs the
-         * check out to its {@code :timeout}.
+         * SIGINT for {@code of}'s check: z3 ends the check it runs and reads
+         * on.  Never its z3 ended here: what it printed after this check --
+         * a later question's answer, its end -- is still to be read.  A z3
+         * gone already ends by its own output; one no signal reached (no
+         * process id) runs the check out to its {@code :timeout}, or is
+         * stopped silent ({@link #silent}).  The signal is outstanding
+         * until the check answers ({@link #interruptOutstanding}).
          */
-        private void interrupt() {
+        private void interrupt(Turn of) {
             if (pid <= 0L || process == null || !process.isAlive()) return;
+            interruptOutstanding = true;
+            signalled = of;
+            cancelling = of;
+            cancelDeadline = System.nanoTime() + TimeUnit.MILLISECONDS
+                    .toNanos(SILENCE_MARGIN_MS);
             try {
                 Process kill = new ProcessBuilder("kill", "-INT",
                         Long.toString(pid)).redirectErrorStream(true).start();
