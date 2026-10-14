@@ -245,12 +245,33 @@ Merged 2026-10-13 afternoon (lead, through `solr-int`, each gated; system/solr f
   by name. `solr-forcebound` (FB) 015501d6b: the FORCE run likewise (its question named by its flip).
 - Hosts lift02-05 (owner 2026-10-13) in `LIFTS` and `launch.sh`; lift01 lacks `/bigtemp`.
 
-### 1. Branches in flight (lead's agents of 2026-10-13; design gate first, review before merge)
+Merged 2026-10-13 evening (lead, through `solr-int`, each reviewed by a read-only agent where it touches the schedule,
+COMPOSE or the ledger, and gated); found by the SGF3 runs on the code before them (SGF3 is a preview; the final round is
+SGF4 on all of them):
+- `solr-exposeid` (FB) cc9a3ef5c: an obligation asked again under its id has a worker and a session per ask; every pairing
+  of an ask with its artifacts goes by session (SGF3-adhoc-21 died on "no one worker with a focus row").
+- `solr-witfirst` (WF) 7ec64b960: a planner round runs in its own lane over frozen inputs; a landed witness is attempted
+  within one gate step (Z3S-18413's witness had waited ~70 min behind a round).
+- `solr-readout` (RO) 61a9661bf + 8b5164611: a read-out envelope seen again unchanged is filed as its held decoding
+  (SGF3-adhoc-31's seed was decode-bound, drifted, never reached its target; now it does).
+- offline-ab passes the case's system doors file to every stage (FB, 3b8a3de7b); solr-adhoc-39 at world depth 0.
+- `solr-viewwriter` (FB) 8d1e434d7: a run writer with no selector holds its location by the observed arm, named;
+  round-verify prints HOLD:<n>.
+- `solr-z3mem` (WF) e0b546c6d: every z3 under memory_max_size, charged on the ledger (SGF3-adhoc-13's COMPOSE z3 had
+  swapped lift12).
+- `solr-pubturn` (PB) 48e76fde4: a view's PUBLISH turn is settled when its publication is in force (SGF3-bugs-snapshot's
+  seed read node0's view at v7 -> SEED_OBSERVED_FATAL).
+- `solr-margin` (WF) cee108ef1: a witness's clock margin sits on the jump (PRE4-18406's 2-clock witness kept 1 ns, native
+  0/10).
+
+### 1. Branches in flight and parked (2026-10-13 evening)
 
 | branch | agent | what | state |
 | --- | --- | --- | --- |
-| `solr-armkey` | KY | a run-varying value derived from a CLOCK root (e.g. 18413's routing-rule `expireAt` content leaf) reaches the arm key, so one arm is re-asked under a new id per parent (Z3S-18413: 7378 obligations over 809 arms, up to 47 ids per arm; 1640 encoded queries, 781 distinct); and path-independent answers (NOT_FLIPPABLE, "no session still states path") are asked per path | confirming the cause, design pending |
-| `solr-witfirst` | WF | a landed witness waits behind a running planner round (Z3S-18413: ADMITTED at 26 min, acted on ~70 min later after an out-of-heap planner) | diagnosis + design pending |
+| `solr-decider` | RO | the decider rule through a branchless helper that returns a constant from a checked exception's handler and another after its one guarded call (SGF3-adhoc-09: 23 of 24 fatal arms constant false through waitForCoreNodeGone/waitForState); Boolean.valueOf(const); explicit Guard.via | review FIX FIRST (catch order), fixing; joins SGF4 |
+| `solr-vmfp` | FB | VM: a container version records size + modCount; a read whose live container differs is named UNHOOKED_CONTAINER_MUTATION and joins a VERSION_UNOBSERVED state (§3t) | in development, image vm-force9; after SGF4 |
+| `solr-armkey` | KY | arm keys name only the roots the question reads (§3n) | PARKED: review found folds of distinct questions (§3s) |
+| `solr-portname` | FB | COMPOSE: message-close cache keyed by slots; other runs' node spellings respelled into the path's (§3v) | PARKED: review FIX FIRST (§3v) |
 
 Solr tree: `gc/solr-final9` 0ce3deafed (`/bigtemp/vnr3ne/wt/lucene-solr-final9`, `GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`)
 = final5 + the Overseer's batching wait 0 + snapshot-no-active's search loops + the session expirer + snapshot's workload
@@ -355,8 +376,32 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 - **q. Fewest clocks across paths (WF, 2026-10-13, not done):** `ClaimPolicy#leastClocks` keeps the fewest clock jumps
   within the witness's own path; a witness on another sat path might need fewer (fewer moved clocks, fewer native
   timing turns). Choosing among paths means a refinement per sat path; measured on PRE4-18406 before any build.
+- **s. Arm-key redundancy (`solr-armkey`, parked 3bfdca7bc):** the key naming the delivering world's whole fault-root
+  valuation (`Corpus#handoffName`, `Arms#rootGuards`) re-asks one arm per parent world (Z3S-18413 up to 47 ids/arm;
+  SGF3-adhoc-39 7.72, top 59). The fix tried (name only roots the question reads) folds questions FlipQuery still tells
+  apart: roots pinned through other eligible writers, view decodes and own-run arms; earlier non-kept decisions,
+  inherited flips' conjuncts and domain-less pinned roots. Needs a KeyGate-style check (re-key answered arms; no key covers
+  both a SAT/ADMITTED and an UNSAT answer) before any merge. Review findings in the branch's history.
+- **t. Container mutations the VM never sees (FB diagnosis, `solr-vmfp`):** a tracked map mutated with only concrete
+  arguments, unguarded and with no callback, runs as plain bytecode (`symbolicMap.cpp:400-406`), and a thread with no
+  activation never reaches the model (`cppInterpreter_zero.cpp:570`); containers carry no read-time version check
+  (`sharedFieldVersions.hpp:76-80`, `containerSupport.cpp:1225`), so a later read joins a stale version silently
+  (SGF3-adhoc-09 path 13: MAP 1368 read null at seq 5090, joined v3302 holding the collection; PRE4-adhoc-21 paths 5/13).
+  Spurious PATH_SELF_CONTRADICTORY, possibly a false UNSAT.
+- **u. SEED's static pass is nondeterministic on six study cases** (RO, offline-ab with one jar on both sides:
+  solr-adhoc-05/07/09/10/21/31; 07 2803 vs 609 scope-map rows): diagnosis under way
+  (`/bigtemp/vnr3ne/analysis/solr-2026-10-13/static-nondet/`).
+- **v. Cross-run node spellings and message closes (`solr-portname`, parked b80976bb7):** a family closed for one
+  session's delivery is reused for another's (`ComposedFamilies#closeMessages` keyed by consumer endpoints only), and
+  another run's host:port literals decide arm compatibility (SGF3-adhoc-09 path 23). Review FIX FIRST: the respelling
+  scope is taken from frame depth, so families (lowered after the path's frame closes) are respelled into the arm's own
+  run; selectors keyed by group are shared by two closures of one group; CONFIRM would name respelled text by the arm's
+  run; the regex has no digit boundary; unmatched spellings stay silently.
+- **w. A sender's arm whose two values coincide where the receiver's differ** (PRE4-adhoc-21 path 6:
+  message_family__6__6f5f76f8d017 binds two fields' handoffs equal, the receiving run compares them unequal): whether a
+  sender's arm fits the receiver's state; open, not diagnosed further.
 
-- **o. The exact in-force hook of a notification's publication (`solr-pubturn`):** its PUBLISH turn is taken when the
+- **r. The exact in-force hook of a notification's publication (`solr-pubturn`):** its PUBLISH turn is taken when the
   watch callback ends (`MessageDoors#notified`), after `constructState`; what runs between the cluster state's write and
   the callback's end (`notifyStateWatchers` waking a `waitForState`, the update lock's release, `publishIfNewer`'s
   `notifyAll`) can pass the turn (IDENTITY §8).  Exact: a one-line `MessageDoors` hook where the view is in force -- right
