@@ -82,10 +82,14 @@ final class Disjunction implements AutoCloseable {
 
     /**
      * The slot one z3 of a path ask holds, in MB ({@code Z3#slotted}), so a
-     * composer's 4 GB room runs four path asks at once; one at its cap is
+     * composer's 6 GB room runs four path asks at once; one at its cap is
      * asked again alone, in half the room an engine ({@code Z3#ask}).
+     * Measured (2026-10-13, per-path z3 peaks, capped): solr-adhoc-09 p50
+     * 112 / p90 120 / max 134 MB over 90 path asks, solr-18413 41 / 81 / 109
+     * over 64, solr-bugs-reindex-cleanup 654 / 664 / 664 over 3: 768 MB
+     * holds each p90 without an ask again alone.
      */
-    static final int PATH_SLOT_MB = 512;
+    static final int PATH_SLOT_MB = 768;
 
     /** One path found unsat under these assertions. */
     private static final class Refutation {

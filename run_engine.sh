@@ -586,10 +586,10 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
 # so its charge always leaves real room a host can admit -- a composer whose
 # footprint leaves less than campaign_z3_least_room_mb runs in that, saying
 # so (engine_java): a lone ask's engines take half the room each, four
-# valuations asked together an eighth, a path ask 512 MB (smt/Z3#shared,
+# valuations asked together an eighth, a path ask 768 MB (smt/Z3#shared,
 # #slotted).  A solver's is a question's, in its first lane
 # (campaign_solver_z3_room_mb).  A main that starts no z3 has none.
-campaign_compose_z3_room_mb=4096
+campaign_compose_z3_room_mb=6144
 campaign_z3_room_margin_mb=2048
 # The least room smt/Z3 holds a run in (Z3.Room).
 campaign_z3_least_room_mb=256

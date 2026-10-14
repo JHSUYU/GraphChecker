@@ -1082,8 +1082,9 @@ slots fit in what R has free, in the order the runs asked (`Room#take`; a run al
 A z3 at its cap answers nothing: a run whose output holds the cap's line is `memout` unless its
 verdict AND the payload its command asked for (a model's values, a core) were printed before it
 (`Z3#decided`), so a core cut by the cap is unknown, never empty, and a model cut by it loses the race
-to the other engine's. An ask at its cap in a slot shared with other asks is asked once more alone, in
-half of R an engine (`Z3#ask`); at that cap too it is `memout` (`Answer#memOut`): undecided by name,
+to the other engine's. An ask at its cap in a slot shared with other asks -- its verdict run, or its
+model or core run after a verdict that fit -- is asked once more whole and alone, in half of R an engine
+(`Z3#ask`: a verdict with no model selects no path); at that cap too it is `memout` (`Answer#memOut`): undecided by name,
 as a timeout is, never sat or unsat and no error of the query (an error voids a composition's claim),
 its reason the cap it hit. A solver's R is a question's (`campaign_question_mb`, 1152 MB: its two
 engines 512 MB each), in the hard lane `campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at
@@ -2414,13 +2415,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
    second each alone); one that stops at its memory cap goes path by path too. Path by path, the
-   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 512 MB slot of the
-   composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`), so a 4 GB room runs four at once, the rest
+   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 768 MB slot of the
+   composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3 peaks measured p90 81-664 MB on three
+   Solr corpora), so a 6 GB room runs four at once, the rest
    waiting for a slot; the valuations, asked up to four at a time (`PARALLEL_ASKS`, at most as many as
    there are), ask their whole disjunctions in slots of the room shared that many ways
    (`Disjunction#asking`, `Z3#shared`), and a lone ask -- the formula's, a refinement's, a path asked
    alone -- in half of it each engine; an ask at a shared slot's cap is asked once more alone first.
-   A composer's room is 4096 MB, less where its footprint, the room and a 2048 MB margin would not fit
+   A composer's room is 6144 MB (its charge at the 8 GB start heap 15.2 GB), less where its footprint,
+   the room and a 2048 MB margin would not fit
    under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
    `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer
    in their order: the first sat path's answer (the asks
@@ -2763,8 +2766,11 @@ asserted, the free-formula ask and the self-check ask for the unsat core (a path
 core names one does not contradict its run, `Disjunction#refutedBySelfCheck`); an `UNSAT_CLOSED`
 whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
 roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`),
-each a false positive read against the code before the UNSAT counts (CHECKING). A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
-found no room or answered unknown names none, which is not the empty core), a disjunction's only
+each a false positive read against the code before the UNSAT counts (CHECKING). A core is known only where its own run said unsat and printed its core (`Z3.Answer#coreKnown`; a core run that timed out,
+found no room, answered unknown or stopped at its memory cap names none, which is not the empty core),
+and an UNSAT that excludes refuted claims with its core unknown is `RUN_DEFECT`, its
+`restsOnRefutationsKnown` false (`ComposeMain#campaignClaim`): which of them it rests on is unknown, never
+none. A disjunction's core is known only
 where every path's is, and a path's refutation answers a core-wanting ask only with a known one.
 During EXPLORE a witness attempt CONFIRM did not confirm lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a

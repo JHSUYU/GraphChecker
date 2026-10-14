@@ -6214,7 +6214,7 @@ done
 # Z3-ROOM: a JVM that starts z3 is charged its footprint and its z3 room, and
 # told the room (--z3-room-mb), so the ledger sees every z3 it may run at once
 # (SGF3-adhoc-13: a composer charged its footprint alone ran a z3 to 10.9
-# GB): a composer 4096 MB, less where its footprint, the room and a 2048 MB
+# GB): a composer 6144 MB, less where its footprint, the room and a 2048 MB
 # margin would not fit under the host's ceiling (70 % of 30000 MB here), the
 # least room (256 MB) where nothing is left; a solver a question's room, its
 # hard lane 4096 MB; a main that starts no z3 none.  Per row: the main (or a
@@ -6239,7 +6239,7 @@ done
       || fail "Z3-ROOM: ${z3_main} at ${z3_heap} MB: ${z3_said}, not \
 ${z3_room}|${z3_charge}"
   done <<'EOF'
-compose.ComposeMain|8192|4096|13184
+compose.ComposeMain|8192|6144|15232
 compose.ComposeMain|16384|1160|18952
 compose.ComposeMain|18000|256|19765
 explore.ExploreMain|8192|0|9088
@@ -6248,7 +6248,7 @@ solver|2048|1152|3712
 HARD|2048|4096|6656
 EOF
   [[ "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.compose.ComposeMain \
-      8192)" == "--z3-room-mb 4096" \
+      8192)" == "--z3-room-mb 6144" \
      && -z "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.explore.ExploreMain \
       8192)" ]] \
     || fail "Z3-ROOM: a composer is not told its room, or a planner is"
@@ -6273,7 +6273,7 @@ idle host (${z3_status}): ${campaign_host_wait_reason}"
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
 # heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
 # footprint of what its planner or composer starts at; and on top, the z3 room
-# its composer is charged (4096 MB: its z3s are children its peak does not
+# its composer is charged (6144 MB: its z3s are children its peak does not
 # count).
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
@@ -6303,11 +6303,11 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|13184
-700:0|700|5120
-2949:0 1200:3|2949|7808
-9000:0|9000|15360
-20000:0 300:0|20000|17230
+|-|15232
+700:0|700|7168
+2949:0 1200:3|2949|9856
+9000:0|9000|17408
+20000:0 300:0|20000|19278
 EOF
 campaign_root=""
 # HEAD-NEED-LANES: a round's planner and a head step fold their peaks at once
@@ -6451,7 +6451,7 @@ EOF
 # admits it for the room it reserves on its host, what its planner or
 # composer starts at with the JVM's own memory beside its heap
 # (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
-# heap's footprint, and the z3 room its composer is charged (4096 MB on a
+# heap's footprint, and the z3 room its composer is charged (6144 MB on a
 # 30000 MB host):
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
@@ -6464,9 +6464,9 @@ EOF
       || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
   done <<'EOF'
-engine_memory_mb=16384|16384|13184
-engine_memory_mb=|8192|13184
-engine_memory_mb=4096|4096|8832
+engine_memory_mb=16384|16384|15232
+engine_memory_mb=|8192|15232
+engine_memory_mb=4096|4096|10880
 EOF
 )
 
@@ -6498,7 +6498,7 @@ EOF
 
 # SWEEP-1: sweep.sh launches every case with its head's room as its need (an
 # engine heap of 1 MB: its JVM footprint, 385 MB, and its composer's z3 room,
-# 4096 MB on any lift),
+# 6144 MB on any lift),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -6521,7 +6521,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=4481 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=6529 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

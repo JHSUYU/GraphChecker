@@ -420,8 +420,15 @@ public final class Z3 {
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run("", query, valueCommand(modelSymbols),
-                    timeoutMillis));
+            String printed = run("", query, valueCommand(modelSymbols),
+                    timeoutMillis);
+            // Its model cut by a shared slot's cap: the whole ask once more
+            // alone (a verdict with no model selects no path).
+            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
+            values = parseValues(printed);
         }
         List<String> core = Collections.emptyList();
         boolean coreKnown = false;
@@ -430,6 +437,10 @@ public final class Z3 {
             // host had room, it answered unknown) names no core.
             String printed = run(CORE_TRACKING, query,
                     "(check-sat)\n(get-unsat-core)\n", timeoutMillis);
+            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
             coreKnown = "unsat".equals(firstLine(printed))
                     && answerBlock(printed, true) != null;
             if (coreKnown) core = parseCore(printed);

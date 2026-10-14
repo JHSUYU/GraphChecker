@@ -258,6 +258,97 @@ public class Z3Test {
     }
 
     /**
+     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THE WHOLE ASK AGAIN
+     * ALONE: the verdict fits a path ask's 448 MB cap, its model (or core)
+     * run does not; asked again alone, at the room's lone 1984 MB cap, the
+     * ask answers with its model (its core).  {what the fixture caps at 448
+     * MB, the verdict, the model's x or the core}.
+     */
+    @Test
+    public void aSharedSlotsCapOnItsPayloadAsksTheWholeAskAgainAlone()
+            throws IOException {
+        String[][] rows = {{"get-value", "sat", "6"},
+                {"get-unsat-core", "unsat", "[c]"}};
+        for (String[] row : rows) {
+            Path script = folder.newFile("z3-payload-" + row[0]).toPath();
+            Files.write(script, Arrays.asList(
+                    "#!/bin/bash",
+                    "input=$(cat)",
+                    "case \"$input\" in",
+                    "  *" + row[0] + "*) case \" $* \" in",
+                    "      *' memory_max_size=448 '*) echo " + row[1] + ";"
+                            + " echo '(error \"out of memory\")' ;;",
+                    "      *) echo " + row[1] + "; echo '((x 6))' | sed"
+                            + " 's/((x 6))/" + (row[1].equals("sat")
+                            ? "((x 6))" : "(c)") + "/' ;;",
+                    "    esac ;;",
+                    "  *) echo " + row[1] + " ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(script.toFile().setExecutable(true));
+            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512).ask(
+                    "(assert true)\n", row[1].equals("sat")
+                            ? Collections.singletonList("x")
+                            : Collections.<String>emptyList(),
+                    row[1].equals("unsat"));
+            String what = Arrays.toString(row) + ": " + answer;
+            assertEquals(what, row[1], answer.status());
+            assertEquals(what, row[2], row[1].equals("sat")
+                    ? answer.values().get("x") : answer.core().toString());
+        }
+    }
+
+    /**
+     * THE ROOM SERVES RUNS IN THE ORDER THEY ASKED: a lone run waiting for
+     * the whole room is not passed by a smaller one that would fit, and a
+     * waiter that stops waiting (interrupted) does not hold the ones behind
+     * it.
+     */
+    @Test
+    public void theRoomServesRunsInTheOrderTheyAsked() throws Exception {
+        Z3.Room room = new Z3.Room(4096);
+        assertTrue(room.take(2048));
+        java.util.List<String> order = java.util.Collections.synchronizedList(
+                new java.util.ArrayList<String>());
+        Thread lone = new Thread(() -> {
+            if (room.take(4096)) order.add("lone");
+        });
+        lone.start();
+        while (lone.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread small = new Thread(() -> {
+            if (room.take(1024)) order.add("small");
+        });
+        small.start();
+        while (small.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread.sleep(100L);
+        assertTrue("the small run passed the lone one: " + order,
+                order.isEmpty());
+        room.give(2048);
+        lone.join(5000L);
+        assertEquals("[lone]", order.toString());
+        room.give(4096);
+        small.join(5000L);
+        assertEquals("[lone, small]", order.toString());
+        room.give(1024);
+
+        // A waiter interrupted while it waits stalls no one behind it.
+        assertTrue(room.take(4096));
+        Thread quitter = new Thread(() -> room.take(1024));
+        quitter.start();
+        while (quitter.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread behind = new Thread(() -> {
+            if (room.take(1024)) order.add("behind");
+        });
+        behind.start();
+        while (behind.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        quitter.interrupt();
+        quitter.join(5000L);
+        room.give(4096);
+        behind.join(5000L);
+        assertEquals("[lone, small, behind]", order.toString());
+        assertEquals(1024, room.held());
+    }
+
+    /**
      * THE RUNS OF A ROOM HOLD NO MORE THAN IT: asks put at once run as many
      * as their slots fit, the rest waiting -- a room of 4096 MB at slots of
      * 1024 runs two asks (four z3s) at a time -- and every slot is given

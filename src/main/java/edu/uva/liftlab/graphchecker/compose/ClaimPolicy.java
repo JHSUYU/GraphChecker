@@ -1035,8 +1035,10 @@ public final class ClaimPolicy {
                             + "though its own run satisfied it"
                             : "z3 answered " + answer.status() + " for this "
                             + "path's conjunction without its fatal arm "
-                            + "within " + Disjunction.SELF_CHECK_BUDGET_MS
-                            + "ms, so nothing shows it states its own run"));
+                            + (answer.memOut() ? "(" + answer.reason() + ")"
+                            : "within " + Disjunction.SELF_CHECK_BUDGET_MS
+                            + "ms") + ", so nothing shows it states its own"
+                            + " run"));
         }
         if (contradictory == 0) return;
         gaps.add(GapRow.of(Composer.COMPOSITION,

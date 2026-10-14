@@ -856,6 +856,31 @@ public class ComposerTest {
             assertEquals(detail, name, claim.getAsJsonArray(
                     "restsOnRefutations").get(0).getAsJsonObject()
                     .get("name").getAsString());
+            // The free formula's core not known (its core run at its memory
+            // cap or past its budget): which refuted claims the UNSAT rests
+            // on is unknown -- a defect, never an empty list read as none.
+            Path capped = folder.newFile("z3-core-capped-" + row[0] + "-"
+                    + row[1]).toPath();
+            Files.write(capped, Arrays.asList("#!/bin/bash",
+                    "input=$(cat)",
+                    "case $input in",
+                    "  *get-unsat-core*) echo unsat;"
+                            + " echo '(error \"out of memory\")' ;;",
+                    "  *) echo unsat ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(capped.toFile().setExecutable(true));
+            Z3.Answer noCore = new Z3(capped, 30000L, 8192).ask("",
+                    Collections.<String>emptyList(), true);
+            assertTrue(noCore.toString(), noCore.unsat() && !noCore.coreKnown());
+            JsonObject unknown = ComposeMain.campaignClaim(next,
+                    new ClaimPolicy.Decision(again.claim(), again.outcomes(),
+                            noCore));
+            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
+                    unknown.get("claim").getAsString());
+            assertTrue(detail + ": " + unknown,
+                    unknown.has("restsOnRefutationsKnown")
+                    && !unknown.get("restsOnRefutationsKnown")
+                    .getAsBoolean());
         }
     }
 

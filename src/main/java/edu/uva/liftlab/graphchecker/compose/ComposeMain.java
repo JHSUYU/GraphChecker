@@ -243,6 +243,7 @@ public final class ComposeMain {
         String kind;
         String reason;
         JsonArray restsOnRefutations = new JsonArray();
+        boolean restsKnown = true;
         JsonArray openChain = new JsonArray();
         JsonArray offWitness = new JsonArray();
         if (blockers > 0) {
@@ -303,11 +304,18 @@ public final class ComposeMain {
             // positive CONFIRM refuted (owner 2026-10-08), each read against
             // the code before the UNSAT counts (CHECKING).
             JsonArray rests = new JsonArray();
-            for (JsonObject excluded : composition.restsOn(
-                    decision.formula().core())) {
+            // Its core run past its budget or its memory cap names no core:
+            // which refuted claims the UNSAT rests on is then unknown, never
+            // none.
+            boolean restsUnknown = composition.assertsRefutations()
+                    && !decision.formula().coreKnown();
+            for (JsonObject excluded : restsUnknown
+                    ? Collections.<JsonObject>emptyList()
+                    : composition.restsOn(decision.formula().core())) {
                 rests.add(excluded);
             }
             restsOnRefutations = rests;
+            if (restsUnknown) restsKnown = false;
             // An UNSAT rests on every path: each one's fatal condition is
             // closed, or there is no verdict, its open links named.
             for (JsonObject link : composition.openChain(null)) {
@@ -319,6 +327,14 @@ public final class ComposeMain {
                         + " conditions it rests on name " + openChain.size()
                         + " handoff value(s) no producer the corpus attests"
                         + " made (openChain): no verdict";
+            } else if (restsUnknown) {
+                kind = "RUN_DEFECT";
+                reason = "the composed formula is unsat, but it excludes"
+                        + " refuted claim(s) and its core is not known ("
+                        + decision.formula().status() + "; its core run ran"
+                        + " past its budget or its memory cap): which of"
+                        + " them the UNSAT rests on is not known"
+                        + " (restsOnRefutationsKnown false), so no verdict";
             } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";
@@ -335,6 +351,7 @@ public final class ComposeMain {
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
         row.add("restsOnRefutations", restsOnRefutations);
+        if (!restsKnown) row.addProperty("restsOnRefutationsKnown", false);
         if (openChain.size() > 0) row.add("openChain", openChain);
         if (offWitness.size() > 0) row.add("unboundOffWitness", offWitness);
         JsonArray refused = new JsonArray();
