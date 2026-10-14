@@ -983,6 +983,12 @@ public class ScheduleLogTest {
         assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
         awaitSize(applied, 1, 10000L);
         assertEquals("given way, alone", Arrays.asList("v8"), applied);
+        // The publisher states the publication once its apply has run: the
+        // apply is seen first (1 in 6 runs saw no site yet).
+        long stated = System.currentTimeMillis() + 10000L;
+        while (sites().isEmpty() && System.currentTimeMillis() < stated) {
+            Thread.sleep(20L);
+        }
         assertEquals(Arrays.asList(v8), sites());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 1 given up"));
