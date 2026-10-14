@@ -1787,11 +1787,9 @@ final class ComposedFamilies {
          * but a node's VIEW no publication hook publishes (no PUBLISHED_VIEW
          * of it, {@code Confirmation#hookPublishes}) -- no hold can defer it,
          * so no run pairs its read otherwise (PairingFlip's ADMISSION_GAP,
-         * CONFIRM's PAIRING_UNHELD for the same views): it stays at the
-         * version it observed, named once per location (Z3Q
-         * snapshot-no-active: a claim paired the Overseer's read of a
-         * snapshot's metadata, a direct fetch's decode, and CONFIRM refused
-         * it).
+         * CONFIRM's PAIRING_UNHELD for the same views at any version but
+         * the observed one): it stays at the version it observed, which
+         * CONFIRM compares and holds nothing for, named once per location.
          */
         private boolean heldView(ReadRow read) {
             if (read.location() == null

@@ -123,6 +123,12 @@ public final class Confirmation {
     /** Reader endpoint id -> the version the model joined to (report). */
     private static final Map<String, String> VERSION =
             new LinkedHashMap<String, String>();
+    /** A view's STATE reader endpoint id -> the (location key, version) it
+     *  is held to: a view's writer ({@link #viewWriter}) names a version and
+     *  no location, and a store's versions restart at every path and every
+     *  life of one, so its read is taken only at that location. */
+    private static final Map<String, String> VIEW_AT =
+            new LinkedHashMap<String, String>();
     /** Consumer endpoint id -> the producer this run paired it with. */
     private static final Map<String, String> ATTACHED =
             new LinkedHashMap<String, String>();
@@ -284,8 +290,11 @@ public final class Confirmation {
      * region share one endpoint, so a view's writer is its version.
      */
     public static String viewWriter(long version) {
-        return "VIEW@" + version;
+        return VIEW_WRITER + version;
     }
+
+    /** What every {@link #viewWriter} starts with. */
+    private static final String VIEW_WRITER = "VIEW@";
 
     /**
      * The writer a STATE row and a world's pairing name: a view's version
@@ -545,8 +554,9 @@ public final class Confirmation {
      * causynth.LibraryCatalog#publishedView}, its PUBLISHED_VIEW rows), so
      * a hold defers the publication.  A view no hook publishes (Solr's
      * legacy clusterstate.json, a snapshot's metadata) is never held: its
-     * pairing is refused by name at PLAN and CONFIRM, never left to give
-     * way at the bound.
+     * pairing is refused by name at PLAN, and at CONFIRM at any version but
+     * the one its read observed (compared, held by nothing), never left to
+     * give way at the bound.
      */
     public static boolean hookPublishes(LocationId view) {
         if (view == null || view.kind() != LocationKind.VIEW) return false;
@@ -1412,7 +1422,7 @@ public final class Confirmation {
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
                 if (observed == null
-                        || edge.getValue().equals(WROTE.get(observed))
+                        || taken(edge.getKey(), edge.getValue(), observed)
                         || !INITIAL.equals(edge.getValue())
                         && atAnotherTurn(edge.getKey(), edge.getValue())) {
                     continue;
@@ -1504,20 +1514,22 @@ public final class Confirmation {
                         && atAnotherTurn(edge.getKey(), edge.getValue())) {
                     continue;
                 }
+                String joined = VIEW_AT.containsKey(edge.getKey())
+                        ? VIEW_AT.get(edge.getKey()) : "version " + version;
                 if (observed == null) {
                     mismatches.add("STATE " + edge.getKey() + ": the model"
                             + " joined this read to writer "
-                            + edge.getValue() + " (version " + version
+                            + edge.getValue() + " (" + joined
                             + "), the run never read here");
                     continue;
                 }
+                if (taken(edge.getKey(), edge.getValue(), observed)) continue;
                 String writer = WROTE.get(observed);
-                if (edge.getValue().equals(writer)) continue;
                 String outside = writer == null
                         ? RowRuntime.outsideSite(observed) : null;
                 mismatches.add("STATE " + edge.getKey() + ": the model"
                         + " joined this read to writer " + edge.getValue()
-                        + " (version " + version + "), the run observed "
+                        + " (" + joined + "), the run observed "
                         + observed + (writer != null ? " written by " + writer
                         : outside != null ? ", stored outside every"
                         + " activation" + (outside.isEmpty() ? ""
@@ -1526,6 +1538,18 @@ public final class Confirmation {
             }
         }
         return mismatches;
+    }
+
+    /**
+     * Whether the read observed what its STATE row holds it to: a version
+     * the row's writer wrote, and for a view's, that version of the row's
+     * location ({@link #VIEW_AT}).
+     */
+    private static boolean taken(String reader, String writer,
+                                 String observed) {
+        String at = VIEW_AT.get(reader);
+        return writer.equals(WROTE.get(observed))
+                && (at == null || at.equals(observed));
     }
 
     /**
@@ -1607,6 +1631,23 @@ public final class Confirmation {
                         }
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
+                        if (writer.startsWith(VIEW_WRITER)) {
+                            String location = optionalString(row, "location");
+                            if (location.isEmpty()) {
+                                throw new IllegalStateException("STATE read "
+                                        + reader + " is held to view writer "
+                                        + writer + " of no location");
+                            }
+                            String at = location + "@"
+                                    + optionalString(row, "version");
+                            String other = VIEW_AT.put(reader, at);
+                            if (other != null && !other.equals(at)) {
+                                throw new IllegalStateException(
+                                        "STATE_CONFLICT: read " + reader
+                                                + " is held to " + other
+                                                + " and " + at);
+                            }
+                        }
                         String turns = stated(row, "readerAnyTurn");
                         if (turns != null) {
                             TURNS.put(optionalString(row, "reader"), turns);
@@ -1650,6 +1691,7 @@ public final class Confirmation {
                 WIRE.clear();
                 STATE.clear();
                 VERSION.clear();
+                VIEW_AT.clear();
                 TURNS.clear();
                 TURNED.clear();
                 MINT.clear();
@@ -1685,6 +1727,7 @@ public final class Confirmation {
             WIRE.clear();
             STATE.clear();
             VERSION.clear();
+            VIEW_AT.clear();
             TURNS.clear();
             TURNED.clear();
             READ_TURNS.clear();

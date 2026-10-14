@@ -1049,6 +1049,61 @@ public class ConfirmationTest {
     }
 
     /**
+     * A read of a view no hook publishes, held at the version its session
+     * observed, is a STATE row and no VIEW_HOLD ({@code
+     * explore.ConfirmMain#stateEdges}), taken only where the run read that
+     * version of that location: a view's writer {@code VIEW@v} names no
+     * location, and a store's versions restart at every path and every life
+     * of one.  Another version, another snapshot's metadata or the path
+     * recreated at the same version is a misread; a read that never
+     * happened is none, but the close names it: neither confirms.
+     */
+    @Test
+    public void anUnheldViewReadIsComparedAtItsLocationAndVersion()
+            throws Exception {
+        String owner = "SOLR_ZK@hdfs/dn0#epoch0";
+        Endpoint viewed = endpoint(ANCHOR, "a.Handler#h()#20:READ#VIEW");
+        // the slot the run's fetch decoded and its read observed (null:
+        // never read), at version, taken
+        Object[][] table = {
+                {"/snapshots/s/s-M", 1L, true},
+                {"/snapshots/s/s-M", 2L, false},
+                {"/snapshots/s/s-N", 1L, false},
+                {"/snapshots/s/s-M#2", 1L, false},
+                {null, 1L, false}};
+        for (Object[] row : table) {
+            reset();
+            handed("", Collections.singletonList("{\"kind\":\"STATE\","
+                    + "\"reader\":\"" + Confirmation.id(viewed) + "\","
+                    + "\"mint\":false,\"writer\":\""
+                    + Confirmation.viewWriter(1L) + "\",\"version\":1,"
+                    + "\"location\":\"VIEW/" + owner
+                    + "#/snapshots/s/s-M\"}"));
+            if (row[0] != null) {
+                LocationId view = LocationId.of(LocationKind.VIEW, owner,
+                        (String) row[0]);
+                long version = (Long) row[1];
+                Confirmation.wrote(view, version, endpoint(ANCHOR,
+                        "SOLR_ZK#VIEW:" + row[0]), false);
+                Confirmation.read(viewed, view, version,
+                        ReadRow.UNKNOWN_VERSION);
+            }
+            assertFalse("no view is held", Confirmation.holdsViews());
+            String what = Arrays.toString(row);
+            List<String> close = Confirmation.close();
+            assertEquals(what + ": " + close, row[2], close.isEmpty());
+            assertEquals(what + ": misread", (Boolean) row[2]
+                    || row[0] == null, Confirmation.held().misread.isEmpty());
+            if (!(Boolean) row[2]) {
+                assertTrue(close.get(0), close.get(0).startsWith("STATE "
+                        + Confirmation.id(viewed) + ": the model joined this"
+                        + " read to writer VIEW@1 (VIEW/" + owner
+                        + "#/snapshots/s/s-M@1), the run "));
+            }
+        }
+    }
+
+    /**
      * A view hold whose reader read in role work, which no hook closes, ends
      * at the first region that work closes after the read, in the run as it
      * goes: a region of its context closing before the read ends nothing.
