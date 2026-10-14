@@ -1,24 +1,10 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import org.junit.After;
 import org.junit.Test;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
-import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
-import soot.SootMethod;
-import soot.Type;
-import soot.Unit;
-import soot.Value;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.options.Options;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -30,6 +16,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 /**
  * F3: a protobuf field the slice demands crosses the wire by rule, when an
@@ -116,6 +103,18 @@ public class WirePortDerivationTest {
         }
     }
 
+    /** A system's flow declaration applies to a program that holds every
+     *  method it names; one side alone carries nothing. */
+    @Test
+    public void aFlowNamingAMethodTheProgramDoesNotHoldDoesNotApply() {
+        assertFalse(WireFlowCatalog.applies(JsonParser.parseString(
+                "{\"schemaVersion\":3,\"kind\":\"WIRE_FLOW\",\"id\":\"key-id\","
+                        + "\"javaType\":\"int\","
+                        + "\"producer\":{\"method\":\"<a.P: int p()>\"},"
+                        + "\"consumer\":{\"method\":\"<a.C: void c(int)>\"}}")
+                .getAsJsonObject(), Collections.emptyMap()));
+    }
+
     private static List<String> captures(Map<String, Object> port,
                                          String side) {
         List<String> found = new ArrayList<>();
@@ -143,95 +142,47 @@ public class WirePortDerivationTest {
 
     /** The scene, and the declared throw in {@code check}. */
     private static CausynthTargetContext target() {
-        G.reset();
-        Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null);
-        SootClass runtime = library("com.google.protobuf.GeneratedMessageV3",
-                object);
-        SootClass message = application(MESSAGE, runtime);
-        SootClass section = application(SECTION, runtime);
-        SootClass codec = application("m.Codec", object);
-        library("java.lang.IllegalStateException", object);
-        RefType messageType = message.getType();
-        RefType sectionType = section.getType();
-
-        // The service: getKeys(RpcController, KeysRequest) answers a
-        // KeysReply whose repeated field holds KeyProto.
-        SootClass reply = library("m.Protos$KeysReply", runtime);
-        method(reply, "getKey", Collections.<Type>singletonList(IntType.v()),
-                messageType, 0);
-        method(library("m.Protos$KeyService$BlockingInterface", object),
-                "getKeys", Arrays.<Type>asList(library(
-                        "com.google.protobuf.RpcController", object).getType(),
-                        library("m.Protos$KeysRequest", runtime).getType()),
-                reply.getType(), 0);
-
-        SootMethod[] keyId = keyIdField(message, object);
-        SootMethod[] sectionKeyId = keyIdField(section, object);
-        // encodeA sets its parameter; encodeB a value it computed;
-        // saveSection writes the on-disk section.
-        for (String name : new String[]{"encodeA", "encodeB", "saveSection"}) {
-            SootMethod set = ("saveSection".equals(name) ? sectionKeyId
-                    : keyId)[1];
-            Type builderType = set.getDeclaringClass().getType();
-            SootMethod encode = method(codec, name, Arrays.<Type>asList(
-                    builderType, IntType.v()), VoidType.v(), Modifier.STATIC);
-            Local target = local(encode, "r0", builderType);
-            Local key = local(encode, "i0", IntType.v());
-            List<Unit> units = new ArrayList<>(Arrays.asList(
-                    Jimple.v().newIdentityStmt(target,
-                            Jimple.v().newParameterRef(builderType, 0)),
-                    Jimple.v().newIdentityStmt(key,
-                            Jimple.v().newParameterRef(IntType.v(), 1))));
-            Local sent = key;
-            if ("encodeB".equals(name)) {
-                sent = local(encode, "i1", IntType.v());
-                units.add(Jimple.v().newAssignStmt(sent,
-                        Jimple.v().newAddExpr(key, IntConstant.v(1))));
-            }
-            units.add(Jimple.v().newInvokeStmt(Jimple.v()
-                    .newVirtualInvokeExpr(target, set.makeRef(),
-                            Collections.<Value>singletonList(sent))));
-            units.add(Jimple.v().newReturnVoidStmt());
-            body(encode, units.toArray(new Unit[0]));
-        }
-
-        SootMethod check = method(codec, "check", Arrays.<Type>asList(
-                messageType, messageType, sectionType), VoidType.v(),
-                Modifier.STATIC);
-        Local first = local(check, "r0", messageType);
-        Local second = local(check, "r1", messageType);
-        Local stored = local(check, "r2", sectionType);
-        Local firstKey = local(check, "i0", IntType.v());
-        Local secondKey = local(check, "i1", IntType.v());
-        Local idle = local(check, "i2", IntType.v());
-        Local storedKey = local(check, "i3", IntType.v());
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(check, "r3", failure);
-        Unit done = Jimple.v().newReturnVoidStmt();
-        body(check, Jimple.v().newIdentityStmt(first,
-                        Jimple.v().newParameterRef(messageType, 0)),
-                Jimple.v().newIdentityStmt(second,
-                        Jimple.v().newParameterRef(messageType, 1)),
-                Jimple.v().newIdentityStmt(stored,
-                        Jimple.v().newParameterRef(sectionType, 2)),
-                Jimple.v().newAssignStmt(firstKey, Jimple.v()
-                        .newVirtualInvokeExpr(first, keyId[0].makeRef())),
-                Jimple.v().newAssignStmt(secondKey, Jimple.v()
-                        .newVirtualInvokeExpr(second, keyId[0].makeRef())),
-                Jimple.v().newAssignStmt(idle, Jimple.v()
-                        .newVirtualInvokeExpr(first, keyId[0].makeRef())),
-                Jimple.v().newAssignStmt(storedKey, Jimple.v()
-                        .newVirtualInvokeExpr(stored,
-                                sectionKeyId[0].makeRef())),
-                Jimple.v().newIfStmt(Jimple.v().newNeExpr(firstKey,
-                        secondKey), done),
-                Jimple.v().newIfStmt(Jimple.v().newEqExpr(storedKey,
-                        IntConstant.v(0)), done),
-                Jimple.v().newAssignStmt(thrown,
-                        Jimple.v().newNewExpr(failure)),
-                Jimple.v().newThrowStmt(thrown),
-                done);
+        String runtime = "com.google.protobuf.GeneratedMessageV3";
+        String getSection = "<" + SECTION + ": int getKeyId()>";
+        JimpleScene.load(JimpleScene.OBJECT,
+                "public class " + runtime + " extends java.lang.Object { }",
+                "application " + keyIdField(MESSAGE, runtime),
+                "application " + keyIdField(SECTION, runtime),
+                // encodeA sets its parameter; encodeB a value it computed;
+                // saveSection writes the on-disk section.
+                "application public class m.Codec extends java.lang.Object {"
+                        + encode("encodeA", BUILDER, "i0")
+                        + encode("encodeB", BUILDER, "i1")
+                        + encode("saveSection", SECTION + "$Builder", "i0")
+                        + " public static void check(" + MESSAGE + ", "
+                        + MESSAGE + ", " + SECTION + ") { " + MESSAGE + " r0,"
+                        + " r1; " + SECTION + " r2; int i0, i1, i2, i3;"
+                        + " java.lang.IllegalStateException r3;"
+                        + " r0 := @parameter0: " + MESSAGE + ";"
+                        + " r1 := @parameter1: " + MESSAGE + ";"
+                        + " r2 := @parameter2: " + SECTION + ";"
+                        + " i0 = virtualinvoke r0." + GETTER + "();"
+                        + " i1 = virtualinvoke r1." + GETTER + "();"
+                        + " i2 = virtualinvoke r0." + GETTER + "();"
+                        + " i3 = virtualinvoke r2." + getSection + "();"
+                        + " if i0 != i1 goto label1; if i3 == 0 goto label1;"
+                        + " r3 = new java.lang.IllegalStateException;"
+                        + " throw r3; label1: return; } }",
+                JimpleScene.FAILURE,
+                // The service: getKeys(RpcController, KeysRequest) answers a
+                // KeysReply whose repeated field holds KeyProto.
+                "public class m.Protos$KeysReply extends " + runtime
+                        + " { public " + MESSAGE + " getKey(int) { } }",
+                "public class m.Protos$KeyService$BlockingInterface extends"
+                        + " java.lang.Object { public m.Protos$KeysReply"
+                        + " getKeys(com.google.protobuf.RpcController,"
+                        + " m.Protos$KeysRequest) { } }",
+                "public class com.google.protobuf.RpcController extends"
+                        + " java.lang.Object { }",
+                "public class m.Protos$KeysRequest extends " + runtime
+                        + " { }",
+                "application " + builder(MESSAGE),
+                "application " + builder(SECTION));
         return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", "m.Codec", "check",
                         "(Lm/Protos$KeyProto;Lm/Protos$KeyProto;"
@@ -239,68 +190,32 @@ public class WirePortDerivationTest {
                         "java.lang.IllegalStateException", 0));
     }
 
-    /** {@code int getKeyId()} returning its field {@code keyId_} on the
-     *  message, and {@code setKeyId(int)} on its {@code $Builder}. */
-    private static SootMethod[] keyIdField(SootClass message,
-                                           SootClass object) {
-        SootClass builder = application(message.getName() + "$Builder",
-                object);
-        RefType messageType = message.getType();
-        RefType builderType = builder.getType();
-        SootField keyId = new SootField("keyId_", IntType.v(),
-                Modifier.PRIVATE);
-        message.addField(keyId);
-        SootMethod getter = method(message, "getKeyId",
-                Collections.<Type>emptyList(), IntType.v(), 0);
-        Local self = local(getter, "r0", messageType);
-        Local held = local(getter, "i0", IntType.v());
-        body(getter, Jimple.v().newIdentityStmt(self,
-                        Jimple.v().newThisRef(messageType)),
-                Jimple.v().newAssignStmt(held, Jimple.v()
-                        .newInstanceFieldRef(self, keyId.makeRef())),
-                Jimple.v().newReturnStmt(held));
-        SootMethod setter = method(builder, "setKeyId",
-                Collections.<Type>singletonList(IntType.v()), builderType, 0);
-        Local building = local(setter, "r0", builderType);
-        Local value = local(setter, "i0", IntType.v());
-        body(setter, Jimple.v().newIdentityStmt(building,
-                        Jimple.v().newThisRef(builderType)),
-                Jimple.v().newIdentityStmt(value,
-                        Jimple.v().newParameterRef(IntType.v(), 0)),
-                Jimple.v().newReturnStmt(building));
-        return new SootMethod[]{getter, setter};
+    /** {@code static void name(Builder b, int k)}: {@code b.setKeyId(k)},
+     *  or ({@code sent} i1) of {@code k + 1}. */
+    private static String encode(String name, String builder, String sent) {
+        return " public static void " + name + "(" + builder + ", int) { "
+                + builder + " r0; int i0" + (sent.equals("i1") ? ", i1" : "")
+                + "; r0 := @parameter0: " + builder + "; i0 := @parameter1:"
+                + " int;" + (sent.equals("i1") ? " i1 = i0 + 1;" : "")
+                + " virtualinvoke r0.<" + builder + ": " + builder
+                + " setKeyId(int)>(" + sent + "); return; }";
     }
 
-    private static SootClass application(String name, SootClass parent) {
-        SootClass type = library(name, parent);
-        type.setApplicationClass();
-        return type;
+    /** The message: {@code int getKeyId()} returning its field {@code
+     *  keyId_}. */
+    private static String keyIdField(String message, String runtime) {
+        return "public class " + message + " extends " + runtime + " {"
+                + " private int keyId_; public int getKeyId() { " + message
+                + " r0; int i0; r0 := @this: " + message + "; i0 = r0.<"
+                + message + ": int keyId_>; return i0; } }";
     }
 
-    private static SootClass library(String name, SootClass parent) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
-    }
-
-    private static SootMethod method(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     int modifiers) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | modifiers);
-        owner.addMethod(method);
-        method.setActiveBody(Jimple.v().newBody(method));
-        return method;
-    }
-
-    private static Local local(SootMethod method, String name, Type type) {
-        Local local = Jimple.v().newLocal(name, type);
-        method.getActiveBody().getLocals().add(local);
-        return local;
-    }
-
-    private static void body(SootMethod method, Unit... units) {
-        method.getActiveBody().getUnits().addAll(Arrays.asList(units));
+    /** Its {@code $Builder}: {@code setKeyId(int)}. */
+    private static String builder(String message) {
+        String builder = message + "$Builder";
+        return "public class " + builder + " extends java.lang.Object {"
+                + " public " + builder + " setKeyId(int) { " + builder
+                + " r0; int i0; r0 := @this: " + builder + ";"
+                + " i0 := @parameter0: int; return r0; } }";
     }
 }
