@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
@@ -175,9 +176,39 @@ public final class ClaimPolicy {
     /** Solves every valuation of one composition and reads the claim off. */
     public static Decision decide(Composer.Composition composition,
                                   Z3 solver) {
+        return decide(composition, solver, DECIDE_BUDGET_MS);
+    }
+
+    /**
+     * How long one composition's claim may ask z3, in all: past it no
+     * question starts and every one running ends, each undecided -- named
+     * (a DIAGNOSTIC {@code decide budget} row), never a refutation, so no
+     * UNSAT stands on it.  The bound a decide that would not end in time
+     * rests on (SGF6-bugs-snapshot-no-active 0001: 141 paths, 128
+     * valuations, hours).
+     */
+    static final long DECIDE_BUDGET_MS = 1_800_000L;
+
+    /** {@link #decide} within {@code budgetMillis}. */
+    static Decision decide(Composer.Composition composition, Z3 solver,
+                           long budgetMillis) {
+        Z3 bounded = solver.until(System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(budgetMillis));
         Decision decision;
-        try (Disjunction asks = new Disjunction(composition, solver)) {
+        try (Disjunction asks = new Disjunction(composition, bounded)) {
             decision = closed(composition, asks, read(composition, asks));
+        }
+        if (bounded.pastDeadline()) {
+            List<GapRow> gaps = new ArrayList<GapRow>(
+                    decision.claim().gaps());
+            gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, "decide budget " + budgetMillis
+                            + "ms", "the claim's questions ran past the "
+                            + "composition's decide budget: those asked "
+                            + "after it are undecided, named where they "
+                            + "are, never a refutation"));
+            decision = new Decision(claimWith(decision.claim(), gaps),
+                    decision.outcomes(), decision.formula());
         }
         // After every ask: a solver error means some query was never read,
         // so the claim over it is refused by name.

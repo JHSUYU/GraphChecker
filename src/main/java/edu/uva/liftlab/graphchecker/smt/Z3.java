@@ -289,6 +289,12 @@ public final class Z3 {
     private final Room room;
     /** The slot each z3 of this solver's runs holds, in MB. */
     private final int slotMb;
+    /** {@link System#nanoTime} past which no run starts and every run's
+     *  budget ends ({@link #until}); 0: none. */
+    private final long deadlineNanos;
+    /** Whether a verdict at a shared slot's cap is asked again alone
+     *  ({@link #atItsSlot}: not). */
+    private final boolean aloneOnCap;
 
     /**
      * A solver whose z3s share a room of {@code roomMb} (what its JVM's
@@ -299,17 +305,47 @@ public final class Z3 {
         this(executable == null ? Paths.get("z3") : executable,
                 timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
                 new AtomicInteger(), new TreeSet<String>(), new Room(roomMb),
-                roomMb / 2);
+                roomMb / 2, 0L, true);
     }
 
     private Z3(Path z3, long timeoutMillis, AtomicInteger runs,
-               Set<String> errors, Room room, int slotMb) {
+               Set<String> errors, Room room, int slotMb, long deadlineNanos,
+               boolean aloneOnCap) {
         this.z3 = z3;
         this.timeoutMillis = timeoutMillis;
         this.runs = runs;
         this.errors = errors;
         this.room = room;
         this.slotMb = slotMb;
+        this.deadlineNanos = deadlineNanos;
+        this.aloneOnCap = aloneOnCap;
+    }
+
+    /**
+     * The same solver ending every run at {@code deadlineNanos}
+     * ({@link System#nanoTime}): a run's budget is at most what is left, and
+     * one that would start past it answers {@link #TIMEOUT} -- undecided,
+     * never a verdict -- without a z3.  A named bound's (a composition's
+     * decide budget, {@code ClaimPolicy#DECIDE_BUDGET_MS}).
+     */
+    public Z3 until(long deadlineNanos) {
+        return new Z3(z3, timeoutMillis, runs, errors, room, slotMb,
+                deadlineNanos, aloneOnCap);
+    }
+
+    /** Whether this solver's deadline ({@link #until}) has passed. */
+    public boolean pastDeadline() {
+        return deadlineNanos != 0L && System.nanoTime() - deadlineNanos >= 0L;
+    }
+
+    /**
+     * The same solver whose verdict at its slot's cap is undecided there,
+     * never asked again alone: a whole disjunction a smaller question (each
+     * path) answers anyway ({@code Disjunction#ask}).
+     */
+    public Z3 atItsSlot() {
+        return new Z3(z3, timeoutMillis, runs, errors, room, slotMb,
+                deadlineNanos, false);
     }
 
     /**
@@ -320,7 +356,8 @@ public final class Z3 {
      */
     public Z3 slotted(int slotMb) {
         return new Z3(z3, timeoutMillis, runs, errors, room,
-                Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)));
+                Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)),
+                deadlineNanos, aloneOnCap);
     }
 
     /** The same solver as {@code asksAtOnce} callers ask it together: each
@@ -408,8 +445,9 @@ public final class Z3 {
         String status = firstLine(run("", query, "(check-sat)\n", budget));
         if (MEMOUT.equals(status)) {
             // At a slot shared with other asks: once more alone, in half
-            // the room an engine, before it is undecided.
-            if (slotMb < room.mb / 2) {
+            // the room an engine, before it is undecided -- unless asked at
+            // its slot (atItsSlot).
+            if (slotMb < room.mb / 2 && aloneOnCap) {
                 return slotted(room.mb / 2).ask(query, modelSymbols,
                         wantCore, budgetMillis);
             }
@@ -420,27 +458,21 @@ public final class Z3 {
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            String printed = run("", query, valueCommand(modelSymbols),
-                    timeoutMillis);
-            // Its model cut by a shared slot's cap: the whole ask once more
-            // alone (a verdict with no model selects no path).
-            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
-                return slotted(room.mb / 2).ask(query, modelSymbols,
-                        wantCore, budgetMillis);
-            }
-            values = parseValues(printed);
+            // Its model cut by a shared slot's cap: that run once more
+            // alone, never the verdict again (a verdict with no model
+            // selects no path).
+            values = parseValues(payload("", query,
+                    valueCommand(modelSymbols)));
         }
         List<String> core = Collections.emptyList();
         boolean coreKnown = false;
         if (wantCore && "unsat".equals(status)) {
             // A core run that did not say unsat (its budget ran out, no
-            // host had room, it answered unknown) names no core.
-            String printed = run(CORE_TRACKING, query,
-                    "(check-sat)\n(get-unsat-core)\n", timeoutMillis);
-            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
-                return slotted(room.mb / 2).ask(query, modelSymbols,
-                        wantCore, budgetMillis);
-            }
+            // host had room, it answered unknown, its cap alone too) names
+            // no core: the verdict stands, unsat, its core unknown -- never
+            // asked again for a core, nor undecided for want of one.
+            String printed = payload(CORE_TRACKING, query,
+                    "(check-sat)\n(get-unsat-core)\n");
             coreKnown = "unsat".equals(firstLine(printed))
                     && answerBlock(printed, true) != null;
             if (coreKnown) core = parseCore(printed);
@@ -453,6 +485,24 @@ public final class Z3 {
                     "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
         return new Answer(status, values, core, coreKnown, reason);
+    }
+
+    /**
+     * A decided verdict's payload run -- its model, its core -- under the
+     * instance's budget ({@link #ask}); at a shared slot's cap, that run once
+     * more alone, in half the room an engine (SGF6-bugs-snapshot-no-active
+     * 0001: 26 of 48 core runs at a path slot's 704 MB cap re-asked their
+     * whole question alone, verdict and core, each holding the composer's
+     * whole room for minutes).
+     */
+    private String payload(String prefix, ArtifactIO.Body query,
+                           String suffix) {
+        String printed = run(prefix, query, suffix, timeoutMillis);
+        if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
+            printed = slotted(room.mb / 2).run(prefix, query, suffix,
+                    timeoutMillis);
+        }
+        return printed;
     }
 
     /**
@@ -546,13 +596,21 @@ public final class Z3 {
      */
     private String run(String prefix, ArtifactIO.Body query, String suffix,
                        long budgetMillis) {
+        // Past its deadline (until) no run starts: no z3, no count.
+        if (pastDeadline()) return TIMEOUT;
         int run = runs.incrementAndGet();
         long started = System.nanoTime();
         String answer = TIMEOUT;
         int slots = ARITHMETIC.length * slotMb;
         if (room.take(slots)) {
             try {
-                answer = raced(prefix, query, suffix, budgetMillis);
+                // Its budget at most what its deadline leaves (until).
+                long budget = deadlineNanos == 0L ? budgetMillis
+                        : Math.min(budgetMillis, TimeUnit.NANOSECONDS
+                        .toMillis(deadlineNanos - System.nanoTime()));
+                if (budget > 0L) {
+                    answer = raced(prefix, query, suffix, budget);
+                }
             } finally {
                 room.give(slots);
             }

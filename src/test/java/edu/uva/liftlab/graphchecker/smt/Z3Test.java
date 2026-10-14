@@ -258,14 +258,14 @@ public class Z3Test {
     }
 
     /**
-     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THE WHOLE ASK AGAIN
+     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THAT RUN AGAIN
      * ALONE: the verdict fits a path ask's 448 MB cap, its model (or core)
-     * run does not; asked again alone, at the room's lone 1984 MB cap, the
-     * ask answers with its model (its core).  {what the fixture caps at 448
-     * MB, the verdict, the model's x or the core}.
+     * run does not; that run asked again alone, at the room's lone 1984 MB
+     * cap, the ask answers with its model (its core).  {what the fixture
+     * caps at 448 MB, the verdict, the model's x or the core}.
      */
     @Test
-    public void aSharedSlotsCapOnItsPayloadAsksTheWholeAskAgainAlone()
+    public void aSharedSlotsCapOnItsPayloadAsksThatRunAgainAlone()
             throws IOException {
         String[][] rows = {{"get-value", "sat", "6"},
                 {"get-unsat-core", "unsat", "[c]"}};
@@ -295,6 +295,44 @@ public class Z3Test {
             assertEquals(what, row[2], row[1].equals("sat")
                     ? answer.values().get("x") : answer.core().toString());
         }
+    }
+
+    /**
+     * A CORE AT ITS CAP LEAVES THE VERDICT UNSAT, ITS CORE UNKNOWN: the
+     * verdict is unsat at a path ask's 448 MB cap, its core run is not
+     * there nor alone at the room's 1984 MB cap -- where the verdict would
+     * not fit either.  The verdict is never asked again for a core: unsat,
+     * the core unknown, never undecided for want of one; the runs a
+     * check-sat, the core run, the core run alone.
+     */
+    @Test
+    public void aCoreAtItsCapLeavesTheVerdictUnsatItsCoreUnknown()
+            throws IOException {
+        Path log = folder.newFile("core-cap.log").toPath();
+        Path script = folder.newFile("z3-core-cap").toPath();
+        Files.write(script, Arrays.asList(
+                "#!/bin/bash",
+                "input=$(cat)",
+                "cap=$(printf '%s' \" $* \" | sed -n"
+                        + " 's/.* memory_max_size=\\([0-9]*\\) .*/\\1/p')",
+                "case \"$input\" in",
+                "  *get-unsat-core*) echo \"core $cap\" >> " + log + ";"
+                        + " echo unsat; echo '(error \"out of memory\")' ;;",
+                "  *) echo \"verdict $cap\" >> " + log + ";"
+                        + " if [ \"$cap\" = 1984 ]; then"
+                        + " echo '(error \"out of memory\")'; exit 101;"
+                        + " fi; echo unsat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512).ask(
+                "(assert true)\n", Collections.<String>emptyList(), true);
+        assertTrue(answer.toString(), answer.unsat());
+        assertTrue("its core unknown: " + answer, !answer.coreKnown());
+        java.util.Set<String> runs = new java.util.TreeSet<String>(
+                Files.readAllLines(log));
+        assertEquals("the verdict at its slot, the core there and alone",
+                new java.util.TreeSet<String>(Arrays.asList("verdict 448",
+                        "core 448", "core 1984")), runs);
     }
 
     /**
