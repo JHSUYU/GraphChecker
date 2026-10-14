@@ -1440,7 +1440,7 @@ INSTRUMENT and its verifier, the import gate, the planner (one service held for 
 §7.9), COMPOSE, CONFIRM's and REPRODUCE's `ConfirmMain`, GROW's planner and weave -- each charged
 while it runs at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
-(`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
+(`campaign_engine_need_mb`: the static pass and the composer 4 GB, the planner 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
 `ExposedRegionPlanMain` (0.13 GB measured) 2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
 that runs out of its heap (exit 3 under
@@ -1734,7 +1734,7 @@ UNSAT_CLOSED).
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
 proposed twice; the wave budget is what bounds the derivation. A case whose corpus outgrows the
-8 GB start gives its planner and composer more (`engine_memory_mb`, hdfs-11741's 16 GB): the 70
+8 GB start gives its planner more, and a composer past 8 GB more (`engine_memory_mb`, hdfs-11741's 16 GB): the 70
 sessions (5.7 GB on disk) of round a40h2's check DataStreamer-638 ran its round-4 planner out of
 8 GB. An end other than WITNESSED on a
 last round whose closure was truncated (its `truncated`) is one BLOCKING
@@ -2439,12 +2439,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    second each alone); one that stops at its memory cap goes path by path too. Path by path, the
    paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 768 MB slot of the
    composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3 peaks measured p90 81-664 MB on three
-   Solr corpora), so a 6 GB room runs four at once, the rest
+   Solr corpora), so a 3 GB room runs two at once, the rest
    waiting for a slot; the valuations, asked up to four at a time (`PARALLEL_ASKS`, at most as many as
    there are), ask their whole disjunctions in slots of the room shared that many ways
    (`Disjunction#asking`, `Z3#shared`), and a lone ask -- the formula's, a refinement's, a path asked
    alone -- in half of it each engine; an ask at a shared slot's cap is asked once more alone first.
-   A composer's room is 6144 MB (its charge at the 8 GB start heap 15.2 GB), less where its footprint,
+   A composer's room is 3072 MB (its charge at the 4 GB start heap 7.8 GB, at 8 GB once it outgrew 4 GB
+   12.2 GB; a 6144 MB room beside an 8 GB start, 15.2 GB that every head held too, kept five bug checks
+   of round SGF4 waiting 30 min and more for a host), less where its footprint,
    the room and a 2048 MB margin would not fit
    under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
    `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer

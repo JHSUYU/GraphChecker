@@ -44,8 +44,9 @@ running out of memory, and a single case alone takes the whole cluster.
   seed replay (HG4: 11741 674 / 662-715 MB; adhoc-07 238 / 194-257; outlier adhoc-15 514 / up to 2003, which grows
   through the ledger).
 - **Every z3 is capped and charged** (PIPELINE §7.5): z3's own `memory_max_size` at a slot of the z3 room its JVM is
-  charged with (`--z3-room-mb`): a composer's 6 GB beside its footprint and a 2 GB margin under the ceiling (a lone
-  ask 3 GB an engine, four valuations or four path asks at a time 768 MB, asked again alone at their cap; per-path z3
+  charged with (`--z3-room-mb`): a composer's 3 GB beside its footprint (its 4 GB start heap: charged 7.8 GB) and a 2 GB
+  margin under the ceiling (a lone ask 1.5 GB an engine, four valuations at a time 384 MB, two path asks at a time 768 MB,
+  asked again alone at their cap; per-path z3
   peaks measured capped on solr-adhoc-09, solr-18413 and solr-bugs-reindex-cleanup: p90 120, 81 and 664 MB), a solver
   question's 1152 MB (512 MB an engine), the hard lane's 4096; a z3 at its cap is undecided by name (`memout`,
   `SOLVER_MEMOUT`), as a timeout is.
@@ -112,7 +113,8 @@ running out of memory, and a single case alone takes the whole cluster.
 | 11741's witness attempt stuck for hours (CC7, 2026-10-06) | `Cone.read` searched every assertion of another selector to the end of a 150 MB body for every path | the Cone read once and indexed by selector (3e7becca7) |
 | a confirmed witness's verdict waiting behind a witness attempt | a returned confirmation is decided only by the next step, and steps run one at a time | minutes with the Cone fix (HF2: 15 min queue to accepted); `hdfs1-confirm-first` parked |
 | solr-18413 Z3S: a witness attempted 69 min after its replay ended (2026-10-13) | a round and the gate shared one head step, one step at a time: the witness returned 3 s after a step began that planned round 2 (its planner out of 8 GB, then 1437 s waiting for 17.8 GB: 57 min), then GROW wove g3 in the head's hands for 8 min | rounds in a lane of their own over inputs frozen as each starts (`corpus.txt`, `answers.jsonl`, `in_flight.jsonl`), taken between two head steps: landing, the gate and witness attempts go on while a round plans (PIPELINE §7.9; shell row STREAM-WITFIRST) |
-| SGF3-adhoc-13, lift12 (2026-10-13): swap full, load ~110, sshd over 60 s, every campaign with work there slowed or failed | its composer, charged its JVM's 8.9 GB footprint, ran a z3 (`-T 1810 -in -smt2`) that grew to 10.9 GB in 20 min: no z3 was capped or charged, the composer's admission read only `MemAvailable` | every z3 under z3's `memory_max_size` at a slot of a z3 room its JVM is charged with (composer 6 GB, question 1152 MB, hard lane 4096); at the cap `memout`, undecided by name (PIPELINE §7.5, §8); `tools/lib/z3-race.sh` capped at 4096 MB an engine |
+| SGF3-adhoc-13, lift12 (2026-10-13): swap full, load ~110, sshd over 60 s, every campaign with work there slowed or failed | its composer, charged its JVM's 8.9 GB footprint, ran a z3 (`-T 1810 -in -smt2`) that grew to 10.9 GB in 20 min: no z3 was capped or charged, the composer's admission read only `MemAvailable` | every z3 under z3's `memory_max_size` at a slot of a z3 room its JVM is charged with (composer 3 GB, question 1152 MB, hard lane 4096); at the cap `memout`, undecided by name (PIPELINE §7.5, §8); `tools/lib/z3-race.sh` capped at 4096 MB an engine |
+| SGF4: five bug checks waited 30+ min for a 15232 MB head step (2026-10-14, e.g. 18406's compose "held on lift10") | the composer's 6 GB z3 room beside its 8 GB start heap, a charge every head reserved too, fit no host with a head on a full pool | room 3 GB (two path asks at once), composer start 4 GB (measured Solr peaks 2.9-8.7 GB; one out of heap reruns at 8 GB and its case's later composers start there): charged 7.8 GB |
 | solr-adhoc-07 RX6: the round-0 planner ran out of 8 then 16 GB over a 78 MB corpus (2026-10-12) | `SmtLowering`'s frames took a memoized node's unbound values again on every hit, as a list, so they doubled per level of a shared container chain; the arm keys lower every guard-location write | each frame holds a value once, by identity (`Raised#unbound`): round 0 in 8 s at 1.2 GB |
 
 Older history is in `git log` of `run_engine.sh` and in PIPELINE §7.7's own examples.

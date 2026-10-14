@@ -587,9 +587,11 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
 # footprint leaves less than campaign_z3_least_room_mb runs in that, saying
 # so (engine_java): a lone ask's engines take half the room each, four
 # valuations asked together an eighth, a path ask 768 MB (smt/Z3#shared,
-# #slotted).  A solver's is a question's, in its first lane
+# #slotted), so 3072 MB holds two path asks at once (6144 MB beside an 8 GB
+# start heap, every head reserving it too, found no host on a full pool:
+# campaign_engine_need_mb).  A solver's is a question's, in its first lane
 # (campaign_solver_z3_room_mb).  A main that starts no z3 has none.
-campaign_compose_z3_room_mb=6144
+campaign_compose_z3_room_mb=3072
 campaign_z3_room_margin_mb=2048
 # The least room smt/Z3 holds a run in (Z3.Room).
 campaign_z3_least_room_mb=256
@@ -710,19 +712,28 @@ campaign_engine_start_mb() {
 #                                             GB and hdfs-11741 past 4 GB: at
 #                                             4 GB 17960 collected for 30 min
 #   composer (ComposeMain)                    1.4-4.3 GB; hdfs-11741 9.1 GB at
-#                                             8 GB, and m1-11741 ran out of 8
+#                                             8 GB, and m1-11741 ran out of 8;
+#                                             Solr 18406 2.9 GB, 18413 3.5,
+#                                             reindex 4.2-5.5, adhoc-21 6.6,
+#                                             adhoc-09 8.7
 #   GROW's exposed-region planner          0.13 GB, 0.4 s (V5-11741 round 5,
 #   (ExposedRegionPlanMain)                its two rows: static inputs only)
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
 # growth step is the door step's main: measured as that.  Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
 # of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
+# The composer alone starts below its largest: at 4 GB, charged ~7.8 GB with
+# its z3 room, most composers fit, and one that runs out is run again at
+# 8 GB, where its case's later composers start (engine_java).  Started at
+# 8 GB with a 6 GB room, its 15232 MB charge, which every head reserved too
+# (campaign_head_need_mb), kept five bug checks of round SGF4 waiting 30 min
+# and more for a host.
 campaign_engine_need_mb() {
   case "$1" in
-    *.GraphCheckerMain) echo 4096 ;;
+    *.GraphCheckerMain|*.ComposeMain) echo 4096 ;;
     *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
       |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain) \
       echo 2048 ;;
-    *.ExploreMain|*.ComposeMain) echo 8192 ;;
+    *.ExploreMain) echo 8192 ;;
   esac
 }
 
