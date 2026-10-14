@@ -2307,6 +2307,11 @@ MB, over the $5 MB its host holds for it, and lift12 has no room; ended" >&2
         heap|hardheap|ceiling)
           campaign_solver_outgrown "$3" "$(campaign_solver_heap_mb "$3")"
           return 3 ;;
+        capped)
+          # Past a charge already at the most a solver of its own is given.
+          campaign_watch_peak_mb=12000
+          echo "the JVM failed" >&2
+          return 1 ;;
         crash|thrown)
           # Within its charge; the watch's own line is the last it says.
           campaign_watch_peak_mb=900
@@ -2373,6 +2378,7 @@ heap||3712|owes 5888 ALONE
 crash||3712|its solver of its own failed (exit 1) at a peak of 900 MB within its 3712 MB: the JVM crashed
 thrown||3712|its solver of its own failed (exit 1) at a peak of 900 MB within its 3712 MB: java.lang.IllegalArgumentException: the root
 alone|ALONE|5888|UNSAT
+capped|ALONE|10240|its solver of its own failed (exit 1) at a peak of 12000 MB past its 10240 MB, the most a solver of its own is given: the JVM failed
 hardheap|HARD|6656|owes 8832 HARD
 ceiling|ALONE|2624|its solver of its own ran out of heap at the engine heap, 1024 MB
 EOF_OWED
@@ -4181,11 +4187,13 @@ EOF
 # still in flight: an ALONE among the solves, a HARD in the hard lane; only
 # a start no host of the pool can ever hold -- its admission charge, the need
 # or what a solver of its corpus needs now where that is more, past every
-# host's ceiling (70 % of 31583 MB: 22109) less the room a head holds there
-# -- is an answer, landed NOT_ADMITTED naming that charge, with the
-# campaign's gap row.  Per row: the ending job's kind, what it owes (need and
-# lane), the corpus's solver heap, the head rooms on lift12 and lift13, and
-# the queue, the hard lane and what waits to land after it.
+# host's ceiling (70 % of 31583 MB: 22109) less the largest head reservation
+# standing there, idle or busy -- is an answer, landed NOT_ADMITTED naming
+# that charge, with the campaign's gap row; a waiting step's hold, which
+# comes back, is none.  Per row: the ending job's kind, what it owes (need
+# and lane), the corpus's solver heap, the heads on lift12 and lift13 (a
+# reservation, b: busy, +: a waiting step's hold), and the queue, the hard
+# lane and what waits to land after it.
 owed_stream="${test_tmp}/stream-owed"
 while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
     os_hard os_pending; do
@@ -4203,11 +4211,15 @@ while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
     os_at=0
     for os_room in ${os_heads}; do
       os_at=$((os_at + 1))
-      os_host=lift1$((os_at + 1))
-      mkdir -p "${campaign_host_gate_root}/${os_host}/heads"
-      echo 31583 >"${campaign_host_gate_root}/${os_host}/total"
-      [[ "${os_room}" == 0 ]] || echo "${os_room}" \
-        >"${campaign_host_gate_root}/${os_host}/heads/head.1.1"
+      os_host="${campaign_host_gate_root}/lift1$((os_at + 1))"
+      mkdir -p "${os_host}/heads"
+      echo 31583 >"${os_host}/total"
+      [[ "${os_room}" != *+* ]] \
+        || echo "${os_room#*+}" >"${os_host}/heads/other.2.2.hold"
+      os_room=${os_room%%+*}
+      [[ "${os_room%b}" == 0 ]] || echo "${os_room%b}" \
+        >"${os_host}/heads/head.1.1"
+      [[ "${os_room}" != *b ]] || : >"${os_host}/heads/head.1.1.busy.3"
     done
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
       stream_job_tree=() stream_host_jobs=() stream_host_solves=() \
@@ -4261,6 +4273,8 @@ HARD|8832|HARD|2048|9088 0|REPLAY obligations-0000 C g0/c g0/p|HARD obligations-
 OBLIGATION|21000|ALONE|2048|9088 0|ALONE obligations-0000 A 21000,REPLAY obligations-0000 C g0/c g0/p|-|-
 OBLIGATION|21000|ALONE|2048|9088 9088|REPLAY obligations-0000 C g0/c g0/p|-|OBLIGATION obligations-0000 A lift12 0:21000
 OBLIGATION|1000|ALONE|16384|9088 9088|REPLAY obligations-0000 C g0/c g0/p|-|OBLIGATION obligations-0000 A lift12 0:18944
+OBLIGATION|21000|ALONE|2048|9088 0+15000|ALONE obligations-0000 A 21000,REPLAY obligations-0000 C g0/c g0/p|-|-
+OBLIGATION|21000|ALONE|2048|9088 9088b|REPLAY obligations-0000 C g0/c g0/p|-|OBLIGATION obligations-0000 A lift12 0:21000
 EOF
 
 # STREAM-IDLE: the exploration ends -- its fixed point, or a stop already

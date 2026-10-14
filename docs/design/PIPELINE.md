@@ -1001,14 +1001,16 @@ outgrew 2, 4 and 8 GB), or what the first measurably held -- its watched peak --
 corpus held (SL1-10: a question that held 1.2 GB asked the 12.5 GB its campaign's largest host solver
 had reached, and no host had it), at most the engine heap's footprint and the room; a JVM of its own is
 owed again only when its watch grew it past its charge. Only a start no host of the pool can ever hold
--- its admission charge past every host's ceiling less the room a head holds there
-(`campaign_pool_can_hold`) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold
+-- its admission charge past every host's ceiling less the largest head reservation standing there,
+idle or busy (`campaign_pool_can_hold`, `campaign_host_head_reserved`; a waiting step's hold, which
+comes back, is none) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold
 a solver JVM of its own of N MB", with an `OBLIGATION_UNFINISHED` gap row; there is no time bound, which
 would drop a starved solve again. Why (SGF5, 2026-10-14): a solve that placed itself from inside its
 start waited at most 600 s, and on a pool charged past its real use (lift10: 21 GB charged, 9.4 GB in
 use) its worker died and the obligation was answered NOT_ADMITTED for good -- 4 to 69 per case,
 18413's witness among them. A solver JVM of its own that failed where more memory is no help -- out of
-heap at the engine heap (`campaign_alone_heap_mb`, the heap it ran at), or failed within its charge --
+heap at the engine heap (`campaign_alone_heap_mb`, the heap it ran at), or failed within its charge
+or past one already at the most a solver of its own is given --
 fails the worker by name, its cause what the JVM threw (`campaign_failure_said`: `campaign_thrown`, else
 its last line that is no stack frame and not the watch's `causynth:` peak line) in the obligation's
 unfinished answer (§7.7). The debt is written before any row it left is removed, and a head that still

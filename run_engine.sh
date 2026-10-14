@@ -3640,10 +3640,17 @@ ${heap} MB"
       (( need <= measured )) || need=${measured}
       if (( own == 1 )); then
         # Asked again only when it grew past its charge (the watch's): one
-        # that failed within it fails where more memory is no help.
-        (( peak > charged && need > charged )) || die "obligation \
-${obligation_id}: its solver of its own failed (exit ${status}) at a peak of \
-${peak} MB within its ${charged} MB: ${why:-it said nothing}"
+        # that failed within it, or past a charge at the most a solver of
+        # its own is given, fails where more memory is no help.
+        if (( peak <= charged )); then
+          die "obligation ${obligation_id}: its solver of its own failed \
+(exit ${status}) at a peak of ${peak} MB within its ${charged} MB: \
+${why:-it said nothing}"
+        elif (( need <= charged )); then
+          die "obligation ${obligation_id}: its solver of its own failed \
+(exit ${status}) at a peak of ${peak} MB past its ${charged} MB, the most a \
+solver of its own is given: ${why:-it said nothing}"
+        fi
         why="its solver of its own grew to ${peak} MB past its ${charged} \
 MB and failed (${why:-it said nothing})"
       else
@@ -4259,9 +4266,11 @@ campaign_pool_slots() {
 
 # campaign_pool_can_hold <mb> <host>...: whether some host could ever hold
 # one start of <mb>: its ceiling (CAUSYNTH_HOST_MAX_USED_PCT of its
-# MemTotal) less the room a head holds there now (campaign_host_head_room),
-# what a start that is no head's own may never take.  A host whose memory
-# cannot be read is counted as one that could: its start waits for it
+# MemTotal) less the largest head reservation standing there
+# (campaign_host_head_reserved), what a start that is no head's own never
+# takes while that head lives.  What comes back is no bound: a waiting
+# step's hold, a head JVM's busy turn.  A host whose memory cannot be read
+# is counted as one that could: its start waits for it
 # (campaign_stream_unreadable), it is never answered for it.
 campaign_pool_can_hold() {
   local mb=$1 host dir total now
@@ -4272,9 +4281,26 @@ campaign_pool_can_hold() {
     mkdir -p "${dir}"
     total=$(campaign_host_memory_total "${host}" "${dir}") || return 0
     (( $(campaign_host_limit_mb "${total}") \
-       - $(campaign_host_head_room "${dir}" "${now}") < mb )) || return 0
+       - $(campaign_host_head_reserved "${dir}" "${now}") < mb )) || return 0
   done
   return 1
+}
+
+# The largest fresh head reservation of one host's ledger directory <dir>,
+# in MB, idle or busy (HEAD ROOM above): the structural part of the room
+# heads hold there, no waiting step's hold (<id>.hold) counted; 0 when there
+# is none.
+campaign_host_head_reserved() {
+  local dir=$1 now=$2 file need held=0
+  for file in "${dir}"/heads/*; do
+    [[ -f "${file}" && "${file}" != *.busy.* && "${file}" != *.hold ]] \
+      || continue
+    (( now - $(stat -c %Y "${file}" 2>/dev/null || echo 0) \
+      < campaign_head_reservation_stale_s )) || continue
+    read -r need 2>/dev/null <"${file}" || continue
+    [[ "${need}" =~ ^[0-9]+$ ]] && (( need > held )) && held=${need}
+  done
+  printf '%s\n' "${held}"
 }
 
 # Drops one start's charge: what it ran has returned, and whatever it held
