@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-/** A class {@link PlantAgentTest} has the plant-run agent rewrite: calls
+/** A class the plant-run agent rewrites
+ *  ({@link RecordingPlantTest#namedInvokesHandTheirReturnsToThePlant}): calls
  *  of each return type, one before a branch (a frame after the call). */
 public final class PlantAgentFixture {
     private PlantAgentFixture() {
