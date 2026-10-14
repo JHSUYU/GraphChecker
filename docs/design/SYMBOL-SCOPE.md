@@ -338,7 +338,36 @@ and `FALSE` arms 1 and 0; and a helper with no branch that returns one call's re
 class's `call()` running `lambda$m$N`) forwards to that call's deciders, one helper deeper
 (solr-adhoc-09: `if (!callable.call())`, DeleteReplicaCmd.java:277, is decided by the lambda's
 `waitForCoreNodeGone` tests; its deciders' `via` is `deleteCore`, since `Identity#callerFrame`
-passes the lambda class's and `lambda$` frames). A helper with no branch that returns `h2().equals(c)`
+passes the lambda class's and `lambda$` frames). `Boolean.valueOf` of a constant (javac's boxing of
+`return true;`) is that constant, as `Boolean.TRUE` is. A helper with no branch whose constant says
+whether one call threw (`BooleanReturns#thrown`) is decided by that call's own arms: a trap catching
+a checked exception `E` -- never `Exception`, `Throwable` or a `RuntimeException`, which code
+anywhere below could throw -- whose handler runs straight to a constant return, around exactly one
+call `g` that declares `E`, the path after `g` running straight to another constant; each branch of
+`g` with an arm that runs straight (local stores, calls, jumps) to a throw of a `new E'` assignable
+to `E` that no handler of `g` keeps (a `finally` rethrows it, past its own branches) and that the
+helper's first trap covering the call that catches it is this one's (the exception table's order:
+`catch (SubE)` before `catch (E)` takes a `new SubE`; traps sharing a handler are one range) has the
+handler's verdict, one that runs straight to `g`'s return the normal path's, any other arm is open.
+Exact only where `E` comes from `g`'s own throws: a `g` any of whose calls declares `E`, a subtype or
+a supertype of it, or is unresolved, decides nothing; one level of exception, and `g` counts a
+helper deeper; a synthetic forwarder (the lambda class's `call()`) is no helper level, as it is no caller for `via`. solr-adhoc-09's `waitForCoreNodeGone` returns false
+from `catch (TimeoutException)` around `waitForState` and true after it, so the lambda's tests are
+decided by `waitForState`'s `if (!latch.await(..)) throw new TimeoutException` (ZkStateReader.java
+:1993, the TIMED_WAIT door's decision) and its early `if (predicate.test(..)) return`; without it
+every path's fatal arm was the constant `false` (CHECKING trap 4). Every decider states its `via`
+(`StaticScopeMap.Guard#via`), the method its helper is called from past synthetic hops
+(`contract.JvmNames#syntheticHop`, the one rule `Identity#callerFrame` names a caller by): a forced
+replay forces it only in a call from there, COMPOSE's way guard counts it only there
+(`plan.ForcingTable`, `ForcedArms#calledFrom`, `RestsOn#wayGuard`); `waitForState`'s deciders are
+called from `waitForCoreNodeGone`, not from the lambda whose test they decide. A guard in a lambda's
+body states no `via` (the run names a call's caller past the lambda, which no static frame names):
+its deciders are forced in any call -- the over-approximation. Limits, named: an `E` thrown below `g`
+without being declared (a sneaky throw, `Unsafe.throwException`, `Class.newInstance`) is not seen,
+so the arm that reached it reads as `g`'s normal return; and at run time the condition is the latest
+decision in the helper's method before the guard (`RowPublication#decided`), so a woven branch of
+that method that runs after the deciding one (a `finally`'s `if (log.isDebugEnabled())`, were it a
+decision site) makes the guard its own, concrete condition, silently. A helper with no branch that returns `h2().equals(c)`
 (an enum's `equals` is identity) is the guard `h2() == c`, its verdicts read through the boolean it
 returns: hdfs-adhoc-15/17's `isComplete()` is `getBlockUCState().equals(COMPLETE)`, decided by
 `uc == null ? COMPLETE : uc.getBlockUCState()`, whose `uc != null` arm is open; hdfs-adhoc-40's

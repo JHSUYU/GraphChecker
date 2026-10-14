@@ -27,9 +27,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * branch arms that decide a guard on a helper's constant return
  * ({@code guardDeciders}): the arm whose verdict is the guard's wanted
  * arm, else the OPEN arm (it runs on to a value no constant states, where
- * the fatal may lie), nested deciders alike, each with {@code via}, the
- * method that calls its helper (a decider is forced only in a call from
- * there).  A switch guard is not forced (the VM forces an if's arm only),
+ * the fatal may lie), nested deciders alike, each with its {@code via} as
+ * SEED states it ({@link StaticScopeMap.Guard#via}: the method its helper
+ * is called from, past synthetic hops; a decider is forced only in a call
+ * from there).  A switch guard is not forced (the VM forces an if's arm only),
  * nor a fault call, which no branch decides: a forced world they take
  * elsewhere closes before its target, FORCE_DIVERGED.  A guard each of whose
  * arms reaches the throw within one iteration ({@code
@@ -97,14 +98,13 @@ public final class ForcingTable {
             List<StaticScopeMap.Guard> deciders =
                     target.guardDeciders.get(site);
             if (arm != null && deciders != null) {
-                deciders(table, deciders, arm, SiteId.methodOf(site));
+                deciders(table, deciders, arm);
             }
         }
         for (StaticScopeMap.Guard guard : target.chain) {
             branch(table, guard.siteId(), guard.outcome(), passable);
             if (guard.outcome() != null) {
-                deciders(table, guard.deciders(), guard.outcome(),
-                        SiteId.methodOf(guard.siteId()));
+                deciders(table, guard.deciders(), guard.outcome());
             }
         }
         JsonArray json = new JsonArray();
@@ -129,10 +129,12 @@ public final class ForcingTable {
      * open arm) -- is {@code passable}, as a guard each of whose arms
      * reaches the throw is: forcing it against its concrete arm would put
      * {@code false} in the forced condition for an arm that leads on too.
+     * Each is forced in a call of its helper from its own {@code via}
+     * ({@link StaticScopeMap.Guard#via}, which SEED states).
      */
     private static void deciders(Map<String, Arm> table,
                                  List<StaticScopeMap.Guard> deciders,
-                                 boolean wanted, String via) {
+                                 boolean wanted) {
         Map<String, StaticScopeMap.Guard> chosen =
                 new LinkedHashMap<String, StaticScopeMap.Guard>();
         Map<String, Set<Boolean>> leaving =
@@ -163,11 +165,10 @@ public final class ForcingTable {
         for (StaticScopeMap.Guard decider : chosen.values()) {
             if (table.containsKey(decider.siteId())) continue;
             table.put(decider.siteId(), new Arm(decider.siteId(),
-                    decider.outcome(), via,
+                    decider.outcome(), decider.via(),
                     arms.get(decider.siteId()).size() == 2
                             && !leaving.containsKey(decider.siteId())));
-            deciders(table, decider.deciders(), decider.outcome(),
-                    SiteId.methodOf(decider.siteId()));
+            deciders(table, decider.deciders(), decider.outcome());
         }
     }
 

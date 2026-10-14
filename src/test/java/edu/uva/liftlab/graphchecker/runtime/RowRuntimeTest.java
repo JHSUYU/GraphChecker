@@ -3151,16 +3151,18 @@ public class RowRuntimeTest {
         String nested = "<a.H: boolean hasMin(int)>";
         List<StaticScopeMap.Guard> hasMin = Arrays.asList(
                 new StaticScopeMap.Guard(nested + "#u1", true, true,
-                        Collections.<StaticScopeMap.Guard>emptyList()),
+                        Collections.<StaticScopeMap.Guard>emptyList(), helper),
                 new StaticScopeMap.Guard(nested + "#u1", false, false,
-                        Collections.<StaticScopeMap.Guard>emptyList()));
+                        Collections.<StaticScopeMap.Guard>emptyList(), helper));
         List<StaticScopeMap.Guard> deciders = Arrays.asList(
-                new StaticScopeMap.Guard(helper + "#u2", true, null, hasMin),
-                new StaticScopeMap.Guard(helper + "#u2", false, true, hasMin),
+                new StaticScopeMap.Guard(helper + "#u2", true, null, hasMin,
+                        ""),
+                new StaticScopeMap.Guard(helper + "#u2", false, true, hasMin,
+                        ""),
                 new StaticScopeMap.Guard(helper + "#u4", true, false,
-                        Collections.<StaticScopeMap.Guard>emptyList()),
+                        Collections.<StaticScopeMap.Guard>emptyList(), ""),
                 new StaticScopeMap.Guard(helper + "#u4", false, true,
-                        Collections.<StaticScopeMap.Guard>emptyList()));
+                        Collections.<StaticScopeMap.Guard>emptyList(), ""));
         JsonObject m = predicate("m"), h = predicate("h"), o = predicate("o");
         String refM = RowRuntime.expressionRef(m);
         String refH = RowRuntime.expressionRef(h);

@@ -50,6 +50,9 @@ public class ForcingTableTest {
     private static final String H = "<a.T: boolean expired()>";
     private static final String N = "<a.T: int age()>";
     private static final String CALLER = "<a.T: void run(int)>";
+    /** A branchless helper between {@link #H}'s test and {@link #N}: N's
+     *  deciders are called from it, not from H. */
+    private static final String X = "<a.T: boolean aged()>";
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -68,11 +71,13 @@ public class ForcingTableTest {
                 + "\"guardOutcomes\":[false,null],"
                 + "\"guardDeciders\":{\"" + M + "#u8\":["
                 + "{\"siteId\":\"" + H + "#u1\",\"outcome\":true,"
-                + "\"verdict\":true},"
+                + "\"verdict\":true,\"via\":\"" + M + "\"},"
                 + "{\"siteId\":\"" + H + "#u1\",\"outcome\":false,"
+                + "\"via\":\"" + M + "\","
                 + "\"deciders\":[{\"siteId\":\"" + N + "#u2\","
-                + "\"outcome\":true,\"verdict\":false},{\"siteId\":\""
-                + N + "#u2\",\"outcome\":false}]}]},"
+                + "\"outcome\":true,\"verdict\":false,\"via\":\"" + X
+                + "\"},{\"siteId\":\"" + N + "#u2\",\"outcome\":false,"
+                + "\"via\":\"" + X + "\"}]}]},"
                 + "\"chain\":[{\"siteId\":\"" + M + "#u3\",\"outcome\":null},"
                 + "{\"siteId\":\"" + CALLER + "#u4\",\"outcome\":true}]}";
         StaticScopeMap.Site target = read(row).targetSites().get(0);
@@ -85,8 +90,10 @@ public class ForcingTableTest {
                         H + "#u1", "=false via " + M},
                 {"under that open arm, the nested decider at the arm whose "
                         + "verdict it wants; its other arm is open, so "
-                        + "neither leaves the way: passable", N + "#u2",
-                        "=true via " + H + " passable"},
+                        + "neither leaves the way: passable; via as SEED "
+                        + "stated it (its helper is called from X, not from "
+                        + "H, whose branch it decides)", N + "#u2",
+                        "=true via " + X + " passable"},
                 {"a chain switch: never forced", M + "#u3", null},
                 {"a caller's chain guard", CALLER + "#u4", "=true"},
                 {"a fault call: no arm to force", M + "#u5", null}};

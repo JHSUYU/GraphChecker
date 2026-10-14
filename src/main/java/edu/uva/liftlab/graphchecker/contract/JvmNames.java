@@ -60,4 +60,26 @@ public final class JvmNames {
         }
         return stable;
     }
+
+    /**
+     * Whether a method ({@code <a.B: R m(A)>}, a frame's or Soot's
+     * signature) is a synthetic hop between the method that wrote a call and
+     * the one it runs: javac's {@code access$NNN} or lambda body {@code
+     * lambda$m$N}, or a method of Soot's desugared lambda class ({@code
+     * X$lambda_m_N__k}, whose {@code call()} or {@code run()} forwards to
+     * the lambda's body).  A helper such a hop calls is called from the
+     * method that wrote the call: the one rule {@code runtime.Identity
+     * #callerFrame} and a decider's {@code via} ({@code
+     * causynth.BooleanReturns}) share.
+     */
+    public static boolean syntheticHop(String method) {
+        if (method == null) return false;
+        int colon = method.indexOf(':');
+        int paren = method.indexOf('(', colon + 1);
+        if (colon < 0 || paren < 0) return false;
+        if (method.substring(0, colon).contains("$lambda_")) return true;
+        String head = method.substring(colon + 1, paren).trim();
+        String name = head.substring(head.lastIndexOf(' ') + 1);
+        return name.startsWith("access$") || name.startsWith("lambda$");
+    }
 }

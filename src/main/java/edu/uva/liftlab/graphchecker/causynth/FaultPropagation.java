@@ -395,9 +395,10 @@ final class FaultPropagation {
         return seen;
     }
 
-    /** A checked exception: an Exception that is no RuntimeException. */
-    private boolean checked(RefType type) {
-        FastHierarchy hierarchy = scene.getOrMakeFastHierarchy();
+    /** A checked exception: an Exception that is no RuntimeException
+     *  (also what an exception-decided return catches, BooleanReturns). */
+    static boolean checked(RefType type) {
+        FastHierarchy hierarchy = Scene.v().getOrMakeFastHierarchy();
         SootClass exception = Scene.v().getSootClassUnsafe(
                 "java.lang.Exception", false);
         SootClass runtime = Scene.v().getSootClassUnsafe(
@@ -589,7 +590,7 @@ final class FaultPropagation {
         return null;
     }
 
-    private static boolean covers(Body body, Trap trap, Unit unit) {
+    static boolean covers(Body body, Trap trap, Unit unit) {
         for (Unit at = trap.getBeginUnit(); at != null
                 && at != trap.getEndUnit();
              at = body.getUnits().getSuccOf(at)) {

@@ -890,7 +890,10 @@ ${AB_EXTRA_CHAINS[*]}"
       # run.sh derives the target spec of a case its tree marks into the
       # output directory it is given (declared-target.yaml): one no stage
       # clears, or SEED.static's fresh directory deletes the spec it reads.
+      # GC_TREES kept: a case's tree is the one its round ran on (a Solr
+      # round's sg3h-trees), never gc-env's default under a clean env.
       (cd "${decl}" && env -i HOME="${HOME}" PATH="${PATH}" \
+          GC_TREES="${GC_TREES}" \
           CAUSYNTH_OUTPUT_DIR="${dir}/declared" "${override[@]}" \
           bash "${repo}/experiments/lib/run.sh" "${decl}" \
           "$([[ ${arg} == - ]] || echo "${arg}")" config) \
