@@ -615,18 +615,28 @@ public final class Confirmation {
         /** Its apply has begun (guarded by {@link #LOCK}): a supersession
          *  can no longer stop it ({@link #superseded}). */
         boolean running;
-        /** The PUBLISH turn its publisher takes before it applies, or null
-         *  ({@link ScheduleEvent.Kind#PUBLISH}). */
+        /** Its PUBLISH turn, settled once its apply returns ({@link
+         *  #settle}), or null ({@link ScheduleEvent.Kind#PUBLISH}). */
         final String turn;
+        /** Whether that turn is taken -- its publisher waits until it is
+         *  due -- or given up by name: an exempt version, which a pairing
+         *  world puts in force whatever its turn ({@link #publishing}). */
+        final boolean take;
 
         Deferred(long version, Runnable apply, List<ViewHold> holds,
-                 String node, Object scope, String turn) {
+                 String node, Object scope, String turn, boolean take) {
             this.version = version;
             this.apply = apply;
             this.holds = holds;
             this.node = node;
             this.scope = scope;
             this.turn = turn;
+            this.take = take;
+        }
+
+        /** The turn its publisher waits for before it applies, or null. */
+        String awaited() {
+            return take ? turn : null;
         }
     }
 
@@ -637,6 +647,8 @@ public final class Confirmation {
     /** Node -> the one thread applying its deferred publications. */
     private static final Map<String, Thread> PUBLISHERS =
             new HashMap<String, Thread>();
+    /** A node's publisher's thread name, before the node. */
+    static final String PUBLISHER_THREAD = "causynth-view-publisher-";
     /** Node -> when its publisher began the apply it runs (nanoTime), and
      *  the view's key: a blocked apply is named ({@link #blockedApplies}). */
     private static final Map<String, Object[]> APPLYING =
@@ -666,9 +678,17 @@ public final class Confirmation {
      * deferral, past which the hold gives way by name.  The thread goes on:
      * Solr runs each watch callback on a pooled thread, so a slow callback
      * delays no other event, and every reader on the node keeps the version
-     * it had.
+     * it had.  A publication with a PUBLISH {@code turn} that nothing defers
+     * is published by its caller, as the system would; its turn stands in
+     * flight from here ({@link #begin}) and is settled when the notification's
+     * callback ends ({@link #notificationEnded}), after the caller's
+     * constructState -- never at the door, where what the order lets go after
+     * it would read the version before it (SGF3 snapshot-no-active: the
+     * Overseer's task read node0's cluster state between v8's turn and the
+     * callback's constructState).
      *
-     * @return whether the publication was deferred; false: publish now
+     * @return whether the publication was deferred; false: the caller
+     *         publishes it now
      */
     static boolean publishing(LocationId view, long version,
                               OccurrenceAddress at, String node,
@@ -731,15 +751,15 @@ public final class Confirmation {
                             Collections.singleton(hold.waitsFor()));
                 }
                 // An exempt version queued behind the view's deferred ones
-                // carries no turn: its turn is given up below, by name.
+                // waits for no turn: its turn is given up once it applies.
                 DEFERRED.computeIfAbsent(queued,
                         unused -> new ArrayList<Deferred>())
                         .add(new Deferred(version, apply, holding, node,
-                                scope, exempt ? null : turn));
+                                scope, turn, !exempt));
                 Thread publisher = PUBLISHERS.get(node);
                 if (publisher == null || !publisher.isAlive()) {
                     publisher = new Thread(() -> publish(node),
-                            "causynth-view-publisher-" + node);
+                            PUBLISHER_THREAD + node);
                     publisher.setDaemon(true);
                     PUBLISHERS.put(node, publisher);
                     publisher.start();
@@ -747,20 +767,118 @@ public final class Confirmation {
                 LOCK.notifyAll();
             }
         }
-        if (turn != null && exempt && (deferred || !due)) {
-            ScheduleLog.turnNotTaken(node, turn, "a pairing world puts this"
-                    + " version in force " + (deferred ? "after the view's"
-                    + " deferred ones" : "at once") + ", whatever its"
-                    + " recorded turn (the paired version, or the reader's"
-                    + " own work's)");
-        } else if (!deferred && turn != null) {
-            // Due now (or no order holds one): taken here, without a wait;
-            // the caller puts it in force right after (the window between: a
-            // successor the turn lets go may run before the caller's own
-            // publish has finished).
-            ScheduleLog.observe(ScheduleEvent.Kind.PUBLISH, turn, "", stance);
+        if (!deferred && turn != null) {
+            // Due now, or exempt: its caller publishes it, and its turn is
+            // settled when the callback ends -- taken where it was due at the
+            // door, else given up by name.
+            OWED.get().add(begin(node, turn, due));
         }
         return deferred;
+    }
+
+    /**
+     * A notification's publication whose PUBLISH turn is settled once it is
+     * in force: begun ({@link #begin}) where the publication starts, settled
+     * ({@link #settle}) where it is in force -- after the system's own apply
+     * on its node's publisher ({@link #apply}), or, published by its caller
+     * on the notification's thread, when the notification's callback ends
+     * ({@link #notificationEnded}: Solr's watch callbacks end right after
+     * their constructState, StateWatcher#process, AliasesManager#process).
+     */
+    private static final class Turn {
+        final String node;
+        final String turn;
+        /** Taken -- due where it began -- or given up by name: an exempt
+         *  version, which a pairing world puts in force whatever its turn. */
+        final boolean take;
+        /** Its slot in flight while taken ({@code
+         *  ScheduleLog#publicationBegins}), or null. */
+        final ScheduleLog.Publication publication;
+
+        Turn(String node, String turn, boolean take,
+             ScheduleLog.Publication publication) {
+            this.node = node;
+            this.turn = turn;
+            this.take = take;
+            this.publication = publication;
+        }
+    }
+
+    /** The turns of publications this thread's notifications made at once,
+     *  settled when their callbacks end ({@link #notificationEnded}). */
+    private static final ThreadLocal<List<Turn>> OWED =
+            ThreadLocal.withInitial(ArrayList::new);
+
+    /**
+     * {@code turn} (null: none) of a publication on {@code node} begins:
+     * taken ({@code take}), its slot stands in flight at the frontier until it
+     * is settled, and a publication that waits there past a grace on a lock
+     * whose owner chain reaches a thread waiting for its turn behind it has
+     * its turn taken for it, named ({@code ScheduleLog#publicationBegins},
+     * {@code #inFlightLocked}); one that computes or waits on anything else
+     * holds its turn.  The engine's own step: a fault in it is named, never
+     * thrown into the system.
+     */
+    private static Turn begin(String node, String turn, boolean take) {
+        if (turn == null) return null;
+        ScheduleLog.Publication publication = null;
+        try {
+            publication = take ? ScheduleLog.publicationBegins(node, turn)
+                    : null;
+        } catch (RuntimeException fault) {
+            engineFault(turn, "began", fault);
+        }
+        return new Turn(node, turn, take, publication);
+    }
+
+    /**
+     * {@code begun}'s publication is in force: its turn is taken ({@code
+     * ScheduleLog#publicationInForce}), unless the watchdog took it for it,
+     * or given up by name ({@code ScheduleLog#turnNotTaken}) -- so nothing the
+     * order lets go after the turn reads past it.  The engine's own step, as
+     * {@link #begin}.
+     */
+    private static void settle(Turn begun) {
+        if (begun == null) return;
+        try {
+            if (begun.take) {
+                ScheduleLog.publicationInForce(begun.publication, begun.node,
+                        begun.turn);
+            } else {
+                ScheduleLog.turnNotTaken(begun.node, begun.turn, "a pairing"
+                        + " world put this version in force whatever its"
+                        + " recorded turn (the paired version, or the"
+                        + " reader's own work's)");
+            }
+        } catch (RuntimeException fault) {
+            engineFault(begun.turn, "settled", fault);
+        }
+    }
+
+    /** A PUBLISH turn's step faulted in the engine: named, BLOCKING. */
+    private static void engineFault(String turn, String step,
+                                    RuntimeException fault) {
+        RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING, turn,
+                "the PUBLISH turn of " + turn + " could not be " + step
+                        + ": " + fault);
+    }
+
+    /** Where a store notification's callback begins ({@code
+     *  MessageDoors#notified}): the mark {@link #notificationEnded} takes. */
+    static int notificationBegins() {
+        return OWED.get().size();
+    }
+
+    /**
+     * The store notification's callback that began at {@code mark} ended
+     * ({@code MessageDoors#notified}, its finally: a throw included): every
+     * publication its caller made at once is in force -- Solr's callback ends
+     * after its constructState -- so their turns are settled, in the order
+     * they began ({@link #settle}).
+     */
+    static void notificationEnded(int mark) {
+        List<Turn> owed = OWED.get();
+        while (owed.size() > mark) settle(owed.remove(mark));
     }
 
     /**
@@ -1029,7 +1147,7 @@ public final class Confirmation {
             // class's lock.
             List<String> turns = new ArrayList<String>();
             for (Object[] item : due) {
-                String turn = ((Deferred) item[1]).turn;
+                String turn = ((Deferred) item[1]).awaited();
                 if (turn != null) turns.add(turn);
             }
             Set<String> dueTurns = turns.isEmpty()
@@ -1038,8 +1156,8 @@ public final class Confirmation {
             List<Object[]> ready = new ArrayList<Object[]>();
             for (Object[] item : due) {
                 Deferred deferred = (Deferred) item[1];
-                if (deferred.turn == null
-                        || dueTurns.contains(deferred.turn)) {
+                if (deferred.awaited() == null
+                        || dueTurns.contains(deferred.awaited())) {
                     ready.add(item);
                 }
             }
@@ -1087,18 +1205,18 @@ public final class Confirmation {
             APPLYING.put(deferred.node,
                     new Object[] {System.nanoTime(), view});
         }
-        // Its PUBLISH turn is taken once it is in force, so nothing the order
-        // lets go after it reads past it -- or, where the apply waits at the
-        // frontier on a lock a thread the order holds behind it owns, by the
-        // watchdog a grace in (ScheduleLog#publicationBegins; review R2).
-        // Due already (#publish asked), so taken without a wait.
-        ScheduleLog.Publication publication = deferred.turn == null ? null
-                : ScheduleLog.publicationBegins(deferred.node, deferred.turn);
         long scope = MessageDoors.enterCarriedScope(deferred.scope,
                 edu.uva.liftlab.graphchecker.contract.Role.EXECUTOR_TASK
                         .name(), "");
         try {
-            deferred.apply.run();
+            // Its turn settled once it is in force: due already when taken
+            // (#publish asked), so taken without a wait.
+            Turn begun = begin(deferred.node, deferred.turn, deferred.take);
+            try {
+                deferred.apply.run();
+            } finally {
+                settle(begun);
+            }
         } catch (RuntimeException | Error thrown) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, view,
                     "the system's own publication of version "
@@ -1107,10 +1225,6 @@ public final class Confirmation {
                             + " failure, as on its notification's thread");
         } finally {
             MessageDoors.exitCarriedScope(scope);
-            if (deferred.turn != null) {
-                ScheduleLog.publicationInForce(publication, deferred.node,
-                        deferred.turn);
-            }
             synchronized (LOCK) {
                 APPLYING.remove(deferred.node);
                 // Left at its queue's head while it applied: a publication
@@ -1561,6 +1675,7 @@ public final class Confirmation {
             UNREALIZED.clear();
             DEFERRED.clear();
             PUBLISHERS.clear();
+            OWED.remove();
             APPLYING.clear();
             BLOCKED_NAMED.clear();
             WAITING.clear();

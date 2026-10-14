@@ -353,6 +353,14 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   `/bigtemp/vnr3ne/analysis/solr-2026-10-12/fb-viewwriter/ab-probe2/candidate/solr-bugs-snapshot-no-active/COMPOSE/stderr.log`
   (PROBE lines).
 
+- **o. The exact in-force hook of a notification's publication (`solr-pubturn`):** its PUBLISH turn is taken when the
+  watch callback ends (`MessageDoors#notified`), after `constructState`; what runs between the cluster state's write and
+  the callback's end (`notifyStateWatchers` waking a `waitForState`, the update lock's release, `publishIfNewer`'s
+  `notifyAll`) can pass the turn (IDENTITY §8).  Exact: a one-line `MessageDoors` hook where the view is in force -- right
+  after `constructState` assigns `clusterState` (final9 :650, settling only a delivering thread's owed turns) and after
+  `AliasesManager#publishIfNewer` sets `aliases` -- a new tree (final10), its natives and validation; only if a seed
+  shows the window.
+
 ### 4. The last round (SGF3) and the fork
 
 1. Done: §1's four branches merged (with solr-forcebound), snapshots `~/gc-run/sgf3` (5fae3fedb: 18406, migrate, tra,

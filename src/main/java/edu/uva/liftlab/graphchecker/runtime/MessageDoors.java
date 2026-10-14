@@ -933,10 +933,13 @@ public final class MessageDoors {
      * it, and a deferred one holds every later one of the view behind it
      * ({@code Confirmation#publishing}): the thread goes on, the node's
      * readers keep the version they had, and the publications apply later
-     * in the order they came.  A synchronous publication -- a forced
-     * refresh, a fetch on the reader's own thread, the node's own write --
-     * is never deferred, and supersedes the deferred removals and what came
-     * before them ({@code Confirmation#published}).
+     * in the order they came.  A notification's publication that nothing
+     * defers is published by the caller, its PUBLISH turn settled when the
+     * callback ends, after the caller's constructState ({@link #notified},
+     * {@code Confirmation#notificationEnded}).  A synchronous publication --
+     * a forced refresh, a fetch on the reader's own thread, the node's own
+     * write -- is never deferred, and supersedes the deferred removals and
+     * what came before them ({@code Confirmation#published}).
      *
      * @return whether it was deferred: the caller then publishes nothing
      */
@@ -1224,6 +1227,7 @@ public final class MessageDoors {
     public static void notified(String kind, Runnable callback) {
         NOTIFIED.set(trimmed(kind));
         DELIVERING.set(DELIVERING.get() + 1);
+        int owed = Confirmation.notificationBegins();
         try {
             callback.run();
         } finally {
@@ -1231,6 +1235,10 @@ public final class MessageDoors {
             // The callback's own exception is the system's and goes on; an
             // engine fault here would replace it, so it is named instead.
             try {
+                // What it published at once is in force now -- Solr's watch
+                // callbacks end right after their constructState -- so its
+                // PUBLISH turns are settled here (#publishing).
+                Confirmation.notificationEnded(owed);
                 NOTIFIED.remove();
                 endInbound();
             } catch (RuntimeException fault) {

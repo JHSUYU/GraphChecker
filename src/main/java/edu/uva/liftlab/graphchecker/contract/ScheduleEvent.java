@@ -92,8 +92,12 @@ public final class ScheduleEvent extends Value {
          * unawaited), so without it a replay published a version when its
          * timing had it -- under the VM after a reader the recording ran
          * after it (SGF2 snapshot-no-active: CREATESNAPSHOT read v7, the
-         * recording v8).  Held, it is taken by the node's publisher, never on
-         * the callback's thread ({@code runtime.Confirmation#publishing}).
+         * recording v8).  It is taken once the publication is in force: a
+         * turn not due is handed to the node's publisher, which takes it
+         * after its apply -- never waited for on the callback's thread --
+         * and one due at the door is taken when the callback that published
+         * it ends, after its caller's constructState ({@code
+         * runtime.Confirmation#publishing}, {@code #notificationEnded}).
          */
         PUBLISH
     }

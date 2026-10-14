@@ -367,7 +367,8 @@ public final class ScheduleLog {
      * door (a notification's, before its turn is asked, or the system's own
      * at once): the node's open PUBLISH slots of that view at an older
      * version, but those still on their way ({@code coming}: deferred on
-     * the node's publisher), will never come -- a notification fetches the
+     * the node's publisher; or in flight, begun and being published, {@link
+     * #publicationBegins}), will never come -- a notification fetches the
      * newest version, so a callback that fetched this one never publishes
      * an older one, and a node never publishes an older version after a
      * newer -- so each is given up now, by name, not by the watchdog at the
@@ -454,7 +455,14 @@ public final class ScheduleLog {
                     boolean settles = which == Settle.AT ? held == version
                             : held < version || which == Settle.UP_TO
                             && held == version;
-                    if (!settles || coming.contains(held)) continue;
+                    // One in flight is on its way too: begun, its caller
+                    // still publishing it (review SA: v9's door gave v8's
+                    // slot up while v8's callback had not yet constructed
+                    // its state, so what v8 holds back read v7).
+                    if (!settles || coming.contains(held)
+                            || IN_FLIGHT.containsKey(slot)) {
+                        continue;
+                    }
                     giveUpLocked(slot);
                     stateLocked("schedule-publish-settled#" + slot,
                             event.render() + " given up: " + why);
@@ -531,11 +539,14 @@ public final class ScheduleLog {
     }
 
     /**
-     * A PUBLISH whose apply runs on its node's publisher, its turn due: the
+     * A PUBLISH whose publication runs, its turn due -- published by the
+     * notification's caller or applied by its node's publisher ({@code
+     * Confirmation#begin}, {@code #settle}): the
      * turn is taken once the publication is in force ({@link
      * #publicationInForce}), so nothing the order lets go after it reads
-     * past it (review S1) -- unless the apply waits, past {@link
-     * #PUBLISH_GRACE_MS} at the frontier, on a lock whose owner the order
+     * past it (review S1; SGF3 snapshot-no-active) -- unless the apply
+     * waits, past {@link #PUBLISH_GRACE_MS} at the frontier, on a lock
+     * whose owner the order
      * holds: the system's own locks it takes (Solr's collection refresh
      * lock, the reader's update lock) may be held by a thread waiting for
      * its turn behind this slot (a forced refresh's READ behind the WRITE
@@ -576,10 +587,10 @@ public final class ScheduleLog {
             new HashMap<Integer, Publication>();
 
     /**
-     * The publisher on this thread begins the apply of {@code site}'s
-     * publication on {@code node}, its turn due: the in-flight publication
-     * whose turn {@link #publicationInForce} takes, or null where no slot
-     * holds it.
+     * This thread begins {@code site}'s publication on {@code node}, its turn
+     * due ({@code Confirmation#begin}): the in-flight
+     * publication whose turn {@link #publicationInForce} takes, or null
+     * where no slot holds it.
      */
     public static Publication publicationBegins(String node, String site) {
         if (!RecordingWindow.opened()) return null;
@@ -608,9 +619,14 @@ public final class ScheduleLog {
     public static void publicationInForce(Publication applying, String node,
                                           String site) {
         if (applying != null) {
-            synchronized (LOCK) {
-                IN_FLIGHT.remove(applying.slot, applying);
-                if (applying.taken) return;
+            mute();
+            try {
+                synchronized (LOCK) {
+                    IN_FLIGHT.remove(applying.slot, applying);
+                    if (applying.taken) return;
+                }
+            } finally {
+                unmute();
             }
         }
         observe(ScheduleEvent.Kind.PUBLISH, site, "", viewStance(node));
@@ -618,8 +634,9 @@ public final class ScheduleLog {
 
     /**
      * The watchdog's first look ({@link #watchdogLocked}): a PUBLISH's apply
-     * in flight at the frontier.  Its publisher is an engine thread, whose
-     * CPU no look counts, so it is looked at here: computing, it holds the
+     * in flight at the frontier.  The thread applying it -- its node's
+     * publisher, an engine thread whose CPU no look counts, or the
+     * notification's own -- is looked at here: computing, it holds the
      * order as any owner of the frontier at work does (false: nothing else
      * is done), up to {@link #CEILING} timeouts.  Waiting past {@link
      * #PUBLISH_GRACE_MS} -- under half its time on CPU or in the collectors
@@ -674,16 +691,26 @@ public final class ScheduleLog {
      * The lock {@code publisher} waits on as its owner chain names it, when
      * an owner on that chain -- the lock's, or the lock that owner waits
      * on's, a few hops -- is a thread waiting for its turn ({@link
-     * #WAITERS}), the publisher aside; else null: no lock with an owner, an
-     * owner the order does not hold, or a hop through this class's own
+     * #WAITERS}), the applying thread and every node's publisher aside;
+     * else null: no lock with an owner, an owner the order does not hold,
+     * or a hop through this class's own
      * {@link #LOCK} -- a thread merely entering it waits on the watchdog
      * that holds it, itself a waiter, which is no cycle (review R2b).  A
      * Solr lock the watchdog's own thread owns while it waits for its turn
      * is one: that waiter runs the watchdog on its asks.
      */
     private static String heldByTheOrderLocked(Thread publisher) {
+        // A node's publisher waits for a turn between its asks, never under
+        // a lock the system takes: no cycle runs through one (a callback in
+        // flight waiting on the update lock the publisher holds applying
+        // another view's head).
         Set<Long> waiting = new HashSet<Long>();
-        for (Thread thread : WAITERS.keySet()) waiting.add(thread.getId());
+        for (Thread thread : WAITERS.keySet()) {
+            if (!thread.getName().startsWith(
+                    Confirmation.PUBLISHER_THREAD)) {
+                waiting.add(thread.getId());
+            }
+        }
         waiting.remove(publisher.getId());
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         int order = System.identityHashCode(LOCK);
