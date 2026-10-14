@@ -189,6 +189,18 @@ public final class ClaimPolicy {
      */
     static final long DECIDE_BUDGET_MS = 1_800_000L;
 
+    /**
+     * The self-check's part of the decide budget, one in this many: past it
+     * no path is self-checked and the one running ends, each undecided --
+     * left in the disjunction, never refuted on it -- and the cap is named
+     * (a DIAGNOSTIC {@code self-check cap} row), so the recorded valuation,
+     * whose answer decides the claim's polarity, and the other valuations
+     * are asked in the rest (SGF6-bugs-snapshot-no-active 0001: 141 paths,
+     * about 28 of them satisfiable after 20-90 s each, a self-check of 21
+     * of the 30 minutes).
+     */
+    static final int SELF_CHECK_SHARE = 3;
+
     /** {@link #decide} within {@code budgetMillis}. */
     static Decision decide(Composer.Composition composition, Z3 solver,
                            long budgetMillis) {
@@ -196,7 +208,8 @@ public final class ClaimPolicy {
                 + TimeUnit.MILLISECONDS.toNanos(budgetMillis));
         Decision decision;
         try (Disjunction asks = new Disjunction(composition, bounded)) {
-            decision = closed(composition, asks, read(composition, asks));
+            decision = closed(composition, asks, read(composition, asks,
+                    budgetMillis / SELF_CHECK_SHARE));
         }
         if (bounded.pastDeadline()) {
             List<GapRow> gaps = new ArrayList<GapRow>(
@@ -383,11 +396,12 @@ public final class ClaimPolicy {
      * else no supported witness.
      */
     private static Decision read(Composer.Composition composition,
-                                 Disjunction asks) {
+                                 Disjunction asks, long selfCheckCapMillis) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         Decision unasked = unasked(composition, gaps);
         if (unasked != null) return unasked;
-        Reading reading = new Reading(composition, asks, gaps);
+        Reading reading = new Reading(composition, asks, gaps,
+                selfCheckCapMillis);
         Decision claimed = reading.movedRoot(false);
         if (claimed == null) claimed = reading.clockOrPairing();
         if (claimed == null) claimed = reading.movedRoot(true);
@@ -464,11 +478,11 @@ public final class ClaimPolicy {
         private final Set<String> partial = new LinkedHashSet<String>();
 
         Reading(Composer.Composition composition, Disjunction asks,
-                List<GapRow> gaps) {
+                List<GapRow> gaps, long selfCheckCapMillis) {
             this.composition = composition;
             this.asks = asks;
             this.gaps = gaps;
-            selfContradictory(composition, asks, gaps);
+            selfContradictory(composition, asks, gaps, selfCheckCapMillis);
             // Asked PARALLEL_ASKS at a time: each whole ask's z3s in a
             // slot of the composer's z3 room shared that many ways.
             Disjunction together = asks.asking(Math.min(PARALLEL_ASKS,
@@ -1006,14 +1020,27 @@ public final class ClaimPolicy {
      */
     private static void selfContradictory(Composer.Composition composition,
                                           Disjunction asks,
-                                          List<GapRow> gaps) {
+                                          List<GapRow> gaps,
+                                          long capMillis) {
         int undecided = 0;
-        // A sanity check, not the witness search: its own short budget.  An
-        // undecided run leaves the path in the disjunction (safe direction).
-        for (Z3.Answer answer : asks.selfCheck()) {
+        long started = System.nanoTime();
+        // A sanity check, not the witness search: its own short budget and
+        // its cap.  An undecided run leaves the path in the disjunction
+        // (safe direction).
+        for (Z3.Answer answer : asks.selfCheck(capMillis)) {
             if (!answer.decided()) undecided++;
         }
-        if (undecided > 0) {
+        if (undecided > 0 && capMillis > 0L && System.nanoTime() - started
+                >= TimeUnit.MILLISECONDS.toNanos(capMillis)) {
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    "self-check cap " + capMillis + "ms",
+                    undecided + " of " + composition.disjuncts().size()
+                            + " path(s) were not decided within the "
+                            + "self-check's part of the decide budget, or "
+                            + "its budget a path, and stay in the "
+                            + "disjunction unexamined, never refuted on it"));
+        } else if (undecided > 0) {
             // A budget that drops a question says so: runs stay comparable.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,

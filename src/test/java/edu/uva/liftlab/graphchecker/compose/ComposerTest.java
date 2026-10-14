@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
+import edu.uva.liftlab.graphchecker.smt.ScopedFixture;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -753,7 +754,7 @@ public class ComposerTest {
                 "echo '(:reason-unknown \"(incomplete quantifiers)\")'"));
         assertTrue("the fixture solver is executable",
                 script.toFile().setExecutable(true));
-        return script;
+        return ScopedFixture.of(script);
     }
 
     private Path warningSolver() throws IOException {
@@ -775,7 +776,7 @@ public class ComposerTest {
                         + "literal, expecting x or b\")'"));
         assertTrue("the fixture solver is executable",
                 script.toFile().setExecutable(true));
-        return script;
+        return ScopedFixture.of(script);
     }
 
     /**
@@ -2257,9 +2258,9 @@ public class ComposerTest {
         };
         for (Object[] row : rows) {
             try (Disjunction asks = new Disjunction(composition,
-                    new Z3(script, 30000L, 8192))) {
+                    new Z3(ScopedFixture.of(script), 30000L, 8192))) {
                 if ("self-check".equals(row[0])) {
-                    asks.selfCheck();
+                    asks.selfCheck(0L);
                 } else if (row[0] != null) {
                     @SuppressWarnings("unchecked")
                     List<String> refuting = (List<String>) row[0];
@@ -2311,8 +2312,8 @@ public class ComposerTest {
         assertTrue(script.toFile().setExecutable(true));
         List<String> none = Collections.emptyList();
         try (Disjunction asks = new Disjunction(composition,
-                new Z3(script, 30000L, 8192))) {
-            for (Z3.Answer answer : asks.selfCheck()) {
+                new Z3(ScopedFixture.of(script), 30000L, 8192))) {
+            for (Z3.Answer answer : asks.selfCheck(0L)) {
                 assertTrue(answer.toString(), answer.unsat());
             }
             assertEquals("no core run", 0L, asked(log));
@@ -2372,7 +2373,7 @@ public class ComposerTest {
         int flat = 0;
         int askedFlat = 0;
         try (Disjunction asks = new Disjunction(composition,
-                new Z3(script, 30000L, 8192))) {
+                new Z3(ScopedFixture.of(script), 30000L, 8192))) {
             for (Composer.Valuation valuation : composition.valuations()) {
                 boolean flipped = "true".equals(
                         valuation.assignment().get(MARKER_ROOT));
@@ -2426,6 +2427,44 @@ public class ComposerTest {
     }
 
     /**
+     * THE SELF-CHECK HAS ITS PART OF THE DECIDE BUDGET, a third: past it no
+     * path is self-checked and the one running ends, undecided -- the path
+     * left in the disjunction, never refuted on it -- the cap is named, and
+     * the valuations are asked in the rest.  The fixture z3 answers a
+     * question no valuation pins (the self-check's) after 20 s, the
+     * valuations' at once: within a 9 s decide budget the claim stands.
+     */
+    @Test
+    public void theSelfCheckHasItsPartOfTheDecideBudget() throws Exception {
+        Path iteration = folder.newFolder("self-check-cap").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target(MARKER, false, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        solver();
+        Path script = folder.newFile("z3-slow-self-check.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *':named " + Composer.VALUATION_PIN + "'*) ;;",
+                "  *) sleep 20 ;;",
+                "esac",
+                "printf '%s' \"$input\" | exec " + z3() + " \"$@\""),
+                StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                new Z3(ScopedFixture.of(script), 30000L, 8192), 9000L);
+        List<GapRow> gaps = decision.claim().gaps();
+        assertEquals(gaps.toString(), ClaimKind.MARKER_FLIPPED,
+                decision.claim().kind());
+        assertTrue("the cap is named: " + gaps,
+                named(gaps, "self-check cap 3000ms"));
+        assertFalse("and the decide ran within its budget",
+                named(gaps, "decide budget 9000ms"));
+    }
+
+    /**
      * A WHOLE ASK AT ITS MEMORY CAP GOES PATH BY PATH, as one past its
      * budget does, at the slot it was asked in -- never asked again alone,
      * since every path is a smaller question: the fixture z3 runs out of
@@ -2455,7 +2494,7 @@ public class ComposerTest {
                 "esac"), StandardCharsets.UTF_8);
         assertTrue(script.toFile().setExecutable(true));
         List<String> none = Collections.emptyList();
-        Z3 solver = new Z3(script, 30000L, 8192);
+        Z3 solver = new Z3(ScopedFixture.of(script), 30000L, 8192);
         try (Disjunction asks = new Disjunction(composition, solver)) {
             // Asked as valuations are, four at once at a shared slot: at
             // its cap the whole query goes path by path, never asked again
@@ -2609,9 +2648,9 @@ public class ComposerTest {
         Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             // One path's question holds its own guarded commands and none
-            // of the other path's (Composition#pathQuery).
-            String alone = text(composition.pathQuery(disjunct.selector(),
-                    composition.valuations().get(0).assertions()));
+            // of the other path's (Composition#scopeQuery).
+            String alone = pathQuery(composition, disjunct.selector(),
+                    composition.valuations().get(0).assertions());
             for (Composer.Disjunct other : composition.disjuncts()) {
                 assertEquals("guarded by " + other.selector(),
                         other == disjunct, alone.contains(
@@ -3545,7 +3584,7 @@ public class ComposerTest {
             String own = "(assert (= clk_now " + (1_000_000L + row[2]) + "))";
             assertEquals(disjunct.path().sessionId + " in its own world",
                     row[0] == 1L ? "sat" : "unsat", solver().ask(
-                            composition.pathQuery(disjunct.selector(),
+                            pathQuery(composition, disjunct.selector(),
                                     Collections.singletonList(own)),
                             null, false).status());
         }
@@ -4572,7 +4611,7 @@ public class ComposerTest {
                 {"s1", null, "sat"},
                 {"s1", "(not (= vu 2))", "unsat"}};
         for (String[] row : rows) {
-            String answer = solver().ask(composition.pathQuery(
+            String answer = solver().ask(pathQuery(composition,
                     selectorOf.get(row[0]), row[1] == null
                             ? Collections.<String>emptyList()
                             : Collections.singletonList("(assert "
@@ -10605,6 +10644,15 @@ public class ComposerTest {
             body.writeTo(output);
         }
         return written.toString();
+    }
+
+    /** One path's question whole, as its scoped z3 reads it: the shared
+     *  part, then its scope. */
+    private static String pathQuery(Composer.Composition composition,
+                                    String selector, List<String> assertions)
+            throws IOException {
+        return text(composition.sharedQuery())
+                + text(composition.scopeQuery(selector, assertions));
     }
 
     /** One integer literal, as the VM serializes it. */

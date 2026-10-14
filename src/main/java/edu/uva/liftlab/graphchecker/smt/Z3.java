@@ -47,8 +47,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>EVERY z3 RUNS UNDER A MEMORY CAP its JVM's charge covers ({@link
  * Room}): the campaign charges a JVM that runs z3 its footprint and a z3
  * room of R MB ({@code --z3-room-mb}), and every z3 of the JVM holds a slot
- * of it -- a lone ask's engines half the room each, a path ask of a
- * disjunction a slot of its own size ({@link #slotted}) -- started with
+ * of it -- a lone ask's engines half the room each, a whole disjunction
+ * asked with others a slot of the room shared that many ways ({@link
+ * #shared}), a pair of scoped z3s the whole room ({@link Z3Incremental})
+ * -- started with
  * z3's own {@code memory_max_size} at the slot less what z3's accounting
  * misses ({@link #MISSED_MB}); a run starts only while its two slots fit in
  * what the room has free.  A z3 at its cap prints {@code (error "out of
@@ -79,7 +81,7 @@ public final class Z3 {
     private static final String ERROR = "(error ";
 
     /** The status of an answer no process lived long enough to print. */
-    private static final String TIMEOUT = "timeout";
+    static final String TIMEOUT = "timeout";
 
     /** What a z3 at its memory cap prints (4.14.1, exit 101), and the
      *  status it is read as: undecided by name, no error of the query. */
@@ -111,9 +113,13 @@ public final class Z3 {
 
     /**
      * How long the preferred engine may still answer after the other one
-     * decided: as long again as that one took, and at least this.  Within
-     * it the preferred answer wins, so a query the preferred engine alone
-     * decides promptly answers as it did before the race, model and all.
+     * decided a run that asks a model or a core: as long again as that one
+     * took, and at least this.  Within it the preferred answer wins, so a
+     * query the preferred engine alone decides promptly answers as it did
+     * before the race, model and all.  A run that asks neither takes the
+     * first decided verdict at once: it is the same whichever engine gives
+     * it (SGF6-bugs-snapshot-no-active 0001's self-check: a path engine 6
+     * satisfied in 22 s, engine 2 undecided at 120 s, answered at 44 s).
      */
     static final long PREFERRED_GRACE_MILLIS = 1000L;
 
@@ -129,8 +135,8 @@ public final class Z3 {
         private final boolean coreKnown;
         private final String reason;
 
-        private Answer(String status, Map<String, String> values,
-                       List<String> core, boolean coreKnown, String reason) {
+        Answer(String status, Map<String, String> values,
+               List<String> core, boolean coreKnown, String reason) {
             this.status = status;
             this.values = Collections.unmodifiableMap(values);
             this.core = Collections.unmodifiableList(core);
@@ -224,8 +230,8 @@ public final class Z3 {
      * One JVM's z3 room: the MB its charge holds for its z3 processes
      * ({@code --z3-room-mb}), and the slots its running z3s hold.  A run
      * takes its two slots before it starts, in the order the runs asked
-     * (so an ask again alone, in half the room an engine, is not passed by
-     * smaller ones forever), waiting while they do not fit in what is free,
+     * (so a run alone, in half the room an engine, is not passed by smaller
+     * ones forever), waiting while they do not fit in what is free,
      * and gives them back when its z3s are gone; a run alone always fits,
      * its slots being at most half the room each.
      */
@@ -279,6 +285,12 @@ public final class Z3 {
         synchronized int held() {
             return held;
         }
+
+        /** Whether a run waits for its turn: one holding slots gives them
+         *  back between questions ({@code Z3Incremental}). */
+        synchronized boolean contended() {
+            return issued > serving;
+        }
     }
 
     private final Path z3;
@@ -292,9 +304,6 @@ public final class Z3 {
     /** {@link System#nanoTime} past which no run starts and every run's
      *  budget ends ({@link #until}); 0: none. */
     private final long deadlineNanos;
-    /** Whether a verdict at a shared slot's cap is asked again alone
-     *  ({@link #atItsSlot}: not). */
-    private final boolean aloneOnCap;
 
     /**
      * A solver whose z3s share a room of {@code roomMb} (what its JVM's
@@ -305,12 +314,11 @@ public final class Z3 {
         this(executable == null ? Paths.get("z3") : executable,
                 timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
                 new AtomicInteger(), new TreeSet<String>(), new Room(roomMb),
-                roomMb / 2, 0L, true);
+                roomMb / 2, 0L);
     }
 
     private Z3(Path z3, long timeoutMillis, AtomicInteger runs,
-               Set<String> errors, Room room, int slotMb, long deadlineNanos,
-               boolean aloneOnCap) {
+               Set<String> errors, Room room, int slotMb, long deadlineNanos) {
         this.z3 = z3;
         this.timeoutMillis = timeoutMillis;
         this.runs = runs;
@@ -318,7 +326,6 @@ public final class Z3 {
         this.room = room;
         this.slotMb = slotMb;
         this.deadlineNanos = deadlineNanos;
-        this.aloneOnCap = aloneOnCap;
     }
 
     /**
@@ -330,22 +337,12 @@ public final class Z3 {
      */
     public Z3 until(long deadlineNanos) {
         return new Z3(z3, timeoutMillis, runs, errors, room, slotMb,
-                deadlineNanos, aloneOnCap);
+                deadlineNanos);
     }
 
     /** Whether this solver's deadline ({@link #until}) has passed. */
     public boolean pastDeadline() {
         return deadlineNanos != 0L && System.nanoTime() - deadlineNanos >= 0L;
-    }
-
-    /**
-     * The same solver whose verdict at its slot's cap is undecided there,
-     * never asked again alone: a whole disjunction a smaller question (each
-     * path) answers anyway ({@code Disjunction#ask}).
-     */
-    public Z3 atItsSlot() {
-        return new Z3(z3, timeoutMillis, runs, errors, room, slotMb,
-                deadlineNanos, false);
     }
 
     /**
@@ -357,7 +354,7 @@ public final class Z3 {
     public Z3 slotted(int slotMb) {
         return new Z3(z3, timeoutMillis, runs, errors, room,
                 Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)),
-                deadlineNanos, aloneOnCap);
+                deadlineNanos);
     }
 
     /** The same solver as {@code asksAtOnce} callers ask it together: each
@@ -375,6 +372,35 @@ public final class Z3 {
     /** What the slots of this solver's room's running z3s hold, in MB. */
     int roomHeldMb() {
         return room.held();
+    }
+
+    /** The room this solver's z3s hold their slots in. */
+    Room room() {
+        return room;
+    }
+
+    Path executable() {
+        return z3;
+    }
+
+    /** One more run of this solver's count, its number. */
+    int countRun() {
+        return runs.incrementAndGet();
+    }
+
+    /** One {@code (error ...)} line z3 printed ({@link #errors}). */
+    void noteError(String line) {
+        synchronized (errors) {
+            errors.add(line.trim());
+        }
+    }
+
+    /** {@code budgetMillis}, at most what this solver's deadline leaves
+     *  ({@link #until}); none left: at most 0. */
+    long budgetLeft(long budgetMillis) {
+        return deadlineNanos == 0L ? budgetMillis : Math.min(budgetMillis,
+                TimeUnit.NANOSECONDS.toMillis(deadlineNanos
+                        - System.nanoTime()));
     }
 
     /** The budget a question gets when its ask names none. */
@@ -444,13 +470,9 @@ public final class Z3 {
         long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
         String status = firstLine(run("", query, "(check-sat)\n", budget));
         if (MEMOUT.equals(status)) {
-            // At a slot shared with other asks: once more alone, in half
-            // the room an engine, before it is undecided -- unless asked at
-            // its slot (atItsSlot).
-            if (slotMb < room.mb / 2 && aloneOnCap) {
-                return slotted(room.mb / 2).ask(query, modelSymbols,
-                        wantCore, budgetMillis);
-            }
+            // At its slot's cap: undecided there, never asked again alone
+            // (a whole disjunction asked at a shared slot goes path by
+            // path, each a smaller question: compose.Disjunction#ask).
             return new Answer(status, Collections.<String, String>emptyMap(),
                     Collections.<String>emptyList(), false, "out of memory at"
                     + " its cap of " + capMb() + " MB (memory_max_size)");
@@ -515,7 +537,12 @@ public final class Z3 {
 
     /** The commands that ask a sat query for these constants' values. */
     private static String valueCommand(List<String> modelSymbols) {
-        StringBuilder text = new StringBuilder("(check-sat)\n(get-value (");
+        return "(check-sat)\n" + getValue(modelSymbols);
+    }
+
+    /** The command that asks a sat answer for these constants' values. */
+    static String getValue(List<String> modelSymbols) {
+        StringBuilder text = new StringBuilder("(get-value (");
         if (modelSymbols != null) {
             for (String symbol : modelSymbols) {
                 text.append(' ').append(symbol);
@@ -605,9 +632,7 @@ public final class Z3 {
         if (room.take(slots)) {
             try {
                 // Its budget at most what its deadline leaves (until).
-                long budget = deadlineNanos == 0L ? budgetMillis
-                        : Math.min(budgetMillis, TimeUnit.NANOSECONDS
-                        .toMillis(deadlineNanos - System.nanoTime()));
+                long budget = budgetLeft(budgetMillis);
                 if (budget > 0L) {
                     answer = raced(prefix, query, suffix, budget);
                 }
@@ -615,12 +640,27 @@ public final class Z3 {
                 room.give(slots);
             }
         }
-        String said = firstLine(answer);
-        System.err.println("z3 run " + run + " (" + command(suffix) + "): "
+        said(run, command(suffix), firstLine(answer), started);
+        return answer;
+    }
+
+    /** What one run answered and how long it took, on stderr. */
+    static void said(int run, String command, String said,
+                     long startedNanos) {
+        System.err.println("z3 run " + run + " (" + command + "): "
                 + (said.length() > 40 ? said.substring(0, 40) + "..." : said)
                 + " in " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
-                - started) / 1000.0 + " s");
-        return answer;
+                - startedNanos) / 1000.0 + " s");
+    }
+
+    /** A z3 now running, taken with its JVM ({@link #LIVE}). */
+    static void track(Process process) {
+        LIVE.add(process);
+    }
+
+    /** A z3 gone. */
+    static void untrack(Process process) {
+        LIVE.remove(process);
     }
 
     /** The command a run's suffix asks: its last line's name. */
@@ -665,7 +705,7 @@ public final class Z3 {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
-                LIVE.remove(engine);
+                untrack(engine);
             }
         }
     }
@@ -673,14 +713,18 @@ public final class Z3 {
     /**
      * The printed answer {@link #run} returns, or {@link #TIMEOUT}: the
      * preferred engine's as soon as it decides; the other's once it has
-     * decided and the preferred one has not within its grace; when neither
-     * decides, the preferred engine's.
+     * decided and the preferred one has not within its grace -- at once
+     * where {@code suffix} asks no model and no core
+     * ({@link #PREFERRED_GRACE_MILLIS}); when neither decides, the
+     * preferred engine's.
      */
     private static String race(Process[] engines,
                                List<AtomicReference<String>> read,
                                List<Thread> readers, long started,
                                long deadline, String suffix) {
         long otherDecidedAt = 0L;
+        boolean payload = suffix.contains("(get-value")
+                || suffix.contains("(get-unsat-core)");
         try {
             while (true) {
                 String preferred = finished(engines[0], read.get(0),
@@ -696,7 +740,8 @@ public final class Z3 {
                     long took = otherDecidedAt - started;
                     long grace = Math.max(took, TimeUnit.MILLISECONDS
                             .toNanos(PREFERRED_GRACE_MILLIS));
-                    if (preferred != null || now - otherDecidedAt >= grace) {
+                    if (!payload || preferred != null
+                            || now - otherDecidedAt >= grace) {
                         return other;
                     }
                 }
@@ -756,7 +801,7 @@ public final class Z3 {
     }
 
     /** Whether the line after the verdict is a payload: a list, no error. */
-    private static boolean payload(String printed) {
+    static boolean payload(String printed) {
         String[] lines = printed.split("\n", -1);
         return lines.length > 1 && lines[1].trim().startsWith("(")
                 && !lines[1].trim().startsWith(ERROR);
@@ -832,6 +877,13 @@ public final class Z3 {
             out.flush();
         }
 
+        /** Whatever it holds written, and the writer under it flushed, but
+         *  not closed: the end of one text of several on one input. */
+        void finish() throws IOException {
+            release();
+            out.flush();
+        }
+
         @Override
         public void close() throws IOException {
             try {
@@ -864,7 +916,7 @@ public final class Z3 {
             readers.add(null);
             return null;
         }
-        LIVE.add(process);
+        track(process);
         Thread writer = new Thread(() -> {
             try (BufferedWriter input = new BufferedWriter(new EngineWriter(
                     new OutputStreamWriter(process.getOutputStream(),
@@ -1034,7 +1086,7 @@ public final class Z3 {
     }
 
     /** The text of one {@code (:reason-unknown "…")} line, or "". */
-    private static String parseReason(String output) {
+    static String parseReason(String output) {
         if (output == null) return "";
         int at = output.indexOf(":reason-unknown");
         if (at < 0) return "";
@@ -1057,7 +1109,7 @@ public final class Z3 {
      * The list z3 printed after its verdict line: the first term there, or
      * ({@code firstList}) the first parenthesised one; null when none.
      */
-    private static SExpression answerBlock(String output, boolean firstList) {
+    static SExpression answerBlock(String output, boolean firstList) {
         int verdictEnd = output == null ? -1 : output.indexOf('\n');
         if (verdictEnd < 0) return null;
         int at = firstList ? output.indexOf('(', verdictEnd) : verdictEnd + 1;

@@ -234,8 +234,8 @@ public final class Composer {
         /** Every CLOCK root this composition anchors -> its reading. */
         private final Map<String, String> clockRootReadings;
         /** Where each top-level command of the body ends, the path
-         *  selector it is guarded by (null: every path's; #pathQuery), and
-         *  whether it asserts a refuted claim (#withoutFatalArm). */
+         *  selector it is guarded by (null: every path's; #scopeQuery), and
+         *  whether it asserts a refuted claim (#scopeWithoutFatalArm). */
         private final int[] commandEnds;
         private final String[] commandGuards;
         private final boolean[] commandRefuted;
@@ -377,21 +377,48 @@ public final class Composer {
         }
 
         /**
-         * One path's question: the body without the commands another path's
-         * selector guards, this path's selector asserted, plus these
-         * assertions.  The partition forces every other selector false, so
-         * each command dropped held vacuously: the answer is
-         * {@link #query}'s with the selector asserted, but z3 reads what
-         * every path shares and this path's own text, not every path's.
+         * What every path's question shares: the body's commands no path
+         * selector guards and that assert no refuted claim, in their order --
+         * every declaration and definition among them.  A long-lived z3
+         * reads it once ({@code smt.Z3Incremental}); each path's question is
+         * then one scope over it ({@link #scopeQuery}).
          */
-        public ArtifactIO.Body pathQuery(String selector,
-                                         List<String> assertions) {
+        public ArtifactIO.Body sharedQuery() {
+            return output -> {
+                int start = 0;
+                for (int index = 0; index < commandEnds.length; index++) {
+                    if (commandGuards[index] == null
+                            && !commandRefuted[index]) {
+                        output.write(body, start, commandEnds[index] - start);
+                    }
+                    start = commandEnds[index];
+                }
+                output.write("\n");
+            };
+        }
+
+        /**
+         * One path's question as a scope over {@link #sharedQuery}: the
+         * refuted claims the body asserts, the commands this path's selector
+         * guards, the selector asserted, and these assertions.  With the
+         * shared part it is the body without the commands another path's
+         * selector guards: the partition forces every other selector false,
+         * so each command left out held vacuously, and the answer is
+         * {@link #query}'s with the selector asserted, but z3 reads what
+         * every path shares once and this path's own text, not every
+         * path's.  Every command left to a scope is an assertion, read after
+         * every declaration as it would be in place.
+         */
+        public ArtifactIO.Body scopeQuery(String selector,
+                                          List<String> assertions) {
             List<String> legal = legal(assertions);
             legal.add(0, "\n(assert " + selector + ")\n");
             return output -> {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
-                    if (kept(index, selector)) {
+                    String guard = commandGuards[index];
+                    if (guard == null ? commandRefuted[index]
+                            : guard.equals(selector)) {
                         output.write(body, start, commandEnds[index] - start);
                     }
                     start = commandEnds[index];
@@ -401,14 +428,14 @@ public final class Composer {
         }
 
         /**
-         * One path's question with its fatal arm left out ({@link
-         * #pathQuery}, its {@code path_fatal__} command replaced by the
-         * same implication without phi) and no refuted claim asserted (a
-         * model CONFIRM refuted is no part of the run itself): what its own
+         * One path's question with its fatal arm left out, as a scope over
+         * {@link #sharedQuery}: its {@code path_fatal__} command replaced by
+         * the same implication without phi, and no refuted claim asserted (a
+         * model CONFIRM refuted is no part of the run itself) -- what its own
          * run satisfied, every root free.  Unsat, the composition
          * contradicts the run itself (ClaimPolicy's self-check).
          */
-        public ArtifactIO.Body withoutFatalArm(String selector) {
+        public ArtifactIO.Body scopeWithoutFatalArm(String selector) {
             Disjunct disjunct = bySelector(selector);
             String own = "\n(assert " + SmtNames.legalSymbols(
                     disjunct.withoutFatalArm) + ")\n";
@@ -417,15 +444,13 @@ public final class Composer {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
                     int end = commandEnds[index];
-                    if (!kept(index, selector) || commandRefuted[index]) {
-                        start = end;
-                        continue;
-                    }
                     if (selector.equals(commandGuards[index])
-                            && body.startsWith(named, end - named.length())) {
-                        output.write(own);
-                    } else {
-                        output.write(body, start, end - start);
+                            && !commandRefuted[index]) {
+                        if (body.startsWith(named, end - named.length())) {
+                            output.write(own);
+                        } else {
+                            output.write(body, start, end - start);
+                        }
                     }
                     start = end;
                 }
@@ -444,11 +469,6 @@ public final class Composer {
         private static boolean refutation(String body, int start, int end) {
             String tail = body.substring(Math.max(start, end - 64), end);
             return tail.contains(":named " + REFUTED_CLAIM);
-        }
-
-        private boolean kept(int command, String selector) {
-            String guard = commandGuards[command];
-            return guard == null || guard.equals(selector);
         }
 
         /**

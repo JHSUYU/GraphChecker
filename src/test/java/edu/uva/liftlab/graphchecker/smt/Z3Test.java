@@ -221,43 +221,6 @@ public class Z3Test {
     }
 
     /**
-     * AN ASK AT ITS CAP IN A SHARED SLOT IS ASKED AGAIN ALONE, in half the
-     * room an engine, before it is undecided: a z3 at a path ask's 448 MB
-     * cap, one at the lone cap of a 4096 MB room (1984 MB) answering.
-     * {the caps at which the fixture runs out of memory, the status, the
-     * cap the answer names}.
-     */
-    @Test
-    public void anAskAtItsCapInASharedSlotIsAskedAgainAlone()
-            throws IOException {
-        Object[][] rows = {
-                {"448", "sat", null},
-                {"448|1984", "memout", "1984 MB"},
-        };
-        for (Object[] row : rows) {
-            Path script = folder.newFile("z3-alone-"
-                    + ((String) row[0]).replace('|', '-')).toPath();
-            Files.write(script, Arrays.asList(
-                    "#!/bin/bash",
-                    "cat >/dev/null",
-                    "case \" $* \" in",
-                    "  *' memory_max_size=" + ((String) row[0]).replace("|",
-                            " '*|*' memory_max_size=") + " '*)"
-                            + " echo '(error \"out of memory\")'; exit 101 ;;",
-                    "  *) echo sat ;;",
-                    "esac"), StandardCharsets.UTF_8);
-            assertTrue(script.toFile().setExecutable(true));
-            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512)
-                    .ask("(assert true)\n", Collections.<String>emptyList(),
-                            false);
-            String what = Arrays.toString(row) + ": " + answer;
-            assertEquals(what, row[1], answer.status());
-            assertTrue(what, row[2] == null
-                    || answer.reason().contains((String) row[2]));
-        }
-    }
-
-    /**
      * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THAT RUN AGAIN
      * ALONE: the verdict fits a path ask's 448 MB cap, its model (or core)
      * run does not; that run asked again alone, at the room's lone 1984 MB
@@ -449,6 +412,23 @@ public class Z3Test {
             assertEquals(what, row[3], answer.values().get("x"));
             assertTrue(what + " took " + seconds + " s", seconds < 10L);
         }
+    }
+
+    /**
+     * A VERDICT ALONE IS THE FIRST ENGINE'S THAT DECIDES: asked no model
+     * and no core, the preferred engine gets no grace -- the verdict is the
+     * same whichever engine gives it -- so engine 6's sat answers at once
+     * where engine 2 never answers (within the grace, a second, before).
+     */
+    @Test
+    public void aVerdictAloneIsTheFirstEngineThatDecides() throws IOException {
+        Z3 solver = new Z3(fakeZ3(), 3000L, 8192);
+        long started = System.nanoTime();
+        Z3.Answer answer = solver.ask("; on2 hang\n; on6 sat\n",
+                Collections.<String>emptyList(), false);
+        long millis = (System.nanoTime() - started) / 1_000_000L;
+        assertEquals("sat", answer.status());
+        assertTrue("took " + millis + " ms", millis < 800L);
     }
 
     /**
