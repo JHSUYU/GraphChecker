@@ -210,26 +210,37 @@ public final class StaticScopeMap {
          *  (causynth.BooleanReturns), each with its own; none for another
          *  guard. */
         private final List<Guard> deciders;
+        /** A decider arm's: the method its helper must be called from --
+         *  the nearest method on the way from the guard that is no
+         *  synthetic hop (contract.JvmNames#syntheticHop), as
+         *  runtime.Identity#callerFrame names a call's caller; "" for a
+         *  guard that is no decider. */
+        private final String via;
 
         public Guard(String siteId, Boolean outcome) {
             this(siteId, outcome, Collections.<Guard>emptyList());
         }
 
         public Guard(String siteId, Boolean outcome, List<Guard> deciders) {
-            this(siteId, outcome, null, deciders);
+            this(siteId, outcome, null, deciders, "");
         }
 
         public Guard(String siteId, Boolean outcome, Boolean verdict,
-                     List<Guard> deciders) {
+                     List<Guard> deciders, String via) {
             this.siteId = siteId == null ? "" : siteId;
             this.outcome = outcome;
             this.verdict = verdict;
             this.deciders = Collections.unmodifiableList(
                     new ArrayList<Guard>(deciders));
+            this.via = via == null ? "" : via;
         }
 
         public List<Guard> deciders() {
             return deciders;
+        }
+
+        public String via() {
+            return via;
         }
 
         public Boolean verdict() {
@@ -1229,6 +1240,7 @@ public final class StaticScopeMap {
         if (!guard.deciders().isEmpty()) {
             json.add("deciders", guardsJson(guard.deciders()));
         }
+        if (!guard.via().isEmpty()) json.addProperty("via", guard.via());
         return json;
     }
 
@@ -1253,7 +1265,7 @@ public final class StaticScopeMap {
     private static Guard guardOf(JsonObject json) {
         return new Guard(optionalString(json, "siteId"),
                 flag(json.get("outcome")), flag(json.get("verdict")),
-                guardsOf(json.get("deciders")));
+                guardsOf(json.get("deciders")), optionalString(json, "via"));
     }
 
     private static Boolean flag(JsonElement value) {

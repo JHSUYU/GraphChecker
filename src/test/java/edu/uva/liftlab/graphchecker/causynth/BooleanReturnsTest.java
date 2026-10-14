@@ -240,6 +240,184 @@ public class BooleanReturnsTest {
                 render(BooleanReturns.deciders(caller, guard)));
     }
 
+    /**
+     * A branchless helper returning by whether one call threw
+     * (solr-adhoc-09's {@code waitForCoreNodeGone}: false from {@code catch
+     * (TimeoutException)} around {@code waitForState}, true after it): the
+     * guard is decided by the called method's own arms, an arm throwing a
+     * new {@code E} with the catch's verdict, one returning with the normal
+     * path's, any other open, each called from the helper ({@code via}).
+     * A trap on {@code Exception} decides nothing (code anywhere below may
+     * throw one), nor a called method one of whose calls declares {@code
+     * E}.  waitFor(int i0): u1 if i0 <= 0 goto u7; u2 z = await(i0); u3 if z
+     * != 0 goto u7; u4 e = new TimedOut; u5 e.<init>(); u6 throw e; u7
+     * return.  gone(int i0): u1 waitFor(i0) [caught: TimedOut -> u3];
+     * u2 goto u5; u3 caught; u4 return 0; u5 return 1.
+     */
+    @Test
+    public void aGuardOnAHelperThatReturnsFromACatchIsDecidedByTheCallsThrowArm() {
+        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootClass object = library("java.lang.Object");
+        SootClass throwable = library("java.lang.Throwable");
+        throwable.setSuperclass(object);
+        SootClass exception = library("java.lang.Exception");
+        exception.setSuperclass(throwable);
+        SootClass runtime = library("java.lang.RuntimeException");
+        runtime.setSuperclass(exception);
+        SootClass timedOut = library("j.TimedOut");
+        timedOut.setSuperclass(exception);
+        SootMethod init = new SootMethod("<init>",
+                Collections.<Type>emptyList(), soot.VoidType.v(),
+                Modifier.PUBLIC);
+        timedOut.addMethod(init);
+        SootClass lib = library("j.Lib");
+        lib.setSuperclass(object);
+        SootMethod await = new SootMethod("await",
+                Collections.<Type>singletonList(IntType.v()),
+                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        lib.addMethod(await);
+        SootMethod awaitThrowing = new SootMethod("awaitThrowing",
+                Collections.<Type>singletonList(IntType.v()),
+                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        awaitThrowing.addException(timedOut);
+        lib.addMethod(awaitThrowing);
+
+        SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
+                init);
+        SootMethod waitForDeep = waitFor(owner, "waitForDeep", awaitThrowing,
+                timedOut, init);
+        Object[][] rows = {
+            {"the called method's own arms decide", gone(owner, "gone",
+                    waitFor, timedOut), Arrays.asList(
+                    sig(waitFor) + "#u1=true:false[]",
+                    sig(waitFor) + "#u1=false:open[]",
+                    sig(waitFor) + "#u3=true:false[]",
+                    sig(waitFor) + "#u3=false:true[]")},
+            {"a trap on Exception decides nothing", gone(owner, "goneAny",
+                    waitFor, exception),
+                    Collections.<String>emptyList()},
+            {"nor a called method a call of which declares E", gone(owner,
+                    "goneDeep", waitForDeep, timedOut),
+                    Collections.<String>emptyList()}};
+        for (Object[] row : rows) {
+            SootMethod helper = (SootMethod) row[1];
+            List<StaticScopeMap.Guard> found = BooleanReturns.deciders(
+                    caller(owner, helper, null, true), callerGuard(owner));
+            assertEquals((String) row[0], row[2], render(found));
+            for (StaticScopeMap.Guard decider : found) {
+                assertEquals("called from the helper", sig(helper),
+                        decider.via());
+            }
+        }
+    }
+
+    /**
+     * {@code Boolean.valueOf} of a constant (javac's boxing of {@code return
+     * true;} in a method returning {@code Boolean}) is the constant, as
+     * {@code Boolean.TRUE} is.  boxed(int i0): u1 if i0 <= 0 goto u4; u2 b =
+     * valueOf(1); u3 return b; u4 b = valueOf(0); u5 return b.
+     */
+    @Test
+    public void aBooleanValueOfAConstantIsThatConstant() {
+        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootClass bool = library("java.lang.Boolean");
+        RefType boolType = bool.getType();
+        Jimple j = Jimple.v();
+        SootMethod boxed = method(owner, "boxed", boolType);
+        Body body = boxed.getActiveBody();
+        Local b = local(body, "b", boolType);
+        Unit low = j.newAssignStmt(b, j.newStaticInvokeExpr(
+                Scene.v().makeMethodRef(bool, "valueOf",
+                        Collections.<Type>singletonList(BooleanType.v()),
+                        boolType, true), IntConstant.v(0)));
+        body.getUnits().addAll(Arrays.asList(
+                j.newIfStmt(j.newLeExpr(body.getParameterLocal(0),
+                        IntConstant.v(0)), low),
+                j.newAssignStmt(b, j.newStaticInvokeExpr(
+                        Scene.v().makeMethodRef(bool, "valueOf",
+                                Collections.<Type>singletonList(
+                                        BooleanType.v()), boolType, true),
+                        IntConstant.v(1))),
+                j.newReturnStmt(b),
+                low,
+                j.newReturnStmt(b)));
+        SootMethod run = method(owner, "run", soot.VoidType.v());
+        Body caller = run.getActiveBody();
+        Local answer = local(caller, "$b", boolType);
+        Local value = local(caller, "$z", BooleanType.v());
+        Unit end = j.newReturnVoidStmt();
+        Unit guard = j.newIfStmt(j.newEqExpr(value, IntConstant.v(0)), end);
+        caller.getUnits().addAll(Arrays.asList(
+                j.newAssignStmt(answer, j.newStaticInvokeExpr(boxed.makeRef(),
+                        caller.getParameterLocal(0))),
+                j.newAssignStmt(value, j.newVirtualInvokeExpr(answer,
+                        Scene.v().makeMethodRef(bool, "booleanValue",
+                                Collections.<Type>emptyList(),
+                                BooleanType.v(), false))),
+                guard,
+                end));
+        assertEquals(Arrays.asList(sig(boxed) + "#u1=true:true[]",
+                        sig(boxed) + "#u1=false:false[]"),
+                render(BooleanReturns.deciders(caller, guard)));
+    }
+
+    /** waitFor(int i0), void, declaring {@code thrown}: see the test. */
+    private static SootMethod waitFor(SootClass owner, String name,
+                                      SootMethod await, SootClass thrown,
+                                      SootMethod init) {
+        SootMethod method = method(owner, name, soot.VoidType.v());
+        method.addException(thrown);
+        Body body = method.getActiveBody();
+        Jimple j = Jimple.v();
+        Local z = local(body, "z", BooleanType.v());
+        Local e = local(body, "e", thrown.getType());
+        Unit done = j.newReturnVoidStmt();
+        body.getUnits().addAll(Arrays.asList(
+                j.newIfStmt(j.newLeExpr(body.getParameterLocal(0),
+                        IntConstant.v(0)), done),
+                j.newAssignStmt(z, j.newStaticInvokeExpr(await.makeRef(),
+                        body.getParameterLocal(0))),
+                j.newIfStmt(j.newNeExpr(z, IntConstant.v(0)), done),
+                j.newAssignStmt(e, j.newNewExpr(thrown.getType())),
+                j.newInvokeStmt(j.newSpecialInvokeExpr(e, init.makeRef())),
+                j.newThrowStmt(e),
+                done));
+        return method;
+    }
+
+    /** gone(int i0): false where {@code waitFor} threw {@code caught}, true
+     *  after it: see the test. */
+    private static SootMethod gone(SootClass owner, String name,
+                                   SootMethod waitFor, SootClass caught) {
+        SootMethod method = method(owner, name, BooleanType.v());
+        Body body = method.getActiveBody();
+        Jimple j = Jimple.v();
+        Local e = local(body, "e", caught.getType());
+        Unit call = j.newInvokeStmt(j.newStaticInvokeExpr(waitFor.makeRef(),
+                body.getParameterLocal(0)));
+        Unit yes = j.newReturnStmt(IntConstant.v(1));
+        Unit after = j.newGotoStmt(yes);
+        Unit handler = j.newIdentityStmt(e, j.newCaughtExceptionRef());
+        body.getUnits().addAll(Arrays.asList(call, after, handler,
+                j.newReturnStmt(IntConstant.v(0)), yes));
+        body.getTraps().add(j.newTrap(caught, call, after, handler));
+        return method;
+    }
+
+    /** The guard {@link #caller} made last: its one if. */
+    private static Unit callerGuard(SootClass owner) {
+        SootMethod last = owner.getMethodByName("caller"
+                + (owner.getMethodCount() - 1));
+        for (Unit unit : last.getActiveBody().getUnits()) {
+            if (unit instanceof soot.jimple.IfStmt) return unit;
+        }
+        return null;
+    }
+
     private static SootClass library(String name) {
         SootClass type = new SootClass(name, Modifier.PUBLIC);
         Scene.v().addClass(type);

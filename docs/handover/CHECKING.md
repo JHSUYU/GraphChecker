@@ -68,6 +68,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
    helper branch deciding the predicate's value (`getBlockUCState`'s `uc == null ? COMPLETE : …`) was never part of
    it, so the UNSAT was free. Look at the `path_fatal__i` assertions: an UNSAT where every fatal is `false` while the
    guard reads tracked state is a scope hole until shown otherwise (fixed by the decider rule, b650a0f6d).
+   Again in SGF3-adhoc-09 (2026-10-13): 23 of 24 paths `false`, the guard on a helper whose constant said whether
+   one call threw (`waitForCoreNodeGone`'s `catch (TimeoutException)`); the decider rule now reads such a return
+   (SYMBOL-SCOPE §3, `BooleanReturns#thrown`).
 5. **The arm where the bug lives never ran** (39, DO2): the open arm `uc != null` was asked as a flip six times and
    every replay came back NOT_ADMITTED, yet the case said UNSAT. Now named `OPEN_ARM_UNANSWERED` (RUN_DEFECT); read
    `result.json` `openArms` / `defects`. An arm closed UNSAT (or BOUNDED) after refuted worlds (`WORLD_REFUTED`)
