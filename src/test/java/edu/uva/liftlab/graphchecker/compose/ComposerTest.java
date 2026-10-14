@@ -3472,6 +3472,49 @@ public class ComposerTest {
                 decision.formula().status());
     }
 
+    /**
+     * A JUMP KEEPS ITS MARGIN AGAINST THE CLOCK IT RUNS ON FROM: the witness
+     * needs the clock past 1000 at one cell and the next cell of the same
+     * clock more than 3600 past it, so both jump; each keeps a margin of its
+     * own against the cell its clock runs on from ({@code
+     * ClaimPolicy#withMargin}), never one added to its instant that the
+     * earlier jump's margin, carried on, uses up (PRE4-18406: the second
+     * delete() kept 1 ns over the reservation it ran on from, natively
+     * 0/10).
+     */
+    @Test
+    public void aJumpKeepsItsMarginAgainstTheClockItRunsOnFrom()
+            throws Exception {
+        Path runs = folder.newFolder("clock-margins").toPath();
+        Session twice = new Session(runs, "s0", false);
+        twice.clock("700");
+        twice.roots.add(RootMintRow.of("s0", ++twice.seq, ANCHOR, "ROOT.THEN",
+                "clock_then", RootKind.CLOCK, RootCategory.CLOCK, "705", null,
+                null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
+        twice.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        twice.decision(ANCHOR, "anchor#u2", "(or (> (- clock_then " + CLOCK
+                + ") 3600) (not (> (- clock_then " + CLOCK + ") 3600)))",
+                "ROOT.THEN", 705L);
+        twice.target("(and (> " + CLOCK + " 1000) (> (- clock_then " + CLOCK
+                + ") 3600))", false, true);
+        twice.write();
+        ClaimPolicy.Decision decided = ClaimPolicy.decide(compose(runs, 4),
+                solver());
+        assertEquals(ClaimKind.CLOCK_SKEW, decided.claim().kind());
+        Map<String, String> moved = decided.claim().movedRoots();
+        long margin = edu.uva.liftlab.graphchecker.explore.ClockMargin.margin(
+                1_000_000L);
+        assertTrue("both cells jump: " + moved, moved.containsKey(CLOCK)
+                && moved.containsKey("clock_then"));
+        long first = Long.parseLong(moved.get(CLOCK).trim());
+        long then = Long.parseLong(moved.get("clock_then").trim());
+        assertTrue("the first jump has its margin: " + moved,
+                first > 1000L + margin);
+        assertTrue("the second keeps its own against the clock it runs on "
+                + "from: " + moved, then - first > 3600L + margin);
+    }
+
     @Test
     public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
         Path iteration = folder.newFolder("polarity").toPath();

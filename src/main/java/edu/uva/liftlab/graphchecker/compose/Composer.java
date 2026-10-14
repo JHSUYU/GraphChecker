@@ -3814,9 +3814,31 @@ public final class Composer {
      */
     static String clockStep(String cell, Map<String, Long> readings,
                             Map<String, String> before, int sign) {
-        String relation = sign == 0 ? "=" : sign > 0 ? ">" : "<";
+        return clockStep(cell, readings, before,
+                sign == 0 ? "=" : sign > 0 ? ">" : "<", 0L);
+    }
+
+    /**
+     * The same step under {@code relation} against {@code offset} ticks:
+     * the cell's skew off its reading less the cell before it's, or the
+     * skew alone where none is before it, {@code relation offset} -- a
+     * witness's margin on a jump against the clock it runs on from ({@code
+     * ClaimPolicy#withMargin}).  Offset 0 is spelled as {@link #clockStep}
+     * always spelled a step.
+     */
+    static String clockStep(String cell, Map<String, Long> readings,
+                            Map<String, String> before, String relation,
+                            long offset) {
         String reading = integralLiteral(Long.toString(readings.get(cell)));
         String previous = before.get(cell);
+        if (offset != 0L) {
+            String skew = "(- " + cell + " " + reading + ")";
+            return "(" + relation + " " + (previous == null ? skew
+                    : "(- " + skew + " (- " + previous + " "
+                    + integralLiteral(Long.toString(readings.get(previous)))
+                    + "))") + " " + integralLiteral(Long.toString(offset))
+                    + ")";
+        }
         return previous == null
                 ? "(" + relation + " " + cell + " " + reading + ")"
                 : "(" + relation + " (- " + cell + " " + reading + ") (- "

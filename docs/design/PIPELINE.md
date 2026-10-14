@@ -2571,7 +2571,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`.
 6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
    re-asked with each clock jump a margin (one minute in its ticks) further the same way (`withMargin`:
-   all at once, else each in seq order, kept where still sat). `movedRoots` = the valuation's moved
+   all at once, else each in seq order, kept where still sat), the margin on the JUMP against the cell
+   its clock runs on from -- `(cell - reading) - (before - beforeReading) >= jump + margin`, `<=` and
+   `- margin` for a jump back, `Composer#clockStep` with an offset -- never on the cell's instant: a later
+   reading runs on from an earlier jump, so a minute added to the earlier instant moved the cell a later
+   jump runs on from and used up that jump's own (PRE4-18406: the second delete() kept 1 ns over the
+   reservation its clock ran on from, natively 0/10). `movedRoots` = the valuation's moved
    roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
    differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
    witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it

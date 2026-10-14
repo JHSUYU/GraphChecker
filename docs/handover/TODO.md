@@ -352,6 +352,9 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   Evidence: the sessions' `writes.jsonl` (VIEW `/collections/causynthSnapshot/state.json`, node0) and
   `/bigtemp/vnr3ne/analysis/solr-2026-10-12/fb-viewwriter/ab-probe2/candidate/solr-bugs-snapshot-no-active/COMPOSE/stderr.log`
   (PROBE lines).
+- **q. Fewest clocks across paths (WF, 2026-10-13, not done):** `ClaimPolicy#leastClocks` keeps the fewest clock jumps
+  within the witness's own path; a witness on another sat path might need fewer (fewer moved clocks, fewer native
+  timing turns). Choosing among paths means a refinement per sat path; measured on PRE4-18406 before any build.
 
 - **o. The exact in-force hook of a notification's publication (`solr-pubturn`):** its PUBLISH turn is taken when the
   watch callback ends (`MessageDoors#notified`), after `constructState`; what runs between the cluster state's write and
