@@ -284,10 +284,20 @@ public class BooleanReturnsTest {
         awaitThrowing.addException(timedOut);
         lib.addMethod(awaitThrowing);
 
+        SootClass subTimedOut = library("j.SubTimedOut");
+        subTimedOut.setSuperclass(timedOut);
+        SootMethod subInit = new SootMethod("<init>",
+                Collections.<Type>emptyList(), soot.VoidType.v(),
+                Modifier.PUBLIC);
+        subTimedOut.addMethod(subInit);
         SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
-                init);
+                init, true);
         SootMethod waitForDeep = waitFor(owner, "waitForDeep", awaitThrowing,
-                timedOut, init);
+                timedOut, init, true);
+        SootMethod waitForSub = waitFor(owner, "waitForSub", await,
+                subTimedOut, subInit, true);
+        SootMethod waitForSwallowed = waitFor(owner, "waitForSwallowed",
+                await, timedOut, init, false);
         Object[][] rows = {
             {"the called method's own arms decide", gone(owner, "gone",
                     waitFor, timedOut), Arrays.asList(
@@ -300,7 +310,22 @@ public class BooleanReturnsTest {
                     Collections.<String>emptyList()},
             {"nor a called method a call of which declares E", gone(owner,
                     "goneDeep", waitForDeep, timedOut),
-                    Collections.<String>emptyList()}};
+                    Collections.<String>emptyList()},
+            {"nor a trap on a RuntimeException", gone(owner, "goneRuntime",
+                    waitFor, runtime), Collections.<String>emptyList()},
+            {"catch (SubE) before catch (E): a new SubE is the first trap's"
+                    + " (true, as the normal path), so that arm is open",
+                    goneSubFirst(owner, waitForSub, subTimedOut, timedOut),
+                    Arrays.asList(sig(waitForSub) + "#u1=true:false[]",
+                            sig(waitForSub) + "#u1=false:open[]",
+                            sig(waitForSub) + "#u3=true:false[]",
+                            sig(waitForSub) + "#u3=false:open[]")},
+            {"a throw a finally swallows never leaves: open", gone(owner,
+                    "goneSwallowed", waitForSwallowed, timedOut),
+                    Arrays.asList(sig(waitForSwallowed) + "#u1=true:false[]",
+                            sig(waitForSwallowed) + "#u1=false:open[]",
+                            sig(waitForSwallowed) + "#u3=true:false[]",
+                            sig(waitForSwallowed) + "#u3=false:open[]")}};
         for (Object[] row : rows) {
             SootMethod helper = (SootMethod) row[1];
             List<StaticScopeMap.Guard> found = BooleanReturns.deciders(
@@ -407,7 +432,7 @@ public class BooleanReturnsTest {
         Jimple j = Jimple.v();
         RefType boolType = bool.getType();
         SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
-                init);
+                init, true);
         SootMethod gone = gone(owner, "gone", waitFor, timedOut);
 
         SootMethod body = method(owner, "lambda$run$0", boolType);
@@ -487,10 +512,11 @@ public class BooleanReturnsTest {
                 found.get(0).deciders().get(0).via());
     }
 
-    /** waitFor(int i0), void, declaring {@code thrown}: see the test. */
+    /** waitFor(int i0), void, declaring {@code thrown}: see the test; its
+     *  finally rethrows, or ({@code rethrows} false) swallows. */
     private static SootMethod waitFor(SootClass owner, String name,
                                       SootMethod await, SootClass thrown,
-                                      SootMethod init) {
+                                      SootMethod init, boolean rethrows) {
         SootMethod method = method(owner, name, soot.VoidType.v());
         method.addException(thrown);
         Body body = method.getActiveBody();
@@ -514,13 +540,14 @@ public class BooleanReturnsTest {
                 j.newThrowStmt(e),
                 done,
                 // A finally around the throw: it rethrows what it caught,
-                // past its own `if (log.isDebugEnabled())`.
-                handler,
+                // past its own `if (log.isDebugEnabled())` -- or swallows it.
+                handler));
+        body.getUnits().addAll(rethrows ? Arrays.asList(
                 j.newIfStmt(j.newEqExpr(body.getParameterLocal(0),
                         IntConstant.v(7)), rethrow),
                 j.newInvokeStmt(j.newStaticInvokeExpr(await.makeRef(),
                         body.getParameterLocal(0))),
-                rethrow));
+                rethrow) : Arrays.asList(j.newReturnVoidStmt()));
         body.getTraps().add(j.newTrap(thrown.getSuperclass().getSuperclass(),
                 make, done, handler));
         return method;
@@ -543,6 +570,61 @@ public class BooleanReturnsTest {
                 j.newReturnStmt(IntConstant.v(0)), yes));
         body.getTraps().add(j.newTrap(caught, call, after, handler));
         return method;
+    }
+
+    /** goneSubFirst(int i0): true where waitFor threw a {@code sub} (the
+     *  first trap) or nothing, false where it threw another {@code sup}. */
+    private static SootMethod goneSubFirst(SootClass owner,
+                                           SootMethod waitFor,
+                                           SootClass sub, SootClass sup) {
+        SootMethod method = method(owner, "goneSubFirst", BooleanType.v());
+        Body body = method.getActiveBody();
+        Jimple j = Jimple.v();
+        Local e = local(body, "e", sub.getType());
+        Local f = local(body, "f", sup.getType());
+        Unit call = j.newInvokeStmt(j.newStaticInvokeExpr(waitFor.makeRef(),
+                body.getParameterLocal(0)));
+        Unit yes = j.newReturnStmt(IntConstant.v(1));
+        Unit after = j.newGotoStmt(yes);
+        Unit subHandler = j.newIdentityStmt(e, j.newCaughtExceptionRef());
+        Unit supHandler = j.newIdentityStmt(f, j.newCaughtExceptionRef());
+        body.getUnits().addAll(Arrays.asList(call, after, subHandler,
+                j.newReturnStmt(IntConstant.v(1)), supHandler,
+                j.newReturnStmt(IntConstant.v(0)), yes));
+        body.getTraps().add(j.newTrap(sub, call, after, subHandler));
+        body.getTraps().add(j.newTrap(sup, call, after, supHandler));
+        return method;
+    }
+
+    /**
+     * A guard in a lambda's body: the run names a call's caller past the
+     * lambda, which no static frame names, so its deciders state no via and
+     * are forced in any call (the over-approximation).
+     */
+    @Test
+    public void aGuardInALambdasBodyStatesNoVia() {
+        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootMethod helper = twoConstants(owner, "expired", 1, 0);
+        SootMethod lambda = method(owner, "lambda$check$0",
+                soot.VoidType.v());
+        Body body = lambda.getActiveBody();
+        Local result = local(body, "$r", BooleanType.v());
+        Unit end = Jimple.v().newReturnVoidStmt();
+        Unit guard = Jimple.v().newIfStmt(Jimple.v().newEqExpr(result,
+                IntConstant.v(0)), end);
+        body.getUnits().addAll(Arrays.asList(
+                Jimple.v().newAssignStmt(result, Jimple.v()
+                        .newStaticInvokeExpr(helper.makeRef(),
+                                body.getParameterLocal(0))),
+                guard, end));
+        List<StaticScopeMap.Guard> found =
+                BooleanReturns.deciders(body, guard);
+        assertEquals(2, found.size());
+        for (StaticScopeMap.Guard decider : found) {
+            assertEquals("", decider.via());
+        }
     }
 
     /** The guard {@link #caller} made last: its one if. */

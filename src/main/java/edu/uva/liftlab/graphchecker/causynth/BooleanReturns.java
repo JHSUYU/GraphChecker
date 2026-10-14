@@ -43,9 +43,11 @@ import soot.jimple.ThrowStmt;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * A guard testing a constant a helper returned, where the helper's own
@@ -101,7 +103,12 @@ final class BooleanReturns {
 
     /** The helper branch arms deciding {@code guard}; empty for none. */
     static List<StaticScopeMap.Guard> deciders(Body body, Unit guard) {
-        return deciders(body, guard, 1, body.getMethod().getSignature());
+        // A guard in a lambda's body: the run names its caller past the
+        // lambda, which no static frame names, so its deciders state no via
+        // and are forced in any call (the over-approximation).
+        String method = body.getMethod().getSignature();
+        return deciders(body, guard, 1,
+                JvmNames.syntheticHop(method) ? "" : method);
     }
 
     /** {@code via}: the method a call in {@code body} is called from, as a
@@ -298,16 +305,18 @@ final class BooleanReturns {
         List<StaticScopeMap.Guard> found =
                 new ArrayList<StaticScopeMap.Guard>();
         if (depth >= MAX_DEPTH) return found;
+        // Each handler once, in the exception table's order: the traps of
+        // one try range javac split share their handler.
+        Set<Unit> handlers = new LinkedHashSet<Unit>();
         for (Trap trap : helperBody.getTraps()) {
             SootClass caught = trap.getException();
-            if (!checkedNarrow(caught)) continue;
-            Unit handler = trap.getHandlerUnit();
-            if (handler instanceof IdentityStmt) {
-                handler = helperBody.getUnits().getSuccOf(handler);
-            }
+            Unit catching = trap.getHandlerUnit();
+            if (!checkedNarrow(caught) || !handlers.add(catching)) continue;
+            Unit handler = catching instanceof IdentityStmt
+                    ? helperBody.getUnits().getSuccOf(catching) : catching;
             Boolean onThrow = verdict(returned(helperBody, handler, boxed),
                     compared, equal, nullThrows);
-            Unit call = guardedCall(helperBody, trap, caught);
+            Unit call = guardedCall(helperBody, catching, caught);
             Boolean onReturn = call == null ? null : verdict(returned(
                     helperBody, helperBody.getUnits().getSuccOf(call), boxed),
                     compared, equal, nullThrows);
@@ -315,6 +324,13 @@ final class BooleanReturns {
                     || onThrow.equals(onReturn)) {
                 continue;
             }
+            // A throw is this handler's only where the JVM picks it: the
+            // first trap covering the call that catches what was thrown
+            // (catch (SubE) before catch (E) takes a new SubE).
+            Predicate<SootClass> caughtHere = thrown -> {
+                Trap first = firstCatching(helperBody, call, thrown);
+                return first != null && first.getHandlerUnit() == catching;
+            };
             SootMethod g = onlyCall(helperBody,
                     ((Stmt) call).getInvokeExpr());
             Body gBody = g == null || !g.getDeclaringClass()
@@ -328,11 +344,11 @@ final class BooleanReturns {
                 if (unit instanceof IfStmt) branches.add((IfStmt) unit);
             }
             for (IfStmt branch : branches) {
-                Boolean taken = exit(gBody, branch.getTarget(), caught,
+                Boolean taken = exit(gBody, branch.getTarget(), caughtHere,
                         onThrow, onReturn);
                 Boolean fallen = exit(gBody,
-                        gBody.getUnits().getSuccOf(branch), caught, onThrow,
-                        onReturn);
+                        gBody.getUnits().getSuccOf(branch), caughtHere,
+                        onThrow, onReturn);
                 if (taken == null && fallen == null
                         || taken != null && taken.equals(fallen)) {
                     continue;
@@ -367,21 +383,41 @@ final class BooleanReturns {
         }
     }
 
-    /** The one unit in {@code trap}'s range whose call may throw {@code
-     *  caught}, or null for none or several. */
-    private static Unit guardedCall(Body body, Trap trap, SootClass caught) {
+    /** The one unit in the ranges of the traps that share {@code handler}
+     *  whose call may throw {@code caught}, or null for none or several. */
+    private static Unit guardedCall(Body body, Unit handler,
+                                    SootClass caught) {
         Unit found = null;
-        for (Unit at = trap.getBeginUnit(); at != null
-                && at != trap.getEndUnit();
-             at = body.getUnits().getSuccOf(at)) {
-            if (!(at instanceof Stmt) || !((Stmt) at).containsInvokeExpr()
-                    || !mayThrow(((Stmt) at).getInvokeExpr(), caught)) {
-                continue;
+        for (Trap trap : body.getTraps()) {
+            if (trap.getHandlerUnit() != handler) continue;
+            for (Unit at = trap.getBeginUnit(); at != null
+                    && at != trap.getEndUnit();
+                 at = body.getUnits().getSuccOf(at)) {
+                if (!(at instanceof Stmt)
+                        || !((Stmt) at).containsInvokeExpr()
+                        || !mayThrow(((Stmt) at).getInvokeExpr(), caught)
+                        || at == found) {
+                    continue;
+                }
+                if (found != null) return null;
+                found = at;
             }
-            if (found != null) return null;
-            found = at;
         }
         return found;
+    }
+
+    /** The first trap of {@code body}, in its exception table's order,
+     *  covering {@code call} and catching {@code thrown}: the one the JVM
+     *  runs; null for none. */
+    private static Trap firstCatching(Body body, Unit call,
+                                      SootClass thrown) {
+        for (Trap trap : body.getTraps()) {
+            if (FaultPropagation.covers(body, trap, call)
+                    && assignable(thrown, trap.getException())) {
+                return trap;
+            }
+        }
+        return null;
     }
 
     /** Whether a call's method declares an exception {@code caught} or one
@@ -420,19 +456,22 @@ final class BooleanReturns {
 
     /**
      * How an arm of {@code g} leaves it, as the helper's guard takes it: a
-     * throw of a {@code new E'} the arm made, {@code E'} assignable to {@code
-     * caught} and not kept by a handler of {@code g}, is {@code onThrow}; a
-     * return is {@code onReturn}; null (open) for anything else.  The arm
-     * runs straight -- stores to locals, calls, jumps, a branch both of whose
-     * arms leave alike -- at most {@link #MAX_ARM} units.
+     * throw of a {@code new E'} the arm made, not kept by a handler of
+     * {@code g}, that the helper's handler at hand catches first ({@code
+     * caughtHere}) is {@code onThrow}; a return is {@code onReturn}; null
+     * (open) for anything else.  The arm runs straight -- stores to locals,
+     * calls, jumps, a branch both of whose arms leave alike -- at most
+     * {@link #MAX_ARM} units.
      */
-    private static Boolean exit(Body g, Unit start, SootClass caught,
+    private static Boolean exit(Body g, Unit start,
+                                Predicate<SootClass> caughtHere,
                                 Boolean onThrow, Boolean onReturn) {
-        return exit(g, start, caught, onThrow, onReturn,
+        return exit(g, start, caughtHere, onThrow, onReturn,
                 new HashMap<Value, SootClass>(), MAX_ARM);
     }
 
-    private static Boolean exit(Body g, Unit start, SootClass caught,
+    private static Boolean exit(Body g, Unit start,
+                                Predicate<SootClass> caughtHere,
                                 Boolean onThrow, Boolean onReturn,
                                 Map<Value, SootClass> made, int budget) {
         Unit unit = start;
@@ -442,7 +481,7 @@ final class BooleanReturns {
             }
             if (unit instanceof ThrowStmt) {
                 SootClass thrown = made.get(((ThrowStmt) unit).getOp());
-                return thrown != null && assignable(thrown, caught)
+                return thrown != null && caughtHere.test(thrown)
                         && escapes(g, unit, thrown) ? onThrow : null;
             }
             if (unit instanceof GotoStmt) {
@@ -450,12 +489,12 @@ final class BooleanReturns {
                 continue;
             }
             if (unit instanceof IfStmt) {
-                Boolean taken = exit(g, ((IfStmt) unit).getTarget(), caught,
-                        onThrow, onReturn,
+                Boolean taken = exit(g, ((IfStmt) unit).getTarget(),
+                        caughtHere, onThrow, onReturn,
                         new HashMap<Value, SootClass>(made),
                         budget - step - 1);
                 Boolean fallen = exit(g, g.getUnits().getSuccOf(unit),
-                        caught, onThrow, onReturn,
+                        caughtHere, onThrow, onReturn,
                         new HashMap<Value, SootClass>(made),
                         budget - step - 1);
                 return taken != null && taken.equals(fallen) ? taken : null;
