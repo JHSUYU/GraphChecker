@@ -1378,10 +1378,18 @@ public final class ClaimPolicy {
      * the cheapest world (a token's expiry passed by one millisecond), and
      * the confirming replay reads every clock fresh, so an instant at the
      * boundary falls back on the recorded arm: exploration's margin rule
-     * (adhoc token-expired.proxy missed by 70 ms).  Every margin at once
-     * first; else each jump's in seq order, kept where the witness stays: a
-     * jump back that sits on its cell's floor has no room, and costs the
-     * other jumps none of theirs.  Within {@link #REFINE_BUDGET_MS}.
+     * (adhoc token-expired.proxy missed by 70 ms).  The margin is on the
+     * JUMP, against the clock its cell runs on from ({@link
+     * Composer#clockStep} with an offset), never on the cell's instant: a
+     * later reading runs on from an earlier jump ({@link #runsOn}), so a
+     * minute added to the earlier instant moved the cell a later jump runs
+     * on from too, and used up that jump's own minute (PRE4-18406: delete()
+     * jumped in two occurrences, the second kept 1 ns of room over the
+     * reservation its clock ran on from, natively 0/10).  Every margin at
+     * once first; else each jump's in seq order, kept where the witness
+     * stays: a jump back that sits on its cell's floor has no room, and
+     * costs the other jumps none of theirs.  Within {@link
+     * #REFINE_BUDGET_MS}.
      */
     private static Outcome withMargin(Composer.Composition composition,
                                       Disjunction asks, Outcome witness,
@@ -1391,15 +1399,14 @@ public final class ClaimPolicy {
         for (String cell : composition.clockCells()) {
             Long jumped = jump(composition, model, cell);
             if (jumped == null || jumped == 0L) continue;
-            long at = Long.parseLong(model.get(cell).trim());
             boolean later = jumped > 0L;
             long margin = ClockMargin.margin(
                     composition.clockNanos().get(cell));
-            margins.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
-                    + " " + integralLiteral(Long.toString(later
-                    ? at + margin : at - margin))
-                    + ") :named clock_margin__" + ArtifactIO.digest(cell, 10)
-                    + "))");
+            margins.add("(assert (! " + Composer.clockStep(cell,
+                    composition.clockReadings(), composition.clockBefore(),
+                    later ? ">=" : "<=", later ? jumped + margin
+                    : jumped - margin) + " :named clock_margin__"
+                    + ArtifactIO.digest(cell, 10) + "))");
         }
         if (margins.isEmpty()) return witness;
         long deadline = System.currentTimeMillis() + REFINE_BUDGET_MS;
