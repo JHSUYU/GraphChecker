@@ -308,7 +308,9 @@ public final class ConfirmMain {
      * decided and the writes the model chose there that the fatal rests on,
      * and the model's moved roots.  CONFIRM's replay ({@link #write}) and a
      * native reproduction's plant ({@link #writePlant}) are both made of
-     * it, so a native run plants what CONFIRM's world plants.
+     * it: a native run plants a subset of CONFIRM's rows -- the world's
+     * roots, and of its holds those of what the model chose and of the
+     * world's pairings ({@link #history}).
      */
     static final class Witness {
         final JsonObject decided;
@@ -341,6 +343,14 @@ public final class ConfirmMain {
          *  selected session's own history, which a native plant does not
          *  hold ({@link #writePlant}). */
         final Set<String> history = new LinkedHashSet<String>();
+        /** The locations the model chose at, by key: a writer arm's -- it
+         *  binds every read of its location, though its interactions name
+         *  the first ({@code compose.ComposedFamilies#writerArms}) -- and a
+         *  selected observed arm's, the run as it happened chosen over the
+         *  location's concurrent writers ({@code observed_arm__}, group
+         *  {@code observed:<key>}, {@code ComposedFamilies#observedArm}).
+         *  Their reads' ORDERs are the model's, no history. */
+        final Set<String> chosenAt = new LinkedHashSet<String>();
 
         private Witness(JsonObject claim, JsonObject manifest, Path iteration)
                 throws IOException {
@@ -406,6 +416,17 @@ public final class ConfirmMain {
             chosen.keySet().removeIf(reader -> !restsOn.contains(
                     SmtLowering.locationKey(closure.readers.get(reader)
                             .location())));
+            for (String reader : chosen.keySet()) {
+                chosenAt.add(SmtLowering.locationKey(
+                        closure.readers.get(reader).location()));
+            }
+            for (JsonObject arm : arms) {
+                String group = optionalString(arm, "groupId");
+                if (optionalString(arm, "selector").startsWith(
+                        "observed_arm__") && group.startsWith("observed:")) {
+                    chosenAt.add(group.substring("observed:".length()));
+                }
+            }
             world = obligationWorld(iteration, sessionId);
             moved = moved(decided, manifest, session, recording);
             sawChosen = closure.ran(chosen);
@@ -456,7 +477,8 @@ public final class ConfirmMain {
                     resting.add(read);
                 }
             }
-            Holding state = stateEdges(closure, resting, chosen, false);
+            Holding state = stateEdges(closure, resting, chosen, chosenAt,
+                    false);
             edges.addAll(state.edges);
             cone.addAll(state.cone);
             // The pairings the selected session's world planted are its
@@ -597,9 +619,10 @@ public final class ConfirmMain {
         // readers; natively a waitForState took its fast path and
         // registered no watcher, or another watch notification decoded the
         // state, and the first row waiting for an activation that never
-        // came released every hold, 0/10).  A VIEW_HOLD defers a
-        // publication and waits for no event to come: planted, a join's
-        // too.
+        // came released every hold, 0/10).  A VIEW_HOLD is planted, a
+        // join's too: it only defers a node's publications of the view
+        // until its reader's work ends, at most VIEW_HOLD_MAX, and names
+        // no activation the run must make.
         Set<String> orders = new LinkedHashSet<String>();
         int placeholders = 0;
         for (JsonObject edge : witness.edges(iteration, world)) {
@@ -639,8 +662,8 @@ public final class ConfirmMain {
         rows.addAll(realized);
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
-                    + "root and holds no order, so a native run would "
-                    + "repeat the recording");
+                    + "root and holds no order the model chose, so a native "
+                    + "run would repeat the recording");
         }
         int planted = rows.size();
         if (!world.clockDeltas.isEmpty()) {
@@ -1619,9 +1642,10 @@ public final class ConfirmMain {
                 new LinkedHashSet<OccurrenceAddress>();
         /** Each ORDER as "before\nafter", once. */
         private final Set<String> orders = new LinkedHashSet<String>();
-        /** The ORDERs a read the model chose a writer for needs (all of a
-         *  world's pairings'): the rest order reads to the writes they
-         *  joined, the run's own history ({@link #history}). */
+        /** The ORDERs a read the model chose at needs -- its writer, or its
+         *  location ({@code Witness#chosenAt}); all of a world's
+         *  pairings': the rest order reads to the writes they joined, the
+         *  run's own history ({@link #history}). */
         private final Set<String> chosenOrders = new LinkedHashSet<String>();
 
         private void order(String order, boolean chosen) {
@@ -1659,11 +1683,14 @@ public final class ConfirmMain {
      * re-read the bound after the reconfiguration had landed, so the turn
      * read 1 at its guard and 0 at its limit).  Endpoints and activations
      * are named as every delivery of their stored message is
-     * ({@link Confirmation#id}).
+     * ({@link Confirmation#id}).  The ORDERs of a read the model chose no
+     * writer for, at a location it chose at nowhere ({@code chosenAt}),
+     * are {@link Holding#history}.
      */
     private static Holding stateEdges(StateClosure closure,
                                       List<ReadRow> reads,
                                       Map<String, WriteRow> chosen,
+                                      Set<String> chosenAt,
                                       boolean block) {
         Holding holding = new Holding();
         for (ReadRow read : reads) {
@@ -1779,7 +1806,11 @@ public final class ConfirmMain {
                 }
                 continue;
             }
-            boolean model = chosen.containsKey(reader);
+            // A read the model chose a writer for, or one at a location it
+            // chose at (Witness#chosenAt), needs its ORDERs; any other
+            // read's are the run's own history (Holding#history).
+            boolean model = chosen.containsKey(reader)
+                    || chosenAt.contains(location);
             if (!held.initial()) {
                 holding.order(closure.order(holding, closure.exit(
                         held.endpoint(), held.seq()), read.endpoint(),
@@ -1892,7 +1923,8 @@ public final class ConfirmMain {
                     + unread + ", which session " + session.sessionId()
                     + " states no read at");
         }
-        return stateEdges(closure, reads, chosen, true);
+        return stateEdges(closure, reads, chosen,
+                Collections.<String>emptySet(), true);
     }
 
     /** One version of one location. */

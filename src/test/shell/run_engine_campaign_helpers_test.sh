@@ -1408,7 +1408,9 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # counts the answers (whole plant applied, fatal, at the anchor, reproduced:
 # at the anchor with every root planted and every order held, an order
 # unheld -- what it waited for came late, or never came --, an order still
-# holding) and names the runs that stated none.  The plant holds the order
+# holding) and names the runs that stated none; beside them as many control
+# runs of the target's rows alone, nothing the model chose planted, counted
+# (control: fatal, at the anchor).  The plant holds the order
 # of the session CONFIRM saw (final/confirm.json's sessionId).  A plant
 # CONFIRM refuses, or a recording that measured no peak memory, is no run
 # and the reason.  Per row: ConfirmMain's exit, the recording's peak MB, and
@@ -1483,6 +1485,15 @@ ${confirmed}"; return 1; }
       echo "$2 $4 $6 $(ls "${campaign_host_gate_root}/gate-head/charges" \
         | grep -c "^$4\\.")" >>"${repro_dir}/bounds"
       (( n < 5 )) || return 1
+      # A control run, its plant the target alone: run 1 takes the fatal
+      # arm at the anchor all the same, the program's own race.
+      if [[ "${run}" == */control/* ]]; then
+        [[ "$(jq -r -s -c 'map(.kind)' "$3")" == '["TARGET"]' ]] \
+          || echo "control plant $(cat "$3")" >>"${repro_dir}/bounds"
+        (( n > 1 )) || echo '{"event":"PLANT_FATAL","atAnchor":true}' \
+          >"${run}/runtime_trace.jsonl"
+        return 0
+      fi
       {
         echo '{"event":"BRANCH"}'
         case ${n} in
@@ -1545,9 +1556,9 @@ name the order: $(cat "${repro_dir}/final/reproduce/run-4/answer.json")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":5,"planted":1,"fatal":4,"atAnchor":3,"reproduced":1,"unheld":2,"unheldLate":1,"unheldMissing":1,"holding":1,"reason":""}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+0|2048|{"runs":5,"planted":1,"fatal":4,"atAnchor":3,"reproduced":1,"unheld":2,"unheldLate":1,"unheldMissing":1,"holding":1,"reason":"","control":{"runs":5,"fatal":1,"atAnchor":1}}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock","control":{"runs":0,"fatal":0,"atAnchor":0}}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with","control":{"runs":0,"fatal":0,"atAnchor":0}}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target

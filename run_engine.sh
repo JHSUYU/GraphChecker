@@ -7802,7 +7802,13 @@ has no room for another claim"
 # ANSWER row applied and every ORDER held: what tools/adhoc/findings.py
 # rates), could not hold an ORDER in time (unheld; unheldLate: what it
 # waited for came after all, unheldMissing: it never came), and still held
-# one when the run ended -- and names the runs that stated none.  The
+# one when the run ended -- and names the runs that stated none.  Beside
+# them, as many control runs of a plant of the target's rows alone
+# (control.jsonl: nothing the model chose -- no root, answer or clock, no
+# order, no view hold), placed and bounded alike; reproduce.json's control
+# counts how many took the fatal arm and how many at the anchor: the
+# program's own rate of the fatal, the evidence a reproduction is read
+# against, never a gate.  The
 # realized order makes REPRODUCE run the world CONFIRM saw; it never touches
 # CONFIRM: the rate ranks a finding (tools/adhoc/findings.py) and never
 # refutes it, and nothing here moves the claim, CONFIRM's decision or what
@@ -7817,6 +7823,7 @@ campaign_reproduce() {
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
   local charge
   local confirmed
+  local control=""
   local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
@@ -7845,11 +7852,16 @@ campaign_reproduce() {
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
       runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
-      unheldLate: 0, unheldMissing: 0, holding: 0, reason: $reason}' \
+      unheldLate: 0, unheldMissing: 0, holding: 0, reason: $reason,
+      control: {runs: 0, fatal: 0, atAnchor: 0}}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
   fi
+  # The control: as many runs of the target's rows alone, nothing the model
+  # chose planted -- no root, answer or clock, no order, no view hold.
+  jq -c 'select(.kind == "TARGET")' "${dir}/plant.jsonl" \
+    >"${dir}/control.jsonl"
   bound=$(campaign_reproduce_bound)
   charge=$(( campaign_recorded_workload_rss_mb * reproduce_charge_pct / 100 ))
   campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
@@ -7861,13 +7873,21 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
     campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
       "${dir}/plant.jsonl" "${charge}" &
     pids+=("$!")
+    campaign_reproduce_one "${dir}/control/run-$((run + 1))" "${bound}" \
+      "${dir}/control.jsonl" "${charge}" &
+    pids+=("$!")
   done
   for pid in "${pids[@]}"; do
     wait "${pid}" || true
   done
+  control=$(find "${dir}/control" -mindepth 2 -maxdepth 2 -name answer.json \
+      -print0 | xargs -0 -r cat \
+    | jq -s -c --argjson runs "${reproduce_runs}" '{runs: $runs,
+        fatal: map(select(.fatal)) | length,
+        atAnchor: map(select(.atAnchor)) | length}')
   find "${dir}" -mindepth 2 -maxdepth 2 -name answer.json -print0 \
     | xargs -0 -r cat \
-    | jq -s --argjson runs "${reproduce_runs}" '
+    | jq -s --argjson runs "${reproduce_runs}" --argjson control "${control}" '
       {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
@@ -7881,8 +7901,9 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
        holding: map(select(any(.unapplied[]; .why == "HOLDING"))) | length,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
-         else "" end)}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding)"' \
+         else "" end),
+       control: $control}' >"${campaign_final}/reproduce.json"
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
 }
 

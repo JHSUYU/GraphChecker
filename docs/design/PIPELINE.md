@@ -2848,9 +2848,10 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
 `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
 VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map
---confirmed-session <dir> --plant <file>` writes the plant from what CONFIRM itself plants and
-holds (`ConfirmMain.Witness`, the one reading of the claim both make: the selected session's world
-under the model's moved roots, and the edges the model chose) and from the order the session
+--confirmed-session <dir> --plant <file>` writes the plant from a subset of what CONFIRM itself
+plants and holds (`ConfirmMain.Witness`, the one reading of the claim both make: the selected
+session's world under the model's moved roots, and the edges the model chose; of CONFIRM's holds,
+those of what the model chose and of the world's pairings, below) and from the order the session
 CONFIRM saw ran in, each row numbered (`row`); where a value is the return of a call it
 names the call as the task plan does (`explore.PlantSites`: the input action's `siteId`,
 `<method>#u<unit>`, and its `declaredCallee`, or an unwoven accessor's call):
@@ -2877,9 +2878,14 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   solr-bugs-snapshot-no-active: 178 of its 179 rows were joins, most ordering
   `ZkStateReader.collectionWatches`' writers and readers; natively a `waitForState` took its fast path and registered no watcher, or
   another watch notification decoded the state, and the first row waiting for an activation that
-  never came released every hold, 0/10); CONFIRM still holds and compares them. And its
-  `VIEW_HOLD` rows, a join's too (a hold defers a publication and waits for no event to come), each
-  once, which the native run holds as CONFIRM does, deferring the node's
+  never came released every hold, 0/10); CONFIRM still holds and compares them. A read the model
+  chose at is one whose writer it chose, or one at a location it chose at
+  (`ConfirmMain.Witness#chosenAt`): a writer arm binds every read of its location though its
+  interactions name the first, and a selected observed arm (`observed_arm__`, group
+  `observed:<key>`) chooses the run as it happened there over the location's concurrent writers.
+  And its `VIEW_HOLD` rows, a join's too (a hold only defers a node's publications of the view
+  until its reader's work ends, at most VIEW_HOLD_MAX, and names no activation the run must make),
+  each once, which the native run holds as CONFIRM does, deferring the node's
   publication (`Confirmation#publishing`, each stated held, applied or unheld, at most VIEW_HOLD_MAX); a pairing at a placeholder (a mint
   read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
   plant's summary counts them (`placeholderPairings`);
@@ -2953,7 +2959,7 @@ Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reaso
   return, or whose value a message getter's element carries (a codec port: which getter call
   attaches is the decode's binding, `MessageCodec`, which a native run does not keep -- keeping it
   would export on every send, which needs the VM); a world that plants no root and holds no order
-  (it would repeat the recording); a scope map that states no fatal arm;
+  the model chose (it would repeat the recording); a scope map that states no fatal arm;
 - a recording that measured no peak resident memory to charge a run with.
 
 `reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
@@ -3028,12 +3034,19 @@ ORDER, whether it took the fatal arm and at the anchor, and whether it **reprodu
 arm at the claim's anchor with every ROOT and ANSWER row applied (clock jumps, configurations and
 answers included) and no ORDER timed out. A run that did not plant the model's roots, or ran
 another order than the world CONFIRM saw, and reaches the fatal all the same is the program's own
-race, never a reproduction. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
-planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, reason}` -- runs
-that applied the whole plant, took the fatal arm, took it at the anchor (planted or not),
-reproduced, could not hold an ORDER in time (of them, one whose before-event came late, one whose
-before-event never came), still held one when they ended, and the runs that stated no answer as
-`reason`. REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
+race, never a reproduction. **The control**: beside them go as many runs of a plant of the TARGET
+rows alone (`reproduce/control.jsonl`, `reproduce/control/run-<n>`: nothing the model chose -- no
+root, answer or clock, no order, no view hold), placed, charged and bounded alike; how many of them
+take the fatal arm, and at the anchor, is the program's own rate of the fatal on the recording's
+timing, the evidence a reproduction's rate is read against (a plant whose rows hold little of the
+chain, a CLOCK root alone or a VIEW_HOLD alone, reproduces as often as the workload throws by
+itself), and never a gate. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
+planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, reason, control:
+{runs, fatal, atAnchor}}` -- runs that applied the whole plant, took the fatal arm, took it at the
+anchor (planted or not), reproduced, could not hold an ORDER in time (of them, one whose
+before-event came late, one whose before-event never came), still held one when they ended, the
+runs that stated no answer as `reason`, and the control's runs, fatal and at the anchor; the log
+states "reproduced in k of N ...; control k' of N". REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
 and the realized order only makes a native run faithful to the world CONFIRM saw. The share of runs
 that reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
 `result.json`) and never refutes it. Then the campaign exits by its verdict
