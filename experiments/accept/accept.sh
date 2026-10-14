@@ -232,8 +232,13 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/obligations-*/*/stderr.log'
   'schedule/iteration-*/obligations-*/*/replay-stdout.log'
   'schedule/iteration-*/obligations-*/*/replay-stderr.log'
+  'schedule/iteration-*/obligations-*/*/alone-stderr.log'
+  'schedule/iteration-*/obligations-*/*/hard-stderr.log'
+  'schedule/iteration-*/obligations-*/*/obligation_result.first.jsonl'
   'schedule/iteration-*/obligations-*/*/host.txt'
   'schedule/iteration-*/obligations-*/*/replay-host.txt'
+  'schedule/iteration-*/obligations-*/*/alone-host.txt'
+  'schedule/iteration-*/obligations-*/*/hard-host.txt'
   'schedule/iteration-*/obligations-*/explore_manifest.json'
 )
 

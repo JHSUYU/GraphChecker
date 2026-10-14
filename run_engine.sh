@@ -1994,6 +1994,11 @@ ${waited}s; the shared home did not deliver what the peer wrote"
     sleep 1
     waited=$((waited + 1))
   done
+  # A row seen here may be one a worker that owed a solver of its own has
+  # removed since: it states the debt first (campaign_obligation_owe), so
+  # the listing is read again, and a debt seen is what it wrote.
+  ls "${worker}" >/dev/null 2>&1 || true
+  [[ ! -s "${worker}/solve_owed" ]] || return 0
   session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
   # A verdict that names no session staged none.  The solver's own opened
   # none; a replay's opened one that the peer withdrew (killed on its bound,
@@ -3476,11 +3481,14 @@ campaign_solver_jvm() {
 # on this host under a charge of <charged_mb> its caller's start holds here:
 # a cold host's solve (a solver's start), or an ALONE or HARD start charged
 # that JVM's need (campaign_stream_owed).  What the JVM grows past it is
-# asked of the host as it grows (campaign_watch_workload).
+# asked of the host as it grows (campaign_watch_workload).  The heap it ran
+# at is campaign_alone_heap_mb.
+campaign_alone_heap_mb=0
 campaign_solve_obligation_alone() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
   local budget=$6 room=$7 status=0 heap
   heap=$(campaign_solver_heap_mb "${sessions}")
+  campaign_alone_heap_mb=${heap}
   run_capturing_status campaign_solver_jvm "${heap}" \
     "${charged}" "${budget}" "${room}" \
     --obligations "${obligations}" \
@@ -3500,13 +3508,28 @@ campaign_solve_obligation_alone() {
 # on the pool, and holds no charge while the start waits.
 campaign_obligation_owe() {
   local worker=$1 need=$2 lane=$3 why=$4
-  rm -f -- "${worker}/obligation_result.jsonl" "${worker}/question.txt" \
-    "${worker}/question.asked"
   campaign_log "obligation $(basename "${worker}"): ${why}; owed a solver \
 JVM of its own of ${need} MB (${lane})"
+  # Owed before any answer row it left is gone: a head that still sees the
+  # row over NFS sees the debt too (campaign_await_remote_result).
   jq -n -c --argjson need "${need}" --arg lane "${lane}" --arg why "${why}" \
     '{need: $need, lane: $lane, why: $why}' \
     | campaign_write_whole "${worker}/solve_owed"
+  rm -f -- "${worker}/obligation_result.jsonl" "${worker}/question.txt" \
+    "${worker}/question.asked"
+}
+
+# What a failed start said of why on its stderr <log>: the deepest throwable
+# its JVM printed (campaign_thrown), else its last line that is neither a
+# stack frame nor the watch's own (campaign_watch_workload's "causynth: "
+# lines, a peak and a charge, which name no cause); nothing when it said
+# none.
+campaign_failure_said() {
+  local said
+  said=$(campaign_thrown "$1") || said=""
+  [[ -n "${said}" ]] || said=$(grep -v -E '^([[:space:]]+at |causynth: )' \
+    -- "$1" 2>/dev/null | tail -n 1) || said=""
+  printf '%s\n' "${said}"
 }
 
 # One obligation SOLVED: its question answered into <worker>, the one
@@ -3568,7 +3591,6 @@ campaign_obligation_worker() {
   fi
   if [[ -n "${lane}" ]]; then
     own=1
-    heap=$(campaign_solver_heap_mb "${sessions}")
     run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
       "${obligations}" "${sessions}" "${worker}" "${charged}" "${budget}" \
       "${room}"
@@ -3591,7 +3613,6 @@ ${campaign_solver_busy_patience_s}s" ;;
       campaign_log "obligation ${obligation_id}: ${why}; answered in a \
 solver JVM of its own under its start's ${charged} MB"
       own=1
-      heap=$(campaign_solver_heap_mb "${sessions}")
       run_capturing_status campaign_solve_obligation_alone \
         "${obligation_id}" "${obligations}" "${sessions}" "${worker}" \
         "${charged}" "${budget}" "${room}"
@@ -3599,8 +3620,8 @@ solver JVM of its own under its start's ${charged} MB"
   fi
   if [[ "${status}" -ne 0 ]]; then
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
-    why=$(grep -v -E '^[[:space:]]+at ' "${log}" 2>/dev/null | tail -n 1) \
-      || why=""
+    why=$(campaign_failure_said "${log}")
+    heap=${campaign_alone_heap_mb}
     measured=$(( $(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}") \
       + room ))
     if (( own == 1 && status == campaign_jvm_out_of_heap_status )); then
@@ -3618,11 +3639,13 @@ ${heap} MB"
         || need=$(( $(campaign_need_of_peak_mb "${peak}") + room ))
       (( need <= measured )) || need=${measured}
       if (( own == 1 )); then
-        (( need > charged )) || die "obligation ${obligation_id}: its \
-solver of its own failed (exit ${status}) under ${charged} MB, which held \
-its need: ${why:-it said nothing}"
-        why="its solver of its own was ended at ${charged} MB, its peak \
-${peak} MB"
+        # Asked again only when it grew past its charge (the watch's): one
+        # that failed within it fails where more memory is no help.
+        (( peak > charged && need > charged )) || die "obligation \
+${obligation_id}: its solver of its own failed (exit ${status}) at a peak of \
+${peak} MB within its ${charged} MB: ${why:-it said nothing}"
+        why="its solver of its own grew to ${peak} MB past its ${charged} \
+MB and failed (${why:-it said nothing})"
       else
         why="its host's solver did not answer (${why:-it said nothing})"
       fi
@@ -4232,6 +4255,26 @@ campaign_pool_slots() {
     slots=$(( slots + fit ))
   done
   printf '%s\n' "${slots}"
+}
+
+# campaign_pool_can_hold <mb> <host>...: whether some host could ever hold
+# one start of <mb>: its ceiling (CAUSYNTH_HOST_MAX_USED_PCT of its
+# MemTotal) less the room a head holds there now (campaign_host_head_room),
+# what a start that is no head's own may never take.  A host whose memory
+# cannot be read is counted as one that could: its start waits for it
+# (campaign_stream_unreadable), it is never answered for it.
+campaign_pool_can_hold() {
+  local mb=$1 host dir total now
+  shift
+  now=$(date +%s)
+  for host in "$@"; do
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+    mkdir -p "${dir}"
+    total=$(campaign_host_memory_total "${host}" "${dir}") || return 0
+    (( $(campaign_host_limit_mb "${total}") \
+       - $(campaign_host_head_room "${dir}" "${now}") < mb )) || return 0
+  done
+  return 1
 }
 
 # Drops one start's charge: what it ran has returned, and whatever it held
@@ -4844,9 +4887,7 @@ the stages after the exploration are owed $(campaign_reserve)s of it \
     # round owed is planning (campaign_stream_round_start): nothing left to
     # start, run, plan or take is the end -- the stop already stated, else
     # the fixed point.
-    if (( ${#stream_jobs[@]} + ${#stream_queue[@]} == 0 )) \
-        && [[ -z "${stream_step_pid}${stream_round_pid}" \
-              && -z "${stream_round_returned}" ]]; then
+    if campaign_stream_idle; then
       if [[ -z "${stream_stop}" ]]; then
         stream_stop=FIXED_POINT
         stream_stop_detail="round $((stream_round - 1)) proposed nothing, \
@@ -4872,6 +4913,17 @@ ${stream_stop_detail}"
 round(s), $(grep -c '' "${results}" || true) obligation verdict(s); ran on: \
 $(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
   | LC_ALL=C sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
+}
+
+# Whether an exploration has nothing left to start, run, plan or take
+# (campaign_explore's end): no job runs, nothing waits in the queue or the
+# hard lane -- an ask there is in flight until answered, so no fixed point
+# is declared before it, nor a stop ends with it unasked -- and no head
+# step, round, or round returned and not taken.
+campaign_stream_idle() {
+  (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} == 0 )) \
+    && [[ -z "${stream_step_pid}${stream_round_pid}" \
+          && -z "${stream_round_returned}" ]]
 }
 
 # The planner's arguments that stay the same every round.
@@ -6060,8 +6112,9 @@ campaign_process_tree() {
 # (campaign_stream_admit_host) -- so a replay no host has room for holds no
 # solve behind it, nor an ALONE of one need one of another.  An entry queued
 # longer than campaign_stream_wait_bound_s goes first and alone: nothing
-# behind it starts until it does, so a stream of small solves never starves
-# a large replay or solver.  While GROW owes re-runs or swaps, no solve
+# behind it starts until it does but a witness's confirmation or a GROW
+# re-run, so a stream of small solves never starves a large replay or
+# solver, and a witness never waits for one.  While GROW owes re-runs or swaps, no solve
 # starts (campaign_stream_solves; a replay and a confirmation read no
 # corpus).  The hard lane (campaign_solver_first_tier_ms) starts once the
 # queue is empty.
@@ -6072,13 +6125,25 @@ campaign_stream_dispatch() {
     campaign_stream_collect_jobs
     campaign_stream_has_slot || return 0
     # The hard lane once no other start waits (campaign_solver_first_tier_ms),
-    # and as any solve not while GROW holds the solves.
+    # and as any solve not while GROW holds the solves: the first of its asks
+    # a host admits, one refused refusing none of another need.
     if (( ${#stream_queue[@]} == 0 )); then
       (( stream_hold == 0 )) || return 0
-      read -r _ _ _ need <<<"${stream_hard[0]}"
-      campaign_stream_admit_host HARD "${need}" || return 0
-      entry=${stream_hard[0]}
-      stream_hard=("${stream_hard[@]:1}")
+      started=-1
+      refused=" "
+      for at in "${!stream_hard[@]}"; do
+        read -r _ _ _ need <<<"${stream_hard[at]}"
+        [[ "${refused}" != *" ${need} "* ]] || continue
+        if campaign_stream_admit_host HARD "${need}"; then
+          started=${at}
+          break
+        fi
+        refused+="${need} "
+      done
+      (( started >= 0 )) || return 0
+      entry=${stream_hard[started]}
+      stream_hard=("${stream_hard[@]:0:started}" \
+        "${stream_hard[@]:started+1}")
       campaign_stream_start "${entry}" "${stream_admitted_host}"
       continue
     fi
@@ -6097,9 +6162,13 @@ campaign_stream_dispatch() {
     started=-1
     refused=" "
     for at in "${!stream_queue[@]}"; do
-      (( first < 0 || at == first )) || continue
       entry=${stream_queue[at]}
       read -r kind _ _ need _ <<<"${entry}"
+      # Behind an entry that goes first and alone waits everything but a
+      # witness's confirmation and GROW's re-runs, which lead the queue:
+      # neither waits behind a large solver or replay.
+      (( first < 0 || at == first )) \
+        || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
       ! campaign_stream_solves "${kind}" || (( stream_hold == 0 )) || continue
       # An ALONE is charged its own need: one refused refuses none of
       # another need.
@@ -6483,15 +6552,14 @@ campaign_stream_ended() {
         && { [[ "${answer}" == *SOLVER_MEMOUT* ]] \
              || campaign_solver_two_lanes; }; then
       # Undecided at the first budget or at its z3s' memory cap: still in
-      # flight, asked again in the hard lane (the full budget, the hard
-      # lane's z3 room); its first answer kept beside its worker's.
-      campaign_log "obligation ${id}: undecided on ${host} (${answer#*|}); \
-asked again at the full ${solver_timeout_ms} ms and a z3 room of \
-${campaign_hard_z3_room_mb} MB once no other start waits"
+      # flight, owed its ask in the hard lane (the full budget, the hard
+      # lane's z3 room) once no other start waits; its first answer kept
+      # beside its worker's.
       mv -f -- "${worker}/obligation_result.jsonl" \
         "${worker}/obligation_result.first.jsonl"
-      stream_hard+=("HARD ${round} ${id} \
-$(campaign_solver_need_mb "${sessions:-}" HARD)")
+      campaign_stream_owed "${kind}" "${round}" "${id}" "${host}" \
+        "${worker}" "$(campaign_solver_need_mb "${sessions:-}" HARD) HARD \
+undecided on ${host} (${answer#*|})"
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
@@ -6501,34 +6569,37 @@ $(campaign_solver_need_mb "${sessions:-}" HARD)")
 
 # campaign_stream_owed <kind> <round> <id> <host> <worker> "<need> <lane>
 # <why>": a solve of <kind> returned owing its obligation a solver JVM of its
-# own of <need> MB in <lane> (campaign_obligation_owe), queued as a start
-# charged that need, admitted by the ledger as any start, with no patience:
-# a HARD in the hard lane, an ALONE among the solves (campaign_stream_enqueue,
+# own of <need> MB in <lane> (campaign_obligation_owe, or a first ask
+# undecided: its hard-lane ask), queued as a start charged that need,
+# admitted by the ledger as any start, with no patience and no time bound: a
+# HARD in the hard lane, an ALONE among the solves (campaign_stream_enqueue,
 # first and alone once it waited past campaign_stream_wait_bound_s).  Only a
-# need no host of the pool can ever hold -- past every host's ceiling
-# (campaign_pool_slots) -- is an answer, the named bound: NOT_ADMITTED, for
-# the next step to land.  A pool short of room now is none (SGF5: a solve
-# that waited 600 s inside its start for 3712 MB on an over-charged pool was
-# answered NOT_ADMITTED for good, 18413's witness among them).
+# start no host of the pool can ever hold -- its admission charge
+# (campaign_stream_charge_mb) past every host's ceiling less the room a head
+# holds there (campaign_pool_can_hold) -- is an answer, the named bound:
+# NOT_ADMITTED, for the next step to land.  A pool short of room now is none
+# (SGF5: a solve that waited 600 s inside its start for 3712 MB on an
+# over-charged pool was answered NOT_ADMITTED for good, 18413's witness among
+# them).
 campaign_stream_owed() {
-  local kind=$1 round=$2 id=$3 host=$4 worker=$5 need lane why
+  local kind=$1 round=$2 id=$3 host=$4 worker=$5 need lane why charge
   read -r need lane why <<<"$6"
-  [[ -n "${stream_pool_slots[${need}]:-}" ]] \
-    || stream_pool_slots[${need}]=$(campaign_pool_slots "${need}" \
-      "${stream_hosts[@]}")
-  if (( stream_pool_slots[${need}] == 0 )); then
+  [[ "${lane}" == HARD ]] || lane=ALONE
+  charge=$(campaign_stream_charge_mb "${lane}" cold "${need}")
+  if ! campaign_pool_can_hold "${charge}" "${stream_hosts[@]}"; then
     campaign_obligation_unanswered "${id}" "${worker}" "no host of the pool \
-can hold a solver JVM of its own of ${need} MB (${why})"
+can hold a solver JVM of its own of ${charge} MB (${why})"
     campaign_log "obligation ${id}: no host of the pool can hold a solver \
-JVM of its own of ${need} MB; answered NOT_ADMITTED"
+JVM of its own of ${charge} MB; answered NOT_ADMITTED"
     stream_pending+=("${kind} ${round} ${id} ${host} 0")
   elif [[ "${lane}" == HARD ]]; then
     campaign_log "obligation ${id}: ${why}; a solver JVM of its own of \
-${need} MB queued in the hard lane"
+${charge} MB queued in the hard lane (${solver_timeout_ms} ms, a z3 room of \
+${campaign_hard_z3_room_mb} MB) once no other start waits"
     stream_hard+=("HARD ${round} ${id} ${need}")
   else
     campaign_log "obligation ${id}: ${why}; a solver JVM of its own of \
-${need} MB queued"
+${charge} MB queued"
     campaign_stream_enqueue "ALONE ${round} ${id} ${need}"
   fi
 }

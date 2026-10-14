@@ -968,13 +968,15 @@ had no room for. A
 question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) -- or at its z3s' cap
 (`SOLVER_MEMOUT at <cap> MB`, whatever the budgets) -- lands nothing: the head moves its answer aside
 (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues it in the hard lane
-(`campaign_stream_ended`, `stream_hard`, `HARD <round> <id> <need>`), which `campaign_stream_dispatch`
-starts only once no other start waits and, as any solve, not while GROW holds the solves -- HARD, in its
-worker, at the full
+(`campaign_stream_ended` through `campaign_stream_owed`, as any solve owed a solver JVM of its own, below;
+`stream_hard`, `HARD <round> <id> <need>`), whose asks `campaign_stream_dispatch` starts only once no
+other start waits -- the first of them a host admits, one of a need no host admits now holding none of
+another -- and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
 `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB) in a solver JVM
 of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`), charged its footprint and that
 room (`campaign_solver_need_mb ... HARD`), at most `campaign_stream_hard_per_host` (1) per host. Since
-the obligation stays in flight, no fixed point is declared before its hard ask. One undecided there
+the obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end
+the exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there
 lands NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each
 a `SOLVER_TIMEOUT` or `SOLVER_MEMOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any claim but a
 SAT_CANDIDATE: a RUN_DEFECT, counted in `defects[]`. Why (SP4-10, 2026-10-12): the answered questions took
@@ -988,7 +990,8 @@ no answer, and never waits for room inside its start: its worker owes it (`campa
 `solve_owed`, its need and lane, no answer) and returns, and the head queues it as a start charged
 that need (`campaign_stream_owed`), admitted by the ledger as any start, with no patience: an `ALONE`
 among the solves (the first budget and a question's z3 room; first and alone once it waited past
-`campaign_stream_wait_bound_s`, as any start; not while GROW holds the solves), a hard-lane ask's again
+`campaign_stream_wait_bound_s`, as any start; not while GROW holds the solves; an ALONE of one need
+refused holds none of another), a hard-lane ask's again
 in the hard lane, each `<kind> <round> <id> <need>`, charged that need or what a solver JVM of the
 corpus in its lane needs now where that is more (`campaign_stream_charge_mb`), the obligation in
 flight meanwhile. Its need is a solver JVM's footprint at its corpus's solver heap and its z3 room
@@ -996,15 +999,20 @@ flight meanwhile. Its need is a solver JVM's footprint at its corpus's solver he
 outgrew 2, 4 and 8 GB), or what the first measurably held -- its watched peak -- with the usual margin
 (`campaign_need_of_peak_mb`, ×1.5) and the room where that is more, never what other solvers of the
 corpus held (SL1-10: a question that held 1.2 GB asked the 12.5 GB its campaign's largest host solver
-had reached, and no host had it), at most the engine heap's footprint and the room. Only a need no
-host of the pool can hold -- past every host's ceiling (`campaign_pool_slots`) -- is an answer, the
-named bound: NOT_ADMITTED "no host of the pool can hold a solver JVM of its own of N MB", with an
-`OBLIGATION_UNFINISHED` gap row. Why (SGF5, 2026-10-14): a solve that placed itself from inside its
+had reached, and no host had it), at most the engine heap's footprint and the room; a JVM of its own is
+owed again only when its watch grew it past its charge. Only a start no host of the pool can ever hold
+-- its admission charge past every host's ceiling less the room a head holds there
+(`campaign_pool_can_hold`) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold
+a solver JVM of its own of N MB", with an `OBLIGATION_UNFINISHED` gap row; there is no time bound, which
+would drop a starved solve again. Why (SGF5, 2026-10-14): a solve that placed itself from inside its
 start waited at most 600 s, and on a pool charged past its real use (lift10: 21 GB charged, 9.4 GB in
 use) its worker died and the obligation was answered NOT_ADMITTED for good -- 4 to 69 per case,
 18413's witness among them. A solver JVM of its own that failed where more memory is no help -- out of
-heap at the engine heap, or failed under a charge that held its need -- fails the worker by name, its
-cause in the obligation's unfinished answer (§7.7). None settles a question
+heap at the engine heap (`campaign_alone_heap_mb`, the heap it ran at), or failed within its charge --
+fails the worker by name, its cause what the JVM threw (`campaign_failure_said`: `campaign_thrown`, else
+its last line that is no stack frame and not the watch's `causynth:` peak line) in the obligation's
+unfinished answer (§7.7). The debt is written before any row it left is removed, and a head that still
+sees such a row reads the debt (`campaign_await_remote_result`). None settles a question
 (`question.txt`/`question.asked` are removed).
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
@@ -1353,7 +1361,8 @@ replays of later solves started ahead of the witness's confirmation, four hours)
 (seconds each, and each decides whether a replay is owed: solr-adhoc-21 RX4 left 1075 of 1158 in
 flight as solves never started behind replays), the REPLAYs last, the newest first; dispatch starts
 the first entry a host admits, and an entry queued past `campaign_stream_wait_bound_s` goes first
-and alone -- on the class tree and
+and alone, but for a witness's `CONFIRM` and GROW's `RERUN`s, which never wait behind it (a witness's
+confirmation behind a 10 GB solver of its own) -- on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the

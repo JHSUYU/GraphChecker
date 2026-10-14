@@ -28,7 +28,9 @@ the sources are the files the campaign wrote:
   one obligation     obligations-NNNN/<id>/ with an obligation_result.jsonl:
                      host.txt (its solve started; in a run pruned before
                      host.txt was kept, its logs' earliest last write) ->
-                     the solver's files ->
+                     the solver's files (a solve asked again in a solver JVM
+                     of its own: alone-host.txt, an ALONE start; hard-host.txt,
+                     the hard lane's) ->
                      replay-host.txt (its REPLAY started, a start of its own;
                      replay-stderr.log when pruned; a run before the split
                      replayed as its solve ended) -> replay.log (the replay's
@@ -230,7 +232,8 @@ def round_rows(iteration):
             start, solve_end, replay_start, replay_end, end = worker_times(worker)
             replayed = replay_end is not None
             said = ""
-            for log in ("stdout.log", "stderr.log"):
+            for log in ("stdout.log", "stderr.log", "alone-stdout.log",
+                        "alone-stderr.log", "hard-stdout.log", "hard-stderr.log"):
                 try:
                     said += open(os.path.join(worker, log), errors="replace").read()
                 except OSError:
@@ -255,6 +258,8 @@ def round_rows(iteration):
                 "wall": (end - start) if start and end else None,
                 "end": end,
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
+                "alone": os.path.exists(os.path.join(worker, "alone-host.txt")),
+                "hard": os.path.exists(os.path.join(worker, "hard-host.txt")),
             })
         ends = [o["end"] for o in obligations if o["end"]]
         dispatch_end = max(ends) if ends else plan_end
@@ -409,6 +414,11 @@ def report(root, label):
         reruns = sum(1 for w in waves for o in w["obligations"] if o["rerun"])
         if reruns:
             print("   GROW re-ran %d exposing replay(s)" % reruns)
+        alone = sum(1 for w in waves for o in w["obligations"] if o["alone"])
+        hard = sum(1 for w in waves for o in w["obligations"] if o["hard"])
+        if alone or hard:
+            print("   solves asked again in a solver JVM of their own: %d ALONE, %d HARD"
+                  % (alone, hard))
         attempts = attempt_rows(iteration)
         if attempts:
             print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
