@@ -1049,6 +1049,46 @@ public class ConfirmationTest {
     }
 
     /**
+     * A read of a view no hook publishes, held at the version its session
+     * observed, is a STATE row and no VIEW_HOLD ({@code
+     * explore.ConfirmMain#stateEdges}), compared exactly: a run whose read
+     * observed that version took the edge; one whose fetch decoded and read
+     * another took none, a misread, and is not confirmed.
+     */
+    @Test
+    public void anUnheldViewReadIsComparedAtItsVersion() throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/snapshots/s/s-M");
+        Endpoint fetched = endpoint(ANCHOR, "SOLR_ZK#VIEW:.snapshots.s.s-M");
+        Endpoint viewed = endpoint(ANCHOR, "a.Handler#h()#20:READ#VIEW");
+        // the version the run's fetch decoded and its read observed, taken
+        Object[][] table = {{1L, true}, {2L, false}};
+        for (Object[] row : table) {
+            reset();
+            handed("", Collections.singletonList("{\"kind\":\"STATE\","
+                    + "\"reader\":\"" + Confirmation.id(viewed) + "\","
+                    + "\"mint\":false,\"writer\":\""
+                    + Confirmation.viewWriter(1L) + "\",\"version\":1,"
+                    + "\"location\":\"VIEW/SOLR_ZK@hdfs/dn0#epoch0#"
+                    + "/snapshots/s/s-M\"}"));
+            long version = (Long) row[0];
+            Confirmation.wrote(view, version, fetched, false);
+            Confirmation.read(viewed, view, version, ReadRow.UNKNOWN_VERSION);
+            assertFalse("no view is held", Confirmation.holdsViews());
+            List<String> close = Confirmation.close();
+            assertEquals(row[0] + ": " + close, row[1], close.isEmpty());
+            assertEquals(row[0] + ": misread", row[1],
+                    Confirmation.held().misread.isEmpty());
+            if (!(Boolean) row[1]) {
+                assertTrue(close.get(0), close.get(0).startsWith("STATE "
+                        + Confirmation.id(viewed) + ": the model joined this"
+                        + " read to writer VIEW@1 (version 1), the run"
+                        + " observed"));
+            }
+        }
+    }
+
+    /**
      * A view hold whose reader read in role work, which no hook closes, ends
      * at the first region that work closes after the read, in the run as it
      * goes: a region of its context closing before the read ends nothing.

@@ -1679,10 +1679,20 @@ public final class ConfirmMain {
             // region exits (Confirmation#publishing) -- and orders nothing
             // else.
             if (held.location().kind() == LocationKind.VIEW) {
+                // A view no publication hook publishes (no PUBLISHED_VIEW)
+                // is never held.  At the version the selected session's
+                // read observed, the row above is all: the session read it
+                // with no hold, and the run must read it again, compared
+                // exactly (SGF5 snapshot-no-active: the Overseer's read of
+                // a snapshot's metadata its own fetch decoded).  Any other
+                // version no run can be held to.
                 if (!Confirmation.hookPublishes(held.location())) {
-                    throw new Refused("PAIRING_UNHELD: the world pairs read "
-                            + reader + " of " + held.location() + ", a view"
-                            + " no publication hook publishes (no"
+                    if (held.version() == read.observedVersion()) continue;
+                    throw new Refused("PAIRING_UNHELD: read " + reader
+                            + " of " + held.location() + " is held to"
+                            + " version " + held.version() + ", not the "
+                            + read.observedVersion() + " it observed, and"
+                            + " no publication hook publishes the view (no"
                             + " PUBLISHED_VIEW of it), so no hold can defer"
                             + " it");
                 }

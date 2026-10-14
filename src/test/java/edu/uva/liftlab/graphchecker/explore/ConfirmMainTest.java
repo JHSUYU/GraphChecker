@@ -388,6 +388,97 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A read of a view no publication hook publishes (no PUBLISHED_VIEW:
+     * a snapshot's metadata) is never held.  At the version the selected
+     * session's read observed -- its own fetch's decode, no choice of the
+     * model -- it is a STATE row compared exactly and no VIEW_HOLD (SGF5
+     * snapshot-no-active: CONFIRM refused such a read it was never asked to
+     * pair); a version the model chose that the read did not observe no run
+     * can be held to, refused by name.
+     */
+    @Test
+    public void aViewNoHookPublishesIsComparedAtTheVersionItsReadObserved()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/snapshots/s/s-M");
+        Endpoint fetched = endpoint(ANCHOR, "SOLR_ZK#VIEW:.snapshots.s.s-M");
+        Endpoint older = endpoint(MINT, "SOLR_ZK#VIEW:.snapshots.s.s-M");
+        Endpoint viewed = endpoint(ANCHOR, "a.Handler#h()#20:READ#VIEW");
+        System.setProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS, java.nio.file.Paths.get("src",
+                "test", "resources", "published-views.jsonl")
+                .toAbsolutePath().toString());
+        try {
+            Path iteration = iteration();
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                    Arrays.asList(WriteRow.of("sel", 5L, older, view, 0L, "",
+                            "J"), WriteRow.of("sel", 25L, fetched, view, 1L,
+                            "", "J")), RowCodec::writeWrite);
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                    Collections.singletonList(ReadRow.of("sel", 30L, viewed,
+                            view, 1L, "V_meta", "J", "1")),
+                    RowCodec::writeRead);
+            // the writer the model chose (null: none), the refusal's start
+            // (null: confirmed by the rows below)
+            Object[][] table = {
+                    {null, null},
+                    {older, "PAIRING_UNHELD: read " + viewed.id()}};
+            for (Object[] row : table) {
+                Path claim = claim("FAULT:IPC", "true");
+                if (row[0] != null) {
+                    JsonObject document = ExploreCodec.readObject(claim);
+                    JsonObject arm = new JsonObject();
+                    arm.addProperty("selector", "writer_arm__1__w");
+                    arm.addProperty("groupId",
+                            ((Endpoint) row[0]).occurrence().id());
+                    JsonArray fills = new JsonArray();
+                    fills.add(Interaction.of(InteractionKind.STATE,
+                            (Endpoint) row[0], viewed).id());
+                    arm.add("interactionIds", fills);
+                    document.getAsJsonArray("valuations").get(1)
+                            .getAsJsonObject().getAsJsonArray("selectedArms")
+                            .add(arm);
+                    Files.write(claim, document.toString()
+                            .getBytes(StandardCharsets.UTF_8));
+                }
+                Path out = folder.newFolder().toPath();
+                try {
+                    ConfirmMain.write(iteration, claim,
+                            manifest(SmtLowering.locationKey(view)), out);
+                    assertEquals("handed to a confirmation", null, row[1]);
+                } catch (ConfirmMain.Refused refused) {
+                    assertTrue(refused.getMessage(), row[1] != null
+                            && refused.getMessage().startsWith(
+                            (String) row[1]));
+                    continue;
+                }
+                List<String> held = new ArrayList<String>();
+                for (JsonObject edge : RowCodec.readJsonl(
+                        out.resolve(Confirmation.FILE))) {
+                    String kind = edge.get("kind").getAsString();
+                    if ("STATE".equals(kind)) {
+                        held.add("STATE " + edge.get("reader").getAsString()
+                                + " " + edge.get("writer").getAsString()
+                                + "@" + edge.get("version").getAsString()
+                                + (edge.has("readerAnyTurn") ? " any turn"
+                                : ""));
+                    } else if (!"WIRE".equals(kind)
+                            && !"MARKER".equals(kind)
+                            && !"ANCHOR".equals(kind)) {
+                        held.add(kind);
+                    }
+                }
+                assertEquals(Collections.singletonList("STATE "
+                        + Confirmation.id(viewed) + " "
+                        + Confirmation.viewWriter(1L) + "@1"), held);
+            }
+        } finally {
+            System.clearProperty(edu.uva.liftlab.graphchecker.causynth
+                    .LibraryCatalog.SYSTEM_DOORS);
+        }
+    }
+
+    /**
      * A forced path's claim (PIPELINE §7.10) is confirmed unforced, on the
      * recording's schedule: its session ran a forced world to its forced
      * target, and that tail is no order a run takes.
