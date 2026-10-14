@@ -647,6 +647,8 @@ public final class Confirmation {
     /** Node -> the one thread applying its deferred publications. */
     private static final Map<String, Thread> PUBLISHERS =
             new HashMap<String, Thread>();
+    /** A node's publisher's thread name, before the node. */
+    static final String PUBLISHER_THREAD = "causynth-view-publisher-";
     /** Node -> when its publisher began the apply it runs (nanoTime), and
      *  the view's key: a blocked apply is named ({@link #blockedApplies}). */
     private static final Map<String, Object[]> APPLYING =
@@ -757,7 +759,7 @@ public final class Confirmation {
                 Thread publisher = PUBLISHERS.get(node);
                 if (publisher == null || !publisher.isAlive()) {
                     publisher = new Thread(() -> publish(node),
-                            "causynth-view-publisher-" + node);
+                            PUBLISHER_THREAD + node);
                     publisher.setDaemon(true);
                     PUBLISHERS.put(node, publisher);
                     publisher.start();

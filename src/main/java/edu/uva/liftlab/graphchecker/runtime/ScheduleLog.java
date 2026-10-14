@@ -367,7 +367,8 @@ public final class ScheduleLog {
      * door (a notification's, before its turn is asked, or the system's own
      * at once): the node's open PUBLISH slots of that view at an older
      * version, but those still on their way ({@code coming}: deferred on
-     * the node's publisher), will never come -- a notification fetches the
+     * the node's publisher; or in flight, begun and being published, {@link
+     * #publicationBegins}), will never come -- a notification fetches the
      * newest version, so a callback that fetched this one never publishes
      * an older one, and a node never publishes an older version after a
      * newer -- so each is given up now, by name, not by the watchdog at the
@@ -454,7 +455,14 @@ public final class ScheduleLog {
                     boolean settles = which == Settle.AT ? held == version
                             : held < version || which == Settle.UP_TO
                             && held == version;
-                    if (!settles || coming.contains(held)) continue;
+                    // One in flight is on its way too: begun, its caller
+                    // still publishing it (review SA: v9's door gave v8's
+                    // slot up while v8's callback had not yet constructed
+                    // its state, so what v8 holds back read v7).
+                    if (!settles || coming.contains(held)
+                            || IN_FLIGHT.containsKey(slot)) {
+                        continue;
+                    }
                     giveUpLocked(slot);
                     stateLocked("schedule-publish-settled#" + slot,
                             event.render() + " given up: " + why);
@@ -683,16 +691,26 @@ public final class ScheduleLog {
      * The lock {@code publisher} waits on as its owner chain names it, when
      * an owner on that chain -- the lock's, or the lock that owner waits
      * on's, a few hops -- is a thread waiting for its turn ({@link
-     * #WAITERS}), the publisher aside; else null: no lock with an owner, an
-     * owner the order does not hold, or a hop through this class's own
+     * #WAITERS}), the applying thread and every node's publisher aside;
+     * else null: no lock with an owner, an owner the order does not hold,
+     * or a hop through this class's own
      * {@link #LOCK} -- a thread merely entering it waits on the watchdog
      * that holds it, itself a waiter, which is no cycle (review R2b).  A
      * Solr lock the watchdog's own thread owns while it waits for its turn
      * is one: that waiter runs the watchdog on its asks.
      */
     private static String heldByTheOrderLocked(Thread publisher) {
+        // A node's publisher waits for a turn between its asks, never under
+        // a lock the system takes: no cycle runs through one (a callback in
+        // flight waiting on the update lock the publisher holds applying
+        // another view's head).
         Set<Long> waiting = new HashSet<Long>();
-        for (Thread thread : WAITERS.keySet()) waiting.add(thread.getId());
+        for (Thread thread : WAITERS.keySet()) {
+            if (!thread.getName().startsWith(
+                    Confirmation.PUBLISHER_THREAD)) {
+                waiting.add(thread.getId());
+            }
+        }
         waiting.remove(publisher.getId());
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         int order = System.identityHashCode(LOCK);

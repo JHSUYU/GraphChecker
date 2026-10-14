@@ -785,6 +785,63 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A NEWER VERSION'S DOOR NEVER GIVES UP AN OLDER ONE IN FLIGHT (review
+     * SA): v8's callback has begun its turn and is still publishing (between
+     * its refresh lock and its constructState) when v9's callback reaches its
+     * door.  v8's slot is on its way, so v9's turn is not due: v9 goes to the
+     * node's publisher, the order stays v8 then v9, and what v8 holds back
+     * sees v8.  Given up at v9's door, v8's slot let it go to read v7.
+     */
+    @Test(timeout = 30000L)
+    public void aNewerVersionsDoorKeepsAnOlderOneInFlight() throws Exception {
+        Confirmation.resetForTests();
+        String viewNode = "auto0/node0#epoch0";
+        LocationId view = view(viewNode, "/c.json");
+        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
+        String v9 = ScheduleEvent.published("SOLR_ZK", "/c.json", 9L);
+        enforce(Arrays.asList(publish(viewNode, v8), publish(viewNode, v9),
+                event(ScheduleEvent.Kind.SEND, "after")),
+                Collections.<ScheduleEvent>emptyList());
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+        CountDownLatch publishing = new CountDownLatch(1);
+        CountDownLatch constructed = new CountDownLatch(1);
+        Thread first = new Thread(() -> door(view, 8L, viewNode, () -> {
+            publishing.countDown();
+            try {
+                constructed.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            applied.add("v8");
+        }, v8));
+        first.start();
+        publishing.await();
+        boolean[] sawV8 = new boolean[1];
+        Thread after = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawV8[0] = applied.contains("v8");
+        });
+        after.start();
+        assertTrue("v8 in flight: v9's turn is not due, handed to the"
+                + " publisher", door(view, 9L, viewNode,
+                () -> applied.add("v9"), v9));
+        Thread.sleep(200L);
+        assertTrue("nothing past v8 before it is in force: " + applied,
+                applied.isEmpty());
+        constructed.countDown();
+        first.join(5000L);
+        after.join(5000L);
+        assertFalse(after.isAlive());
+        assertTrue("what v8 holds back sees it", sawV8[0]);
+        awaitSize(applied, 2);
+        assertEquals(Arrays.asList("v8", "v9"), applied);
+        assertEquals(Arrays.asList(v8, v9, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+    }
+
+    /**
      * THE PUBLISHER NEVER BLOCKS ON A TURN (review B2): two views of one
      * node arrive in the reverse of their recorded order -- X@8's callback
      * first, behind the SEND the recording made first, then Y@3's, whose
