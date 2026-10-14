@@ -16,13 +16,16 @@ both arithmetic engines at once, the first that decides answering, as the engine
 engine 2 alone solr-18413's file was undecided in 300 s, under 6 sat in 0.2 s),
 `BOUNDED:<keys>` (a declared bound cut the search: `result.json` `bounded`), `UNBOUND:<n>` (distinct boundary
 variables a fatal condition names that no message family binds: `report/<case>/cone.json` `unbound`),
-`BLOCKING:<codes>`, `moved=`/`polarityDecides=`, `leaves=` (the formula's leaf symbols, roots/reads/handoffs; 0 is
-`NO-SYMBOL`), `confirmed`. The last line counts BOUNDED and UNBOUND cases.
+`BLOCKING:<codes>`, `HOLD:<n>` (STATE locations whose run writer had no arm, held by the observed arm: COMPOSE's
+DIAGNOSTIC "whose arm states nothing" rows, `ComposedFamilies.StateFamilies#holdUnstatedRuns`), `moved=`/
+`polarityDecides=`, `leaves=` (the formula's leaf symbols, roots/reads/handoffs; 0 is `NO-SYMBOL`), `confirmed`. The
+last line counts BOUNDED, UNBOUND and HOLD cases.
 
 **An UNSAT is done when** the claim is `UNSAT_CLOSED`, `end=(FIXED_POINT)`, z3 says unsat on the file, there is no
 BOUNDED, no UNBOUND on any path, no BLOCKING gap, `defects` is empty (`result.json`; e.g. `OPEN_ARM_UNANSWERED`,
 `EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
-code, why the chain is constant inside the window.
+code, why the chain is constant inside the window. An UNSAT resting on a hold names it (`HOLD:<n>`): read the held
+location's dropped store-state choices (the run writer's closure, not offered there) before counting it.
 
 **A SAT is done when** the claim is `SAT_CANDIDATE`, CONFIRM confirmed it (`final/confirm.json`), `claim.json`
 `movedRoots` names at least one root, `polarityDecides` is true, the claimed path's cone has no unbound handoff

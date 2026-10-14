@@ -6598,8 +6598,8 @@ public class ComposerTest {
     }
 
     /**
-     * The recorded arm is the pairing the run took, or there is none and the
-     * claim is blocked by name.  (a) The observed writer wrote again after
+     * The recorded arm is the pairing the run took, else the pins' arm: the
+     * run is always a world of the formula.  (a) The observed writer wrote again after
      * the read: its arm is the write read, not the later one.  (b) Two reads
      * of one location saw two writes, which no writer arm is (each binds
      * both reads), and (p) a second read saw a version no row wrote: the

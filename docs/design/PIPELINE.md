@@ -2039,7 +2039,8 @@ body did not lower (SGF3-bugs-snapshot-no-active: a StateWatcher decode was hand
 `state.json` whose content an unplanned second `setData` of the Overseer's state update wrote,
 uninstrumented, so no session attests that message whole, `UNPRODUCIBLE_ANSWER`) -- the location is
 held by its observed arm (`StateFamilies#holdUnstatedRuns`), as a broken block is, beside its other
-writers' arms. That writer's own value there then no longer moves with roots: one DIAGNOSTIC
+writers' arms. The reads keep their joins; that writer's closure and store-state choices are not offered
+there: one DIAGNOSTIC
 `UNSTATED_VALUE` row per hold names the path, the location, the writer and what refused it.
 
 **A store content's leaf through a node's view** (`SmtLowering#throughView`, SYMBOL-SCOPE §6.4). A

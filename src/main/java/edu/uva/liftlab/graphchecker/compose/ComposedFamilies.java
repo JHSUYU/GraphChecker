@@ -737,9 +737,10 @@ final class ComposedFamilies {
     /**
      * The sessions that could have SENT this message (PIPELINE §8) -- those
      * with an attested arm at EVERY interaction it covers.  A per-leaf check would
-     * accept a run that sent only part of the response.  A leaf no session
-     * attests whose producer only a daemon tick past the recording's last
-     * began is that bound's loss, named ({@link #nameTickBound}).
+     * accept a run that sent only part of the response.  Each leaf of a
+     * refused message no session attests whose producer only a daemon tick
+     * past the recording's last began is that bound's loss, named ({@link
+     * #nameTickBound}).
      *
      * @return the eligible sessions, or null (refused by name) when none is
      */
@@ -759,8 +760,13 @@ final class ComposedFamilies {
                 eligible.retainAll(sessions);
             }
             if (eligible.isEmpty()) {
-                if (sessions.isEmpty()) {
-                    nameTickBound(producerOf.get(slotId), message);
+                // Every leaf no session attests, not only this one: the
+                // refusal rests on each of them.
+                for (String leaf : slots) {
+                    Set<String> attesting = attestedAt.get(leaf);
+                    if (attesting == null || attesting.isEmpty()) {
+                        nameTickBound(producerOf.get(leaf), message);
+                    }
                 }
                 refusals.add(GapRow.of(corpus.seedSessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
@@ -1548,12 +1554,14 @@ final class ComposedFamilies {
      * pairing on (location -> planted writer, {@code Composer#repairing}) the
      * recording's pairing is any arm but the plant: a witness resting on it
      * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
-     * value moves with the valuation while its pairing stays.  Where no arm
-     * is that pairing (the one write they saw has no arm, or a read has no
-     * join or pin) the run as it happened is no world of the formula, and a
-     * BLOCKING gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
-     * that pairing, and every other kind is named only once the pairing flip
-     * is ruled out ({@link ClaimPolicy}).  A writer arm's delivery rests on
+     * value moves with the valuation while its pairing stays.  The run is
+     * always a world of the formula: where the one writer every read saw has
+     * no selector (its write no arm, or its body refused) the location is
+     * held by the observed arm too, named ({@link
+     * StateFamilies#holdUnstatedRuns}).  STATE_PAIRING_FLIPPED and the
+     * recording's own verdict pin that pairing, and every other kind is
+     * named only once the pairing flip is ruled out ({@link ClaimPolicy}).
+     * A writer arm's delivery rests on
      * the messages it was handed as a message arm's does
      * ({@link #closeMessages}).
      */
@@ -1890,8 +1898,10 @@ final class ComposedFamilies {
          * uninstrumented) -- is
          * held by its observed arm, each read at its own join or pin, beside
          * its other writers' arms, as {@link #holdBrokenBlocks} holds one.
-         * That writer's own value there no longer moves with roots: named,
-         * one DIAGNOSTIC row per hold.
+         * The reads keep their joins; that writer's closure and store-state
+         * choices are not offered there: named, one DIAGNOSTIC row per hold
+         * ("whose arm states nothing", the phrase tools/rounds/round-verify.sh
+         * counts as HOLD).
          */
         void holdUnstatedRuns() {
             for (StateLocation location : locations.values()) {
@@ -1912,9 +1922,10 @@ final class ComposedFamilies {
                                 + why + "): the location is held by its"
                                 + " observed arm, each read at its own join"
                                 + " or pin -- the run as it happened --"
-                                + " beside its other writers' arms, so that"
-                                + " writer's own value here no longer moves"
-                                + " with roots"));
+                                + " beside its other writers' arms: the"
+                                + " reads keep their joins, and that"
+                                + " writer's closure and store-state choices"
+                                + " are not offered here"));
                 location.observedPin = observedPin(location.symbols, pins);
                 location.runWriter = null;
             }
