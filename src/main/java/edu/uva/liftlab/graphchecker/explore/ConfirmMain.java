@@ -1682,12 +1682,16 @@ public final class ConfirmMain {
                 // A view no publication hook publishes (no PUBLISHED_VIEW)
                 // is never held.  At the version the selected session's
                 // read observed, the row above is all: the session read it
-                // with no hold, and the run must read it again, compared
-                // exactly (SGF5 snapshot-no-active: the Overseer's read of
-                // a snapshot's metadata its own fetch decoded).  Any other
-                // version no run can be held to.
+                // with no hold, and the run must read that version of that
+                // location again (Confirmation#taken; SGF5
+                // snapshot-no-active: the Overseer's read of a snapshot's
+                // metadata its own fetch decoded).  Any other version no run
+                // can be held to.
                 if (!Confirmation.hookPublishes(held.location())) {
-                    if (held.version() == read.observedVersion()) continue;
+                    if (held.location().equals(read.location())
+                            && held.version() == read.observedVersion()) {
+                        continue;
+                    }
                     throw new Refused("PAIRING_UNHELD: read " + reader
                             + " of " + held.location() + " is held to"
                             + " version " + held.version() + ", not the "

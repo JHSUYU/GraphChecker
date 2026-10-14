@@ -391,10 +391,11 @@ public class ConfirmMainTest {
      * A read of a view no publication hook publishes (no PUBLISHED_VIEW:
      * a snapshot's metadata) is never held.  At the version the selected
      * session's read observed -- its own fetch's decode, no choice of the
-     * model -- it is a STATE row compared exactly and no VIEW_HOLD (SGF5
-     * snapshot-no-active: CONFIRM refused such a read it was never asked to
-     * pair); a version the model chose that the read did not observe no run
-     * can be held to, refused by name.
+     * model, or the model's choice of that decode -- it is a STATE row
+     * compared exactly and no VIEW_HOLD (SGF5 snapshot-no-active: CONFIRM
+     * refused such a read it was never asked to pair); a version the model
+     * chose that the read did not observe no run can be held to, refused by
+     * name.
      */
     @Test
     public void aViewNoHookPublishesIsComparedAtTheVersionItsReadObserved()
@@ -422,6 +423,7 @@ public class ConfirmMainTest {
             // (null: confirmed by the rows below)
             Object[][] table = {
                     {null, null},
+                    {fetched, null},
                     {older, "PAIRING_UNHELD: read " + viewed.id()}};
             for (Object[] row : table) {
                 Path claim = claim("FAULT:IPC", "true");

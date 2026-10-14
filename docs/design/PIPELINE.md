@@ -1181,7 +1181,9 @@ pairing of any other (Solr's legacy `clusterstate.json`, a snapshot's metadata) 
 choice and stays at the version it observed, a named `ADMISSION_GAP` (`ComposedFamilies#heldView`) --
 and refused at CONFIRM (`PAIRING_UNHELD`), never left to give way; at the version its read observed in
 the selected session (a snapshot's metadata its own fetch decoded) CONFIRM holds nothing and compares
-the read exactly, a STATE row (`ConfirmMain#stateEdges`). A hold ends when the reader's work is done -- the reader's occurrence exits, or, for a read in
+the read exactly, a STATE row (`ConfirmMain#stateEdges`). A view's STATE row is taken only where the run
+read that version of that location (`Confirmation#taken`): a view's writer `VIEW@v` names no location,
+and ZooKeeper's versions restart at every path and every life of one. A hold ends when the reader's work is done -- the reader's occurrence exits, or, for a read in
 role work which no hook closes, the first region that work closes after the read in the run as it
 goes, a named region's exit or a hop's close (`Confirmation#regionClosed`: a routed alias captures its
 view in the request's role work and writes it in a store door's region) -- and is realistic for at most
