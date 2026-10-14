@@ -94,6 +94,14 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   (110 runs: 32 above it, the largest 1.27x), and ten charged at 100 % on one host outgrew its 70 % ceiling
   together, so the watcher refused the next one's growth and ended it (LL5-lock-leak: 4 of 10 on lift13, ended
   by `campaign_watch_workload`, not the OOM killer).
+- Every z3 the engine starts runs under z3's own `memory_max_size` and is charged with the JVM that starts it
+  (`run_engine.sh` `campaign_jvm_charge_mb`: its footprint and its z3 room, `--z3-room-mb`): a composer 6 GB beside its
+  footprint (less where it and a 2 GB margin would not fit under the host's 70 % ceiling; the head's held room counts it),
+  a solver question 1152 MB (`campaign_question_mb`), the hard
+  lane 4096 (`campaign_hard_z3_room_mb`). A z3 at its cap answers `memout` (`compose.log`: "z3 run N (...): memout"),
+  undecided, never unsat; an obligation's is `SOLVER_MEMOUT`, asked again in the hard lane. `round-verify.sh` and the
+  accept probe race z3 at 4096 MB an engine (`tools/lib/z3-race.sh`, `Z3_RACE_CAP_MB`), printing `memout`. Never run
+  z3 on a composed query uncapped: a bit-blasting query took 27 GB of a lift in 90 s.
 - Every replay after a campaign's seed replay (obligations, GROW re-runs, CONFIRM) is charged the
   campaign's measured need (`run_engine.sh` `campaign_replay_need_mb`): the largest resident peak
   its replays stated so far (`workload_rss_mb` in each worker directory; the seed replay's first)

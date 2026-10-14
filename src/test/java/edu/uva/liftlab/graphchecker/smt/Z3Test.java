@@ -9,6 +9,7 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -60,7 +61,7 @@ public class Z3Test {
                     "  *) echo unsat ;;",
                     "esac"), StandardCharsets.UTF_8);
             assertTrue(script.toFile().setExecutable(true));
-            Z3.Answer answer = new Z3(script, 1000L).ask(
+            Z3.Answer answer = new Z3(script, 1000L, 8192).ask(
                     "(declare-const m Bool)\n(assert m)\n",
                     Collections.<String>emptyList(), true);
             assertTrue(row[0] + ": " + answer, answer.unsat());
@@ -100,24 +101,286 @@ public class Z3Test {
     }
 
     /**
-     * A z3 starts only under the host's memory ceiling, the percentage the
-     * campaign states (the owner's 70 when none is); one that is no
-     * percentage is refused, never read as the default.  {stated, ceiling or
-     * null for refused}.
+     * EVERY z3 STARTS UNDER ITS SLOT'S CAP: z3's own memory_max_size, the
+     * slot less what z3's accounting misses.  A lone ask's engines take half
+     * the room each, a caller of many asks at once a slot of the room shared
+     * that many ways, a path ask a slot of its own size, never past half the
+     * room nor below the least slot; a room that holds no run is refused.
+     * {room, how the solver is held (lone, shared:k, slotted:mb), the cap}.
      */
     @Test
-    public void theMemoryCeilingIsAPercentageOrRefused() {
-        Object[][] rows = {{null, 70}, {"70", 70}, {" 100 ", 100}, {"1", 1},
-                {"0", null}, {"101", null}, {"seventy", null}, {"", null}};
+    public void aZ3StartsUnderItsSlotsCap() {
+        Object[][] rows = {
+                {8192, "lone", 4032},
+                {8192, "shared:4", 960},
+                {8192, "slotted:1024", 960},
+                {1152, "lone", 512},
+                {1152, "slotted:1024", 512},
+                {4096, "lone", 1984},
+                {512, "slotted:16", 64},
+                {255, "lone", null},
+        };
         for (Object[] row : rows) {
-            Integer ceiling;
+            Integer cap;
             try {
-                ceiling = Z3.ceilingPercent((String) row[0]);
-            } catch (IllegalStateException refused) {
-                ceiling = null;
+                Z3 solver = new Z3(Paths.get("z3"), 1000L, (Integer) row[0]);
+                String[] how = ((String) row[1]).split(":");
+                if (how[0].equals("shared")) {
+                    solver = solver.shared(Integer.parseInt(how[1]));
+                } else if (how[0].equals("slotted")) {
+                    solver = solver.slotted(Integer.parseInt(how[1]));
+                }
+                cap = solver.capMb();
+                assertTrue(Arrays.toString(row), Z3.command(Paths.get("z3"),
+                        cap + Z3.MISSED_MB, 20_000L).contains(
+                        "memory_max_size=" + cap));
+            } catch (IllegalArgumentException refused) {
+                cap = null;
             }
-            assertEquals(Arrays.toString(row), row[1], ceiling);
+            assertEquals(Arrays.toString(row), row[2], cap);
         }
+    }
+
+    /**
+     * A z3 AT ITS CAP IS UNDECIDED BY NAME, as a timeout is: never a verdict,
+     * no error of the query (an error voids a composition's claim), its
+     * reason the cap it hit; the other engine's verdict still answers.
+     * {engine 2, engine 6, status}.
+     */
+    @Test
+    public void aZ3AtItsCapIsUndecidedByName() throws IOException {
+        Path script = folder.newFile("z3-memout").toPath();
+        Files.write(script, Arrays.asList(
+                "#!/bin/bash",
+                "input=$(cat)",
+                "engine=$(printf '%s' \"$input\" | sed -n"
+                        + " 's/.*(set-option :smt.arith.solver \\([0-9]*\\)).*/\\1/p'"
+                        + " | head -1)",
+                "act=$(printf '%s' \"$input\" | sed -n"
+                        + " \"s/.*; on$engine \\([a-z]*\\).*/\\1/p\" | head -1)",
+                "case $act in",
+                "  oom) echo '(error \"out of memory\")'; exit 101 ;;",
+                "  *) echo sat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        String[][] rows = {{"oom", "oom", "memout"}, {"oom", "sat", "sat"}};
+        for (String[] row : rows) {
+            Z3 solver = new Z3(script, 3000L, 1152);
+            Z3.Answer answer = solver.ask("; on2 " + row[0] + "\n; on6 "
+                    + row[1] + "\n", Collections.<String>emptyList(), true);
+            String what = Arrays.toString(row) + ": " + answer;
+            assertEquals(what, row[2], answer.status());
+            assertEquals(what, row[2].equals("memout"), answer.memOut());
+            assertTrue(what, answer.memOut() != answer.decided());
+            assertTrue(what + " " + solver.errors(), solver.errors().isEmpty());
+            assertTrue(what + " " + answer.reason(), !answer.memOut()
+                    || answer.reason().contains("512 MB"));
+        }
+    }
+
+    /**
+     * A CAP AFTER THE VERDICT ANSWERS ONLY WITH ITS PAYLOAD: a core run
+     * whose z3 printed unsat and then stopped at its cap names no core (the
+     * core is unknown, not empty), and a model run's z3 that printed sat and
+     * then stopped at its cap loses the race to the other engine's model.
+     * {what each engine's core or model run prints after its verdict, the
+     * core known, x's value}.
+     */
+    @Test
+    public void aCapAfterTheVerdictAnswersOnlyWithItsPayload()
+            throws IOException {
+        Path script = folder.newFile("z3-cap-after").toPath();
+        Files.write(script, Arrays.asList(
+                "#!/bin/bash",
+                "input=$(cat)",
+                "engine=$(printf '%s' \"$input\" | sed -n"
+                        + " 's/.*(set-option :smt.arith.solver \\([0-9]*\\)).*/\\1/p'"
+                        + " | head -1)",
+                "verdict=$(printf '%s' \"$input\" | sed -n"
+                        + " 's/.*; verdict \\([a-z]*\\).*/\\1/p' | head -1)",
+                "case $input in",
+                "  *get-unsat-core*) echo unsat;"
+                        + " echo '(error \"out of memory\")' ;;",
+                "  *get-value*) echo sat; if [ $engine = 2 ];"
+                        + " then echo '(error \"out of memory\")';"
+                        + " else echo '((x 6))'; fi ;;",
+                "  *) echo $verdict ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3 solver = new Z3(script, 3000L, 8192);
+        Z3.Answer unsat = solver.ask("; verdict unsat\n",
+                Collections.<String>emptyList(), true);
+        assertTrue(unsat.toString(), unsat.unsat());
+        assertTrue("a core cut by the cap is unknown: " + unsat,
+                !unsat.coreKnown() && unsat.core().isEmpty());
+        Z3.Answer sat = solver.ask("; verdict sat\n",
+                Collections.singletonList("x"), false);
+        assertEquals("the other engine's model answers: " + sat, "6",
+                sat.values().get("x"));
+        assertTrue(solver.errors().toString(), solver.errors().isEmpty());
+    }
+
+    /**
+     * AN ASK AT ITS CAP IN A SHARED SLOT IS ASKED AGAIN ALONE, in half the
+     * room an engine, before it is undecided: a z3 at a path ask's 448 MB
+     * cap, one at the lone cap of a 4096 MB room (1984 MB) answering.
+     * {the caps at which the fixture runs out of memory, the status, the
+     * cap the answer names}.
+     */
+    @Test
+    public void anAskAtItsCapInASharedSlotIsAskedAgainAlone()
+            throws IOException {
+        Object[][] rows = {
+                {"448", "sat", null},
+                {"448|1984", "memout", "1984 MB"},
+        };
+        for (Object[] row : rows) {
+            Path script = folder.newFile("z3-alone-"
+                    + ((String) row[0]).replace('|', '-')).toPath();
+            Files.write(script, Arrays.asList(
+                    "#!/bin/bash",
+                    "cat >/dev/null",
+                    "case \" $* \" in",
+                    "  *' memory_max_size=" + ((String) row[0]).replace("|",
+                            " '*|*' memory_max_size=") + " '*)"
+                            + " echo '(error \"out of memory\")'; exit 101 ;;",
+                    "  *) echo sat ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(script.toFile().setExecutable(true));
+            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512)
+                    .ask("(assert true)\n", Collections.<String>emptyList(),
+                            false);
+            String what = Arrays.toString(row) + ": " + answer;
+            assertEquals(what, row[1], answer.status());
+            assertTrue(what, row[2] == null
+                    || answer.reason().contains((String) row[2]));
+        }
+    }
+
+    /**
+     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THE WHOLE ASK AGAIN
+     * ALONE: the verdict fits a path ask's 448 MB cap, its model (or core)
+     * run does not; asked again alone, at the room's lone 1984 MB cap, the
+     * ask answers with its model (its core).  {what the fixture caps at 448
+     * MB, the verdict, the model's x or the core}.
+     */
+    @Test
+    public void aSharedSlotsCapOnItsPayloadAsksTheWholeAskAgainAlone()
+            throws IOException {
+        String[][] rows = {{"get-value", "sat", "6"},
+                {"get-unsat-core", "unsat", "[c]"}};
+        for (String[] row : rows) {
+            Path script = folder.newFile("z3-payload-" + row[0]).toPath();
+            Files.write(script, Arrays.asList(
+                    "#!/bin/bash",
+                    "input=$(cat)",
+                    "case \"$input\" in",
+                    "  *" + row[0] + "*) case \" $* \" in",
+                    "      *' memory_max_size=448 '*) echo " + row[1] + ";"
+                            + " echo '(error \"out of memory\")' ;;",
+                    "      *) echo " + row[1] + "; echo '((x 6))' | sed"
+                            + " 's/((x 6))/" + (row[1].equals("sat")
+                            ? "((x 6))" : "(c)") + "/' ;;",
+                    "    esac ;;",
+                    "  *) echo " + row[1] + " ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(script.toFile().setExecutable(true));
+            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512).ask(
+                    "(assert true)\n", row[1].equals("sat")
+                            ? Collections.singletonList("x")
+                            : Collections.<String>emptyList(),
+                    row[1].equals("unsat"));
+            String what = Arrays.toString(row) + ": " + answer;
+            assertEquals(what, row[1], answer.status());
+            assertEquals(what, row[2], row[1].equals("sat")
+                    ? answer.values().get("x") : answer.core().toString());
+        }
+    }
+
+    /**
+     * THE ROOM SERVES RUNS IN THE ORDER THEY ASKED: a lone run waiting for
+     * the whole room is not passed by a smaller one that would fit, and a
+     * waiter that stops waiting (interrupted) does not hold the ones behind
+     * it.
+     */
+    @Test
+    public void theRoomServesRunsInTheOrderTheyAsked() throws Exception {
+        Z3.Room room = new Z3.Room(4096);
+        assertTrue(room.take(2048));
+        java.util.List<String> order = java.util.Collections.synchronizedList(
+                new java.util.ArrayList<String>());
+        Thread lone = new Thread(() -> {
+            if (room.take(4096)) order.add("lone");
+        });
+        lone.start();
+        while (lone.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread small = new Thread(() -> {
+            if (room.take(1024)) order.add("small");
+        });
+        small.start();
+        while (small.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread.sleep(100L);
+        assertTrue("the small run passed the lone one: " + order,
+                order.isEmpty());
+        room.give(2048);
+        lone.join(5000L);
+        assertEquals("[lone]", order.toString());
+        room.give(4096);
+        small.join(5000L);
+        assertEquals("[lone, small]", order.toString());
+        room.give(1024);
+
+        // A waiter interrupted while it waits stalls no one behind it.
+        assertTrue(room.take(4096));
+        Thread quitter = new Thread(() -> room.take(1024));
+        quitter.start();
+        while (quitter.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        Thread behind = new Thread(() -> {
+            if (room.take(1024)) order.add("behind");
+        });
+        behind.start();
+        while (behind.getState() != Thread.State.WAITING) Thread.sleep(5L);
+        quitter.interrupt();
+        quitter.join(5000L);
+        room.give(4096);
+        behind.join(5000L);
+        assertEquals("[lone, small, behind]", order.toString());
+        assertEquals(1024, room.held());
+    }
+
+    /**
+     * THE RUNS OF A ROOM HOLD NO MORE THAN IT: asks put at once run as many
+     * as their slots fit, the rest waiting -- a room of 4096 MB at slots of
+     * 1024 runs two asks (four z3s) at a time -- and every slot is given
+     * back.
+     */
+    @Test
+    public void theRunsOfARoomHoldNoMoreThanIt() throws Exception {
+        Path script = folder.newFile("z3-slow").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash", "cat >/dev/null",
+                "sleep 0.4", "echo sat"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3 solver = new Z3(script, 5000L, 4096).slotted(1024);
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(6);
+        java.util.List<java.util.concurrent.Future<Z3.Answer>> asked =
+                new java.util.ArrayList<java.util.concurrent.Future<Z3.Answer>>();
+        for (int at = 0; at < 6; at++) {
+            asked.add(pool.submit(() -> solver.ask("(assert true)\n",
+                    Collections.<String>emptyList(), false)));
+        }
+        int most = 0;
+        while (!asked.stream().allMatch(java.util.concurrent.Future::isDone)) {
+            most = Math.max(most, solver.roomHeldMb());
+            Thread.sleep(5L);
+        }
+        for (java.util.concurrent.Future<Z3.Answer> each : asked) {
+            assertTrue(each.get().sat());
+        }
+        pool.shutdown();
+        assertEquals("two runs of two 1 GB slots at once, never more", 4096,
+                most);
+        assertEquals("every slot given back", 0, solver.roomHeldMb());
     }
 
     /**
@@ -129,7 +392,7 @@ public class Z3Test {
      */
     @Test
     public void aRunIsTheFirstEngineThatDecides() throws IOException {
-        Z3 solver = new Z3(fakeZ3(), 3000L);
+        Z3 solver = new Z3(fakeZ3(), 3000L, 8192);
         String[][] rows = {
                 {"sat", "sat", "sat", "2"},
                 {"late", "sat", "sat", "2"},

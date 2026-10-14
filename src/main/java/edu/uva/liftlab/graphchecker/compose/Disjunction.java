@@ -15,6 +15,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -72,11 +73,23 @@ final class Disjunction implements AutoCloseable {
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
     /**
-     * How many path asks run at once: sixteen z3 processes, two per ask (one
-     * per arithmetic engine, {@code Z3#run}), on a 48-core host, each
-     * started only while the host has memory to spare ({@code Z3}).
+     * How many path asks are put to the solver at once: up to sixteen z3
+     * processes, two per ask (one per arithmetic engine, {@code Z3#run}), on
+     * a 48-core host -- as many of them running as their slots fit in the
+     * composer's z3 room ({@code Z3.Room}).
      */
     static final int PATH_ASKS = 8;
+
+    /**
+     * The slot one z3 of a path ask holds, in MB ({@code Z3#slotted}), so a
+     * composer's 6 GB room runs four path asks at once; one at its cap is
+     * asked again alone, in half the room an engine ({@code Z3#ask}).
+     * Measured (2026-10-13, per-path z3 peaks, capped): solr-adhoc-09 p50
+     * 112 / p90 120 / max 134 MB over 90 path asks, solr-18413 41 / 81 / 109
+     * over 64, solr-bugs-reindex-cleanup 654 / 664 / 664 over 3: 768 MB
+     * holds each p90 without an ask again alone.
+     */
+    static final int PATH_SLOT_MB = 768;
 
     /** One path found unsat under these assertions. */
     private static final class Refutation {
@@ -96,19 +109,46 @@ final class Disjunction implements AutoCloseable {
 
     private final Composer.Composition composition;
     private final Z3 solver;
+    /** The solver as a path ask holds it: a slot of PATH_SLOT_MB a z3. */
+    private final Z3 pathSolver;
     private final ExecutorService pool;
-    private final Map<String, List<Refutation>> refuted =
-            new ConcurrentHashMap<String, List<Refutation>>();
+    private final Map<String, List<Refutation>> refuted;
     /** Each path's self-check answer, by selector ({@link #selfCheck}). */
-    private final Map<String, Z3.Answer> selfChecked =
-            new ConcurrentHashMap<String, Z3.Answer>();
-    /** Set once a whole ask ran past its budget. */
-    private volatile boolean pathByPath;
+    private final Map<String, Z3.Answer> selfChecked;
+    /** Set once a whole ask ran past its budget or its memory cap. */
+    private final AtomicBoolean pathByPath;
 
     Disjunction(Composer.Composition composition, Z3 solver) {
+        this(composition, solver, Executors.newFixedThreadPool(PATH_ASKS),
+                new ConcurrentHashMap<String, List<Refutation>>(),
+                new ConcurrentHashMap<String, Z3.Answer>(),
+                new AtomicBoolean());
+    }
+
+    private Disjunction(Composer.Composition composition, Z3 solver,
+                        ExecutorService pool,
+                        Map<String, List<Refutation>> refuted,
+                        Map<String, Z3.Answer> selfChecked,
+                        AtomicBoolean pathByPath) {
         this.composition = composition;
         this.solver = solver;
-        this.pool = Executors.newFixedThreadPool(PATH_ASKS);
+        this.pathSolver = solver.slotted(PATH_SLOT_MB);
+        this.pool = pool;
+        this.refuted = refuted;
+        this.selfChecked = selfChecked;
+        this.pathByPath = pathByPath;
+    }
+
+    /**
+     * This disjunction as {@code asksAtOnce} callers ask it together
+     * ({@code ClaimPolicy}'s valuations): its refutations, its pool and
+     * whether it asks path by path shared, each whole ask's z3s in a slot of
+     * the composer's z3 room shared that many ways ({@code Z3#shared}).  Its
+     * owner closes the pool.
+     */
+    Disjunction asking(int asksAtOnce) {
+        return new Disjunction(composition, solver.shared(asksAtOnce), pool,
+                refuted, selfChecked, pathByPath);
     }
 
     /**
@@ -167,8 +207,9 @@ final class Disjunction implements AutoCloseable {
         List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             String selector = disjunct.selector();
-            pending.add(pool.submit(() -> solver.ask(question.apply(selector),
-                    none, wantCore, SELF_CHECK_BUDGET_MS)));
+            pending.add(pool.submit(() -> pathSolver.ask(
+                    question.apply(selector), none, wantCore,
+                    SELF_CHECK_BUDGET_MS)));
         }
         List<Z3.Answer> answers = new ArrayList<Z3.Answer>();
         for (Future<Z3.Answer> each : pending) answers.add(get(each));
@@ -191,11 +232,14 @@ final class Disjunction implements AutoCloseable {
             open |= refutation == null;
         }
         // With every path refuted already there is nothing to ask.
-        if (open && !pathByPath) {
+        if (open && !pathByPath.get()) {
             Z3.Answer whole = solver.ask(composition.query(assertions),
                     asked, wantCore, WHOLE_BUDGET_MS);
             if (whole.decided()) return whole;
-            if (whole.timedOut()) pathByPath = true;
+            // Past its budget, or at its memory cap asked alone (a shared
+            // slot's cap is asked again alone first, Z3#ask): every path is
+            // a smaller question.
+            if (whole.timedOut() || whole.memOut()) pathByPath.set(true);
         }
         // Every open path's own run first, all of them: a sat one answers
         // before any path is asked free (hdfs-11741 L1: a path its own run
@@ -207,7 +251,7 @@ final class Disjunction implements AutoCloseable {
         for (int at = 0; at < selectors.size(); at++) {
             String selector = selectors.get(at);
             pending.add(known.get(at) != null ? null : pool.submit(
-                    () -> solver.ask(composition.pathQuery(selector,
+                    () -> pathSolver.ask(composition.pathQuery(selector,
                             assertions), asked, wantCore)));
         }
         try {
@@ -251,7 +295,7 @@ final class Disjunction implements AutoCloseable {
             String selector = selectors.get(at);
             pending.add(known.get(at) != null ? null : pool.submit(
                     () -> ownRun(selector, assertions, asked,
-                            solver.timeoutMillis())));
+                            solver.timeoutMillis(), pathSolver)));
         }
         try {
             for (Future<Z3.Answer> each : pending) {
@@ -282,7 +326,7 @@ final class Disjunction implements AutoCloseable {
         Z3.Answer known = refutation(selector, under, wantCore);
         if (known != null) return known;
         Z3.Answer answer = pathAsk(selector, assertions, asked, wantCore,
-                budgetMillis);
+                budgetMillis, solver);
         if (answer.unsat()) {
             remember(selector, under, answer, wantCore && answer.coreKnown());
         }
@@ -296,18 +340,20 @@ final class Disjunction implements AutoCloseable {
      * question, and z3 finds one where the question asked free runs its
      * budget out (hdfs-11741 L1: two fatal-observing paths sat in about 100
      * s so, undecided after 30 minutes free).  Asked free only where its own
-     * run is refuted or undecided within {@link #OWN_RUN_BUDGET_MS}.
+     * run is refuted or undecided within {@link #OWN_RUN_BUDGET_MS}.  Asked
+     * of {@code by}: the caller's solver on its own thread, the path slot's
+     * on the pool.
      */
     private Z3.Answer pathAsk(String selector, List<String> assertions,
                               List<String> asked, boolean wantCore,
-                              long budgetMillis) {
+                              long budgetMillis, Z3 by) {
         long budget = budgetMillis > 0L
                 ? Math.min(budgetMillis, solver.timeoutMillis())
                 : solver.timeoutMillis();
         long deadline = System.currentTimeMillis() + budget;
-        Z3.Answer own = ownRun(selector, assertions, asked, budget);
+        Z3.Answer own = ownRun(selector, assertions, asked, budget, by);
         if (own != null && own.sat()) return own;
-        return solver.ask(composition.pathQuery(selector, assertions),
+        return by.ask(composition.pathQuery(selector, assertions),
                 asked, wantCore, Math.max(1L,
                         deadline - System.currentTimeMillis()));
     }
@@ -316,12 +362,12 @@ final class Disjunction implements AutoCloseable {
      *  {@link #OWN_RUN_BUDGET_MS} and {@code budget}; null where it has
      *  none. */
     private Z3.Answer ownRun(String selector, List<String> assertions,
-                             List<String> asked, long budget) {
+                             List<String> asked, long budget, Z3 by) {
         List<String> own = composition.ownRun(selector);
         if (own.isEmpty()) return null;
         List<String> held = new ArrayList<String>(assertions);
         held.addAll(own);
-        return solver.ask(composition.pathQuery(selector, held), asked,
+        return by.ask(composition.pathQuery(selector, held), asked,
                 false, Math.min(OWN_RUN_BUDGET_MS, budget));
     }
 

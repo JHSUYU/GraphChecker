@@ -214,7 +214,7 @@ public class ComposerTest {
         // is refused by name and blocks, instead of being read off the
         // answers as if an undecided valuation.
         ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
-                new Z3(erroringSolver(), 30000L));
+                new Z3(erroringSolver(), 30000L, 8192));
         assertEquals("an error is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, errored.claim().kind());
         assertTrue("and it is named and blocking",
@@ -229,7 +229,7 @@ public class ComposerTest {
         // as a bare state=unknown with nothing to route: named, BLOCKING,
         // and carrying the fragment z3 named.
         ClaimPolicy.Decision undecided = ClaimPolicy.decide(composition,
-                new Z3(undecidingSolver(), 30000L));
+                new Z3(undecidingSolver(), 30000L, 8192));
         assertEquals("an undecided valuation is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, undecided.claim().kind());
         assertTrue("it blocks, and the row names the valuation",
@@ -247,7 +247,7 @@ public class ComposerTest {
         // quantifiers: the answer is the line after the warning.
         assertEquals("a warning is not the verdict", ClaimKind.MARKER_FLIPPED,
                 ClaimPolicy.decide(composition, new Z3(warningSolver(),
-                        30000L)).claim().kind());
+                        30000L, 8192)).claim().kind());
 
         // 1b. The same claim where the marker reaches the target only
         // through CONTROL dependence -- 17960's shape.  The marker gates a
@@ -856,6 +856,31 @@ public class ComposerTest {
             assertEquals(detail, name, claim.getAsJsonArray(
                     "restsOnRefutations").get(0).getAsJsonObject()
                     .get("name").getAsString());
+            // The free formula's core not known (its core run at its memory
+            // cap or past its budget): which refuted claims the UNSAT rests
+            // on is unknown -- a defect, never an empty list read as none.
+            Path capped = folder.newFile("z3-core-capped-" + row[0] + "-"
+                    + row[1]).toPath();
+            Files.write(capped, Arrays.asList("#!/bin/bash",
+                    "input=$(cat)",
+                    "case $input in",
+                    "  *get-unsat-core*) echo unsat;"
+                            + " echo '(error \"out of memory\")' ;;",
+                    "  *) echo unsat ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(capped.toFile().setExecutable(true));
+            Z3.Answer noCore = new Z3(capped, 30000L, 8192).ask("",
+                    Collections.<String>emptyList(), true);
+            assertTrue(noCore.toString(), noCore.unsat() && !noCore.coreKnown());
+            JsonObject unknown = ComposeMain.campaignClaim(next,
+                    new ClaimPolicy.Decision(again.claim(), again.outcomes(),
+                            noCore));
+            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
+                    unknown.get("claim").getAsString());
+            assertTrue(detail + ": " + unknown,
+                    unknown.has("restsOnRefutationsKnown")
+                    && !unknown.get("restsOnRefutationsKnown")
+                    .getAsBoolean());
         }
     }
 
@@ -2211,7 +2236,7 @@ public class ComposerTest {
         };
         for (Object[] row : rows) {
             try (Disjunction asks = new Disjunction(composition,
-                    new Z3(script, 30000L))) {
+                    new Z3(script, 30000L, 8192))) {
                 if ("self-check".equals(row[0])) {
                     asks.selfCheck();
                 } else if (row[0] != null) {
@@ -2233,6 +2258,51 @@ public class ComposerTest {
 
     private static long asked(Path log) throws IOException {
         return Files.readAllLines(log).size();
+    }
+
+    /**
+     * A WHOLE ASK AT ITS MEMORY CAP GOES PATH BY PATH, as one past its
+     * budget does (a lone ask's cap: there is no larger slot to ask it in):
+     * the fixture z3 runs out of memory on the whole query, refutes path 0
+     * and satisfies path 1; the disjunction is sat, and the next ask asks no
+     * whole query again.
+     */
+    @Test
+    public void aWholeAskAtItsCapGoesPathByPath() throws Exception {
+        Path iteration = folder.newFolder("whole-memout").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.target("true", true, true);
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        String first = composition.disjuncts().get(0).selector();
+        String second = composition.disjuncts().get(1).selector();
+        Path log = folder.newFile("whole.log").toPath();
+        Path script = folder.newFile("z3-whole-memout.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'(assert " + first + ")'*) echo unsat; echo '()' ;;",
+                "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
+                "  *) echo whole >> " + log
+                        + "; echo '(error \"out of memory\")'; exit 101 ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        Z3 solver = new Z3(script, 30000L, 8192);
+        try (Disjunction asks = new Disjunction(composition, solver)) {
+            Z3.Answer answer = asks.ask(none, composition.selectors(), none,
+                    false);
+            assertEquals(answer.toString(), "sat", answer.status());
+            long whole = asked(log);
+            assertTrue("the whole query was asked: " + whole, whole > 0);
+            assertEquals("sat", asks.ask(Collections.singletonList(
+                    "(assert true)"), composition.selectors(), none, false)
+                    .status());
+            assertEquals("no whole ask once one ran out of memory", whole,
+                    asked(log));
+            assertTrue(solver.errors().toString(), solver.errors().isEmpty());
+        }
     }
 
     /**
@@ -10057,7 +10127,7 @@ public class ComposerTest {
         Path z3 = z3();
         Assume.assumeTrue("z3 is not on this machine",
                 Files.isExecutable(z3) || !z3.isAbsolute());
-        return new Z3(z3, 30000L);
+        return new Z3(z3, 30000L, 8192);
     }
 
     private static Path z3() {

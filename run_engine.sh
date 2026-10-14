@@ -538,14 +538,20 @@ engine_java() {
     break
   done
   start=$(campaign_engine_start_mb "${main}" "${engine_need_mb:-}")
+  [[ "$(campaign_z3_room_mb "${main}" "${heap}")" != \
+      "${campaign_z3_least_room_mb}" ]] \
+    || printf '[campaign] %s at %s MB leaves no z3 room under the host'"'"'s \
+ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
+      "${campaign_z3_least_room_mb}" >&2
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "$(campaign_jvm_footprint_mb "${start}")" \
+    campaign_head_charged "$(campaign_jvm_charge_mb "${main}" "${start}")" \
       campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
+      $(campaign_z3_room_args "${main}" "${start}") \
       >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
       cat -- "${out}"
@@ -560,11 +566,68 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "$(campaign_jvm_footprint_mb "${heap}")" \
+  campaign_head_charged "$(campaign_jvm_charge_mb "${main}" "${heap}")" \
     campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@"
+    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
+    $(campaign_z3_room_args "${main}" "${heap}")
+}
+
+# THE z3 ROOM.  Every z3 the engine starts is capped (smt/Z3: z3's own
+# memory_max_size, the slot it holds less what z3's accounting misses), and
+# the JVM that starts it is charged its footprint and a z3 room, the caps it
+# may run at once, so the ledger sees its z3s (SGF3-adhoc-13: a composer
+# charged its 8.9 GB footprint ran a z3 that grew to 10.9 GB in 20 minutes,
+# swap full, its host unreachable for a minute).  A composer's room is
+# campaign_compose_z3_room_mb, less where its footprint, the room and
+# campaign_z3_room_margin_mb would not fit under the host's ceiling
+# (CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal; the lifts are alike),
+# so its charge always leaves real room a host can admit -- a composer whose
+# footprint leaves less than campaign_z3_least_room_mb runs in that, saying
+# so (engine_java): a lone ask's engines take half the room each, four
+# valuations asked together an eighth, a path ask 768 MB (smt/Z3#shared,
+# #slotted).  A solver's is a question's, in its first lane
+# (campaign_solver_z3_room_mb).  A main that starts no z3 has none.
+campaign_compose_z3_room_mb=6144
+campaign_z3_room_margin_mb=2048
+# The least room smt/Z3 holds a run in (Z3.Room).
+campaign_z3_least_room_mb=256
+campaign_z3_room_mb() {
+  local main=$1 heap=$2 room limit
+  case "${main}" in
+    edu.uva.liftlab.graphchecker.compose.ComposeMain) ;;
+    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain)
+      campaign_solver_z3_room_mb ""
+      return 0 ;;
+    *)
+      printf '0\n'
+      return 0 ;;
+  esac
+  limit=$(campaign_host_limit_mb "$(campaign_host_total_mb localhost \
+    | tail -n 1)")
+  room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") \
+    - campaign_z3_room_margin_mb ))
+  (( room <= campaign_compose_z3_room_mb )) \
+    || room=${campaign_compose_z3_room_mb}
+  (( room >= campaign_z3_least_room_mb )) || room=${campaign_z3_least_room_mb}
+  printf '%s\n' "${room}"
+}
+
+# What a JVM of <main> at <heap_mb> is charged and held at, in MB: its
+# footprint (campaign_jvm_footprint_mb) and its z3 room (campaign_z3_room_mb).
+campaign_jvm_charge_mb() {
+  printf '%s\n' "$(( $(campaign_jvm_footprint_mb "$2") \
+    + $(campaign_z3_room_mb "$1" "$2") ))"
+}
+
+# The arguments that tell a JVM of <main> at <heap_mb> its z3 room
+# (--z3-room-mb, what its charge holds for its z3s); none for a main that
+# starts no z3.
+campaign_z3_room_args() {
+  local room
+  room=$(campaign_z3_room_mb "$1" "$2")
+  (( room == 0 )) || printf -- '--z3-room-mb %s\n' "${room}"
 }
 
 # campaign_engine_jvm <peak_file> <command...>: one engine JVM of a head
@@ -676,19 +739,23 @@ campaign_engine_need_mb() {
 # and round MCH2) kept 8 GB of every lift from the pool.  A step its held
 # room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0 peak heap
+  local main start largest=0 peak heap room compose
+  compose=edu.uva.liftlab.graphchecker.compose.ComposeMain
   heap=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
+  # A composer's z3s are its children, which its JVM's peak does not count.
+  room=$(campaign_z3_room_mb "${compose}" \
+    "$(campaign_engine_start_mb "${compose}")")
   if [[ -n "${campaign_root}" ]] \
       && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
       && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
     largest=$(( (peak * 5 + 511) / 512 * 128 ))
     (( largest >= 1024 )) || largest=1024
-    printf '%s\n' "$(( largest < heap ? largest : heap ))"
+    printf '%s\n' "$(( (largest < heap ? largest : heap) + room ))"
     return 0
   fi
-  for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
-      edu.uva.liftlab.graphchecker.compose.ComposeMain; do
-    start=$(campaign_jvm_footprint_mb "$(campaign_engine_start_mb "${main}")")
+  for main in edu.uva.liftlab.graphchecker.explore.ExploreMain "${compose}"; do
+    start=$(campaign_jvm_charge_mb "${main}" \
+      "$(campaign_engine_start_mb "${main}")")
     (( start <= largest )) || largest=${start}
   done
   printf '%s\n' "${largest}"
@@ -3125,20 +3192,42 @@ campaign_solver_outgrown() {
 # the ledger and a question's own JVM charged a question's 512 MB was ended at
 # its first growth on a full host (SL1-10).
 campaign_solver_need_mb() {
-  campaign_jvm_footprint_mb "$(campaign_solver_heap_mb "${1:-}")"
+  printf '%s\n' "$(( $(campaign_jvm_footprint_mb \
+    "$(campaign_solver_heap_mb "${1:-}")") \
+    + $(campaign_solver_z3_room_mb "${2:-}") ))"
 }
 
-# A solver's start on a corpus no solver outgrew, in MB (what the stream
-# charges a solve on a cold host, campaign_stream_charge_mb).
-campaign_solver_start_mb=$(campaign_jvm_footprint_mb \
-  "${campaign_solver_start_heap_mb}")
+# What a solver JVM holds for its z3 processes, in MB (smt/Z3's room,
+# --z3-room-mb; one question at a time, its two engines half each): a
+# question's (campaign_question_mb) -- a host's solver's z3s are charged per
+# question, a question's own JVM its footprint and this -- and in the hard
+# lane (<lane> HARD) campaign_hard_z3_room_mb, so a question undecided at a
+# 512 MB cap is asked again at 2 GB.
+campaign_hard_z3_room_mb=4096
+campaign_solver_z3_room_mb() {
+  if [[ "${1:-}" == HARD ]]; then
+    printf '%s\n' "${campaign_hard_z3_room_mb}"
+  else
+    printf '%s\n' "${campaign_question_mb}"
+  fi
+}
 
 # What a question its host's serving solver answers is charged, in MB: its z3
-# run, a child of that solver (the solver JVM's own charge is its JVM's).
-# Charged a solver's start, a sweep's questions held 51 GB of the ten lifts'
-# ledger over z3 runs of a median 1 MB, p90 369 MB, at most 1.8 GB (118 z3
-# processes, HI1/HI2), and new campaigns waited for room their lifts had.
-campaign_question_mb=512
+# run, a child of that solver (the solver JVM's own charge is its JVM's) --
+# two engines, each capped at half of it less smt/Z3's MISSED_MB, 512 MB, so
+# no z3 outgrows what is charged (SGF3-adhoc-13: an uncapped z3 grew to 10.9
+# GB beside its JVM's charge); one at its cap is asked again in the hard
+# lane (campaign_hard_z3_room_mb).  Charged a solver's start, a sweep's
+# questions held 51 GB of the ten lifts' ledger over z3 runs of a median
+# 1 MB, p90 369 MB, at most 1.8 GB (118 z3 processes, HI1/HI2), and new
+# campaigns waited for room their lifts had.
+campaign_question_mb=1152
+
+# A solver's start on a corpus no solver outgrew, in MB (what the stream
+# charges a solve on a cold host, campaign_stream_charge_mb): its footprint
+# and a question's z3 room.
+campaign_solver_start_mb=$(( $(campaign_jvm_footprint_mb \
+  "${campaign_solver_start_heap_mb}") + campaign_question_mb ))
 
 # THE SOLVE'S TWO LANES.  A question is first asked at campaign_solver_first_ms
 # (campaign_solver_first_tier_ms, never past solver_timeout_ms): a host's
@@ -3317,6 +3406,7 @@ campaign_start_solver() {
     campaign_host_keep localhost "${charge}"
     status=0
     campaign_solver_jvm "${heap}" "${need}" "$(campaign_solver_first_ms)" \
+      "${campaign_question_mb}" \
       --serve "${dir}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
@@ -3329,16 +3419,17 @@ campaign_start_solver() {
   mv -f -- "${dir}/server.part" "${dir}/server"
 }
 
-# campaign_solver_jvm <heap_mb> <charged_mb> <budget_ms> <ObligationSolverMain
-# args...>: one solver JVM at <heap_mb>, each z3 run under <budget_ms>, ended
+# campaign_solver_jvm <heap_mb> <charged_mb> <budget_ms> <z3_room_mb>
+# <ObligationSolverMain args...>: one solver JVM at <heap_mb>, each z3 run
+# under <budget_ms> and in its z3 room (--z3-room-mb), ended
 # at its first out-of-heap error (exit 3) (run_java_main's, started here so its pid is
 # the JVM's own: java_bin execs java), watched until it ends
 # (campaign_watch_workload): what it grows past the <charged_mb> its host
 # holds for it is asked of the host as it grows, and a host whose real use
 # cannot take it ends it.  Its status.
 campaign_solver_jvm() {
-  local heap=$1 charged=$2 budget=$3 jvm status=0
-  shift 3
+  local heap=$1 charged=$2 budget=$3 room=$4 jvm status=0
+  shift 4
   require_file "GraphChecker jar" "${graphchecker_jar}"
   (cd "${graphchecker_work_dir}" \
     && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
@@ -3350,6 +3441,7 @@ campaign_solver_jvm() {
       edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
       --z3 "${z3_bin}" \
       --solver-timeout-ms "${budget}" \
+      --z3-room-mb "${room}" \
       ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
       "$@") &
   jvm=$!
@@ -3359,7 +3451,8 @@ campaign_solver_jvm() {
 }
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker> <charged_mb> <budget_ms>: the question in a solver JVM of its own
+# <worker> <charged_mb> <budget_ms> <z3_room_mb>: the question in a solver
+# JVM of its own, its z3s in <z3_room_mb> (campaign_solver_z3_room_mb)
 # at its corpus's solver heap (campaign_solver_heap_mb; out of it, exit 3, the
 # next one doubles), its z3 runs under <budget_ms> (its lane's), its
 # files straight into <worker>, its status the JVM's,
@@ -3370,10 +3463,10 @@ campaign_solver_jvm() {
 # (campaign_watch_workload).
 campaign_solve_obligation_alone() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local budget=$6 status=0 heap
+  local budget=$6 room=$7 status=0 heap
   heap=$(campaign_solver_heap_mb "${sessions}")
   run_capturing_status campaign_solver_jvm "${heap}" \
-    "${charged}" "${budget}" \
+    "${charged}" "${budget}" "${room}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
@@ -3392,8 +3485,8 @@ campaign_solve_obligation_alone() {
 campaign_solver_place_patience_s=600
 
 # campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
-# <worker> <need_mb> <budget_ms>: a question asked again of a solver of its
-# own at its lane's budget, placed
+# <worker> <need_mb> <budget_ms> <z3_room_mb>: a question asked again of a
+# solver of its own at its lane's budget and z3 room, placed
 # as any start is: on the pool's host with the most room for <need_mb>
 # (campaign_host_room), charged there while it runs -- this host or a peer
 # (--run-placed, from a directory under <worker>).  4, with why in
@@ -3401,7 +3494,7 @@ campaign_solver_place_patience_s=600
 # campaign_solver_place_patience_s; else the JVM's status.
 campaign_solve_obligation_placed() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 need=$5
-  local budget=$6
+  local budget=$6 z3_room=$7
   local host room best best_room since=${SECONDS} charge status=0
   while true; do
     best=""
@@ -3425,13 +3518,14 @@ campaign_solve_obligation_placed() {
   status=0
   if campaign_host_is_local "${best}"; then
     run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}" "${need}" "${budget}"
+      "${obligations}" "${sessions}" "${worker}" "${need}" "${budget}" \
+      "${z3_room}"
   else
     # Its placed directory under the worker: a peer has no campaign root.
     local campaign_root=${worker}
     run_capturing_status campaign_run_placed "${best}" \
       campaign_solve_obligation_alone "${obligation_id}" "${obligations}" \
-      "${sessions}" "${worker}" "${need}" "${budget}" >&2
+      "${sessions}" "${worker}" "${need}" "${budget}" "${z3_room}" >&2
   fi
   campaign_host_release "${best}" "${charge}"
   return "${status}"
@@ -3459,6 +3553,8 @@ campaign_solve_obligation_placed() {
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
   local lane=${6:-} budget outcome status=0 peak need="" held="" measured=0
+  local room
+  room=$(campaign_solver_z3_room_mb "${lane}")
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -3475,9 +3571,9 @@ campaign_obligation_worker() {
   case "${status}" in
     3) campaign_log "obligation ${obligation_id}: no room on $(hostname -s) \
 to start its solver now; answered in a solver JVM of its own" ;;
-    4) campaign_log "obligation ${obligation_id}: undecided in \
-$(campaign_solver_first_ms) ms; asked at the full ${budget} ms in a solver \
-JVM of its own" ;;
+    4) campaign_log "obligation ${obligation_id}: undecided in its first ask \
+(its budget or its z3s' cap); asked at the full ${budget} ms and a z3 room of \
+${room} MB in a solver JVM of its own" ;;
     5) campaign_log "obligation ${obligation_id}: its host's solver was busy \
 past ${campaign_solver_busy_patience_s}s; answered in a solver JVM of its own" ;;
   esac
@@ -3485,15 +3581,17 @@ past ${campaign_solver_busy_patience_s}s; answered in a solver JVM of its own" ;
     # Answered in its own JVM at once, not after a start that waits for
     # memory nor behind a question its host's solver is busy with: here
     # under this start's charge when it covers that JVM's need, else placed
-    # as any start by that need (a question's charge, 512 MB, on a warm host).
-    need=$(campaign_solver_need_mb "${sessions}")
+    # as any start by that need (a question's charge, 1152 MB, on a warm
+    # host).
+    need=$(campaign_solver_need_mb "${sessions}" "${lane}")
     if (( charged >= need )); then
       run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-        "${obligations}" "${sessions}" "${worker}" "${charged}" "${budget}"
+        "${obligations}" "${sessions}" "${worker}" "${charged}" "${budget}" \
+        "${room}"
     else
       run_capturing_status campaign_solve_obligation_placed \
         "${obligation_id}" "${obligations}" "${sessions}" "${worker}" \
-        "${need}" "${budget}"
+        "${need}" "${budget}" "${room}"
       (( status != 4 )) || die "obligation ${obligation_id}: no host has \
 room for a solver of its own of ${need} MB within \
 ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
@@ -3518,10 +3616,13 @@ ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
     # an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     peak=${campaign_watch_peak_mb}
-    need=$(campaign_solver_need_mb "${sessions}")
-    (( peak <= 0 || $(campaign_need_of_peak_mb "${peak}") <= need )) \
-      || need=$(campaign_need_of_peak_mb "${peak}")
-    measured=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
+    need=$(campaign_solver_need_mb "${sessions}" "${lane}")
+    # Its JVM's watched peak counts no z3 of it: its room comes on top.
+    (( peak <= 0 \
+       || $(campaign_need_of_peak_mb "${peak}") + room <= need )) \
+      || need=$(( $(campaign_need_of_peak_mb "${peak}") + room ))
+    measured=$(( $(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}") \
+      + room ))
     (( need <= measured )) || need=${measured}
     held="held ${peak} MB"
     (( peak > 0 )) || held="ran in its host's solver, unwatched"
@@ -3530,16 +3631,17 @@ ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
       | tail -n 1)); asked again of a solver of its own, ${need} MB for a \
 first that ${held}, on any host with the room"
     run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}" "${need}" "${budget}"
+      "${obligations}" "${sessions}" "${worker}" "${need}" "${budget}" \
+      "${room}"
     while (( status == campaign_jvm_out_of_heap_status )) \
         && (( need < measured )); do
-      need=$(campaign_solver_need_mb "${sessions}")
+      need=$(campaign_solver_need_mb "${sessions}" "${lane}")
       campaign_log "obligation ${obligation_id}: its solver of its own ran \
 out of heap; asked again at $(campaign_solver_heap_mb "${sessions}") MB \
 (${need} MB)"
       run_capturing_status campaign_solve_obligation_placed \
         "${obligation_id}" "${obligations}" "${sessions}" "${worker}" \
-        "${need}" "${budget}"
+        "${need}" "${budget}" "${room}"
     done
     if [[ "${status}" -eq 4 ]]; then
       die "obligation ${obligation_id}: its solver did not answer, and no \
@@ -6127,7 +6229,8 @@ campaign_stream_charge_mb() {
   if [[ "${1:-}" == OBLIGATION && "${2:-cold}" == warm ]]; then
     printf '%s\n' "${campaign_question_mb}"
   elif [[ "${1:-}" == OBLIGATION || "${1:-}" == HARD ]]; then
-    campaign_solver_need_mb "${sessions:-}"
+    campaign_solver_need_mb "${sessions:-}" "$([[ "${1}" != HARD ]] \
+      || echo HARD)"
   else
     local need
     need=$(campaign_replay_need_mb)
@@ -6346,13 +6449,16 @@ campaign_stream_ended() {
       campaign_stream_enqueue \
         "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
     elif [[ "${kind}" == OBLIGATION \
-        && "${answer}" == NOT_ADMITTED\|SOLVER_TIMEOUT\ * ]] \
-        && campaign_solver_two_lanes; then
-      # Undecided at the first budget: still in flight, asked again in the
-      # hard lane; its first answer kept beside its worker's.
-      campaign_log "obligation ${id}: undecided in \
-$(campaign_solver_first_ms) ms on ${host}; asked again at the full \
-${solver_timeout_ms} ms once no other start waits"
+        && ( "${answer}" == NOT_ADMITTED\|SOLVER_MEMOUT\ * \
+             || "${answer}" == NOT_ADMITTED\|SOLVER_TIMEOUT\ * ) ]] \
+        && { [[ "${answer}" == *SOLVER_MEMOUT* ]] \
+             || campaign_solver_two_lanes; }; then
+      # Undecided at the first budget or at its z3s' memory cap: still in
+      # flight, asked again in the hard lane (the full budget, the hard
+      # lane's z3 room); its first answer kept beside its worker's.
+      campaign_log "obligation ${id}: undecided on ${host} (${answer#*|}); \
+asked again at the full ${solver_timeout_ms} ms and a z3 room of \
+${campaign_hard_z3_room_mb} MB once no other start waits"
       mv -f -- "${worker}/obligation_result.jsonl" \
         "${worker}/obligation_result.first.jsonl"
       stream_hard+=("HARD ${round} ${id}")
@@ -6412,7 +6518,8 @@ campaign_stream_land() {
       2>/dev/null) || session=""
     campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
     if [[ "${kind}" == HARD && "${verdict}" == NOT_ADMITTED ]] && jq -e \
-        '.detail // "" | startswith("SOLVER_TIMEOUT")' \
+        '.detail // "" | startswith("SOLVER_TIMEOUT")
+           or startswith("SOLVER_MEMOUT")' \
         "${worker}/obligation_result.jsonl" >/dev/null 2>&1; then
       jq -c --arg host "${host}" '{obligationId, detail, host: $host}' \
         "${worker}/obligation_result.jsonl" \
@@ -7001,10 +7108,11 @@ campaign_open_arms() {
     "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
-# The obligations the hard lane left undecided at the full budget
-# (campaign_solver_first_tier_ms, solver_timeouts.jsonl): each an arm no
-# verdict answered, one ADMISSION_GAP row SOLVER_TIMEOUT, BLOCKING under any
-# claim but a SAT_CANDIDATE (whose witness stands as CONFIRM decides it).
+# The obligations the hard lane left undecided -- at the full budget, or at
+# its z3s' cap (campaign_hard_z3_room_mb) -- (solver_timeouts.jsonl): each an
+# arm no verdict answered, one ADMISSION_GAP row SOLVER_TIMEOUT or
+# SOLVER_MEMOUT, BLOCKING under any claim but a SAT_CANDIDATE (whose witness
+# stands as CONFIRM decides it).
 campaign_solver_timeouts() {
   local iteration_dir=$1 claim
   [[ -s "${iteration_dir}/solver_timeouts.jsonl" ]] || return 0
@@ -7013,9 +7121,11 @@ campaign_solver_timeouts() {
     {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
      kind: "ADMISSION_GAP",
      cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING" end),
-     subject: "SOLVER_TIMEOUT", topologyEpoch: $epoch,
-     detail: ("obligation \(.obligationId) on \(.host): \(.detail), at the"
-       + " full budget after the first; its arm has no verdict, so no UNSAT"
+     subject: (if (.detail // "") | startswith("SOLVER_MEMOUT")
+       then "SOLVER_MEMOUT" else "SOLVER_TIMEOUT" end),
+     topologyEpoch: $epoch,
+     detail: ("obligation \(.obligationId) on \(.host): \(.detail), in the"
+       + " hard lane after the first ask; its arm has no verdict, so no UNSAT"
        + " closes over it")}' \
     "${iteration_dir}/solver_timeouts.jsonl" \
     >>"${iteration_dir}/campaign_gaps.jsonl"

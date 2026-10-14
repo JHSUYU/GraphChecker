@@ -43,6 +43,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code smt.arith.solver 2}, a second under 6), and neither is the faster
  * one on every query (2 closes the nested {@code mod 2^32} terms wrapping
  * arithmetic writes, where 6 can branch for minutes).</p>
+ *
+ * <p>EVERY z3 RUNS UNDER A MEMORY CAP its JVM's charge covers ({@link
+ * Room}): the campaign charges a JVM that runs z3 its footprint and a z3
+ * room of R MB ({@code --z3-room-mb}), and every z3 of the JVM holds a slot
+ * of it -- a lone ask's engines half the room each, a path ask of a
+ * disjunction a slot of its own size ({@link #slotted}) -- started with
+ * z3's own {@code memory_max_size} at the slot less what z3's accounting
+ * misses ({@link #MISSED_MB}); a run starts only while its two slots fit in
+ * what the room has free.  A z3 at its cap prints {@code (error "out of
+ * memory")}: the answer {@link #MEMOUT}, undecided by name as a timeout is,
+ * never a refutation and no error of the query (SGF3-adhoc-13: one z3 of a
+ * composer charged its JVM only grew to 10.9 GB in 20 minutes, swap full,
+ * its host unreachable for a minute).</p>
  */
 public final class Z3 {
 
@@ -67,6 +80,23 @@ public final class Z3 {
 
     /** The status of an answer no process lived long enough to print. */
     private static final String TIMEOUT = "timeout";
+
+    /** What a z3 at its memory cap prints (4.14.1, exit 101), and the
+     *  status it is read as: undecided by name, no error of the query. */
+    static final String OUT_OF_MEMORY = "(error \"out of memory\")";
+    static final String MEMOUT = "memout";
+
+    /**
+     * What a z3's resident memory holds past the {@code memory_max_size} it
+     * is started under, in MB: its binary and stacks, which z3's own
+     * accounting does not count (measured on 4.14.1: 12-20 MB at caps of
+     * 20-90 MB; at 1 and 2 GB caps the resident peak stayed below the cap).
+     * A slot of S MB starts its z3 at S less this.
+     */
+    static final int MISSED_MB = 64;
+
+    /** The least slot a z3 can be started in. */
+    static final int LEAST_SLOT_MB = 2 * MISSED_MB;
 
     /**
      * The arithmetic engines a run races ({@code smt.arith.solver}), the
@@ -131,9 +161,15 @@ public final class Z3 {
             return TIMEOUT.equals(status);
         }
 
+        /** Whether z3 stopped at its memory cap: undecided by name. */
+        public boolean memOut() {
+            return MEMOUT.equals(status);
+        }
+
         /**
          * Why the solver did not decide ({@code :reason-unknown}), or "";
-         * asked only of an undecided, non-timeout answer.
+         * asked only of an undecided answer that is no timeout and no
+         * memout (a memout's names the cap it hit).
          */
         public String reason() {
             return reason;
@@ -184,16 +220,124 @@ public final class Z3 {
         }
     }
 
+    /**
+     * One JVM's z3 room: the MB its charge holds for its z3 processes
+     * ({@code --z3-room-mb}), and the slots its running z3s hold.  A run
+     * takes its two slots before it starts, in the order the runs asked
+     * (so an ask again alone, in half the room an engine, is not passed by
+     * smaller ones forever), waiting while they do not fit in what is free,
+     * and gives them back when its z3s are gone; a run alone always fits,
+     * its slots being at most half the room each.
+     */
+    static final class Room {
+        final int mb;
+        private int held;
+        private long issued;
+        private long serving;
+        private final Set<Long> abandoned = new java.util.HashSet<Long>();
+
+        Room(int mb) {
+            if (mb < 2 * LEAST_SLOT_MB) {
+                throw new IllegalArgumentException("a z3 room of " + mb
+                        + " MB holds no run: at least " + 2 * LEAST_SLOT_MB);
+            }
+            this.mb = mb;
+        }
+
+        /** Takes {@code need} MB once every run that asked before took
+         *  its own and they fit: true; false when interrupted first. */
+        synchronized boolean take(int need) {
+            long ticket = issued++;
+            while (ticket != serving || held + need > mb) {
+                try {
+                    wait();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    abandoned.add(ticket);
+                    pass();
+                    return false;
+                }
+            }
+            held += need;
+            serving++;
+            pass();
+            return true;
+        }
+
+        /** The turn past the runs that stopped waiting, and every waiter
+         *  told. */
+        private void pass() {
+            while (abandoned.remove(serving)) serving++;
+            notifyAll();
+        }
+
+        synchronized void give(int need) {
+            held -= need;
+            notifyAll();
+        }
+
+        synchronized int held() {
+            return held;
+        }
+    }
+
     private final Path z3;
     private final long timeoutMillis;
     /** Asks may run on several threads, each its own z3 process. */
-    private final AtomicInteger runs = new AtomicInteger();
-    private final Set<String> errors = new TreeSet<String>();
+    private final AtomicInteger runs;
+    private final Set<String> errors;
+    private final Room room;
+    /** The slot each z3 of this solver's runs holds, in MB. */
+    private final int slotMb;
 
-    public Z3(Path executable, long timeoutMillis) {
-        this.z3 = executable == null ? Paths.get("z3") : executable;
-        this.timeoutMillis = timeoutMillis <= 0L
-                ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis;
+    /**
+     * A solver whose z3s share a room of {@code roomMb} (what its JVM's
+     * charge holds for them, {@code --z3-room-mb}); a lone ask's two
+     * engines take half of it each.
+     */
+    public Z3(Path executable, long timeoutMillis, int roomMb) {
+        this(executable == null ? Paths.get("z3") : executable,
+                timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
+                new AtomicInteger(), new TreeSet<String>(), new Room(roomMb),
+                roomMb / 2);
+    }
+
+    private Z3(Path z3, long timeoutMillis, AtomicInteger runs,
+               Set<String> errors, Room room, int slotMb) {
+        this.z3 = z3;
+        this.timeoutMillis = timeoutMillis;
+        this.runs = runs;
+        this.errors = errors;
+        this.room = room;
+        this.slotMb = slotMb;
+    }
+
+    /**
+     * The same solver -- its room, run counter and errors -- whose z3s hold
+     * slots of {@code slotMb} (at most half the room): a caller that asks
+     * many at once (a disjunction's paths) runs as many as their slots fit
+     * in the room, the rest waiting for one to end.
+     */
+    public Z3 slotted(int slotMb) {
+        return new Z3(z3, timeoutMillis, runs, errors, room,
+                Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)));
+    }
+
+    /** The same solver as {@code asksAtOnce} callers ask it together: each
+     *  z3 a slot of its room shared that many ways. */
+    public Z3 shared(int asksAtOnce) {
+        return slotted(room.mb / (ARITHMETIC.length * Math.max(1,
+                asksAtOnce)));
+    }
+
+    /** The memory cap, in MB, each z3 of this solver starts under. */
+    public int capMb() {
+        return slotMb - MISSED_MB;
+    }
+
+    /** What the slots of this solver's room's running z3s hold, in MB. */
+    int roomHeldMb() {
+        return room.held();
     }
 
     /** The budget a question gets when its ask names none. */
@@ -262,11 +406,29 @@ public final class Z3 {
                       boolean wantCore, long budgetMillis) {
         long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
         String status = firstLine(run("", query, "(check-sat)\n", budget));
+        if (MEMOUT.equals(status)) {
+            // At a slot shared with other asks: once more alone, in half
+            // the room an engine, before it is undecided.
+            if (slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
+            return new Answer(status, Collections.<String, String>emptyMap(),
+                    Collections.<String>emptyList(), false, "out of memory at"
+                    + " its cap of " + capMb() + " MB (memory_max_size)");
+        }
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run("", query, valueCommand(modelSymbols),
-                    timeoutMillis));
+            String printed = run("", query, valueCommand(modelSymbols),
+                    timeoutMillis);
+            // Its model cut by a shared slot's cap: the whole ask once more
+            // alone (a verdict with no model selects no path).
+            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
+            values = parseValues(printed);
         }
         List<String> core = Collections.emptyList();
         boolean coreKnown = false;
@@ -275,7 +437,12 @@ public final class Z3 {
             // host had room, it answered unknown) names no core.
             String printed = run(CORE_TRACKING, query,
                     "(check-sat)\n(get-unsat-core)\n", timeoutMillis);
-            coreKnown = "unsat".equals(firstLine(printed));
+            if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
+            coreKnown = "unsat".equals(firstLine(printed))
+                    && answerBlock(printed, true) != null;
             if (coreKnown) core = parseCore(printed);
         }
         // Not after a timeout: it would spend the budget again for "".
@@ -323,13 +490,12 @@ public final class Z3 {
     static final long ORPHAN_MARGIN_SECONDS = 10L;
 
     /**
-     * The z3 processes running now, each with its pid (-1: unknown), whose
-     * resident memory {@link #enter} reads.  A JVM that ends (a bound's or
-     * a stop's TERM) takes them with it at once; one killed outright runs
-     * no hook, and the kernel kills its z3s ({@link #DIES_WITH_ITS_DRIVER}).
+     * The z3 processes running now.  A JVM that ends (a bound's or a stop's
+     * TERM) takes them with it at once; one killed outright runs no hook,
+     * and the kernel kills its z3s ({@link #DIES_WITH_ITS_DRIVER}).
      */
-    private static final Map<Process, Integer> LIVE =
-            new ConcurrentHashMap<Process, Integer>();
+    private static final Set<Process> LIVE =
+            Collections.newSetFromMap(new ConcurrentHashMap<Process, Boolean>());
 
     /**
      * What every z3 is started under: the kernel sends it KILL when the
@@ -343,157 +509,27 @@ public final class Z3 {
     static final String[] DIES_WITH_ITS_DRIVER =
             {"setpriv", "--pdeathsig", "KILL", "--"};
 
-    /**
-     * How full a host's memory may be, in percent, before another z3
-     * starts: the ceiling every start of a campaign keeps
-     * ({@code CAUSYNTH_HOST_MAX_USED_PCT}; tools/lib/gc-env.sh states the
-     * owner's 70 where nothing else does, and so does this where no script
-     * started the JVM).  One that is no percentage is refused.
-     */
-    static final int CEILING_PERCENT =
-            ceilingPercent(System.getenv("CAUSYNTH_HOST_MAX_USED_PCT"));
-
-    static int ceilingPercent(String stated) {
-        if (stated == null) return 70;
-        String text = stated.trim();
-        int percent = text.matches("[0-9]{1,3}") ? Integer.parseInt(text) : 0;
-        if (percent < 1 || percent > 100) {
-            throw new IllegalStateException("CAUSYNTH_HOST_MAX_USED_PCT must"
-                    + " be a percentage in 1..100: \"" + stated + "\"");
-        }
-        return percent;
-    }
-
-    /** Runs in flight in this JVM, each its two engines. */
-    private static final AtomicInteger RUNNING = new AtomicInteger();
-
-    /** What a run waiting for room waits on, and how often it looks. */
-    private static final Object ROOM = new Object();
-    private static final long ROOM_POLL_MILLIS = 500L;
-
-    /**
-     * The most resident memory one z3 of this JVM has held, in kB, read as
-     * runs are admitted; until one is read, what a z3 is taken to grow to
-     * (i1's per-path z3s held 0.1 GB, m1's 1 GB, a whole 124 MB body 0.4).
-     */
-    private static long largestKb = 256L * 1024L;
-
-    /**
-     * Waits until this host has room for one more run and counts it in:
-     * true; false when interrupted first.  Room: the host's available
-     * memory, less what each running z3 may still grow to (the largest any
-     * z3 of this JVM has held) and two such z3s for the new run, at least
-     * the share {@link #CEILING_PERCENT} keeps free.  A JVM with no run in
-     * flight starts one anyway: it holds nothing it could give back by
-     * waiting.  A composition asks many paths at once
-     * ({@code compose.Disjunction}): sixteen z3s of hdfs-11741 m1's paths,
-     * a GB each beside the composer's 15, took a host to 82 %.
-     */
-    private static boolean enter() {
-        synchronized (ROOM) {
-            while (RUNNING.get() > 0 && !hostHasRoom(owed())) {
-                try {
-                    ROOM.wait(ROOM_POLL_MILLIS);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return false;
-                }
-            }
-            RUNNING.incrementAndGet();
-            return true;
-        }
-    }
-
-    private static void leave() {
-        RUNNING.decrementAndGet();
-        synchronized (ROOM) {
-            ROOM.notifyAll();
-        }
-    }
-
-    /**
-     * In kB, what this JVM's z3s may still take: each running one up to the
-     * largest any has held, and the new run's two engines that much each.
-     */
-    private static long owed() {
-        long held = 0L;
-        List<Long> each = new ArrayList<Long>();
-        for (int pid : LIVE.values()) {
-            long kb = residentKb(pid);
-            if (kb < 0L) continue;
-            each.add(kb);
-            largestKb = Math.max(largestKb, kb);
-        }
-        for (long kb : each) held += largestKb - kb;
-        return held + 2L * largestKb;
-    }
-
-    /** Whether MemAvailable less {@code owedKb} is at least what the
-     *  ceiling keeps free; a host whose memory cannot be read is taken to
-     *  have room. */
-    static boolean hostHasRoom(long owedKb) {
-        long total = -1L;
-        long available = -1L;
-        try {
-            for (String line : java.nio.file.Files.readAllLines(
-                    Paths.get("/proc/meminfo"), StandardCharsets.UTF_8)) {
-                if (line.startsWith("MemTotal:")) total = kilobytes(line);
-                if (line.startsWith("MemAvailable:")) {
-                    available = kilobytes(line);
-                }
-            }
-        } catch (IOException | RuntimeException unreadable) {
-            return true;
-        }
-        return total <= 0L || available < 0L || (available - owedKb) * 100L
-                >= total * (100L - CEILING_PERCENT);
-    }
-
-    /** A process's resident memory in kB, or -1 once it is gone. */
-    private static long residentKb(int pid) {
-        if (pid <= 0) return -1L;
-        try {
-            for (String line : java.nio.file.Files.readAllLines(Paths.get(
-                    "/proc", Integer.toString(pid), "status"),
-                    StandardCharsets.UTF_8)) {
-                if (line.startsWith("VmRSS:")) return kilobytes(line);
-            }
-        } catch (IOException | RuntimeException gone) {
-            return -1L;
-        }
-        return -1L;
-    }
-
-    private static long kilobytes(String line) {
-        String[] words = line.trim().split("\\s+");
-        return words.length < 2 ? -1L : Long.parseLong(words[1]);
-    }
-
-    /**
-     * A started process's pid: Java 8 states it only in its UNIXProcess's
-     * own field.  -1 where it cannot be read: that z3's memory is then not
-     * counted (the run is still bounded by its driver's budget).
-     */
-    private static int pidOf(Process process) {
-        try {
-            java.lang.reflect.Field pid =
-                    process.getClass().getDeclaredField("pid");
-            pid.setAccessible(true);
-            return pid.getInt(process);
-        } catch (ReflectiveOperationException | RuntimeException unknown) {
-            return -1;
-        }
-    }
-
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            for (Process process : LIVE.keySet()) process.destroyForcibly();
+            for (Process process : LIVE) process.destroyForcibly();
         }, "graphchecker-z3-reaper"));
     }
 
     /** z3's own wall clock for one run of {@code budgetMillis}. */
     static String hardTimeout(long budgetMillis) {
         return "-T:" + ((budgetMillis + 999L) / 1000L + ORPHAN_MARGIN_SECONDS);
+    }
+
+    /** The command one z3 of a slot of {@code slotMb} runs, for a run of
+     *  {@code budgetMillis}: its memory cap, its own clock, the query on its
+     *  input. */
+    static List<String> command(Path z3, int slotMb, long budgetMillis) {
+        List<String> command = new ArrayList<String>(
+                Arrays.asList(DIES_WITH_ITS_DRIVER));
+        command.addAll(Arrays.asList(z3.toString(),
+                "memory_max_size=" + (slotMb - MISSED_MB),
+                hardTimeout(budgetMillis), "-in", "-smt2"));
+        return command;
     }
 
     /**
@@ -503,21 +539,22 @@ public final class Z3 {
      * other's -- with the other killed.  Both undecided: the preferred
      * one's answer.  Both share the budget, enforced here; z3's own
      * ({@link #hardTimeout}) only outlives a driver that hangs.  A run
-     * starts once its host has room ({@link #enter}); an interrupted one
-     * answers as a timeout, its z3s killed.  Each run says what it answered
-     * and how long it took, waiting for room included, on stderr: a quiet
-     * log is then one run's own wall, bounded by its budget.
+     * starts once its two slots fit in its room ({@link Room#take}); an
+     * interrupted one answers as a timeout, its z3s killed.  Each run says
+     * what it answered and how long it took, waiting for room included, on
+     * stderr: a quiet log is then one run's own wall, bounded by its budget.
      */
     private String run(String prefix, ArtifactIO.Body query, String suffix,
                        long budgetMillis) {
         int run = runs.incrementAndGet();
         long started = System.nanoTime();
         String answer = TIMEOUT;
-        if (enter()) {
+        int slots = ARITHMETIC.length * slotMb;
+        if (room.take(slots)) {
             try {
                 answer = raced(prefix, query, suffix, budgetMillis);
             } finally {
-                leave();
+                room.give(slots);
             }
         }
         String said = firstLine(answer);
@@ -554,11 +591,22 @@ public final class Z3 {
                 engines[at] = launch(ARITHMETIC[at], prefix, query, suffix,
                         budgetMillis, output, readers);
             }
-            return answerOf(race(engines, read, readers, started, deadline));
+            String printed = race(engines, read, readers, started, deadline,
+                    suffix);
+            // A cap hit before the payload asked for was printed: the run
+            // answered nothing, whatever verdict it printed first.
+            return answerOf(memoryOut(printed) && !decided(printed, suffix)
+                    ? OUT_OF_MEMORY : printed);
         } finally {
             for (Process engine : engines) {
                 if (engine == null) continue;
                 engine.destroyForcibly();
+                // Its slot is given back once its memory is: when it is gone.
+                try {
+                    engine.waitFor(ORPHAN_MARGIN_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
                 LIVE.remove(engine);
             }
         }
@@ -573,17 +621,19 @@ public final class Z3 {
     private static String race(Process[] engines,
                                List<AtomicReference<String>> read,
                                List<Thread> readers, long started,
-                               long deadline) {
+                               long deadline, String suffix) {
         long otherDecidedAt = 0L;
         try {
             while (true) {
                 String preferred = finished(engines[0], read.get(0),
                         readers.get(0));
-                if (preferred != null && decided(preferred)) return preferred;
+                if (preferred != null && decided(preferred, suffix)) {
+                    return preferred;
+                }
                 String other = finished(engines[1], read.get(1),
                         readers.get(1));
                 long now = System.nanoTime();
-                if (other != null && decided(other)) {
+                if (other != null && decided(other, suffix)) {
                     if (otherDecidedAt == 0L) otherDecidedAt = now;
                     long took = otherDecidedAt - started;
                     long grace = Math.max(took, TimeUnit.MILLISECONDS
@@ -618,9 +668,40 @@ public final class Z3 {
         return read.get() == null ? "" : read.get();
     }
 
-    private static boolean decided(String printed) {
+    /**
+     * Whether one engine's printed answer decided its run's command
+     * ({@code suffix}): sat or unsat, and -- where z3 stopped at its cap
+     * after the verdict -- the payload the command asked for printed before
+     * the cap: the model's values of a {@code (get-value ...)}, the core of a
+     * {@code (get-unsat-core)}.
+     */
+    static boolean decided(String printed, String suffix) {
         String verdict = firstLine(printed);
-        return "sat".equals(verdict) || "unsat".equals(verdict);
+        if (!"sat".equals(verdict) && !"unsat".equals(verdict)) return false;
+        if (!memoryOut(printed)) return true;
+        if (suffix.contains("(get-unsat-core)")) {
+            return "unsat".equals(verdict) && payload(printed);
+        }
+        if (suffix.contains("(get-value")) {
+            return "sat".equals(verdict) && payload(printed);
+        }
+        return true;
+    }
+
+    /** Whether z3 printed its cap's {@link #OUT_OF_MEMORY} anywhere. */
+    static boolean memoryOut(String printed) {
+        if (printed == null) return false;
+        for (String line : printed.split("\n", -1)) {
+            if (OUT_OF_MEMORY.equals(line.trim())) return true;
+        }
+        return false;
+    }
+
+    /** Whether the line after the verdict is a payload: a list, no error. */
+    private static boolean payload(String printed) {
+        String[] lines = printed.split("\n", -1);
+        return lines.length > 1 && lines[1].trim().startsWith("(")
+                && !lines[1].trim().startsWith(ERROR);
     }
 
     /** How one engine is stated ({@link #ARITHMETIC_OPENING}). */
@@ -716,11 +797,8 @@ public final class Z3 {
                            List<Thread> readers) {
         Process process;
         try {
-            List<String> command = new ArrayList<String>(
-                    Arrays.asList(DIES_WITH_ITS_DRIVER));
-            command.addAll(Arrays.asList(z3.toString(),
-                    hardTimeout(budgetMillis), "-in", "-smt2"));
-            ProcessBuilder builder = new ProcessBuilder(command);
+            ProcessBuilder builder = new ProcessBuilder(
+                    command(z3, slotMb, budgetMillis));
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {
@@ -728,7 +806,7 @@ public final class Z3 {
             readers.add(null);
             return null;
         }
-        LIVE.put(process, pidOf(process));
+        LIVE.add(process);
         Thread writer = new Thread(() -> {
             try (BufferedWriter input = new BufferedWriter(new EngineWriter(
                     new OutputStreamWriter(process.getOutputStream(),
@@ -760,14 +838,16 @@ public final class Z3 {
     /**
      * The answer z3 printed: its WARNING lines dropped (the optimizer warns
      * it ignores an objective under quantifiers, then answers on the next
-     * line, which every reader here takes as the first), every error line
+     * line, which every reader here takes as the first), its cap's
+     * {@link #OUT_OF_MEMORY} read as {@link #MEMOUT}, every other error line
      * remembered.
      */
     private String answerOf(String printed) {
         if (printed == null) return "";
         List<String> kept = new ArrayList<String>();
         for (String line : printed.split("\n", -1)) {
-            if (!line.startsWith("WARNING:")) kept.add(line);
+            if (line.startsWith("WARNING:")) continue;
+            kept.add(OUT_OF_MEMORY.equals(line.trim()) ? MEMOUT : line);
         }
         String output = String.join("\n", kept);
         int at = output.indexOf(ERROR);

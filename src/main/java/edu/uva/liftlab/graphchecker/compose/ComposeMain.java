@@ -47,6 +47,8 @@ import java.util.Map;
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
+ *   --z3-room-mb &lt;n&gt;     what the JVM's charge holds for its z3
+ *                          processes ({@code smt.Z3}); required
  * </pre>
  *
  * <p>Parsed by {@link LongOptions}.  Every outcome, failures included, is written as a claim with its gaps,
@@ -84,7 +86,8 @@ public final class ComposeMain {
                 / (1024 * 1024) + " MB body and " + composition.valuations()
                 .size() + " valuation(s), in " + seconds(lowered - started)
                 + " s; deciding");
-        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
+        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis,
+                arguments.z3RoomMb);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
         long decided = System.nanoTime();
@@ -240,6 +243,7 @@ public final class ComposeMain {
         String kind;
         String reason;
         JsonArray restsOnRefutations = new JsonArray();
+        boolean restsKnown = true;
         JsonArray openChain = new JsonArray();
         JsonArray offWitness = new JsonArray();
         if (blockers > 0) {
@@ -300,11 +304,18 @@ public final class ComposeMain {
             // positive CONFIRM refuted (owner 2026-10-08), each read against
             // the code before the UNSAT counts (CHECKING).
             JsonArray rests = new JsonArray();
-            for (JsonObject excluded : composition.restsOn(
-                    decision.formula().core())) {
+            // Its core run past its budget or its memory cap names no core:
+            // which refuted claims the UNSAT rests on is then unknown, never
+            // none.
+            boolean restsUnknown = composition.assertsRefutations()
+                    && !decision.formula().coreKnown();
+            for (JsonObject excluded : restsUnknown
+                    ? Collections.<JsonObject>emptyList()
+                    : composition.restsOn(decision.formula().core())) {
                 rests.add(excluded);
             }
             restsOnRefutations = rests;
+            if (restsUnknown) restsKnown = false;
             // An UNSAT rests on every path: each one's fatal condition is
             // closed, or there is no verdict, its open links named.
             for (JsonObject link : composition.openChain(null)) {
@@ -316,6 +327,14 @@ public final class ComposeMain {
                         + " conditions it rests on name " + openChain.size()
                         + " handoff value(s) no producer the corpus attests"
                         + " made (openChain): no verdict";
+            } else if (restsUnknown) {
+                kind = "RUN_DEFECT";
+                reason = "the composed formula is unsat, but it excludes"
+                        + " refuted claim(s) and its core is not known ("
+                        + decision.formula().status() + "; its core run ran"
+                        + " past its budget or its memory cap): which of"
+                        + " them the UNSAT rests on is not known"
+                        + " (restsOnRefutationsKnown false), so no verdict";
             } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";
@@ -332,6 +351,7 @@ public final class ComposeMain {
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
         row.add("restsOnRefutations", restsOnRefutations);
+        if (!restsKnown) row.addProperty("restsOnRefutationsKnown", false);
         if (openChain.size() > 0) row.add("openChain", openChain);
         if (offWitness.size() > 0) row.add("unboundOffWitness", offWitness);
         JsonArray refused = new JsonArray();
@@ -562,6 +582,8 @@ public final class ComposeMain {
         /** Null: {@link Z3}'s own default. */
         final Path z3;
         final long timeoutMillis;
+        /** What the JVM's charge holds for its z3 processes. */
+        final int z3RoomMb;
 
         private Arguments(LongOptions options) {
             Path sessions = options.path("sessions");
@@ -577,6 +599,7 @@ public final class ComposeMain {
             z3 = options.path("z3");
             timeoutMillis = integer(options.value("solver-timeout-ms", null),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
+            z3RoomMb = integer(options.value("z3-room-mb", null), 0);
         }
 
         static Arguments parse(String[] argv) {
@@ -592,6 +615,11 @@ public final class ComposeMain {
             if (arguments.output == null || arguments.manifest == null) {
                 throw new IllegalArgumentException(
                         "--output and --manifest are required");
+            }
+            if (arguments.z3RoomMb <= 0) {
+                throw new IllegalArgumentException("--z3-room-mb is required:"
+                        + " what this JVM's charge holds for its z3"
+                        + " processes");
             }
             // Fail closed: without the map no reference write is known to
             // rest on the decisions that built its referent.
