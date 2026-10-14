@@ -937,8 +937,9 @@ public class ComposerTest {
     /**
      * A LEAF NO RUN ATTESTS AT ITS OWN PAIRING, FOR A PRODUCER PAST THE TICK
      * BOUND: a store content leaf whose producer one session ran
-     * instrumented, delivering to no consumer of this path, while the run
-     * that delivered it ran its producer concretely, is no family
+     * instrumented, delivering to no consumer of this path (a constant or a
+     * symbol, which would lower), while the run that delivered it ran its
+     * producer concretely, is no family
      * (Arms#attestedDeliveries: a run's own pairing, attested) -- taken for
      * one, no session could send it and what rested on it was refused
      * (PV6-18413's NO_SUPPORTED_WITNESS) -- but settled by the
@@ -959,9 +960,14 @@ public class ComposerTest {
                 "REGION.tick", CausalContext.of(Role.of("TICK"), "", 1),
                 ExecutionIndex.empty());
         // the producer of the unsent leaf, whether the bound is named, how
-        // the leaf is settled
-        Object[][] rows = {{late, true, SmtLowering.Unbound.BOUNDED},
-                {early, false, SmtLowering.Unbound.CONSTANT}};
+        // the leaf is settled, what the run that ran it instrumented
+        // exported (a symbol: a delivery that lowers)
+        Object[][] rows = {
+                {late, true, SmtLowering.Unbound.BOUNDED, constant("false")},
+                {early, false, SmtLowering.Unbound.CONSTANT,
+                        constant("false")},
+                {early, false, SmtLowering.Unbound.CONSTANT,
+                        symbol(MARKER, "Z")}};
         for (Object[] row : rows) {
             OccurrenceAddress heldBy = (OccurrenceAddress) row[0];
             Path iteration = folder.newFolder("unsent-" + judged++).toPath();
@@ -992,7 +998,7 @@ public class ComposerTest {
             other.activation(heldBy, "thread#" + heldBy.regionId(), true,
                     true);
             other.marker("false");
-            other.expression("EXPR.v1.marker", constant("false"));
+            other.expression("EXPR.v1.marker", (JsonObject) row[3]);
             other.export(unsent, "EXPR.v1.marker", 1L, "false");
             other.target(MARKER, false, true);
             other.write();
@@ -2506,8 +2512,8 @@ public class ComposerTest {
             held.add(row.kind + " " + row.subject + "=" + row.value + " "
                     + row.reason);
         }
-        String why = SmtLowering.Unbound.PRODUCER_UNSTATED + ": no export "
-                + "row of this corpus attests its producer " + producer.id();
+        String why = SmtLowering.Unbound.PRODUCER_UNSTATED + ": no session "
+                + "ran its producer " + producer.id() + " instrumented";
         assertEquals("and named, per path", Arrays.asList(
                 "HELD vh=10 " + why, "HELD vh=20 " + why), held);
 
@@ -8668,7 +8674,9 @@ public class ComposerTest {
                     replay, replay);
             session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
                     replay, replay);
-            session.expression("EXPR.v1.key", symbol("k", "Z"));
+            // A delivery that lowers: taken for a family, it would bind.
+            session.marker("false");
+            session.expression("EXPR.v1.key", symbol(MARKER, "Z"));
             session.export(tick, "EXPR.v1.key", 1L, "false");
             if (replay) session.export(later, "EXPR.v1.key", 2L, "false");
             session.attach(consumer, "vh", "false", replay ? later : tick);

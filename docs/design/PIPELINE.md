@@ -1951,20 +1951,25 @@ forced world's and asserting them in another world could make a real witness UNS
   bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal) --
   a family only where some run attests a delivery AT the attach's slot (`Arms#attestedDeliveries`:
-  a run whose own pairing named this consumer ran its producer instrumented -- the selection the
-  slot's arms are made by, `Arms#pairings`, one rule for both; the family then sets aside a replaced
-  session's arm and the anchor's work past the path, by name); an attested producer's export no run
-  paired with this consumer answers nothing here (PV6-18413: one replay ran the Overseer's state-update tick w12 instrumented while its
-  own read of the target collection was delivered by tick w13; taken as a family no session could
-  send, the leaf refused qn-14's producer arms, the state.json@9 family and both witness paths,
-  NO_SUPPORTED_WITNESS; held, the corpus composes SAT CLOCK_SKEW). An attach with no such run (or
-  with no producer named) has a producer no row states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
+  a run whose own pairing named this consumer ran its producer instrumented, its session not one a
+  GROW re-run replaces -- the selection the slot's arms are made by, `Arms#pairings`, one rule for
+  both; the family then sets aside the anchor's work past the path, by name); an attested
+  producer's export no run paired with this consumer answers nothing here (PV6-18413: one replay ran
+  the Overseer's state-update tick w12 instrumented while its own read of the target collection was
+  delivered by tick w13; taken as a family no session could send, the leaf refused qn-14's producer
+  arms, the state.json@9 family and both witness paths, NO_SUPPORTED_WITNESS; held, the corpus
+  composes SAT CLOCK_SKEW). Still family-only, so an arrival only they leave without a sender is
+  refused rather than settled (TODO): the anchor's work past the path, an arm naming a root its
+  session minted no row for, and a message no one run sends at every leaf. An attach with no such
+  run (or with no producer named) has a producer no row states, named for which case it is ("no
+  session ran its producer instrumented", or "ran instrumented in N run(s), none of which paired it
+  with this consumer"): HELD at the value its row states it received, conjoined with the path (inside an arm: with
   the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
   body holds it, none on the path's own) -- a String arrival held at its text (`Composer#arrived`)
   --, except a store content leaf (`contract.ContentPort`) whose producer no session attests at its
   port (`Composer#refusedByRule`): a role, which no weave captures (`ROLE`); a daemon tick past the
-  recording's last, `Corpus#tickPastRecording` (`TICK_BOUND`); or a region no session ran instrumented
-  where it wrote that port (`UNATTESTED`: which tick of a periodic writer writes a document's key is
+  recording's last, `Corpus#tickPastRecording` (`TICK_BOUND`); or a region no run ran instrumented
+  and paired with this consumer where it wrote that port (`UNATTESTED`: which tick of a periodic writer writes a document's key is
   timing -- solr-18413 SG3C's Overseer state update that wrote the routing rule's `expireAt` ran
   instrumented 21 times, never writing it): that producer's own export at the port in the leaf's run
   (`Composer#delivery`) settles it. An expression binds it, the leaf stated as the
