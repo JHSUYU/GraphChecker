@@ -11,7 +11,7 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the final round SGF4 (2026-10-14 night) -- read this first if you take over Solr
+## S. Solr: the final round SGF5 (2026-10-14 night) -- read this first if you take over Solr
 
 Lead of 2026-10-13/14 (owner /goal: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/GOAL-next-agent.md`; session log: memory
 `lead-session-2026-10-13-solr`). Read, in order: this section, TODO.md "Solr" (§0 merged, §1 in flight and parked, §3 open
@@ -20,8 +20,8 @@ problems, §4 the rounds and the fork), STATUS.md "Solr checks", and the reading
 - **Code.** `system/solr` = `solr-int` = abd3511e2: TODO Solr §0, including the 2026-10-13 evening merges (exposeid,
   witfirst, readout, viewwriter, z3mem, pubturn, margin, decider, the offline-ab fixes, 39 at depth 0), each found by the
   SGF3/PRE4 rounds and reviewed where it touches the schedule, COMPOSE, the ledger or the symbolic scope.
-- **The final round SGF4** runs on `~/gc-run/sgf4` (abd3511e2), tree `gc/solr-final9` (`GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
-  VM `vm-force8`, `CAUSYNTH_STREAM_SHARED_POOL=true`, `gc-out/solr`, runs `SGF4-<case>`; launched 00:17 with the 8 bug checks
+- **The final round SGF5** runs on `~/gc-run/sgf5` (60de0b60f: abd3511e2 + the composer room, 4 GB heap + 3 GB z3 room; SGF4 on sgf4 deadlocked on 15 GB compose steps and was stopped), tree `gc/solr-final9` (`GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
+  VM `vm-force8`, `CAUSYNTH_STREAM_SHARED_POOL=true`, `gc-out/solr`, runs `SGF5-<case>`; launched 02:08 with the 8 bug checks
   (14400 s) and 07 (43200 s), 13, 14, 19, 40 (28800 s); then 05, 10, 31 (28800 s), 09, 21, 38, 39 (14400 s). SGF3 and PRE4
   (`SGF3-*`, `PRE4-*`) were previews on earlier code.
 - **Tree / fork.** `gc/solr-final9` 0ce3deafed = the fork's `graphchecker/solr-checks` (fast-forwarded 2026-10-13, verified from
