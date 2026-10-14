@@ -365,6 +365,128 @@ public class BooleanReturnsTest {
                 render(BooleanReturns.deciders(caller, guard)));
     }
 
+    /**
+     * solr-adhoc-09 whole: {@code if (!callable.call())}, the callable a
+     * desugared lambda whose body returns {@code Boolean.TRUE} where {@code
+     * gone(i0)} -- a branchless helper returning by whether {@code waitFor}
+     * threw -- answered true: the body's test is decided by {@code
+     * waitFor}'s arms, called from {@code gone}.  The lambda class's
+     * forwarding {@code call()} is no helper level (as it is no caller for
+     * via), so the four helpers fit {@code MAX_DEPTH}.  body(int i0): u1 z =
+     * gone(i0); u2 if z == 0 goto u5; u3 b = TRUE; u4 return b; u5 b =
+     * FALSE; u6 return b.
+     */
+    @Test
+    public void aLambdasTestOfAHelperThatReturnsFromACatchIsDecidedBelow() {
+        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootClass object = library("java.lang.Object");
+        SootClass throwable = library("java.lang.Throwable");
+        throwable.setSuperclass(object);
+        SootClass exception = library("java.lang.Exception");
+        exception.setSuperclass(throwable);
+        SootClass runtime = library("java.lang.RuntimeException");
+        runtime.setSuperclass(exception);
+        SootClass timedOut = library("j.TimedOut");
+        timedOut.setSuperclass(exception);
+        SootMethod init = new SootMethod("<init>",
+                Collections.<Type>emptyList(), soot.VoidType.v(),
+                Modifier.PUBLIC);
+        timedOut.addMethod(init);
+        SootClass lib = library("j.Lib");
+        lib.setSuperclass(object);
+        SootMethod await = new SootMethod("await",
+                Collections.<Type>singletonList(IntType.v()),
+                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        lib.addMethod(await);
+        SootClass bool = library("java.lang.Boolean");
+        bool.setSuperclass(object);
+        SootClass callable = library("java.util.concurrent.Callable");
+        callable.setModifiers(Modifier.PUBLIC | Modifier.INTERFACE);
+        Jimple j = Jimple.v();
+        RefType boolType = bool.getType();
+        SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
+                init);
+        SootMethod gone = gone(owner, "gone", waitFor, timedOut);
+
+        SootMethod body = method(owner, "lambda$run$0", boolType);
+        Body lambdaBody = body.getActiveBody();
+        Local z = local(lambdaBody, "z", BooleanType.v());
+        Local b = local(lambdaBody, "b", boolType);
+        Unit falseArm = j.newAssignStmt(b, j.newStaticFieldRef(
+                Scene.v().makeFieldRef(bool, "FALSE", boolType, true)));
+        lambdaBody.getUnits().addAll(Arrays.asList(
+                j.newAssignStmt(z, j.newStaticInvokeExpr(gone.makeRef(),
+                        lambdaBody.getParameterLocal(0))),
+                j.newIfStmt(j.newEqExpr(z, IntConstant.v(0)), falseArm),
+                j.newAssignStmt(b, j.newStaticFieldRef(
+                        Scene.v().makeFieldRef(bool, "TRUE", boolType, true))),
+                j.newReturnStmt(b),
+                falseArm,
+                j.newReturnStmt(b)));
+
+        SootClass lambda = new SootClass(OWNER + "$lambda_run_0__1",
+                Modifier.PUBLIC);
+        lambda.setSuperclass(object);
+        lambda.addInterface(callable);
+        Scene.v().addClass(lambda);
+        lambda.setApplicationClass();
+        SootMethod call = new SootMethod("call",
+                Collections.<Type>emptyList(), object.getType(),
+                Modifier.PUBLIC);
+        lambda.addMethod(call);
+        Body forward = j.newBody(call);
+        call.setActiveBody(forward);
+        Local self = local(forward, "this", lambda.getType());
+        Local result = local(forward, "$r", boolType);
+        forward.getUnits().addAll(Arrays.asList(
+                j.newIdentityStmt(self, j.newThisRef(lambda.getType())),
+                j.newAssignStmt(result, j.newStaticInvokeExpr(body.makeRef(),
+                        IntConstant.v(1))),
+                j.newReturnStmt(result)));
+        SootMethod bootstrap = new SootMethod("bootstrap$",
+                Collections.<Type>emptyList(), callable.getType(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        lambda.addMethod(bootstrap);
+
+        SootMethod run = method(owner, "run", soot.VoidType.v());
+        Body caller = run.getActiveBody();
+        Local made = local(caller, "$f", callable.getType());
+        Local answer = local(caller, "$o", object.getType());
+        Local boxed = local(caller, "$b", boolType);
+        Local value = local(caller, "$z", BooleanType.v());
+        Unit end = j.newReturnVoidStmt();
+        Unit guard = j.newIfStmt(j.newNeExpr(value, IntConstant.v(0)), end);
+        caller.getUnits().addAll(Arrays.asList(
+                j.newAssignStmt(made, j.newStaticInvokeExpr(
+                        bootstrap.makeRef())),
+                j.newAssignStmt(answer, j.newInterfaceInvokeExpr(made,
+                        Scene.v().makeMethodRef(callable, "call",
+                                Collections.<Type>emptyList(),
+                                object.getType(), false))),
+                j.newAssignStmt(boxed, j.newCastExpr(answer, boolType)),
+                j.newAssignStmt(value, j.newVirtualInvokeExpr(boxed,
+                        Scene.v().makeMethodRef(bool, "booleanValue",
+                                Collections.<Type>emptyList(),
+                                BooleanType.v(), false))),
+                guard,
+                end));
+        String below = "[" + sig(waitFor) + "#u1=true:false[], "
+                + sig(waitFor) + "#u1=false:open[], "
+                + sig(waitFor) + "#u3=true:false[], "
+                + sig(waitFor) + "#u3=false:true[]]";
+        List<StaticScopeMap.Guard> found =
+                BooleanReturns.deciders(caller, guard);
+        assertEquals(Arrays.asList(sig(body) + "#u2=true:false" + below,
+                        sig(body) + "#u2=false:true" + below),
+                render(found));
+        assertEquals("the lambda's arms: called from run (past the "
+                + "lambda class and body)", sig(run), found.get(0).via());
+        assertEquals("waitFor's: called from gone", sig(gone),
+                found.get(0).deciders().get(0).via());
+    }
+
     /** waitFor(int i0), void, declaring {@code thrown}: see the test. */
     private static SootMethod waitFor(SootClass owner, String name,
                                       SootMethod await, SootClass thrown,

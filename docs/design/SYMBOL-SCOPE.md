@@ -348,7 +348,7 @@ call `g` that declares `E`, the path after `g` running straight to another const
 to `E` that no handler of `g` keeps (a `finally` rethrows it) has the handler's verdict, one that
 runs straight to `g`'s return the normal path's, any other arm is open. Exact only where `E` comes
 from `g`'s own throws: a `g` any of whose calls declares `E` or a subtype decides nothing; one level
-of exception, and `g` counts a helper deeper. solr-adhoc-09's `waitForCoreNodeGone` returns false
+of exception, and `g` counts a helper deeper; a synthetic forwarder (the lambda class's `call()`) is no helper level, as it is no caller for `via`. solr-adhoc-09's `waitForCoreNodeGone` returns false
 from `catch (TimeoutException)` around `waitForState` and true after it, so the lambda's tests are
 decided by `waitForState`'s `if (!latch.await(..)) throw new TimeoutException` (ZkStateReader.java
 :1993, the TIMED_WAIT door's decision) and its early `if (predicate.test(..)) return`; without it

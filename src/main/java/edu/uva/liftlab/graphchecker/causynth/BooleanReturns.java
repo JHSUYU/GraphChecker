@@ -240,10 +240,14 @@ final class BooleanReturns {
         // A forwarder: it returns what one call returned (Soot's desugared
         // lambda's call() running the lambda's body, lambda$m$N), so the
         // deciders are that call's, one helper deeper.
+        // A synthetic forwarder (the lambda class's call()) is no helper
+        // level, as it is no caller for via: the lambda's body is.
         if (returned != null) {
-            return depth < MAX_DEPTH ? helperDeciders(helperBody, returned,
-                    compared, equal, nullThrows, boxed, depth + 1, via)
-                    : found;
+            boolean hop = JvmNames.syntheticHop(
+                    helperBody.getMethod().getSignature());
+            return hop || depth < MAX_DEPTH ? helperDeciders(helperBody,
+                    returned, compared, equal, nullThrows, boxed,
+                    hop ? depth : depth + 1, via) : found;
         }
         if (equals == null) return found;
         Value base = ((InstanceInvokeExpr) equals).getBase();
