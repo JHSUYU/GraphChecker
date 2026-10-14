@@ -935,17 +935,21 @@ public class ComposerTest {
     }
 
     /**
-     * A MESSAGE NO SESSION SENDS WHOLE, FOR A PRODUCER PAST THE TICK BOUND
-     * (ComposedFamilies#nameTickBound): a store content leaf whose producer
-     * one session ran instrumented (so its arrival is a family), whose own
-     * pairing no session attests -- the run that delivered it ran its
-     * producer concretely -- refuses what rests on it; where a daemon tick
-     * past the recording's last began that producer, the refusal is that
-     * bound's loss, named {@code <producer> daemon-tick-bound=<last>}
-     * (campaign_bounds: daemon_tick_bound); any other producer's is not.
+     * A LEAF NO RUN ATTESTS AT ITS OWN PAIRING, FOR A PRODUCER PAST THE TICK
+     * BOUND: a store content leaf whose producer one session ran
+     * instrumented, delivering to no consumer of this path, while the run
+     * that delivered it ran its producer concretely, is no family
+     * (Arms#attestedDeliveries: a run's own pairing, attested) -- taken for
+     * one, no session could send it and what rested on it was refused
+     * (PV6-18413's NO_SUPPORTED_WITNESS) -- but settled by the
+     * refused-producer rule ({@code Composer#refusedByRule}): where a daemon
+     * tick past the recording's last began that producer, BOUNDED, that
+     * bound named {@code <producer> daemon-tick-bound=<last>}
+     * (campaign_bounds: daemon_tick_bound); any other producer's leaf its
+     * run's constant export, CONSTANT, no bound named.  Nothing is refused.
      */
     @Test
-    public void anUnsentMessageOfAProducerPastTheTickBoundNamesTheBound()
+    public void aLeafOfAProducerPastTheTickBoundIsBoundedNeverRefused()
             throws Exception {
         String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
         OccurrenceAddress late = OccurrenceAddress.of(PRODUCER.node(),
@@ -954,8 +958,10 @@ public class ComposerTest {
         OccurrenceAddress early = OccurrenceAddress.of(PRODUCER.node(),
                 "REGION.tick", CausalContext.of(Role.of("TICK"), "", 1),
                 ExecutionIndex.empty());
-        // the producer of the unsent leaf, whether the bound is named
-        Object[][] rows = {{late, true}, {early, false}};
+        // the producer of the unsent leaf, whether the bound is named, how
+        // the leaf is settled
+        Object[][] rows = {{late, true, SmtLowering.Unbound.BOUNDED},
+                {early, false, SmtLowering.Unbound.CONSTANT}};
         for (Object[] row : rows) {
             OccurrenceAddress heldBy = (OccurrenceAddress) row[0];
             Path iteration = folder.newFolder("unsent-" + judged++).toPath();
@@ -981,7 +987,7 @@ public class ComposerTest {
                     "false", null, false, false, "EXPR.v1.marker",
                     constant("false"));
             // Another run ran it instrumented, delivering to no consumer of
-            // this path: its arrival is a family no session sends whole.
+            // this path: no attested delivery of this leaf.
             Session other = new Session(iteration, "s2", true);
             other.activation(heldBy, "thread#" + heldBy.regionId(), true,
                     true);
@@ -999,10 +1005,19 @@ public class ComposerTest {
                         + Composer.DAEMON_TICK_BOUND + "=1")
                         && gap.kind() == GapKind.BOUND_INSUFFICIENT;
             }
-            assertTrue(heldBy.render() + ": the message is refused: "
+            assertFalse(heldBy.render() + ": nothing is refused: "
                     + composition.gaps(), refused);
             assertEquals(heldBy.render() + ": the tick bound named: "
                     + composition.gaps(), row[1], named);
+            String settled = "";
+            for (Composer.Concrete stated : composition.concrete()) {
+                if (stated.subject.equals(leaf)
+                        && SmtLowering.settled(stated.kind)) {
+                    settled = stated.kind;
+                }
+            }
+            assertEquals(heldBy.render() + ": " + composition.concrete(),
+                    row[2], settled);
         }
     }
 
@@ -8621,6 +8636,61 @@ public class ComposerTest {
             }
         }
         assertTrue(wrong.toString(), wrong.isEmpty());
+    }
+
+    /**
+     * AN ATTESTED PRODUCER'S EXPORT NO RUN PAIRED WITH THIS CONSUMER ANSWERS
+     * NOTHING HERE (PV6-18413).  The seed's read was delivered by a tick of
+     * the producer it ran concretely; one replay ran that tick
+     * instrumented, but its own read of the same leaf was delivered by
+     * another tick.  No run is attested AT the seed's slot
+     * (Arms#attestedDeliveries: a run's own pairing, attested), so the
+     * seed's arrival is HELD at what its row received and its path stands;
+     * taken as a family because the producer is attested somewhere, no
+     * session could send it, and the seed's path was refused
+     * (NO_SUPPORTED_WITNESS on both witness paths).
+     */
+    @Test
+    public void anAttestedExportNoRunPairedWithTheConsumerAnswersNothing()
+            throws Exception {
+        Path iteration = folder.newFolder("paired-elsewhere").toPath();
+        Endpoint tick = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint later = Endpoint.of(UPSTREAM, "PORT.key",
+                at("export#2", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        for (String run : new String[] {"s0", "s1"}) {
+            boolean replay = "s1".equals(run);
+            Session session = new Session(iteration, run, replay);
+            // The seed ran the tick concretely, the replay instrumented.
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    replay, replay);
+            session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                    replay, replay);
+            session.expression("EXPR.v1.key", symbol("k", "Z"));
+            session.export(tick, "EXPR.v1.key", 1L, "false");
+            if (replay) session.export(later, "EXPR.v1.key", 2L, "false");
+            session.attach(consumer, "vh", "false", replay ? later : tick);
+            session.target("vh", false, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(iteration, 4);
+        Set<String> paths = new LinkedHashSet<String>();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            paths.add(disjunct.path().sessionId);
+        }
+        assertTrue("the seed's path stands: " + paths + " "
+                + composition.gaps(), paths.contains("s0"));
+        assertFalse("no family of a delivery no run made: "
+                + composition.gaps(), says(composition.gaps(),
+                GapKind.UNPRODUCIBLE_ANSWER, "states an attested delivery"));
+        boolean held = false;
+        for (Composer.Concrete row : composition.concrete()) {
+            held |= "HELD".equals(row.kind) && "vh".equals(row.subject);
+        }
+        assertTrue("the seed's arrival is held at what it received: "
+                + composition.concrete(), held);
     }
 
     /** Path session -> the sessions of the arms its families offer. */

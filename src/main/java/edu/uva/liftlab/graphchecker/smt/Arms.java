@@ -356,12 +356,41 @@ public final class Arms {
     private List<Arm> armsAt(Interaction slot, String symbol, String scope,
                              String only) {
         List<Arm> arms = new ArrayList<Arm>();
+        for (Pairing pairing : pairings(slot, scope, only)) {
+            Arm arm = arm(slot.id(), symbol, pairing.attach.sessionId(),
+                    slot.producer().occurrence(),
+                    pairing.export.expressionRef(), pairing.export.seq(),
+                    null, pairing.attach);
+            if (arm != null) arms.add(arm);
+        }
+        return arms;
+    }
+
+    /** One delivery a run's own pairing names at a wire slot. */
+    private static final class Pairing {
+        final AttachRow attach;
+        final ExportRow export;
+
+        Pairing(AttachRow attach, ExportRow export) {
+            this.attach = attach;
+            this.export = export;
+        }
+    }
+
+    /**
+     * THE SELECTION of a wire slot's deliveries (IDENTITY §4), one rule for
+     * its arms ({@link #armsAt}) and for whether an arrival there is
+     * attested ({@link #attestedDeliveries}): only a run whose OWN pairing
+     * named this consumer, each with every export of the slot's producer
+     * that run made.
+     */
+    private List<Pairing> pairings(Interaction slot, String scope,
+                                   String only) {
+        List<Pairing> pairings = new ArrayList<Pairing>();
         List<AttachRow> attaches = new ArrayList<AttachRow>(
                 rows.attachesOf(slot));
         attaches.addAll(rows.ownAttachesOf(scope, slot));
         for (AttachRow paired : attaches) {
-            // Selection (IDENTITY §4): only a run whose OWN pairing named
-            // this consumer; the guard and the attestation are the arm's own.
             String session = paired.sessionId();
             if (only != null && !only.equals(session)) continue;
             List<ExportRow> own = rows.ownExportsOf(session, slot.producer());
@@ -369,15 +398,43 @@ public final class Arms {
                     rows.exportsOf(slot.producer()), own)) {
                 for (ExportRow export : exports) {
                     if (!export.sessionId().equals(session)) continue;
-                    Arm arm = arm(slot.id(), symbol, session,
-                            slot.producer().occurrence(),
-                            export.expressionRef(), export.seq(), null,
-                            paired);
-                    if (arm != null) arms.add(arm);
+                    pairings.add(new Pairing(paired, export));
                 }
             }
         }
-        return arms;
+        return pairings;
+    }
+
+    /**
+     * The ATTESTED deliveries at one wire slot: the exports its runs' own
+     * pairings name ({@link #pairings}, the selection its arms are made by)
+     * where that run ran the producer instrumented, the seed's first -- the
+     * same order as the composer's {@code seedRow}.  An export of an
+     * attested producer that no run paired with this consumer is none: an
+     * arrival resting on one alone was taken for a family no session could
+     * send (PV6-18413: one replay ran the Overseer's state-update tick w12
+     * instrumented while its own read of the target collection was
+     * delivered by tick w13).
+     */
+    public List<ExportRow> attestedDeliveries(Interaction slot,
+                                              String scope) {
+        List<ExportRow> attested = new ArrayList<ExportRow>();
+        if (slot == null || slot.producer() == null) return attested;
+        String seed = rows.seedSessionId();
+        Set<String> seen = new HashSet<String>();
+        for (Pairing pairing : pairings(slot, scope, null)) {
+            ExportRow export = pairing.export;
+            if (!attested(export.sessionId(), slot.producer().occurrence())
+                    || !seen.add(export.sessionId() + "#" + export.seq())) {
+                continue;
+            }
+            if (seed != null && seed.equals(export.sessionId())) {
+                attested.add(0, export);
+            } else {
+                attested.add(export);
+            }
+        }
+        return attested;
     }
 
     /**
@@ -837,28 +894,6 @@ public final class Arms {
         ActivationRow activation = rows.activationOf(session,
                 occurrence.id());
         return activation != null && activation.instrumented();
-    }
-
-    /**
-     * The exports at one producer endpoint made by any session that attests
-     * the PRODUCER (not the consumer's session), the seed's first -- the
-     * same order as the composer's {@code seedRow}.
-     */
-    public List<ExportRow> attestedExports(Endpoint producer) {
-        List<ExportRow> attested = new ArrayList<ExportRow>();
-        if (producer == null) return attested;
-        String seed = rows.seedSessionId();
-        for (ExportRow export : rows.exportsOf(producer)) {
-            if (!attested(export.sessionId(), producer.occurrence())) {
-                continue;
-            }
-            if (seed != null && seed.equals(export.sessionId())) {
-                attested.add(0, export);
-            } else {
-                attested.add(export);
-            }
-        }
-        return attested;
     }
 
     /**

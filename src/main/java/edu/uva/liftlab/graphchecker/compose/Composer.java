@@ -2385,7 +2385,7 @@ public final class Composer {
         }
         List<ExportRow> attested = attach.producer() == null
                 ? Collections.<ExportRow>emptyList()
-                : arms.attestedExports(attach.producer());
+                : arms.attestedDeliveries(attach.interaction(), session);
         if (attestedArrival(attach, attested)) {
             bound.add(attach);
             return;
@@ -2566,8 +2566,9 @@ public final class Composer {
      * the recorded delivery here too made paths self-contradictory.
      *
      * <p>Declared HERE, during the path's lowering, or leaves naming it in
-     * phi or a join are cut as free.  Attested is the PRODUCER's property
-     * ({@link Arms#attestedExports}), from any session that ran it, lowered
+     * phi or a join are cut as free.  Attested is the delivery's own
+     * property ({@link Arms#attestedDeliveries}): a run whose own pairing
+     * named this consumer ran the producer instrumented, its export lowered
      * in that session's scope; never ask the consumer's session.</p>
      */
     private boolean attestedArrival(AttachRow attach,
