@@ -1920,7 +1920,9 @@ forced world's and asserting them in another world could make a real witness UNS
   filters -- named `EXPORTED`; a constant expression holds it at its received value, named
   `CONSTANT` (a role, or unattested), and `BOUNDED` past the tick bound, a named bound the case rests on (a
   DIAGNOSTIC `<producer> daemon-tick-bound=<last>` row, `run_engine.sh campaign_bounds`:
-  `daemon_tick_bound`). These three are no open link of a chain (`SmtLowering#settled`, `Cone`;
+  `daemon_tick_bound`; the same row names a message no session sends whole whose unanswered leaf
+  that producer wrote, `ComposedFamilies#nameTickBound`, since the arm handed it is refused for that
+  bound). These three are no open link of a chain (`SmtLowering#settled`, `Cone`;
   `cone.py`'s `exportedByRefusedProducer`, `constantByRefusedProducer`, `boundedByTick`), one
   DIAGNOSTIC per producer, rule and kind counts the leaves on the paths kept. No export that lowers
   leaves it HELD and open, as a leaf with no producer; one whose producer is attested and no
@@ -2092,9 +2094,15 @@ run took (the observed arm, else the one writer every read observed) is part of 
 pairing -- at a location the world planted, the recording's pairing, any arm but the plant and the
 observed arm, which holds the reads to what the plant gave them (`(not (or <plant> <observed>))`),
 so a witness that needs either names it as the arm it re-paired (`repairedArms`) and the recording
-decides it (STATE_PAIRING_FLIPPED); a location where no arm is that pairing (the one write the
-reads saw has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the
-formula.
+decides it (STATE_PAIRING_FLIPPED). The run is always a world of the formula: where the one writer
+every read observed has no selector -- its write is no arm here (`StateLocation#unoffered`) or its
+body did not lower (SGF3-bugs-snapshot-no-active: a StateWatcher decode was handed a version of
+`state.json` whose content an unplanned second `setData` of the Overseer's state update wrote,
+uninstrumented, so no session attests that message whole, `UNPRODUCIBLE_ANSWER`) -- the location is
+held by its observed arm (`StateFamilies#holdUnstatedRuns`), as a broken block is, beside its other
+writers' arms. The reads keep their joins; that writer's closure and store-state choices are not offered
+there: one DIAGNOSTIC
+`UNSTATED_VALUE` row per hold names the path, the location, the writer and what refused it.
 
 **A store content's leaf through a node's view** (`SmtLowering#throughView`, SYMBOL-SCOPE §6.4). A
 guard that decides on a node's view of a store location -- Solr's `ZkStateReader.clusterState`,

@@ -663,11 +663,14 @@ final class ComposedFamilies {
                     new LinkedHashMap<String, List<Arms.Arm>>();
             Map<String, Set<String>> attestedAt =
                     new LinkedHashMap<String, Set<String>>();
+            Map<String, Endpoint> producerOf =
+                    new LinkedHashMap<String, Endpoint>();
             for (AttachRow attach : leaves) {
                 Interaction slot = attach.interaction();
                 if (slotOf.containsKey(slot.id())) continue;
                 slotOf.put(slot.id(), slot);
                 symbolOf.put(slot.id(), attach.symbol());
+                producerOf.put(slot.id(), attach.producer());
                 attestedAt.put(slot.id(), new LinkedHashSet<String>());
                 for (Arms.Arm arm : arms.armsAt(slot, attach.symbol(),
                         attach.sessionId())) {
@@ -686,7 +689,7 @@ final class ComposedFamilies {
             }
             // (3) and (4): eligibility, then one case split per message.
             List<String> eligible = eligibleSessions(message.getKey(),
-                    slotOf.keySet(), attestedAt, refusals);
+                    slotOf.keySet(), attestedAt, producerOf, refusals);
             // One message not closed refuses what rests on it, and the
             // rollback of that takes the message back.
             if (eligible == null || !messageFamily(ordinal, family,
@@ -704,6 +707,9 @@ final class ComposedFamilies {
     /** The views no hook publishes already named ({@code
      *  StateFamilies#heldView}). */
     private final Set<String> unheldNamed = new LinkedHashSet<String>();
+    /** What refused the last arm body that did not lower ({@code
+     *  ArmBody#end}), in words. */
+    private String lastRefusal = "";
 
     /**
      * Whether an arm is the anchor occurrence's work past the path being
@@ -731,13 +737,17 @@ final class ComposedFamilies {
     /**
      * The sessions that could have SENT this message (PIPELINE §8) -- those
      * with an attested arm at EVERY interaction it covers.  A per-leaf check would
-     * accept a run that sent only part of the response.
+     * accept a run that sent only part of the response.  Each leaf of a
+     * refused message no session attests whose producer only a daemon tick
+     * past the recording's last began is that bound's loss, named ({@link
+     * #nameTickBound}).
      *
      * @return the eligible sessions, or null (refused by name) when none is
      */
     private List<String> eligibleSessions(
             String message, Set<String> slots,
-            Map<String, Set<String>> attestedAt, List<GapRow> refusals) {
+            Map<String, Set<String>> attestedAt,
+            Map<String, Endpoint> producerOf, List<GapRow> refusals) {
         Set<String> eligible = null;
         for (String slotId : slots) {
             Set<String> sessions = attestedAt.get(slotId);
@@ -750,6 +760,14 @@ final class ComposedFamilies {
                 eligible.retainAll(sessions);
             }
             if (eligible.isEmpty()) {
+                // Every leaf no session attests, not only this one: the
+                // refusal rests on each of them.
+                for (String leaf : slots) {
+                    Set<String> attesting = attestedAt.get(leaf);
+                    if (attesting == null || attesting.isEmpty()) {
+                        nameTickBound(producerOf.get(leaf), message);
+                    }
+                }
                 refusals.add(GapRow.of(corpus.seedSessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                         message, "no session of this corpus states an "
@@ -763,6 +781,35 @@ final class ComposedFamilies {
         }
         return eligible == null ? new ArrayList<String>()
                 : new ArrayList<String>(eligible);
+    }
+
+    /** The producers already named past the daemon tick bound. */
+    private final Set<String> tickNamed = new LinkedHashSet<String>();
+
+    /**
+     * A message leaf no session attests, whose producer a daemon tick past
+     * the recording's last began ({@code Corpus#tickPastRecording}: no
+     * replay that follows the recording runs it instrumented, and the
+     * closure never grows it): the arm handed the message is refused for
+     * that bound, named as {@code <producer> daemon-tick-bound=<last>}
+     * once per producer (run_engine.sh campaign_bounds: daemon_tick_bound),
+     * as the leaves such a producer wrote are held on a path ({@code
+     * Composer#arrival}).
+     */
+    private void nameTickBound(Endpoint producer, String message) {
+        if (producer == null) return;
+        Corpus.TickPast tick = corpus.tickPastRecording(
+                producer.occurrence());
+        if (tick == null) return;
+        String subject = producer.occurrence().render() + " "
+                + Composer.DAEMON_TICK_BOUND + "=" + tick.last;
+        if (!tickNamed.add(subject)) return;
+        composer.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC, subject,
+                "a message an arm was handed (" + message + ") holds a leaf"
+                        + " this producer wrote, begun by the daemon tick "
+                        + tick.tick + " past the recording's last: no session"
+                        + " ran it instrumented, so the arm resting on that"
+                        + " message is refused (UNPRODUCIBLE_ANSWER)");
     }
 
     /**
@@ -1226,6 +1273,12 @@ final class ComposedFamilies {
                     lowering.openRefusals());
             conjuncts.addAll(lowering.end());
             if (!stated || !local.isEmpty() || !refused.isEmpty()) {
+                lastRefusal = !local.isEmpty() ? local.get(0).kind() + " "
+                        + local.get(0).subject() + ": "
+                        + local.get(0).detail() : !refused.isEmpty()
+                        ? "a value the recording does not state: "
+                        + refused.get(0) : "a value it delivered does not"
+                        + " lower";
                 gaps.addAll(local);
                 for (String refusal : refused) {
                     composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -1501,12 +1554,14 @@ final class ComposedFamilies {
      * pairing on (location -> planted writer, {@code Composer#repairing}) the
      * recording's pairing is any arm but the plant: a witness resting on it
      * names the plant as the arm it re-paired.  A read's value is no such statement, since a joined
-     * value moves with the valuation while its pairing stays.  Where no arm
-     * is that pairing (the one write they saw has no arm, or a read has no
-     * join or pin) the run as it happened is no world of the formula, and a
-     * BLOCKING gap says so: STATE_PAIRING_FLIPPED and the recording's own verdict pin
-     * that pairing, and every other kind is named only once the pairing flip
-     * is ruled out ({@link ClaimPolicy}).  A writer arm's delivery rests on
+     * value moves with the valuation while its pairing stays.  The run is
+     * always a world of the formula: where the one writer every read saw has
+     * no selector (its write no arm, or its body refused) the location is
+     * held by the observed arm too, named ({@link
+     * StateFamilies#holdUnstatedRuns}).  STATE_PAIRING_FLIPPED and the
+     * recording's own verdict pin that pairing, and every other kind is
+     * named only once the pairing flip is ruled out ({@link ClaimPolicy}).
+     * A writer arm's delivery rests on
      * the messages it was handed as a message arm's does
      * ({@link #closeMessages}).
      */
@@ -1532,6 +1587,7 @@ final class ComposedFamilies {
         }
         families.holdBrokenBlocks();
         families.writerSelectors();
+        families.holdUnstatedRuns();
         families.gateNestedSelectors();
         return families.locationFamilies(recorded, planted);
     }
@@ -1550,6 +1606,9 @@ final class ComposedFamilies {
         /** Otherwise each read held to its own join or pin: the run's own
          *  interleaving, one more arm. */
         List<String> observedPin;
+        /** Why the run's own write is no arm here, where an arm of it was
+         *  set aside ({@link StateFamilies#writerArms}), or null. */
+        String unoffered;
 
         StateLocation(String key, List<ReadRow> reads) {
             this.key = key;
@@ -1580,6 +1639,9 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, Set<String>>();
         /** Each writer's selector, where its body lowered. */
         private final Map<String, String> selectorOf =
+                new LinkedHashMap<String, String>();
+        /** Each writer whose body did not lower -> what refused it. */
+        private final Map<String, String> refusedBodies =
                 new LinkedHashMap<String, String>();
         /** Nested selector -> the arms delivering a store it is a state
          *  of. */
@@ -1693,10 +1755,18 @@ final class ComposedFamilies {
             for (Arms.Arm arm : arms.stateArms(first.endpoint(), session,
                     location.key, first.observedVersion(),
                     named && heldView(first))) {
-                if (replacing.contains(arm.sessionId())
-                        || arm.producer() == null || leftPath(arm)
-                        || !seenByAll(reader, session, location.key,
-                        versions, arm.write())) {
+                String aside = replacing.contains(arm.sessionId())
+                        ? "its session is replaced"
+                        : arm.producer() == null ? "it names no producer"
+                        : leftPath(arm) ? "it is the anchor's work past the"
+                        + " path" : !seenByAll(reader, session, location.key,
+                        versions, arm.write()) ? "not every read of the"
+                        + " location could have seen it" : null;
+                if (aside != null) {
+                    if (arm.write() != null && arm.write().version()
+                            == first.observedVersion()) {
+                        location.unoffered = aside;
+                    }
                     continue;
                 }
                 if (!arm.attested()) {
@@ -1776,6 +1846,8 @@ final class ComposedFamilies {
                         12);
                 lowering.declare(name, VmTermLowering.Sort.BOOL);
                 int[] mark = mark();
+                // What refuses it, unless an arm body states more (ArmBody#end).
+                lastRefusal = "a value it delivered does not lower";
                 String body = writer.getKey().startsWith(INITIAL)
                         ? initialBody(session, writer.getValue())
                         : producerBody(ordinal, name, writer.getKey(),
@@ -1783,6 +1855,7 @@ final class ComposedFamilies {
                         new ArrayList<String>(), 0,
                         new LinkedHashMap<String, BoundLeaf>());
                 if (body == null) {
+                    refusedBodies.put(writer.getKey(), lastRefusal);
                     rollback(mark);
                     continue;
                 }
@@ -1816,6 +1889,49 @@ final class ComposedFamilies {
         }
 
         /**
+         * The run is a world of the formula: a location whose run writer
+         * has no selector -- its own write set aside ({@code
+         * StateLocation#unoffered}) or its body refused (a message it was
+         * handed that no session attests whole, SGF3-bugs-snapshot-no-active:
+         * a StateWatcher decode of a state.json version whose content an
+         * unplanned second setData of an Overseer state update wrote,
+         * uninstrumented) -- is
+         * held by its observed arm, each read at its own join or pin, beside
+         * its other writers' arms, as {@link #holdBrokenBlocks} holds one.
+         * The reads keep their joins; that writer's closure and store-state
+         * choices are not offered there: named, one DIAGNOSTIC row per hold
+         * ("whose arm states nothing", the phrase tools/rounds/round-verify.sh
+         * counts as HOLD).
+         */
+        void holdUnstatedRuns() {
+            for (StateLocation location : locations.values()) {
+                String writer = location.runWriter;
+                if (writer == null || selectorOf.containsKey(writer)) {
+                    continue;
+                }
+                String why = refusedBodies.containsKey(writer)
+                        ? "its body was refused: " + refusedBodies.get(writer)
+                        : "its write is no arm here: " + (location.unoffered
+                        == null ? "no expression of its run states it, or"
+                        + " it names a root its run did not mint"
+                        : location.unoffered);
+                gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, location.key, "path "
+                                + path.pathId + " observed one write, by "
+                                + writer + ", whose arm states nothing ("
+                                + why + "): the location is held by its"
+                                + " observed arm, each read at its own join"
+                                + " or pin -- the run as it happened --"
+                                + " beside its other writers' arms: the"
+                                + " reads keep their joins, and that"
+                                + " writer's closure and store-state choices"
+                                + " are not offered here"));
+                location.observedPin = observedPin(location.symbols, pins);
+                location.runWriter = null;
+            }
+        }
+
+        /**
          * Every nested selector this path minted holds only under an arm of
          * it delivering a store its state was seen through: under none --
          * the arm of the store the read observed, the pins', no family, a
@@ -1840,7 +1956,8 @@ final class ComposedFamilies {
          * One exactly-one per location over the arms it has -- its writers'
          * selectors and its observed arm -- and the arm the run took there
          * into {@code recorded}: the observed arm, else the one writer every
-         * read observed; at a location the session's world planted a
+         * read observed (one with a selector, {@link #holdUnstatedRuns});
+         * at a location the session's world planted a
          * pairing on, any arm but the plant and the observed arm (this run's
          * reads saw what the plant held them to).  A refused body can leave
          * one arm, which is no alternative: the reads keep their own joins.
@@ -1869,18 +1986,8 @@ final class ComposedFamilies {
                     taken = observed;
                 }
                 chosen.addAll(location.symbols);
-                if (taken == null) {
-                    gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, location.key, "path "
-                                    + path.pathId + " observed one write, by "
-                                    + location.runWriter + ", that no arm "
-                                    + "here states: no arm is the pairing "
-                                    + "the run took, so the run as it "
-                                    + "happened is no world of the formula"));
-                } else {
-                    recordRun(location, selectors, taken, observed, recorded,
-                            planted);
-                }
+                recordRun(location, selectors, taken, observed, recorded,
+                        planted);
                 String formula = Arms.exactlyOne(selectors);
                 stated.add(formula);
                 assertFamily("state_family__" + ordinal + "__"

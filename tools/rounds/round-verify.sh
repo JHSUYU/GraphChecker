@@ -6,13 +6,17 @@
 # the declared bounds that cut the case's search (result.json's `bounded`, RULES: a named, rare last resort), and the
 # round's last line counts those cases. UNBOUND:<n> counts the distinct boundary variables a fatal condition names that
 # no message family binds (cone.py's `unbound`: a broken causal chain, so the case is not done whatever its verdict);
-# the last line counts those cases too. No case: every finished case of the round.
+# the last line counts those cases too. HOLD:<n> counts COMPOSE's holds, the STATE locations whose run writer had no
+# arm, held by the observed arm (ComposedFamilies' DIAGNOSTIC row "... whose arm states nothing ..."): the reads keep
+# their joins, the writer's closure and store-state choices are not offered, so an UNSAT resting on one is read at
+# that location before it counts (CHECKING §1); the last line counts those cases. No case: every finished case of the
+# round.
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 # shellcheck source=../lib/z3-race.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/z3-race.sh"
 out=${GC_OUT}; round=$1; shift
-want=" $* "; cases=0; bounded=0; unbound=0
+want=" $* "; cases=0; bounded=0; unbound=0; held=0
 while IFS=$'\t' read -r n c; do
   [[ $# -eq 0 || "$want" == *" $c "* ]] || continue
   d=$out/accept-$round-$n; s=$d/summary.tsv
@@ -36,6 +40,9 @@ try:
     g=json.load(open(os.path.join(f,'gaps.json')))
     b=[r for r in g.get('gaps',[]) if r.get('class')=='BLOCKING']
     if b: out.append('BLOCKING:'+','.join(sorted(set(r.get('code','?') for r in b))))
+    h={r.get('detail') for r in g.get('gaps',[])+g.get('telemetryGaps',[])
+       if 'whose arm states nothing' in (r.get('detail') or '')}
+    if h: out.append(f'HOLD:{len(h)}')
 except Exception: pass
 def find(o,k):
     if isinstance(o,dict):
@@ -68,5 +75,6 @@ PY
   printf "%-24s %-15s %6ss  end=%-24s z3=%-6s %s\n" "$c" "$claim" "$secs" "${stop:--}" "${z:--}" "$extra"
   cases=$((cases + 1)); [[ $extra != BOUNDED:* ]] || bounded=$((bounded + 1))
   [[ $extra != *UNBOUND:* ]] || unbound=$((unbound + 1))
+  [[ $extra != *HOLD:* ]] || held=$((held + 1))
 done < <(round_runs "$round")
-echo "# $round: $cases case(s), $bounded BOUNDED, $unbound UNBOUND"
+echo "# $round: $cases case(s), $bounded BOUNDED, $unbound UNBOUND, $held HOLD"

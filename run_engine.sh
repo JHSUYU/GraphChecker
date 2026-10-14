@@ -6792,9 +6792,11 @@ campaign_stream_manifest() {
 # plan); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); the paths a loop
 # bound cut at the anchor (loop_body_bound, RestsOn's loop-body-bound rows);
-# the store content leaves held past the daemon tick bound (daemon_tick_bound,
-# COMPOSE's daemon-tick-bound rows: their producers, begun by a tick past the
-# recording's last, are never grown); the pairing holds that gave way at
+# the store content leaves held past the daemon tick bound, and the arms
+# refused on a message such a producer wrote (daemon_tick_bound, COMPOSE's
+# daemon-tick-bound rows, one producer counted once: their producers, begun
+# by a tick past the recording's last, are never grown); the pairing holds
+# that gave way at
 # VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); the flips, and
 # the FORCE run (named FORCE), whose replays were killed past replay_timeout_s
 # twice and that nothing else answered, held unproposed and open
@@ -6870,9 +6872,11 @@ explore_manifest.json 2>/dev/null) \
               | sub(".*="; "")) | unique | join(", ")) + ")")}),
         (select(($ticks | length) > 0)
          | {by: "daemon_tick_bound",
-            detail: ("\($ticks | length) producer(s) begun by a daemon tick"
-              + " past the recording'"'"'s last hold the store content"
-              + " leaves they wrote at their versions'"'"' values (" + ($ticks
+            detail: ("\($ticks | map(.subject) | unique | length)"
+              + " producer(s) begun by a daemon tick past the recording'"'"'s"
+              + " last: the store content leaves they wrote are held at their"
+              + " versions'"'"' values, or an arm handed their message is"
+              + " refused (" + ($ticks
               | map(.subject | sub(" daemon-tick-bound=.*"; "")) | unique
               | join(", ")) + ")")}),
         (select(($holds | length) > 0)

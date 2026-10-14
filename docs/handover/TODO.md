@@ -308,6 +308,8 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   ended: a barrier, not a stream"; "exploration.json does not name the end, the coalesced attempts, the cancelled and
   the reaped"): 3 of 3 failed on lift08 while it carried round Z3D's workers (2026-10-13, solr-zk4 bfada52ac, whose
   change no test reads), and the same tree passed on lift06, as did a909fa5c7 on lift08 between them.
+  `ScheduleLogTest#aPublicationsTurnWaitsWhereTheWatchdogSeesIt` too (its 1 s watchdog): failed in two full gates on lifts
+  loaded by offline COMPOSE runs (2026-10-13, solr-viewwriter), passed alone on three lifts and in the whole class on lift08.
 
 - **i. The Overseer's idle wait: DONE in `gc/solr-final9` (cd98d779dc).** SGF2's reindex seed recording stalled
   because a missed child watch of `/overseer/queue` parked the never-timeout idle wait for good (evidence
@@ -338,6 +340,18 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   page's `complete` and `nextAfterEventId` (`SharedStateCapture#pageHeader`) by skipping every record before them with a
   JsonReader, about 4 MB/s on the Zero interpreter (SGF3-31: ~870 MB of record text on the closing threads, with the VM
   context held). The VM writing those two members before `locations` makes it a read of the page's head.
+- **p. One writer id for two decodes in two runs (FB, 2026-10-13, not done):** a node's StateWatcher callback is
+  identified by its anchor, the Overseer `setData` endpoint that fired it, and tick counts are not identity: in
+  SGF3-bugs-snapshot-no-active the seed's decode of v5 of node0's `state.json` view and session 9e4cbffc's decode of
+  v12 are both callbacks anchored on c6176901b30565df, one occurrence id 12eebcfee65f82ae, so one writer key
+  (`ComposedFamilies#writer`, `Arms#stateArms`' one arm per writer occurrence) and one STATE slot id stand for two
+  decodes of two runs. Within one session each decode had its own anchor (9e4cbffc: v4-v12, nine anchors), so no
+  in-session alternative was lost there. Keying VIEW writers by (occurrence, version) re-keys `Arms#stateArms`,
+  `ComposedFamilies#writer` (every VIEW writer's selector and assertion names: no case with a view family stays
+  byte-identical), block granularity (`holdBrokenBlocks`) and the slot ids families are keyed by; a design of its own.
+  Evidence: the sessions' `writes.jsonl` (VIEW `/collections/causynthSnapshot/state.json`, node0) and
+  `/bigtemp/vnr3ne/analysis/solr-2026-10-12/fb-viewwriter/ab-probe2/candidate/solr-bugs-snapshot-no-active/COMPOSE/stderr.log`
+  (PROBE lines).
 
 ### 4. The last round (SGF3) and the fork
 
