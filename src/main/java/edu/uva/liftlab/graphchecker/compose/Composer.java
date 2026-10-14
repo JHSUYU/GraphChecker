@@ -2356,7 +2356,10 @@ public final class Composer {
     /**
      * THE ONE RULE for one arrival a conjunction names, a path's and an
      * arm's alike (PIPELINE §8), stated once per conjunction.  An ATTESTED
-     * producer delivered it: its FAMILY alone binds it (it joins {@code
+     * DELIVERY made it -- a run whose own pairing named this consumer ran
+     * its producer instrumented ({@link Arms#attestedDeliveries}, the
+     * selection the slot's family arms are made by), its session not one a
+     * GROW re-run replaces: its FAMILY alone binds it (it joins {@code
      * bound}); nothing is conjoined here, and it takes just its sort from
      * the delivery ({@link #attestedArrival}).  Answered or not: an
      * obligation's answer is what its replay planted at the consumer, and a
@@ -2364,18 +2367,28 @@ public final class Composer {
      * delivered (hdfs-17967-pathC rb1: a flip answered the DataNode's key
      * id with 119532 while the moved serial had its producer deliver
      * 119533, and the answer, pinned as a literal, let the solver move the
-     * serial past it).  Its producer attested and no export of it lowers:
-     * what it delivered is unknown and nothing pins it, FREE, named.  No
-     * producer this corpus attests (or none named): HELD at the value its
-     * row states it received ({@code holds} receives the conjunct, stated
-     * under the caller's selector), named "producer unstated" ({@link
-     * SmtLowering#unbound}); a value the lowering places nowhere pins
-     * nothing, FREE, named.  Never free by default, never a silent pin, and
-     * never a refused conjunction (hdfs-11741 PS1-PS3: the SASL sender's
-     * arms were refused for the expiry dates its closure read from a
-     * refresh whose NameNode handler no session instrumented, and the key
-     * id they would have bound was left HELD).  Inside an arm's body its
-     * row names that arm ({@link SmtLowering#arm}).
+     * serial past it).  Attested deliveries none of which lowers: what was
+     * delivered is unknown and nothing pins it, FREE, named.  No attested
+     * delivery (or no producer named) -- the producer ran concretely, or
+     * instrumented only in runs that never paired it with this consumer
+     * (PV6-18413: taken as a family, no session could send it) -- HELD at
+     * the value its row states it received ({@code holds} receives the
+     * conjunct, stated under the caller's selector), named "producer
+     * unstated" ({@link SmtLowering#unbound}), or settled by rule ({@link
+     * #refusedByRule}); a value the lowering places nowhere pins nothing,
+     * FREE, named.  Never free by default, never a silent pin, and never a
+     * refused conjunction (hdfs-11741 PS1-PS3: the SASL sender's arms were
+     * refused for the expiry dates its closure read from a refresh whose
+     * NameNode handler no session instrumented, and the key id they would
+     * have bound was left HELD).  Inside an arm's body its row names that
+     * arm ({@link SmtLowering#arm}).
+     *
+     * <p>TODO: the family sets aside more than this selection does -- the
+     * anchor's work past the path ({@code ComposedFamilies#leftPath}), an
+     * arm naming a root its session minted no row for ({@code Arms#arm}),
+     * and a message no one run sends at every leaf (its eligibility
+     * intersection) -- so an arrival only those leave without a sender is
+     * still refused, not settled here.</p>
      */
     private void arrival(String session, AttachRow attach,
                          List<String> holds, List<AttachRow> bound) {
@@ -2383,9 +2396,16 @@ public final class Composer {
             // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
         }
-        List<ExportRow> attested = attach.producer() == null
-                ? Collections.<ExportRow>emptyList()
-                : arms.attestedExports(attach.producer());
+        List<ExportRow> attested = new ArrayList<ExportRow>();
+        if (attach.producer() != null) {
+            for (ExportRow export : arms.attestedDeliveries(
+                    attach.interaction(), session)) {
+                // A session a GROW re-run replaces sends no family.
+                if (!replacing.contains(export.sessionId())) {
+                    attested.add(export);
+                }
+            }
+        }
         if (attestedArrival(attach, attested)) {
             bound.add(attach);
             return;
@@ -2397,10 +2417,11 @@ public final class Composer {
                 attach.producer());
         if (!attested.isEmpty()) {
             lowering.declareStated(attach.symbol(), sort);
-            lowering.freedArrival(attach.symbol(), "attested producer "
-                    + attach.producer().id() + ", whose "
-                    + attested.size() + " export(s) did not lower to a value"
-                    + " of the read's sort");
+            lowering.freedArrival(attach.symbol(), attested.size()
+                    + " attested delivery(ies) of producer "
+                    + attach.producer().id() + " (a run that paired it with"
+                    + " this consumer ran it instrumented) did not lower to"
+                    + " a value of the read's sort");
             return;
         }
         // No producer the corpus attests delivered it.
@@ -2438,19 +2459,39 @@ public final class Composer {
         }
         lowering.held(attach.symbol(), received, attach.producer() == null
                 ? "the attach names no producer"
-                : "no export row of this corpus attests its producer "
-                + attach.producer().id() + (refused == null ? ""
+                : unattestedWhy(attach.producer()) + (refused == null ? ""
                 : ", and its own run's export at the port lowers to"
                 + " nothing (" + refused.why + ")"));
     }
 
     /**
-     * Why no session attests the producer of a store content leaf at its
-     * port -- the leaf is here because no attested export binds it -- or
-     * null where the leaf names no producer: a role, which no weave
-     * captures; a daemon tick past the recording's last ({@code
+     * Why no delivery of {@code producer} is attested at an arrival's slot,
+     * in words: it ran instrumented in runs none of which paired it with
+     * this consumer, or in none.
+     */
+    private String unattestedWhy(Endpoint producer) {
+        Set<String> instrumented = new LinkedHashSet<String>();
+        for (ExportRow export : corpus.exportsOf(producer)) {
+            if (arms.attested(export.sessionId(), producer.occurrence())) {
+                instrumented.add(export.sessionId());
+            }
+        }
+        return instrumented.isEmpty()
+                ? "no session ran its producer " + producer.id()
+                + " instrumented"
+                : "its producer " + producer.id() + " ran instrumented in "
+                + instrumented.size() + " run(s), none of which paired it"
+                + " with this consumer";
+    }
+
+    /**
+     * Why no run attests a delivery of a store content leaf at its port --
+     * the leaf is here because no attested delivery binds it -- or null
+     * where the leaf names no producer: a role, which no weave captures; a
+     * daemon tick past the recording's last ({@code
      * Corpus#tickPastRecording}: only a replay slower than the recording ran
-     * it); or none ran it instrumented where it wrote this port (which tick
+     * it); or none ran it instrumented and paired it with this consumer
+     * ({@link #unattestedWhy}) where it wrote this port (which tick
      * of a periodic writer writes a document's key is timing: solr-18413
      * SG3C, the Overseer state update that wrote the routing rule's expireAt
      * ran instrumented 21 times, never writing it).  Its own run's export at
@@ -2474,7 +2515,8 @@ public final class Composer {
         }
         Corpus.TickPast tick = corpus.tickPastRecording(producer);
         return tick == null ? new Refused(producer.render(), "UNATTESTED",
-                "no session ran it instrumented where it wrote this port", -1)
+                "where it wrote this port, "
+                        + unattestedWhy(attach.producer()), -1)
                 : new Refused(producer.render(), "TICK_BOUND",
                 "begun by the daemon tick " + tick, tick.last);
     }
@@ -2566,8 +2608,9 @@ public final class Composer {
      * the recorded delivery here too made paths self-contradictory.
      *
      * <p>Declared HERE, during the path's lowering, or leaves naming it in
-     * phi or a join are cut as free.  Attested is the PRODUCER's property
-     * ({@link Arms#attestedExports}), from any session that ran it, lowered
+     * phi or a join are cut as free.  Attested is the delivery's own
+     * property ({@link Arms#attestedDeliveries}): a run whose own pairing
+     * named this consumer ran the producer instrumented, its export lowered
      * in that session's scope; never ask the consumer's session.</p>
      */
     private boolean attestedArrival(AttachRow attach,
