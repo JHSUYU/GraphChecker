@@ -244,6 +244,25 @@ public class ConfirmMainTest {
         return file;
     }
 
+    /** The claim's model, choosing {@code writer}'s write for
+     *  {@code reader}'s read: a writer arm as the composer spells it -- the
+     *  writer's OCCURRENCE; the interaction it fills is what names the
+     *  write. */
+    private static void chose(Path claim, Endpoint writer, Endpoint reader)
+            throws Exception {
+        JsonObject document = ExploreCodec.readObject(claim);
+        JsonObject arm = new JsonObject();
+        arm.addProperty("selector", "writer_arm__1__w");
+        arm.addProperty("groupId", writer.occurrence().id());
+        JsonArray fills = new JsonArray();
+        fills.add(Interaction.of(InteractionKind.STATE, writer, reader).id());
+        arm.add("interactionIds", fills);
+        document.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                .getAsJsonArray("selectedArms").add(arm);
+        Files.write(claim, document.toString()
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
     private Path manifest() throws Exception {
         return manifest("INSTANCE/1#40", "INSTANCE/8#16", "MAP/20#-3",
                 "MAP/30#-3");
@@ -311,25 +330,7 @@ public class ConfirmMainTest {
                 RowCodec::writeRead);
         for (boolean chosen : new boolean[]{false, true}) {
             Path claim = claim("FAULT:IPC", "true");
-            if (chosen) {
-                JsonObject document = JsonParser.parseString(new String(
-                        Files.readAllBytes(claim), StandardCharsets.UTF_8))
-                        .getAsJsonObject();
-                JsonObject arm = new JsonObject();
-                arm.addProperty("selector", "writer_arm__1__w");
-                // As the composer spells it: the writer's OCCURRENCE; the
-                // interaction it fills is what names the write.
-                arm.addProperty("groupId", writer.occurrence().id());
-                JsonArray fills = new JsonArray();
-                fills.add(Interaction.of(InteractionKind.STATE, writer,
-                        reader).id());
-                arm.add("interactionIds", fills);
-                document.getAsJsonArray("valuations").get(1)
-                        .getAsJsonObject().getAsJsonArray("selectedArms")
-                        .add(arm);
-                Files.write(claim, document.toString()
-                        .getBytes(StandardCharsets.UTF_8));
-            }
+            if (chosen) chose(claim, writer, reader);
             Path out = folder.newFolder("outside-" + chosen).toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
             JsonObject state = null;
@@ -427,22 +428,7 @@ public class ConfirmMainTest {
                     {older, "PAIRING_UNHELD: read " + viewed.id()}};
             for (Object[] row : table) {
                 Path claim = claim("FAULT:IPC", "true");
-                if (row[0] != null) {
-                    JsonObject document = ExploreCodec.readObject(claim);
-                    JsonObject arm = new JsonObject();
-                    arm.addProperty("selector", "writer_arm__1__w");
-                    arm.addProperty("groupId",
-                            ((Endpoint) row[0]).occurrence().id());
-                    JsonArray fills = new JsonArray();
-                    fills.add(Interaction.of(InteractionKind.STATE,
-                            (Endpoint) row[0], viewed).id());
-                    arm.add("interactionIds", fills);
-                    document.getAsJsonArray("valuations").get(1)
-                            .getAsJsonObject().getAsJsonArray("selectedArms")
-                            .add(arm);
-                    Files.write(claim, document.toString()
-                            .getBytes(StandardCharsets.UTF_8));
-                }
+                if (row[0] != null) chose(claim, (Endpoint) row[0], viewed);
                 Path out = folder.newFolder().toPath();
                 try {
                     ConfirmMain.write(iteration, claim,
@@ -1331,9 +1317,14 @@ public class ConfirmMainTest {
     /**
      * A native run's plant is CONFIRM's world: a ROOT per root it assigns
      * (here a tree hook's, at the occurrence the recording mints it at), the
-     * ORDER rows CONFIRM holds, TARGET rows at the anchor, each numbered.  A
-     * world the recording weave cannot plant is refused by name: a clock
-     * skew, a root of no plantable category, or nothing at all.
+     * ORDER rows CONFIRM holds for what the model chose, TARGET rows at the
+     * anchor, each numbered.  A read the model chose no writer for is held
+     * by CONFIRM to the write it joined, its rows the same as if the model
+     * had chosen that write; the plant holds none of them: the run's own
+     * history, which a native run makes by its own paths (HV1
+     * snapshot-no-active, 0/10).  A world the recording weave cannot plant
+     * is refused by name: a clock skew, a root of no plantable category, or
+     * nothing at all.
      */
     @Test
     public void aNativePlantIsConfirmsWorld() throws Exception {
@@ -1343,31 +1334,19 @@ public class ConfirmMainTest {
         JsonObject world = RowCodec.readJsonl(focus).get(0);
         Files.write(iteration.resolve("execution_task_plan.jsonl"),
                 new byte[0]);
-        Path scopeMap = folder.newFile("static_scope_map.jsonl").toPath();
-        JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion", 1);
-        site.addProperty("kind", StaticScopeMap.SITE_KIND);
-        site.addProperty("role", StaticScopeMap.TARGET_SITE);
-        site.addProperty("regionId", anchor.regionId());
-        site.addProperty("siteId", "<a.Handler: void handle()>#u8");
-        JsonArray guards = new JsonArray();
-        guards.add("<a.Handler: void handle()>#u5");
-        site.add("guards", guards);
-        JsonArray arms = new JsonArray();
-        arms.add(false);
-        site.add("guardOutcomes", arms);
-        Files.write(scopeMap, Collections.singletonList(site.toString()),
-                StandardCharsets.UTF_8);
+        Path scopeMap = targetScopeMap();
         // The world, the claim's moved root and its value, then the plant's
-        // first ROOT row; null: refused; "": no ROOT row.
+        // first ROOT row; null: refused.
         Object[][] worlds = {
                 {"{}", "HDFS.SERIAL", "119981", "ROOT HOOK HDFS.SERIAL "
                         + mint.id() + " 119981"},
                 {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", "119981", null},
                 // A marker no plan input calls: no site to answer at.
                 {"{}", "M_Z_fault", "119981", null},
-                // A marker at false is the run as recorded: never planted.
-                {"{}", "M_Z_fault", "false", ""},
+                // A marker at false is the run as recorded: never planted,
+                // and with the model choosing nothing the world plants
+                // nothing: refused.
+                {"{}", "M_Z_fault", "false", null},
         };
         for (Object[] row : worlds) {
             JsonObject planted = world.deepCopy();
@@ -1389,40 +1368,39 @@ public class ConfirmMainTest {
                 continue;
             }
             List<JsonObject> rows = RowCodec.readJsonl(plant);
-            if ("".equals(row[3])) {
-                for (JsonObject planted2 : rows) {
-                    assertFalse(Arrays.toString(row) + ": " + planted2,
-                            "ROOT".equals(planted2.get("kind").getAsString()));
-                }
-                continue;
-            }
             JsonObject root = rows.get(0);
             assertEquals(row[3], root.get("kind").getAsString() + " "
                     + root.get("category").getAsString() + " "
                     + root.get("rootId").getAsString() + " "
                     + root.get("occurrence").getAsString() + " "
                     + root.get("value").getAsString());
-            // CONFIRM's own ORDER rows, as its replay is held to them.
+            // CONFIRM's own ORDER rows, as its replay is held to them: the
+            // same whether the model chose the write the read joined or not.
             Path out = folder.newFolder().toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
+            List<JsonObject> edges = RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE));
             List<JsonObject> orders = new ArrayList<JsonObject>();
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges) {
                 if ("ORDER".equals(edge.get("kind").getAsString())) {
                     orders.add(edge);
                 }
             }
             assertFalse("the closure orders nothing", orders.isEmpty());
-            List<JsonObject> held = new ArrayList<JsonObject>();
-            for (JsonObject planted2 : rows) {
-                if (!"ORDER".equals(planted2.get("kind").getAsString())) {
-                    continue;
-                }
-                JsonObject order = planted2.deepCopy();
-                order.remove("row");
-                held.add(order);
-            }
-            assertEquals(orders, held);
+            assertEquals("the join's rows are the plant's none",
+                    Collections.<JsonObject>emptyList(), ordersOf(rows));
+            Path chosen = claim((String) row[1], (String) row[2]);
+            chose(chosen, writer, reader);
+            Path outChosen = folder.newFolder().toPath();
+            ConfirmMain.write(iteration, chosen, manifest(), outChosen);
+            assertEquals("CONFIRM's edges", edges, RowCodec.readJsonl(
+                    outChosen.resolve(Confirmation.FILE)));
+            Path plantChosen = folder.newFile().toPath();
+            ConfirmMain.writePlant(iteration, chosen, manifest(), scopeMap,
+                    iteration.resolve("sessions").resolve("sel"),
+                    plantChosen);
+            assertEquals("what the model chose is planted", orders,
+                    ordersOf(RowCodec.readJsonl(plantChosen)));
             JsonObject target = rows.get(rows.size() - 1);
             assertEquals("TARGET " + anchor.id() + " false",
                     target.get("kind").getAsString() + " "
@@ -1432,6 +1410,145 @@ public class ConfirmMainTest {
                 assertEquals(index, rows.get(index).get("row").getAsInt());
             }
         }
+    }
+
+    /**
+     * Whose ORDERs a native plant holds: those of every read at a location
+     * the model chose at, not only the read a writer arm's interaction
+     * names -- the arm binds every read of its location -- or a selected
+     * observed arm's location, the run as it happened chosen over its
+     * concurrent writers; a chosen INITIAL's; and of the world's pairings,
+     * where they overlap the history too.  Here CELL has two writers, the
+     * anchor's read of the second's write and a read of the first's in the
+     * second writer's occurrence, before its write; the plant's ORDERs, as
+     * the CONFIRM rows of which reads.
+     */
+    @Test
+    public void aNativePlantHoldsEveryReadTheModelChoseAt() throws Exception {
+        Path iteration = iteration();
+        Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                new byte[0]);
+        Path scopeMap = targetScopeMap();
+        Endpoint second = Endpoint.of(OccurrenceAddress.parse(PRODUCER),
+                "a.Convert#c()#2:WRITE", ExecutionIndex.of(
+                        Collections.singletonList(Frame.of(
+                                "<a.Convert: void put()>", 0))), 0);
+        Endpoint early = endpoint(PRODUCER, "a.Convert#c()#1:READ");
+        Endpoint initial = endpoint(ANCHOR, Endpoint.initialSite(
+                "a.Handler#h()#12:READ"));
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.writes(), Arrays.asList(
+                WriteRow.initial("sel", 0L, initial, CELL, 4L, "", "I"),
+                WriteRow.of("sel", 10L, writer, CELL, 5L, "EXPR.w", "I"),
+                WriteRow.of("sel", 20L, second, CELL, 6L, "EXPR.w", "I")),
+                RowCodec::writeWrite);
+        RowCodec.writeAll(sel.reads(), Arrays.asList(
+                ReadRow.of("sel", 15L, early, CELL, 5L, "INSTANCE_FIELD/1"
+                        + "#40@v5", "I", "3"),
+                ReadRow.of("sel", 30L, reader, CELL, 6L, "INSTANCE_FIELD/1"
+                        + "#40@v6", "I", "3")), RowCodec::writeRead);
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        world.add("rootAssignments", new JsonObject());
+        world.add("rootMints", new JsonObject());
+        world.add("clockDeltas", new JsonObject());
+        // the model's choice (a writer arm's write for the anchor's read, an
+        // observed arm, none), the world's pairing of the anchor's read, and
+        // whose CONFIRM ORDERs the plant holds: all, or the anchor's read's
+        Object[][] table = {
+                {null, false, "none"},
+                {second, false, "all"},
+                {"observed", false, "all"},
+                {initial, false, "all"},
+                {null, true, "anchor"}};
+        for (Object[] row : table) {
+            JsonObject planted = world.deepCopy();
+            JsonObject pairings = new JsonObject();
+            if ((Boolean) row[1]) {
+                pairings.addProperty(Confirmation.id(reader),
+                        Confirmation.id(second));
+            }
+            planted.add("pairings", pairings);
+            RowCodec.writeJsonl(focus, Collections.singletonList(planted));
+            Path claim = claim("HDFS.SERIAL", "119981");
+            if (row[0] instanceof Endpoint) {
+                chose(claim, (Endpoint) row[0], reader);
+            } else if ("observed".equals(row[0])) {
+                JsonObject document = ExploreCodec.readObject(claim);
+                JsonObject arm = new JsonObject();
+                arm.addProperty("selector", "observed_arm__1__o");
+                arm.addProperty("groupId", "observed:"
+                        + SmtLowering.locationKey(CELL));
+                document.getAsJsonArray("valuations").get(1)
+                        .getAsJsonObject().getAsJsonArray("selectedArms")
+                        .add(arm);
+                Files.write(claim, document.toString()
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            Path out = folder.newFolder().toPath();
+            ConfirmMain.write(iteration, claim, manifest(), out);
+            List<JsonObject> confirmed = new ArrayList<JsonObject>();
+            List<JsonObject> anchors = new ArrayList<JsonObject>();
+            for (JsonObject edge : RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE))) {
+                // Each pair once: CONFIRM's closure and the world's
+                // pairings state the anchor's read's twice.
+                if (!"ORDER".equals(edge.get("kind").getAsString())
+                        || confirmed.contains(edge)) {
+                    continue;
+                }
+                confirmed.add(edge);
+                // The early read's one ORDER is held at its occurrence's
+                // opening; the second writer's at its put().
+                if (!edge.get("after").getAsString().equals(
+                        Confirmation.activation(early.occurrence(),
+                                ExecutionIndex.empty()))) {
+                    anchors.add(edge);
+                }
+            }
+            assertTrue(Arrays.toString(row) + ": " + confirmed,
+                    confirmed.size() > anchors.size()
+                            && !anchors.isEmpty());
+            Path plant = folder.newFile().toPath();
+            ConfirmMain.writePlant(iteration, claim, manifest(), scopeMap,
+                    iteration.resolve("sessions").resolve("sel"), plant);
+            List<JsonObject> expected = "all".equals(row[2]) ? confirmed
+                    : "anchor".equals(row[2]) ? anchors
+                    : Collections.<JsonObject>emptyList();
+            assertEquals(Arrays.toString(row), expected,
+                    ordersOf(RowCodec.readJsonl(plant)));
+        }
+    }
+
+    /** The scope map of one TARGET_SITE row: the anchor's region, its
+     *  guard's fatal arm false. */
+    private Path targetScopeMap() throws Exception {
+        Path scopeMap = folder.newFile().toPath();
+        JsonObject site = new JsonObject();
+        site.addProperty("schemaVersion", 1);
+        site.addProperty("kind", StaticScopeMap.SITE_KIND);
+        site.addProperty("role", StaticScopeMap.TARGET_SITE);
+        site.addProperty("regionId", anchor.regionId());
+        site.addProperty("siteId", "<a.Handler: void handle()>#u8");
+        site.add("guards", JsonParser.parseString(
+                "[\"<a.Handler: void handle()>#u5\"]"));
+        site.add("guardOutcomes", JsonParser.parseString("[false]"));
+        Files.write(scopeMap, Collections.singletonList(site.toString()),
+                StandardCharsets.UTF_8);
+        return scopeMap;
+    }
+
+    /** A plant's ORDER rows, without their row numbers. */
+    private static List<JsonObject> ordersOf(List<JsonObject> rows) {
+        List<JsonObject> held = new ArrayList<JsonObject>();
+        for (JsonObject row : rows) {
+            if (!"ORDER".equals(row.get("kind").getAsString())) continue;
+            JsonObject order = row.deepCopy();
+            order.remove("row");
+            held.add(order);
+        }
+        return held;
     }
 
     /**
@@ -1458,18 +1575,7 @@ public class ConfirmMainTest {
         answers.addProperty(consumer.id(), "5");
         world.add("answers", answers);
         RowCodec.writeJsonl(focus, Collections.singletonList(world));
-        Path scopeMap = folder.newFile("static_scope_map.jsonl").toPath();
-        JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion", 1);
-        site.addProperty("kind", StaticScopeMap.SITE_KIND);
-        site.addProperty("role", StaticScopeMap.TARGET_SITE);
-        site.addProperty("regionId", anchor.regionId());
-        site.addProperty("siteId", "<a.Handler: void handle()>#u8");
-        site.add("guards", JsonParser.parseString(
-                "[\"<a.Handler: void handle()>#u5\"]"));
-        site.add("guardOutcomes", JsonParser.parseString("[false]"));
-        Files.write(scopeMap, Collections.singletonList(site.toString()),
-                StandardCharsets.UTF_8);
+        Path scopeMap = targetScopeMap();
         for (String codecField : new String[]{"", "keyId"}) {
             JsonObject clock = new JsonObject();
             clock.addProperty("portId", "CLOCK.r");

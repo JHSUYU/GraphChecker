@@ -7687,8 +7687,9 @@ campaign_claim_room() {
 # attempts; the last planner round, which reads the same corpus, stands for
 # a COMPOSE none has run yet -- CONFIRM as long as the longest CONFIRM --
 # the seed's REPLAY stands for a CONFIRM replay none has run yet -- and
-# REPRODUCE its own bound (campaign_reproduce_bound; its native runs go out
-# at once); never less than
+# REPRODUCE two of its own bounds (campaign_reproduce_bound: its native runs
+# go out at once, its controls queued behind them, two waves where the pool
+# holds one); never less than
 # campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
 # the case timeout when the reserve owed COMPOSE and CONFIRM alone; HR1:
 # hdfs-adhoc-07's first COMPOSE, over 556 sessions after planner rounds of 4
@@ -7706,7 +7707,9 @@ campaign_reserve() {
         $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
         END { printf "%d\n", (2 * (c > 0 ? c : p) + r) / 1000 }')
-  measured=$(( measured + $(campaign_reproduce_bound) ))
+  # REPRODUCE's runs and its controls behind them: two waves where the
+  # pool holds one.
+  measured=$(( measured + 2 * $(campaign_reproduce_bound) ))
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
 }
 
@@ -7790,7 +7793,8 @@ has no room for another claim"
 # target's guards for their fatal arm at the claim's anchor
 # (explore.ConfirmMain --plant, the code that wrote CONFIRM's world;
 # runtime.RecordingPlant, runtime.PlantAgent).  reproduce_runs runs, all at
-# once, each a head step charged reproduce_charge_pct percent of the
+# once (the controls below queued behind them), each a head step charged
+# reproduce_charge_pct percent of the
 # recording's measured peak resident memory wherever there is room
 # (campaign_reproduce_one) and bounded by
 # campaign_reproduce_bound; a run ends as
@@ -7802,7 +7806,14 @@ has no room for another claim"
 # ANSWER row applied and every ORDER held: what tools/adhoc/findings.py
 # rates), could not hold an ORDER in time (unheld; unheldLate: what it
 # waited for came after all, unheldMissing: it never came), and still held
-# one when the run ended -- and names the runs that stated none.  The
+# one when the run ended -- and names the runs that stated none.  Behind
+# them, as many control runs of a plant of the target's rows alone
+# (control.jsonl: nothing the model chose -- no root, answer or clock, no
+# order, no view hold), placed and bounded alike, each answer marked
+# control and never reproduced; reproduce.json's control counts how many
+# took the fatal arm and how many at the anchor and names the control runs
+# that stated none: the program's own rate of the fatal, the evidence a
+# reproduction is read against, never a gate.  The
 # realized order makes REPRODUCE run the world CONFIRM saw; it never touches
 # CONFIRM: the rate ranks a finding (tools/adhoc/findings.py) and never
 # refutes it, and nothing here moves the claim, CONFIRM's decision or what
@@ -7817,6 +7828,7 @@ campaign_reproduce() {
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
   local charge
   local confirmed
+  local control=""
   local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
@@ -7845,29 +7857,56 @@ campaign_reproduce() {
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
       runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
-      unheldLate: 0, unheldMissing: 0, holding: 0, reason: $reason}' \
+      unheldLate: 0, unheldMissing: 0, holding: 0, reason: $reason,
+      control: {runs: 0, fatal: 0, atAnchor: 0, reason: ""}}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
   fi
+  # The control: as many runs of the target's rows alone, nothing the model
+  # chose planted -- no root, answer or clock, no order, no view hold.
+  jq -c 'select(.kind == "TARGET")' "${dir}/plant.jsonl" \
+    >"${dir}/control.jsonl"
   bound=$(campaign_reproduce_bound)
   charge=$(( campaign_recorded_workload_rss_mb * reproduce_charge_pct / 100 ))
-  campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
+  campaign_log "reproduce: ${reproduce_runs} native run(s) at once, then \
+${reproduce_runs} control run(s) behind them, each \
 charged ${charge} MB (reproduce_charge_pct=${reproduce_charge_pct} of the \
 recording's ${campaign_recorded_workload_rss_mb} MB peak) and bounded by \
 ${bound}s (reproduce_time_factor=${reproduce_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
+  # The plant's runs first; the controls once each of them has its place
+  # (its host.txt) or has ended, so no plant run waits for room behind one.
   for ((run = 0; run < reproduce_runs; run++)); do
     campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
-      "${dir}/plant.jsonl" "${charge}" &
+      "${dir}/plant.jsonl" "${charge}" false &
+    pids+=("$!")
+  done
+  for ((run = 0; run < reproduce_runs; run++)); do
+    while [[ ! -e "${dir}/run-$((run + 1))/host.txt" ]] \
+        && kill -0 "${pids[run]}" 2>/dev/null; do
+      sleep "${campaign_host_poll_s}"
+    done
+  done
+  for ((run = 0; run < reproduce_runs; run++)); do
+    campaign_reproduce_one "${dir}/control/run-$((run + 1))" "${bound}" \
+      "${dir}/control.jsonl" "${charge}" true &
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do
     wait "${pid}" || true
   done
+  control=$(find "${dir}/control" -mindepth 2 -maxdepth 2 -name answer.json \
+      -print0 | xargs -0 -r cat \
+    | jq -s -c --argjson runs "${reproduce_runs}" '{runs: $runs,
+        fatal: map(select(.fatal)) | length,
+        atAnchor: map(select(.atAnchor)) | length,
+        reason: (if length < $runs
+          then "\($runs - length) of \($runs) run(s) stated no answer"
+          else "" end)}')
   find "${dir}" -mindepth 2 -maxdepth 2 -name answer.json -print0 \
     | xargs -0 -r cat \
-    | jq -s --argjson runs "${reproduce_runs}" '
+    | jq -s --argjson runs "${reproduce_runs}" --argjson control "${control}" '
       {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
@@ -7881,8 +7920,9 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
        holding: map(select(any(.unapplied[]; .why == "HOLDING"))) | length,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
-         else "" end)}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding)"' \
+         else "" end),
+       control: $control}' >"${campaign_final}/reproduce.json"
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
 }
 
@@ -7910,11 +7950,11 @@ campaign_confirmed_session() {
 # peer has its answer waited for until the shared home shows it here
 # (campaign_await_visible); one that never shows states none.
 campaign_reproduce_one() {
-  local run=$1 bound=$2 plant=$3 charge=$4
+  local run=$1 bound=$2 plant=$3 charge=$4 control=$5
   mkdir -p "${run}"
   campaign_head_charged "${charge}" \
     campaign_reproduce_run "${analysis_classes_dir}" \
-    "${run}" "${bound}" "${plant}" "${charge}" \
+    "${run}" "${bound}" "${plant}" "${charge}" "${control}" \
     || campaign_log "reproduce: $(basename "${run}") exited nonzero; its \
 logs are in ${run}"
   campaign_host_is_local "${campaign_placed_host}" \
@@ -7929,7 +7969,8 @@ logs are in ${run}"
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
 # rows, applied, unapplied, planted, rootsPlanted, ordersHeld, fatal,
-# atAnchor, reproduced} -- the plant's rows to apply (ROOT, ANSWER and ORDER
+# atAnchor, control, reproduced} -- a control run (<control> true) never
+# reproduced -- the plant's rows to apply (ROOT, ANSWER and ORDER
 # of either scope: a CLOCK_SITE or TARGET row is context), how many the run
 # applied, each one it did not with why (an ORDER whose wait timed out:
 # LATE when what it waited for came after all, MISSING when it never came
@@ -7949,14 +7990,16 @@ logs are in ${run}"
 # order is stated before the bound ends the run; the first one timed out
 # releases every hold of the run (PIPELINE §10b).
 campaign_reproduce_run() {
-  local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5 status=0
+  local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5
+  local control=$6 status=0
   local trace="${run}/runtime_trace.jsonl"
   hostname -s >"${run}/host.txt"
   run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}" \
     "${charged}" "" "$(( bound * 500 ))" \
     >"${run}/stdout.log" 2>"${run}/stderr.log"
   [[ -s "${trace}" ]] || trace=/dev/null
-  jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" '
+  jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" \
+    --argjson control "${control}" '
     [inputs | select(contains("\"event\":\"PLANT_")) | fromjson?] as $rows
     | [$plant[] | select(.kind == "ROOT" or .kind == "ANSWER"
         or .kind == "ORDER")] as $planted
@@ -7986,7 +8029,8 @@ campaign_reproduce_run() {
        planted: ($count > 0 and ($unapplied | length) == 0),
        rootsPlanted: $roots, ordersHeld: $held,
        fatal: any($rows[]; .event == "PLANT_FATAL"),
-       atAnchor: $atAnchor, reproduced: ($atAnchor and $roots and $held)}' \
+       atAnchor: $atAnchor, control: $control,
+       reproduced: (($control | not) and $atAnchor and $roots and $held)}' \
     "${trace}" >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"
 }
