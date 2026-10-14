@@ -216,14 +216,34 @@ public class Z3IncrementalTest {
         assertEquals(solver.errors().toString(), 2, solver.errors().size());
     }
 
+    /**
+     * A SHARED PART THAT TAKES LONG TO READ IS NO QUESTION'S SILENCE: the
+     * fixture reads it in 12 s, past a 1 s question's budget and margin
+     * counted from the question's send; counted from the read's end, the
+     * question is answered, its z3 never ended.
+     */
+    @Test
+    public void aSharedPartThatTakesLongToReadIsNoSilence()
+            throws IOException {
+        Path log = folder.newFile("slowread.log").toPath();
+        Z3 solver = new Z3(fake(log), 30000L, 4096);
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n; slowread\n"))) {
+            assertEquals("sat", scopes.ask(output -> output.write(
+                    "; sat\n"), null, false, 1000L).status());
+        }
+        assertEquals("one z3 per engine", 2, Files.readAllLines(log).size());
+    }
+
     private Path fake() throws IOException {
         return fake(folder.newFile("unused.log").toPath());
     }
 
     /**
      * A z3 answering scopes as their {@code ; <word>} comments say, and a
-     * SIGINT as z3 does: inside a check it ends the check, unknown,
-     * "canceled"; anywhere else it ends z3.  {@code oom} runs out of
+     * SIGINT as z3 4.14.1 does: inside a check it ends the check, unknown,
+     * "interrupted from keyboard"; anywhere else it ends z3.  A shared
+     * part saying {@code slowread} takes 12 s to read.  {@code oom} runs out of
      * memory on the check, {@code agedoom} on a z3 that answered a check
      * before, {@code modelcut} on its model, {@code corecut} on its core;
      * {@code slow} searches a minute under engine 6 unless cancelled, a
@@ -264,7 +284,7 @@ public class Z3IncrementalTest {
                 "    try:",
                 "        time.sleep(seconds); return True",
                 "    except Cancelled:",
-                "        reason = 'canceled'; return False",
+                "        reason = 'interrupted from keyboard'; return False",
                 "    finally: solving = False",
                 "while True:",
                 "    line = sys.stdin.readline()",
@@ -285,7 +305,8 @@ public class Z3IncrementalTest {
                 "        if '; agedoom' in scope and answered > 0: oom()",
                 "        answered += 1",
                 "        if stray == 'cancel':",
-                "            stray = None; verdict = 'unknown'; reason = 'canceled'",
+                "            stray = None; verdict = 'unknown'",
+                "            reason = 'interrupted from keyboard'",
                 "        elif ('; slow' in scope and engine == '6')"
                         + " or ('; late2' in scope and engine == '2'):",
                 "            verdict = 'sat' if search(60) else 'unknown'",
@@ -316,6 +337,8 @@ public class Z3IncrementalTest {
                 "    elif '(get-unsat-core)' in text:",
                 "        if '; corecut' in scope: oom()",
                 "        say('(c)')",
+                "    elif '; slowread' in text:",
+                "        time.sleep(12)",
                 "    elif '(get-info' in text:",
                 "        say('(:reason-unknown \"' + reason + '\")')",
                 "    say(said[len('(echo \"'):-2])",

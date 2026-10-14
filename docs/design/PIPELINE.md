@@ -2510,8 +2510,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `unknown`, a z3 at its cap -- and a z3 that ends mid-question answers it nothing: the questions
    after it go to a fresh one. A question is asked once more where its z3 ended before reaching it,
    ran out of memory after answering others, or had a SIGINT meant for an earlier check still to land
-   (sent as that check ended, it cancels the next check or, outside a check, ends z3); a cancelled
-   check that shows no verdict within 10 s ends its z3, and a question's silence counts from its send.
+   (sent as that check ended, it cancels the next check -- "interrupted from keyboard", z3 4.14.1 --
+   or, outside a check, ends z3); a cancelled check that shows no verdict within 10 s ends its z3,
+   and a question's silence counts from its send, on a fresh z3 from the end of the shared part's
+   read (which never counts: a large shared part is no timeout of every question).
    Two decided answers to one question that differ -- its engines' in one run or race, or its verdict's
    and its model's or core's -- are an error (`Z3#DISAGREE`, the claim refused by name) and the
    question undecided. A sat whose model its cap cut is undecided, an unsat whose core it cut stands

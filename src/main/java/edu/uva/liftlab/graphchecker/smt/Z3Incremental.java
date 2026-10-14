@@ -62,9 +62,10 @@ import java.util.concurrent.TimeUnit;
  * more where its z3 ended before reaching it, where it ran out of memory
  * after answering others, and where a SIGINT meant for an earlier check
  * was still to land -- one sent as that check ended cancels the next check
- * ("canceled") or, outside a check, ends z3.  A cancelled check no verdict
- * of which comes within {@link #SILENCE_MARGIN_MS} ends its z3; a
- * question's own silence is counted from when it is sent.  A sat whose
+ * ("interrupted from keyboard") or, outside a check, ends z3.  A cancelled
+ * check no verdict of which comes within {@link #SILENCE_MARGIN_MS} ends
+ * its z3; a question's own silence is counted from when it is sent, or on
+ * a fresh z3 from the end of its shared part's read, which never counts.  A sat whose
  * model its cap cut is undecided; an unsat whose core it cut stands, its
  * core unknown, as {@link Z3#ask}'s does.  Two decided answers to one
  * question that differ -- its engines', or its verdict's and its core's
@@ -342,8 +343,9 @@ public final class Z3Incremental implements AutoCloseable {
         /** Between its began and verdict marks: in {@code check-sat}. */
         boolean solving;
         /** {@link System#nanoTime} past which its z3 is silent too long:
-         *  its budget and a margin from when it was sent, then from its
-         *  check's start and from each payload asked. */
+         *  its budget and a margin from when it was sent -- from the shared
+         *  part read, on a fresh z3, and none while it is read (0) -- then
+         *  from its check's start and from each payload asked. */
         long silentUntil;
         boolean retried;
         String verdict;
@@ -684,7 +686,10 @@ public final class Z3Incremental implements AutoCloseable {
         }
 
         private void send(Turn asked) {
-            asked.bound();
+            // Behind a shared part still read, its silence counts from the
+            // read's end (STARTUP), never the read itself.
+            if (reading()) asked.silentUntil = 0L;
+            else asked.bound();
             Mark began = mark(Role.BEGAN, asked);
             Mark verdict = mark(Role.VERDICT, asked);
             send("(push 1)\n(set-option :timeout " + asked.budgetMillis
@@ -752,6 +757,14 @@ public final class Z3Incremental implements AutoCloseable {
                             + Z3.arithmeticOption(arithmetic) + "\n", shared,
                     "\n" + echo(ready));
             return true;
+        }
+
+        /** Whether its z3 is still reading the shared part. */
+        private boolean reading() {
+            for (Mark mark : expected) {
+                if (mark.role == Role.STARTUP) return true;
+            }
+            return false;
         }
 
         private Mark mark(Role role, Turn of) {
@@ -843,6 +856,13 @@ public final class Z3Incremental implements AutoCloseable {
                 case PAYLOAD:
                     if (!of.cancelled) payload(of, lines);
                     return;
+                case STARTUP:
+                    // The shared part read: an open question sent behind
+                    // it is silent from here, not from its send.
+                    if (turn != null && !turn.done() && !turn.solving) {
+                        turn.bound();
+                    }
+                    return;
                 default:
             }
         }
@@ -894,16 +914,23 @@ public final class Z3Incremental implements AutoCloseable {
                         ""), true);
             } else {
                 String reason = Z3.parseReason(text);
-                if (reason.contains("canceled") && interruptOutstanding
+                if (interrupted(reason) && interruptOutstanding
                         && !of.retried) {
                     // A signal meant for a check before it.
                     again(of);
                     return;
                 }
-                of.end(reason.contains("timeout") || reason.contains("canceled")
+                of.end(reason.contains("timeout") || interrupted(reason)
                         ? bare(Z3.TIMEOUT, "")
                         : bare(of.verdict, reason), false);
             }
+        }
+
+        /** Whether z3 said its check was ended from outside: SIGINT under
+         *  its tactic solver ("interrupted from keyboard", z3 4.14.1), or
+         *  its incremental core's "canceled", which a timeout says too. */
+        private boolean interrupted(String reason) {
+            return reason.contains("interrupted") || reason.contains("canceled");
         }
 
         /** {@code of} asked once more: of this z3, its scope popped first,
@@ -976,20 +1003,27 @@ public final class Z3Incremental implements AutoCloseable {
          */
         void silent(long now) {
             Turn of = turn;
-            if (process == null) return;
+            if (process == null) {
+                // No z3 left to answer it (once asked again already).
+                if (of != null && !of.done()) {
+                    of.end(bare(Z3.TIMEOUT, ""), false);
+                }
+                return;
+            }
             if (signalDue != 0L && now - signalDue >= 0L) {
                 signalDue = 0L;
                 if (signalTurn.solving) interrupt(signalTurn);
             }
             if (cancelDeadline != 0L && now - cancelDeadline >= 0L) {
                 stop();
-                if (of != null && !of.done() && !of.retried) {
-                    again(of);
-                    return;
+                if (of != null && !of.done()) {
+                    if (of.retried) of.end(bare(Z3.TIMEOUT, ""), false);
+                    else again(of);
                 }
+                return;
             }
             if (of == null || of.done() || process == null
-                    || now - of.silentUntil < 0L) {
+                    || of.silentUntil == 0L || now - of.silentUntil < 0L) {
                 return;
             }
             stop();
