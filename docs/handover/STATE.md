@@ -11,30 +11,29 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the last round SGF3 (2026-10-13 afternoon) -- read this first if you take over Solr
+## S. Solr: the final round SGF4 (2026-10-14 night) -- read this first if you take over Solr
 
-A new lead took over from the 2026-10-13 handover (owner /goal: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/GOAL-next-agent.md`).
-Read, in order: this section, TODO.md "Solr" (§0 what is merged, §1 the branches in flight, §3 open problems, §4 the last
-round and the fork), STATUS.md "Solr checks" (a current-evidence table, then each case's row), the handover reports
-`/bigtemp/vnr3ne/analysis/solr-2026-10-12/HANDOVER-2026-10-13.md`, and the readings in `.../solr-2026-10-12/readings/`.
+Lead of 2026-10-13/14 (owner /goal: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/GOAL-next-agent.md`; session log: memory
+`lead-session-2026-10-13-solr`). Read, in order: this section, TODO.md "Solr" (§0 merged, §1 in flight and parked, §3 open
+problems, §4 the rounds and the fork), STATUS.md "Solr checks", and the readings in `.../solr-2026-10-12/readings/`.
 
-- **Code.** `system/solr` (worktree `/bigtemp/vnr3ne/wt/gc-solr`) = `solr-int` (`/bigtemp/vnr3ne/wt/gc-solr-merge`):
-  everything of TODO Solr §0, including the 2026-10-13 afternoon merges (solr-zk5, solr-native-claim + solr-confirm-spell,
-  solr-replaybound, solr-forcebound). In flight: `solr-armkey` (KY), `solr-witfirst` (WF), TODO §1.
-- **Tree.** `gc/solr-final9` 0ce3deafed (`/bigtemp/vnr3ne/wt/lucene-solr-final9`, `GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
-  = the fork's `JHSUYU/solr` `graphchecker/solr-checks` (fast-forwarded 2026-10-13, verified from a fresh clone: 17/17
-  workloads, 20/20 valid). VM `/bigtemp/vnr3ne/vm-force8/j2sdk-image`.
-- **Hosts.** lift02-05 added by the owner (2026-10-13); lift01 lacks `/bigtemp`. lift11 stays the control host.
-- **Bug checks (8).** SGF3 PASS, read into STATUS: 18406, migrate, restore, tra, lock-leak (confirmed; native 10/10, 9/10
-  for restore). Running: 18413, reindex, snapshot-no-active.
-- **Study checks (12).** All twelve running in SGF3 on sgf3b (07 with 21600 s, the rest 14400 s); 38 is SAT confirmed in
-  SC5/SGF2 (new-bugs #14).
-- **Next.** Read each finished `.smt` into STATUS; merge solr-armkey/solr-witfirst after their gates if they land, and
-  rerun the cases they change; new-bugs.txt for a confirmed lost watch (09/40).
-- **Tools.** Launch: `.../solr-2026-10-12/launch.sh` (one campaign; thirteen hosts) or `.../solr-2026-10-13/launch-batch.sh`
-  (several, shared pool). Status: `.../solr-2026-10-13/st.sh <suffix...>`. Watch: `watch-remote.sh` on lift06 over
-  `live.txt` (wrapped in `timeout 1780` under a Monitor). Verify: `tools/rounds/round-verify.sh SGF3`. Stop:
-  `tools/rounds/stop-run.sh <suffix>` with the run's GC_OUT.
+- **Code.** `system/solr` = `solr-int` = abd3511e2: TODO Solr §0, including the 2026-10-13 evening merges (exposeid,
+  witfirst, readout, viewwriter, z3mem, pubturn, margin, decider, the offline-ab fixes, 39 at depth 0), each found by the
+  SGF3/PRE4 rounds and reviewed where it touches the schedule, COMPOSE, the ledger or the symbolic scope.
+- **The final round SGF4** runs on `~/gc-run/sgf4` (abd3511e2), tree `gc/solr-final9` (`GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
+  VM `vm-force8`, `CAUSYNTH_STREAM_SHARED_POOL=true`, `gc-out/solr`, runs `SGF4-<case>`; launched 00:17 with the 8 bug checks
+  (14400 s) and 07 (43200 s), 13, 14, 19, 40 (28800 s); then 05, 10, 31 (28800 s), 09, 21, 38, 39 (14400 s). SGF3 and PRE4
+  (`SGF3-*`, `PRE4-*`) were previews on earlier code.
+- **Tree / fork.** `gc/solr-final9` 0ce3deafed = the fork's `graphchecker/solr-checks` (fast-forwarded 2026-10-13, verified from
+  a fresh clone: 17/17 workloads, 20/20 valid).
+- **Hosts.** lift02-05 (owner) and lift06-15; lift01 lacks `/bigtemp`; lift02/03 cannot reach lift15 (workers, never heads);
+  lift11 is the control host. A transient ssh outage hit several lifts around 2026-10-13 23:50.
+- **Known open (named, TODO §3):** container mutations the VM never sees (§3t, package `solr-vmfp` in development) behind
+  SGF3-09 path 13 and PRE4-21 paths 5/13; cross-run spellings and message closes (§3v, `solr-portname` parked); a sender's
+  arm whose values coincide (§3w); arm-key redundancy (§3s, `solr-armkey` parked).
+- **Tools.** `.../solr-2026-10-12/launch.sh` (one campaign), `.../solr-2026-10-13/launch-batch.sh` (several, shared pool),
+  `.../solr-2026-10-13/st.sh <suffix...>` (status with log age), `watch-remote.sh` on lift07 over `live.txt`,
+  `tools/rounds/round-verify.sh SGF4` (now prints HOLD:<n>), `tools/rounds/stop-run.sh` (pass all hosts in LIFTS).
 
 ## 0. The end state: two branches (owner 2026-10-06)
 

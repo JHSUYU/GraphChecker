@@ -411,7 +411,11 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   `AliasesManager#publishIfNewer` sets `aliases` -- a new tree (final10), its natives and validation; only if a seed
   shows the window.
 
-### 4. The last round (SGF3) and the fork
+### 4. The final round (SGF4) and the fork
+
+0. SGF4 (2026-10-14 00:17 on): all 20 on `system/solr` abd3511e2 (`~/gc-run/sgf4`), final9, vm-force8, shared pool; read
+   every `.smt` into STATUS as each case finishes (CHECKING §1-§2, `smt-legend.py --repo /bigtemp/vnr3ne/wt/lucene-solr-final9`),
+   readings in `.../solr-2026-10-12/readings/<case>-SGF4.md`. SGF3 below was a preview on earlier code.
 
 1. Done: §1's four branches merged (with solr-forcebound), snapshots `~/gc-run/sgf3` (5fae3fedb: 18406, migrate, tra,
    restore, lock-leak, snapshot-no-active) and `~/gc-run/sgf3b` (294f10623: 18413, reindex and the 12 study checks).
