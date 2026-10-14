@@ -388,9 +388,11 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   (`sharedFieldVersions.hpp:76-80`, `containerSupport.cpp:1225`), so a later read joins a stale version silently
   (SGF3-adhoc-09 path 13: MAP 1368 read null at seq 5090, joined v3302 holding the collection; PRE4-adhoc-21 paths 5/13).
   Spurious PATH_SELF_CONTRADICTORY, possibly a false UNSAT.
-- **u. SEED's static pass is nondeterministic on six study cases** (RO, offline-ab with one jar on both sides:
-  solr-adhoc-05/07/09/10/21/31; 07 2803 vs 609 scope-map rows): diagnosis under way
-  (`/bigtemp/vnr3ne/analysis/solr-2026-10-13/static-nondet/`).
+- **u. SEED's static pass looked nondeterministic: a harness defect, fixed.** The divergent A/B pairs (07: 2803 vs 609
+  scope-map rows) were batches stopped mid-way: `offline-ab.sh ab_stage_seed_static`'s growth loop ended on a bare
+  `|| break` and left the last pass's exit=0 over a half-grown scope; completed runs of one jar are byte-identical and the
+  live campaigns' scope maps agree across reruns (`/bigtemp/vnr3ne/analysis/solr-2026-10-13/static-nondet/evidence.txt`).
+  The stage is now `exit=cut step=<step>` unless the loop reached its fixpoint.
 - **v. Cross-run node spellings and message closes (`solr-portname`, parked b80976bb7):** a family closed for one
   session's delivery is reused for another's (`ComposedFamilies#closeMessages` keyed by consumer endpoints only), and
   another run's host:port literals decide arm compatibility (SGF3-adhoc-09 path 23). Review FIX FIRST: the respelling

@@ -284,6 +284,7 @@ ab_explore_args() {
 
 ab_stage_seed_static() {
   local dir classes out grown growth sha step=0 changes summary heap
+  local ended=cut at=pass
   local -a roots=() pass=()
   dir=$(ab_stage_dir SEED.static)
   classes=${dir}/classes
@@ -337,8 +338,10 @@ ab_stage_seed_static() {
       doors=${chosen}
       continue
     fi
-    [[ "${growth:-0}" != 0 ]] && (( ${#roots[@]} > 0 )) || break
+    [[ "${growth:-0}" != 0 ]] && (( ${#roots[@]} > 0 )) \
+      || { ended=fixpoint; break; }
     step=$(( step + 1 ))
+    at=growth-${step}
     mkdir -p "${dir}/growth-${step}"
     ab_java "${dir}/growth-${step}" "${heap}" "${ab_jar}" \
       edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \
@@ -347,10 +350,20 @@ ab_stage_seed_static() {
            break; }
     ab_seed_wall "${dir}/growth-${step}"
     read -r changes summary <"${dir}/growth-${step}/stdout.log"
-    [[ "${changes}" =~ ^[1-9][0-9]*$ ]] || break
+    [[ "${changes}" =~ ^[1-9][0-9]*$ ]] || { ended=fixpoint; break; }
+    at=doors-${step}
     ab_seed_doors "${dir}/doors-${step}" || break
+    at=pass
   done
   ab_props=()
+  # A loop that ended anywhere but its fixpoint (nothing grown, or no growth
+  # asked) left the last finished pass's exit=0 over a half-grown scope: the
+  # stage is cut, never ok (a stopped batch read as a scope map that differs
+  # between runs of one jar).
+  if [[ "${ended}" != fixpoint ]] && ab_ok SEED.static; then
+    printf 'exit=cut step=%s host=%s\n' "${at}" "$(hostname -s)" \
+      >"${dir}/status"
+  fi
   # The loop's wall in place of the last pass's.
   [[ ! -f "${dir}/status" ]] || sed -i "s/ wall_s=[^ ]* / wall_s=${ab_seed_total} /" \
     "${dir}/status"
@@ -724,8 +737,9 @@ ab_trace_rest() {
 # v92 run's skeletons declare ports main refuses, while 17960's fresh ones
 # open a region its v92 trace never addressed) -- or, with AB_FRESH_SLICE=1,
 # over each side's own fresh slice: what a slice change does to the region
-# plan and PLAN's closure.  The static pass is not deterministic, so by
-# default neither side reads its own.
+# plan and PLAN's closure.  By default neither side reads its own, so a
+# change of the slice and a change of what follows it are seen apart (the
+# pass itself is deterministic: completed runs of one jar are byte-identical).
 ab_seed() {
   local out=$1 case_id=$2 side fresh
   for side in "${AB_SIDES[@]}"; do
