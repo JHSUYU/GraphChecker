@@ -81,6 +81,11 @@ public class ConfirmMainTest {
     private final Endpoint after = endpoint(ANCHOR, "a.Handler#h()#14:READ");
     private final Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
 
+    /** The confirmation rows a worker was handed in {@code out}. */
+    private static List<JsonObject> edges(Path out) throws Exception {
+        return RowCodec.readJsonl(out.resolve(Confirmation.FILE));
+    }
+
     private static Endpoint endpoint(String occurrence, String site) {
         return Endpoint.of(OccurrenceAddress.parse(occurrence), site,
                 ExecutionIndex.empty(), 0);
@@ -334,8 +339,7 @@ public class ConfirmMainTest {
             Path out = folder.newFolder("outside-" + chosen).toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
             JsonObject state = null;
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(out)) {
                 if ("STATE".equals(edge.get("kind").getAsString())) {
                     state = edge;
                 }
@@ -374,8 +378,7 @@ public class ConfirmMainTest {
         ConfirmMain.write(iteration, claim("FAULT:IPC", "true"),
                 manifest(SmtLowering.locationKey(store)), out);
         List<String> held = new ArrayList<String>();
-        for (JsonObject edge : RowCodec.readJsonl(
-                out.resolve(Confirmation.FILE))) {
+        for (JsonObject edge : edges(out)) {
             String kind = edge.get("kind").getAsString();
             if ("STATE".equals(kind)) {
                 held.add("STATE " + edge.get("reader").getAsString() + "@"
@@ -441,8 +444,7 @@ public class ConfirmMainTest {
                     continue;
                 }
                 List<String> held = new ArrayList<String>();
-                for (JsonObject edge : RowCodec.readJsonl(
-                        out.resolve(Confirmation.FILE))) {
+                for (JsonObject edge : edges(out)) {
                     String kind = edge.get("kind").getAsString();
                     if ("STATE".equals(kind)) {
                         held.add("STATE " + edge.get("reader").getAsString()
@@ -568,11 +570,11 @@ public class ConfirmMainTest {
                         Confirmation.INITIAL));
         Map<List<JsonObject>, String> after =
                 new LinkedHashMap<List<JsonObject>, String>();
-        after.put(RowCodec.readJsonl(out.resolve(Confirmation.FILE)),
+        after.put(edges(out),
                 polled.activation());
         after.put(paired.edges, Confirmation.activation(anchor,
                 ExecutionIndex.empty()));
-        after.put(RowCodec.readJsonl(planted.resolve(Confirmation.FILE)),
+        after.put(edges(planted),
                 Confirmation.activation(anchor, ExecutionIndex.empty()));
         for (Map.Entry<List<JsonObject>, String> each : after.entrySet()) {
             List<JsonObject> edges = each.getKey();
@@ -786,8 +788,7 @@ public class ConfirmMainTest {
             if (!"chosen".equals(name)) continue;
             List<String> held = new ArrayList<String>();
             List<String> orders = new ArrayList<String>();
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(out)) {
                 String kind = edge.get("kind").getAsString();
                 if ("STATE".equals(kind)) {
                     held.add(edge.get("reader").getAsString() + " <- "
@@ -889,8 +890,7 @@ public class ConfirmMainTest {
             }
             if ("pairings".equals(row[0])) {
                 int held = 0;
-                for (JsonObject edge : RowCodec.readJsonl(
-                        out.resolve(Confirmation.FILE))) {
+                for (JsonObject edge : edges(out)) {
                     if ("STATE".equals(edge.get("kind").getAsString())
                             && edge.get("reader").getAsString().equals(
                             Confirmation.id(reader))) {
@@ -983,8 +983,7 @@ public class ConfirmMainTest {
                     + "realization: " + summary, summary.has("realizedBy"));
             List<String> readers = new ArrayList<String>();
             long cut = -1L;
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(out)) {
                 String kind = edge.get("kind").getAsString();
                 if ("STATE".equals(kind)) {
                     readers.add(edge.get("reader").getAsString());
@@ -1088,8 +1087,7 @@ public class ConfirmMainTest {
         ConfirmMain.write(iteration, claim, manifest(), out);
 
         Map<String, JsonObject> wire = new LinkedHashMap<String, JsonObject>();
-        for (JsonObject edge : RowCodec.readJsonl(
-                out.resolve(Confirmation.FILE))) {
+        for (JsonObject edge : edges(out)) {
             if ("WIRE".equals(edge.get("kind").getAsString())) {
                 wire.put(edge.get("consumer").getAsString(), edge);
             }
@@ -1151,8 +1149,7 @@ public class ConfirmMainTest {
                         out.resolve(SchedulePrefix.REST_FILE)).size());
 
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
-        List<JsonObject> rows = RowCodec.readJsonl(
-                out.resolve(Confirmation.FILE));
+        List<JsonObject> rows = edges(out);
         for (JsonObject edge : rows) {
             edges.put(edge.get("kind").getAsString(), edge);
         }
@@ -1199,8 +1196,7 @@ public class ConfirmMainTest {
         ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
                 polled);
         int held = 0;
-        for (JsonObject edge : RowCodec.readJsonl(
-                polled.resolve(Confirmation.FILE))) {
+        for (JsonObject edge : edges(polled)) {
             if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
             held++;
             assertEquals(Endpoint.activation(anchor, ExecutionIndex.of(
@@ -1227,8 +1223,7 @@ public class ConfirmMainTest {
             Path asked = folder.newFolder("asked-" + answered).toPath();
             ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
                     asked);
-            for (JsonObject edge : RowCodec.readJsonl(
-                    asked.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(asked)) {
                 if (!"WIRE".equals(edge.get("kind").getAsString())) continue;
                 assertEquals("answered " + answered, answered,
                         edge.has(Confirmation.PRODUCER_QUESTION));
@@ -1259,8 +1254,7 @@ public class ConfirmMainTest {
             ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
                     snapshot);
             int stated = 0;
-            for (JsonObject edge : RowCodec.readJsonl(
-                    snapshot.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(snapshot)) {
                 if (!"STATE".equals(edge.get("kind").getAsString())) continue;
                 stated++;
                 assertEquals(Confirmation.anyTurn(reader),
@@ -1274,8 +1268,7 @@ public class ConfirmMainTest {
         Path unheld = folder.newFolder("unheld").toPath();
         ConfirmMain.write(iteration, claim("M_J_clock.sel"),
                 manifest("MAP/20#-3"), unheld);
-        for (JsonObject edge : RowCodec.readJsonl(
-                unheld.resolve(Confirmation.FILE))) {
+        for (JsonObject edge : edges(unheld)) {
             assertTrue(edge.toString(), !"STATE".equals(edge.get("kind")
                     .getAsString()) && !"ORDER".equals(edge.get("kind")
                     .getAsString()));
@@ -1378,8 +1371,7 @@ public class ConfirmMainTest {
             // same whether the model chose the write the read joined or not.
             Path out = folder.newFolder().toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
-            List<JsonObject> edges = RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE));
+            List<JsonObject> edges = edges(out);
             List<JsonObject> orders = new ArrayList<JsonObject>();
             for (JsonObject edge : edges) {
                 if ("ORDER".equals(edge.get("kind").getAsString())) {
@@ -1393,8 +1385,7 @@ public class ConfirmMainTest {
             chose(chosen, writer, reader);
             Path outChosen = folder.newFolder().toPath();
             ConfirmMain.write(iteration, chosen, manifest(), outChosen);
-            assertEquals("CONFIRM's edges", edges, RowCodec.readJsonl(
-                    outChosen.resolve(Confirmation.FILE)));
+            assertEquals("CONFIRM's edges", edges, edges(outChosen));
             Path plantChosen = folder.newFile().toPath();
             ConfirmMain.writePlant(iteration, chosen, manifest(), scopeMap,
                     iteration.resolve("sessions").resolve("sel"),
@@ -1490,8 +1481,7 @@ public class ConfirmMainTest {
             ConfirmMain.write(iteration, claim, manifest(), out);
             List<JsonObject> confirmed = new ArrayList<JsonObject>();
             List<JsonObject> anchors = new ArrayList<JsonObject>();
-            for (JsonObject edge : RowCodec.readJsonl(
-                    out.resolve(Confirmation.FILE))) {
+            for (JsonObject edge : edges(out)) {
                 // Each pair once: CONFIRM's closure and the world's
                 // pairings state the anchor's read's twice.
                 if (!"ORDER".equals(edge.get("kind").getAsString())
