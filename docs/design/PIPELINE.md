@@ -377,7 +377,7 @@ A focused replay ends early, once, for one of five reasons (`ConcolicResultPubli
   `FocusedReplay#refusedAt`, §7.6), a FORCE run's divergence among them (§7.10).
 - `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
   (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
-- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, before any flip it carries
+- `AT_NO_PROGRESS`: nothing new for 600 s in a replay asked a flip, before any flip it carries
   was taken, which decided every obligation (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
@@ -1312,16 +1312,19 @@ holds the session the row names, or none naming the obligation when it names non
 
 **The early end at a stall** (`ConcolicResultPublisher#watchProgress`). A replay asked a flip --
 never the seed's (no obligation) nor a confirmation's (its verdict rules stand; a stuck one ends at
-its bound) -- is watched every 10 s inside its recording window (before it the cluster starts; after
-it the test is over, and its teardown, which answers nothing asked, may wait: solr-18413 FA5, an
-admitted replay's 275 s): once nothing has moved there for 600 s (no
-schedule step, `ScheduleLog#steps`: an event but a `WAKE` or a tick's `END`, which a poll that wakes
-and finds nothing makes; nothing the settle counts, `#movedLocked`: no activation began
-or settled, no loop body charged, no publication finished or read-out decoded; no thread computing,
-`#Computing`: one thread with the collectors at half a look's span, the schedule's measure, not a
-sum, since a hung cluster test's threads still ping its ZooKeeper), every question still open is
+its bound) -- is watched every 10 s from its recording window's opening on (before it the cluster
+starts). Progress is what is new (`ScheduleLog#newKeys`, `#madeKey`): an event of a kind, site,
+node and context shape the run had not made before -- the shape as the question compares contexts
+(`ScheduleLog#shape`, `ContextShape`: per anchor hop the RPC site and the sender's node, then the
+root's role and api; no invocation count, anchor hash or handoff), every name the run minted for
+itself taken out of the key (`RunSpellings#strip`: a sequential znode's counter, a session id, a host
+and port, an identity hash). A poll, a retry or a watch made again makes no new key however busy it
+is; other code, another store location, another request handler or another node does. The window's
+close is a step too, and the teardown after it, which records no event, is watched: it is given the
+whole bound from the close (`#watched`). Once nothing new has come for 600 s
+(`#NO_NEW_EVENT_MILLIS`), every question still open is
 `NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
-`REPLAY_NO_PROGRESS: nothing moved for N s (...); no schedule hold was live` or `; a schedule hold
+`REPLAY_NO_PROGRESS: nothing new for N s (...); no schedule hold was live` or `; a schedule hold
 was live: <ScheduleLog#holding: the threads held for a turn, the longest's slot and wait, how many
 with no slot or behind a held write>`), so a stall the engine's own hold made reads apart from one
 the workload made, and its threads are dumped on the replay log. Before any flip it carries was
@@ -1330,13 +1333,19 @@ then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROG
 session, its question settled. After one was taken the flips taken keep their verdicts, never
 rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
 to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
-it. A workload that ended settles on the settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
-of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z) an admitted one went at most 122 s
-without a log line in its window (a schedule stall's ceiling, 8 timeouts of 15 s), one 300 s (an
-HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed at
-`replay_timeout_s` (solr-bugs-reindex-cleanup: an Overseer command waiting for a response node
-already deleted, in a tree whose waits never time out) worked about 80 s and then stood still for
-2,320 s.
+it. A workload that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
+replays that ended by themselves or at their witness (PV7-38, PV7-39, nine SGF6 cases), the longest
+span with no new kind of log line was 230 s (p99 162 s, p50 16 s); of their 567 teardowns 558 took
+under a minute and 9 took 600-620 s, each standing on an Overseer response until a ZooKeeper session
+expired (all ADMITTED: cut at the bound now, they end as `STALLED_AFTER_FLIP`, their verdicts and
+sessions the same); every replay PV7-38 lost to `replay_timeout_s` made
+nothing new for more than 2,100 s before it (PULL replicas polling a leader left down, inside the
+window; a failed test's teardown waiting on an Overseer response that never came), while the old
+measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each replay
+states its own count at exit (`Causynth schedule: <n> distinct event(s), at most <s> s between two
+new ones, the last <s> s ago; ...`, `ScheduleLog#progress`), the measure the bound is checked against.
+`replay_timeout_s` stays the last resort: only a run that keeps making something new, or a JVM that
+does not end, reaches it.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound, its detail opening `REPLAY_BOUNDED:`

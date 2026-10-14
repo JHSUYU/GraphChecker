@@ -7,10 +7,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateReadOut;
 import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -240,45 +238,46 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * How long a focused replay asked a flip may stand still in its window
-     * before it is decided there, by name ({@link #watchProgress}): 600 s,
-     * the recording's own stall bound ({@code campaign_unbounded_stall_s}).
-     * Of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z),
-     * an admitted one went at most 122 s without a log line inside its
-     * window (a schedule stall's ceiling, 8 timeouts of 15 s), and one 300 s
-     * (an HTTP call waiting out its socket timeout, NOT_ADMITTED); each of
-     * the 172 killed at replay_timeout_s (solr-bugs-reindex-cleanup: an
-     * Overseer command waiting for a response node already deleted, in a
-     * tree whose waits never time out) worked about 80 s and then stood
-     * still for 2,320 s.
+     * How long a focused replay asked a flip may make nothing new before it
+     * is decided there, by name ({@link #watchProgress}): 600 s with no event
+     * this run had not made before ({@code ScheduleLog#newKeys}).  Of 1,077
+     * Solr replays that ended by themselves or at their witness (PV7-38,
+     * PV7-39, nine SGF6 cases), the longest span with no new kind of log
+     * line was 230 s (p99 162 s, p50 16 s); every replay PV7-38 lost to
+     * {@code replay_timeout_s} made nothing new for more than 2,100 s
+     * before it: PULL replicas polling a leader left down, or a teardown
+     * waiting on an Overseer response that never came.  Each replay states
+     * its own longest span at exit ({@code ScheduleLog#progress}).
      */
-    static final long NO_PROGRESS_MILLIS = 600_000L;
+    static final long NO_NEW_EVENT_MILLIS = 600_000L;
     /** How often the watch looks. */
     private static final long LOOK_MILLIS = 10_000L;
     /** The most frames of one thread the watch's dump shows. */
     private static final int DUMP_FRAMES = 24;
 
     /**
-     * THE WATCH of a focused replay asked a flip: once nothing has moved for
-     * {@link #NO_PROGRESS_MILLIS} -- no schedule step ({@link
-     * ScheduleLog#steps}: a WAKE or a tick's END is the clock, not a step),
-     * nothing the settle counts ({@link #movedLocked})
-     * and no thread computing ({@link Computing}) -- every question still
-     * open is NOT_ADMITTED by REPLAY_NO_PROGRESS, which names the
-     * schedule's holds then ({@code FocusedReplay#noProgress}, {@code
-     * ScheduleLog#holding}), its threads are dumped on its log, and it ends,
-     * long before {@code replay_timeout_s} would kill it: decided, its
-     * session withdrawn, when no flip it was asked was taken yet ({@link
-     * Conclusion#AT_NO_PROGRESS}); its session standing as the run made it,
-     * the flips taken keeping their verdicts, when one was ({@link
-     * Conclusion#STALLED_AFTER_FLIP}).  Only inside the
-     * recording window ({@link RecordingWindow#opened}): before it the
-     * cluster starts, and after it the test is over -- its teardown answers
-     * nothing the question asked, and may wait (solr-18413 FA5: an admitted
-     * replay's teardown stood 275 s on an Overseer command).  Never the
-     * seed's replay (it carries no obligation) nor a confirmation's (its
-     * verdict rules stand); a replay whose workload ended settles on the
-     * settle's bound.
+     * THE WATCH of a focused replay asked a flip: once the run has made
+     * nothing new for {@link #NO_NEW_EVENT_MILLIS} -- no event of a kind,
+     * site, node and context shape it had not made before ({@code
+     * ScheduleLog#newKeys}; a loop busy doing again what it did makes none)
+     * -- every question still open is NOT_ADMITTED by REPLAY_NO_PROGRESS,
+     * which names the schedule's holds then ({@code FocusedReplay
+     * #noProgress}, {@code ScheduleLog#holding}), its threads are dumped on
+     * its log, and it ends, long before {@code replay_timeout_s} would kill
+     * it: decided, its session withdrawn, when no flip it was asked was
+     * taken yet ({@link Conclusion#AT_NO_PROGRESS}); its session standing as
+     * the run made it, the flips taken keeping their verdicts, when one was
+     * ({@link Conclusion#STALLED_AFTER_FLIP}).  From the window's opening on
+     * ({@link RecordingWindow#index}; before it the cluster starts): the
+     * window's close is a step, the teardown after it is watched too and
+     * records no event, so a teardown is given the whole bound from the
+     * close (PV7-38: a failed test's teardown stood on an Overseer response
+     * until the kill; of 567 teardowns that ended, 558 took under a minute
+     * and 9 took 600-620 s, each freed only by a ZooKeeper session's
+     * expiry).  Never
+     * the seed's replay (it carries no obligation) nor a confirmation's
+     * (its verdict rules stand); a replay whose workload ended settles on
+     * the settle's bound.
      */
     static void watchProgress() {
         if (FocusedReplay.obligationIds().isEmpty()
@@ -294,10 +293,8 @@ final class ConcolicResultPublisher {
     }
 
     private static void watch() {
-        Computing computing = new Computing();
-        long computed = 0L;
-        Grace grace = new Grace(TimeUnit.MILLISECONDS.toNanos(
-                NO_PROGRESS_MILLIS), System.nanoTime(), watched(computed));
+        long bound = TimeUnit.MILLISECONDS.toNanos(NO_NEW_EVENT_MILLIS);
+        Grace grace = null;
         while (true) {
             try {
                 Thread.sleep(LOOK_MILLIS);
@@ -307,21 +304,18 @@ final class ConcolicResultPublisher {
             synchronized (PUBLICATION_LOCK) {
                 if (concluded != null) return;
             }
-            if (computing.look()) computed++;
-            if (!RecordingWindow.opened()) {
-                grace = new Grace(TimeUnit.MILLISECONDS.toNanos(
-                        NO_PROGRESS_MILLIS), System.nanoTime(),
-                        watched(computed));
+            if (RecordingWindow.index() == 0) continue;
+            long now = System.nanoTime();
+            if (grace == null) {
+                grace = new Grace(bound, now, watched());
                 continue;
             }
-            long remaining = grace.remaining(System.nanoTime(),
-                    watched(computed));
+            long remaining = grace.remaining(now, watched());
             if (remaining > 0L) continue;
-            String still = "nothing moved for " + TimeUnit.NANOSECONDS
-                    .toSeconds(TimeUnit.MILLISECONDS.toNanos(
-                            NO_PROGRESS_MILLIS) - remaining) + " s (no"
-                    + " schedule step, no activation began or settled, no"
-                    + " loop body, no publication, no thread computing)";
+            String still = "nothing new for " + TimeUnit.NANOSECONDS
+                    .toSeconds(bound - remaining) + " s (no event of a"
+                    + " kind, site, node and context this run had not made"
+                    + " before)";
             if (FocusedReplay.noProgress(still, ScheduleLog.holding())) {
                 dumpThreads(still);
                 conclude(FocusedReplay.stalledAfterFlip()
@@ -332,58 +326,11 @@ final class ConcolicResultPublisher {
         }
     }
 
-    /** What the watch sees move: the settle's counts, the schedule's
-     *  steps, and the looks that saw a thread computing. */
-    private static long[] watched(long computed) {
-        long[] moved;
-        synchronized (PUBLICATION_LOCK) {
-            moved = movedLocked();
-        }
-        long[] watched = Arrays.copyOf(moved, moved.length + 2);
-        watched[moved.length] = ScheduleLog.steps();
-        watched[moved.length + 1] = computed;
-        return watched;
-    }
-
-    /**
-     * Whether a thread computed since the last look: one thread used, with
-     * the collectors, half the look's span (the schedule's measure of
-     * computing, {@code ScheduleLog#lookLocked}).  One thread, not a sum: a
-     * hung cluster test's threads still ping its ZooKeeper, each a little.
-     */
-    static final class Computing {
-        private final ThreadMXBean threads =
-                ManagementFactory.getThreadMXBean();
-        private Map<Long, Long> seen = cpu();
-        private long collected = ScheduleLog.collectedMillis();
-        private long at = System.nanoTime();
-
-        boolean look() {
-            Map<Long, Long> now = cpu();
-            long most = 0L;
-            for (Map.Entry<Long, Long> thread : now.entrySet()) {
-                Long before = seen.get(thread.getKey());
-                most = Math.max(most, thread.getValue()
-                        - (before == null ? 0L : before));
-            }
-            long collectedNow = ScheduleLog.collectedMillis();
-            long nanos = System.nanoTime();
-            boolean computed = 2L * (most + TimeUnit.MILLISECONDS.toNanos(
-                    collectedNow - collected)) >= nanos - at;
-            seen = now;
-            collected = collectedNow;
-            at = nanos;
-            return computed;
-        }
-
-        private Map<Long, Long> cpu() {
-            Map<Long, Long> cpu = new HashMap<Long, Long>();
-            for (long id : threads.getAllThreadIds()) {
-                long nanos = threads.getThreadCpuTime(id);
-                if (nanos >= 0L) cpu.put(id, nanos);
-            }
-            return cpu;
-        }
+    /** What the watch counts as progress: the distinct events the run made,
+     *  and its window's opening and closing. */
+    static long[] watched() {
+        return new long[] {ScheduleLog.newKeys(), RecordingWindow.index(),
+                RecordingWindow.opened() ? 1L : 0L};
     }
 
     /** Every thread's stack on the replay log, as a SIGQUIT would put it:
@@ -432,14 +379,14 @@ final class ConcolicResultPublisher {
         /** A refusal decided every obligation the replay carries
          *  ({@code FocusedReplay#refusedAt}). */
         AT_REFUSAL("a refusal decided every obligation this replay carries"),
-        /** Nothing moved for {@link #NO_PROGRESS_MILLIS} ({@link
+        /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} ({@link
          *  #watchProgress}), which decided every obligation it carries. */
-        AT_NO_PROGRESS("nothing moved for " + NO_PROGRESS_MILLIS / 1000L
+        AT_NO_PROGRESS("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
                 + " s, which decided every obligation this replay carries"),
-        /** Nothing moved for {@link #NO_PROGRESS_MILLIS} after a flip the
+        /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} after a flip the
          *  replay was asked was taken: the session stands as the run made
          *  it, the obligations still open NOT_ADMITTED. */
-        STALLED_AFTER_FLIP("nothing moved for " + NO_PROGRESS_MILLIS / 1000L
+        STALLED_AFTER_FLIP("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
                 + " s after a flip this replay was asked was taken: its"
                 + " session stands, the questions still open are not"
                 + " admitted");

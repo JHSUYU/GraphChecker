@@ -282,9 +282,9 @@ public final class FocusedReplay {
      * every one.  A flipped obligation is never decided before its replay
      * ends: its session is a corpus session, and later waves and COMPOSE read
      * every row of it (the anchor, the fatal, writers after the anchor) --
-     * but at a stall before any flip it was asked was taken: a replay in
-     * which nothing moved for {@code ConcolicResultPublisher
-     * #NO_PROGRESS_MILLIS} ({@link #noProgress}) is decided there, every
+     * but at a stall before any flip it was asked was taken: a replay that
+     * made nothing new for {@code ConcolicResultPublisher
+     * #NO_NEW_EVENT_MILLIS} ({@link #noProgress}) is decided there, every
      * obligation NOT_ADMITTED by {@link #REPLAY_NO_PROGRESS}.</p>
      *
      * <p>A replay decided here ends at once
@@ -319,8 +319,8 @@ public final class FocusedReplay {
 
     /**
      * Ends this replay at a stall ({@code
-     * ConcolicResultPublisher#watchProgress}): {@code what} says what stood
-     * still and for how long, and {@code held} the schedule's holds then
+     * ConcolicResultPublisher#watchProgress}): {@code what} says for how
+     * long the run made nothing new, and {@code held} the schedule's holds then
      * ({@code ScheduleLog#holding}; "" for none), so a stall the engine's
      * own hold made reads apart from one the workload made.  A stall is
      * NOT_ADMITTED for the questions still open (the owner's

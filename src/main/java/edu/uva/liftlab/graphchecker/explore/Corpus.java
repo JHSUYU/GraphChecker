@@ -905,22 +905,17 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, Set<String>> handoffsOf =
             new ConcurrentHashMap<String, Set<String>>();
 
-    /** A ZooKeeper sequential node's name: a name, a dash or underscore,
-     *  and ten digits ({@code qn-0000000003}, {@code n_0000000001}). */
-    private static final Pattern SEQUENCE = Pattern.compile(
-            "([A-Za-z]+[-_])(\\d{10})(?!\\d)");
-
     /**
-     * {@code text} with each sequential znode's counter as a handle ({@link
-     * #handle}): which item of its parent it is, by where the key first
-     * meets it, not its counter, which shifts with every item an earlier
-     * world or a retry added (solr-adhoc-19 SC6: the first queue item a
-     * member read was qn-0000000000 in one world and qn-0000000001 in
-     * another).
+     * {@code text} with each sequential znode's counter ({@link
+     * RunSpellings#SEQUENCE}) as a handle ({@link #handle}): which item of
+     * its parent it is, by where the key first meets it, not its counter,
+     * which shifts with every item an earlier world or a retry added
+     * (solr-adhoc-19 SC6: the first queue item a member read was
+     * qn-0000000000 in one world and qn-0000000001 in another).
      */
     static String sequences(String text) {
         if (text == null || text.isEmpty()) return "";
-        Matcher counter = SEQUENCE.matcher(text);
+        Matcher counter = RunSpellings.SEQUENCE.matcher(text);
         StringBuffer out = new StringBuffer();
         while (counter.find()) {
             counter.appendReplacement(out, Matcher.quoteReplacement(

@@ -1623,10 +1623,75 @@ public class ScheduleLogTest {
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         assertEquals(Arrays.asList(site, site, "x"), sites());
-        assertEquals("a WAKE is the clock's, the SEND a step", 1L,
-                ScheduleLog.steps());
+        assertEquals("the same WAKE again is nothing new", 2,
+                ScheduleLog.newKeys());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains("2 taken, 0 given up"));
+    }
+
+    /**
+     * PROGRESS IS WHAT IS NEW ({@link ScheduleLog#newKeys}, as the replay's
+     * watch counts it, {@link ConcolicResultPublisher#watched}): the turns
+     * of a poll loop, each its own root occurrence, doing again what the
+     * first did -- its wake, its send, its write to the queue's next
+     * sequential znode, a site spelled by a fresh port, session id or
+     * object -- make nothing new; other code, another location or another
+     * node does, and so does the window's close.  Counted as steps, every
+     * turn moved (PV7-38: PULL replicas polling a leader left down kept
+     * replays alive until replay_timeout_s).
+     */
+    @Test
+    public void aLoopDoingAgainWhatItDidMakesNothingNew() {
+        noRequest();
+        int made = -1;
+        long[] watched = null;
+        for (int turn = 0; turn < 3; turn++) {
+            final int n = turn;
+            request("poll", () -> {
+                ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.poll");
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                        "HTTP#REQUEST:replication");
+                ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+                        "ZK:/overseer/queue/qn-000000000" + n);
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                        "HTTP#REQUEST@127.0.0.1:5430" + n);
+                ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+                        "ZK:/sessions/" + (72150482482561029L + n));
+                ScheduleLog.observe(ScheduleEvent.Kind.START,
+                        "<S: void s()>#u1 Searcher@1a2b3c" + n);
+            });
+            if (made < 0) {
+                made = ScheduleLog.newKeys();
+                watched = ConcolicResultPublisher.watched();
+            }
+        }
+        assertEquals("six distinct events", 6, made);
+        assertEquals(events().toString(), 18, events().size());
+        assertEquals("turns two and three: nothing new", made,
+                ScheduleLog.newKeys());
+        assertTrue(Arrays.equals(watched, ConcolicResultPublisher.watched()));
+        request("poll", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                "HTTP#REQUEST:update"));
+        assertEquals("another request", made + 1, ScheduleLog.newKeys());
+        request("poll", () -> ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+                "ZK:/overseer/collection-queue-work/qn-0000000000"));
+        assertEquals("another location", made + 2, ScheduleLog.newKeys());
+        Object other = new Object();
+        RuntimeTraceContext.registerSource(other, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
+        long elsewhere = RuntimeTraceContext.beginRequest(other, "poll");
+        try {
+            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.poll");
+        } finally {
+            RuntimeTraceContext.endRequest(elsewhere);
+        }
+        assertEquals("another node", made + 3, ScheduleLog.newKeys());
+        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().startsWith(
+                "no order; " + (made + 3) + " distinct event(s), at most "));
+        watched = ConcolicResultPublisher.watched();
+        RecordingWindow.close();
+        assertFalse("the window's close is a step", Arrays.equals(watched,
+                ConcolicResultPublisher.watched()));
     }
 
     /**
