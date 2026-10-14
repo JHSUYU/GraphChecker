@@ -497,17 +497,32 @@ public class BooleanReturnsTest {
         Jimple j = Jimple.v();
         Local z = local(body, "z", BooleanType.v());
         Local e = local(body, "e", thrown.getType());
+        Local t = local(body, "t", thrown.getSuperclass().getSuperclass()
+                .getType());
         Unit done = j.newReturnVoidStmt();
+        Unit make = j.newAssignStmt(e, j.newNewExpr(thrown.getType()));
+        Unit rethrow = j.newThrowStmt(t);
+        Unit handler = j.newIdentityStmt(t, j.newCaughtExceptionRef());
         body.getUnits().addAll(Arrays.asList(
                 j.newIfStmt(j.newLeExpr(body.getParameterLocal(0),
                         IntConstant.v(0)), done),
                 j.newAssignStmt(z, j.newStaticInvokeExpr(await.makeRef(),
                         body.getParameterLocal(0))),
                 j.newIfStmt(j.newNeExpr(z, IntConstant.v(0)), done),
-                j.newAssignStmt(e, j.newNewExpr(thrown.getType())),
+                make,
                 j.newInvokeStmt(j.newSpecialInvokeExpr(e, init.makeRef())),
                 j.newThrowStmt(e),
-                done));
+                done,
+                // A finally around the throw: it rethrows what it caught,
+                // past its own `if (log.isDebugEnabled())`.
+                handler,
+                j.newIfStmt(j.newEqExpr(body.getParameterLocal(0),
+                        IntConstant.v(7)), rethrow),
+                j.newInvokeStmt(j.newStaticInvokeExpr(await.makeRef(),
+                        body.getParameterLocal(0))),
+                rethrow));
+        body.getTraps().add(j.newTrap(thrown.getSuperclass().getSuperclass(),
+                make, done, handler));
         return method;
     }
 

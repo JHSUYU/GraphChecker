@@ -501,15 +501,27 @@ final class BooleanReturns {
         return true;
     }
 
-    /** Whether a handler runs straight -- calls, local stores -- to throwing
-     *  the exception it caught. */
+    /** Whether a handler runs straight -- calls, local stores, a branch
+     *  both of whose arms do (a {@code finally}'s {@code if
+     *  (log.isDebugEnabled())}) -- to throwing the exception it caught. */
     private static boolean rethrows(Body g, Unit handler) {
-        if (!(handler instanceof IdentityStmt)) return false;
-        Value caught = ((IdentityStmt) handler).getLeftOp();
-        Unit unit = g.getUnits().getSuccOf(handler);
-        for (int step = 0; unit != null && step < MAX_ARM; step++) {
+        return handler instanceof IdentityStmt && rethrows(g,
+                g.getUnits().getSuccOf(handler),
+                ((IdentityStmt) handler).getLeftOp(), MAX_ARM);
+    }
+
+    private static boolean rethrows(Body g, Unit start, Value caught,
+                                    int budget) {
+        Unit unit = start;
+        for (int step = 0; unit != null && step < budget; step++) {
             if (unit instanceof ThrowStmt) {
                 return ((ThrowStmt) unit).getOp() == caught;
+            }
+            if (unit instanceof IfStmt) {
+                return rethrows(g, ((IfStmt) unit).getTarget(), caught,
+                        budget - step - 1) && rethrows(g,
+                        g.getUnits().getSuccOf(unit), caught,
+                        budget - step - 1);
             }
             if (unit instanceof AssignStmt
                     && ((AssignStmt) unit).getLeftOp() instanceof Local
