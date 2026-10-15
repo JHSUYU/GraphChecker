@@ -182,24 +182,8 @@ public final class SlotTable {
             throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
-        List<Path> files = new ArrayList<Path>();
-        files.add(iteration.resolve(FILE));
-        Map<Integer, Path> rounds = new TreeMap<Integer, Path>();
-        try (DirectoryStream<Path> dirs =
-                     Files.newDirectoryStream(iteration, ROUNDS + "*")) {
-            for (Path dir : dirs) {
-                String number = dir.getFileName().toString()
-                        .substring(ROUNDS.length());
-                if (!number.matches("[0-9]+")) continue;
-                int at = Integer.parseInt(number);
-                if (at < round) rounds.put(at, dir.resolve(FILE));
-            }
-        } catch (NoSuchFileException none) {
-            return table;
-        }
-        files.addAll(rounds.values());
         // Indexed by standing(), which knows the sessions they stand on.
-        for (Path file : files) {
+        for (Path file : files(iteration, round)) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
             // Each line read into its slot as it is parsed.
@@ -214,6 +198,36 @@ public final class SlotTable {
             }
         }
         return table;
+    }
+
+    /** The files {@link #read(Path)} reads, there or not: what a
+     *  composition's inputs name of the table ({@code
+     *  compose.CompositionInputs}). */
+    public static List<Path> files(Path iteration) throws IOException {
+        return files(iteration, Integer.MAX_VALUE);
+    }
+
+    /** The iteration's recorded table, then each round's changes below
+     *  {@code round} in round order; none without the iteration. */
+    private static List<Path> files(Path iteration, int round)
+            throws IOException {
+        List<Path> files = new ArrayList<Path>();
+        files.add(iteration.resolve(FILE));
+        Map<Integer, Path> rounds = new TreeMap<Integer, Path>();
+        try (DirectoryStream<Path> dirs =
+                     Files.newDirectoryStream(iteration, ROUNDS + "*")) {
+            for (Path dir : dirs) {
+                String number = dir.getFileName().toString()
+                        .substring(ROUNDS.length());
+                if (!number.matches("[0-9]+")) continue;
+                int at = Integer.parseInt(number);
+                if (at < round) rounds.put(at, dir.resolve(FILE));
+            }
+        } catch (NoSuchFileException none) {
+            return Collections.<Path>emptyList();
+        }
+        files.addAll(rounds.values());
+        return files;
     }
 
     public boolean stated() {

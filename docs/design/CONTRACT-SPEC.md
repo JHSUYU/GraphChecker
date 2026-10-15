@@ -319,8 +319,9 @@ field=<f> <subject>`.
   recorded valuation; `movedRoots` maps a moved root's id, or a moved clock cell's symbol, to its
   value in the witness; `polarityDecides` = the recorded valuation's disjunct is unsat with a
   valuation pin in its core; `blocked()` = a BLOCKING gap travels with it.
-- `CompositionManifest(anchor, paths, families, roots, valuations, claim, smt2Path)`: written by
-  `compose.ComposeMain` into `candidate_composition_manifest.json`, which adds `schemaVersion`,
+- `CompositionManifest(anchor, paths, families, roots, valuations, claim)`: written by
+  `compose.ComposeMain` into `candidate_composition_manifest.json` (no location: a composition
+  copied elsewhere is the same bytes, `ComposeMain --reuse`), which adds `schemaVersion`,
   `kind COMPOSITION_MANIFEST`, `anchor` (rendered), `anchorId`, `seedSessionId`,
   `symbolicPropagationComplete`, `finalStatus`, `finalStatusRefusals`, `gaps` and `solver`.
 

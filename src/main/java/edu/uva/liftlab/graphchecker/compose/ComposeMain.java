@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -49,6 +50,9 @@ import java.util.Map;
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  *   --z3-room-mb &lt;n&gt;     what the JVM's charge holds for its z3
  *                          processes ({@code smt.Z3}); required
+ *   --reuse &lt;dir&gt;        an earlier composition, its files named as this
+ *                          one's: taken where it read the same inputs
+ *                          ({@link CompositionInputs})
  * </pre>
  *
  * <p>Parsed by {@link LongOptions}.  Every outcome, failures included, is written as a claim with its gaps,
@@ -67,9 +71,23 @@ public final class ComposeMain {
         System.out.println(run(Arguments.parse(argv)));
     }
 
-    /** Writes the query, the manifest and the claim; answers one summary line. */
+    /**
+     * Writes the query, the manifest, the claim and, where no input changed
+     * while they were made, the digest of the inputs they were made of
+     * ({@link CompositionInputs}); answers one summary line.  The
+     * composition {@code --reuse} names, made of the inputs this one would
+     * read, is this one: its four files are copied and nothing is composed
+     * or solved.
+     */
     static String run(Arguments arguments) throws IOException {
         long started = System.nanoTime();
+        String inputs = CompositionInputs.of(arguments);
+        System.err.println("compose: inputs " + inputs + " digested in "
+                + seconds(System.nanoTime() - started) + " s");
+        if (arguments.reuse != null
+                && inputs.equals(CompositionInputs.of(arguments.reuse))) {
+            return reuse(arguments, inputs, started);
+        }
         // Root domains are read once, with the corpus (Corpus#domainOf).
         Corpus corpus = Corpus.read(arguments.iteration,
                 arguments.rootDomains);
@@ -100,14 +118,64 @@ public final class ComposeMain {
         CompositionManifest composed = CompositionManifest.of(anchor,
                 composition.paths(), composition.families(),
                 composition.roots(), composition.valuations().size(),
-                decision.claim(), arguments.output.toString());
+                decision.claim());
         write(arguments.manifest,
                 manifest(composed, composition, decision, solver));
-        write(arguments.manifest.resolveSibling("claim.json"),
+        write(arguments.manifest.resolveSibling(CLAIM),
                 claim(composition, decision, solver));
+        // Its inputs, last: an input that changed while they were read (a
+        // session landed, a refuted claim recorded) leaves none stated.
+        Path stated = arguments.manifest.resolveSibling(
+                CompositionInputs.FILE);
+        if (inputs.equals(CompositionInputs.of(arguments))) {
+            ArtifactIO.replace(stated, inputs + "\n");
+        } else {
+            Files.deleteIfExists(stated);
+            System.err.println("compose: an input changed while it was"
+                    + " read; no " + CompositionInputs.FILE + " stated");
+        }
         return summary(anchor, composition, decision, solver)
                 + " composeSeconds=" + seconds(lowered - started)
                 + " solveSeconds=" + seconds(decided - lowered);
+    }
+
+    /** The claim beside the manifest. */
+    static final String CLAIM = "claim.json";
+
+    /**
+     * The composition {@code --reuse} names, made of these inputs: its
+     * query, manifest, claim and digest, copied byte for byte -- the claim
+     * the same model, so its CONFIRM is the one it had.
+     */
+    private static String reuse(Arguments arguments, String inputs,
+                                long started) throws IOException {
+        copy(arguments.reuse.resolve(arguments.output.getFileName()),
+                arguments.output);
+        copy(arguments.reuse.resolve(arguments.manifest.getFileName()),
+                arguments.manifest);
+        copy(arguments.reuse.resolve(CLAIM),
+                arguments.manifest.resolveSibling(CLAIM));
+        copy(arguments.reuse.resolve(CompositionInputs.FILE),
+                arguments.manifest.resolveSibling(CompositionInputs.FILE));
+        return "reused the composition in " + arguments.reuse + ": its"
+                + " inputs are this one's (" + CompositionInputs.FILE + " "
+                + inputs + "), nothing composed or solved, in "
+                + seconds(System.nanoTime() - started) + " s";
+    }
+
+    /** One file copied whole: a temporary sibling, then one move. */
+    private static void copy(Path from, Path to) throws IOException {
+        Path target = to.toAbsolutePath().normalize();
+        Files.createDirectories(target.getParent());
+        Path staged = Files.createTempFile(target.getParent(),
+                "artifact-" + target.getFileName(), ".tmp");
+        try {
+            Files.copy(from, staged, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(staged);
+        }
     }
 
     /** Where COMPOSE's time went, for the summary line ({@code
@@ -584,6 +652,8 @@ public final class ComposeMain {
         final long timeoutMillis;
         /** What the JVM's charge holds for its z3 processes. */
         final int z3RoomMb;
+        /** An earlier composition this one may be; null: none. */
+        final Path reuse;
 
         private Arguments(LongOptions options) {
             Path sessions = options.path("sessions");
@@ -600,6 +670,7 @@ public final class ComposeMain {
             timeoutMillis = integer(options.value("solver-timeout-ms", null),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
             z3RoomMb = integer(options.value("z3-room-mb", null), 0);
+            reuse = options.path("reuse");
         }
 
         static Arguments parse(String[] argv) {

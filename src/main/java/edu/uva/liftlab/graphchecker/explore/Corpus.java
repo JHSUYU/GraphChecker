@@ -479,7 +479,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** The recording's schedule, which run_engine sets beside the sessions. */
-    static final String RECORDED_SCHEDULE = "recorded_schedule.jsonl";
+    public static final String RECORDED_SCHEDULE = "recorded_schedule.jsonl";
 
     /** node|role -> the last daemon tick the recording ran; null when the
      *  iteration states no recorded schedule. */

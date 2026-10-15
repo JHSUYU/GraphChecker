@@ -19,7 +19,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
-| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
+| COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json`, `compose_inputs.sha256` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json`; a refuted claim's row in `refuted_claims.jsonl` | never (a failure is "unconfirmed"; after a refutation, while the budget has room, COMPOSE..CONFIRM run again for the next claim, the refuted one in `final/refuted/NNNN/`, §10) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
@@ -2510,6 +2510,21 @@ name a node had only in one run named by the node on both sides -- the arm's run
 run's (`Confirmation#attached`, `RunNames#name`) -- and exactly after that: a node's address differs by its run's port
 (NC3-reindex attempt 0000 was refuted on `127.0.0.1:41564_solr` against `127.0.0.1:33130_solr`, both `auto0/node1`).
 
+**The same inputs, the same composition** (`compose.CompositionInputs`). Last, a composition states
+the SHA-256 of everything it read, `compose_inputs.sha256`: its arguments (anchor, root domains,
+static scope map, valuation bound, solver budget, z3 -- not the z3 room, a resource), the JVM's
+`causynth.*` properties and the file one names, each session (id, its files' names and sizes, its
+manifest), `recorded_schedule.jsonl`, `refuted_claims.jsonl`, the slot tables, and the result and
+focus rows of each worker whose session is one of them; taken before the corpus is read and again once
+the claim is written, it is stated only where the two agree. The final COMPOSE is handed the
+exploration's accepted witness attempt (`campaign_compose`, `ComposeMain --reuse`): where that attempt
+states the digest of what the final would read -- its corpus is the one EXPLORE ended on (§7.9) -- its
+four files are copied byte for byte and nothing is composed or solved: the same composition but for
+z3's free choices, and the claim the same model, whose confirmation CONFIRM takes (§10). Anything
+else (a refuted claim recorded, a session landed) composes anew. SGF7 (2026-10-15): both final
+COMPOSEs made the attempt's `.smt2` again byte for byte (57 and 14 min of stage time), and 18413's claim,
+another model of it in one Long value and 7 message arms, was replayed again (CONFIRM 4.6 min).
+
 **Cost.** COMPOSE reads the whole corpus -- every session (`SessionReader#readAll`) and every
 obligation worker's answer with, once it published a session, its focus row (`ObligationDir#workersIn`),
 8 directories at a time (`contract.ParallelReads`: on NFS a read is its latency) -- composes each
@@ -2993,8 +3008,8 @@ room for its reserve (`campaign_claim_room`) and fewer than `campaign_max_claims
 decided again (past it the last claim is published, the bound named in the log), its artifacts
 move to `final/refuted/NNNN/` and COMPOSE, SOLVE, DECIDE and CONFIRM run again. The
 final CONFIRM of the model the exploration's witness attempt confirmed (the same model,
-`campaign_claim_model`: kind, path, arms, valuation and moved roots) takes that attempt's
-`confirm.json` and runs no replay. EMIT publishes every refuted claim (`result.json`
+`campaign_claim_model`: kind, path, arms, valuation and moved roots; the attempt's own claim where
+the final COMPOSE took its composition, §8) takes that attempt's `confirm.json` and runs no replay. EMIT publishes every refuted claim (`result.json`
 `refutedClaims`; `tools/adhoc/triage.py` classes a case with any and no confirmed witness
 REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIRM replay).
 
