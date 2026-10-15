@@ -5729,7 +5729,8 @@ campaign_stream_take_round() {
   # UNPLANNED_INPUT) nothing to grow.
   require_file "round growth rows" "${round_dir}/growth.jsonl"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
-  # A doors-only occurrence a value demand reached grows the plan as an
+  # A doors-only occurrence a value demand reached, and a store edge a
+  # replay ran past the ZooKeeper chain (ZK_EDGE), grow the plan as an
   # exposure does (campaign_stream_grow).
   exposures=$(campaign_exposures "${round_dir}/growth.jsonl"; \
     campaign_unpauses "${round_dir}/growth.jsonl")
@@ -5794,7 +5795,8 @@ campaign_stream_chain_round() {
   # chain is open: dropping its mark asks no obligation.
   jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
       | jq -R . | jq -s -c .)" \
-    'select(.kind == "DOORS_ONLY_UNPAUSED" or .kind == "EXPOSED_REGION"
+    'select(.kind == "DOORS_ONLY_UNPAUSED"
+       or (.kind == "EXPOSED_REGION" or .kind == "ZK_EDGE")
        and (.occurrence as $at | any($chain[]; . == $at)))' \
     "${round_dir}/growth.jsonl" >"${round_dir}/growth-chain.jsonl"
   while read -r occurrence; do
@@ -7001,31 +7003,38 @@ campaign_exposures() {
     | LC_ALL=C sort -u
 }
 
-# The DOORS_ONLY_UNPAUSED rows of a round's growth.jsonl (a doors-only
-# occurrence a value demand reached, ClosurePlanner#plan), one `obligation
-# occurrence session` line each, sorted; the obligation and session are ""
-# where no admitted focused replay ran it.
+# The occurrences a round's growth.jsonl runs whole from the next generation
+# on, one `obligation occurrence session` line each, sorted: a
+# DOORS_ONLY_UNPAUSED row's (a doors-only occurrence a value demand reached,
+# ClosurePlanner#plan) and a ZK_EDGE row's (a store edge a replay ran past
+# the ZooKeeper chain, explore.ZkEdges: its occurrence joins the chain); the
+# obligation and session are "" where no admitted focused replay ran it.
 campaign_unpauses() {
-  jq -r 'select(.kind == "DOORS_ONLY_UNPAUSED")
+  jq -r 'select(.kind == "DOORS_ONLY_UNPAUSED" or .kind == "ZK_EDGE")
          | [.obligationId, .occurrence, .sessionId] | @tsv' "$1" \
     | LC_ALL=C sort -u
 }
 
 # GROW (PIPELINE §7.8): a region a replay reached without its hooks, a
-# marker invocation only a flipped world made, or a doors-only occurrence a
-# value demand reached is planned -- the region woven in -- and the replay
-# that exposed it is run again under the same world, so a later round's
-# closure sees the region's decisions and exports, flips the new root, or
-# takes the occurrence's values.
+# marker invocation only a flipped world made, a doors-only occurrence a
+# value demand reached, or a store edge a replay ran past the ZooKeeper
+# chain (ZK_EDGE) is planned -- the region woven in -- and the replay that
+# exposed it is run again under the same world, so a later round's closure
+# sees the region's decisions and exports, flips the new root, or takes the
+# occurrence's values.
 #
 # One GROW is one GENERATION of the plan and the class tree:
 # ExposedRegionPlanMain writes the generation's whole plan -- the one before
-# it with the reached doors-only occurrences' marks dropped, each grown
-# invocation an input of its task's row, plus the task rows the exposed
-# regions need (admissionBasis EXPOSED_BY) -- as a new file, kept beside the
-# round too (grown_plan.jsonl); the iteration's plan and the seed plan are
-# its links from now on, and INSTRUMENT weaves it into the generation's own
-# tree where it has new task rows.  A start takes the generation current
+# it with the reached doors-only occurrences' marks dropped (a ZK_EDGE
+# occurrence's too), each grown invocation an input of its task's row, plus
+# the task rows the exposed regions and the ZK_EDGE occurrences no task
+# holds need (admissionBasis EXPOSED_BY) -- as a new file, kept beside the
+# round too (grown_plan.jsonl), and the generation's ZooKeeper chain, the one
+# before it with each ZK_EDGE row's path and occurrence appended
+# (contract.ZkChain#grown; a seed's edge, which no replay re-runs, as well);
+# the iteration's plan, its chain and the seed plan are its links from now
+# on, and INSTRUMENT weaves it into the generation's own tree where it has
+# new task rows.  A start takes the generation current
 # when it starts (campaign_stream_start), so whatever already runs keeps the
 # plan and the classes it started on.  Each exposing obligation's replay is
 # queued first, to re-run -- on whichever host of the pool admits it, as an
@@ -7038,7 +7047,7 @@ campaign_unpauses() {
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
   local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
-  local worker file unpaused
+  local worker file unpaused tasks
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
@@ -7056,7 +7065,8 @@ can be grown into"
     'if .doorsOnly == true and (.occurrenceId as $at
        | any($unpaused[]; . == $at)) then del(.doorsOnly) else . end' \
     "${stream_plan}" >"${generation}/unpaused_plan.jsonl"
-  if [[ -n "$(campaign_exposures "${growth}")" ]]; then
+  if [[ -n "$(campaign_exposures "${growth}")" ]] \
+      || jq -e -s 'any(.[]; .kind == "ZK_EDGE")' "${growth}" >/dev/null; then
     run_capturing_status run_java_main \
       edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
       --iteration "${iteration_dir}" \
@@ -7064,6 +7074,8 @@ can be grown into"
       --plan "${generation}/unpaused_plan.jsonl" \
       --growth "${growth}" \
       --output "${generation}/execution_task_plan.jsonl" \
+      --zk-chain "${iteration_dir}/zk_chain.jsonl" \
+      --zk-chain-output "${generation}/zk_chain.jsonl" \
       >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
     [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
       "${round_dir}/grow-stderr.log" \
@@ -7076,19 +7088,22 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
   fi
   require_nonempty "the grown generation's plan" \
     "${generation}/execution_task_plan.jsonl"
+  # Only new task rows are new weaving: a grown input stands at the hook its
+  # marker's planned input has (the weave hooks a local definition by
+  # method, unit and local, never by invocation), and dropping a doors-only
+  # mark weaves nothing.
+  tasks=$(( $(grep -c '' "${generation}/execution_task_plan.jsonl") \
+    - $(grep -c '' "${stream_plan}") ))
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${round_dir}/grown_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  [[ ! -f "${generation}/zk_chain.jsonl" ]] \
+    || ln -f "${generation}/zk_chain.jsonl" "${iteration_dir}/zk_chain.jsonl"
   stream_plan="${generation}/execution_task_plan.jsonl"
-  # Only new task rows are new weaving: a grown input stands at the hook its
-  # marker's planned input has (the weave hooks a local definition by
-  # method, unit and local, never by invocation), and dropping a doors-only
-  # mark weaves nothing.
-  if jq -e -s 'any(.[]; .kind == "EXPOSED_REGION")' "${growth}" \
-      >/dev/null; then
+  if (( tasks > 0 )); then
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \

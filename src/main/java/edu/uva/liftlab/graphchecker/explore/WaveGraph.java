@@ -161,14 +161,16 @@ final class WaveGraph {
      *  closure grows ({@link ClosurePlanner.Plan#exposed}), one
      *  DOORS_ONLY_UNPAUSED row per doors-only occurrence a value demand
      *  reached ({@link ClosurePlanner.Plan#unpaused}: GROW drops its mark),
-     *  and one UNPLANNED_INPUT row per marker invocation a flipped world
-     *  added ({@link ClosurePlanner#unplanned}), each naming the session
-     *  whose replay is re-run, if any, and its obligation; returns the row
-     *  count. */
+     *  one UNPLANNED_INPUT row per marker invocation a flipped world added
+     *  ({@link ClosurePlanner#unplanned}), each naming the session whose
+     *  replay is re-run, if any, and its obligation, and the ZK_EDGE rows of
+     *  the store edges its replays ran past the ZooKeeper chain ({@link
+     *  ZkEdges}); returns the row count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
                            Map<OccurrenceAddress, String> unpaused,
                            Map<UnplannedInput, String> inputs,
+                           List<JsonObject> zkEdges,
                            Path roundDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
@@ -188,6 +190,7 @@ final class WaveGraph {
             row.addProperty("k", input.k());
             rows.add(row);
         }
+        rows.addAll(zkEdges);
         RowCodec.writeJsonl(roundDir.resolve(GROWTH), rows);
         return rows.size();
     }

@@ -1607,7 +1607,7 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 ### 7.8 GROW
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
-and its obligation) or `UNPLANNED_INPUT` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
+and its obligation), `UNPLANNED_INPUT` rows or `ZK_EDGE` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
 GROW's re-runs, as what was queued before them stays queued: they start once the re-runs have
 swapped in, in flight from the round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
@@ -1654,6 +1654,22 @@ run would read the re-run and every later session of its world as a replacement 
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
 `instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
+
+A replay may also run past the plan's ZooKeeper chain (`zk_chain.jsonl`, SYMBOL-SCOPE §6.4): a row of
+it that names a chain path's version written or decoded by an occurrence off the chain (a STORE write, a
+decode's VIEW write), or a path off the chain read by a chain occurrence (a STORE or VIEW read), is a
+`ZK_EDGE` growth row of the round (`explore.ZkEdges`): transport, location (the row's slot), version,
+occurrence, the leaf pointers the replay named there (its content ports), and the first admitted
+focused replay that showed it with its obligation -- or none (`sessionId` "") where only the seed or
+unadmitted replays did, which no re-run follows. GROW's planner writes the generation's chain beside its
+plan (`generations/g<k>/zk_chain.jsonl`, the iteration's `zk_chain.jsonl` its link from then on): the
+one before it with each edge's path, occurrence and keys appended (`contract.ZkChain#grown`: an
+occurrence keyed by the fields the chain holds of the path, a path new to the chain by the leaves its
+reader read), so the chain grows field by field and never shrinks, a seed's edge as well; the edge's
+occurrence loses its doors-only mark (`campaign_unpauses`), or, where no task holds it and its region
+is a candidate skeleton, is planned `EXPOSED_BY` (work under no candidate region runs as recorded, its
+path on the chain), each such row stating the keys (`contentKeys`); a generation that adds task rows
+is woven. Its exposing replay is re-run as an exposure's is.
 
 A flipped world may also call a planned fault marker of a demanded door more often in its
 occurrence than the recording did (solr-adhoc-09: the first `waitForState` timed out, so the

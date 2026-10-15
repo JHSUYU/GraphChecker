@@ -1601,6 +1601,13 @@ a view with an older decode where the difference is no value a term names; CONFI
 pairing by a `VIEW_HOLD` row: the node's later publications of the view are deferred, never its
 threads, until the reader's work's region exits, at most VIEW_HOLD_MAX (PIPELINE §7.5).
 
+The classes that build a node's view are the system's, woven in every case and named by none
+(Solr: `experiments/solr/system.sh` `system_scope`), and the plan keeps symbolic only the decodes
+and writers on the anchor's backward chain over the store's (path, version) edges (`zk_chain.jsonl`).
+A replay that writes or decodes a chain path's version in an occurrence off the chain, or reads a
+path off it in a chain occurrence, grows the chain for the next generation (`ZK_EDGE`, PIPELINE §7.8):
+the edge's path, its occurrence and their leaf keys join it, and the occurrence runs whole.
+
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
