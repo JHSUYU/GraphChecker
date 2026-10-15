@@ -255,9 +255,6 @@ public final class ObligationSolverMain {
         return proposal;
     }
 
-    /** A hard-lane record that does not belong to its worker's query. */
-    static final String HARD_ASK_MISMATCH = "HARD_ASK_MISMATCH";
-
     /**
      * THE HARD LANE: one flip's ask at the full budget, z3 alone, over the
      * query its first ask published and the record beside it ({@link
@@ -265,49 +262,90 @@ public final class ObligationSolverMain {
      * corpus's ask maps one ({@code ObligationFactory#settled}) and published
      * into the worker as that ask publishes it: UNSAT settling its question,
      * or no verdict by name.  A sat answer leaves its model ({@link
-     * HardAsk.Model}) and no answer: its host's solver finishes the flip.  A
-     * record of another obligation or another query is refused by name
-     * ({@link #HARD_ASK_MISMATCH}), never decided.
+     * HardAsk.Model}) and no answer: its host's solver finishes the flip.
      */
     static void decide(Path obligations, String obligationId, Path worker,
                        Path z3, long timeoutMillis, int z3RoomMb)
             throws IOException {
         Obligation proposal = proposal(obligations, obligationId);
         HardAsk ask = HardAsk.read(worker.resolve(HardAsk.FILE));
-        String query = new String(Files.readAllBytes(worker.resolve(QUERY)),
-                StandardCharsets.UTF_8);
-        String suffix = Z3.modelQuery("", ask.modelSymbols);
-        String sha = ArtifactIO.sha256(query);
-        if (!ask.obligationId.equals(obligationId)
-                || !sha.equals(ask.querySha256) || !query.endsWith(suffix)) {
-            String why = HARD_ASK_MISMATCH + ": the record of "
-                    + ask.obligationId + " over query " + ask.querySha256
-                    + " is not obligation " + obligationId + "'s query "
-                    + sha;
-            List<GapRow> gaps = new ArrayList<GapRow>(ask.gaps);
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, obligationId,
-                    why));
-            publish(worker, proposal, ObligationResult.of(obligationId,
-                    Verdict.NOT_ADMITTED, "", why), query, gaps, null);
-            return;
+        // The query is streamed to z3, never held: a query past tens of MB
+        // held twice over (its text and its body) outgrew the JVM's heap.
+        Path query = worker.resolve(QUERY);
+        byte[] suffix = Z3.modelQuery("", ask.modelSymbols)
+                .getBytes(StandardCharsets.UTF_8);
+        long body = Files.size(query) - suffix.length;
+        if (!endsWith(query, suffix)) {
+            throw new IOException("the query " + query + " does not end "
+                    + "with its record's model request");
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
         Z3 solver = new Z3(z3, budget, z3RoomMb);
-        Z3.Answer answer = solver.ask(query.substring(0,
-                query.length() - suffix.length()), ask.modelSymbols, false);
+        Z3.Answer answer = solver.ask(output -> {
+            try (java.io.Reader in = new java.io.InputStreamReader(
+                    new java.io.BufferedInputStream(
+                            new LimitedInput(Files.newInputStream(query),
+                                    body)), StandardCharsets.UTF_8)) {
+                char[] buffer = new char[1 << 16];
+                for (int read; (read = in.read(buffer)) > 0; ) {
+                    output.write(buffer, 0, read);
+                }
+            }
+        }, ask.modelSymbols, false);
+        // The query stays as its first ask published it.
         ObligationFactory.Outcome settled = ObligationFactory.settled(ask,
-                answer, budget, solver, query);
+                answer, budget, solver, null);
         if (settled == null) {
-            new HardAsk.Model(ask.querySha256, answer.values())
+            new HardAsk.Model(answer.values(), budget, z3RoomMb)
                     .write(worker.resolve(HardAsk.Model.FILE));
             return;
         }
-        publish(worker, proposal, settled.result, settled.smt2,
-                settled.gaps, null);
+        publish(worker, proposal, settled.result, null, settled.gaps, null);
         if (settled.settles) {
             ask(worker.resolve(ObligationDir.QUESTION), settled.question);
+        }
+    }
+
+    /** Whether the file ends with these bytes. */
+    private static boolean endsWith(Path file, byte[] tail) throws IOException {
+        long size = Files.size(file);
+        if (size < tail.length) return false;
+        try (java.nio.channels.FileChannel channel =
+                     java.nio.channels.FileChannel.open(file)) {
+            java.nio.ByteBuffer read = java.nio.ByteBuffer.allocate(
+                    tail.length);
+            channel.position(size - tail.length);
+            while (read.hasRemaining() && channel.read(read) > 0) {
+                continue;
+            }
+            return java.util.Arrays.equals(read.array(), tail);
+        }
+    }
+
+    /** The first {@code limit} bytes of a stream. */
+    private static final class LimitedInput extends java.io.FilterInputStream {
+        private long left;
+
+        LimitedInput(java.io.InputStream in, long limit) {
+            super(in);
+            this.left = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (left <= 0) return -1;
+            int value = super.read();
+            if (value >= 0) left--;
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int at, int length) throws IOException {
+            if (left <= 0) return -1;
+            int read = super.read(buffer, at, (int) Math.min(length, left));
+            if (read > 0) left -= read;
+            return read;
         }
     }
 
@@ -502,12 +540,14 @@ public final class ObligationSolverMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"),
                 ExploreMain.distinct(new ArrayList<GapRow>(gaps)),
                 RowCodec::writeGap);
-        // Always written: an UNSAT query is the one a reader most needs.
-        Files.write(out.resolve(QUERY),
-                (smt2.isEmpty()
-                        ? "; no query was encoded: " + result.verdict() + " "
-                        + result.detail() + System.lineSeparator()
-                        : smt2).getBytes(StandardCharsets.UTF_8));
+        // Always written -- but by a hard-lane ask (null), which keeps its
+        // first ask's: an UNSAT query is the one a reader most needs.
+        if (smt2 != null) {
+            Files.write(out.resolve(QUERY), (smt2.isEmpty()
+                    ? "; no query was encoded: " + result.verdict() + " "
+                    + result.detail() + System.lineSeparator()
+                    : smt2).getBytes(StandardCharsets.UTF_8));
+        }
         ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
                 focus);
         return row;

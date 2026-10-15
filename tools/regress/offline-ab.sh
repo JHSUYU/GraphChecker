@@ -19,7 +19,8 @@
 #             PLAN        do_schedule                   this side's SEED.trace plan
 #             EXPLORE.0   campaign_explore, round 0     the seed session + this side's PLAN
 #             SOLVE.0     campaign_solve_obligation     each EXPLORE.0 obligation (z3), no replay,
-#                                                       one served solver
+#                                                       one served solver at the first lane's
+#                                                       60 s (no hard lane)
 #   IMPORT    IMPORT      campaign_import_gate          the recorded final corpus
 #   EXPLORE.N EXPLORE.N   campaign_explore, last round  the recorded final corpus, verdicts, slots
 #   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)

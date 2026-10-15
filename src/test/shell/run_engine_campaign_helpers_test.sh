@@ -2342,6 +2342,10 @@ while IFS='|' read -r sw_lane sw_returns sw_before sw_end sw_asks; do
   [[ "$(cat "${sw_dir}/asked")" == "${sw_asks}" ]] \
     || fail "SOLVE-WORKER ${sw_lane} ${sw_returns}: asked \
 $(cat "${sw_dir}/asked"), not ${sw_asks}"
+  [[ "${sw_end}" != UNSAT && "${sw_end}" != again:no* \
+     || ! -e "${sw_dir}/asked_again" ]] \
+    || fail "SOLVE-WORKER ${sw_lane} ${sw_returns}: its earlier ask again \
+outlived an answer or a new reason"
   case "${sw_end}" in
     UNSAT)
       [[ "${sw_status}" -eq 0 && ! -e "${sw_dir}/solve_again" \
@@ -2365,7 +2369,8 @@ name (${sw_status}): $(cat "${sw_log}")" ;;
   esac
 done <<'EOF_WORKER'
 OBLIGATION|0||UNSAT|service charge.1,
-OBLIGATION|3||again:no room on |service charge.1,
+OBLIGATION|0|before|UNSAT|service charge.1,
+OBLIGATION|3|before|again:no room on |service charge.1,
 OBLIGATION|1||again:its host's solver did not answer (ObligationSolverMain: the solver of lift12 ended)|service charge.1,
 OBLIGATION|1|before|its host's solver did not answer it, asked twice: ObligationSolverMain: the solver of lift12 ended|service charge.1,
 HARD|0||UNSAT|decide 5024 at 1800000 in 4096,
@@ -4938,7 +4943,7 @@ while IFS='|' read -r par_kind par_mb par_cores par_warm par_most; do
     [[ "${par_warm}" != warm ]] || stream_solver_seen[lift12]=$(date +%s)
     par_count=0
     while (( par_count < 64 )) \
-        && campaign_stream_admit_host "${par_kind}" "${par_mb}"; do
+        && campaign_stream_admit_host "${par_kind}"; do
       campaign_stream_host_count "${stream_admitted_host}" "${par_kind}" 1
       par_count=$((par_count + 1))
     done
@@ -4952,17 +4957,16 @@ done <<'EOF'
 REPLAY|896|48|cold|24
 REPLAY|896|16|cold|16
 CONFIRM|1408|48|cold|15
-HARD|6656|48|cold|3
-HARD|6656|5|cold|2
-HARD|6656|1|cold|1
-ALONE|3712|48|cold|5
+HARD|5024|48|cold|4
+HARD|5024|5|cold|2
+HARD|5024|1|cold|1
 OBLIGATION|1152|48|warm|4
 OBLIGATION|1152|6|warm|3
 OBLIGATION|3712|48|cold|1
 EOF
 # Mixed kinds on one host, offered in turn until a whole turn starts none: a
-# hard-lane ask 6656 MB, a REPLAY 768, a warm solve 1152, a CONFIRM 1408, an
-# ALONE 3712.  What it admits never leaves the host's live charges and the
+# hard-lane ask 5024 MB, a REPLAY 768, a warm solve 1152, a CONFIRM 1408.
+# What it admits never leaves the host's live charges and the
 # head's reservation there past the ceiling, 22109 MB, and stops only where
 # not even the smallest charge fits.  {the head's reservation in MB, the
 # starts admitted in turn}.
@@ -4982,8 +4986,8 @@ while IFS='|' read -r mix_head mix_want; do
     campaign_solver_seats() { printf '4\n'; }
     campaign_stream_charge_mb() {
       case "$1" in
-        HARD) echo 6656 ;; REPLAY) echo 768 ;; OBLIGATION) echo 1152 ;;
-        CONFIRM) echo 1408 ;; ALONE) echo 3712 ;;
+        HARD) echo 5024 ;; REPLAY) echo 768 ;; OBLIGATION) echo 1152 ;;
+        CONFIRM) echo 1408 ;;
       esac
     }
     campaign_log() { :; }
@@ -4997,7 +5001,7 @@ while IFS='|' read -r mix_head mix_want; do
     mix_more=1
     while (( mix_more )); do
       mix_more=0
-      for mix_kind in HARD REPLAY OBLIGATION CONFIRM ALONE; do
+      for mix_kind in HARD REPLAY OBLIGATION CONFIRM; do
         campaign_stream_admit_host "${mix_kind}" || continue
         campaign_stream_host_count lift12 "${mix_kind}" 1
         mix_admitted+=("${mix_kind}")
@@ -5015,8 +5019,8 @@ charged and ${mix_head} MB held"
     || fail "HOST-PAR: mixed starts beside a ${mix_head} MB head reservation \
 admitted ${mix_took}, not ${mix_want}"
 done <<'EOF'
-4544|HARD REPLAY OBLIGATION CONFIRM ALONE REPLAY OBLIGATION CONFIRM
-0|HARD REPLAY OBLIGATION CONFIRM ALONE HARD REPLAY REPLAY
+4544|HARD REPLAY OBLIGATION CONFIRM HARD REPLAY OBLIGATION CONFIRM REPLAY
+0|HARD REPLAY OBLIGATION CONFIRM HARD REPLAY OBLIGATION CONFIRM HARD
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an

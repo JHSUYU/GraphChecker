@@ -286,13 +286,6 @@ public final class ObligationFactory {
     }
 
     /**
-     * A sat answer of the hard lane over another query than the one the
-     * corpus now builds for its flip: refused by name, never decided (the
-     * corpus moved under it, as GROW's swaps move it).
-     */
-    static final String HARD_MODEL_STALE = "HARD_MODEL_STALE";
-
-    /**
      * What an answer to {@code ask} settles of its flip without a model: an
      * UNSAT, which settles its question, or no verdict by name -- the budget
      * spent ({@code SOLVER_TIMEOUT}), z3 at its memory cap ({@code
@@ -300,7 +293,8 @@ public final class ObligationFactory {
      * owing its hard-lane ask (the outcome's {@code owed}); null for a sat
      * answer, which only the corpus finishes.  The one mapping both the
      * corpus's ask ({@link #solve}) and the hard lane's ({@code
-     * ObligationSolverMain --decide}) answer by, so their files are the same.
+     * ObligationSolverMain --decide}) answer by, so their files are the same
+     * ({@code query} null: the hard lane keeps the first ask's).
      */
     static Outcome settled(HardAsk ask, Z3.Answer answer, long budget,
                            Z3 solver, String query) {
@@ -1129,22 +1123,12 @@ public final class ObligationFactory {
                         + rests.size() + " world(s) its replays refuted "
                         + "(WORLD_REFUTED), on which this rests: "
                         + String.join(", ", rests)),
-                gaps, built.modelSymbols, ArtifactIO.sha256(query));
-        Z3.Answer answer;
-        if (decided == null) {
-            answer = solver.ask(built.smt2, built.modelSymbols, false);
-        } else if (decided.querySha256.equals(ask.querySha256)) {
-            // The hard lane's model, over this very query.
-            answer = Z3.Answer.sat(decided.values);
-        } else {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
-                    HARD_MODEL_STALE));
-            return refused(candidate, Verdict.NOT_ADMITTED, HARD_MODEL_STALE
-                    + ": the hard lane decided query " + decided.querySha256
-                    + ", and this corpus builds " + ask.querySha256, query,
-                    gaps, question, false);
-        }
+                gaps, built.modelSymbols);
+        // The hard lane's model is planted as it is, over whatever query the
+        // corpus builds now: its replay is a real run, and decides.
+        Z3.Answer answer = decided == null
+                ? solver.ask(built.smt2, built.modelSymbols, false)
+                : Z3.Answer.sat(decided.values);
         Outcome settled = settled(ask, answer, budget, solver, query);
         if (settled != null) return settled;
         Planted planted = planted(corpus, candidate, built, answer.values(),
@@ -1160,8 +1144,11 @@ public final class ObligationFactory {
         // the run's own pairings, which no order has to realize.
         if (!planted.pairings.isEmpty()) {
             String held = heldToRecording(built);
+            // A hard lane's flip asks it at the hard lane's budget and room.
+            Z3 asker = decided == null ? solver
+                    : new Z3(z3, decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
-                    : solver.ask(held, built.modelSymbols, false);
+                    : asker.ask(held, built.modelSymbols, false);
             if (again != null && again.decided() && again.sat()) {
                 Planted recorded = planted(corpus, candidate, built,
                         again.values(), gaps);

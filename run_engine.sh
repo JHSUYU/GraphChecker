@@ -3523,15 +3523,18 @@ campaign_solver_log() {
 # an answer is only as free as the root domains behind the arm that produces
 # it.
 campaign_start_solver() {
-  local dir=$1 sessions=$2 handed=${3:-} charge status=0 heap need charges
+  local dir=$1 sessions=$2 handed=${3:-} charge="" status=0 heap need
+  local charges
   heap=$(campaign_solver_heap_mb "${sessions}")
   # Its JVM's footprint: each question it answers is charged its z3 room.
   need=$(( $(campaign_solver_need_mb "${sessions}") - campaign_question_mb ))
   charges="${campaign_host_gate_root}/$(campaign_host_key localhost)/charges"
-  if [[ -n "${handed}" ]] && (( ${handed%%.*} >= need )); then
+  if [[ -n "${handed}" ]] && (( ${handed%%.*} >= need )) \
+      && mv -- "${charges}/${handed}" "${charges}/${handed}.solver" \
+        2>/dev/null; then
+    # What it holds is what its watch starts from.
     charge="${handed}.solver"
-    mv -- "${charges}/${handed}" "${charges}/${charge}" 2>/dev/null \
-      || return 1
+    need=${handed%%.*}
   else
     campaign_host_try_charge localhost "${need}"
     (( status == 0 )) || return 1
@@ -3671,8 +3674,9 @@ campaign_obligation_worker() {
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}" "${charge}"
   case "${status}" in
-    0) ;;
+    0) rm -f -- "${worker}/asked_again" ;;
     3)
+      rm -f -- "${worker}/asked_again"
       campaign_obligation_again "${worker}" "no room on $(hostname -s) to \
 start its solver now"
       return 0 ;;
@@ -3719,6 +3723,7 @@ campaign_obligation_decide() {
     --obligation-id "${obligation_id}"
   (( status == 0 )) || die "obligation ${obligation_id}: its hard-lane ask \
 failed (exit ${status}): $(campaign_failure_said "${log}")"
+  rm -f -- "${worker}/asked_again"
   if [[ ! -s "${worker}/obligation_result.jsonl" \
         && -s "${worker}/obligation_model.json" ]]; then
     campaign_obligation_again "${worker}" "the hard lane found a model; \
@@ -4449,8 +4454,7 @@ campaign_workload_output_bytes() {
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
-# released when it ends; its peak is campaign_watch_peak_mb once it has
-# (a solver asked again places its JVM by it, campaign_obligation_worker).
+# released when it ends.
 # A JVM given <max_trace_mb> (a recording's, 0 for none: a native run's)
 # is one with a trace directory <dir> and no bound on its waits.  It is ended,
 # saying why in <dir>/${campaign_recording_end_marker}, once its trace
@@ -4459,7 +4463,6 @@ campaign_workload_output_bytes() {
 # <dir> or its output for campaign_unbounded_stall_s (RECORDING_STALLED,
 # campaign_workload_output_bytes), its threads first dumped on its own
 # output (SIGQUIT).
-campaign_watch_peak_mb=0
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
@@ -4516,7 +4519,6 @@ ever times out; its threads are dumped on its output; ended"
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
-  campaign_watch_peak_mb=${peak}
   if [[ -n "${ended}" ]]; then
     printf '%s\n' "${ended}" >"${dir}/${campaign_recording_end_marker}"
     echo "causynth: ${ended}" >&2
@@ -4708,11 +4710,18 @@ campaign_stream_solves() {
 
 # The path prefix of what a start of <kind> writes beside its work in
 # <worker> -- its stdout.log and stderr.log, and a peer's remote-worker.sh
-# and ssh.log: a HARD's and a REPLAY's prefixed, so none overwrites the
-# solve's before it, whichever host ran either.
+# and ssh.log: a HARD's, a REPLAY's and an obligation's asked again
+# prefixed, so none overwrites the first ask's, whichever host ran either.
 campaign_stream_logs() {
   case "$1" in
     HARD) printf '%s/hard-\n' "$2" ;;
+    # An obligation asked again (again-host.txt, campaign_stream_start).
+    OBLIGATION)
+      if [[ -e "$2/again-host.txt" ]]; then
+        printf '%s/again-\n' "$2"
+      else
+        printf '%s/\n' "$2"
+      fi ;;
     REPLAY) printf '%s/replay-\n' "$2" ;;
     *) printf '%s/\n' "$2" ;;
   esac
@@ -6232,7 +6241,7 @@ campaign_process_tree() {
 # queue is empty.
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry kind at first started now refused need
+  local entry kind at first started now refused
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
     campaign_stream_collect_jobs
     campaign_stream_has_slot || return 0
@@ -6263,20 +6272,19 @@ campaign_stream_dispatch() {
     refused=" "
     for at in "${!stream_queue[@]}"; do
       entry=${stream_queue[at]}
-      read -r kind _ _ need _ <<<"${entry}"
+      kind=${entry%% *}
       # Behind an entry that goes first and alone waits everything but a
       # witness's confirmation and GROW's re-runs, which lead the queue:
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
       ! campaign_stream_solves "${kind}" || (( stream_hold == 0 )) || continue
-      need=""
-      [[ "${refused}" != *" ${kind}${need:+:${need}} "* ]] || continue
-      if campaign_stream_admit_host "${kind}" "${need}"; then
+      [[ "${refused}" != *" ${kind} "* ]] || continue
+      if campaign_stream_admit_host "${kind}"; then
         started=${at}
         break
       fi
-      refused+="${kind}${need:+:${need}} "
+      refused+="${kind} "
     done
     (( started >= 0 )) || return 0
     entry=${stream_queue[started]}
@@ -6338,8 +6346,8 @@ campaign_stream_unenroll() {
   campaign_stream_entry=""
 }
 
-# Picks the host for one start of <kind> (OBLIGATION, HARD,
-# <need> MB, REPLAY, RERUN or CONFIRM) and charges it there
+# Picks the host for one start of <kind> (OBLIGATION, HARD, REPLAY, RERUN
+# or CONFIRM) and charges it there
 # (stream_admitted_host, stream_admitted_mb):
 # the pool from the host after the last one chosen, each start charged its
 # need for as long as it runs (campaign_stream_charge_mb); an OBLIGATION
@@ -6354,11 +6362,11 @@ campaign_stream_unenroll() {
 # CAUSYNTH_HOST_MAX_USED_PCT charged or full, and none takes a head's room).
 # 1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
-  local kind=$1 need=${2:-} host turn count pass is status=0 mb
+  local kind=$1 host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
   for pass in warm cold; do
     [[ "${pass}" == cold ]] || campaign_stream_seated "${kind}" || continue
-    mb=$(campaign_stream_charge_mb "${kind}" "${pass}" "${need}")
+    mb=$(campaign_stream_charge_mb "${kind}" "${pass}")
     for ((turn = 0; turn < count; turn++)); do
       host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
       # A seated question tries each host once, in the pass of its warmth.
@@ -6543,8 +6551,10 @@ campaign_stream_start() {
   case "${kind}" in
     OBLIGATION)
       # Its charge, a cold host's solver's to take over
-      # (campaign_start_solver).
+      # (campaign_start_solver).  Asked again, where it starts is beside
+      # the first ask's (campaign_stream_logs).
       worker="${iteration_dir}/${round}/${id}"
+      [[ "${session}" != again ]] || started=again-host.txt
       session=""
       work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
         "${sessions}" "${worker}" "${stream_admitted_mb}" \

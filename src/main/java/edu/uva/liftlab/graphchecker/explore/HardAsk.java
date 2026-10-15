@@ -22,9 +22,8 @@ import java.util.List;
  * obligation_query.smt2}), so that its ask at the full budget runs z3 alone,
  * in a JVM that reads no corpus ({@code ObligationSolverMain --decide}), and
  * answers as the corpus would: the question an answer settles, the gaps the
- * query's build stated, what an UNSAT says, the constants a model names, and
- * the query itself by its sha256 -- a record beside another query is refused
- * by name, never decided.  A corpus-sized JVM per hard ask held one host each
+ * query's build stated, what an UNSAT says, and the constants a model
+ * names.  A corpus-sized JVM per hard ask held one host each
  * for a 15-20 min corpus read before its z3 started (SGF7-adhoc-39: 21 GB of
  * sessions, 18-21 GB charged per ask, one per host).
  */
@@ -44,12 +43,9 @@ final class HardAsk {
     final List<GapRow> gaps;
     /** The constants a sat answer's model names, in the query's order. */
     final List<String> modelSymbols;
-    /** sha256 of the query as published (body, check-sat, get-value). */
-    final String querySha256;
 
     HardAsk(String obligationId, String gapSession, String question,
-            String unsatDetail, List<GapRow> gaps, List<String> modelSymbols,
-            String querySha256) {
+            String unsatDetail, List<GapRow> gaps, List<String> modelSymbols) {
         this.obligationId = obligationId;
         this.gapSession = gapSession;
         this.question = question;
@@ -57,7 +53,6 @@ final class HardAsk {
         this.gaps = Collections.unmodifiableList(new ArrayList<GapRow>(gaps));
         this.modelSymbols = Collections.unmodifiableList(
                 new ArrayList<String>(modelSymbols));
-        this.querySha256 = querySha256;
     }
 
     void write(Path file) throws IOException {
@@ -72,7 +67,6 @@ final class HardAsk {
         JsonArray symbols = new JsonArray();
         for (String symbol : modelSymbols) symbols.add(symbol);
         json.add("modelSymbols", symbols);
-        json.addProperty("querySha256", querySha256);
         Path part = file.resolveSibling(file.getFileName() + ".part");
         Files.write(part, (json + "\n").getBytes(StandardCharsets.UTF_8));
         Files.move(part, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
@@ -80,26 +74,31 @@ final class HardAsk {
     }
 
     /**
-     * A sat answer of the hard lane: the model's values, over the query of
-     * this sha256.  The flip is finished by its host's solver ({@code
-     * ObligationFactory#solve} given it), which builds the query again and
-     * takes the model only for a query of the same sha256.
+     * A sat answer of the hard lane: the model's values, and the budget and
+     * z3 room it was asked at.  The flip is finished by its host's solver
+     * ({@code ObligationFactory#solve} given it), which plants the model as
+     * it is over the query its corpus builds -- the replay decides -- and
+     * asks whatever more it asks (the held re-ask) at this budget and room.
      */
     static final class Model {
         static final String FILE = "obligation_model.json";
 
-        final String querySha256;
         final java.util.Map<String, String> values;
+        final long budgetMillis;
+        final int roomMb;
 
-        Model(String querySha256, java.util.Map<String, String> values) {
-            this.querySha256 = querySha256;
+        Model(java.util.Map<String, String> values, long budgetMillis,
+              int roomMb) {
             this.values = Collections.unmodifiableMap(
                     new java.util.LinkedHashMap<String, String>(values));
+            this.budgetMillis = budgetMillis;
+            this.roomMb = roomMb;
         }
 
         void write(Path file) throws IOException {
             JsonObject json = new JsonObject();
-            json.addProperty("querySha256", querySha256);
+            json.addProperty("budgetMillis", budgetMillis);
+            json.addProperty("roomMb", roomMb);
             JsonObject values = new JsonObject();
             for (java.util.Map.Entry<String, String> value
                     : this.values.entrySet()) {
@@ -121,8 +120,8 @@ final class HardAsk {
                     : JsonFields.object(json, "values").entrySet()) {
                 values.put(value.getKey(), value.getValue().getAsString());
             }
-            return new Model(JsonFields.primitiveString(json, "querySha256"),
-                    values);
+            return new Model(values, json.get("budgetMillis").getAsLong(),
+                    json.get("roomMb").getAsInt());
         }
     }
 
@@ -139,7 +138,7 @@ final class HardAsk {
         return new HardAsk(JsonFields.primitiveString(json, "obligationId"),
                 JsonFields.primitiveString(json, "gapSession"),
                 JsonFields.primitiveString(json, "question"),
-                JsonFields.primitiveString(json, "unsatDetail"), gaps, symbols,
-                JsonFields.primitiveString(json, "querySha256"));
+                JsonFields.primitiveString(json, "unsatDetail"), gaps,
+                symbols);
     }
 }

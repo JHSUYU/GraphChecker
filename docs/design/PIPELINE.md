@@ -1021,11 +1021,11 @@ JVM that reads no corpus (`campaign_obligation_decide`, `ObligationSolverMain --
 once on a host as its cores and ledger room hold (§7.7). It answers as the corpus's ask maps an answer
 (`ObligationFactory#settled`, the one mapping): UNSAT with the record's detail and gaps, settling its
 question; undecided NOT_ADMITTED by name; a sat answer leaves its model (`obligation_model.json`,
-`HardAsk.Model`) and asks the obligation again of a host's solver, which builds the query again and
-finishes the flip with the model where the query's sha256 is the record's (the planted world, the held
-re-ask at its first budget, the focus row: the code after z3), else refuses it by name
-(`HARD_MODEL_STALE`: the corpus moved under it, as GROW's swaps move it). A record over another query
-or obligation is refused by name before any z3 (`HARD_ASK_MISMATCH`), never decided. Since the
+`HardAsk.Model`, the budget and room it was asked at) and asks the obligation again of a host's
+solver (its diagnostics `again-host.txt`, `again-std*.log` beside the first ask's), which plants the
+model as it is over the query its corpus builds now (the planted world, the held re-ask at the hard
+lane's budget and room, the focus row: the code after z3): the corpus may have moved under it, and its
+replay, a real run, decides. Since the
 obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end the
 exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there lands
 NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each a

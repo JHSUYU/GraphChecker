@@ -8,7 +8,6 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -642,6 +641,27 @@ public class ExploreTest {
         assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertEquals("true",
                 worker.obligation.rootAssignments().get("CASE.MARKER"));
+        // THE HARD LANE'S MODEL, FINISHED BY THE CORPUS: a first ask out of
+        // budget leaves its record, the hard lane decides it with no corpus,
+        // and its model is planted as it is: the same world the corpus's own
+        // ask planted.
+        Path hard = out.resolve("hard");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), hard, Paths.get("z3"), 1L,
+                1152, null);
+        ObligationSolverMain.decide(wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), hard, Paths.get("z3"),
+                10_000L, 1152);
+        Path finish = out.resolve("finish");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), finish, Paths.get("z3"),
+                10_000L, 1152, HardAsk.Model.read(
+                        hard.resolve(HardAsk.Model.FILE)));
+        assertEquals(worker.obligation, RowCodec.readAll(finish.resolve(
+                ObligationDir.OBLIGATION), ExploreCodec::readObligation)
+                .get(0));
         // The focus row is its own file.  execution_task_plan.jsonl is the
         // PLAN's name, and the workload session opener decodes whatever
         // stands under it, so a focus row written there killed every
@@ -6790,11 +6810,10 @@ public class ExploreTest {
      * HardAsk}), answered as the corpus's ask maps an answer ({@code
      * ObligationFactory#settled}): UNSAT with the record's detail, gaps and
      * question, settling it; the budget spent a named SOLVER_TIMEOUT, never
-     * UNSAT; a model left for the host's solver to finish, no answer; a
-     * record over another query refused by name before any z3 (SGF7-adhoc-39:
-     * each hard ask was a corpus JVM of 18-21 GB, one per host).  Per row: the
-     * body, the budget, whether the record names another query, and the
-     * verdict and detail published (MODEL: a model, no answer).
+     * UNSAT; a model left for the host's solver to finish, no answer
+     * (SGF7-adhoc-39: each hard ask was a corpus JVM of 18-21 GB, one per
+     * host).  Per row: the body, the budget, and the verdict and detail
+     * published (MODEL: a model, no answer).
      */
     @Test
     public void theHardLaneAnswersOverItsFirstAsksQueryAlone()
@@ -6805,12 +6824,10 @@ public class ExploreTest {
                 + "(declare-const z Int)\n(assert (and (> x 2) (> y 2) "
                 + "(> z 2) (= (+ (* x x x) (* y y y)) (* z z z))))\n";
         Object[][] rows = {
-                {unsat, 60_000L, false, "UNSAT",
+                {unsat, 60_000L, "UNSAT",
                         "no world of this corpus takes the other arm at s#1"},
-                {slow, 1L, false, "NOT_ADMITTED", "SOLVER_TIMEOUT after 1ms"},
-                {sat, 60_000L, false, "MODEL", ""},
-                {sat, 60_000L, true, "NOT_ADMITTED",
-                        ObligationSolverMain.HARD_ASK_MISMATCH},
+                {slow, 1L, "NOT_ADMITTED", "SOLVER_TIMEOUT after 1ms"},
+                {sat, 60_000L, "MODEL", ""},
         };
         int at = 0;
         for (Object[] row : rows) {
@@ -6830,13 +6847,12 @@ public class ExploreTest {
                     GapClass.DIAGNOSTIC, "OB.1", "built");
             new HardAsk("OB.1", "S", "the question",
                     "no world of this corpus takes the other arm at s#1",
-                    Collections.singletonList(built), symbols,
-                    (Boolean) row[2] ? "another" : ArtifactIO.sha256(query))
+                    Collections.singletonList(built), symbols)
                     .write(worker.resolve(HardAsk.FILE));
             ObligationSolverMain.decide(obligations, "OB.1", worker,
                     Paths.get("z3"), (Long) row[1], 1152);
             String says = Arrays.toString(row);
-            if ("MODEL".equals(row[3])) {
+            if ("MODEL".equals(row[2])) {
                 assertFalse(says, Files.exists(
                         worker.resolve(ObligationDir.RESULT)));
                 assertEquals(says, "42", HardAsk.Model.read(worker.resolve(
@@ -6846,12 +6862,12 @@ public class ExploreTest {
             ObligationResult result = RowCodec.readAll(
                     worker.resolve(ObligationDir.RESULT),
                     RowCodec::readObligationResult).get(0);
-            assertEquals(says, row[3], result.verdict().name());
+            assertEquals(says, row[2], result.verdict().name());
             assertTrue(says + result.detail(),
-                    result.detail().startsWith((String) row[4]));
+                    result.detail().startsWith((String) row[3]));
             assertTrue(says, anyGap(worker, gap -> "built".equals(
                     gap.detail())));
-            assertEquals(says, "UNSAT".equals(row[3]), Files.exists(
+            assertEquals(says, "UNSAT".equals(row[2]), Files.exists(
                     worker.resolve(ObligationDir.QUESTION)));
         }
     }
