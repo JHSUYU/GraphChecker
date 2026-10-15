@@ -640,7 +640,8 @@ public class ConfirmationTest {
                 held.await();
                 answered[0] = MessageDoors.publishing("SOLR_ZK", path, 2L,
                         () -> { });
-                MessageDoors.notified("Watcher", () -> {
+                MessageDoors.notified("Watcher", "STORE", null,
+                        "NodeDataChanged", () -> {
                     long token = MessageDoors.refreshStarting();
                     try {
                         answered[1] = MessageDoors.publishing("SOLR_ZK",

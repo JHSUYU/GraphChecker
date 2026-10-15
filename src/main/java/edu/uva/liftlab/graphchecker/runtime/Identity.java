@@ -1551,6 +1551,8 @@ public final class Identity {
                 Confirmation.entering(Confirmation.activation(address,
                         ExecutionIndex.empty()));
             }
+            // A store notification's callback runs here.
+            MessageDoors.regionOpened(address);
         }
         return address;
     }

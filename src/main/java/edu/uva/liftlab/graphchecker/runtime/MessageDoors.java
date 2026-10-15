@@ -745,11 +745,11 @@ public final class MessageDoors {
             RowOrder.Position position = Identity.enginePosition();
             // The content first: a reader that finds the version filed
             // finds its leaves exported ({@link #filed}).
-            StoreContent.stored(transport, key, data);
+            Object document = StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
-            written(transport, key, owner, position);
+            written(transport, key, owner, position, document);
         } catch (RuntimeException fault) {
             doorFault("stored " + key, fault);
         } finally {
@@ -765,13 +765,20 @@ public final class MessageDoors {
      * from a demanded read of it ({@code RecordedStore}).
      */
     private static void written(String transport, String key, Object owner,
-                                RowOrder.Position position) {
+                                RowOrder.Position position,
+                                Object document) {
         long version = version(key);
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
         String node = RuntimeTraceContext.ownedSource(owner).key();
+        OccurrenceAddress writer = Identity.currentOccurrence(node);
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
-                Identity.currentOccurrence(node));
+                writer);
+        if (document != null) {
+            CausynthTraceRecorder.storeLeaves(true, trimmed(transport), path,
+                    version, writer, StoreContent.leafRows(transport, path,
+                            document));
+        }
         if (!RowRuntime.open()) return;
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         LocationId location = storeLocation(transport, path);
@@ -1108,7 +1115,7 @@ public final class MessageDoors {
      * builds the writer's document only then.
      */
     public static boolean capturingContent() {
-        return StoreContent.capturing();
+        return StoreContent.capturing() || RecordingWindow.opened();
     }
 
     /**
@@ -1134,7 +1141,18 @@ public final class MessageDoors {
      */
     public static void jsonRead(byte[] bytes, Object tree) {
         try {
-            StoreContent.parsed(bytes, tree);
+            String version = StoreContent.parsed(bytes, tree);
+            if (version == null) return;
+            // What the recording states the reader parsed, leaf by leaf, in
+            // the occurrence parsing it: the version's life, as its decode
+            // names it (#decode).
+            int cut = version.indexOf('\n');
+            String transport = version.substring(0, cut);
+            String key = version.substring(cut + 1);
+            String path = life(transport, location(key), version(key), false);
+            CausynthTraceRecorder.storeLeaves(false, transport, path,
+                    version(key), Identity.currentOccurrence(nodeHere()),
+                    StoreContent.leafRows(transport, path, tree));
         } catch (RuntimeException fault) {
             doorFault("jsonRead", fault);
         }
@@ -1218,15 +1236,25 @@ public final class MessageDoors {
      * the first version the callback reads that a write of the window
      * stored ({@link #fetched}) is the message that caused it, and the
      * callback's end ends it.  Whatever lineage the callback's pooled thread
-     * inherited is the pool's, not the notification's cause.
+     * inherited is the pool's, not the notification's cause.  The
+     * recording states the notification (WATCH_FIRED) in the occurrence the
+     * callback opens first ({@link #regionOpened}), else in the one it ran
+     * in.
      *
      * @param kind what is notified (the watcher's class): one change the
      *             store reports to two watchers is read by two callbacks,
      *             each an occurrence of its own
+     * @param path the location notified, null for none (a session event)
+     * @param type the event's type
      */
-    public static void notified(String kind, Runnable callback) {
+    public static void notified(String kind, String transport, String path,
+                                String type, Runnable callback) {
         NOTIFIED.set(trimmed(kind));
         DELIVERING.set(DELIVERING.get() + 1);
+        // The notification, stated in the occurrence its callback opens
+        // (#regionOpened), else where it ran (below).
+        FIRED.set(path == null ? null : new String[] {trimmed(transport),
+                trimmed(path), trimmed(type)});
         int owed = Confirmation.notificationBegins();
         try {
             callback.run();
@@ -1235,6 +1263,7 @@ public final class MessageDoors {
             // The callback's own exception is the system's and goes on; an
             // engine fault here would replace it, so it is named instead.
             try {
+                fired(Identity.currentOccurrence(nodeHere()));
                 // What it published at once is in force now -- Solr's watch
                 // callbacks end right after their constructState -- so its
                 // PUBLISH turns are settled here (#publishing).
@@ -1245,6 +1274,78 @@ public final class MessageDoors {
                 doorFault("notified " + kind, fault);
             }
         }
+    }
+
+    /** A notification this thread delivers, not yet stated ({@link
+     *  #notified}): transport, path and type. */
+    private static final ThreadLocal<String[]> FIRED = new ThreadLocal<>();
+
+    /**
+     * An occurrence opened on this thread ({@code Identity#occurrence}):
+     * the first a notification's callback opens is the callback's, where
+     * the notification is stated.
+     */
+    static void regionOpened(OccurrenceAddress occurrence) {
+        if (FIRED.get() != null) fired(occurrence);
+    }
+
+    /** States the notification this thread delivers, once, at
+     *  {@code occurrence}: its zxid none, which ZooKeeper's notifications
+     *  carry no client of. */
+    private static void fired(OccurrenceAddress occurrence) {
+        String[] fired = FIRED.get();
+        if (fired == null) return;
+        FIRED.remove();
+        CausynthTraceRecorder.watchFired(fired[0], life(fired[0], fired[1],
+                -1L, false), fired[2], -1L, occurrence);
+    }
+
+    /**
+     * A read of {@code key} -- the location and the version it returned,
+     * -1 for no node -- at the store's call ({@code op}: a ZooKeeper
+     * getData, exists or getChildren, whose version is the node's children
+     * version): stated in the recording, and in a replay a read row of the
+     * version at the reading occurrence, under the store's own site ({@code
+     * <transport>#READ:<location>}), but for a getChildren, whose version is
+     * no data version a write made.
+     */
+    public static void storeRead(String transport, String key, String op,
+                                 Object owner) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            read(transport, key, op, owner);
+        } catch (RuntimeException fault) {
+            doorFault("storeRead " + key, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void read(String transport, String key, String op,
+                             Object owner) {
+        long version = version(key);
+        // The path's life as it stands: a read waits for no write in flight
+        // (a decode does, #decode), so its timing is the store's alone.
+        String path = life(transport, location(key), version, false);
+        String node = RuntimeTraceContext.ownedSource(owner).key();
+        CausynthTraceRecorder.storeRead(trimmed(transport), path, version, op,
+                Identity.currentOccurrence(node));
+        if (!RowRuntime.open() || version < 0L || "getChildren".equals(op)) {
+            return;
+        }
+        LocationId location = storeLocation(transport, path);
+        RowRuntime.storeRead(RowRuntime.doorOccurrence(node),
+                Identity.enginePosition(), Endpoint.messageSite(
+                        trimmed(transport), "READ", location.slot()
+                                .replace('/', '.').replace('@', '.')),
+                location, version);
+    }
+
+    /** A fetch's version key with its life ({@link #life}), as a decode of
+     *  it names it. */
+    static String livePath(String transport, String key) {
+        return life(transport, location(key), version(key), false);
     }
 
     /**
@@ -1276,6 +1377,7 @@ public final class MessageDoors {
 
     private static void fetch(String transport, String key, Object owner,
                               byte[] data) {
+        read(transport, key, "getData", owner);
         StoreContent.fetched(transport, key, data);
         String kind = NOTIFIED.get();
         if (kind == null) return;

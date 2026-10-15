@@ -177,6 +177,35 @@ public class StoreContentTest {
         StoreContent.resetForTests();
     }
 
+    /**
+     * A document's leaves as a recording states them (STORE_LEAVES): each
+     * pointer as a content port spells it and its leaf object, flat -- the
+     * pointers joined by a TAB, the objects' identities by a comma, one
+     * object one identity -- and none past the walk's bound, the whole
+     * document.
+     */
+    @Test
+    public void aDocumentsLeavesAreStatedFlatUpToTheBound() {
+        String shared = new String("active");
+        Map<String, Object> document = single("a", shared);
+        document.put("b", Arrays.asList(shared, 7L));
+        List<Object[]> leaves = StoreContent.leafRows("T", "/x", document);
+        List<String> pointers = new ArrayList<String>();
+        for (Object[] leaf : leaves) pointers.add((String) leaf[0]);
+        assertEquals(Arrays.asList("|a", "|b|0", "|b|1"), pointers);
+        String[] flat = CausynthTraceRecorder.flat(leaves);
+        assertEquals("|a\t|b|0\t|b|1", flat[0]);
+        String[] ids = flat[1].split(",");
+        assertEquals(3, ids.length);
+        assertEquals("one object, one identity", ids[0], ids[1]);
+        assertFalse(ids[0].equals(ids[2]));
+        Map<String, Object> wide = new LinkedHashMap<String, Object>();
+        for (int leaf = 0; leaf <= StoreContent.MAX_LEAVES; leaf++) {
+            wide.put("k" + leaf, "v");
+        }
+        assertNull(StoreContent.leafRows("T", "/x", wide));
+    }
+
     private static Map<String, Object> single(String key, Object value) {
         Map<String, Object> map = new LinkedHashMap<String, Object>();
         map.put(key, value);

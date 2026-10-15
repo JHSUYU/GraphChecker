@@ -426,6 +426,15 @@ public final class CausynthTraceRecorder {
     /** {@code event} of the objects one fetch of a version was parsed
      *  into. */
     static final String STORE_DECODED_EVENT = "STORE_DECODED";
+    /** {@code event} of one read of a store location's version at the
+     *  store's call (a ZooKeeper getData, exists or getChildren). */
+    static final String STORE_READ_EVENT = "STORE_READ";
+    /** {@code event} of one store notification delivered into its
+     *  callback (a ZooKeeper watch). */
+    static final String WATCH_FIRED_EVENT = "WATCH_FIRED";
+    /** {@code event} of the leaves of one document a store version
+     *  carries, as its writer serialized it or a reader parsed it. */
+    static final String STORE_LEAVES_EVENT = "STORE_LEAVES";
 
     /**
      * The recording's half of a store write ({@link MessageDoors#stored}):
@@ -442,9 +451,116 @@ public final class CausynthTraceRecorder {
                     "seq", EVENT_COUNTER.incrementAndGet(),
                     "transport", nonNull(transport),
                     "location", nonNull(location),
+                    "slot", slot(transport, location),
                     "version", version,
                     "occurrenceAddress", writer.render());
         }
+    }
+
+    /**
+     * The recording's half of a store read at the store's call ({@link
+     * MessageDoors#storeRead}): the version the call returned -- a
+     * getData's or an exists' data version, a getChildren's child version,
+     * -1 for no node -- and the occurrence it ran in, which PLAN joins with
+     * the version's write ({@code causynth.ZkCausalGraph}).
+     */
+    static void storeRead(String transport, String location, long version,
+                          String op, OccurrenceAddress occurrence) {
+        if (!RecordingWindow.opened()) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", STORE_READ_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "transport", nonNull(transport),
+                    "location", nonNull(location),
+                    "slot", slot(transport, location),
+                    "version", version,
+                    "op", nonNull(op),
+                    "occurrenceAddress", rendered(occurrence));
+        }
+    }
+
+    /**
+     * The recording's half of a store notification ({@link
+     * MessageDoors#notified}): its location and type, the zxid of the change
+     * that fired it (-1: the store states none), and the occurrence its
+     * callback ran in.
+     */
+    static void watchFired(String transport, String location, String type,
+                           long zxid, OccurrenceAddress occurrence) {
+        if (!RecordingWindow.opened()) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", WATCH_FIRED_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "transport", nonNull(transport),
+                    "location", nonNull(location),
+                    "slot", slot(transport, location),
+                    "type", nonNull(type),
+                    "zxid", zxid,
+                    "occurrenceAddress", rendered(occurrence));
+        }
+    }
+
+    /**
+     * The recording's half of a document a store version carries, leaf by
+     * leaf ({@code StoreContent}): as its writer serialized it ({@code
+     * write}) or a reader parsed it, each leaf {@code [pointer, object]},
+     * stated flat -- the pointers, as a content port spells them, joined by
+     * a TAB, and parallel to them the objects by the identity a FIELD_READ
+     * names its value by, joined by a comma -- which PLAN follows field by
+     * field ({@code causynth.ZkCausalGraph}); {@code whole} and no pointers
+     * past the walk's bound ({@code leaves} null): the whole document.
+     */
+    static void storeLeaves(boolean write, String transport, String location,
+                            long version, OccurrenceAddress occurrence,
+                            List<Object[]> leaves) {
+        if (!RecordingWindow.opened()) return;
+        synchronized (LOCK) {
+            String[] flat = leaves == null ? new String[2] : flat(leaves);
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", STORE_LEAVES_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "side", write ? "WRITE" : "DECODE",
+                    "transport", nonNull(transport),
+                    "location", nonNull(location),
+                    "slot", slot(transport, location),
+                    "version", version,
+                    "occurrenceAddress", rendered(occurrence),
+                    "pointers", flat[0],
+                    "objects", flat[1],
+                    "whole", leaves == null ? Boolean.TRUE : null);
+        }
+    }
+
+    /** A document's leaves flat ({@link #storeLeaves}): the pointers
+     *  joined by a TAB, the objects' identities joined by a comma. */
+    static String[] flat(List<Object[]> leaves) {
+        StringBuilder pointers = new StringBuilder();
+        StringBuilder objects = new StringBuilder();
+        for (Object[] leaf : leaves) {
+            if (objects.length() > 0) {
+                pointers.append('\t');
+                objects.append(',');
+            }
+            pointers.append(leaf[0]);
+            objects.append(identity(leaf[1]));
+        }
+        return new String[] {pointers.toString(), objects.toString()};
+    }
+
+    /** A store location as session rows spell it, named while RunNames
+     *  knows the run's names ({@link MessageDoors#storeLocation}). */
+    private static String slot(String transport, String location) {
+        return MessageDoors.storeLocation(nonNull(transport),
+                nonNull(location)).slot();
+    }
+
+    private static String rendered(OccurrenceAddress occurrence) {
+        return occurrence == null ? "" : occurrence.render();
     }
 
     /**
@@ -487,6 +603,7 @@ public final class CausynthTraceRecorder {
                     "seq", EVENT_COUNTER.incrementAndGet(),
                     "transport", nonNull(transport),
                     "location", nonNull(location),
+                    "slot", slot(transport, location),
                     "version", version,
                     "objects", ids.toString(),
                     "occurrenceAddress", fetch == null ? ""

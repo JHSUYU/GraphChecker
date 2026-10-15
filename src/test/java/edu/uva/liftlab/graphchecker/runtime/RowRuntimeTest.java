@@ -63,6 +63,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -1063,6 +1064,112 @@ public class RowRuntimeTest {
                 "42 /m5/life#3@0"), writes(LocationKind.STORE, write ->
                 write.seq() + " " + write.location().slot() + "@"
                         + write.version()));
+    }
+
+    /**
+     * A read at the store's call is a read row of the version it returned
+     * at the reading occurrence, under the store's READ site -- a getData's
+     * (its fetch) and an exists' -- but a getChildren's, whose version is
+     * its children's, and a read of no node.
+     */
+    @Test
+    public void aStoreCallsReadIsARowOfItsDataVersion() throws Exception {
+        openSession();
+        RecordingWindow.open();
+        Identity.clock(() -> 41L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.reads", true);
+        MessageDoors.fetched("SOLR_ZK", "/live/one@2", owner, null);
+        MessageDoors.storeRead("SOLR_ZK", "/live/two@5", "exists", owner);
+        MessageDoors.storeRead("SOLR_ZK", "/live/three@-1", "exists", owner);
+        MessageDoors.storeRead("SOLR_ZK", "/live@7", "getChildren", owner);
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        List<String> reads = new ArrayList<String>();
+        for (ReadRow read : SessionReader.read(session()).reads()) {
+            if (read.location().kind() == LocationKind.STORE) {
+                reads.add(read.endpoint().site() + "@"
+                        + read.observedVersion());
+            }
+        }
+        assertEquals(Arrays.asList("SOLR_ZK#READ:.live.one@2",
+                "SOLR_ZK#READ:.live.two@5"), reads);
+    }
+
+    /**
+     * A store document crosses symbolically only at or under the content
+     * keys of the occurrence that writes or parses it (a plan row's
+     * {@code contentKeys}): there a leaf is exported or minted -- no VM runs
+     * here, so each one tried is named unread or unminted -- and every
+     * other leaf a writer exports as its value, a constant, and a reader
+     * takes as parsed, no attach.  No keys: every leaf.
+     */
+    @Test
+    public void aDocumentCrossesSymbolicallyOnlyUnderItsContentKeys()
+            throws Exception {
+        openSession();
+        RecordingWindow.open();
+        Identity.clock(() -> 41L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.keys", true);
+        // the location, its content keys (null: none)
+        Object[][] table = {
+                {"/collections/a/state.json", null},
+                {"/collections/b/state.json",
+                        Collections.singletonList("|c|shards|s1|state")}};
+        for (Object[] row : table) {
+            Map<String, Object> shard = new LinkedHashMap<String, Object>();
+            shard.put("state", "active");
+            shard.put("leader", "n1");
+            Map<String, Object> collection =
+                    new LinkedHashMap<String, Object>();
+            collection.put("shards", Collections.singletonMap("s1", shard));
+            collection.put("router", "compositeId");
+            Map<String, Object> tree = Collections.<String, Object>
+                    singletonMap("c", collection);
+            @SuppressWarnings("unchecked")
+            List<String> keys = (List<String>) row[1];
+            String key = row[0] + "@3";
+            StoreContent.export("SOLR_ZK", key, tree, keys);
+            StoreContent.attach("SOLR_ZK", key, null, tree, keys);
+        }
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        Map<String, List<String>> tried = new TreeMap<String, List<String>>();
+        for (GapRow gap : gaps()) {
+            String how = gap.detail().startsWith("the leaf's expression")
+                    ? "export" : gap.detail().startsWith("the parsed leaf")
+                    ? "mint" : null;
+            if (how == null) continue;
+            tried.computeIfAbsent(how, any -> new ArrayList<String>())
+                    .add(gap.subject().substring(gap.subject()
+                            .indexOf("#CONTENT:") + 9));
+        }
+        for (List<String> each : tried.values()) Collections.sort(each);
+        List<String> all = Arrays.asList(
+                "|collections|a|state.json#|c|router",
+                "|collections|a|state.json#|c|shards|s1|leader",
+                "|collections|a|state.json#|c|shards|s1|state");
+        List<String> keyed = Collections.singletonList(
+                "|collections|b|state.json#|c|shards|s1|state");
+        List<String> both = new ArrayList<String>(all);
+        both.addAll(keyed);
+        assertEquals("export", both, tried.get("export"));
+        assertEquals("mint", both, tried.get("mint"));
+        List<String> constants = new ArrayList<String>();
+        for (ExportRow export : SessionReader.read(session()).exports()) {
+            constants.add(export.endpoint().site().substring(export
+                    .endpoint().site().indexOf("#CONTENT:") + 9) + "="
+                    + export.recordedValue() + " " + export.javaType());
+        }
+        Collections.sort(constants);
+        assertEquals(Arrays.asList(
+                "|collections|b|state.json#|c|router=compositeId"
+                        + " java/lang/String",
+                "|collections|b|state.json#|c|shards|s1|leader=n1"
+                        + " java/lang/String"), constants);
     }
 
     /**

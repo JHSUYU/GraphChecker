@@ -9,7 +9,8 @@
 # batching wait 2fc60518c6 (its idle wait back to stock, cd98d779dc) + a view's
 # publication door 827b46a609 +
 # snapshot-no-active's search d287b1e036 + a planted session expiry b707106739 +
-# snapshot-no-active's workload order 7845c97bb1 + makePath's creates 0ce3deafed), pushed
-# under this name.
+# snapshot-no-active's workload order 7845c97bb1 + makePath's creates 0ce3deafed), and from
+# the ZooKeeper causal trace on the local gc/solr-zktrace 8fde6b812c (final9 + SolrZkClient's
+# store reads at their calls and watch events into their callbacks), pushed under this name.
 # name	fork branch	what it is
 lucene-solr-checks	graphchecker/solr-checks	every Solr case: the adapter (CausynthSolrCluster; the message, store-write and store-read doors, a store read's lost reply; ZooKeeper store versions and their JSON content; the node's views of cluster state and aliases), the 12 study checks' markers and the eight bug checks' markers and workloads, with the automatic cluster's determinism patches, the per-collection refresh lock, and the workloads of solr-adhoc-13 and -38 cut after their declared occurrence, the CacheCleaner workaround, the Overseer's batching wait, makePath's creates through create, snapshot-no-active's search as loops, and the expirer a planted SessionExpired calls
