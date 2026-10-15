@@ -199,6 +199,14 @@ public final class ConcolicScheduler {
             task.json().addProperty(RuntimeSelectedRegionFinalizer.DOORS_ONLY,
                     true);
         }
+        // The ZooKeeper causal chain's fields it carries: a leaf it parses
+        // or serializes outside them crosses as a constant
+        // (runtime.StoreContent).
+        if (plan.json().has(RuntimeSelectedRegionFinalizer.CONTENT_KEYS)) {
+            task.json().add(RuntimeSelectedRegionFinalizer.CONTENT_KEYS,
+                    plan.json().get(RuntimeSelectedRegionFinalizer
+                            .CONTENT_KEYS).deepCopy());
+        }
         List<String> regions = new ArrayList<>(strings(plan.json(),
                 RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
         regions.add(plan.regionId());

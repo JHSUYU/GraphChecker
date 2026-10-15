@@ -94,6 +94,14 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DOORS_ONLY = "doorsOnly";
     /**
+     * Activation member: the ZooKeeper causal chain's fields this occurrence
+     * carries ({@link ZkCausalGraph#keys}), each {@code location}, {@code
+     * slot} and {@code pointer} (a JSON pointer prefix, '|' for '/'; ""
+     * the whole document): a leaf it parses or serializes outside every
+     * one crosses as a constant.  None stated: no restriction.
+     */
+    public static final String CONTENT_KEYS = "contentKeys";
+    /**
      * {@code admissionBasis} of an activation carried because it exported a
      * value the walk demanded on the other side of a message: the recording
      * bound its OUT capture of a port to the exchange leg the demanding
@@ -135,7 +143,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * Activation member: the data-flow doors' captures ({@code
      * LibraryCatalog#dataFlowMarker}, a shared store's read) this occurrence
      * mints, each {@code siteId}, {@code ordinal}, {@code fetch} (why:
-     * {@value #PROVENANCE_FETCH} or {@value #LOCATION_FETCH}), {@code
+     * {@value #PROVENANCE_FETCH}), {@code
      * location} and {@code version}.  Every other capture of such a door is
      * woven but never asked: no port is planned for it ({@code
      * plan.ConcolicScheduler#declaredPorts}), so the read never fails.
@@ -143,9 +151,6 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String STORE_FETCHES = "storeFetches";
     /** The fetch whose decode registered an object the target read. */
     static final String PROVENANCE_FETCH = "PROVENANCE";
-    /** Another fetch, on the target's node, of a location the target read
-     *  through a decoded object. */
-    static final String LOCATION_FETCH = "LOCATION";
     /**
      * Activation member, in memory only: per field the recording saw it read
      * or write, the objects it did so on ({@code
@@ -411,7 +416,7 @@ public final class RuntimeSelectedRegionFinalizer {
         stateSharedAddressClasses(program, sharedAddresses);
         // Declared last, and deliberately after the closure filter.
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
-        return new Result(program.regions, program.planGaps);
+        return new Result(program.regions, program.planGaps, program.zkChain);
     }
 
     /** One declared cut port of one region, built once from its skeleton. */
@@ -1045,6 +1050,12 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, unplannable, heap);
+        walk.zk = ZkCausalGraph.of(store);
+        walk.chain = zkChain(program, scopeMap, messages, store, walk.zk,
+                targets);
+        program.zkChain.addAll(walk.chain.rows());
+        program.zkChain.addAll(contentKeys(program, store, walk.zk,
+                walk.chain, targets));
         List<Demand> seeds = new ArrayList<>();
         for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
@@ -1058,6 +1069,7 @@ public final class RuntimeSelectedRegionFinalizer {
         walk.walk(seeds);
         crossStore(program, walk, scopeMap, messages, store, targets);
         admitRelevantRoots(program, walk, scopeMap, messages);
+        walk.stateOffChain(program.planGaps);
         walk.stateConfinedWriters(program.planGaps);
         walk.stateUnpairedWires(program.planGaps);
         walk.stateFixedDeciders(program.planGaps);
@@ -1214,8 +1226,9 @@ public final class RuntimeSelectedRegionFinalizer {
      * -- a construction-only field the root demand chose ({@code
      * StaticScopeMap#provenanceCells}), read on an object the recording
      * states that fetch registered ({@link RecordedStore#versionsOf}) --
-     * rests on that version, and on every earlier version of its location
-     * ({@link RecordedStore#writersUpTo}).  Each occurrence that made one is
+     * rests on its location, every version of it, never pruned by the
+     * recorded order ({@link RecordedStore#writersOf}): the ZooKeeper causal
+     * chain's writers ({@link ZkCausalGraph}).  Each occurrence that made one is
      * admitted where it is an activation (a role -- an updater turn that ran
      * no woven region -- is passed through, never planned).  The message
      * each served, the queue item an updater turn took in ({@code
@@ -1229,6 +1242,105 @@ public final class RuntimeSelectedRegionFinalizer {
      * state holds was written by the Overseer's state updater for the item
      * RestoreCmd offered after its RESTORECORE requests).
      */
+    /**
+     * The targets' ZooKeeper causal chain ({@link ZkCausalGraph#chain}):
+     * seeded by the locations the objects they read fields on were decoded
+     * from (the provenance cells, {@link RecordedStore#versionsOf}), a
+     * writer's queue items' senders ({@link RecordedMessages#sendersOf})
+     * walked as its inputs.
+     */
+    private static ZkCausalGraph.Chain zkChain(StaticProgram program,
+                                               StaticScopeMap scopeMap,
+                                               RecordedMessages messages,
+                                               RecordedStore store,
+                                               ZkCausalGraph zk,
+                                               Collection<String> targets) {
+        Map<String, String> byId = new HashMap<>();
+        for (String occurrence : program.activations.keySet()) {
+            byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
+        }
+        Set<String> seeds = new LinkedHashSet<>();
+        for (String target : targets) {
+            Set<Integer> objects = new HashSet<>();
+            for (String cell : scopeMap.provenanceCells()) {
+                objects.addAll(objectsOf(program.activations.get(target),
+                        cell, false));
+            }
+            seeds.addAll(store.versionsOf(objects).keySet());
+        }
+        return zk.chain(targets, seeds, occurrence -> {
+            List<String> senders = new ArrayList<>();
+            for (String sender : messages.sendersOf(
+                    OccurrenceAddress.parse(occurrence))) {
+                String held = byId.get(sender);
+                if (held != null) senders.add(held);
+            }
+            return senders;
+        });
+    }
+
+    /**
+     * Each chain occurrence's fields ({@link ZkCausalGraph#keys}), stated on
+     * its activation ({@link #CONTENT_KEYS}: a leaf outside them crosses as
+     * a constant, on a parse and on a write) and returned as {@code
+     * zk_chain.jsonl}'s ZK_CHAIN_KEYS rows.  Seeded by every object the
+     * targets read a field on or read; a location whose decoded objects a
+     * target read fields of is carried whole.
+     */
+    private static List<Map<String, Object>> contentKeys(
+            StaticProgram program, RecordedStore store, ZkCausalGraph zk,
+            ZkCausalGraph.Chain chain, Collection<String> targets) {
+        Set<Integer> seeds = new HashSet<>();
+        Set<Integer> owners = new HashSet<>();
+        for (String target : targets) {
+            Map<String, Object> activation = program.activations.get(target);
+            owners.addAll(allObjects(activation, FIELD_OWNERS));
+            seeds.addAll(owners);
+            seeds.addAll(allObjects(activation, FIELD_REFERENTS));
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, Map<String, Set<String>>> held : zk.keys(
+                chain, seeds, store.versionsOf(owners).keySet()).entrySet()) {
+            List<Map<String, Object>> stated = new ArrayList<>();
+            for (Map.Entry<String, Set<String>> location
+                    : held.getValue().entrySet()) {
+                int cut = location.getKey().indexOf('\n');
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("schemaVersion", 1);
+                row.put("kind", "ZK_CHAIN_KEYS");
+                row.put("occurrenceId", held.getKey());
+                row.put("location", location.getKey().substring(cut + 1));
+                row.put("slot", chain.paths.get(location.getKey()));
+                row.put("pointers", new ArrayList<>(location.getValue()));
+                rows.add(row);
+                for (String pointer : location.getValue()) {
+                    Map<String, Object> key = new LinkedHashMap<>();
+                    key.put("location", row.get("location"));
+                    key.put("slot", row.get("slot"));
+                    key.put("pointer", pointer);
+                    stated.add(key);
+                }
+            }
+            Map<String, Object> activation = program.activations.get(
+                    held.getKey());
+            if (activation != null) activation.put(CONTENT_KEYS, stated);
+        }
+        return rows;
+    }
+
+    /** Every object one activation member names, over all its fields. */
+    @SuppressWarnings("unchecked")
+    private static Set<Integer> allObjects(Map<String, Object> activation,
+                                           String member) {
+        Set<Integer> objects = new HashSet<>();
+        Object byField = activation == null ? null : activation.get(member);
+        if (!(byField instanceof Map)) return objects;
+        for (Object held : ((Map<String, Object>) byField).values()) {
+            if (held instanceof Set) objects.addAll((Set<Integer>) held);
+        }
+        return objects;
+    }
+
     private static void crossStore(StaticProgram program, DemandWalk walk,
                                    StaticScopeMap scopeMap,
                                    RecordedMessages messages,
@@ -1250,10 +1362,8 @@ public final class RuntimeSelectedRegionFinalizer {
             int depth = walk.depth(target) + 1;
             askFetches(program, walk, scopeMap, store, byId, target, objects,
                     depth);
-            for (Map.Entry<String, Long> version
-                    : store.versionsOf(objects).entrySet()) {
-                for (String writer : store.writersUpTo(version.getKey(),
-                        version.getValue())) {
+            for (String location : store.versionsOf(objects).keySet()) {
+                for (String writer : store.writersOf(location)) {
                     if (!crossed.add(writer)) continue;
                     if (program.activations.containsKey(writer)
                             && !walk.excluded.contains(writer)) {
@@ -1287,14 +1397,10 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The store reads on the data flow of what {@code target} read through
      * {@code objects} (SYMBOL-SCOPE §4.2, a {@code DATA_FLOW} door): the
-     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH})
-     * and every other fetch, on the target's node, of a location they were
-     * decoded from, at a version up to the one they hold ({@value
-     * #LOCATION_FETCH}): a read that fails registers no watch, so the next
-     * version is never fetched and the node reads the one before (an alias's
-     * watcher whose re-read failed: solr-adhoc-40's "alias must exist"); a
-     * later version's fetch ran after the target read, on no flow of it (Z1D4:
-     * node2's eight re-reads of /aliases.json after the first update).  Each such occurrence is admitted ({@value
+     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH});
+     * another fetch of the location is the ZooKeeper causal chain's
+     * ({@link ZkCausalGraph}: a consumer of a chain location on the target's
+     * node).  Each such occurrence is admitted ({@value
      * #STORE_FETCH_ADMISSION}), its fetch's door is the data-flow door call
      * it made last before the decode ({@link #fetchDoor}), and those captures
      * are stated ({@link #STORE_FETCHES}): only they mint, and EXPLORE
@@ -1307,8 +1413,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                    Map<String, String> byId, String target,
                                    Set<Integer> objects, int depth) {
         for (Map.Entry<RecordedStore.Fetch, String> fetch : dataFlowFetches(
-                store, objects, OccurrenceAddress.parse(target).node())
-                .entrySet()) {
+                store, objects).entrySet()) {
             admitFetch(program, walk, scopeMap, byId, fetch.getKey(),
                     fetch.getValue(), depth);
         }
@@ -1316,19 +1421,10 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** {@link #askFetches}'s fetches, each with why, in the order asked. */
     static Map<RecordedStore.Fetch, String> dataFlowFetches(
-            RecordedStore store, Collection<Integer> objects, NodeId node) {
+            RecordedStore store, Collection<Integer> objects) {
         Map<RecordedStore.Fetch, String> fetches = new LinkedHashMap<>();
         for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
             fetches.putIfAbsent(fetch, PROVENANCE_FETCH);
-        }
-        for (Map.Entry<String, Long> read
-                : store.versionsOf(objects).entrySet()) {
-            for (RecordedStore.Fetch fetch : store.fetchesAt(read.getKey())) {
-                if (fetch.version <= read.getValue() && node.equals(
-                        OccurrenceAddress.parse(fetch.occurrence).node())) {
-                    fetches.putIfAbsent(fetch, LOCATION_FETCH);
-                }
-            }
         }
         return fetches;
     }
@@ -1865,6 +1961,13 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Occurrences that left a demanded store at guards no source
          *  reaches in them ({@link #movable}), so no writer was planned. */
         private final Set<String> fixedDeciders = new LinkedHashSet<>();
+        /** The recording's ZooKeeper causal graph and the targets' chain
+         *  over it: a ZooKeeper-carried writer of a demanded cell off the
+         *  chain is no candidate ({@link #offChain}). */
+        private ZkCausalGraph zk;
+        private ZkCausalGraph.Chain chain;
+        /** ZooKeeper-carried writers the chain left out of the walk. */
+        private final Set<String> offChain = new LinkedHashSet<>();
         /** Occurrences reached as writers of a demanded store: they ran
          *  its method or left it at a guard. */
         private final Set<String> storeWriters = new HashSet<>();
@@ -2082,6 +2185,16 @@ public final class RuntimeSelectedRegionFinalizer {
                                 || !node.equals(nodes.get(writerOccurrence))
                                 || holdsOthersOnly(writerOccurrence,
                                         occurrenceId, cell, site)) {
+                            continue;
+                        }
+                        // A store's value reaches a cell only along the
+                        // ZooKeeper causal chain: another decode, read or
+                        // callback writing the cell (a node's cluster state,
+                        // re-pointed by every collection's decode) carries
+                        // nothing the targets rest on.
+                        if (zk.zkCarried(writerOccurrence)
+                                && !chain.holds(writerOccurrence)) {
+                            offChain.add(writerOccurrence);
                             continue;
                         }
                         if (!held.storers.contains(writerOccurrence)
@@ -2588,6 +2701,20 @@ public final class RuntimeSelectedRegionFinalizer {
         /** One DIAGNOSTIC row per region whose occurrences left a demanded
          *  store at guards nothing the engine moves reaches ({@link
          *  #movable}), and the walk planned none of them otherwise. */
+        /** Names how many ZooKeeper-carried writers the chain left out
+         *  (one DIAGNOSTIC row): they run as recorded, unwoven. */
+        private void stateOffChain(List<Map<String, Object>> gaps) {
+            if (offChain.isEmpty()) return;
+            planGap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    "ZooKeeper causal chain", offChain.size() + " writer(s)"
+                            + " of a demanded cell read, decoded or were"
+                            + " called back on a store location off the"
+                            + " targets' chain (" + chain.paths.size()
+                            + " location(s), " + chain.occurrences.size()
+                            + " occurrence(s)) and are not planned, e.g. "
+                            + offChain.iterator().next());
+        }
+
         private void stateFixedDeciders(List<Map<String, Object>> gaps) {
             Map<String, Integer> byRegion = new LinkedHashMap<>();
             for (String occurrence : fixedDeciders) {
@@ -3195,10 +3322,15 @@ public final class RuntimeSelectedRegionFinalizer {
          * they travel into the runtime plan artifact with their own class.
          */
         public final List<Map<String, Object>> gaps;
+        /** The ZooKeeper causal chain the plan was cut to: {@code
+         *  zk_chain.jsonl} ({@link ZkCausalGraph.Chain#rows}). */
+        public final List<Map<String, Object>> zkChain;
         private Result(List<Map<String, Object>> regions,
-                       List<Map<String, Object>> gaps) {
+                       List<Map<String, Object>> gaps,
+                       List<Map<String, Object>> zkChain) {
             this.regions = regions;
             this.gaps = gaps;
+            this.zkChain = zkChain;
         }
     }
 }

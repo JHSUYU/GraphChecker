@@ -426,14 +426,14 @@ public final class CausynthTraceRecorder {
     /** {@code event} of the objects one fetch of a version was parsed
      *  into. */
     static final String STORE_DECODED_EVENT = "STORE_DECODED";
-    /** {@code event} of one read of a store location's version at the
-     *  store's call (a ZooKeeper getData, exists or getChildren). */
+    /** {@code event} of a store read that decoded nothing (getData,
+     *  exists, getChildren): the ZooKeeper causal trace's reader. */
     static final String STORE_READ_EVENT = "STORE_READ";
-    /** {@code event} of one store notification delivered into its
-     *  callback (a ZooKeeper watch). */
+    /** {@code event} of a watch callback on a store location. */
     static final String WATCH_FIRED_EVENT = "WATCH_FIRED";
-    /** {@code event} of the leaves of one document a store version
-     *  carries, as its writer serialized it or a reader parsed it. */
+    /** {@code event} of the leaves one write serialized or one parse read,
+     *  each JSON pointer with its leaf object: the causal trace's
+     *  fields. */
     static final String STORE_LEAVES_EVENT = "STORE_LEAVES";
 
     /**
@@ -1845,6 +1845,7 @@ public final class CausynthTraceRecorder {
         planGaps.addAll(trace.lineageGaps);
         writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
                 activationGraph.runtimeInstances, planGaps);
+        writeZkChain(target.outputDir, closure.zkChain);
     }
 
     /** The recorded decisions as the finalizer reads them (its branch
@@ -2383,7 +2384,7 @@ public final class CausynthTraceRecorder {
                     row.stringValue("transport"), row.stringValue("location"),
                     row.longValue("version", -1L),
                     row.stringValue("occurrenceAddress"),
-                    row.longValue("seq", 0L)));
+                    row.longValue("seq", 0L)).slot(row.stringValue("slot")));
         } else if (STORE_DECODED_EVENT.equals(eventKind)) {
             String listed = row.stringValue("objects");
             String[] ids = listed.isEmpty() ? new String[0]
@@ -2396,7 +2397,20 @@ public final class CausynthTraceRecorder {
                     row.stringValue("transport"), row.stringValue("location"),
                     row.longValue("version", -1L), objects,
                     row.stringValue("occurrenceAddress"),
-                    row.longValue("seq", 0L)));
+                    row.longValue("seq", 0L)).slot(row.stringValue("slot")));
+        } else if (STORE_READ_EVENT.equals(eventKind)) {
+            trace.store.add(RecordedStore.Event.read(
+                    row.stringValue("transport"), row.stringValue("location"),
+                    row.longValue("version", -1L),
+                    row.stringValue("occurrenceAddress"),
+                    row.longValue("seq", 0L)).slot(row.stringValue("slot")));
+        } else if (WATCH_FIRED_EVENT.equals(eventKind)) {
+            trace.store.add(RecordedStore.Event.fired(
+                    row.stringValue("transport"), row.stringValue("location"),
+                    row.stringValue("occurrenceAddress"),
+                    row.longValue("seq", 0L)).slot(row.stringValue("slot")));
+        } else if (STORE_LEAVES_EVENT.equals(eventKind)) {
+            trace.store.add(storeLeavesOf(row));
         } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
@@ -2641,6 +2655,22 @@ public final class CausynthTraceRecorder {
                                 .toPath());
     }
 
+    /** The ZooKeeper causal chain the plan was cut to, beside the plan
+     *  ({@code zk_chain.jsonl}: ZK_CHAIN_PATH, ZK_CHAIN_OCCURRENCE and
+     *  ZK_CHAIN_KEYS rows, {@code causynth.ZkCausalGraph}). */
+    private static void writeZkChain(File directory,
+                                     List<Map<String, Object>> rows)
+            throws IOException {
+        StringBuilder text = new StringBuilder();
+        com.google.gson.Gson gson = new com.google.gson.Gson();
+        for (Map<String, Object> row : rows) {
+            text.append(gson.toJson(row)).append('\n');
+        }
+        java.nio.file.Files.write(new File(directory, "zk_chain.jsonl")
+                .toPath(), text.toString().getBytes(
+                java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     /** The epoch's scope map, refused when it states no site at all. */
     private static StaticScopeMap readScopeMap(File staticScopeMap)
             throws IOException {
@@ -2782,6 +2812,35 @@ public final class CausynthTraceRecorder {
             this.region = region;
             this.occurrence = occurrence;
         }
+    }
+
+    /**
+     * One STORE_LEAVES row ({@link #STORE_LEAVES_EVENT}), flat as every
+     * trace row is: {@code side} (WRITE or DECODE), {@code pointers} (the
+     * JSON pointers, tab-separated), {@code objects} (their leaf objects,
+     * comma-separated, parallel), or {@code whole} true past the bound.
+     */
+    private static RecordedStore.Event storeLeavesOf(FlatJsonRow row) {
+        String[] pointers = null;
+        int[] objects = new int[0];
+        if (!row.booleanValue("whole", false)) {
+            String listed = row.stringValue("pointers");
+            pointers = listed.isEmpty() ? new String[0]
+                    : listed.split("\t", -1);
+            String ids = row.stringValue("objects");
+            String[] split = ids.isEmpty() ? new String[0] : ids.split(",");
+            objects = new int[split.length];
+            for (int at = 0; at < split.length; at++) {
+                objects[at] = Integer.parseInt(split[at].trim());
+            }
+        }
+        return RecordedStore.Event.leaves(
+                "WRITE".equals(row.stringValue("side")),
+                row.stringValue("transport"), row.stringValue("location"),
+                row.longValue("version", -1L),
+                row.stringValue("occurrenceAddress"),
+                row.longValue("seq", 0L), pointers, objects)
+                .slot(row.stringValue("slot"));
     }
 
     /**

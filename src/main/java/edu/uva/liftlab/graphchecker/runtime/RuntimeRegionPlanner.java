@@ -1453,14 +1453,15 @@ public final class RuntimeRegionPlanner {
             }
             // The equivalent deciders this occurrence is planned for, the
             // writers it did not cross to as confined, the store reads
-            // whose doors it asks, and whether it is planned for its doors
-            // alone.
+            // whose doors it asks, whether it is planned for its doors
+            // alone, and the store fields it carries.
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
                     RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
                     RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
                     RuntimeSelectedRegionFinalizer.STORE_FETCHES,
-                    RuntimeSelectedRegionFinalizer.DOORS_ONLY}) {
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY,
+                    RuntimeSelectedRegionFinalizer.CONTENT_KEYS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }

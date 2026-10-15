@@ -107,12 +107,11 @@ public class StoreFetchDoorsTest {
                 store.versionsOf(Collections.singletonList(10)));
     }
 
-    /** The fetches a target asks: the one that decoded what it read, and its
-     *  node's other fetches of that location up to the version read (a
-     *  failed one registers no watch); a later one, or another node's, is on
-     *  no flow of the read. */
+    /** The fetch a target asks: the one that decoded what it read; another
+     *  fetch of the location is the ZooKeeper causal chain's (ZkCausalGraph),
+     *  never asked here. */
     @Test
-    public void aTargetAsksItsNodesFetchesUpToTheVersionItRead() {
+    public void aTargetAsksTheFetchThatDecodedWhatItRead() {
         String node2 = "auto0/node2#epoch0/region/REGION.w/ctx:Root:CLIENT/"
                 + "suite#1/idx:<a.B: void m()>@";
         String node3 = "auto0/node3#epoch0/region/REGION.w/ctx:Root:CLIENT/"
@@ -126,15 +125,13 @@ public class StoreFetchDoorsTest {
                         new int[]{3}, node2 + "2", 30L)));
         Object[][] rows = {
             {1, Collections.singletonList(node2 + "1@1 PROVENANCE")},
-            {3, Arrays.asList(node2 + "2@2 PROVENANCE",
-                    node2 + "1@1 LOCATION")},
+            {3, Collections.singletonList(node2 + "2@2 PROVENANCE")},
         };
         for (Object[] row : rows) {
             List<String> asked = new ArrayList<>();
             for (Map.Entry<RecordedStore.Fetch, String> fetch
                     : RuntimeSelectedRegionFinalizer.dataFlowFetches(store,
-                    Collections.singletonList((Integer) row[0]),
-                    NodeId.parse("auto0/node2#epoch0")).entrySet()) {
+                    Collections.singletonList((Integer) row[0])).entrySet()) {
                 asked.add(fetch.getKey().occurrence + "@"
                         + fetch.getKey().version + " " + fetch.getValue());
             }
