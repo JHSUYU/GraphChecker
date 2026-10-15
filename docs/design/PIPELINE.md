@@ -1143,6 +1143,23 @@ in the query. Demanded conjuncts (the flip and the inherited flips) get a one-mi
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
 an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest world:
 `minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
+THE QUERY IS THE FLIP'S CONE (KLEE's constraint independence, `FlipQuery#cone`): what it asserts --
+prefix decisions, inherited flips, writer choices, root and clock domains, stated facts -- is split
+into top-level conjuncts (`and`, `not not`, `not or`; `FlipQuery#conjuncts`), and only those that
+share a name with the flipped conjunct, closed to a fixed point, are stated: a variable of the query,
+or a declaration it states, which shares every name its definition reaches (a conjunct naming a
+container shares what the container is built from, never what is only built from it); a preamble
+function (`assoc_*`, `string_ref`) shares nothing, and a conjunct naming neither (constants alone) is
+kept. A dropped conjunct shares no name with the cone and holds at the recording's values (a prefix
+decision as run, a writer choice's exactly-one at the run's choice, a domain or pin at what was read,
+an inherited flip as the session's world ran it, a stated fact as recorded), so the cone UNSAT is the
+whole query UNSAT and a model of the cone, every dropped name at its recorded value, is a model of
+the whole: only the cone's variables are declared, minimized and read back, and no dropped root,
+clock, handoff or writer choice is planted. The hard lane asks the same text. SOLR-18413's witness
+flip (`RoutingRule#isExpired`): 8 of 245 conjuncts, SAT at once with MigrateCmd's clock +243 s,
+where the whole query, ZkStateReader's map bookkeeping sharing nothing with the flip, was "unknown
+(incomplete (theory array))"; on its corpus the four flips undecided that way decided, ten decided
+ones answered alike, queries 474 KB -> 7 KB.
 
 z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; a JVM that ends takes its
 running z3 processes with it (a shutdown hook), every z3 is started under `setpriv --pdeathsig
