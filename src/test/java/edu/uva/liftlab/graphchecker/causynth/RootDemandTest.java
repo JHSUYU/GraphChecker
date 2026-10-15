@@ -112,6 +112,44 @@ public class RootDemandTest {
     }
 
     /**
+     * A reference only the system's view classes write is no tracked cell
+     * ({@value RootDemand#SYSTEM_VIEW}): ZkStateReader.clusterState, woven
+     * for its decodes, is the view's bookkeeping, read as it is.
+     */
+    @Test
+    public void aReferenceOnlyTheViewWritesIsNotTracked() {
+        System.setProperty(RootDemand.SYSTEM_VIEW, T);
+        try {
+            Map<String, List<String>> writers = new LinkedHashMap<>();
+            scene(writers);
+            List<Map<String, Object>> edges = edges();
+            Map<String, Object> region = new LinkedHashMap<>();
+            region.put("regionId", "REGION.r");
+            region.put("rootMethod", HANDLE);
+            region.put("methods", Arrays.asList(HANDLE, RUN, CHECK));
+            RootDemand demand = RootDemand.of(edges,
+                    Collections.singletonList(region),
+                    Collections.<String, Clock>emptyMap(),
+                    ConfigRoots.of(edges, writers),
+                    Collections.singleton(CHECK + "#u9"),
+                    field -> field.contains(": int ")
+                            ? SharedFieldFlow.TrackedKind.VALUE
+                            : SharedFieldFlow.TrackedKind.REFERENCE,
+                    field -> false, owner -> owner.startsWith("t."),
+                    new Faults(), Collections.<DemandedDoors.Site>emptyList());
+            String kind = "";
+            for (RootDemand.Boundary boundary : demand.boundaries()) {
+                if (boundary.cell.equals(field("java.lang.String name"))) {
+                    kind = boundary.kind.name();
+                }
+            }
+            assertEquals("PRE_WINDOW", kind);
+        } finally {
+            System.clearProperty(RootDemand.SYSTEM_VIEW);
+        }
+    }
+
+    /**
      * SYMBOL-SCOPE §4.6: a construction-only field is a PROVENANCE boundary
      * (a read of a decoded object's field reads the store version it was
      * parsed from), and the walk goes on through what its constructor stored

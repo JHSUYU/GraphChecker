@@ -146,6 +146,9 @@ workflow_config_keys=(
   # The system's own DOOR rows, which replace the engine catalog's of their
   # transport and direction (causynth.LibraryCatalog, SYMBOL-SCOPE §4.2).
   "causynth_system_doors CAUSYNTH_SYSTEM_DOORS krp -"
+  # The system's view classes (system_scope), comma-separated class names:
+  # a reference field only they write is no tracked cell (causynth.RootDemand).
+  "causynth_system_view CAUSYNTH_SYSTEM_VIEW krp -"
   # How many classes of the lineage roots SEED may add to the case's scope
   # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE §2.4),
   # nearest the throw first; 0 keeps the declared scope as it is.
@@ -977,6 +980,7 @@ do_analyze() {
     system_properties+=("-Dcausynth.lineage.roots=${causynth_lineage_roots}")
   fi
   system_properties+=("-Dcausynth.system.doors=${causynth_system_doors}")
+  system_properties+=("-Dcausynth.system.view=${causynth_system_view}")
   system_properties+=("-Dcausynth.io.doors=$(campaign_io_doors)")
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
