@@ -1566,7 +1566,8 @@ parse mints only the leaves at or under a stated prefix of the location and take
 parsed (no attach), and a write exports those leaves by their expression and every other as its
 value, a constant (`StoreContent#attach`, `#export`, `#under`). The chain alone decides (owner
 2026-10-15: a finite set of ZooKeeper fields, by the causal trace): a parse or a write in a planned
-occurrence that is doors-only, or whose row states no keys, mints and exports no leaf at all, and one
+occurrence whose row states no keys mints and exports no leaf at all (a doors-only one keeps its
+row's keys: a chain writer run for its doors still writes the chain's fields), and one
 outside every planned occurrence (a role's: a watcher callback) only the chain's keys of its location
 over the whole plan -- every other leaf runs as its value, untracked, however
 many of the view's classes are woven. No leaf is walked for a STORE_LEAVES row outside the recording
