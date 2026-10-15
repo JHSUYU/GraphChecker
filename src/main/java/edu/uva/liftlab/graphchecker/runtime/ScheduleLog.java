@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -139,8 +140,20 @@ public final class ScheduleLog {
     private static final Map<String, Integer> COUNTS =
             new HashMap<String, Integer>();
     private static long seq;
-    /** {@link #steps}; guarded by {@link #LOCK}. */
-    private static long steps;
+    /**
+     * Every event key this run made, as progress counts it ({@link
+     * #madeKey}), so {@link #newKeys} grows only by what the run had not
+     * done before; guarded by {@link #LOCK}.
+     */
+    private static final Set<String> MADE_KEYS = new HashSet<String>();
+    /** Whether this run counts them: only a focused replay's watch asks
+     *  ({@link #countNewEvents}); a recording, the seed and CONFIRM pay
+     *  nothing. */
+    private static volatile boolean counting;
+    /** When the last new key was made ({@code System.nanoTime}, 0 before
+     *  any) and the longest span between two; guarded by {@link #LOCK}. */
+    private static long lastNewNanos;
+    private static long longestQuietNanos;
 
     // ---- the order, guarded by LOCK ---------------------------------------
     private static final byte OPEN = 0;
@@ -1171,10 +1184,13 @@ public final class ScheduleLog {
                 }
             }
         }
-        if (pending.kind != ScheduleEvent.Kind.WAKE
-                && pending.kind != ScheduleEvent.Kind.END
-                && pending.kind != ScheduleEvent.Kind.READ) {
-            steps++;
+        if (counting && MADE_KEYS.add(madeKey(pending))) {
+            long now = System.nanoTime();
+            if (lastNewNanos != 0L) {
+                longestQuietNanos = Math.max(longestQuietNanos,
+                        now - lastNewNanos);
+            }
+            lastNewNanos = now;
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
@@ -2495,16 +2511,52 @@ public final class ScheduleLog {
     }
 
     /**
-     * How many steps this run has made so far: its events but the clock's,
-     * a WAKE (a timed wait's timeout) and a tick's END -- a poll that wakes
-     * and finds nothing makes only those (solr-bugs-reindex-cleanup: a hung
-     * replay's request handler woke once a minute).  What a replay's watch
-     * sees move ({@code ConcolicResultPublisher#watchProgress}).
+     * How many distinct events this run has made so far ({@link #madeKey}):
+     * what a replay's watch counts as progress ({@code
+     * ConcolicResultPublisher#watchProgress}).  A loop that only does again
+     * what it did adds none, however busy (PV7-38: PULL replicas polling a
+     * leader left down, a test retrying against it, for 36 minutes).
      */
-    static long steps() {
+    static int newKeys() {
         synchronized (LOCK) {
-            return steps;
+            return MADE_KEYS.size();
         }
+    }
+
+    /** From now on this run counts its distinct events ({@link #newKeys}):
+     *  a focused replay's watch is armed. */
+    static void countNewEvents() {
+        counting = true;
+    }
+
+    /** Slots of the order taken or given up so far: bounded by the order,
+     *  what the replay's watch counts besides its new events. */
+    static long settledSlots() {
+        synchronized (LOCK) {
+            return (long) taken + givenUp;
+        }
+    }
+
+    /**
+     * An event as progress counts it: its kind; its site, with every name
+     * the run minted for itself taken out ({@link RunSpellings#strip}: a
+     * sequential znode's counter, a session id, a host and port, an
+     * identity hash); its node and its context's shape ({@link #shape}: per
+     * anchor hop the RPC site and the sender's node, then the root's role
+     * and api -- no invocation count, anchor hash or handoff), names the
+     * engine built and never stripped (a node named like a number would
+     * fold two nodes).  A poll, a retry or a watch made again makes no new
+     * key; other code, another store location, another request handler or
+     * another node does.  A view's PUBLISH names the version it put in
+     * force, so a loop publishing new versions still makes new keys: the
+     * safe direction, a cut missed, never a run cut.
+     */
+    private static String madeKey(Pending pending) {
+        ContextShape.Stance stance =
+                ContextShape.Stance.ofSend(pending.context);
+        return pending.kind.name() + " " + RunSpellings.strip(pending.site)
+                + " | " + (stance == null ? pending.context
+                : stance.node() + "|" + shape(stance.context()));
     }
 
     /**
@@ -2583,12 +2635,6 @@ public final class ScheduleLog {
                             + " runs free from its first event");
             return;
         }
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                EngineConsole.println("Causynth schedule: " + progress());
-            }
-        }, "causynth-schedule-progress"));
     }
 
     /**
@@ -2755,11 +2801,36 @@ public final class ScheduleLog {
         return beside.toFile().isFile() ? beside : null;
     }
 
-    /** The replay's account of its order, at exit. */
+    /**
+     * How the run held the order it was handed, said once by its end
+     * ({@code JUnitMethodRunner#exit}); nothing for a run handed none.
+     */
+    static void stateProgress() {
+        synchronized (LOCK) {
+            if (order.isEmpty()) return;
+        }
+        EngineConsole.println("Causynth schedule: " + progress());
+    }
+
+    /**
+     * The replay's account of its order, at exit, and of its progress: how
+     * many distinct events it made ({@link #newKeys}), the longest span
+     * between two new ones and how long ago the last one was -- what the
+     * watch's bound is measured against ({@code
+     * ConcolicResultPublisher#NO_NEW_EVENT_MILLIS}).
+     */
     static String progress() {
         synchronized (LOCK) {
-            if (order.isEmpty()) return "no order";
-            return "of an order of " + order.size() + " slot(s) (prefix "
+            long now = System.nanoTime();
+            String made = !counting ? "" : MADE_KEYS.size()
+                    + " distinct event(s)" + (lastNewNanos == 0L ? ""
+                    : ", at most " + TimeUnit.NANOSECONDS.toSeconds(
+                    longestQuietNanos) + " s between two new ones, the last "
+                    + TimeUnit.NANOSECONDS.toSeconds(now - lastNewNanos)
+                    + " s ago") + "; ";
+            if (order.isEmpty()) return made + "no order";
+            return made + "of an order of " + order.size()
+                    + " slot(s) (prefix "
                     + cut + "): " + taken + " taken, " + givenUp
                     + " given up in " + stalls + " stall(s), " + dead
                     + " settled by their occurrence's close, " + settledByEnd
@@ -2802,7 +2873,10 @@ public final class ScheduleLog {
                 UNKNOWN_SENDERS.clear();
             }
             seq = 0L;
-            steps = 0L;
+            MADE_KEYS.clear();
+            counting = false;
+            lastNewNanos = 0L;
+            longestQuietNanos = 0L;
             realized = null;
             names = new StableEventNames();
             AWAITED.clear();

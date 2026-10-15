@@ -106,7 +106,8 @@ solve() {  # solve <file> <seconds>: z3's verdict line, both arithmetic engines 
 }
 
 # One path's text per path selector of the manifest, as ClaimPolicy asks a
-# disjunction z3 left undecided whole (Composition#pathQuery): the body
+# disjunction z3 left undecided whole (Composition#sharedQuery and
+# #scopeQuery, one scope of its scoped z3s, read here as one text): the body
 # without the commands another path's selector guards -- (assert (=> <sel>
 # ...)), named or not, vacuous once the partition forces that selector
 # false -- and with its own selector asserted.  Written once, on first need.

@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
+import edu.uva.liftlab.graphchecker.smt.ScopedFixture;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -753,7 +754,7 @@ public class ComposerTest {
                 "echo '(:reason-unknown \"(incomplete quantifiers)\")'"));
         assertTrue("the fixture solver is executable",
                 script.toFile().setExecutable(true));
-        return script;
+        return ScopedFixture.of(script);
     }
 
     private Path warningSolver() throws IOException {
@@ -775,7 +776,7 @@ public class ComposerTest {
                         + "literal, expecting x or b\")'"));
         assertTrue("the fixture solver is executable",
                 script.toFile().setExecutable(true));
-        return script;
+        return ScopedFixture.of(script);
     }
 
     /**
@@ -2257,9 +2258,9 @@ public class ComposerTest {
         };
         for (Object[] row : rows) {
             try (Disjunction asks = new Disjunction(composition,
-                    new Z3(script, 30000L, 8192))) {
+                    new Z3(ScopedFixture.of(script), 30000L, 8192))) {
                 if ("self-check".equals(row[0])) {
-                    asks.selfCheck();
+                    asks.selfCheck(0L);
                 } else if (row[0] != null) {
                     @SuppressWarnings("unchecked")
                     List<String> refuting = (List<String>) row[0];
@@ -2282,11 +2283,199 @@ public class ComposerTest {
     }
 
     /**
+     * THE SELF-CHECK ASKS NO CORE where the body asserts no refuted claim:
+     * asked under no pin, a path's core names nothing a core is read for
+     * (SGF6-bugs-snapshot-no-active 0001: 141 paths' core runs, 26 of 48 at
+     * their cap, held the decide for hours).  Its refutation still answers
+     * an ask that wants a core: no pin can be in it.  The fixture z3
+     * refutes both paths and logs each core run.
+     */
+    @Test
+    public void theSelfCheckAsksNoCoreWhereNoRefutedClaimIsAsserted()
+            throws Exception {
+        Path iteration = folder.newFolder("self-check-core").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.target("true", true, true);
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        assertFalse(composition.assertsRefutations());
+        Path log = folder.newFile("cores.log").toPath();
+        Path script = folder.newFile("z3-self-check.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *get-unsat-core*) echo core >> " + log
+                        + "; echo unsat; echo '()' ;;",
+                "  *) echo unsat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        try (Disjunction asks = new Disjunction(composition,
+                new Z3(ScopedFixture.of(script), 30000L, 8192))) {
+            for (Z3.Answer answer : asks.selfCheck(0L)) {
+                assertTrue(answer.toString(), answer.unsat());
+            }
+            assertEquals("no core run", 0L, asked(log));
+            Z3.Answer wanting = asks.ask(Collections.singletonList(
+                    "(assert true)"), composition.selectors(), none, true);
+            assertTrue(wanting.toString(), wanting.unsat());
+            assertEquals("nor for an ask that wants a core", 0L, asked(log));
+        }
+    }
+
+    /**
+     * A PATH IS ASKED ONCE FOR EVERY VALUATION AGREEING ON THE PINS IT
+     * NAMES (Composition#rootsOf): one path's phi names the marker, the
+     * other's the counter, so every valuation pinning the marker false --
+     * the counter's moves among them -- asks the first once, unsat under
+     * the marker's pin alone, which every one of them contains, not once
+     * each.  A valuation flipping the marker satisfies it, asked under
+     * every pin for its model.  The fixture z3 answers the first path sat
+     * exactly when the marker is pinned true, the second never, the whole
+     * query never, and logs each question it refutes the first under by
+     * its text, whichever engine asked it -- the engine that lost a race
+     * can ask after it: no question after the first flat valuation's is
+     * new.
+     */
+    @Test
+    public void aPathIsAskedOnceForTheValuationsAgreeingOnItsPins()
+            throws Exception {
+        Path iteration = folder.newFolder("projected").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.serial("0", "0", "10");
+        seed.target(MARKER, false, true);
+        seed.write();
+        Session counted = new Session(iteration, "s1", true);
+        counted.marker("false");
+        counted.serial("0", "0", "10");
+        counted.target("(> " + SERIAL + " 5)", false, true);
+        counted.write();
+        Composer.Composition composition = compose(iteration, 16);
+        String selector = composition.disjuncts().get(0).selector();
+        String other = composition.disjuncts().get(1).selector();
+        assertEquals("its question names the marker alone",
+                Collections.singleton(MARKER), composition.rootsOf(selector));
+        Path log = folder.newFile("paths.log").toPath();
+        Path script = folder.newFile("z3-projected.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'(assert " + selector + ")'*) case $input in",
+                "      *'(= " + MARKER + " true)'*) echo sat;"
+                        + " echo '((x 1))' ;;",
+                "      *) printf '%s' \"$input\" | grep -v smt.arith.solver"
+                        + " | md5sum >> " + log + "; echo unsat; echo '()' ;;",
+                "    esac ;;",
+                "  *'(assert " + other + ")'*) echo unsat; echo '()' ;;",
+                "  *) echo unknown ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        int flat = 0;
+        Set<String> first = null;
+        try (Disjunction asks = new Disjunction(composition,
+                new Z3(ScopedFixture.of(script), 30000L, 8192))) {
+            for (Composer.Valuation valuation : composition.valuations()) {
+                boolean flipped = "true".equals(
+                        valuation.assignment().get(MARKER_ROOT));
+                Z3.Answer answer = asks.ask(valuation.assertions(),
+                        composition.selectors(), none, false);
+                assertEquals(valuation.toString(), flipped ? "sat" : "unsat",
+                        answer.status());
+                if (!flipped) {
+                    flat++;
+                    if (first == null) {
+                        first = new java.util.TreeSet<String>(
+                                Files.readAllLines(log));
+                    }
+                }
+            }
+        }
+        assertTrue("valuations pinning the marker false: " + flat + " "
+                + composition.valuations(), flat > 2);
+        assertFalse("the first flat valuation asked it", first.isEmpty());
+        assertEquals("the path asked under one projection for all " + flat
+                        + " of them", first,
+                new java.util.TreeSet<String>(Files.readAllLines(log)));
+    }
+
+    /**
+     * THE DECIDE BUDGET IS A NAMED BOUND, NEVER A REFUTATION: past it no
+     * question starts, each answers undecided, and the claim names the
+     * bound; the formula is not unsat on it.
+     */
+    @Test
+    public void theDecideBudgetIsANamedBoundNeverARefutation()
+            throws Exception {
+        Path iteration = folder.newFolder("decide-budget").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target(MARKER, false, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver(), 0L);
+        assertFalse("no refutation on the bound: " + decision.formula(),
+                decision.formula() != null && decision.formula().unsat());
+        assertFalse("no witness on the bound",
+                decision.claim().kind() == ClaimKind.MARKER_FLIPPED);
+        assertTrue("and the bound is named: " + decision.claim().gaps(),
+                says(decision.claim().gaps(), GapKind.ADMISSION_GAP,
+                        "decide budget"));
+        ClaimPolicy.Decision within = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals("within it, the claim", ClaimKind.MARKER_FLIPPED,
+                within.claim().kind());
+        assertFalse(says(within.claim().gaps(), GapKind.ADMISSION_GAP,
+                "decide budget"));
+    }
+
+    /**
+     * THE SELF-CHECK HAS ITS PART OF THE DECIDE BUDGET, a third: past it no
+     * path is self-checked and the one running ends, undecided -- the path
+     * left in the disjunction, never refuted on it -- the cap is named, and
+     * the valuations are asked in the rest.  The fixture z3 answers a
+     * question no valuation pins (the self-check's) after 20 s, the
+     * valuations' at once: within a 9 s decide budget the claim stands.
+     */
+    @Test
+    public void theSelfCheckHasItsPartOfTheDecideBudget() throws Exception {
+        Path iteration = folder.newFolder("self-check-cap").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target(MARKER, false, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        solver();
+        Path script = folder.newFile("z3-slow-self-check.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *':named " + Composer.VALUATION_PIN + "'*) ;;",
+                "  *) sleep 20 ;;",
+                "esac",
+                "printf '%s' \"$input\" | exec " + z3() + " \"$@\""),
+                StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                new Z3(ScopedFixture.of(script), 30000L, 8192), 9000L);
+        List<GapRow> gaps = decision.claim().gaps();
+        assertEquals(gaps.toString(), ClaimKind.MARKER_FLIPPED,
+                decision.claim().kind());
+        assertTrue("the cap is named: " + gaps,
+                named(gaps, "self-check cap 3000ms"));
+        assertFalse("and the decide ran within its budget",
+                named(gaps, "decide budget 9000ms"));
+    }
+
+    /**
      * A WHOLE ASK AT ITS MEMORY CAP GOES PATH BY PATH, as one past its
-     * budget does (a lone ask's cap: there is no larger slot to ask it in):
-     * the fixture z3 runs out of memory on the whole query, refutes path 0
-     * and satisfies path 1; the disjunction is sat, and the next ask asks no
-     * whole query again.
+     * budget does, at the slot it was asked in -- never asked again alone,
+     * since every path is a smaller question: the fixture z3 runs out of
+     * memory on the whole query, refutes path 0 and satisfies path 1; the
+     * disjunction is sat, and the next ask asks no whole query again.
      */
     @Test
     public void aWholeAskAtItsCapGoesPathByPath() throws Exception {
@@ -2305,18 +2494,26 @@ public class ComposerTest {
                 "case $input in",
                 "  *'(assert " + first + ")'*) echo unsat; echo '()' ;;",
                 "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
-                "  *) echo whole >> " + log
-                        + "; echo '(error \"out of memory\")'; exit 101 ;;",
+                "  *) echo \"whole $(printf '%s' \" $* \" | sed -n"
+                        + " 's/.* memory_max_size=\\([0-9]*\\) .*/\\1/p')\" >> "
+                        + log + "; echo '(error \"out of memory\")'; exit 101 ;;",
                 "esac"), StandardCharsets.UTF_8);
         assertTrue(script.toFile().setExecutable(true));
         List<String> none = Collections.emptyList();
-        Z3 solver = new Z3(script, 30000L, 8192);
+        Z3 solver = new Z3(ScopedFixture.of(script), 30000L, 8192);
         try (Disjunction asks = new Disjunction(composition, solver)) {
-            Z3.Answer answer = asks.ask(none, composition.selectors(), none,
-                    false);
+            // Asked as valuations are, four at once at a shared slot: at
+            // its cap the whole query goes path by path, never asked again
+            // alone first.
+            Z3.Answer answer = asks.asking(4).ask(none,
+                    composition.selectors(), none, false);
             assertEquals(answer.toString(), "sat", answer.status());
             long whole = asked(log);
-            assertTrue("the whole query was asked: " + whole, whole > 0);
+            assertEquals("the whole query was asked at its slot's cap"
+                            + " alone, a quarter of the room's: "
+                            + Files.readAllLines(log),
+                    Collections.singleton("whole 960"),
+                    new java.util.TreeSet<String>(Files.readAllLines(log)));
             assertEquals("sat", asks.ask(Collections.singletonList(
                     "(assert true)"), composition.selectors(), none, false)
                     .status());
@@ -2457,9 +2654,9 @@ public class ComposerTest {
         Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             // One path's question holds its own guarded commands and none
-            // of the other path's (Composition#pathQuery).
-            String alone = text(composition.pathQuery(disjunct.selector(),
-                    composition.valuations().get(0).assertions()));
+            // of the other path's (Composition#scopeQuery).
+            String alone = pathQuery(composition, disjunct.selector(),
+                    composition.valuations().get(0).assertions());
             for (Composer.Disjunct other : composition.disjuncts()) {
                 assertEquals("guarded by " + other.selector(),
                         other == disjunct, alone.contains(
@@ -3393,7 +3590,7 @@ public class ComposerTest {
             String own = "(assert (= clk_now " + (1_000_000L + row[2]) + "))";
             assertEquals(disjunct.path().sessionId + " in its own world",
                     row[0] == 1L ? "sat" : "unsat", solver().ask(
-                            composition.pathQuery(disjunct.selector(),
+                            pathQuery(composition, disjunct.selector(),
                                     Collections.singletonList(own)),
                             null, false).status());
         }
@@ -4420,7 +4617,7 @@ public class ComposerTest {
                 {"s1", null, "sat"},
                 {"s1", "(not (= vu 2))", "unsat"}};
         for (String[] row : rows) {
-            String answer = solver().ask(composition.pathQuery(
+            String answer = solver().ask(pathQuery(composition,
                     selectorOf.get(row[0]), row[1] == null
                             ? Collections.<String>emptyList()
                             : Collections.singletonList("(assert "
@@ -10496,6 +10693,15 @@ public class ComposerTest {
             body.writeTo(output);
         }
         return written.toString();
+    }
+
+    /** One path's question whole, as its scoped z3 reads it: the shared
+     *  part, then its scope. */
+    private static String pathQuery(Composer.Composition composition,
+                                    String selector, List<String> assertions)
+            throws IOException {
+        return text(composition.sharedQuery())
+                + text(composition.scopeQuery(selector, assertions));
     }
 
     /** One integer literal, as the VM serializes it. */

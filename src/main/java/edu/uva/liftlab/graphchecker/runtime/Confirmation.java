@@ -27,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -444,9 +445,11 @@ public final class Confirmation {
             // A hold that waits is the world acting on the run
             // (FocusedReplay#worldActed), and stays in force until it ends.
             long thread = Thread.currentThread().getId();
-            if (!waiting.isEmpty()) {
+            boolean holding = !waiting.isEmpty();
+            if (holding) {
                 FocusedReplay.worldActed();
                 WAITING.put(thread, new Hold(activation, before));
+                HOLD_MOVES.incrementAndGet();
             }
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
@@ -491,9 +494,21 @@ public final class Confirmation {
                 }
             } finally {
                 WAITING.remove(thread);
+                if (holding) HOLD_MOVES.incrementAndGet();
             }
             planted(RecordingPlant.APPLIED, activation, before);
         }
+    }
+
+    /** Order holds begun and ended ({@link #entering}): a replay held to
+     *  the model's order waits there on purpose, up to {@link
+     *  #ORDER_TIMEOUT_MS} a hold, and each hold's start and end is progress
+     *  to its watch ({@code ConcolicResultPublisher#watched}). */
+    private static final AtomicLong HOLD_MOVES = new AtomicLong();
+
+    /** {@link #HOLD_MOVES}. */
+    static long holdMoves() {
+        return HOLD_MOVES.get();
     }
 
     /**

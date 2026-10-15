@@ -41,6 +41,13 @@ public final class RunSpellings {
                     + "|\\[+(?:[BCDFIJSZ]|L[\\w$.]+;))"
                     + "@[0-9a-f]{1,8}(?![\\w])");
 
+    /** A ZooKeeper sequential node's name: a name, a dash or underscore,
+     *  and ten digits ({@code qn-0000000003}, {@code n_0000000001}).  Its
+     *  counter is a timing name: it shifts with every item an earlier world,
+     *  a retry or another client added. */
+    public static final Pattern SEQUENCE = Pattern.compile(
+            "([A-Za-z]+[-_])(\\d{10})(?!\\d)");
+
     public static final RunSpellings NONE =
             new RunSpellings(Collections.<String[]>emptyList());
 
@@ -97,6 +104,37 @@ public final class RunSpellings {
     public static String unnamed(String named) {
         Matcher left = UNNAMED.matcher(named == null ? "" : named);
         return left.find() ? left.group() : "";
+    }
+
+    /**
+     * {@code text} with every name a run mints for itself taken out: each
+     * sequential znode's counter ({@link #SEQUENCE}), each long number or
+     * host and port ({@link #UNNAMED}, as {@code #}) and each identity
+     * hash ({@link #IDENTITY}, its class kept) -- what two turns of one
+     * loop spell apart while they do the same ({@code
+     * runtime.ScheduleLog#madeKey}).  Runs per event: a pattern only where
+     * a cheap scan finds what it could match.
+     */
+    public static String strip(String text) {
+        int run = 0;
+        int longest = 0;
+        boolean port = false;
+        for (int at = 0; at < text.length(); at++) {
+            char c = text.charAt(at);
+            run = c >= '0' && c <= '9' ? run + 1 : 0;
+            longest = Math.max(longest, run);
+            port |= c == ':' && at + 1 < text.length()
+                    && Character.isDigit(text.charAt(at + 1));
+        }
+        String out = text;
+        if (longest >= 10) out = SEQUENCE.matcher(out).replaceAll("$1");
+        if (longest >= 13 || port) {
+            out = UNNAMED.matcher(out).replaceAll("#");
+        }
+        if (out.indexOf('@') >= 0) {
+            out = IDENTITY.matcher(out).replaceAll("$1@");
+        }
+        return out;
     }
 
     /** Spelling -> node, as a session's manifest states them. */

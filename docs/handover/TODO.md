@@ -107,11 +107,18 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   whether a round should wait for more landings; (2) `Value#hashCode` recomputes deep part hashes, about half of
   a late served 07e round's samples: a cached hash needs an immutability audit of the 35 contract values; (3) the
   closure is still built whole each round.
-- **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
-  (or a smaller one) would lift the solve throughput and the memory every lift gives replays. Branch `solr-solver`
-  (solr-adhoc-39 PV7: 113 questions spilled into JVMs of their own): a flip query's build no longer reads its texts
-  once per lowered session, a solver's heap is its corpus's and it re-reads only for what a round needs (done);
-  still to come there, several questions at once per solver. The live set itself: 39's 6.45 GB is mostly the
+- **A host solver answers one question at a time** (`campaign_solver_seats` 1; parked by the lead 2026-10-14 for the
+  final round): with a flip query's build reading its texts once, a corpus-sized heap and round-keyed re-reads
+  (`solr-solver`, done), a question takes 0.4-8 s, so seats would mainly stop one 60 s first-lane z3 run from holding
+  its host. Seats = N threads in the one solver JVM over one corpus read. What it needs: (1) a question's own state
+  off the shared `Corpus` -- `freshLowerings` replaces `loweringById` and the one `Arms` (whose `refusals` a query
+  drains) for every question; make both per thread (a `ThreadLocal` the solver's threads set, the planner keeping the
+  constructor's); (2) race-free memos in `Corpus` (`varied`, `derived`, `roots`, `eligible`, `namingCuts`,
+  `tokenNames`, `canonicalNames`, `compared`, `ofTask`; `classes`/`handoffsOf` are concurrent already, `Derived`'s
+  maps too) and in `Arms` (`unrowed`, `symbolsByExpression`, `rootGuards`): get, compute outside, putIfAbsent -- never
+  a recursive `computeIfAbsent`; (3) the static lazies on the solve's path (`SmtNames.PREAMBLE_NAMES`,
+  `LibraryCatalog.doors`); (4) `Service` taking a question only onto a free seat and an `Outgrown` waiting for the
+  seats in flight; a review agent before merge (concurrency in `Corpus`). The live set itself: 39's 6.45 GB is mostly the
   session expression tables as Gson trees (`ExpressionTable`: 40.9 M `LinkedTreeMap$Node`, 2.0 GB, 26 M
   `JsonPrimitive`, 0.4 GB, and their strings, of 1.8 GB of `char[]`); the same corpus put 39's planner past the 16 GB
   engine heap (PV7 `PLANNER_HEAP_EXCEEDED` at round 6, 10123 MB of sessions). A compact expression form would
@@ -280,6 +287,7 @@ SGF4 on all of them):
 | `solr-vmfp` | FB | VM: a container version records size + modCount; a read whose live container differs is named UNHOOKED_CONTAINER_MUTATION and joins a VERSION_UNOBSERVED state (§3t) | in development, image vm-force9; after SGF4 |
 | `solr-armkey` | KY | arm keys name only the roots the question reads (§3n) | PARKED: review found folds of distinct questions (§3s) |
 | `solr-portname` | FB | COMPOSE: message-close cache keyed by slots; other runs' node spellings respelled into the path's (§3v) | PARKED: review FIX FIRST (§3v) |
+| `solr-stall` | RP | a focused replay's stall is "nothing moved for 600 s" (PIPELINE §7.6), moved meaning: an event of a kind, site, node and context shape the run had not made, its own names stripped (`ScheduleLog#newKeys`, `RunSpellings#strip`), or a bounded move of its question, order or holds, or a focused activation computing; watched from the window's opening through the teardown, where a stand ends the run as the workload's own end would (`TEST_OVER`); it replaces the old watch (any schedule step, settle counts, any thread's CPU), which a busy poll loop kept alive. PV7-38: 17 of its 52 REPLAY_BOUNDED (10 in-window poll loops, 7 hung teardowns) would end at about 680-840 s instead of 2400 s; the other 35 had concluded and hung in `System.exit` (RP2, `solr-halt`) | lead's review and live gate on 39: each replay prints its longest span between new events (`Causynth schedule: <n> distinct event(s), at most <s> s ...`) |
 
 Solr tree: `gc/solr-final9` 0ce3deafed (`/bigtemp/vnr3ne/wt/lucene-solr-final9`, `GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`)
 = final5 + the Overseer's batching wait 0 + snapshot-no-active's search loops + the session expirer + snapshot's workload

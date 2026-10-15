@@ -2583,7 +2583,6 @@ campaign_replay() {
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CHARGED_MB=${charged}" \
     "CAUSYNTH_HEAP_BASIS_MB=${campaign_replay_heap_basis_mb:-${charged}}" \
-    "CAUSYNTH_CONCOLIC_ROLE=${role}" \
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
@@ -2619,7 +2618,7 @@ reservation (the replay log says so), the kernel's memory killer or an \
 operator"
     fi
     campaign_log "replay role=${role} ${campaign_replay_killed} \
-(exit ${status}); its session states no verdict: ${sessions}"
+(exit ${status}): ${sessions}"
     # A caller whose replay is the iteration's only source of observed cases
     # cannot absorb a truncated one, and a killed JVM may well have published
     # rows before it died -- enough for the evidence gate below to pass on a
@@ -3340,6 +3339,14 @@ campaign_solver_two_lanes() {
 # seconds: one long question never holds the others of its host.
 campaign_solver_busy_patience_s=30
 
+# How many questions the host's solver of the corpus <sessions> answers at
+# once, each at once (ObligationSolverMain --serve: one, in turn): the most
+# solves the pool admits on a host where it serves
+# (campaign_stream_has_seat).
+campaign_solver_seats() {
+  printf '1\n'
+}
+
 # The solver directory of the corpus ${1} (an iteration's sessions), on this
 # host: named by the host too, since a pid means something on one host only.
 campaign_solver_dir() {
@@ -3784,13 +3791,23 @@ campaign_obligation_replay() {
   # ONE WRITER.  The replay's process group is gone
   # (run_under_wall_clock_bound), so nothing of it writes after this line,
   # and the obligation's answer is written below, once: the replay's own
-  # statement (RowRuntime#closeSession writes replay_verdict.jsonl), or the
-  # bound's.
-  if [[ -n "${campaign_replay_killed}" ]]; then
-    # Killed, it decided nothing: its question stays unsettled, and its
-    # answer says so (ObligationResult#REPLAY_BOUNDED: no fact about its
-    # arm or its world; a flip killed twice is held BOUNDED and named,
-    # campaign_bounds).
+  # statement, or the bound's.
+  #
+  # THE STATEMENT IS THE ANSWER whenever the replay made one, killed after
+  # it or not.  replay_verdict.jsonl is the last thing the run's one end
+  # writes (RowRuntime#writeWorkerVerdicts): after the session it names is
+  # closed -- or, naming none, withdrawn -- and whole, by one rename; and a
+  # JVM told to end before its run did (a signal, this bound's TERM among
+  # them) states nothing (JUnitMethodRunner#exit).  The end halts the JVM at
+  # once; a kill past the statement only means the halt was late.
+  # PV7-adhoc-38: 35 replays that had decided (32 ADMITTED) hung in a
+  # cluster's shutdown hook after their statement, and were each recorded
+  # REPLAY_BOUNDED at replay_timeout_s=2400 with their sessions withdrawn.
+  if [[ -n "${campaign_replay_killed}" && ! -s "${statement}" ]]; then
+    # Killed before it stated anything, it decided nothing: its question
+    # stays unsettled, and its answer says so
+    # (ObligationResult#REPLAY_BOUNDED: no fact about its arm or its world;
+    # a flip killed twice is held BOUNDED and named, campaign_bounds).
     rm -f -- "${worker}/question.asked"
     campaign_log "obligation ${obligation_id}: \
 replay ${campaign_replay_killed}"
@@ -3805,6 +3822,9 @@ session"
       | campaign_write_whole "${result_row}"
     return 0
   fi
+  [[ -z "${campaign_replay_killed}" ]] || campaign_log "obligation \
+${obligation_id}: its replay stated its verdict and then \
+${campaign_replay_killed}; the statement is its answer"
   # THE REPLAY OWNS THE VERDICT: the rows FocusedReplay.results built, the
   # same rows it publishes into the session, which is the evidence.  What is
   # checked is that the replay DID state one; none is neither an admission
@@ -3817,7 +3837,7 @@ session"
 (\"${outcome}\")" ;;
   esac
   # A verdict that names no session published none: a refusal, or nothing
-  # moving for a while (REPLAY_NO_PROGRESS), decided every obligation the
+  # new for a while (REPLAY_NO_PROGRESS), decided every obligation the
   # replay carried, and it ended there (FocusedReplay#refusedAt).  What it
   # wrote before is a prefix of a run, which the replay withdrew itself at
   # its close (RowRuntime#closeSession); one its move left listed is
@@ -3847,8 +3867,9 @@ prefix of a run"
 # it in the corpus.  `campaign_worker_hosts` empty is this machine alone,
 # with no ssh anywhere; a stated list is every machine an obligation may run
 # on.  How many run on one host at once is that host's to say: one more
-# starts while the memory ledger admits its replay, up to the host's cores
-# (campaign_stream_admit_host).  How many one exploration runs at once is,
+# starts while the memory ledger admits it at its kind's charge, its cores
+# hold it and, a solve, a seat of its solver is free
+# (campaign_stream_try_host).  How many one exploration runs at once is,
 # in a shared pool (stream_shared_pool), its share of its hosts' slots at
 # its measured replay charge (campaign_pool_slots): those slots over the
 # sharing explorations running now, each an entry of the ledger --
@@ -4848,9 +4869,10 @@ campaign_obligation_unanswered() {
 #   stream_flying     obligation id -> its row, from its queueing until its
 #                     answer lands -- solving, its REPLAY queued or
 #                     replaying: a round's --in-flight
-#   stream_host_jobs  host -> how many of this campaign's run there
-#   stream_host_solves host -> how many of them are solves
-#                     (campaign_stream_solves_per_host)
+#   stream_host_busy  host -> the cores this campaign's starts there keep
+#                     busy (campaign_stream_kind_cores)
+#   stream_host_solves host -> how many of them are seated questions
+#                     (campaign_stream_seated, campaign_stream_has_seat)
 #   stream_step_pid   the head step running, or ""; stream_step_dir its
 #                     directory (steps/NNNN/: what it gates and decides, or
 #                     attempts); stream_gating 1 while it gates sessions
@@ -4917,8 +4939,8 @@ campaign_explore() {
   local -a stream_reruns_dropped=() stream_confirms_reaped=()
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
-  local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
-  local -A stream_host_solves=() stream_host_hard=()
+  local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
+  local -A stream_host_solves=()
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
@@ -6196,9 +6218,9 @@ campaign_process_tree() {
 # (campaign_stream_has_slot): the first entry a host admits -- an
 # obligation's solve, its solve in a solver JVM of its own (ALONE), an
 # obligation's REPLAY, a GROW re-run or a confirmation on the next host of
-# the pool, round-robin, whose memory ledger admits one more start and that
-# runs fewer of this campaign's than it has cores
-# (campaign_stream_admit_host) -- so a replay no host has room for holds no
+# the pool, round-robin, whose cores, solver seats and memory ledger admit
+# one more start of its kind (campaign_stream_try_host) -- so a replay no
+# host has room for holds no
 # solve behind it, nor an ALONE of one need one of another.  An entry queued
 # longer than campaign_stream_wait_bound_s goes first and alone: nothing
 # behind it starts until it does but a witness's confirmation or a GROW
@@ -6335,25 +6357,26 @@ campaign_stream_unenroll() {
 # the pool from the host after the last one chosen, each start charged its
 # need for as long as it runs (campaign_stream_charge_mb); an OBLIGATION
 # goes first to a host where this
-# campaign's solver still serves (campaign_stream_warm: one started there
+# campaign's solver still serves (campaign_stream_warm: one answered there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
-# while it runs as many of this campaign's as it has cores, or while the
-# ledger has no room on it (campaign_host_try_start: no start leaves a host
-# more than CAUSYNTH_HOST_MAX_USED_PCT charged or full, and none takes a
-# head's room).
+# while this campaign's starts there keep busy the cores one more would
+# need, a solve while no seat of its solver is free, or while the ledger has
+# no room on it at the start's charge (campaign_stream_try_host,
+# campaign_host_try_start: no start leaves a host more than
+# CAUSYNTH_HOST_MAX_USED_PCT charged or full, and none takes a head's room).
 # 1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
   local kind=$1 need=${2:-} host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
   for pass in warm cold; do
-    [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
+    [[ "${pass}" == cold ]] || campaign_stream_seated "${kind}" || continue
     mb=$(campaign_stream_charge_mb "${kind}" "${pass}" "${need}")
     for ((turn = 0; turn < count; turn++)); do
       host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
-      # An obligation tries each host once, in the pass of its warmth.
+      # A seated question tries each host once, in the pass of its warmth.
       is=cold
-      [[ "${kind}" != OBLIGATION ]] || ! campaign_stream_warm "${host}" \
+      ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
         || is=warm
       [[ "${is}" == "${pass}" ]] || continue
       campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
@@ -6368,9 +6391,12 @@ campaign_stream_admit_host() {
   return 1
 }
 
-# Whether this campaign started an obligation on <host> within its solver's
-# idle time (campaign_solver_idle_s), so the host's solver of its corpus
-# likely still serves.
+# Whether a solve of this campaign returned answered on <host> within its
+# solver's idle time (campaign_solver_idle_s; stream_solver_seen, set by
+# campaign_stream_ended), so the host's solver of its corpus likely serves
+# there still, started and idle for less than that.  One that returned
+# owing a solver JVM of its own (campaign_obligation_owe: no solver served
+# it) leaves its host cold.
 campaign_stream_warm() {
   local seen=${stream_solver_seen[$1]:-}
   [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
@@ -6414,29 +6440,20 @@ campaign_stream_charge_mb() {
   fi
 }
 
-# How many of a campaign's solves one host holds at once.  Its solver
-# answers one question at a time (ObligationSolverMain --serve), so a second
-# keeps it busy and more add no answer, only their charges while they wait
-# in its queue: EX1-adhoc-07c, 13-18 questions waiting per lift, 512 MB each,
-# held 7-9 GB of every lift's ledger and no replay started for ten minutes.
-# The rest wait uncharged in the pool's queue.
-campaign_stream_solves_per_host=2
-
-# How many hard-lane solves (campaign_solver_first_tier_ms) one host holds at
-# once: each runs its z3 race for up to the full budget in a JVM of its own.
-campaign_stream_hard_per_host=1
-
 # One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen, charged <mb>, for a start of <kind>
-# (an OBLIGATION only while the host holds fewer than
-# campaign_stream_solves_per_host): 0 with it charged and chosen.
+# the host after the last one chosen, charged <mb>, for a start of <kind>:
+# only while the cores this campaign's starts keep busy there leave the
+# start's own (campaign_stream_has_cores), a solve only on a seat of the
+# host's solver that answers it at once (campaign_stream_has_seat), and only
+# where the ledger admits its charge (campaign_host_try_charge) -- so each
+# kind runs on a host as many at once as its cores and the room at that
+# kind's measured charge hold, and no fixed count beside them: 0 with it
+# charged and chosen.
 campaign_stream_try_host() {
   local host=$1 turn=$2 mb=$3 kind=${4:-} count=${#stream_hosts[@]} status=0
-  campaign_stream_has_cores "${host}" || return 1
-  [[ "${kind}" != OBLIGATION ]] || (( ${stream_host_solves[${host}]:-0} \
-    < campaign_stream_solves_per_host )) || return 1
-  [[ "${kind}" != HARD ]] || (( ${stream_host_hard[${host}]:-0} \
-    < campaign_stream_hard_per_host )) || return 1
+  campaign_stream_has_cores "${host}" "${kind}" || return 1
+  ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
+    || return 1
   campaign_host_try_charge "${host}" "${mb}"
   case "${status}" in
     0)
@@ -6452,10 +6469,13 @@ campaign_stream_try_host() {
   return 1
 }
 
-# Whether <host> runs fewer of this campaign's starts than it has cores; its
-# core count is read once.  An unreadable count is an unreadable host.
+# Whether <host> has the cores one more start of <kind> keeps busy
+# (campaign_stream_kind_cores) beside those this campaign's starts there keep
+# busy (stream_host_busy) -- a host running none of them takes one whatever
+# its count -- its core count read once.  An unreadable count is an
+# unreadable host.
 campaign_stream_has_cores() {
-  local host=$1 cores
+  local host=$1 kind=${2:-} cores
   if [[ -z "${stream_host_cores[${host}]+x}" ]]; then
     if ! cores=$(campaign_host_cores "${host}"); then
       campaign_stream_unreadable "${host}"
@@ -6463,7 +6483,52 @@ campaign_stream_has_cores() {
     fi
     stream_host_cores[${host}]=${cores}
   fi
-  (( ${stream_host_jobs[${host}]:-0} < ${stream_host_cores[${host}]} ))
+  (( ${stream_host_busy[${host}]:-0} == 0 \
+     || ${stream_host_busy[${host}]:-0} + $(campaign_stream_kind_cores \
+       "${kind}") <= ${stream_host_cores[${host}]} ))
+}
+
+# The cores one start of <kind> keeps busy on its host: a solve -- a
+# question its host's solver answers, an ALONE's or a HARD's JVM of its own
+# -- its z3 race, two z3 processes, one per arithmetic engine (smt/Z3); a
+# replay (a REPLAY, a RERUN, a CONFIRM) one.
+campaign_stream_kind_cores() {
+  case "${1:-}" in
+    OBLIGATION|ALONE|HARD) printf '2\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+
+# Whether a start of <kind> is a question its host's resident solver
+# answers on one of its seats (campaign_solver_seats): an OBLIGATION's
+# solve.  An ALONE and a HARD run in a solver JVM of their own.  It decides
+# all the pool does by seats: the warm pass (campaign_stream_admit_host),
+# the seat (campaign_stream_has_seat, campaign_stream_host_count) and the
+# warmth a return sets or clears (campaign_stream_ended).
+campaign_stream_seated() {
+  [[ "${1:-}" == OBLIGATION ]]
+}
+
+# Whether one more solve of this campaign is answered on <host> at once,
+# never waiting for its solver: a warm host (campaign_stream_warm: a
+# question of this campaign was answered there within the solver's idle
+# time) while it runs fewer solves than its solver has seats
+# (campaign_solver_seats, the questions it answers at once); a cold one
+# only while it runs none -- that solve starts its solver, and a question
+# behind a solver still starting waits for it.  The rest wait in the pool's
+# queue, uncharged: questions admitted past the seats held only their
+# charges while they waited, 512 MB each (EX1-adhoc-07c: 13-18 per lift held
+# 7-9 GB of every lift's ledger, no replay started for ten minutes), and
+# past the solver's patience became solver JVMs of their own (PV7-adhoc-39:
+# 113 of them, "busy past 30s", each reading the corpus again at an 8 GB
+# heap).
+campaign_stream_has_seat() {
+  local host=$1 solves=${stream_host_solves[$1]:-0}
+  if campaign_stream_warm "${host}"; then
+    (( solves < $(campaign_solver_seats "${sessions:-}") ))
+  else
+    (( solves == 0 ))
+  fi
 }
 
 # A host whose memory or cores could not be read: waited out within the ssh
@@ -6526,18 +6591,27 @@ campaign_stream_start() {
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
   esac
   printf '%s\n' "${host}" >"${worker}/${started}"
-  [[ "${kind}" != OBLIGATION ]] || stream_solver_seen[${host}]=$(date +%s)
   campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
   stream_job_charge[$!]=${campaign_host_charge_id}
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
-  stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
-  [[ "${kind}" != OBLIGATION ]] \
-    || stream_host_solves[${host}]=$(( ${stream_host_solves[${host}]:-0} + 1 ))
-  [[ "${kind}" != HARD ]] \
-    || stream_host_hard[${host}]=$(( ${stream_host_hard[${host}]:-0} + 1 ))
+  campaign_stream_host_count "${host}" "${kind}" 1
+}
+
+# campaign_stream_host_count <host> <kind> <delta>: one start of <kind> on
+# <host> counted in (1, campaign_stream_start) or out (-1, its end,
+# campaign_stream_ended): the cores it keeps busy there (stream_host_busy,
+# campaign_stream_kind_cores) and, a seated question, its seat
+# (stream_host_solves, campaign_stream_seated).
+campaign_stream_host_count() {
+  local host=$1 kind=$2 delta=$3
+  stream_host_busy[${host}]=$(( ${stream_host_busy[${host}]:-0} \
+    + delta * $(campaign_stream_kind_cores "${kind}") ))
+  ! campaign_stream_seated "${kind}" \
+    || stream_host_solves[${host}]=$(( ${stream_host_solves[${host}]:-0} \
+      + delta ))
 }
 
 # The jobs that ended, taken without waiting (campaign_stream_ended), between
@@ -6613,11 +6687,7 @@ campaign_stream_ended() {
     worker=${stream_job_worker[${pid}]}
     campaign_stream_release "${pid}"
     campaign_replay_measured "${worker}"
-    stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
-    [[ "${kind}" != OBLIGATION ]] \
-      || stream_host_solves[${host}]=$(( stream_host_solves[${host}] - 1 ))
-    [[ "${kind}" != HARD ]] \
-      || stream_host_hard[${host}]=$(( stream_host_hard[${host}] - 1 ))
+    campaign_stream_host_count "${host}" "${kind}" -1
     answer=""
     owed=""
     if [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
@@ -6626,6 +6696,13 @@ campaign_stream_ended() {
       [[ -n "${owed}" ]] \
         || answer=$(jq -r '"\(.verdict // "")|\(.detail // "")"' \
           "${worker}/obligation_result.jsonl" 2>/dev/null) || answer=""
+    fi
+    # Answered, its host's solver serves there now; owing a solver JVM of
+    # its own, none served it, and its host is cold (campaign_stream_warm).
+    if campaign_stream_seated "${kind}" && [[ -n "${answer}" ]]; then
+      stream_solver_seen[${host}]=$(date +%s)
+    elif campaign_stream_seated "${kind}" && [[ -n "${owed}" ]]; then
+      unset 'stream_solver_seen[$host]'
     fi
     if [[ -n "${owed}" ]]; then
       rm -f -- "${worker}/solve_owed"

@@ -347,10 +347,21 @@ stage reads. Another size or exponent is the JDK's own search; the replay log na
 size. The recording searches as always. The scope map is read once, when the workload session
 opens (`GuardedStoreSites#install`, which hands its rows to `ClockLoops`).
 
-A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
-end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+A run ends before its JVM does, in one end for every workload JVM -- the recording, a focused or
+CONFIRM replay, a native reproduction -- whether its workload ended or an early end came first
+(`runtime.JUnitMethodRunner#exit`): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
-`SessionPublisher` writes nothing more), and only then the VM session closes. The settle
+`SessionPublisher` writes nothing more) and then state the replay's verdict to its worker
+(`RowRuntime#writeWorkerVerdicts`, last, whole by one rename), the schedule states how its order went,
+the recording's trace is flushed and closed (`CausynthTraceRecorder#closeTrace`, its manifest
+`CLOSED`), and the JVM HALTS (`Runtime.halt`; the log's last engine line `Causynth <UTC instant>: the run's
+end halts its JVM (status <n>)`): the engine has no shutdown hook, and no cluster's
+teardown or shutdown hook runs after the end (PV7-adhoc-38: 35 decided replays, verdicts written,
+hung in Jetty's shutdown hook until their bound killed them and recorded `REPLAY_BOUNDED`). The VM
+session is never closed; the halt frees it. A JVM told to end before its run did -- a signal (the
+worker's bound) or the workload's own `System.exit`; the JDK refuses a new shutdown hook from then
+on, before any hook runs (`#shutdownBegun`) -- states nothing and halts: a verdict is only ever a
+decided end's. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
 nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
 finished, no CPU on the publication thread and no garbage collection), so a publication that
@@ -363,10 +374,8 @@ activation is finished, abandoned and moved aside in one step (`ConcolicRegionRu
 under the lock its terminal takes); its VM region is its thread's, so the terminal that thread still
 reaches closes it (`#closeStranded`) and publishes nothing. The end runs once: a
 second thread ending the same run (an early end meeting the workload's own) waits for the first's
-`System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
-shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
-outlive the test, and a region started after the close would open a fresh VM session in which
-every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+halt, so no end halts another's close half-done. Cluster threads outlive the test, and a region they
+start while the end settles and closes the rows would be an occurrence no row states.
 
 A focused replay ends early, once, for one of five reasons (`ConcolicResultPublisher#conclude`):
 
@@ -377,11 +386,13 @@ A focused replay ends early, once, for one of five reasons (`ConcolicResultPubli
   `FocusedReplay#refusedAt`, §7.6), a FORCE run's divergence among them (§7.10).
 - `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
   (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
-- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, before any flip it carries
+- `AT_NO_PROGRESS`: nothing new for 600 s in a replay asked a flip, before any flip it carries
   was taken, which decided every obligation (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
   questions still open are `NOT_ADMITTED` (§7.6).
+- `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
+  workload's own end, nothing decided, every verdict settled as there (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
@@ -392,8 +403,8 @@ flip, one submitted after it (the session is read whole up to there, and its sch
 cut there); at a refusal or a stall before any flip, every one (the session is withdrawn, and
 draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
-name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
-`System.exit` ends the in-process cluster (its threads and ports) with the JVM.
+name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose halt
+ends the in-process cluster (its threads and ports) with the JVM.
 
 A read-out repeats what an earlier one stated (every close reads out every location touched since its
 entry), and each event is one row, published by the first activation whose publication walks it
@@ -940,10 +951,14 @@ footprint of what it needs now (`campaign_solver_need_mb`) and grows as watched.
 heap anyway (`-XX:+ExitOnOutOfMemoryError`, exit 3) states it beside the corpus (`campaign_solver_outgrown`,
 `solver_outgrown_mb`), and every later one needs at least that. Started at a fixed 2 GB, 39's host solvers
 died 20 times of "GC overhead limit exceeded" at 2, 4 and 8 GB (45 solver JVMs on 13 hosts, each a 1-4 min
-corpus read), each death losing every question it held to a JVM of its own. A host holds at most
-`campaign_stream_solves_per_host` (2) of a
-campaign's solves at once (`campaign_stream_try_host`): more add no answer, only their question
-charges while they wait in the solver's queue. Charged that at its start, a solver waited for room it did not use, and every question of
+corpus read), each death losing every question it held to a JVM of its own. A host holds no more of a campaign's solves at once than
+its solver answers at once (`campaign_stream_has_seat`: its seats, `campaign_solver_seats`, one), and a
+host where no solver of the campaign serves yet only one -- that solve starts its solver -- so no
+question is admitted to wait behind a busy or starting solver: more add no answer, only their question
+charges while they wait in the solver's queue (EX1-adhoc-07c: 13-18 per lift, 512 MB each, held 7-9 GB
+of every lift's ledger), and past the solver's patience they became solver JVMs of their own
+(PV7-adhoc-39: 113, "busy past 30s", each reading the corpus again); the rest wait uncharged in the
+pool's queue (§7.7). Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
 questions in the order they came, each from the corpus as it read it: read again only when the
 question's round was planned over a session the read did not hold (the round's `corpus.txt`, of the
@@ -981,7 +996,8 @@ other start waits -- the first of them a host admits, one of a need no host admi
 another -- and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
 `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB) in a solver JVM
 of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`), charged its footprint and that
-room (`campaign_solver_need_mb ... HARD`), at most `campaign_stream_hard_per_host` (1) per host. Since
+room (`campaign_solver_need_mb ... HARD`), as many at once on a host as its cores and its ledger room
+at that charge hold (§7.7). Since
 the obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end
 the exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there
 lands NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each
@@ -1279,7 +1295,10 @@ the one writer of the obligation's answer, `obligation_result.jsonl`, and writes
 replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
 launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it (solr-18406 ra1:
 five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
-the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
+the worker had withdrawn, and the head waited for them until the campaign failed). The statement is
+the answer whenever the replay made one, even when the bound killed its JVM after it: it is the
+run's last write, after the session it names is closed (or, naming none, withdrawn), whole by one
+rename, and a JVM told to end before its run did states nothing (§5). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, every inherited flip held, and every edge of its
 `expected_edges.jsonl` was taken (`runtime.Confirmation`, the world's pairings: a read that did
@@ -1325,33 +1344,61 @@ holds the session the row names, or none naming the obligation when it names non
 
 **The early end at a stall** (`ConcolicResultPublisher#watchProgress`). A replay asked a flip --
 never the seed's (no obligation) nor a confirmation's (its verdict rules stand; a stuck one ends at
-its bound) -- is watched every 10 s inside its recording window (before it the cluster starts; after
-it the test is over, and its teardown, which answers nothing asked, may wait: solr-18413 FA5, an
-admitted replay's 275 s): once nothing has moved there for 600 s (no
-schedule step, `ScheduleLog#steps`: an event but a `WAKE` or a tick's `END`, which a poll that wakes
-and finds nothing makes; nothing the settle counts, `#movedLocked`: no activation began
-or settled, no loop body charged, no publication finished or read-out decoded; no thread computing,
-`#Computing`: one thread with the collectors at half a look's span, the schedule's measure, not a
-sum, since a hung cluster test's threads still ping its ZooKeeper), every question still open is
+its bound) -- is watched every 10 s from its recording window's opening on (before it the cluster
+starts). What counts as progress (`#watched`), every count but the first bounded, so a loop busy
+doing again what it did moves none of them:
+- what is new (`ScheduleLog#newKeys`, `#madeKey`, counted only in a watched replay,
+  `ScheduleLog#countNewEvents`): an event of a kind, site, node and context shape the run had not made
+  before -- the shape as the question compares contexts (`ScheduleLog#shape`, `ContextShape`: per
+  anchor hop the RPC site and the sender's node, then the root's role and api; no invocation count,
+  anchor hash or handoff), every name the run minted for itself taken out of the site
+  (`RunSpellings#strip`: a sequential znode's counter, a session id, a host and port, an identity
+  hash). A poll, a retry or a watch made again makes no new key; other code, another store location,
+  another request handler or another node does. A view's `PUBLISH` names the version it put in force,
+  so a loop publishing new versions still makes new keys: the safe direction, a cut missed;
+- the window's opening and closing: a teardown, which records no event, has the whole bound from the
+  close;
+- the question's own moves (`FocusedReplay#questionMoved`): focused occurrences entered (the
+  obligations', the assigned roots' mints', the inherited flips'), flips taken, own and inherited,
+  roots planted, the world's first act;
+- the order's slots taken or given up (`ScheduleLog#settledSlots`), and a model's order holds begun and
+  ended (`Confirmation#holdMoves`: each may wait up to 300 s on purpose);
+- a focused activation computing (`#FocusedComputing`): its thread, while it is live, used with the
+  collectors half a look's span, the schedule's measure (`ScheduleLog#lookLocked`) asked of the
+  question's own occurrences only.
+
+Once nothing has moved for 600 s (`#NO_NEW_EVENT_MILLIS`) the replay ends (`#stall`). Inside its
+window every question still open is
 `NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
-`REPLAY_NO_PROGRESS: nothing moved for N s (...); no schedule hold was live` or `; a schedule hold
+`REPLAY_NO_PROGRESS: nothing new for N s (...); no schedule hold was live` or `; a schedule hold
 was live: <ScheduleLog#holding: the threads held for a turn, the longest's slot and wait, how many
 with no slot or behind a held write>`), so a stall the engine's own hold made reads apart from one
-the workload made, and its threads are dumped on the replay log. Before any flip it carries was
+the workload made. Before any flip it carries was
 taken the stall decides the replay (`...; the replay ended there and published no session (until
 then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROGRESS`, §5): no
 session, its question settled. After one was taken the flips taken keep their verdicts, never
 rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
 to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
-it. A workload that ended settles on the settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
-of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z) an admitted one went at most 122 s
-without a log line in its window (a schedule stall's ceiling, 8 timeouts of 15 s), one 300 s (an
-HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed at
-`replay_timeout_s` (solr-bugs-reindex-cleanup: an Overseer command waiting for a response node
-already deleted, in a tree whose waits never time out) worked about 80 s and then stood still for
-2,320 s.
+it. After its window closed the test was over, and its teardown answers nothing the question asked:
+the run ends as at the workload's own end (`TEST_OVER`, §5; `FocusedReplay#testOver`), nothing
+decided, every verdict settled as there -- a faithful world never entered is still `WORLD_REFUTED`,
+its condition (d) naming the stand. Either way its threads are dumped on the replay log. A workload
+that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
+replays that ended by themselves or at their witness (PV7-38, PV7-39, nine SGF6 cases), the longest
+span with no new kind of log line was 230 s (p99 162 s, p50 16 s); of their 567 teardowns 558 took
+under a minute and 9 took 600-620 s, each standing on an Overseer response until a ZooKeeper session
+expired (all ADMITTED: they now end at the bound as `TEST_OVER`, about 20 s sooner, verdicts and
+sessions the same); every replay PV7-38 lost to `replay_timeout_s` made
+nothing new for more than 2,100 s before it (PULL replicas polling a leader left down, inside the
+window; a failed test's teardown waiting on an Overseer response that never came), while the old
+measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each watched
+replay states its own count at exit (`Causynth schedule: <n> distinct event(s), at most <s> s between
+two new ones, the last <s> s ago; ...`, `ScheduleLog#progress`), the measure the bound is checked
+against. `replay_timeout_s` stays the last resort: only a run that keeps moving, or a JVM that
+does not end, reaches it.
 
-A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
+A replay killed on its bound before it stated its verdict (one that stated it is answered by its
+statement, above): its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound, its detail opening `REPLAY_BOUNDED:`
 (`ObligationResult#replayBounded`; a replay killed inside its bound, by its memory reservation or a
 signal, too): it answered nothing, of the arm or of its world, so it settles nothing and counts toward
@@ -1392,12 +1439,21 @@ then the tail of the solver's, and the planner failed on the line). The head sta
 first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
 ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
-first on a host where it started one within the solver's idle time (`campaign_stream_warm`: that
-host's solver of its corpus likely still serves, so the question needs no solver started and no
-corpus read), a REPLAY on whichever host admits it (its worker is on the shared home): a host is
-taken while it runs fewer of the campaign's starts than it has cores (read once,
-`campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
-for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
+first on a host where one returned answered within the solver's idle time (`campaign_stream_warm`,
+set when a solve returns answered there, cleared when one returns owing a solver JVM of its own: that host's
+solver of its corpus serves, so the question needs no solver started and no corpus read), a REPLAY
+on whichever host admits it (its worker is on the shared home). A host is taken for a start of a
+kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
+start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve, an `ALONE` or a
+`HARD` two, its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
+none takes one whatever its count; `campaign_stream_host_count` counts each start in and out), a
+question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
+of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one), and its
+memory ledger admits the start at its kind's charge (below) -- so each kind runs on a host as many
+at once as its cores and its room at that kind's measured charge hold, with no fixed count beside
+them (two solves and one hard-lane ask per host kept PV7-adhoc-39 alone on the pool far below its
+room); none admitting, the head waits for a return, its step's end or the poll interval
+(`campaign_host_poll_s`). A start runs locally in
 a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --run-obligation`
 with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
 (`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
@@ -2453,9 +2509,9 @@ obligation worker's answer with, once it published a session, its focus row (`Ob
 admitted path and decides (§9). Where each top-level command of the body ends, the path selector
 guarding it and whether it asserts a refuted claim (its name closes it, so only its last 64
 characters are read) are found once, as the composition is built (`Composition#commandEnds`,
-`#commandGuards`, `#commandRefuted`); every path's question, the self-check's without its fatal arm
-included (`#pathQuery`, `#withoutFatalArm`), is written from the one body by them, never by
-searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
+`#commandGuards`, `#commandRefuted`); what every path's question shares and each path's own scope,
+the self-check's without its fatal arm included (`#sharedQuery`, `#scopeQuery`,
+`#scopeWithoutFatalArm`), are written from the one body by them, never by searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
 self-check (HR1: 556 sessions, 248 paths, a 26 MB body) past the 5400 s case limit; offline it now
 takes 2-3 minutes: the corpus read 73-130 s (NFS), composing 27-45 s, deciding 13 s over 744 z3 runs
 (`/bigtemp/vnr3ne/ab/hdfs-refactor-compose/c07`).
@@ -2471,16 +2527,25 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
 2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): an unsat
-   path is refuted for every question. When the composed formula is unsat (4), every path is asked
+   path is refuted for every question. Its verdict alone, no core, unless the body asserts a refuted
+   claim: asked under no pin, its core can name only that (`#refutedBySelfCheck`), so it answers
+   every later ask without one, those that want a core too (SGF6-bugs-snapshot-no-active 0001: 141
+   paths' core runs, 26 of 48 at their cap, each then asked again alone, held the decide for hours).
+   The self-check has a third of the decide budget (`ClaimPolicy#SELF_CHECK_SHARE`,
+   `Z3Incremental#until`): past it no path is self-checked and the one running ends, each
+   undecided -- left in the disjunction, never refuted on it -- and the cap is named (DIAGNOSTIC
+   `self-check cap`), so the recorded valuation, which decides the polarity, and the other
+   valuations are asked in the rest (snapshot 0001: about 28 of 141 paths satisfiable after 20-90 s
+   each, a self-check of 21 of the 30 minutes). When the composed formula is unsat (4), every path is asked
    once more with its fatal arm left out (`ClaimPolicy#contradictions`, `Disjunction#withoutFatalArms`,
-   `Composition#withoutFatalArm`: its `path_fatal__` implication without phi), what its own run
+   `Composition#scopeWithoutFatalArm`: its `path_fatal__` implication without phi), what its own run
    satisfied: a path unsat there (or undecided), or one that observed the fatal arm, contradicts its
    run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and BLOCKING for the composition, since the UNSAT rests
    on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
    which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
    BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
-   per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
+   per ask or per arithmetic engine, `Composition#query`/`#scopeQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
    clock cells and the held leaves the arms bind (`Composition#heldSymbols`); a selected state arm
    keeps the states whose selector the model set. An undecided valuation is named DIAGNOSTIC: it
@@ -2491,14 +2556,47 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    same disjunction under more pins (hdfs-11741 i1: 24 of its 31 whole asks ran their 60 s
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
-   second each alone); one that stops at its memory cap goes path by path too. Path by path, the
-   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 768 MB slot of the
-   composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3 peaks measured p90 81-664 MB on three
-   Solr corpora), so a 3 GB room runs two at once, the rest
-   waiting for a slot; the valuations, asked up to four at a time (`PARALLEL_ASKS`, at most as many as
-   there are), ask their whole disjunctions in slots of the room shared that many ways
-   (`Disjunction#asking`, `Z3#shared`), and a lone ask -- the formula's, a refinement's, a path asked
-   alone -- in half of it each engine; an ask at a shared slot's cap is asked once more alone first.
+   second each alone); one that stops at its memory cap goes path by path too, at the slot it was
+   asked in -- never asked again alone first (`Z3#ask`): each path is a smaller question.
+   Every path question -- the self-check, the one without its fatal arm, a path in its own run, free,
+   under its own pins -- is one SCOPE of a long-lived z3 (`smt.Z3Incremental`): one z3 per arithmetic
+   engine reads what every path shares once (`Composition#sharedQuery`: the commands no selector
+   guards and no refuted claim) and asks each path as `(push 1) (set-option :timeout B)` its own
+   commands (`#scopeQuery`: the refuted claims, its guarded commands, its selector, its pins)
+   `(check-sat)`, its model or core read off that check, then `(pop 1)`, every answer read up to an
+   `(echo ...)` mark; the pop takes back all the scope asserted, named or declared, so no question
+   sees another's (SGF6-bugs-snapshot-no-active 0001: 65 of each path's 69 MB shared, read again by
+   every path's own z3 before, about 4 of its 5.5-8 s). z3 answers a scope with its incremental
+   core, far slower on some questions (that corpus: a sat path 73 s scoped, 8 s alone), so after 1 s
+   it falls back to its tactic solver (`combined_solver.solver2_timeout`, `SOLVER2_TIMEOUT_MS`): that
+   path 4 s, unsat ones 0.3-3 s. The engines race as a run's do, the preferred one's decided answer
+   winning within its grace where a model or a core is asked -- a verdict alone is the first decided
+   engine's at once, the same whichever gives it (`Z3#PREFERRED_GRACE_MILLIS`, one-shot runs alike:
+   snapshot 0001, a path engine 6 satisfied in 22 s while engine 2 ran 120 s undecided, answered at
+   44 s before); the other engine's check still running is cancelled by SIGINT, on which
+   z3 ends a `check-sat` and reads on (anywhere else SIGINT ends it: started afresh). Undecided is
+   never a verdict -- a timeout (z3's `:timeout`, or silent 10 s past it: that z3 ended), an
+   `unknown`, a z3 at its cap -- and a z3 that ends mid-question answers it nothing: the questions
+   after it go to a fresh one. A question is asked once more where its z3 ended before reaching it,
+   ran out of memory after answering others, or had a SIGINT meant for an earlier check still to land
+   (sent as that check ended, it cancels the next check -- "interrupted from keyboard", z3 4.14.1 --
+   or, outside a check, ends z3); a cancelled check that shows no verdict within 10 s ends its z3,
+   and a question's silence counts from its send, on a fresh z3 from the end of the shared part's
+   read (which never counts: a large shared part is no timeout of every question).
+   Two decided answers to one question that differ -- its engines' in one run or race, or its verdict's
+   and its model's or core's -- are an error (`Z3#DISAGREE`, the claim refused by name) and the
+   question undecided. A sat whose model its cap cut is undecided, an unsat whose core it cut stands
+   with its core unknown. A core is asked again of a second pair started tracking (`Z3#CORE_TRACKING`
+   slows every question). The paths' questions are put 8 at a time (`PATH_ASKS`) and asked in order,
+   one at a time; a pair holds the composer's whole z3 room while it lives, half each engine (a 2269
+   MB room: two z3s capped at 1070 MB; snapshot 0001's held 420-560 MB, 843 MB at peak), and gives it
+   back to whoever waits for it once it has no question, or between questions after 30 s of it
+   (`YIELD_AFTER_MS`), so the two pairs and the one-shot asks take turns. The valuations, asked up
+   to four at a time (`PARALLEL_ASKS`, at most as many as there are), ask their whole disjunctions in
+   slots of the room shared that many ways (`Disjunction#asking`, `Z3#shared`), and a lone one-shot
+   ask -- the formula's -- in half of it each engine; a model or core run at a shared slot's cap is
+   that run once more alone, never the verdict again (`Z3#payload`): a core cut there too leaves the
+   verdict unsat, its core unknown.
    A composer's room is 3072 MB (its charge at the 4 GB start heap 7.8 GB, at 8 GB once it outgrew 4 GB
    12.2 GB; a 6144 MB room beside an 8 GB start, 15.2 GB that every head held too, kept five bug checks
    of round SGF4 waiting 30 min and more for a host), less where its footprint,
@@ -2506,7 +2604,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
    `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer
    in their order: the first sat path's answer (the asks
-   after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
+   after it stopped, a check still running cancelled), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
    `Composition#ownRun`): its own session's arm of each message the path received and each state
    read's observed writer, selectors only (never the values its handoffs carried, which are on its
@@ -2514,18 +2612,32 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
    paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
    so it is not asked again there: its refutation answers, core and all, one asked without a core
-   only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
-   core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
-   of its witness asks two paths. A path is asked by `Composition#pathQuery`: the body without the
-   commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
-   partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
-   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared; hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction
-   check and `mechanism`'s pinned re-asks of the selected path read the same text. Selectors are
-   never asserted together: two contradict the partition.
-   An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
-   each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
-   since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
-   rest forces false.
+   only an ask that wants none, unless it was asked under no assertion at all where the body asserts
+   no refuted claim (the self-check: its core can name no pin). hdfs-11741 i1: 155 of 157 paths
+   refute themselves, so every pinned re-ask of its witness asks two paths. A valuation pins every
+   declared root; a path's question names few of them (`Composition#rootsOf`: the roots its own
+   commands name, closed over the commands every path shares that name one of them and another,
+   read off the body once). Each path -- free and in its own run -- is asked first under the pins of
+   those alone (`Disjunction#projected`), a subset of the valuation's assertions: unsat there, it is
+   remembered so and refutes the path under every valuation agreeing on them, so a path is asked once
+   per distinct projection, not once per valuation; sat or undecided there, the whole valuation
+   decides, in its own run too, within the whole budget: the first try takes at most a quarter of it
+   (`Disjunction#PROJECTED_SHARE`), since its roots follow only the shared commands naming two or more
+   of them and it can leave out a pin the path needs. An unsat is only ever read
+   off a subset of the assertions asked, and a memout or a timeout is never one. A path's question is
+   the body without the commands another path's selector guards (`(assert (=> <selector> ...))`,
+   vacuous once the partition forces that selector false), its own selector asserted: the shared
+   part and its scope; 90-98% of a body is guarded (hdfs-17899-bug2 r4: 1.7 of 93 MB shared;
+   hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction check and `mechanism`'s pinned re-asks of
+   the selected path read the same text. Selectors are never asserted together: two contradict the
+   partition.
+   A one-shot ask (`Z3#ask`, the whole disjunction) is a verdict run, then a model run (sat) or a
+   core run (unsat, where a core is wanted), each its own z3 process; only the core run tracks the
+   named assertions (`smt.Z3#CORE_TRACKING`), since tracked z3 simplifies nothing across them and
+   still searches a disjunct whose selector the rest forces false.
+   One composition's claim asks z3 within `DECIDE_BUDGET_MS` (30 min, `ClaimPolicy#decide`,
+   `Z3#until`): past it no question starts and every one running ends, each undecided -- a named
+   bound (DIAGNOSTIC `decide budget`), never a refutation, so no UNSAT stands on it.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
@@ -3053,7 +3165,8 @@ A planted run is not the recording's world, so the workload's checks of that wor
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
 planted, rootsPlanted, ordersHeld, fatal, atAnchor, control, reproduced}` (a control run never reproduced), read off its trace's plant rows
-against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
+(each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
+them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`
 when what it waited for came after all, `MISSING` when it never came; `UNWRITTEN`, `HOLDING` at the
 run's end, `NOT_REACHED`), whether it applied every row, every ROOT and ANSWER row and held every

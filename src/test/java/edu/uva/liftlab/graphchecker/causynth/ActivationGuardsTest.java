@@ -5,23 +5,9 @@ import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import soot.ArrayType;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
 import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
 import soot.SootMethod;
-import soot.Type;
-import soot.Unit;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.options.Options;
 
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -49,7 +35,6 @@ public class ActivationGuardsTest {
             + "a.Mode,int)>";
     private static final String RUN = "<a.T: void run(a.Base,a.Mode,"
             + "a.Mode,int)>";
-    private static final Jimple J = Jimple.v();
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -245,220 +230,112 @@ public class ActivationGuardsTest {
      * o}.
      */
     private static CausynthTargetContext storeScene() {
-        G.reset();
-        Options.v().set_allow_phantom_refs(true);
-        IntType i = IntType.v();
-        SootClass object = library("java.lang.Object", null, 0);
-        library("java.lang.IllegalStateException", object, 0);
-        SootClass string = library("java.lang.String", object,
-                Modifier.FINAL);
-        SootMethod length = method(string, "length",
-                Collections.<Type>emptyList(), i, 0);
-        SootMethod replace = method(string, "replace", Arrays.<Type>asList(
-                string.getType(), string.getType()), string.getType(), 0);
-        SootClass iterator = library("java.util.Iterator", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootMethod remove = declared(iterator, "remove",
-                Collections.<Type>emptyList(), VoidType.v());
-        SootClass list = library("java.util.List", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootMethod size = declared(list, "size",
-                Collections.<Type>emptyList(), i);
-        SootMethod iterate = declared(list, "iterator",
-                Collections.<Type>emptyList(), iterator.getType());
-
-        SootClass helper = application("a.Helper", object, 0);
-        SootMethod add = method(helper, "add", Arrays.<Type>asList(
-                string.getType(), object.getType()), helper.getType(), 0);
-        Local self = local(add, "r0", helper.getType());
-        body(add, J.newIdentityStmt(self, J.newThisRef(helper.getType())),
-                J.newReturnStmt(self));
-        SootMethod of = method(helper, "of", Collections.<Type>singletonList(
-                object.getType()), helper.getType(), Modifier.STATIC);
-        Local made = local(of, "$r0", helper.getType());
-        Local given = local(of, "r1", object.getType());
-        body(of, J.newIdentityStmt(given,
-                        J.newParameterRef(object.getType(), 0)),
-                J.newAssignStmt(made, J.newNewExpr(helper.getType())),
-                J.newReturnStmt(made));
-
-        SootClass type = application(STORE, object, 0);
-        SootField name = new SootField("name", string.getType(),
-                Modifier.PUBLIC);
-        SootField items = new SootField("items", list.getType(),
-                Modifier.PUBLIC);
-        SootField inst = new SootField("inst", type.getType(),
-                Modifier.PUBLIC | Modifier.STATIC);
-        SootField w = new SootField("w", i, Modifier.PUBLIC);
-        type.addField(name);
-        type.addField(items);
-        type.addField(inst);
-        type.addField(w);
-        SootField gate = staticField(type, "gate");
-
-        SootClass box = application("a.Box", object, 0);
-        SootField v = new SootField("v", i, Modifier.PUBLIC);
-        box.addField(v);
-        SootField held = new SootField("box", box.getType(),
-                Modifier.PUBLIC | Modifier.STATIC);
-        type.addField(held);
-        SootMethod build = method(box, "<init>", Arrays.<Type>asList(
-                type.getType(), i), VoidType.v(), 0);
-        Local b0 = local(build, "r0", box.getType());
-        Local owner = local(build, "r1", type.getType());
-        Local p = local(build, "i0", i);
-        body(build, J.newIdentityStmt(b0, J.newThisRef(box.getType())),
-                J.newIdentityStmt(owner, J.newParameterRef(type.getType(), 0)),
-                J.newIdentityStmt(p, J.newParameterRef(i, 1)),
-                J.newAssignStmt(J.newInstanceFieldRef(b0, v.makeRef()), p),
-                J.newAssignStmt(J.newInstanceFieldRef(owner, w.makeRef()), p),
-                J.newReturnVoidStmt());
-        SootMethod keep = method(type, "keep", Collections.<Type>singletonList(
-                box.getType()), VoidType.v(), Modifier.STATIC);
-        Local kept = local(keep, "r0", box.getType());
-        body(keep, J.newIdentityStmt(kept, J.newParameterRef(box.getType(), 0)),
-                J.newAssignStmt(J.newStaticFieldRef(held.makeRef()), kept),
-                J.newReturnVoidStmt());
-        SootMethod make = method(type, "make", Arrays.<Type>asList(
-                type.getType(), i), VoidType.v(), Modifier.STATIC);
-        Local mt = local(make, "r0", type.getType());
-        Local mk = local(make, "i1", i);
-        Local open = local(make, "$i0", i);
-        Local fresh = local(make, "$r1", box.getType());
-        Unit leave = J.newReturnVoidStmt();
-        body(make, J.newIdentityStmt(mt, J.newParameterRef(type.getType(), 0)),
-                J.newIdentityStmt(mk, J.newParameterRef(i, 1)),
-                J.newAssignStmt(open, J.newStaticFieldRef(gate.makeRef())),
-                J.newIfStmt(J.newEqExpr(open, IntConstant.v(0)), leave),
-                J.newAssignStmt(fresh, J.newNewExpr(box.getType())),
-                J.newInvokeStmt(J.newSpecialInvokeExpr(fresh, build.makeRef(),
-                        mt, mk)),
-                J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), fresh)),
-                leave);
-
-        SootMethod pick = method(type, "pick", Arrays.<Type>asList(
-                type.getType(), i), VoidType.v(), Modifier.STATIC);
-        Local pt = local(pick, "r0", type.getType());
-        Local pk = local(pick, "i1", i);
-        Local chosen = local(pick, "$i0", i);
-        Local first = local(pick, "$r1", box.getType());
-        Local second = local(pick, "$r2", box.getType());
-        Unit picked = J.newReturnVoidStmt();
-        Unit other = J.newAssignStmt(second, J.newNewExpr(box.getType()));
-        body(pick, J.newIdentityStmt(pt, J.newParameterRef(type.getType(), 0)),
-                J.newIdentityStmt(pk, J.newParameterRef(i, 1)),
-                J.newAssignStmt(chosen, J.newStaticFieldRef(gate.makeRef())),
-                J.newIfStmt(J.newEqExpr(chosen, IntConstant.v(0)), other),
-                J.newAssignStmt(first, J.newNewExpr(box.getType())),
-                J.newInvokeStmt(J.newSpecialInvokeExpr(first, build.makeRef(),
-                        pt, IntConstant.v(1))),
-                J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), first)),
-                J.newGotoStmt(picked),
-                other,
-                J.newInvokeStmt(J.newSpecialInvokeExpr(second, build.makeRef(),
-                        pt, IntConstant.v(2))),
-                J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), second)),
-                picked);
-
-        SootMethod touch = method(type, "touch", Collections.<Type>emptyList(),
-                VoidType.v(), 0);
-        Local t0 = local(touch, "r0", type.getType());
-        Local n = local(touch, "$r1", string.getType());
-        Local h = local(touch, "$r2", helper.getType());
-        Local h2 = local(touch, "$r3", helper.getType());
-        Local l = local(touch, "$r4", list.getType());
-        Local it = local(touch, "$r5", iterator.getType());
-        Local s2 = local(touch, "$r6", string.getType());
-        Local s3 = local(touch, "$r7", string.getType());
-        body(touch, J.newIdentityStmt(t0, J.newThisRef(type.getType())),
-                J.newAssignStmt(n, J.newInstanceFieldRef(t0, name.makeRef())),
-                J.newAssignStmt(h, J.newStaticInvokeExpr(of.makeRef(), t0)),
-                J.newAssignStmt(h2, J.newVirtualInvokeExpr(h, add.makeRef(),
-                        soot.jimple.StringConstant.v("n"), n)),
-                J.newInvokeStmt(J.newVirtualInvokeExpr(h2, add.makeRef(),
-                        soot.jimple.StringConstant.v("m"), n)),
-                J.newAssignStmt(l, J.newInstanceFieldRef(t0, items.makeRef())),
-                J.newAssignStmt(it, J.newInterfaceInvokeExpr(l,
-                        iterate.makeRef())),
-                J.newInvokeStmt(J.newInterfaceInvokeExpr(it, remove.makeRef())),
-                J.newAssignStmt(s2, J.newInstanceFieldRef(t0, name.makeRef())),
-                J.newAssignStmt(s3, J.newVirtualInvokeExpr(s2,
-                        replace.makeRef(), soot.jimple.StringConstant.v("a"),
-                        soot.jimple.StringConstant.v("b"))),
-                J.newReturnVoidStmt());
-
-        SootClass objects = library("java.util.Objects", object, 0);
-        SootMethod requireNonNull = method(objects, "requireNonNull",
-                Collections.<Type>singletonList(object.getType()),
-                object.getType(), Modifier.STATIC);
-        SootMethod same = method(type, "same", Collections.<Type>singletonList(
-                object.getType()), object.getType(), Modifier.STATIC);
-        Local given2 = local(same, "r0", object.getType());
-        Local copied = local(same, "$r1", object.getType());
-        body(same, J.newIdentityStmt(given2,
-                        J.newParameterRef(object.getType(), 0)),
-                J.newAssignStmt(copied, given2), J.newReturnStmt(copied));
-        SootMethod through = method(type, "through",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local u0 = local(through, "r0", type.getType());
-        Local[] at = new Local[8];
-        Type[] types = {list.getType(), object.getType(), list.getType(),
-                iterator.getType(), list.getType(), object.getType(),
-                list.getType(), iterator.getType()};
-        for (int k = 0; k < at.length; k++) {
-            at[k] = local(through, "$r" + (k + 1), types[k]);
-        }
-        body(through, J.newIdentityStmt(u0, J.newThisRef(type.getType())),
-                J.newAssignStmt(at[0], J.newInstanceFieldRef(u0,
-                        items.makeRef())),
-                J.newAssignStmt(at[1], J.newStaticInvokeExpr(
-                        requireNonNull.makeRef(), at[0])),
-                J.newAssignStmt(at[2], J.newCastExpr(at[1], list.getType())),
-                J.newAssignStmt(at[3], J.newInterfaceInvokeExpr(at[2],
-                        iterate.makeRef())),
-                J.newInvokeStmt(J.newInterfaceInvokeExpr(at[3],
-                        remove.makeRef())),
-                J.newAssignStmt(at[4], J.newInstanceFieldRef(u0,
-                        items.makeRef())),
-                J.newAssignStmt(at[5], J.newStaticInvokeExpr(same.makeRef(),
-                        at[4])),
-                J.newAssignStmt(at[6], J.newCastExpr(at[5], list.getType())),
-                J.newAssignStmt(at[7], J.newInterfaceInvokeExpr(at[6],
-                        iterate.makeRef())),
-                J.newInvokeStmt(J.newInterfaceInvokeExpr(at[7],
-                        remove.makeRef())),
-                J.newReturnVoidStmt());
-
-        SootMethod check = method(type, "check", Collections.<Type>emptyList(),
-                VoidType.v(), Modifier.STATIC);
-        Local c = local(check, "$r0", type.getType());
-        Local cn = local(check, "$r1", string.getType());
-        Local cl = local(check, "$r2", list.getType());
-        Local len = local(check, "$i0", i);
-        Local count = local(check, "$i1", i);
-        Local sum = local(check, "$i2", i);
-        Local cb = local(check, "$r4", box.getType());
-        Local cv = local(check, "$i3", i);
-        Local cw = local(check, "$i4", i);
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(check, "$r3", failure);
-        Unit done = J.newReturnVoidStmt();
-        body(check, J.newAssignStmt(c, J.newStaticFieldRef(inst.makeRef())),
-                J.newAssignStmt(cn, J.newInstanceFieldRef(c, name.makeRef())),
-                J.newAssignStmt(len, J.newVirtualInvokeExpr(cn,
-                        length.makeRef())),
-                J.newAssignStmt(cl, J.newInstanceFieldRef(c, items.makeRef())),
-                J.newAssignStmt(count, J.newInterfaceInvokeExpr(cl,
-                        size.makeRef())),
-                J.newAssignStmt(sum, J.newAddExpr(len, count)),
-                J.newAssignStmt(cb, J.newStaticFieldRef(held.makeRef())),
-                J.newAssignStmt(cv, J.newInstanceFieldRef(cb, v.makeRef())),
-                J.newAssignStmt(cw, J.newInstanceFieldRef(c, w.makeRef())),
-                J.newAssignStmt(sum, J.newAddExpr(sum, cv)),
-                J.newAssignStmt(sum, J.newAddExpr(sum, cw)),
-                J.newIfStmt(J.newEqExpr(sum, IntConstant.v(0)), done),
-                J.newAssignStmt(thrown, J.newNewExpr(failure)),
-                J.newThrowStmt(thrown), done);
+        String helper = "<a.Helper: a.Helper add(java.lang.String,"
+                + "java.lang.Object)>";
+        String iterator = "<java.util.List: java.util.Iterator iterator()>";
+        String remove = "<java.util.Iterator: void remove()>";
+        String box = "<a.Box: void <init>(a.S,int)>";
+        String keep = "<a.S: void keep(a.Box)>";
+        JimpleScene.load(JimpleScene.OBJECT, JimpleScene.FAILURE,
+                "public final class java.lang.String extends"
+                        + " java.lang.Object { public int length() { }"
+                        + " public java.lang.String replace(java.lang.String,"
+                        + " java.lang.String) { } }",
+                "public abstract interface java.util.Iterator {"
+                        + " public abstract void remove(); }",
+                "public abstract interface java.util.List {"
+                        + " public abstract int size();"
+                        + " public abstract java.util.Iterator iterator(); }",
+                "application public class a.Helper extends java.lang.Object {"
+                        + " public a.Helper add(java.lang.String,"
+                        + " java.lang.Object) { a.Helper r0;"
+                        + " r0 := @this: a.Helper; return r0; }"
+                        + " public static a.Helper of(java.lang.Object) {"
+                        + " a.Helper $r0; java.lang.Object r1;"
+                        + " r1 := @parameter0: java.lang.Object;"
+                        + " $r0 = new a.Helper; return $r0; } }",
+                "application public class a.S extends java.lang.Object {"
+                        + " public java.lang.String name;"
+                        + " public java.util.List items;"
+                        + " public static a.S inst; public int w;"
+                        + " public static int gate; public static a.Box box;"
+                        + " public static void keep(a.Box) { a.Box r0;"
+                        + " r0 := @parameter0: a.Box; <a.S: a.Box box> = r0;"
+                        + " return; }"
+                        + " public static void make(a.S, int) { a.S r0;"
+                        + " int i1, $i0; a.Box $r1; r0 := @parameter0: a.S;"
+                        + " i1 := @parameter1: int; $i0 = <a.S: int gate>;"
+                        + " if $i0 == 0 goto label1; $r1 = new a.Box;"
+                        + " specialinvoke $r1." + box + "(r0, i1);"
+                        + " staticinvoke " + keep + "($r1); label1: return; }"
+                        + " public static void pick(a.S, int) { a.S r0;"
+                        + " int i1, $i0; a.Box $r1, $r2;"
+                        + " r0 := @parameter0: a.S; i1 := @parameter1: int;"
+                        + " $i0 = <a.S: int gate>; if $i0 == 0 goto label1;"
+                        + " $r1 = new a.Box; specialinvoke $r1." + box
+                        + "(r0, 1); staticinvoke " + keep + "($r1);"
+                        + " goto label2; label1: $r2 = new a.Box;"
+                        + " specialinvoke $r2." + box + "(r0, 2);"
+                        + " staticinvoke " + keep + "($r2); label2: return; }"
+                        + " public void touch() { a.S r0;"
+                        + " java.lang.String $r1; a.Helper $r2, $r3;"
+                        + " java.util.List $r4; java.util.Iterator $r5;"
+                        + " java.lang.String $r6, $r7; r0 := @this: a.S;"
+                        + " $r1 = r0.<a.S: java.lang.String name>;"
+                        + " $r2 = staticinvoke <a.Helper: a.Helper of("
+                        + "java.lang.Object)>(r0); $r3 = virtualinvoke $r2."
+                        + helper + "(\"n\", $r1); virtualinvoke $r3." + helper
+                        + "(\"m\", $r1); $r4 = r0.<a.S: java.util.List items>;"
+                        + " $r5 = interfaceinvoke $r4." + iterator + "();"
+                        + " interfaceinvoke $r5." + remove + "();"
+                        + " $r6 = r0.<a.S: java.lang.String name>;"
+                        + " $r7 = virtualinvoke $r6.<java.lang.String:"
+                        + " java.lang.String replace(java.lang.String,"
+                        + "java.lang.String)>(\"a\", \"b\"); return; }"
+                        + " public static java.lang.Object same("
+                        + "java.lang.Object) { java.lang.Object r0, $r1;"
+                        + " r0 := @parameter0: java.lang.Object; $r1 = r0;"
+                        + " return $r1; }"
+                        + " public void through() { a.S r0; java.util.List $r1;"
+                        + " java.lang.Object $r2; java.util.List $r3;"
+                        + " java.util.Iterator $r4; java.util.List $r5;"
+                        + " java.lang.Object $r6; java.util.List $r7;"
+                        + " java.util.Iterator $r8; r0 := @this: a.S;"
+                        + " $r1 = r0.<a.S: java.util.List items>;"
+                        + " $r2 = staticinvoke <java.util.Objects:"
+                        + " java.lang.Object requireNonNull(java.lang.Object)>"
+                        + "($r1); $r3 = (java.util.List) $r2;"
+                        + " $r4 = interfaceinvoke $r3." + iterator + "();"
+                        + " interfaceinvoke $r4." + remove + "();"
+                        + " $r5 = r0.<a.S: java.util.List items>;"
+                        + " $r6 = staticinvoke <a.S: java.lang.Object same("
+                        + "java.lang.Object)>($r5); $r7 = (java.util.List) $r6;"
+                        + " $r8 = interfaceinvoke $r7." + iterator + "();"
+                        + " interfaceinvoke $r8." + remove + "(); return; }"
+                        + " public static void check() { a.S $r0;"
+                        + " java.lang.String $r1; java.util.List $r2;"
+                        + " int $i0, $i1, $i2; a.Box $r4; int $i3, $i4;"
+                        + " java.lang.IllegalStateException $r3;"
+                        + " $r0 = <a.S: a.S inst>;"
+                        + " $r1 = $r0.<a.S: java.lang.String name>;"
+                        + " $i0 = virtualinvoke $r1.<java.lang.String: int"
+                        + " length()>(); $r2 = $r0.<a.S: java.util.List items>;"
+                        + " $i1 = interfaceinvoke $r2.<java.util.List: int"
+                        + " size()>(); $i2 = $i0 + $i1;"
+                        + " $r4 = <a.S: a.Box box>; $i3 = $r4.<a.Box: int v>;"
+                        + " $i4 = $r0.<a.S: int w>; $i2 = $i2 + $i3;"
+                        + " $i2 = $i2 + $i4; if $i2 == 0 goto label1;"
+                        + " $r3 = new java.lang.IllegalStateException;"
+                        + " throw $r3; label1: return; } }",
+                "application public class a.Box extends java.lang.Object {"
+                        + " public int v; public void <init>(a.S, int) {"
+                        + " a.Box r0; a.S r1; int i0; r0 := @this: a.Box;"
+                        + " r1 := @parameter0: a.S; i0 := @parameter1: int;"
+                        + " r0.<a.Box: int v> = i0; r1.<a.S: int w> = i0;"
+                        + " return; } }",
+                "public class java.util.Objects extends java.lang.Object {"
+                        + " public static java.lang.Object requireNonNull("
+                        + "java.lang.Object) { } }");
         return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", STORE, "check", "()V",
                         STORE_CHECK, "java.lang.IllegalStateException", 0));
@@ -514,186 +391,63 @@ public class ActivationGuardsTest {
      * save}, which stores {@code saved}, only when {@code enabled} is.
      */
     private static CausynthTargetContext target() {
-        G.reset();
-        Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        library("java.lang.IllegalStateException", object, 0);
-        IntType i = IntType.v();
-        SootClass enumType = library("java.lang.Enum", object,
-                Modifier.ABSTRACT);
-        method(enumType, "equals", Collections.<Type>singletonList(
-                object.getType()), BooleanType.v(), Modifier.FINAL);
-        SootClass mode = application("a.Mode", enumType, Modifier.FINAL);
-        SootClass type = application(T, object, 0);
-        SootField saved = staticField(type, "saved");
-        SootField gate = staticField(type, "gate");
-        SootField enabled = staticField(type, "enabled");
-        SootField on = staticField(type, "on");
-
-        // Base: abstract, its state() concrete; Leaf inherits it.
-        SootClass base = application("a.Base", object, Modifier.ABSTRACT);
-        SootField mark = new SootField("mark", i, Modifier.PUBLIC);
-        base.addField(mark);
-        SootMethod state = method(base, "state",
-                Collections.<Type>emptyList(), i, 0);
-        Local self = local(state, "r0", base.getType());
-        Local value = local(state, "i0", i);
-        body(state, J.newIdentityStmt(self, J.newThisRef(base.getType())),
-                J.newAssignStmt(value, J.newInstanceFieldRef(self,
-                        mark.makeRef())),
-                J.newAssignStmt(value, J.newAddExpr(value, IntConstant.v(1))),
-                J.newReturnStmt(value));
-        application("a.Leaf", base, 0);
-
-        // save(v): saved = v; caller(v): if (enabled != 0) save(v).
-        SootMethod save = method(type, "save",
-                Collections.<Type>singletonList(i), VoidType.v(),
-                Modifier.STATIC);
-        Local v = local(save, "i0", i);
-        body(save, J.newIdentityStmt(v, J.newParameterRef(i, 0)),
-                J.newAssignStmt(J.newStaticFieldRef(saved.makeRef()), v),
-                J.newReturnVoidStmt());
-        SootMethod caller = method(type, "caller",
-                Collections.<Type>singletonList(i), VoidType.v(),
-                Modifier.STATIC);
-        Local cv = local(caller, "i0", i);
-        Local flag = local(caller, "i1", i);
-        Unit skip = J.newReturnVoidStmt();
-        body(caller, J.newIdentityStmt(cv, J.newParameterRef(i, 0)),
-                J.newAssignStmt(flag, J.newStaticFieldRef(enabled.makeRef())),
-                J.newIfStmt(J.newEqExpr(flag, IntConstant.v(0)), skip),
-                J.newInvokeStmt(J.newStaticInvokeExpr(save.makeRef(), cv)),
-                skip);
-
-        // fill(k): int[] a = new int[1]; if (on != 0) a[0] = k; return a[0].
-        ArrayType ints = ArrayType.v(i, 1);
-        SootMethod fill = method(type, "fill",
-                Collections.<Type>singletonList(i), i, Modifier.STATIC);
-        Local k = local(fill, "i0", i);
-        Local set = local(fill, "i1", i);
-        Local array = local(fill, "r0", ints);
-        Local read = local(fill, "i2", i);
-        Unit load = J.newAssignStmt(read, J.newArrayRef(array,
-                IntConstant.v(0)));
-        body(fill, J.newIdentityStmt(k, J.newParameterRef(i, 0)),
-                J.newAssignStmt(array, J.newNewArrayExpr(i, IntConstant.v(1))),
-                J.newAssignStmt(set, J.newStaticFieldRef(on.makeRef())),
-                J.newIfStmt(J.newEqExpr(set, IntConstant.v(0)), load),
-                J.newAssignStmt(J.newArrayRef(array, IntConstant.v(0)), k),
-                load, J.newReturnStmt(read));
-
-        List<Type> parameters = Arrays.<Type>asList(base.getType(),
-                mode.getType(), mode.getType(), i);
-        SootMethod check = method(type, "check", parameters, VoidType.v(),
-                Modifier.STATIC);
-        Local b = local(check, "r0", base.getType());
-        Local m = local(check, "r1", mode.getType());
-        Local n = local(check, "r2", mode.getType());
-        Local key = local(check, "i0", i);
-        Local got = local(check, "i1", i);
-        Local same = local(check, "z0", BooleanType.v());
-        Local stored = local(check, "i2", i);
-        Local filled = local(check, "i3", i);
-        Local sum = local(check, "i4", i);
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(check, "r3", failure);
-        Unit done = J.newReturnVoidStmt();
-        body(check, J.newIdentityStmt(b, J.newParameterRef(base.getType(), 0)),
-                J.newIdentityStmt(m, J.newParameterRef(mode.getType(), 1)),
-                J.newIdentityStmt(n, J.newParameterRef(mode.getType(), 2)),
-                J.newIdentityStmt(key, J.newParameterRef(i, 3)),
-                J.newAssignStmt(got, J.newVirtualInvokeExpr(b,
-                        state.makeRef())),
-                J.newAssignStmt(same, J.newVirtualInvokeExpr(m,
-                        Scene.v().makeMethodRef(mode, "equals",
-                                Collections.<Type>singletonList(
-                                        object.getType()), BooleanType.v(),
-                                false), n)),
-                J.newAssignStmt(stored, J.newStaticFieldRef(saved.makeRef())),
-                J.newAssignStmt(filled, J.newStaticInvokeExpr(fill.makeRef(),
-                        key)),
-                J.newAssignStmt(sum, J.newAddExpr(got, same)),
-                J.newAssignStmt(sum, J.newAddExpr(sum, stored)),
-                J.newAssignStmt(sum, J.newAddExpr(sum, filled)),
-                J.newIfStmt(J.newNeExpr(sum, IntConstant.v(0)), done),
-                J.newAssignStmt(thrown, J.newNewExpr(failure)),
-                J.newThrowStmt(thrown), done);
-
-        // run(b, m, n, k): if (gate != 0) check(b, m, n, k).
-        SootMethod run = method(type, "run", parameters, VoidType.v(),
-                Modifier.STATIC);
-        Local[] actuals = {local(run, "r0", base.getType()),
-                local(run, "r1", mode.getType()),
-                local(run, "r2", mode.getType()), local(run, "i0", i)};
-        Local open = local(run, "i1", i);
-        Unit leave = J.newReturnVoidStmt();
-        body(run, J.newIdentityStmt(actuals[0],
-                        J.newParameterRef(base.getType(), 0)),
-                J.newIdentityStmt(actuals[1],
-                        J.newParameterRef(mode.getType(), 1)),
-                J.newIdentityStmt(actuals[2],
-                        J.newParameterRef(mode.getType(), 2)),
-                J.newIdentityStmt(actuals[3], J.newParameterRef(i, 3)),
-                J.newAssignStmt(open, J.newStaticFieldRef(gate.makeRef())),
-                J.newIfStmt(J.newEqExpr(open, IntConstant.v(0)), leave),
-                J.newInvokeStmt(J.newStaticInvokeExpr(check.makeRef(),
-                        Arrays.asList(actuals))), leave);
+        String params = "a.Base, a.Mode, a.Mode, int";
+        String identities = " r0 := @parameter0: a.Base;"
+                + " r1 := @parameter1: a.Mode; r2 := @parameter2: a.Mode;"
+                + " i0 := @parameter3: int;";
+        JimpleScene.load(JimpleScene.OBJECT, JimpleScene.FAILURE,
+                "public abstract class java.lang.Enum extends java.lang.Object"
+                        + " { public final boolean equals(java.lang.Object)"
+                        + " { } }",
+                "application public final class a.Mode extends java.lang.Enum"
+                        + " { }",
+                "application public class a.T extends java.lang.Object {"
+                        + " public static int saved; public static int gate;"
+                        + " public static int enabled; public static int on;"
+                        // save(v): saved = v; caller(v): if (enabled != 0)
+                        // save(v).
+                        + " public static void save(int) { int i0;"
+                        + " i0 := @parameter0: int; <a.T: int saved> = i0;"
+                        + " return; }"
+                        + " public static void caller(int) { int i0, i1;"
+                        + " i0 := @parameter0: int; i1 = <a.T: int enabled>;"
+                        + " if i1 == 0 goto label1; staticinvoke <a.T: void"
+                        + " save(int)>(i0); label1: return; }"
+                        // fill(k): int[] a = new int[1]; if (on != 0) a[0] =
+                        // k; return a[0].
+                        + " public static int fill(int) { int i0, i1;"
+                        + " int[] r0; int i2; i0 := @parameter0: int;"
+                        + " r0 = newarray (int)[1]; i1 = <a.T: int on>;"
+                        + " if i1 == 0 goto label1; r0[0] = i0;"
+                        + " label1: i2 = r0[0]; return i2; }"
+                        + " public static void check(" + params + ") {"
+                        + " a.Base r0; a.Mode r1, r2; int i0, i1; boolean z0;"
+                        + " int i2, i3, i4; java.lang.IllegalStateException r3;"
+                        + identities
+                        + " i1 = virtualinvoke r0.<a.Base: int state()>();"
+                        + " z0 = virtualinvoke r1.<a.Mode: boolean equals("
+                        + "java.lang.Object)>(r2); i2 = <a.T: int saved>;"
+                        + " i3 = staticinvoke <a.T: int fill(int)>(i0);"
+                        + " i4 = i1 + z0; i4 = i4 + i2; i4 = i4 + i3;"
+                        + " if i4 != 0 goto label1;"
+                        + " r3 = new java.lang.IllegalStateException;"
+                        + " throw r3; label1: return; }"
+                        // run(b, m, n, k): if (gate != 0) check(b, m, n, k).
+                        + " public static void run(" + params + ") {"
+                        + " a.Base r0; a.Mode r1, r2; int i0, i1;" + identities
+                        + " i1 = <a.T: int gate>; if i1 == 0 goto label1;"
+                        + " staticinvoke " + CHECK
+                        + "(r0, r1, r2, i0); label1: return; } }",
+                // Base: abstract, its state() concrete; Leaf inherits it.
+                "application public abstract class a.Base extends"
+                        + " java.lang.Object { public int mark;"
+                        + " public int state() { a.Base r0; int i0;"
+                        + " r0 := @this: a.Base; i0 = r0.<a.Base: int mark>;"
+                        + " i0 = i0 + 1; return i0; } }",
+                "application public class a.Leaf extends a.Base { }");
         return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", T, "check",
                         "(La/Base;La/Mode;La/Mode;I)V", CHECK,
                         "java.lang.IllegalStateException", 0));
-    }
-
-    private static SootField staticField(SootClass owner, String name) {
-        SootField field = new SootField(name, IntType.v(),
-                Modifier.PUBLIC | Modifier.STATIC);
-        owner.addField(field);
-        return field;
-    }
-
-    private static SootClass application(String name, SootClass parent,
-                                         int modifiers) {
-        SootClass type = library(name, parent, modifiers);
-        type.setApplicationClass();
-        return type;
-    }
-
-    private static SootClass library(String name, SootClass parent,
-                                     int modifiers) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC | modifiers);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
-    }
-
-    private static SootMethod method(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     int modifiers) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | modifiers);
-        owner.addMethod(method);
-        method.setActiveBody(J.newBody(method));
-        return method;
-    }
-
-    /** An abstract method: a library interface's, with no body. */
-    private static SootMethod declared(SootClass owner, String name,
-                                       List<Type> parameters, Type returned) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | Modifier.ABSTRACT);
-        owner.addMethod(method);
-        return method;
-    }
-
-    private static Local local(SootMethod method, String name, Type type) {
-        Local local = J.newLocal(name, type);
-        method.getActiveBody().getLocals().add(local);
-        return local;
-    }
-
-    private static void body(SootMethod method, Unit... units) {
-        for (Unit unit : units) {
-            method.getActiveBody().getUnits().add(unit);
-        }
     }
 }
