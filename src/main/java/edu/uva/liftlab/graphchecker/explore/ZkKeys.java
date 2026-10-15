@@ -18,13 +18,17 @@ import java.util.Set;
 /**
  * Which decisions EXPLORE may flip, as far as the iteration's ZooKeeper
  * chain goes ({@code zk_chain.jsonl}, {@link ZkChain}; its keys read off
- * the seed's composition, {@code compose.ZkKeysMain}).  A decision whose
- * symbolic sources are store values off the chain alone -- leaves of a
- * document no keys cover, reads of a store path or of a view of one the
- * chain does not hold -- is no flip: what it decides on is no value the
- * question rests on, and from the next replay on such a leaf crosses as a
- * constant.  A leaf of a chain path no keys row names is the whole
- * document's ({@link ZkChain#grown}).  No chain: every decision as before.
+ * the seed's composition, {@code compose.ZkKeysMain}).  The causal chain
+ * alone decides which store values a flip may move (owner 2026-10-15:
+ * weaving the classes that hold a node's view adds no flip): a decision is
+ * one only where its term names a root, a message's field, a heap read, or
+ * a chain read -- a leaf the chain's keys cover, a read of a chain path's
+ * store or view.  Store values off the chain (leaves no key covers, reads
+ * of a path or a view the chain does not hold), the containers a decode
+ * builds, and nothing it classifies decide no flip: no value the question
+ * rests on, and from the next replay on such a leaf crosses as a constant.
+ * A leaf of a chain path no keys row names is the whole document's ({@link
+ * ZkChain#grown}).  No chain: every decision as before.
  */
 final class ZkKeys {
     /** The chain's keyed paths' pointers, by slot; null: no chain. */
@@ -45,9 +49,7 @@ final class ZkKeys {
 
     /**
      * Whether a decision may be flipped as far as the chain goes: its term
-     * names some symbol that is no off-chain store value (a root, a clock,
-     * a message's field, a chain leaf, a read of a chain path or of
-     * anything else), or names none it classifies.
+     * names a root, a message's field, a heap read or a chain read.
      */
     boolean flippable(Corpus corpus, String sessionId, DecisionRow decision) {
         if (pointers == null) return true;
@@ -60,7 +62,6 @@ final class ZkKeys {
                     Collections.singletonList(term)));
         }
         SmtNames.symbols(term, symbols);
-        boolean off = false;
         for (String symbol : symbols) {
             Corpus.SymbolKind kind = corpus.symbolKind(sessionId, symbol);
             if (kind == Corpus.SymbolKind.UNKNOWN) continue;
@@ -68,10 +69,7 @@ final class ZkKeys {
                 AttachRow attach = corpus.attach(sessionId, symbol);
                 ContentPort.Parsed leaf = attach == null ? null
                         : ContentPort.parse(attach.endpoint().site());
-                if (leaf != null && !onChain(leaf)) {
-                    off = true;
-                    continue;
-                }
+                if (leaf != null && !onChain(leaf)) continue;
             } else if (kind == Corpus.SymbolKind.READ) {
                 ReadRow read = corpus.read(sessionId, symbol);
                 LocationKind location = read == null ? null
@@ -80,13 +78,12 @@ final class ZkKeys {
                         || location == LocationKind.VIEW)
                         && !paths.contains(read.location().slot())
                         && !pointers.containsKey(read.location().slot())) {
-                    off = true;
                     continue;
                 }
             }
             return true;
         }
-        return !off;
+        return false;
     }
 
     /** Whether the chain holds a leaf: its path's keys cover its pointer,

@@ -1103,7 +1103,7 @@ public class RowRuntimeTest {
      * {@code contentKeys}): there a leaf is exported or minted -- no VM runs
      * here, so each one tried is named unread or unminted -- and every
      * other leaf a writer exports as its value, a constant, and a reader
-     * takes as parsed, no attach.  No keys: every leaf.
+     * takes as parsed, no attach.  No keys: no leaf, no export.
      */
     @Test
     public void aDocumentCrossesSymbolicallyOnlyUnderItsContentKeys()
@@ -1114,9 +1114,9 @@ public class RowRuntimeTest {
         Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NN);
         Identity.occurrence(NN.key(), "REGION.keys", true);
-        // the location, its content keys (null: none)
+        // the location, its content keys
         Object[][] table = {
-                {"/collections/a/state.json", null},
+                {"/collections/a/state.json", Collections.emptyList()},
                 {"/collections/b/state.json",
                         Collections.singletonList("|c|shards|s1|state")}};
         for (Object[] row : table) {
@@ -1148,16 +1148,10 @@ public class RowRuntimeTest {
                             .indexOf("#CONTENT:") + 9));
         }
         for (List<String> each : tried.values()) Collections.sort(each);
-        List<String> all = Arrays.asList(
-                "|collections|a|state.json#|c|router",
-                "|collections|a|state.json#|c|shards|s1|leader",
-                "|collections|a|state.json#|c|shards|s1|state");
         List<String> keyed = Collections.singletonList(
                 "|collections|b|state.json#|c|shards|s1|state");
-        List<String> both = new ArrayList<String>(all);
-        both.addAll(keyed);
-        assertEquals("export", both, tried.get("export"));
-        assertEquals("mint", both, tried.get("mint"));
+        assertEquals("export", keyed, tried.get("export"));
+        assertEquals("mint", keyed, tried.get("mint"));
         List<String> constants = new ArrayList<String>();
         for (ExportRow export : SessionReader.read(session()).exports()) {
             constants.add(export.endpoint().site().substring(export

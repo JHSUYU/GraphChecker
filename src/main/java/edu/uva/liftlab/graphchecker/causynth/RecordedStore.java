@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -17,11 +18,12 @@ import java.util.TreeMap;
  * version each decoded object was parsed from, and which occurrence read,
  * decoded or was called back on each location.  What PLAN asks of it: the
  * versions a set of objects holds ({@link #versionsOf}), and the writers a
- * location rests on ({@link #writersOf}) -- every writer of every version,
- * never pruned by the recorded order (owner 2026-09-29): another schedule
- * of the same writes is another version history -- and the ZooKeeper causal
- * graph's two sides ({@link #consumedBy}, {@link #consumersOf}, {@code
- * ZkCausalGraph}).  And which fetch made each decode: the occurrence that
+ * version rests on ({@link #writersUpTo}) -- the one that made it and those
+ * of every earlier version of its location, since a store keeps one document
+ * per location and each write modifies the one before it (owner 2026-10-15:
+ * for ZooKeeper, uniformly, the versions up to the one read) -- and the
+ * ZooKeeper causal graph's two sides ({@link #consumedBy}, {@link
+ * #consumersOf}, {@link #decodesUpTo}, {@code ZkCausalGraph}).  And which fetch made each decode: the occurrence that
  * read the version and when, whose store-read doors PLAN asks where the
  * fetch lies on the data flow ({@link #fetchesOf}).  A decode of a version its
  * own occurrence wrote (Solr's aliases parsed from the bytes a compare-and-
@@ -169,8 +171,14 @@ public final class RecordedStore {
     private final Map<Integer, Fetch> fetchedBy = new HashMap<>();
     /** transport + location -> its fetches, in trace order. */
     private final Map<String, List<Fetch>> fetches = new HashMap<>();
-    /** occurrence -> the locations it read, decoded or was called back on. */
-    private final Map<String, Set<String>> consumed = new HashMap<>();
+    /** occurrence -> the locations it read, decoded or was called back on,
+     *  each with the highest version it read or decoded there (-1: only
+     *  called back). */
+    private final Map<String, Map<String, Long>> consumed = new HashMap<>();
+    /** transport + location -> version -> the occurrences that decoded
+     *  it. */
+    private final Map<String, TreeMap<Long, Set<String>>> decodes =
+            new HashMap<>();
     /** transport + location -> the occurrences that consumed it. */
     private final Map<String, Set<String>> consumers = new HashMap<>();
     /** transport + location -> its session-row slot. */
@@ -193,12 +201,15 @@ public final class RecordedStore {
         final String pointer;
         final String occurrence;
         final int object;
+        final long version;
 
-        Leaf(String location, String pointer, String occurrence, int object) {
+        Leaf(String location, String pointer, String occurrence, int object,
+             long version) {
             this.location = location;
             this.pointer = pointer;
             this.occurrence = occurrence;
             this.object = object;
+            this.version = version;
         }
     }
 
@@ -226,10 +237,18 @@ public final class RecordedStore {
             if (event.write || event.kind == Event.Kind.LEAVES) continue;
             if (!event.occurrence.isEmpty()) {
                 consumed.computeIfAbsent(event.occurrence,
-                        ignored -> new LinkedHashSet<>()).add(event.key());
+                        ignored -> new LinkedHashMap<>())
+                        .merge(event.key(), event.version, Math::max);
                 consumers.computeIfAbsent(event.key(),
                         ignored -> new LinkedHashSet<>())
                         .add(event.occurrence);
+                if (event.kind == Event.Kind.DECODE) {
+                    decodes.computeIfAbsent(event.key(),
+                            ignored -> new TreeMap<>())
+                            .computeIfAbsent(event.version,
+                                    ignored -> new LinkedHashSet<>())
+                            .add(event.occurrence);
+                }
             }
             if (event.kind != Event.Kind.DECODE) continue;
             Fetch fetch = event.occurrence.isEmpty() || wrote(event) ? null
@@ -259,7 +278,7 @@ public final class RecordedStore {
         for (int at = 0; at < event.pointers.length
                 && at < event.objects.length; at++) {
             Leaf leaf = new Leaf(event.key(), event.pointers[at],
-                    event.occurrence, event.objects[at]);
+                    event.occurrence, event.objects[at], event.version);
             if (event.serialized) {
                 writtenLeaves.computeIfAbsent(event.key(),
                         ignored -> new HashMap<>())
@@ -279,12 +298,17 @@ public final class RecordedStore {
                 Collections.<Leaf>emptyList());
     }
 
-    /** Each write's leaf at {@code pointer} of {@code location}, every
-     *  version. */
-    List<Leaf> writtenAt(String location, String pointer) {
+    /** Each write's leaf at {@code pointer} of {@code location}, of the
+     *  versions up to {@code version}. */
+    List<Leaf> writtenAt(String location, String pointer, long version) {
         Map<String, List<Leaf>> at = writtenLeaves.get(location);
-        return at == null ? Collections.<Leaf>emptyList()
-                : at.getOrDefault(pointer, Collections.<Leaf>emptyList());
+        List<Leaf> found = new ArrayList<>();
+        if (at == null) return found;
+        for (Leaf leaf : at.getOrDefault(pointer,
+                Collections.<Leaf>emptyList())) {
+            if (leaf.version <= version) found.add(leaf);
+        }
+        return found;
     }
 
     /** Whether a location's leaves were ever stated, and never past the
@@ -334,13 +358,26 @@ public final class RecordedStore {
                 Collections.<Fetch>emptyList());
     }
 
-    /** The occurrences (rendered addresses) that made any version of {@code
-     *  location} (transport + location), the latest version's first. */
-    List<String> writersOf(String location) {
-        TreeMap<Long, Set<String>> made = writers.get(location);
+    /** The occurrences (rendered addresses) that made {@code location}'s
+     *  (transport + location) versions up to {@code version}, the latest
+     *  first. */
+    List<String> writersUpTo(String location, long version) {
+        return upTo(writers.get(location), version);
+    }
+
+    /** The occurrences that decoded {@code location}'s versions up to
+     *  {@code version}, the latest first: what a view read at {@code
+     *  version} may be re-pointed to. */
+    List<String> decodesUpTo(String location, long version) {
+        return upTo(decodes.get(location), version);
+    }
+
+    private static List<String> upTo(TreeMap<Long, Set<String>> byVersion,
+                                     long version) {
         List<String> found = new ArrayList<>();
-        if (made == null) return found;
-        for (Set<String> at : made.descendingMap().values()) {
+        if (byVersion == null) return found;
+        for (Set<String> at : byVersion.headMap(version, true)
+                .descendingMap().values()) {
             for (String occurrence : at) {
                 if (!found.contains(occurrence)) found.add(occurrence);
             }
@@ -349,11 +386,12 @@ public final class RecordedStore {
     }
 
     /** The locations (transport + location) {@code occurrence} read,
-     *  decoded or was called back on: a ZooKeeper-carried occurrence where
-     *  any. */
-    Set<String> consumedBy(String occurrence) {
+     *  decoded or was called back on, each with the highest version it read
+     *  or decoded (-1: only called back): a ZooKeeper-carried occurrence
+     *  where any. */
+    Map<String, Long> consumedBy(String occurrence) {
         return consumed.getOrDefault(occurrence,
-                Collections.<String>emptySet());
+                Collections.<String, Long>emptyMap());
     }
 
     /** {@code location}'s (transport + location) spelling in session

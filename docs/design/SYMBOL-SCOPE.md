@@ -1561,8 +1561,13 @@ Only the leaves a question's slice reads cross symbolically. A planned activatio
 locations it writes or parses on the ZooKeeper causal chain, `causynth.ZkCausalGraph`); there a
 parse mints only the leaves at or under a stated prefix of the location and takes every other as
 parsed (no attach), and a write exports those leaves by their expression and every other as its
-value, a constant (`StoreContent#attach`, `#export`, `#under`); a row with no member restricts
-nothing. The recording states what PLAN walks the chain by: each store read at the store's call
+value, a constant (`StoreContent#attach`, `#export`, `#under`). The chain alone decides (owner
+2026-10-15: a finite set of ZooKeeper fields, by the causal trace): a parse or a write in a planned
+occurrence that is doors-only, or whose row states no keys, mints and exports no leaf at all, and one
+outside every planned occurrence (a role's: a watcher callback) only the chain's keys of its location
+over the whole plan -- every other leaf runs as its value, untracked, however
+many of the view's classes are woven. No leaf is walked for a STORE_LEAVES row outside the recording
+window. The recording states what PLAN walks the chain by: each store read at the store's call
 (`STORE_READ`, `MessageDoors#storeRead`: getData's and exists' data version, getChildren's child
 version or -1, at the reading occurrence; a replay states a getData's or an exists' as a read row
 under `<transport>#READ:<location>`), each notification in the occurrence its callback opens first
@@ -1603,15 +1608,21 @@ threads, until the reader's work's region exits, at most VIEW_HOLD_MAX (PIPELINE
 
 The classes that build a node's view are the system's, woven in every case and named by none
 (Solr: `experiments/solr/system.sh` `system_scope`), and the plan keeps symbolic only the decodes
-and writers on the anchor's backward chain over the store's (path, version) edges (`zk_chain.jsonl`).
+and writers on the anchor's backward chain over the store's (path, version) edges (`zk_chain.jsonl`):
+a consumed version rests on the writers of its location's versions up to it, never a later one, and
+a target's view read on the decodes of that view on its node at or below the version it read (owner
+2026-10-15; `RecordedStore#writersUpTo`, `#decodesUpTo`). A writer of a demanded cell that carries a
+store version (read on, or holding, a decoded object) is admitted only on the chain, as a
+ZooKeeper-carried one is.
 PLAN keys the chain by leaf identity over the recording; once the seed is imported, ZKKEYS rekeys it
 with the leaves the seed's own formula names (`compose.ZkKeysMain`: the composition to the anchor,
 and the decisions of every occurrence the anchor's values came from, over handoffs to producers and
 reads to writers): each occurrence PLAN keyed holds, of every keyed path, the seed's pointers there
 -- none, and its leaves cross as constants -- and each plan row stating `contentKeys` takes its
-occurrence's keys (PIPELINE §6). EXPLORE flips no decision over off-chain store values alone
-(`explore.ZkKeys`): leaves no key covers (a chain path no keys row names is the whole document), and
-reads of a store path, or of a view of one, the chain does not hold.
+occurrence's keys (PIPELINE §6). EXPLORE flips a decision only where it rests on a root, a message's
+field, a heap read or a chain read (`explore.ZkKeys`): leaves no key covers (a chain path no keys row
+names is the whole document), reads of a store path or of a view of one the chain does not hold, the
+containers a decode builds and nothing classified decide no flip.
 A replay that writes or decodes a chain path's version in an occurrence off the chain, or reads a
 path off it in a chain occurrence, grows the chain for the next generation (`ZK_EDGE`, PIPELINE §7.8):
 the edge's path, its occurrence and their leaf keys join it, and the occurrence runs whole.

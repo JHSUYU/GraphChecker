@@ -901,9 +901,10 @@ role and api, without the per-site invocation counts; a sender no row names is u
 difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
-decisions first; a decision whose symbolic sources are store values off the ZooKeeper chain alone
-(`explore.ZkKeys`: leaves no key of `zk_chain.jsonl` covers, reads of a store path or of a view of
-one the chain does not hold) is none, counted in a DIAGNOSTIC `zk-keys` row. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
+decisions first; where the iteration has a ZooKeeper chain, a decision is one only where it rests on
+a root, a message's field, a heap read or a chain read (`explore.ZkKeys`, SYMBOL-SCOPE §6.4) -- store
+values off `zk_chain.jsonl`, decoded containers and nothing classified decide none --, the rest
+counted in a DIAGNOSTIC `zk-keys` row. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the
 closure ceiling of 1024), `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is

@@ -1223,9 +1223,9 @@ public final class RuntimeSelectedRegionFinalizer {
      * -- a construction-only field the root demand chose ({@code
      * StaticScopeMap#provenanceCells}), read on an object the recording
      * states that fetch registered ({@link RecordedStore#versionsOf}) --
-     * rests on its location, every version of it, never pruned by the
-     * recorded order ({@link RecordedStore#writersOf}): the ZooKeeper causal
-     * chain's writers ({@link ZkCausalGraph}).  Each occurrence that made one is
+     * rests on that version, and on every earlier version of its location
+     * ({@link RecordedStore#writersUpTo}), as the ZooKeeper causal chain
+     * does ({@link ZkCausalGraph}).  Each occurrence that made one is
      * admitted where it is an activation (a role -- an updater turn that ran
      * no woven region -- is passed through, never planned).  The message
      * each served, the queue item an updater turn took in ({@code
@@ -1256,14 +1256,17 @@ public final class RuntimeSelectedRegionFinalizer {
         for (String occurrence : program.activations.keySet()) {
             byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
         }
-        Set<String> seeds = new LinkedHashSet<>();
+        Map<String, Long> seeds = new LinkedHashMap<>();
         for (String target : targets) {
             Set<Integer> objects = new HashSet<>();
             for (String cell : scopeMap.provenanceCells()) {
                 objects.addAll(objectsOf(program.activations.get(target),
                         cell, false));
             }
-            seeds.addAll(store.versionsOf(objects).keySet());
+            for (Map.Entry<String, Long> read
+                    : store.versionsOf(objects).entrySet()) {
+                seeds.merge(read.getKey(), read.getValue(), Math::max);
+            }
         }
         return zk.chain(targets, seeds, occurrence -> {
             List<String> senders = new ArrayList<>();
@@ -1365,8 +1368,10 @@ public final class RuntimeSelectedRegionFinalizer {
             int depth = walk.depth(target) + 1;
             askFetches(program, walk, scopeMap, store, byId, target, objects,
                     depth);
-            for (String location : store.versionsOf(objects).keySet()) {
-                for (String writer : store.writersOf(location)) {
+            for (Map.Entry<String, Long> version
+                    : store.versionsOf(objects).entrySet()) {
+                for (String writer : store.writersUpTo(version.getKey(),
+                        version.getValue())) {
                     if (!crossed.add(writer)) continue;
                     if (program.activations.containsKey(writer)
                             && !walk.excluded.contains(writer)) {
@@ -2176,9 +2181,14 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
                 String node = nodes.get(occurrenceId);
                 Map<String, Object> reader = instances.get(occurrenceId);
+                Set<Integer> readObjects = objectsOf(reader, cell, true);
                 carriers.computeIfAbsent(node, ignored -> new HashMap<>())
                         .computeIfAbsent(cell, ignored -> new Demanded())
-                        .add(objectsOf(reader, cell, true));
+                        .add(readObjects);
+                // A cell read on, or holding, an object a store version was
+                // decoded into carries that version: what the targets rest
+                // on there, the ZooKeeper causal chain alone writes.
+                boolean stored = zk.decoded(readObjects);
                 for (StaticScopeMap.Site site : writers) {
                     SiteWriters held = siteWriters.computeIfAbsent(site,
                             SiteWriters::new);
@@ -2191,11 +2201,14 @@ public final class RuntimeSelectedRegionFinalizer {
                             continue;
                         }
                         // A store's value reaches a cell only along the
-                        // ZooKeeper causal chain: another decode, read or
-                        // callback writing the cell (a node's cluster state,
-                        // re-pointed by every collection's decode) carries
-                        // nothing the targets rest on.
-                        if (zk.zkCarried(writerOccurrence)
+                        // ZooKeeper causal chain (owner 2026-10-15: weaving
+                        // the view's classes adds no writer): another
+                        // decode, read or callback writing the cell (a node's
+                        // cluster state, re-pointed by every collection's
+                        // decode), and any off-chain writer of a cell that
+                        // carries a store version, carries nothing the
+                        // targets rest on.
+                        if ((stored || zk.zkCarried(writerOccurrence))
                                 && !chain.holds(writerOccurrence)) {
                             offChain.add(writerOccurrence);
                             continue;
@@ -2701,9 +2714,6 @@ public final class RuntimeSelectedRegionFinalizer {
             program.activations.get(first).put(DECIDER_CLASS, deciderClass);
         }
 
-        /** One DIAGNOSTIC row per region whose occurrences left a demanded
-         *  store at guards nothing the engine moves reaches ({@link
-         *  #movable}), and the walk planned none of them otherwise. */
         /** Names how many ZooKeeper-carried writers the chain left out
          *  (one DIAGNOSTIC row): they run as recorded, unwoven. */
         private void stateOffChain(List<Map<String, Object>> gaps) {
@@ -2718,6 +2728,9 @@ public final class RuntimeSelectedRegionFinalizer {
                             + offChain.iterator().next());
         }
 
+        /** One DIAGNOSTIC row per region whose occurrences left a demanded
+         *  store at guards nothing the engine moves reaches ({@link
+         *  #movable}), and the walk planned none of them otherwise. */
         private void stateFixedDeciders(List<Map<String, Object>> gaps) {
             Map<String, Integer> byRegion = new LinkedHashMap<>();
             for (String occurrence : fixedDeciders) {

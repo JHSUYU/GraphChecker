@@ -83,6 +83,11 @@ final class ConcolicTaskPlan {
     /** Each root hook group's loop root ({@link #loopRootOf}). */
     private final Map<String, String> loopRoots =
             new HashMap<String, String>();
+    /** The ZooKeeper chain's fields over every task ({@link
+     *  RuntimeTask#contentKeys}, by slot): what a parse or a write outside
+     *  every planned occurrence carries (runtime.StoreContent). */
+    final Map<String, List<String>> chainKeys =
+            new HashMap<String, List<String>>();
     boolean unansweredAddressesPublished;
 
     /**
@@ -107,6 +112,15 @@ final class ConcolicTaskPlan {
         this.tasks = Collections.unmodifiableList(tasks);
         for (RuntimeTask task : tasks) {
             loopRoots.put(task.rootHookGroup, task.loopRootHookGroup);
+            if (task.contentKeys == null) continue;
+            for (Map.Entry<String, List<String>> keyed
+                    : task.contentKeys.entrySet()) {
+                List<String> held = chainKeys.computeIfAbsent(
+                        keyed.getKey(), slot -> new ArrayList<String>());
+                for (String prefix : keyed.getValue()) {
+                    if (!held.contains(prefix)) held.add(prefix);
+                }
+            }
         }
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];

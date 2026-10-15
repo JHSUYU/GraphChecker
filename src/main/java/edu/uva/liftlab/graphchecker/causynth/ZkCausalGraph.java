@@ -23,11 +23,12 @@ import java.util.function.Function;
  * decode or watch callback on it -- as design §3.1 traces a message: a
  * writer of a location is an edge into every occurrence that consumed it.
  * Walked backward from the targets, it is the chain: every location a
- * chain occurrence consumed, every writer of such a location (EVERY
- * version: another schedule of the same writes is another history, so no
- * writer is pruned by the recorded order), the queue item senders a writer
- * applied, and the consumers of a chain location on a chain occurrence's
- * node (a view a pairing may re-point to an older decode of).  Only a
+ * chain occurrence consumed, the writers of its versions up to the one
+ * consumed (owner 2026-10-15: a document's version rests on the writes
+ * before it, never on a later one), the queue item senders a writer
+ * applied, and the decodes on a target's node of a location it read the
+ * view of, at or below the version it read (a pairing re-points the view
+ * to an older decode).  Only a
  * chain occurrence carries a store's value symbolically: PLAN admits no
  * other ZooKeeper-carried occurrence on a value rule
  * ({@code RuntimeSelectedRegionFinalizer#failureDirectedClosure}), and GROW
@@ -51,53 +52,60 @@ public final class ZkCausalGraph {
         return !store.consumedBy(occurrence).isEmpty();
     }
 
+    /** Whether any of {@code objects} holds a store version: a decode
+     *  registered it ({@link RecordedStore#versionsOf}). */
+    public boolean decoded(Collection<Integer> objects) {
+        return !store.versionsOf(objects).isEmpty();
+    }
+
     /**
      * The chain backward from {@code targets} (rendered addresses) and the
-     * locations their values were decoded from ({@code seeds}, transport +
-     * location: the objects a target read fields on, {@link
+     * versions of the views they read ({@code seeds}, transport + location
+     * -> version: the objects a target read fields on, {@link
      * RecordedStore#versionsOf}); {@code senders} names the occurrences
      * whose queue items a writer applied.
      */
-    public Chain chain(Collection<String> targets, Collection<String> seeds,
+    public Chain chain(Collection<String> targets, Map<String, Long> seeds,
                        Function<String, Collection<String>> senders) {
         Set<String> occurrences = new LinkedHashSet<>(targets);
         Map<String, String> paths = new LinkedHashMap<>();
-        Set<String> nodes = new LinkedHashSet<>();
+        Map<String, Long> versions = new LinkedHashMap<>();
         Deque<String> work = new ArrayDeque<>(targets);
-        Deque<String> located = new ArrayDeque<>(seeds);
+        Deque<Map.Entry<String, Long>> located =
+                new ArrayDeque<>(seeds.entrySet());
+        // A target's view read: the decodes on its node at or below the
+        // version it read, which a pairing may re-point it to.  Not walked
+        // on: what they consumed is at or below what the read rests on.
+        Set<String> nodes = new LinkedHashSet<>();
         for (String target : targets) nodes.add(node(target));
+        for (Map.Entry<String, Long> seed : seeds.entrySet()) {
+            for (String decode : store.decodesUpTo(seed.getKey(),
+                    seed.getValue())) {
+                if (nodes.contains(node(decode))) occurrences.add(decode);
+            }
+        }
         while (!work.isEmpty() || !located.isEmpty()) {
             while (!work.isEmpty()) {
                 String occurrence = work.removeFirst();
-                located.addAll(store.consumedBy(occurrence));
+                located.addAll(store.consumedBy(occurrence).entrySet());
                 for (String sender : senders.apply(occurrence)) {
-                    if (occurrences.add(sender)) {
-                        nodes.add(node(sender));
-                        work.add(sender);
-                    }
+                    if (occurrences.add(sender)) work.add(sender);
                 }
             }
             while (!located.isEmpty()) {
-                String location = located.removeFirst();
-                if (paths.containsKey(location)) continue;
-                paths.put(location, store.slotOf(location));
-                for (String writer : store.writersOf(location)) {
-                    if (occurrences.add(writer)) {
-                        nodes.add(node(writer));
-                        work.add(writer);
-                    }
+                Map.Entry<String, Long> read = located.removeFirst();
+                String location = read.getKey();
+                Long held = versions.get(location);
+                if (held != null && held >= read.getValue()) continue;
+                versions.put(location, read.getValue());
+                paths.putIfAbsent(location, store.slotOf(location));
+                for (String writer : store.writersUpTo(location,
+                        read.getValue())) {
+                    if (occurrences.add(writer)) work.add(writer);
                 }
             }
         }
-        // The consumers of a chain location on a chain node: the decodes a
-        // view there may be re-paired with.  Not walked on: what else they
-        // consumed reaches the chain only through their own node's reads.
-        for (String location : paths.keySet()) {
-            for (String consumer : store.consumersOf(location)) {
-                if (nodes.contains(node(consumer))) occurrences.add(consumer);
-            }
-        }
-        return new Chain(paths, occurrences);
+        return new Chain(paths, versions, occurrences);
     }
 
     /**
@@ -106,7 +114,7 @@ public final class ZkCausalGraph {
      * chain carries -- "" for the whole document.  Seeded by the leaves the
      * targets read ({@code seeds}: the objects they read fields on and
      * read, by leaf identity, {@link RecordedStore#parsedAs}); a writer of
-     * a chain pointer (every version) carries it, and the leaf it wrote is
+     * a chain pointer (a version up to the chain's) carries it, and the leaf it wrote is
      * the leaf object it parsed somewhere -- the leaf's own input -- whose
      * pointer is on the chain in turn; a leaf a writer computed fresh ends
      * the store hop there.  A chain location no seed leaf reaches, or one
@@ -136,7 +144,8 @@ public final class ZkCausalGraph {
         Map<String, Map<String, Set<String>>> keys = new LinkedHashMap<>();
         while (!work.isEmpty()) {
             String[] at = work.removeFirst();
-            for (RecordedStore.Leaf written : store.writtenAt(at[0], at[1])) {
+            for (RecordedStore.Leaf written : store.writtenAt(at[0], at[1],
+                    chain.version(at[0]))) {
                 carry(keys, written.occurrence, at[0], at[1]);
                 for (RecordedStore.Leaf input
                         : store.parsedAs(written.object)) {
@@ -164,7 +173,8 @@ public final class ZkCausalGraph {
                     carry(keys, consumer, location, pointer);
                 }
             }
-            for (String writer : store.writersOf(location)) {
+            for (String writer : store.writersUpTo(location,
+                    chain.version(location))) {
                 for (String pointer : carried) {
                     carry(keys, writer, location, pointer);
                 }
@@ -196,15 +206,26 @@ public final class ZkCausalGraph {
     public static final class Chain {
         /** transport + location -> its session-row slot. */
         public final Map<String, String> paths;
+        /** transport + location -> the highest version the chain read. */
+        private final Map<String, Long> versions;
         public final Set<String> occurrences;
 
-        Chain(Map<String, String> paths, Set<String> occurrences) {
+        Chain(Map<String, String> paths, Map<String, Long> versions,
+              Set<String> occurrences) {
             this.paths = Collections.unmodifiableMap(paths);
+            this.versions = versions;
             this.occurrences = Collections.unmodifiableSet(occurrences);
         }
 
         public boolean holds(String occurrence) {
             return occurrences.contains(occurrence);
+        }
+
+        /** The highest version of {@code location} the chain read; -1 for
+         *  none. */
+        long version(String location) {
+            Long held = versions.get(location);
+            return held == null ? -1L : held;
         }
 
         /** The chain's ZK_CHAIN_PATH and ZK_CHAIN_OCCURRENCE rows ({@link

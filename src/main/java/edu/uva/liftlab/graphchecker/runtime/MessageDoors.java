@@ -774,7 +774,9 @@ public final class MessageDoors {
         OccurrenceAddress writer = Identity.currentOccurrence(node);
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
                 writer);
-        if (document != null) {
+        // The leaves only where the recording states them: no replay walks
+        // a document for a row it never writes.
+        if (document != null && RecordingWindow.opened()) {
             CausynthTraceRecorder.storeLeaves(true, trimmed(transport), path,
                     version, writer, StoreContent.leafRows(transport, path,
                             document));
@@ -1142,7 +1144,7 @@ public final class MessageDoors {
     public static void jsonRead(byte[] bytes, Object tree) {
         try {
             String version = StoreContent.parsed(bytes, tree);
-            if (version == null) return;
+            if (version == null || !RecordingWindow.opened()) return;
             // What the recording states the reader parsed, leaf by leaf, in
             // the occurrence parsing it: the version's life, as its decode
             // names it (#decode).

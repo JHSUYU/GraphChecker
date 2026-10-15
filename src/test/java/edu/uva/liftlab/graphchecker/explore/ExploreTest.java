@@ -6359,10 +6359,12 @@ public class ExploreTest {
     }
 
     /**
-     * A decision over store values off the ZooKeeper chain alone is no flip
-     * ({@code ZkKeys}): a leaf of a chain path no key covers, a read of a
-     * view of a path off the chain.  One over a covered leaf, or over an
-     * off-chain leaf and a root, is; with no chain, every one is.
+     * A decision is a flip only where it rests on a root, a message's
+     * field, a heap read or a chain read ({@code ZkKeys}): not over a leaf
+     * of a chain path no key covers, a read of a view of a path off the
+     * chain, or nothing it classifies (a decoded container).  One over a
+     * covered leaf, or over an off-chain leaf and a root, is; with no
+     * chain, every one is.
      */
     @Test
     public void aDecisionOverOffChainStoreValuesAloneIsNoFlip()
@@ -6383,6 +6385,8 @@ public class ExploreTest {
         seed.decision(TARGET, "Guard#off", 1, true, "(= M_OFF 1)");
         seed.decision(TARGET, "Guard#view", 1, true, "(= M_VIEW 1)");
         seed.decision(TARGET, "Guard#mixed", 1, true, "(= M_OFF M_ROOT)");
+        seed.decision(TARGET, "Guard#container", 1, true,
+                "(= container_dag__1 nullRef)");
         seed.flush();
         Path chainFile = iteration.resolve(ZkChain.FILE);
         RowCodec.writeJsonl(chainFile, Arrays.asList(
@@ -6409,6 +6413,7 @@ public class ExploreTest {
         expected.put("Guard#off", false);
         expected.put("Guard#view", false);
         expected.put("Guard#mixed", true);
+        expected.put("Guard#container", false);
         assertEquals(expected, flips);
     }
 

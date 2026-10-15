@@ -145,6 +145,8 @@ final class StoreContent {
      *  elsewhere; every leaf symbolically where {@code keys} is null. */
     static void export(String transport, String key, Object document,
                        List<String> keys) {
+        // A write that keeps no leaf of the chain exports none.
+        if (keys.isEmpty()) return;
         String location = MessageDoors.location(key);
         Map<String, Exported> leaves = new LinkedHashMap<String, Exported>();
         pauseObservation();
@@ -270,27 +272,34 @@ final class StoreContent {
     /**
      * The content keys of the occurrence running here for the version
      * {@code key} (a plan row's {@code contentKeys}: the leaves of a chain
-     * location the question's slice reads, by pointer prefix): null for no
-     * restriction -- no planned occurrence, or one whose row states none --,
-     * else the prefixes stated for this location, none where it states the
-     * occurrence's keys elsewhere.
+     * location the question's slice reads, by pointer prefix).  THE CHAIN
+     * ALONE (owner 2026-10-15: "有限的zookeeper字段追踪，基于我们的因果追踪"):
+     * the only store values that cross symbolically are the (znode, field)
+     * the causal trace put on the anchor's chain: a planned occurrence's own
+     * keys -- none for a doors-only one, a row that states none, or one that
+     * states them elsewhere --, and outside every planned occurrence (a
+     * role's parse: a watcher callback a view is re-pointed by) the chain's
+     * keys of the location over the whole plan.  Every other leaf runs as
+     * its value, untracked.
      */
     private static List<String> contentKeys(String transport, String key) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-        if (active == null || active.activation.contentKeys == null) {
-            return null;
+        if (active != null && (active.activation.doorsOnly
+                || active.activation.contentKeys == null)) {
+            return Collections.<String>emptyList();
         }
         String slot = MessageDoors.storeLocation(transport,
                 MessageDoors.livePath(transport, key)).slot();
-        List<String> prefixes = active.activation.contentKeys.get(slot);
+        List<String> prefixes = active != null
+                ? active.activation.contentKeys.get(slot)
+                : ConcolicTaskPlan.configuration().chainKeys.get(slot);
         return prefixes == null ? Collections.<String>emptyList() : prefixes;
     }
 
     /** Whether a leaf at {@code pointer} lies at or under one of
-     *  {@code keys}' prefixes; every leaf where {@code keys} is null. */
+     *  {@code keys}' prefixes. */
     static boolean under(List<String> keys, String pointer) {
-        return keys == null
-                || ContentPort.covers(keys, ContentPort.pointer(pointer));
+        return ContentPort.covers(keys, ContentPort.pointer(pointer));
     }
 
     /**
@@ -405,9 +414,11 @@ final class StoreContent {
         synchronized (EXPORTS) {
             exports = EXPORTS.get(version);
         }
+        List<String> keys = contentKeys(transport, key);
+        // A parse that keeps no leaf walks none.
+        if (keys.isEmpty()) return version;
         try {
-            attach(transport, key, exports, tree,
-                    contentKeys(transport, key));
+            attach(transport, key, exports, tree, keys);
         } catch (Throwable failed) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     transport + " " + key, "the version's content was not"
@@ -421,11 +432,11 @@ final class StoreContent {
      * Mints the parsed leaves of version {@code key} at or under
      * {@code keys}' prefixes, each paired with {@code exports}' leaf at its
      * pointer; every other leaf crosses as the value parsed, no attach.
-     * Every leaf where {@code keys} is null.
      */
     static void attach(String transport, String key,
                        Map<String, Exported> exports, Object tree,
                        List<String> keys) {
+        if (keys.isEmpty()) return;
         String location = MessageDoors.location(key);
         pauseObservation();
         try {
