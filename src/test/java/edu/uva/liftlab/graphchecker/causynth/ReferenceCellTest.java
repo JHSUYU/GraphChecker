@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import org.junit.After;
 import org.junit.Rule;
@@ -300,6 +301,37 @@ public class ReferenceCellTest {
                         map.declaredSites()}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
+        }
+
+        // A reference only the system's view classes store is no tracked
+        // cell (plan.SystemView): with the policy the view, known's and
+        // latest's reads go; the atomic's value and the final map's
+        // contents stay.
+        System.setProperty(SystemView.PROPERTY, POLICY);
+        try {
+            Set<String> viewed = new LinkedHashSet<>();
+            for (StaticScopeMap.Site site : StaticScopeMap.sites(
+                    program.edges, Collections.<Map<String, Object>>
+                            singletonList(region()),
+                    Collections.<String, edu.uva.liftlab.graphchecker
+                            .contract.Clock>emptyMap(), (m, u, c) -> null,
+                    (demandSite, demandCell) -> reserves.equals(demandCell)
+                            ? new StaticScopeMap.Demanded("TRACK_CONTAINER",
+                            1, true) : null,
+                    method -> !method.startsWith("<s."),
+                    CausynthStaticFacts::trackedKind,
+                    CausynthStaticFacts::staticField,
+                    CausynthStaticFacts::constructionOnly)) {
+                if (StaticScopeMap.READ_SITE.equals(site.role)) {
+                    viewed.add(site.siteId + " " + site.cell + " "
+                            + site.trackedKind);
+                }
+            }
+            assertEquals(new LinkedHashSet<>(Arrays.asList(
+                    CHECK + "#u7 " + VALUE + " VALUE",
+                    CHECK + "#u8 " + reserves + " CONTAINER")), viewed);
+        } finally {
+            System.clearProperty(SystemView.PROPERTY);
         }
     }
 

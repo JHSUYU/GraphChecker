@@ -859,7 +859,7 @@ public final class StaticScopeMap {
                     Boolean.TRUE.equals(edge.get("ownObject"))));
         }
         markReads(found, unwoven, demand);
-        keepTrackedReads(found);
+        keepTrackedReads(found, SystemView.current());
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
                 // The producer side only: an attach defines no port value,
@@ -1031,14 +1031,25 @@ public final class StaticScopeMap {
     }
 
     /** A READ_SITE stays only where the slice stores its cell too: a cell
-     *  nothing in the slice writes has no writer to join. */
-    private static void keepTrackedReads(List<Site> found) {
+     *  nothing in the slice writes has no writer to join.  A reference only
+     *  the system's view classes store ({@link SystemView}: which decoded
+     *  state a node's view holds, ZkStateReader.clusterState) is the view's
+     *  own bookkeeping, read as it is. */
+    private static void keepTrackedReads(List<Site> found, SystemView view) {
         Set<String> stored = new LinkedHashSet<String>();
+        Set<String> beyondView = new LinkedHashSet<String>();
         for (Site site : found) {
-            if (WRITE_SITE.equals(site.role)) stored.add(site.cell);
+            if (!WRITE_SITE.equals(site.role)) continue;
+            stored.add(site.cell);
+            if (!view.holds(SiteId.methodOf(site.siteId))) {
+                beyondView.add(site.cell);
+            }
         }
         found.removeIf(site -> READ_SITE.equals(site.role)
-                && !stored.contains(site.cell));
+                && (!stored.contains(site.cell)
+                || SharedFieldFlow.TrackedKind.REFERENCE.name().equals(
+                        site.trackedKind)
+                && !beyondView.contains(site.cell)));
     }
 
     /** Every site id in {@code sites}. */

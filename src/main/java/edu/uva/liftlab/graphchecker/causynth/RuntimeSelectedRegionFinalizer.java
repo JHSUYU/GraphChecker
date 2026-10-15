@@ -2233,21 +2233,19 @@ public final class RuntimeSelectedRegionFinalizer {
                                         occurrenceId, cell, site)) {
                             continue;
                         }
-                        // A store's value reaches a cell only as the
-                        // ZooKeeper causal chain's fields (owner 2026-10-15:
-                        // "有限的zookeeper字段追踪"; weaving the view's classes
-                        // adds no writer): a decode, read or callback writing
-                        // the cell (a node's cluster state, re-pointed by
-                        // every collection's decode) carries its fields as
-                        // the chain's leaves and its views, never as heap
-                        // state another occurrence reads -- the chain's
-                        // decodes mint their keys unplanned too
-                        // (runtime.StoreContent) --, and neither does any
-                        // off-chain writer of a cell that carries a store
-                        // version.  A chain writer of the store is crossed
-                        // to as one (#crossStore).
-                        if (zk.zkCarried(writerOccurrence)
-                                || stored && !chain.holds(writerOccurrence)) {
+                        // A store's value reaches a cell only along the
+                        // ZooKeeper causal chain (owner 2026-10-15): a
+                        // decode, read or callback writing the cell (a
+                        // node's cluster state, re-pointed by every
+                        // collection's decode), and any writer of a cell
+                        // that carries a store version, is crossed to only
+                        // where the chain holds it -- off it, it carries
+                        // nothing the targets rest on.  On it, it is the
+                        // chain's way through the heap (the Overseer's
+                        // SliceMutator taking a queue item's expireAt into
+                        // the state its writer stores: solr-18413).
+                        if ((stored || zk.zkCarried(writerOccurrence))
+                                && !chain.holds(writerOccurrence)) {
                             offChain.add(writerOccurrence);
                             continue;
                         }

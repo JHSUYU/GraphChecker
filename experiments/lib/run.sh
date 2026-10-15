@@ -22,6 +22,15 @@ export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
 export CAUSYNTH_SYSTEM_DOORS=
 [[ ! -f "${system_dir}/doors.jsonl" ]] \
   || CAUSYNTH_SYSTEM_DOORS=${system_dir}/doors.jsonl
+# The system's view classes (system.sh system_scope), as class names: woven in
+# every case for the store's decodes, they add no tracked cell (SEED,
+# causynth.RootDemand).
+CAUSYNTH_SYSTEM_VIEW=
+for entry in "${system_scope[@]}"; do
+  view=${entry#*:}
+  CAUSYNTH_SYSTEM_VIEW="${CAUSYNTH_SYSTEM_VIEW:+${CAUSYNTH_SYSTEM_VIEW},}${view//\//.}"
+done
+export CAUSYNTH_SYSTEM_VIEW
 export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
 # A reader of a recorded run (tools/regress/offline-ab.sh `config`) states the

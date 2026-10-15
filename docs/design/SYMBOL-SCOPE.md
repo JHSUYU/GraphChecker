@@ -1618,10 +1618,11 @@ and writers on the anchor's backward chain over the store's (path, version) edge
 a consumed version rests on the writers of its location's versions up to it, never a later one, and
 a target's view read on the decodes of that view on its node at or below the version it read (owner
 2026-10-15; `RecordedStore#writersUpTo`, `#decodesUpTo`). A ZooKeeper-carried writer of a demanded
-cell is never admitted on a value rule: its store values reach the targets as the chain's leaves and
-views, never as heap state another occurrence reads (an unplanned chain decode mints the plan's keys
-of its location, which every target row carries); nor is an off-chain writer of a cell that carries
-a store version. A chain writer of the store is crossed to as one (`#crossStore`).
+cell, or any writer of a cell that carries a store version, is admitted on a value rule only where
+the chain holds it (an unplanned chain decode mints the plan's keys of its location, which every
+target row carries). A reference field whose every writer is a method of the system's view classes
+(`system_scope`) is no tracked cell (SEED, `causynth.RootDemand`): which object the view holds is its
+own bookkeeping, and weaving those classes adds no versioned read.
 PLAN keys the chain by leaf identity over the recording; once the seed is imported, ZKKEYS rekeys it
 with the leaves the seed's own formula names (`compose.ZkKeysMain`: the composition to the anchor,
 and the decisions of every occurrence the anchor's values came from, over handoffs to producers and

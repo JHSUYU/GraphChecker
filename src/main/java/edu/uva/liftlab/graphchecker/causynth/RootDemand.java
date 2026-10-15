@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
@@ -780,6 +781,8 @@ final class RootDemand {
                 trackedKind;
         private final Predicate<String> constructionOnly;
         private final Predicate<String> systemClass;
+        /** The system's view classes ({@link SystemView}). */
+        private final SystemView view = SystemView.current();
 
         Classifier(Map<String, List<Map<String, Object>>> into,
                    Set<String> carried, Set<String> regionMethods,
@@ -871,12 +874,24 @@ final class RootDemand {
                 return null;
             }
             boolean stored = false;
+            boolean viewed = !writers.isEmpty();
             for (String writer : writers) {
                 stored |= regionMethods.contains(writer);
+                viewed &= view.holds(writer);
             }
             boolean container = JavaContainerTypes.shape(type)
                     != JavaContainerTypes.Shape.NONE;
             SharedFieldFlow.TrackedKind tracked = trackedKind.apply(cell);
+            // A reference only the system's view classes write (which
+            // decoded state a node's view holds: ZkStateReader.clusterState)
+            // is the view's own bookkeeping, no store value: weaving those
+            // classes for their decodes versions none of it (owner
+            // 2026-10-15: a finite set of ZooKeeper fields; the chain's
+            // leaves carry the store's values).
+            if (viewed && !container
+                    && tracked != SharedFieldFlow.TrackedKind.VALUE) {
+                stored = false;
+            }
             // Only its construction stores it, it holds no container, and
             // no region's store of it is versioned: nothing re-pairs it,
             // and an object a store's fetch was parsed into holds that
