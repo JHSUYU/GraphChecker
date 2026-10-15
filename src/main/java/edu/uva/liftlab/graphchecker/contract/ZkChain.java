@@ -117,11 +117,8 @@ public final class ZkChain {
     /**
      * This chain grown by each {@value #EDGE} row of {@code growth}: its
      * path and its occurrence where the chain holds them not yet, and the
-     * occurrence's keys of the path where it states none -- the pointers
-     * the chain holds of that path (what the anchor rests on there), else,
-     * for a path new to the chain, those the edge's replay named at the
-     * occurrence ({@code pointers}); none known, no keys row: the whole
-     * document.
+     * occurrence's keys of the path where it states none: the chain's
+     * fields the edge carries ({@code pointers}).
      */
     public ZkChain grown(List<JsonObject> growth) {
         ZkChain grown = new ZkChain(new ArrayList<JsonObject>(rows));
@@ -130,9 +127,8 @@ public final class ZkChain {
             String transport = optionalString(edge, "transport");
             String slot = optionalString(edge, "location");
             String occurrence = optionalString(edge, "occurrence");
-            Set<String> pointers = new LinkedHashSet<String>(
-                    grown.pointers(slot));
-            if (pointers.isEmpty() && edge.has("pointers")) {
+            Set<String> pointers = new LinkedHashSet<String>();
+            if (edge.has("pointers")) {
                 for (JsonElement pointer
                         : edge.getAsJsonArray("pointers")) {
                     pointers.add(pointer.getAsString());
@@ -216,11 +212,6 @@ public final class ZkChain {
 
     public void write(Path file) throws IOException {
         RowCodec.writeJsonl(file, rows);
-    }
-
-    private Set<String> pointers(String slot) {
-        Set<String> held = pointersOf.get(slot);
-        return held == null ? Collections.<String>emptySet() : held;
     }
 
     /** The trace's spelling of a chain path, else its slot's. */

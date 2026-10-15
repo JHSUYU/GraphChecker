@@ -5615,7 +5615,9 @@ reset_config
 # GROW-2 ZK_EDGE: store edges past the ZooKeeper chain that only the seed
 # showed (no re-run): the doors-only occurrence loses its mark, GROW's
 # planner writes the generation's plan and its chain (the iteration's chain
-# linked to it), a task row it adds is woven, and a round is owed.
+# linked to it), a task row it adds is woven, and a round is owed.  Past them,
+# 1500 edges of long addresses: no list crosses jq's command line
+# (SGF7-18413's GROW died on 1099, "Argument list too long").
 growzk="${test_tmp}/growzk"
 mkdir -p "${growzk}/obligations-0003" "${growzk}/instrumented-classes" \
   "${growzk}/seed-replay"
@@ -5627,6 +5629,11 @@ printf '%s\n' \
   '{"kind":"ZK_EDGE","transport":"SOLR_ZK","location":"/s","version":2,"occurrence":"W#1","sessionId":"","obligationId":""}' \
   '{"kind":"ZK_EDGE","transport":"SOLR_ZK","location":"/s","version":3,"occurrence":"Z#1","sessionId":"","obligationId":""}' \
   >"${growzk}/obligations-0003/growth.jsonl"
+long=$(printf 'f%.0s' {1..200})
+for index in $(seq 1 1500); do
+  printf '{"kind":"ZK_EDGE","transport":"SOLR_ZK","location":"/s","version":%d,"occurrence":"%s#%d","sessionId":"","obligationId":""}\n' \
+    "${index}" "${long}" "${index}"
+done >>"${growzk}/obligations-0003/growth.jsonl"
 (
   iteration_dir=${growzk}
   stream_plan=${growzk}/execution_task_plan.jsonl

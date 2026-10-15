@@ -16,6 +16,8 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,20 +26,23 @@ import java.util.Set;
 
 /**
  * THE STORE EDGES A REPLAY RAN PAST THE CHAIN (PIPELINE §7.8, SYMBOL-SCOPE
- * §6.4): a run's row that names a chain path's version written or decoded
- * by an occurrence off the chain -- a STORE write, or a VIEW write, a
- * node's decode -- or a path off the chain that a chain occurrence read
- * (a STORE or VIEW read) is one {@value ZkChain#EDGE} growth row of the
- * round, once per (transport, path, version, occurrence): GROW adds the
- * path and the occurrence to the next generation's chain, the occurrence
- * planned (or its doors-only mark dropped) and the replay that showed the
- * edge run again.  Named by the first admitted focused replay that shows
- * it, which GROW re-runs; by none ({@code sessionId} "") where only the
- * seed or unadmitted replays show it: the chain grows all the same, and no
- * replay is re-run.  Each row states the leaf pointers its replay named at
- * the occurrence for that path ({@code pointers}: the content ports of its
- * attaches and exports there), which key a path new to the chain field by
- * field ({@link ZkChain#grown}).
+ * §6.4): the chain is a finite set of (znode, field), and it grows only by a
+ * field of it.  A replay's write of a chain path's version by an occurrence
+ * off the chain -- a STORE write, or a VIEW write, a node's decode -- is one
+ * {@value ZkChain#EDGE} growth row of the round where a chain occurrence of
+ * the same session read that version (a STORE read or a chain decode of
+ * it; a VIEW read of that node's view) and the occurrence's own leaves of
+ * the path (its content ports) lie under a key the chain holds of it: the
+ * row's {@code pointers} are those keys.  Not an edge: any other decode or
+ * write of a chain path (another node's view, a version no chain occurrence
+ * consumed, a document whose chain fields it never touched), a chain path
+ * the chain holds no field of, a read of a path off the chain (a poll), and
+ * work under no region, which no task can hold (solr-18413 SGF7: every such
+ * one grown, round 2's growth was 1099 rows over 541 occurrences, and its
+ * GROW's argument list overflowed).  Once per (transport, path, version,
+ * occurrence); named by the first admitted focused replay that shows it,
+ * which GROW re-runs, else by none ({@code sessionId} ""): the chain grows
+ * all the same, and no replay is re-run.
  */
 final class ZkEdges {
     private ZkEdges() {
@@ -46,38 +51,75 @@ final class ZkEdges {
     /** The round's growth rows, in corpus and row order. */
     static List<JsonObject> of(Corpus corpus, ZkChain chain) {
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
-        if (chain.empty()) return new ArrayList<JsonObject>();
+        Map<String, Set<String>> keys = chain.pointers();
+        if (keys.isEmpty()) return new ArrayList<JsonObject>();
         for (SessionReader session : corpus.sessions()) {
             boolean exposing = !session.seed() && session.admitted();
+            Set<String> consumed = consumed(session, chain);
             Map<String, Set<String>> leaves = null;
             for (WriteRow write : session.writes()) {
                 // An INITIAL's endpoint observed the location; it wrote
                 // nothing.
-                if (write.initial()) continue;
-                String transport = transport(write.location());
+                LocationId location = write.location();
+                String transport = transport(location);
                 OccurrenceAddress at = write.endpoint().occurrence();
-                if (transport != null && chain.holdsPath(transport,
-                        write.location().slot())
-                        && !chain.holds(at.render())) {
-                    if (leaves == null) leaves = leaves(session);
-                    edge(edges, transport, write.location(), write.version(),
-                            at, session, exposing, leaves);
+                Set<String> held = transport == null ? null
+                        : keys.get(location.slot());
+                if (held == null || write.initial() || at.role()
+                        || chain.holds(at.render())
+                        || !chain.holdsPath(transport, location.slot())
+                        || !consumed.contains(version(location,
+                        write.version()))) {
+                    continue;
                 }
-            }
-            for (ReadRow read : session.reads()) {
-                String transport = transport(read.location());
-                OccurrenceAddress at = read.endpoint().occurrence();
-                if (transport != null && chain.holds(at.render())
-                        && !chain.holdsPath(transport,
-                        read.location().slot())) {
-                    if (leaves == null) leaves = leaves(session);
-                    edge(edges, transport, read.location(),
-                            read.observedVersion(), at, session, exposing,
-                            leaves);
+                if (leaves == null) leaves = leaves(session);
+                Set<String> fields = new LinkedHashSet<String>();
+                for (String leaf : leaves.getOrDefault(at.render() + "\n"
+                        + location.slot(), Collections.<String>emptySet())) {
+                    for (String key : held) {
+                        if (ContentPort.covers(Collections.singleton(key),
+                                leaf)) {
+                            fields.add(key);
+                        }
+                    }
+                }
+                if (!fields.isEmpty()) {
+                    edge(edges, transport, location, write.version(), at,
+                            session, exposing, fields);
                 }
             }
         }
         return new ArrayList<JsonObject>(edges.values());
+    }
+
+    /** The versions a session's chain occurrences consumed ({@link
+     *  #version}): each STORE or VIEW read of one, and each STORE version a
+     *  chain decode decoded. */
+    private static Set<String> consumed(SessionReader session, ZkChain chain) {
+        Set<String> consumed = new HashSet<String>();
+        for (ReadRow read : session.reads()) {
+            if (transport(read.location()) != null && chain.holds(
+                    read.endpoint().occurrence().render())) {
+                consumed.add(version(read.location(),
+                        read.observedVersion()));
+            }
+        }
+        for (WriteRow write : session.writes()) {
+            LocationId location = write.location();
+            if (location.kind() == LocationKind.VIEW && chain.holds(
+                    write.endpoint().occurrence().render())) {
+                consumed.add(LocationKind.STORE + "\n"
+                        + transport(location) + "\n" + location.slot()
+                        + "\n" + write.version());
+            }
+        }
+        return consumed;
+    }
+
+    /** One version of a STORE or VIEW location (a view by its node). */
+    private static String version(LocationId location, long version) {
+        return location.kind() + "\n" + location.owner() + "\n"
+                + location.slot() + "\n" + version;
     }
 
     /** A store location's transport: a STORE's owner, a VIEW's before its
@@ -116,7 +158,7 @@ final class ZkEdges {
                              LocationId location, long version,
                              OccurrenceAddress occurrence,
                              SessionReader session, boolean exposing,
-                             Map<String, Set<String>> leaves) {
+                             Set<String> fields) {
         String key = transport + "\n" + location.slot() + "\n" + version
                 + "\n" + occurrence.render();
         JsonObject held = edges.get(key);
@@ -134,11 +176,7 @@ final class ZkEdges {
         row.addProperty("obligationId", exposing
                 ? session.obligations().get(0).obligationId() : "");
         JsonArray pointers = new JsonArray();
-        Set<String> named = leaves.get(occurrence.render() + "\n"
-                + location.slot());
-        if (named != null) {
-            for (String pointer : named) pointers.add(pointer);
-        }
+        for (String field : fields) pointers.add(field);
         row.add("pointers", pointers);
         edges.put(key, row);
     }
