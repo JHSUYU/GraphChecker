@@ -886,6 +886,117 @@ public class ComposerTest {
     }
 
     /**
+     * A COMPOSITION OVER THE SAME INPUTS IS TAKEN, NOT MADE AGAIN
+     * ({@link CompositionInputs}, ComposeMain --reuse): the final COMPOSE
+     * over the corpus the accepted witness attempt composed copies its four
+     * files byte for byte and runs no z3; an input changed since (a refuted
+     * claim recorded, a session landed) composes anew; and an input changed
+     * while a composition read it (its z3 records a refuted claim) leaves
+     * that composition no digest, so nothing takes it.
+     */
+    @Test
+    public void aCompositionOverTheSameInputsIsTakenNotMadeAgain()
+            throws Exception {
+        solver();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        String refuted = "{\"model\":{\"pathId\":\"elsewhere\",\"arms\":[],"
+                + "\"assignment\":{}},\"reason\":\"r\"}";
+        List<String> files = Arrays.asList("candidate.smt2",
+                "candidate_composition_manifest.json", ComposeMain.CLAIM,
+                CompositionInputs.FILE);
+        for (String change : new String[] {"none", "refuted", "session",
+                "midway"}) {
+            Path root = folder.newFolder("reuse-" + change).toPath();
+            Path iteration = root.resolve("iteration-0000");
+            session(iteration, "s0", false, "false", producer, consumer,
+                    "vh", "false", null, true, false, "EXPR.v1.marker");
+            session(iteration, "s1", true, "true", producer, consumer,
+                    "vh", "true", null, true, true, "EXPR.v1.marker");
+            Files.write(root.resolve("static_scope_map.jsonl"), new byte[0]);
+            // The real z3, each run counted; a "midway" file makes its
+            // first run record a refuted claim.
+            Path runs = root.resolve("z3-runs");
+            Path midway = root.resolve("midway");
+            Path z3 = root.resolve("z3");
+            Files.write(z3, Arrays.asList("#!/bin/bash",
+                    "echo run >>'" + runs + "'",
+                    "if rm '" + midway + "' 2>/dev/null; then",
+                    "  echo '" + refuted + "' >>'"
+                            + iteration.resolve(Refutations.FILE) + "'",
+                    "fi",
+                    "exec '" + z3() + "' \"$@\""), StandardCharsets.UTF_8);
+            assertTrue(z3.toFile().setExecutable(true));
+            if ("midway".equals(change)) Files.createFile(midway);
+            Path attempt = root.resolve("attempt");
+            ComposeMain.run(composeArguments(iteration, attempt, z3, null));
+            assertEquals(change, ClaimKind.MARKER_FLIPPED.name(),
+                    com.google.gson.JsonParser.parseString(new String(
+                            Files.readAllBytes(attempt.resolve(
+                                    ComposeMain.CLAIM)),
+                            StandardCharsets.UTF_8)).getAsJsonObject()
+                            .getAsJsonObject("claim").get("kind")
+                            .getAsString());
+            int attemptRuns = Files.readAllLines(runs).size();
+            boolean stated = !"midway".equals(change);
+            assertEquals(change + ": the attempt's inputs", stated,
+                    Files.isRegularFile(attempt.resolve(
+                            CompositionInputs.FILE)));
+            if ("refuted".equals(change)) {
+                Files.write(iteration.resolve(Refutations.FILE),
+                        Collections.singletonList(refuted),
+                        StandardCharsets.UTF_8);
+            } else if ("session".equals(change)) {
+                session(iteration, "s2", false, "false", producer, consumer,
+                        "vh", "false", null, true, false, "EXPR.v1.marker");
+            }
+            Path last = root.resolve("final");
+            String said = ComposeMain.run(composeArguments(iteration, last,
+                    z3, attempt));
+            boolean taken = "none".equals(change);
+            assertEquals(change + ": " + said, taken,
+                    said.startsWith("reused"));
+            assertEquals(change + ": z3 ran", !taken,
+                    Files.readAllLines(runs).size() > attemptRuns);
+            for (String name : taken ? files : Collections.<String>emptyList()) {
+                assertTrue(change + ": " + name, Arrays.equals(
+                        Files.readAllBytes(attempt.resolve(name)),
+                        Files.readAllBytes(last.resolve(name))));
+            }
+            // Made anew over inputs that held still, it states its own.
+            assertTrue(change, Files.isRegularFile(last.resolve(
+                    CompositionInputs.FILE)));
+            assertEquals(change, taken, CompositionInputs.of(last)
+                    .equals(CompositionInputs.of(attempt)));
+        }
+    }
+
+    /** ComposeMain's arguments as the campaign passes them, its files in
+     *  {@code out} and the static scope map beside the iteration. */
+    private static ComposeMain.Arguments composeArguments(
+            Path iteration, Path out, Path z3, Path reuse) {
+        List<String> argv = new ArrayList<String>(Arrays.asList(
+                "--sessions", iteration.resolve(SessionDir.SESSIONS)
+                        .toString(),
+                "--anchor", ANCHOR.render(),
+                "--static-scope-map", iteration.resolveSibling(
+                        "static_scope_map.jsonl").toString(),
+                "--output", out.resolve("candidate.smt2").toString(),
+                "--manifest", out.resolve(
+                        "candidate_composition_manifest.json").toString(),
+                "--max-valuations", "8",
+                "--z3", z3.toString(),
+                "--z3-room-mb", "8192"));
+        if (reuse != null) {
+            argv.add("--reuse");
+            argv.add(reuse.toString());
+        }
+        return ComposeMain.Arguments.parse(argv.toArray(new String[0]));
+    }
+
+    /**
      * A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (PIPELINE §8, the claim;
      * compose.Cone, cone.py): a SAT on the path it claims -- another path
      * whose fatal condition rests on a value no attested producer made is

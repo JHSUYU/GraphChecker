@@ -6132,6 +6132,38 @@ campaign_witness_attempt=""
 unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
 unset confirm_anchor confirm_stub_target_iteration confirm_java
 
+# FINAL-REUSE: the final COMPOSE is handed the exploration's accepted witness
+# attempt (ComposeMain --reuse), which it takes where it read the same inputs
+# (compose.CompositionInputs); with no accepted attempt it is handed none.
+reuse_root="${test_tmp}/final-reuse"
+mkdir -p "${reuse_root}/iteration-0000/sessions"
+(
+  reset_config
+  campaign_final="${reuse_root}/final"
+  campaign_stage_metrics="${reuse_root}/stage_metrics.tsv"
+  run_java_main() {
+    printf '%s\n' "$*" >"${reuse_root}/args"
+    printf '(check-sat)\n' >"${composed_smt}"
+    printf '{"anchor": "A", "finalStatus": "FINAL_READY"}\n' \
+      >"${composition_manifest}"
+  }
+  for campaign_witness_attempt in "" "${reuse_root}/witness-attempts/0001"
+  do
+    rm -rf -- "${campaign_final}"
+    campaign_compose "${reuse_root}/iteration-0000" >/dev/null
+    if [[ -z "${campaign_witness_attempt}" ]]; then
+      [[ "$(cat "${reuse_root}/args")" != *--reuse* ]] \
+        || fail "a final COMPOSE with no accepted attempt was handed one: \
+$(cat "${reuse_root}/args")"
+    else
+      [[ "$(cat "${reuse_root}/args")" \
+          == *"--reuse ${campaign_witness_attempt}"* ]] \
+        || fail "the final COMPOSE was not handed the accepted attempt: \
+$(cat "${reuse_root}/args")"
+    fi
+  done
+)
+
 # NEXT-CLAIM: a SAT_CANDIDATE CONFIRM refuted (a false positive) does not
 # end the campaign while its budget has room: its
 # artifacts move to final/refuted/NNNN/ and the next claim is composed.  Not

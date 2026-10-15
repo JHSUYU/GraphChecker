@@ -1187,6 +1187,8 @@ do_compose() {
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
     || selection+=(--root-domains "${causynth_root_domains}")
+  [[ -z "${compose_reuse_dir:-}" ]] \
+    || selection+=(--reuse "${compose_reuse_dir}")
   run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
     --sessions "${compose_sessions_dir}" \
     --static-scope-map "${causynth_static_scope_map}" \
@@ -7593,10 +7595,16 @@ campaign_publish_iteration_manifest() {
 # there is no fan-out over observed occurrences here and nothing to elect
 # afterwards: the composer reads every session this iteration produced,
 # factorizes the paths that reach the declared anchor, and writes one
-# candidate.smt2 beside one manifest.
+# candidate.smt2 beside one manifest.  The exploration's accepted witness
+# attempt composed the corpus it ended on: ComposeMain takes that
+# composition -- query, manifest, claim, the same model whose confirmation
+# campaign_confirm takes -- where it read the same inputs
+# (compose.CompositionInputs, compose_inputs.sha256), and composes anew
+# where anything differs (a refuted claim, a session).
 campaign_compose() {
   local iteration_dir=$1
   local started ended millis status=0
+  local compose_reuse_dir=${campaign_witness_attempt}
   # One claim at a time: one CONFIRM did not confirm has moved to
   # final/refuted/ (campaign_next_claim) before the next is composed.
   [[ ! -e "${campaign_final}/candidate.smt2" ]] || die \
@@ -7703,7 +7711,8 @@ campaign_decide() {
 # Only a SAT_CANDIDATE is confirmed; any other claim has nothing to confirm
 # and the stage says so.  The exploration's
 # witness was confirmed as it was accepted (campaign_stream_attempt): the
-# same model, composed again over the same corpus, is not replayed twice.
+# same model -- the attempt's own claim, which COMPOSE takes over the same
+# inputs (campaign_compose) -- is not replayed twice.
 campaign_confirm() {
   local iteration_dir=$1 claim
   claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
@@ -7975,7 +7984,7 @@ has no room for another claim"
   dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${decided}")
   mkdir -p "${dir}"
   for name in candidate.smt2 candidate_composition_manifest.json claim.json \
-      compose.log confirm confirm.json; do
+      compose_inputs.sha256 compose.log confirm confirm.json; do
     [[ ! -e "${campaign_final}/${name}" ]] \
       || mv -- "${campaign_final}/${name}" "${dir}/"
   done
