@@ -21,8 +21,6 @@ if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
     "-Dcausynth.concolic.results=${results}"
     "-Dcausynth.concolic.campaign.max.tasks=${CAUSYNTH_CONCOLIC_MAX_TASKS}"
   )
-  [[ ${CAUSYNTH_CONCOLIC_ROLE} != worker ]] || properties+=(
-    -Dcausynth.concolic.halt.after.selected.result=true)
 else
   classes=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?missing instrumented classes}
   # The recording's own temp and data: nothing reads them after it.

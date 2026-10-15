@@ -2583,7 +2583,6 @@ campaign_replay() {
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CHARGED_MB=${charged}" \
     "CAUSYNTH_HEAP_BASIS_MB=${campaign_replay_heap_basis_mb:-${charged}}" \
-    "CAUSYNTH_CONCOLIC_ROLE=${role}" \
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
@@ -2619,7 +2618,7 @@ reservation (the replay log says so), the kernel's memory killer or an \
 operator"
     fi
     campaign_log "replay role=${role} ${campaign_replay_killed} \
-(exit ${status}); its session states no verdict: ${sessions}"
+(exit ${status}): ${sessions}"
     # A caller whose replay is the iteration's only source of observed cases
     # cannot absorb a truncated one, and a killed JVM may well have published
     # rows before it died -- enough for the evidence gate below to pass on a
@@ -3721,13 +3720,23 @@ campaign_obligation_replay() {
   # ONE WRITER.  The replay's process group is gone
   # (run_under_wall_clock_bound), so nothing of it writes after this line,
   # and the obligation's answer is written below, once: the replay's own
-  # statement (RowRuntime#closeSession writes replay_verdict.jsonl), or the
-  # bound's.
-  if [[ -n "${campaign_replay_killed}" ]]; then
-    # Killed, it decided nothing: its question stays unsettled, and its
-    # answer says so (ObligationResult#REPLAY_BOUNDED: no fact about its
-    # arm or its world; a flip killed twice is held BOUNDED and named,
-    # campaign_bounds).
+  # statement, or the bound's.
+  #
+  # THE STATEMENT IS THE ANSWER whenever the replay made one, killed after
+  # it or not.  replay_verdict.jsonl is the last thing the run's one end
+  # writes (RowRuntime#writeWorkerVerdicts): after the session it names is
+  # closed -- or, naming none, withdrawn -- and whole, by one rename; and a
+  # JVM told to end before its run did (a signal, this bound's TERM among
+  # them) states nothing (JUnitMethodRunner#exit).  The end halts the JVM at
+  # once; a kill past the statement only means the halt was late.
+  # PV7-adhoc-38: 35 replays that had decided (32 ADMITTED) hung in a
+  # cluster's shutdown hook after their statement, and were each recorded
+  # REPLAY_BOUNDED at replay_timeout_s=2400 with their sessions withdrawn.
+  if [[ -n "${campaign_replay_killed}" && ! -s "${statement}" ]]; then
+    # Killed before it stated anything, it decided nothing: its question
+    # stays unsettled, and its answer says so
+    # (ObligationResult#REPLAY_BOUNDED: no fact about its arm or its world;
+    # a flip killed twice is held BOUNDED and named, campaign_bounds).
     rm -f -- "${worker}/question.asked"
     campaign_log "obligation ${obligation_id}: \
 replay ${campaign_replay_killed}"
@@ -3742,6 +3751,9 @@ session"
       | campaign_write_whole "${result_row}"
     return 0
   fi
+  [[ -z "${campaign_replay_killed}" ]] || campaign_log "obligation \
+${obligation_id}: its replay stated its verdict and then \
+${campaign_replay_killed}; the statement is its answer"
   # THE REPLAY OWNS THE VERDICT: the rows FocusedReplay.results built, the
   # same rows it publishes into the session, which is the evidence.  What is
   # checked is that the replay DID state one; none is neither an admission

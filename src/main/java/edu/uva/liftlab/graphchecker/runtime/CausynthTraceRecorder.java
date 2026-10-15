@@ -97,8 +97,6 @@ public final class CausynthTraceRecorder {
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
-    /** Guarded by {@link #LOCK}; a reset must not install duplicate hooks. */
-    private static boolean shutdownHookRegistered;
     /** Gaps stated before the recording window opened ({@link
      *  #recordingGap}), written when it opens; guarded by {@link #LOCK}. */
     private static final List<GapRow> BEFORE_WINDOW = new ArrayList<GapRow>();
@@ -1305,7 +1303,7 @@ public final class CausynthTraceRecorder {
     static void plantRoot(String event, int row, String planted,
                           String occurrence, String value) {
         synchronized (LOCK) {
-            writeTraceRow(
+            writePlantRow(
                     "schemaVersion", 3,
                     "event", event,
                     "seq", EVENT_COUNTER.incrementAndGet(),
@@ -1321,7 +1319,7 @@ public final class CausynthTraceRecorder {
     static void plantOrdered(String event, int row, String after,
                              String waitingFor) {
         synchronized (LOCK) {
-            writeTraceRow(
+            writePlantRow(
                     "schemaVersion", 3,
                     "event", event,
                     "seq", EVENT_COUNTER.incrementAndGet(),
@@ -1337,7 +1335,7 @@ public final class CausynthTraceRecorder {
     static void plantFatal(String siteId, String occurrence,
                            boolean atAnchor) {
         synchronized (LOCK) {
-            writeTraceRow(
+            writePlantRow(
                     "schemaVersion", 3,
                     "event", RecordingPlant.FATAL,
                     "seq", EVENT_COUNTER.incrementAndGet(),
@@ -1551,7 +1549,6 @@ public final class CausynthTraceRecorder {
                         "streaming_trace_manifest.json").toPath());
                 configuredWriter = new BufferedWriter(new FileWriter(
                         configuredTraceFile, false));
-                ensureShutdownHookRegistered();
 
                 // INITIALIZED is the release publication for every field
                 // above.
@@ -1575,19 +1572,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void ensureShutdownHookRegistered() {
-        if (shutdownHookRegistered) {
-            return;
-        }
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                shutdown();
-            }
-        }, "causynth-trace-shutdown"));
-        shutdownHookRegistered = true;
-    }
-
     private static void closeQuietly(BufferedWriter writer) {
         if (writer == null) {
             return;
@@ -1598,7 +1582,15 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void shutdown() {
+    /**
+     * Closes the recording's trace, by the run's one end ({@code
+     * JUnitMethodRunner#exit}) and nothing else: flushed, closed and its
+     * manifest CLOSED, the window's duration stated.  A JVM that ends any
+     * other way (killed, or told to end before its run did) leaves no CLOSED
+     * manifest, and SEED reads its trace as cut.  Nothing for a JVM that
+     * recorded no trace (a replay).
+     */
+    static void closeTrace() {
         RecordingWindow.measured();
         synchronized (LOCK) {
             if (traceWriter != null) {
@@ -2490,6 +2482,22 @@ public final class CausynthTraceRecorder {
         try {
             traceWriter.write(objectWithoutNulls(fields));
             traceWriter.newLine();
+        } catch (IOException ignored) {
+            traceWriteFailure = true;
+        }
+    }
+
+    /**
+     * A plant's row, flushed as it is written: a native run its bound
+     * kills is read off its plant rows ({@code run_engine.sh
+     * campaign_reproduce_run}), and no hook of the engine's flushes the
+     * trace of a JVM that does not reach its run's end.
+     */
+    private static void writePlantRow(Object... fields) {
+        writeTraceRow(fields);
+        if (traceWriter == null) return;
+        try {
+            traceWriter.flush();
         } catch (IOException ignored) {
             traceWriteFailure = true;
         }

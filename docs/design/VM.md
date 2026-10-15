@@ -51,9 +51,11 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Stack shadows.** One `ThreadContext` per thread (`__thread`, `VM/concolic/concolicMngr.cpp`)
   shadows operand slots and locals; arguments and returns move through `ShadowStack` at every Zero
   frame push and pop (`VM/concolic/shadow/shadowStack.cpp`).
-- **Session.** `openWorkloadSession` / `closeWorkloadSession`: one per workload JVM. Every
-  expression is allocated in one session arena (`VM/concolic/globalSymbolicSession.cpp`) and freed
-  at close; one event clock numbers versions, reads and region entries (`currentSymbolicEventId`).
+- **Session.** `openWorkloadSession`: one per workload JVM, for its whole life. Every
+  expression is allocated in one session arena (`VM/concolic/globalSymbolicSession.cpp`), freed with
+  the JVM: the runtime's end halts it and never calls the VM's `closeWorkloadSession`
+  (`runtime.JUnitMethodRunner#exit`, PIPELINE §5); one event clock numbers versions, reads and region
+  entries (`currentSymbolicEventId`).
 - **Regions.** `startConcolicRegion` / `finishConcolicRegion` bracket one activation on one thread;
   each region frame owns its guard and branch events (`VM/concolic/threadContext.cpp`); the path
   holds a marked branch's conditions and nothing else -- a model states what it chose and what it

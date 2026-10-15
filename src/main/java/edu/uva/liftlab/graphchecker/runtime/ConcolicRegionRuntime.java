@@ -87,8 +87,6 @@ public final class ConcolicRegionRuntime {
             };
     private static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
-    /** Session this JVM opened for its workload, or zero when it opened none. */
-    private static volatile long workloadSessionId;
     /**
      * Expression store of the current workload session; native expression
      * ids are session-wide, so one store serves every region.
@@ -376,7 +374,8 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Opens the workload-wide symbolic session that outlives every region in
-     * this JVM.
+     * this JVM.  It lasts the JVM: the run's end halts the JVM, which frees
+     * it ({@code JUnitMethodRunner#exit}).
      *
      * @return an empty string on success, otherwise a named diagnostic
      */
@@ -411,42 +410,6 @@ public final class ConcolicRegionRuntime {
         SymbolicMessageEnvelope.clear();
         workloadExpressionStore = new VmExpressionTable.Store(
                     EnginePlumbing.VM_CLASSES);
-        workloadSessionId = status;
-        return "";
-    }
-
-    /**
-     * Closes the session opened by {@link #openWorkloadSession}.
-     *
-     * @return an empty string on success or when nothing was opened, otherwise
-     * a named diagnostic
-     */
-    public static String closeWorkloadSession() {
-        // The durability boundary, whichever launcher owns it.
-        ConcolicResultPublisher.awaitSelectedResultPublications();
-        long sessionId = workloadSessionId;
-        if (sessionId == 0L) {
-            workloadExpressionStore = new VmExpressionTable.Store(
-                    EnginePlumbing.VM_CLASSES);
-            return "";
-        }
-        ConcolicVmBroker api = engine();
-        final long status;
-        try {
-            status = api.closeWorkloadSession();
-        } catch (Throwable failure) {
-            return "WORKLOAD_SESSION_CLOSE_FAILED: " + rootCause(failure);
-        }
-        if (status != 0L) {
-            return "WORKLOAD_SESSION_CLOSE_REFUSED: "
-                    + workloadSessionStatusName(status)
-                    + " sessionId=" + sessionId + " "
-                    + api.workloadSessionStatus();
-        }
-        SymbolicMessageEnvelope.clear();
-        workloadSessionId = 0L;
-        workloadExpressionStore = new VmExpressionTable.Store(
-                    EnginePlumbing.VM_CLASSES);
         return "";
     }
 
@@ -464,10 +427,9 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Ends the run's admission: no region starts after it.  The run ends
-     * before its VM session does ({@code JUnitMethodRunner#exit}): cluster
-     * threads outlive the test, and a region they start once the session is
-     * closed opens a fresh one, where every handle the old one made is
-     * foreign.
+     * before its JVM does ({@code JUnitMethodRunner#exit}): cluster threads
+     * outlive the test, and a region they start while the end settles and
+     * closes the session's rows would be an occurrence no row states.
      */
     static void endAdmission() {
         admissionEnded = true;

@@ -65,7 +65,6 @@ final class ConcolicVmBroker {
     }
 
     private Method openWorkloadSession;
-    private Method closeWorkloadSession;
     private Method workloadSessionStatus;
     private Method startRegion;
     private Method currentContextId;
@@ -125,13 +124,6 @@ final class ConcolicVmBroker {
     /** Positive session id, or a negative VM status. */
     long openWorkloadSession() throws Exception {
         Object status = openWorkloadSession.invoke(null);
-        return status instanceof Number
-                ? ((Number) status).longValue() : Long.MIN_VALUE;
-    }
-
-    /** Zero, or a negative VM status. */
-    long closeWorkloadSession() throws Exception {
-        Object status = closeWorkloadSession.invoke(null);
         return status instanceof Number
                 ? ((Number) status).longValue() : Long.MIN_VALUE;
     }
@@ -453,7 +445,6 @@ final class ConcolicVmBroker {
         Class<System> system = System.class;
         ConcolicVmBroker api = new ConcolicVmBroker();
         api.openWorkloadSession = method(system, "openWorkloadSession");
-        api.closeWorkloadSession = method(system, "closeWorkloadSession");
         api.workloadSessionStatus =
                 method(system, "getWorkloadSessionStatus");
         api.startRegion = method(system, "startConcolicRegion",
