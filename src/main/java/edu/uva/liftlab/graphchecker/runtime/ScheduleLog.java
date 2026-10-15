@@ -146,6 +146,10 @@ public final class ScheduleLog {
      * done before; guarded by {@link #LOCK}.
      */
     private static final Set<String> MADE_KEYS = new HashSet<String>();
+    /** Whether this run counts them: only a focused replay's watch asks
+     *  ({@link #countNewEvents}); a recording, the seed and CONFIRM pay
+     *  nothing. */
+    private static volatile boolean counting;
     /** When the last new key was made ({@code System.nanoTime}, 0 before
      *  any) and the longest span between two; guarded by {@link #LOCK}. */
     private static long lastNewNanos;
@@ -1170,15 +1174,17 @@ public final class ScheduleLog {
                 && !pending.endpoint.isEmpty() && !AWAITED.isEmpty()) {
             names.sent(pending.context, pending.site, pending.endpoint);
         }
-        ContextShape.Stance stance =
-                ContextShape.Stance.ofSend(pending.context);
         if (pending.kind == ScheduleEvent.Kind.SEND
-                && !pending.endpoint.isEmpty() && stance != null) {
-            synchronized (SENDERS) {
-                SENDERS.put(pending.endpoint, stance);
+                && !pending.endpoint.isEmpty()) {
+            ContextShape.Stance stance =
+                    ContextShape.Stance.ofSend(pending.context);
+            if (stance != null) {
+                synchronized (SENDERS) {
+                    SENDERS.put(pending.endpoint, stance);
+                }
             }
         }
-        if (MADE_KEYS.add(madeKey(pending, stance))) {
+        if (counting && MADE_KEYS.add(madeKey(pending))) {
             long now = System.nanoTime();
             if (lastNewNanos != 0L) {
                 longestQuietNanos = Math.max(longestQuietNanos,
@@ -2517,6 +2523,20 @@ public final class ScheduleLog {
         }
     }
 
+    /** From now on this run counts its distinct events ({@link #newKeys}):
+     *  a focused replay's watch is armed. */
+    static void countNewEvents() {
+        counting = true;
+    }
+
+    /** Slots of the order taken or given up so far: bounded by the order,
+     *  what the replay's watch counts besides its new events. */
+    static long settledSlots() {
+        synchronized (LOCK) {
+            return (long) taken + givenUp;
+        }
+    }
+
     /**
      * An event as progress counts it: its kind; its site, with every name
      * the run minted for itself taken out ({@link RunSpellings#strip}: a
@@ -2527,11 +2547,13 @@ public final class ScheduleLog {
      * engine built and never stripped (a node named like a number would
      * fold two nodes).  A poll, a retry or a watch made again makes no new
      * key; other code, another store location, another request handler or
-     * another node does.  {@code stance} is the event's own, parsed
-     * ({@code null}: a view's or none, its context taken as written).
+     * another node does.  A view's PUBLISH names the version it put in
+     * force, so a loop publishing new versions still makes new keys: the
+     * safe direction, a cut missed, never a run cut.
      */
-    private static String madeKey(Pending pending,
-                                  ContextShape.Stance stance) {
+    private static String madeKey(Pending pending) {
+        ContextShape.Stance stance =
+                ContextShape.Stance.ofSend(pending.context);
         return pending.kind.name() + " " + RunSpellings.strip(pending.site)
                 + " | " + (stance == null ? pending.context
                 : stance.node() + "|" + shape(stance.context()));
@@ -2795,14 +2817,14 @@ public final class ScheduleLog {
     static String progress() {
         synchronized (LOCK) {
             long now = System.nanoTime();
-            String made = MADE_KEYS.size() + " distinct event(s)"
-                    + (lastNewNanos == 0L ? "" : ", at most "
-                    + TimeUnit.NANOSECONDS.toSeconds(longestQuietNanos)
-                    + " s between two new ones, the last "
+            String made = !counting ? "" : MADE_KEYS.size()
+                    + " distinct event(s)" + (lastNewNanos == 0L ? ""
+                    : ", at most " + TimeUnit.NANOSECONDS.toSeconds(
+                    longestQuietNanos) + " s between two new ones, the last "
                     + TimeUnit.NANOSECONDS.toSeconds(now - lastNewNanos)
-                    + " s ago");
-            if (order.isEmpty()) return "no order; " + made;
-            return made + "; of an order of " + order.size()
+                    + " s ago") + "; ";
+            if (order.isEmpty()) return made + "no order";
+            return made + "of an order of " + order.size()
                     + " slot(s) (prefix "
                     + cut + "): " + taken + " taken, " + givenUp
                     + " given up in " + stalls + " stall(s), " + dead
@@ -2847,6 +2869,7 @@ public final class ScheduleLog {
             }
             seq = 0L;
             MADE_KEYS.clear();
+            counting = false;
             lastNewNanos = 0L;
             longestQuietNanos = 0L;
             realized = null;

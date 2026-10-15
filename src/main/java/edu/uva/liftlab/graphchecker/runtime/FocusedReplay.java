@@ -801,7 +801,9 @@ public final class FocusedReplay {
         conditions.add("(c) the recorded order held until the world first"
                 + " acted" + (departed == 0L ? ": no slot was given up"
                 : ": the first slot given up came after it"));
-        conditions.add("(d) the workload ended by itself"
+        conditions.add(!endedOver.isEmpty()
+                ? "(d) the workload's test was over: " + endedOver
+                : "(d) the workload ended by itself"
                 + (endedBy.isEmpty() ? ", its method returning"
                 : ": " + endedBy + " thrown at " + endedAt
                 + (endedInTest.isEmpty() ? "" : ", through " + endedInTest)));
@@ -857,6 +859,9 @@ public final class FocusedReplay {
 
     /** Whether the workload ended by itself ({@link #workloadEnded}). */
     private static volatile boolean workloadEnded;
+    /** How its test was over when its teardown, not the method, ended the
+     *  run ({@link #testOver}); "" otherwise. */
+    private static volatile String endedOver = "";
     /** Its terminating throwable, its innermost frame and the test
      *  method's frame it passed; "" where none. */
     private static volatile String endedBy = "";
@@ -885,6 +890,54 @@ public final class FocusedReplay {
             }
         }
         workloadEnded = true;
+    }
+
+    /**
+     * The workload's test was over -- its window closed -- and its teardown
+     * then stood ({@code ConcolicResultPublisher#watchProgress}: {@code
+     * how}, it made nothing new for so long): the run ends as at the
+     * workload's own end, nothing decided, every verdict settled as there,
+     * a world refuted included.  The teardown answers nothing the question
+     * asked: no occurrence of the window runs after its close.
+     *
+     * @return whether the replay ends here, not already ending otherwise
+     */
+    static boolean testOver(String how) {
+        synchronized (LOCK) {
+            if (workloadEnded || !refusedAt.isEmpty()
+                    || !stalledAt.isEmpty()) {
+                return false;
+            }
+            endedOver = trimmed(how);
+            workloadEnded = true;
+            return true;
+        }
+    }
+
+    /**
+     * What this replay's own question moved so far, each count bounded by
+     * its focus row, so a loop elsewhere moves none of them ({@code
+     * ConcolicResultPublisher#watched}): the focused occurrences entered --
+     * the obligations', the assigned roots' mints', the inherited flips' --,
+     * the flips taken, its own and inherited, the roots planted, and
+     * whether the world has acted.
+     */
+    static long[] questionMoved() {
+        load();
+        synchronized (LOCK) {
+            Set<String> focused = new LinkedHashSet<String>();
+            for (String at : FOCUS.values()) focused.add(trimmed(at));
+            focused.addAll(ROOT_MINTS);
+            focused.addAll(INHERITED_OCCURRENCES);
+            focused.retainAll(ENTERED);
+            long inheritedTaken = 0L;
+            for (Inherited flip : INHERITED) {
+                if (flip.taken) inheritedTaken++;
+            }
+            return new long[] {focused.size(), FLIPPED.size(),
+                    inheritedTaken, PLANTED.size(),
+                    FIRST_ACT.get() == 0L ? 0L : 1L};
+        }
     }
 
     /**
@@ -1362,6 +1415,7 @@ public final class FocusedReplay {
             FIRST_DEPARTURE.set(0L);
             firstDeparture = "";
             workloadEnded = false;
+            endedOver = "";
             endedBy = "";
             endedAt = "";
             endedInTest = "";

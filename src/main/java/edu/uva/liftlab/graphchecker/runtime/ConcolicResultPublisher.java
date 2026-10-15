@@ -7,8 +7,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateReadOut;
 import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -256,34 +258,38 @@ final class ConcolicResultPublisher {
     private static final int DUMP_FRAMES = 24;
 
     /**
-     * THE WATCH of a focused replay asked a flip: once the run has made
-     * nothing new for {@link #NO_NEW_EVENT_MILLIS} -- no event of a kind,
-     * site, node and context shape it had not made before ({@code
-     * ScheduleLog#newKeys}; a loop busy doing again what it did makes none)
-     * -- every question still open is NOT_ADMITTED by REPLAY_NO_PROGRESS,
-     * which names the schedule's holds then ({@code FocusedReplay
-     * #noProgress}, {@code ScheduleLog#holding}), its threads are dumped on
-     * its log, and it ends, long before {@code replay_timeout_s} would kill
-     * it: decided, its session withdrawn, when no flip it was asked was
-     * taken yet ({@link Conclusion#AT_NO_PROGRESS}); its session standing as
-     * the run made it, the flips taken keeping their verdicts, when one was
-     * ({@link Conclusion#STALLED_AFTER_FLIP}).  From the window's opening on
-     * ({@link RecordingWindow#index}; before it the cluster starts): the
-     * window's close is a step, the teardown after it is watched too and
-     * records no event, so a teardown is given the whole bound from the
-     * close (PV7-38: a failed test's teardown stood on an Overseer response
-     * until the kill; of 567 teardowns that ended, 558 took under a minute
-     * and 9 took 600-620 s, each freed only by a ZooKeeper session's
-     * expiry).  Never
-     * the seed's replay (it carries no obligation) nor a confirmation's
-     * (its verdict rules stand); a replay whose workload ended settles on
-     * the settle's bound.
+     * THE WATCH of a focused replay asked a flip: once nothing has moved for
+     * {@link #NO_NEW_EVENT_MILLIS} ({@link #watched}: no event of a kind,
+     * site, node and context shape the run had not made before, no move of
+     * its own question, of the order or of a model's hold, no focused
+     * activation computing; a loop busy doing again what it did moves none)
+     * the replay ends, long before {@code replay_timeout_s} would kill it
+     * ({@link #stall}).  Inside its window every question still open is
+     * NOT_ADMITTED by REPLAY_NO_PROGRESS, which names the schedule's holds
+     * then ({@code FocusedReplay#noProgress}, {@code ScheduleLog#holding}):
+     * decided, its session withdrawn, when no flip it was asked was taken
+     * yet ({@link Conclusion#AT_NO_PROGRESS}); its session standing as the
+     * run made it, the flips taken keeping their verdicts, when one was
+     * ({@link Conclusion#STALLED_AFTER_FLIP}).  After its window closed its
+     * test was over: the teardown answers nothing the question asked, and
+     * the run ends as at the workload's own end, every verdict settled as
+     * there ({@link Conclusion#TEST_OVER}, {@code FocusedReplay#testOver});
+     * the close is a move, so a teardown has the whole bound (PV7-38: a
+     * failed test's teardown stood on an Overseer response until the kill;
+     * of 567 teardowns that ended, 558 took under a minute and 9 took
+     * 600-620 s, each freed only by a ZooKeeper session's expiry).  Its
+     * threads are dumped on the log either way.  From the window's opening
+     * on ({@link RecordingWindow#index}; before it the cluster starts).
+     * Never the seed's replay (it carries no obligation) nor a
+     * confirmation's (its verdict rules stand); a replay whose workload
+     * ended settles on the settle's bound.
      */
     static void watchProgress() {
         if (FocusedReplay.obligationIds().isEmpty()
                 || FocusedReplay.confirming()) {
             return;
         }
+        ScheduleLog.countNewEvents();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         Thread watch = new Thread(root, ConcolicResultPublisher::watch,
@@ -294,6 +300,8 @@ final class ConcolicResultPublisher {
 
     private static void watch() {
         long bound = TimeUnit.MILLISECONDS.toNanos(NO_NEW_EVENT_MILLIS);
+        FocusedComputing computing = new FocusedComputing();
+        long computed = 0L;
         Grace grace = null;
         while (true) {
             try {
@@ -304,33 +312,111 @@ final class ConcolicResultPublisher {
             synchronized (PUBLICATION_LOCK) {
                 if (concluded != null) return;
             }
+            if (computing.look()) computed++;
             if (RecordingWindow.index() == 0) continue;
             long now = System.nanoTime();
             if (grace == null) {
-                grace = new Grace(bound, now, watched());
+                grace = new Grace(bound, now, watched(computed));
                 continue;
             }
-            long remaining = grace.remaining(now, watched());
+            long remaining = grace.remaining(now, watched(computed));
             if (remaining > 0L) continue;
             String still = "nothing new for " + TimeUnit.NANOSECONDS
                     .toSeconds(bound - remaining) + " s (no event of a"
                     + " kind, site, node and context this run had not made"
-                    + " before)";
-            if (FocusedReplay.noProgress(still, ScheduleLog.holding())) {
+                    + " before, no move of its question, its order or a"
+                    + " hold, no focused activation computing)";
+            Conclusion end = stall(still);
+            if (end != null) {
                 dumpThreads(still);
-                conclude(FocusedReplay.stalledAfterFlip()
-                        ? Conclusion.STALLED_AFTER_FLIP
-                        : Conclusion.AT_NO_PROGRESS);
+                conclude(end);
             }
             return;
         }
     }
 
-    /** What the watch counts as progress: the distinct events the run made,
-     *  and its window's opening and closing. */
-    static long[] watched() {
-        return new long[] {ScheduleLog.newKeys(), RecordingWindow.index(),
-                RecordingWindow.opened() ? 1L : 0L};
+    /**
+     * How a replay that stood still for {@code still} ends, or null when it
+     * ends otherwise already (its workload ended, a refusal decided it):
+     * after its window closed, as at the workload's own end ({@link
+     * Conclusion#TEST_OVER}); inside it, by the stall ({@code
+     * FocusedReplay#noProgress}).
+     */
+    static Conclusion stall(String still) {
+        if (RecordingWindow.index() > 0 && !RecordingWindow.opened()) {
+            return FocusedReplay.testOver("its window closed, and its"
+                    + " teardown then made " + still) ? Conclusion.TEST_OVER
+                    : null;
+        }
+        if (!FocusedReplay.noProgress(still, ScheduleLog.holding())) {
+            return null;
+        }
+        return FocusedReplay.stalledAfterFlip()
+                ? Conclusion.STALLED_AFTER_FLIP : Conclusion.AT_NO_PROGRESS;
+    }
+
+    /**
+     * What the watch counts as progress, each bounded but the first: the
+     * distinct events the run made ({@code ScheduleLog#newKeys}); its
+     * window's opening and closing; what its own question moved ({@code
+     * FocusedReplay#questionMoved}: focused occurrences entered, flips
+     * taken, roots planted); the order's slots taken or given up ({@code
+     * ScheduleLog#settledSlots}); a model's order holds begun and ended
+     * ({@code Confirmation#holdMoves}: each may wait up to 300 s on
+     * purpose); and the looks that saw a focused activation computing
+     * ({@code computed}, {@link FocusedComputing}).
+     */
+    static long[] watched(long computed) {
+        long[] question = FocusedReplay.questionMoved();
+        long[] watched = Arrays.copyOf(question, question.length + 6);
+        watched[question.length] = ScheduleLog.newKeys();
+        watched[question.length + 1] = RecordingWindow.index();
+        watched[question.length + 2] = RecordingWindow.opened() ? 1L : 0L;
+        watched[question.length + 3] = ScheduleLog.settledSlots();
+        watched[question.length + 4] = Confirmation.holdMoves();
+        watched[question.length + 5] = computed;
+        return watched;
+    }
+
+    /**
+     * Whether a focused activation computed since the last look: its thread,
+     * while the activation is live, used with the collectors half the look's
+     * span -- the schedule's measure of computing ({@code
+     * ScheduleLog#lookLocked}), asked of the question's own occurrences
+     * only, whose loops are bounded, so a busy thread elsewhere never counts.
+     */
+    static final class FocusedComputing {
+        private final ThreadMXBean threads =
+                ManagementFactory.getThreadMXBean();
+        private Map<Long, Long> seen = new HashMap<Long, Long>();
+        private long collected = ScheduleLog.collectedMillis();
+        private long at = System.nanoTime();
+
+        boolean look() {
+            Map<Long, Long> now = new HashMap<Long, Long>();
+            long most = 0L;
+            for (ActiveRegion active : ACTIVE.values()) {
+                if (active.finished.get() || active.thread == null
+                        || !active.symbolicallyActive()) {
+                    continue;
+                }
+                long id = active.thread.getId();
+                long cpu = threads.getThreadCpuTime(id);
+                if (cpu < 0L) continue;
+                now.put(id, cpu);
+                Long before = seen.get(id);
+                if (before != null) most = Math.max(most, cpu - before);
+            }
+            long collectedNow = ScheduleLog.collectedMillis();
+            long nanos = System.nanoTime();
+            boolean computed = !now.isEmpty() && 2L * (most
+                    + TimeUnit.MILLISECONDS.toNanos(collectedNow - collected))
+                    >= nanos - at;
+            seen = now;
+            collected = collectedNow;
+            at = nanos;
+            return computed;
+        }
     }
 
     /** Every thread's stack on the replay log, as a SIGQUIT would put it:
@@ -370,7 +456,7 @@ final class ConcolicResultPublisher {
     private static long undecodedChars;
 
     /** Why a focused replay ends before its workload does. */
-    private enum Conclusion {
+    enum Conclusion {
         /** The case's declared occurrence observed the fatal. */
         AT_WITNESS("the declared occurrence observed the fatal"),
         /** A FORCE run's declared occurrence published its forced target
@@ -383,6 +469,13 @@ final class ConcolicResultPublisher {
          *  #watchProgress}), which decided every obligation it carries. */
         AT_NO_PROGRESS("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
                 + " s, which decided every obligation this replay carries"),
+        /** Nothing moved for {@link #NO_NEW_EVENT_MILLIS} after the
+         *  window closed ({@link #watchProgress}): the test was over, its
+         *  teardown stood, and the run ends as at the workload's own end,
+         *  every verdict settled as there ({@code FocusedReplay#testOver}). */
+        TEST_OVER("its test was over, and its teardown then moved nothing"
+                + " for " + NO_NEW_EVENT_MILLIS / 1000L + " s: every verdict"
+                + " stands as at the workload's end"),
         /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} after a flip the
          *  replay was asked was taken: the session stands as the run made
          *  it, the obligations still open NOT_ADMITTED. */
@@ -438,7 +531,8 @@ final class ConcolicResultPublisher {
      * strands every activation still live.
      *
      * <p>What still publishes differs.  At the witness, at a forced
-     * target, or at a stall after a flip was taken, every occurrence
+     * target, at a stall after a flip was taken, or once a test over stood
+     * in its teardown, every occurrence
      * completed before it (the witness's own among them): its session is a
      * corpus session, read whole up to there, and its schedule states the
      * run cut there.  At a refusal or a stall before any flip, no

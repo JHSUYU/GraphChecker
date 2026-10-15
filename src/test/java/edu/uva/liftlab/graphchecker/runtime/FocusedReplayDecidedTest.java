@@ -108,7 +108,7 @@ public class FocusedReplayDecidedTest {
     @Test
     public void aStallLeavesTheFlipsTakenAndRefusesTheQuestionsOpen()
             throws Exception {
-        String still = "nothing moved for 300 s";
+        String still = "nothing new for 300 s";
         String held = "2 thread(s) held for a turn";
         assertFalse("the seed's replay carries no obligation",
                 FocusedReplay.noProgress(still, ""));
@@ -192,7 +192,7 @@ public class FocusedReplayDecidedTest {
         handedTwo();
         FocusedReplay.observeDecision(OccurrenceAddress.parse(FOCUS), SITE,
                 1, true);
-        assertTrue(FocusedReplay.noProgress("nothing moved for 600 s",
+        assertTrue(FocusedReplay.noProgress("nothing new for 600 s",
                 "1 thread(s) held for a turn"));
         java.util.Map<String, ObligationResult> byId =
                 new java.util.HashMap<String, ObligationResult>();
@@ -204,7 +204,7 @@ public class FocusedReplayDecidedTest {
         assertEquals(Verdict.NOT_ADMITTED, open.verdict());
         assertEquals("s", open.sessionId());
         assertTrue(open.detail(), open.detail().startsWith(
-                FocusedReplay.REPLAY_NO_PROGRESS + ": nothing moved for 600"
+                FocusedReplay.REPLAY_NO_PROGRESS + ": nothing new for 600"
                         + " s; a schedule hold was live: 1 thread(s) held for"
                         + " a turn; the replay ended there, after another"
                         + " flip it was asked was taken"));
@@ -360,6 +360,46 @@ public class FocusedReplayDecidedTest {
                     result.refutation().exception());
             assertTrue(result.refutation().testFrame(), result.refutation()
                     .testFrame().contains("FocusedReplayDecidedTest"));
+        }
+    }
+
+    /**
+     * A TEST OVER ({@code ConcolicResultPublisher#stall}): a replay whose
+     * window closed and whose teardown then stood ends as at the workload's
+     * own end -- nothing decided, no stall rewriting a verdict, and a
+     * faithful world never entered still refuted, its (d) naming the stand;
+     * once.  Inside the window the same stand is the stall, which decides a
+     * replay no flip of which was taken.
+     */
+    @Test
+    public void aTeardownThatStandsEndsTheRunAsTheWorkloadsEnd()
+            throws Exception {
+        String still = "nothing new for 600 s";
+        for (boolean over : new boolean[] {false, true}) {
+            reset();
+            RecordingWindow.open();
+            handedAnArm(true, false);
+            FocusedReplay.obligationIds();
+            FocusedReplay.planted("r", true);
+            if (over) RecordingWindow.close();
+            assertEquals(over ? ConcolicResultPublisher.Conclusion.TEST_OVER
+                    : ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS,
+                    ConcolicResultPublisher.stall(still));
+            assertEquals("once", null, ConcolicResultPublisher.stall(still));
+            ObligationResult result = only("s");
+            assertEquals(Verdict.NOT_ADMITTED, result.verdict());
+            assertEquals(result.detail(), over,
+                    result.detail().startsWith("WORLD_REFUTED: "));
+            if (!over) {
+                assertTrue(result.detail(), result.detail().startsWith(
+                        FocusedReplay.REPLAY_NO_PROGRESS + ": " + still));
+                continue;
+            }
+            assertEquals("", FocusedReplay.refusedAt());
+            assertFalse(FocusedReplay.stalledAfterFlip());
+            assertEquals("(d) the workload's test was over: its window"
+                    + " closed, and its teardown then made " + still,
+                    result.refutation().conditions().get(3));
         }
     }
 

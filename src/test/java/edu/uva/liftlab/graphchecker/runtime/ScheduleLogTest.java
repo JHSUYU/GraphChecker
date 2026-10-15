@@ -1619,6 +1619,7 @@ public class ScheduleLogTest {
         order.add(event(ScheduleEvent.Kind.WAKE, site));
         order.addAll(prefix("x"));
         enforce(order);
+        ScheduleLog.countNewEvents();
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
@@ -1643,6 +1644,7 @@ public class ScheduleLogTest {
     @Test
     public void aLoopDoingAgainWhatItDidMakesNothingNew() {
         noRequest();
+        ScheduleLog.countNewEvents();
         int made = -1;
         long[] watched = null;
         for (int turn = 0; turn < 3; turn++) {
@@ -1662,14 +1664,15 @@ public class ScheduleLogTest {
             });
             if (made < 0) {
                 made = ScheduleLog.newKeys();
-                watched = ConcolicResultPublisher.watched();
+                watched = ConcolicResultPublisher.watched(0L);
             }
         }
         assertEquals("six distinct events", 6, made);
         assertEquals(events().toString(), 18, events().size());
         assertEquals("turns two and three: nothing new", made,
                 ScheduleLog.newKeys());
-        assertTrue(Arrays.equals(watched, ConcolicResultPublisher.watched()));
+        assertTrue(Arrays.equals(watched,
+                ConcolicResultPublisher.watched(0L)));
         request("poll", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 "HTTP#REQUEST:update"));
         assertEquals("another request", made + 1, ScheduleLog.newKeys());
@@ -1687,11 +1690,11 @@ public class ScheduleLogTest {
         }
         assertEquals("another node", made + 3, ScheduleLog.newKeys());
         assertTrue(ScheduleLog.progress(), ScheduleLog.progress().startsWith(
-                "no order; " + (made + 3) + " distinct event(s), at most "));
-        watched = ConcolicResultPublisher.watched();
+                (made + 3) + " distinct event(s), at most "));
+        watched = ConcolicResultPublisher.watched(0L);
         RecordingWindow.close();
         assertFalse("the window's close is a step", Arrays.equals(watched,
-                ConcolicResultPublisher.watched()));
+                ConcolicResultPublisher.watched(0L)));
     }
 
     /**

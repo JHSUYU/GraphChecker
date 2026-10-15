@@ -3754,7 +3754,7 @@ session"
 (\"${outcome}\")" ;;
   esac
   # A verdict that names no session published none: a refusal, or nothing
-  # moving for a while (REPLAY_NO_PROGRESS), decided every obligation the
+  # new for a while (REPLAY_NO_PROGRESS), decided every obligation the
   # replay carried, and it ended there (FocusedReplay#refusedAt).  What it
   # wrote before is a prefix of a run, which the replay withdrew itself at
   # its close (RowRuntime#closeSession); one its move left listed is

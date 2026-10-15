@@ -382,6 +382,8 @@ A focused replay ends early, once, for one of five reasons (`ConcolicResultPubli
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
   questions still open are `NOT_ADMITTED` (§7.6).
+- `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
+  workload's own end, nothing decided, every verdict settled as there (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
@@ -1313,38 +1315,56 @@ holds the session the row names, or none naming the obligation when it names non
 **The early end at a stall** (`ConcolicResultPublisher#watchProgress`). A replay asked a flip --
 never the seed's (no obligation) nor a confirmation's (its verdict rules stand; a stuck one ends at
 its bound) -- is watched every 10 s from its recording window's opening on (before it the cluster
-starts). Progress is what is new (`ScheduleLog#newKeys`, `#madeKey`): an event of a kind, site,
-node and context shape the run had not made before -- the shape as the question compares contexts
-(`ScheduleLog#shape`, `ContextShape`: per anchor hop the RPC site and the sender's node, then the
-root's role and api; no invocation count, anchor hash or handoff), every name the run minted for
-itself taken out of the key (`RunSpellings#strip`: a sequential znode's counter, a session id, a host
-and port, an identity hash). A poll, a retry or a watch made again makes no new key however busy it
-is; other code, another store location, another request handler or another node does. The window's
-close is a step too, and the teardown after it, which records no event, is watched: it is given the
-whole bound from the close (`#watched`). Once nothing new has come for 600 s
-(`#NO_NEW_EVENT_MILLIS`), every question still open is
+starts). What counts as progress (`#watched`), every count but the first bounded, so a loop busy
+doing again what it did moves none of them:
+- what is new (`ScheduleLog#newKeys`, `#madeKey`, counted only in a watched replay,
+  `ScheduleLog#countNewEvents`): an event of a kind, site, node and context shape the run had not made
+  before -- the shape as the question compares contexts (`ScheduleLog#shape`, `ContextShape`: per
+  anchor hop the RPC site and the sender's node, then the root's role and api; no invocation count,
+  anchor hash or handoff), every name the run minted for itself taken out of the site
+  (`RunSpellings#strip`: a sequential znode's counter, a session id, a host and port, an identity
+  hash). A poll, a retry or a watch made again makes no new key; other code, another store location,
+  another request handler or another node does. A view's `PUBLISH` names the version it put in force,
+  so a loop publishing new versions still makes new keys: the safe direction, a cut missed;
+- the window's opening and closing: a teardown, which records no event, has the whole bound from the
+  close;
+- the question's own moves (`FocusedReplay#questionMoved`): focused occurrences entered (the
+  obligations', the assigned roots' mints', the inherited flips'), flips taken, own and inherited,
+  roots planted, the world's first act;
+- the order's slots taken or given up (`ScheduleLog#settledSlots`), and a model's order holds begun and
+  ended (`Confirmation#holdMoves`: each may wait up to 300 s on purpose);
+- a focused activation computing (`#FocusedComputing`): its thread, while it is live, used with the
+  collectors half a look's span, the schedule's measure (`ScheduleLog#lookLocked`) asked of the
+  question's own occurrences only.
+
+Once nothing has moved for 600 s (`#NO_NEW_EVENT_MILLIS`) the replay ends (`#stall`). Inside its
+window every question still open is
 `NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
 `REPLAY_NO_PROGRESS: nothing new for N s (...); no schedule hold was live` or `; a schedule hold
 was live: <ScheduleLog#holding: the threads held for a turn, the longest's slot and wait, how many
 with no slot or behind a held write>`), so a stall the engine's own hold made reads apart from one
-the workload made, and its threads are dumped on the replay log. Before any flip it carries was
+the workload made. Before any flip it carries was
 taken the stall decides the replay (`...; the replay ended there and published no session (until
 then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROGRESS`, §5): no
 session, its question settled. After one was taken the flips taken keep their verdicts, never
 rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
 to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
-it. A workload that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
+it. After its window closed the test was over, and its teardown answers nothing the question asked:
+the run ends as at the workload's own end (`TEST_OVER`, §5; `FocusedReplay#testOver`), nothing
+decided, every verdict settled as there -- a faithful world never entered is still `WORLD_REFUTED`,
+its condition (d) naming the stand. Either way its threads are dumped on the replay log. A workload
+that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
 replays that ended by themselves or at their witness (PV7-38, PV7-39, nine SGF6 cases), the longest
 span with no new kind of log line was 230 s (p99 162 s, p50 16 s); of their 567 teardowns 558 took
 under a minute and 9 took 600-620 s, each standing on an Overseer response until a ZooKeeper session
-expired (all ADMITTED: cut at the bound now, they end as `STALLED_AFTER_FLIP`, their verdicts and
+expired (all ADMITTED: they now end at the bound as `TEST_OVER`, about 20 s sooner, verdicts and
 sessions the same); every replay PV7-38 lost to `replay_timeout_s` made
 nothing new for more than 2,100 s before it (PULL replicas polling a leader left down, inside the
 window; a failed test's teardown waiting on an Overseer response that never came), while the old
-measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each replay
-states its own count at exit (`Causynth schedule: <n> distinct event(s), at most <s> s between two
-new ones, the last <s> s ago; ...`, `ScheduleLog#progress`), the measure the bound is checked against.
-`replay_timeout_s` stays the last resort: only a run that keeps making something new, or a JVM that
+measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each watched
+replay states its own count at exit (`Causynth schedule: <n> distinct event(s), at most <s> s between
+two new ones, the last <s> s ago; ...`, `ScheduleLog#progress`), the measure the bound is checked
+against. `replay_timeout_s` stays the last resort: only a run that keeps moving, or a JVM that
 does not end, reaches it.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
