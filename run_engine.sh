@@ -5828,11 +5828,13 @@ campaign_stream_chain_round() {
   stream_cancelled+=("$@")
   # A doors-only occurrence a value demand reached is run whole whatever
   # chain is open: dropping its mark asks no obligation.
-  jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
-      | jq -R . | jq -s -c .)" \
-    'select(.kind == "DOORS_ONLY_UNPAUSED"
+  campaign_json_strings "${round_dir}/witness-chain.json" \
+    "${!stream_chain[@]}"
+  jq -c --slurpfile chain "${round_dir}/witness-chain.json" \
+    '($chain[0] | map({(.): true}) | add // {}) as $held
+     | select(.kind == "DOORS_ONLY_UNPAUSED"
        or (.kind == "EXPOSED_REGION" or .kind == "ZK_EDGE")
-       and (.occurrence as $at | any($chain[]; . == $at)))' \
+       and $held[.occurrence])' \
     "${round_dir}/growth.jsonl" >"${round_dir}/growth-chain.jsonl"
   while read -r occurrence; do
     stream_chain_grown[${occurrence}]=1
@@ -5949,13 +5951,14 @@ campaign_stream_attempt() {
       "${dir}/candidate_composition_manifest.json" 2>/dev/null) \
       || polarity=false
   fi
+  campaign_json_strings "${dir}/witnesses.json" "$@"
   jq -n -c --arg step "$(basename "${step}")" --arg dir "${dir}" \
     --arg attempt "$(basename "${dir}")" \
-    --argjson witnesses "$(printf '%s\n' "$@" | jq -R . | jq -s -c .)" \
+    --slurpfile witnesses "${dir}/witnesses.json" \
     --arg claim "${claim}" --arg kind "${kind}" \
     --argjson polarity "${polarity}" --argjson exit "${status}" \
     --argjson composeMillis "${compose_ms}" \
-    '{attempt: $attempt, step: $step, witnesses: $witnesses, dir: $dir,
+    '{attempt: $attempt, step: $step, witnesses: $witnesses[0], dir: $dir,
       composeExit: $exit, claim: $claim, findingKind: $kind,
       polarityDecides: $polarity, composeMillis: $composeMillis}' \
     >"${dir}/attempt.json"
@@ -7028,6 +7031,18 @@ did not stage"
   stream_staged=()
 }
 
+# A JSON array of the strings given, one per argument, empty ones left out,
+# into <file>: what a jq program takes by --slurpfile (as $name[0]).  A list
+# never passes as a command-line argument, which the kernel bounds
+# (MAX_ARG_STRLEN, 128 KB: SGF7-18413's GROW handed jq 1099 occurrences and
+# died, "Argument list too long"); printf is a builtin, so the strings
+# themselves cross no exec.
+campaign_json_strings() {
+  local file=$1
+  shift
+  printf '%s\n' "$@" | jq -R 'select(length > 0)' | jq -s -c . >"${file}"
+}
+
 # The exposures of a round's growth.jsonl, one `obligation grown session`
 # line each, sorted: an EXPOSED_REGION row's region, an UNPLANNED_INPUT
 # row's `<task> <input>#<k>`.
@@ -7095,10 +7110,13 @@ can be grown into"
   mkdir -p "${generation}"
   # A doors-only occurrence a value demand reached runs whole from this
   # generation on: its task row loses the mark.
-  unpaused=$(campaign_unpauses "${growth}" | cut -f2 | jq -R . | jq -s -c .)
-  jq -c --argjson unpaused "${unpaused}" \
-    'if .doorsOnly == true and (.occurrenceId as $at
-       | any($unpaused[]; . == $at)) then del(.doorsOnly) else . end' \
+  campaign_unpauses "${growth}" | cut -f2 | jq -R . | jq -s -c . \
+    >"${generation}/unpaused.json"
+  unpaused=$(jq 'length' "${generation}/unpaused.json")
+  jq -c --slurpfile unpaused "${generation}/unpaused.json" \
+    '($unpaused[0] | map({(.): true}) | add // {}) as $held
+     | if .doorsOnly == true and $held[.occurrenceId] then del(.doorsOnly)
+       else . end' \
     "${stream_plan}" >"${generation}/unpaused_plan.jsonl"
   if [[ -n "$(campaign_exposures "${growth}")" ]] \
       || jq -e -s 'any(.[]; .kind == "ZK_EDGE")' "${growth}" >/dev/null; then
@@ -7142,7 +7160,7 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
-exposure(s)), $(jq 'length' <<<"${unpaused}") doors-only occurrence(s) run \
+exposure(s)), ${unpaused} doors-only occurrence(s) run \
 whole; weaving generation g${stream_generation}"
     campaign_instrument "${iteration_dir}" \
       "${generation}/instrumented-classes"
@@ -7151,7 +7169,7 @@ whole; weaving generation g${stream_generation}"
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
-exposure(s)), $(jq 'length' <<<"${unpaused}") doors-only occurrence(s) run \
+exposure(s)), ${unpaused} doors-only occurrence(s) run \
 whole; generation g${stream_generation} weaves nothing new"
   fi
   while IFS=$'\t' read -r obligation_id session; do
@@ -7356,35 +7374,40 @@ campaign_stream_promote_generation() {
 # that left the corpus after the witness's attempt composed: what EMIT
 # judges a cut by (campaign_exploration_cut).
 campaign_stream_manifest() {
+  local lists="${iteration_dir}/.exploration-lists"
+  mkdir -p "${lists}"
+  campaign_json_strings "${lists}/cancelled.json" "${stream_cancelled[@]}"
+  campaign_json_strings "${lists}/reaped.json" "${stream_reaped[@]}"
+  campaign_json_strings "${lists}/afterWitness.json" \
+    "${stream_after_witness[@]}"
+  campaign_json_strings "${lists}/rerunsDropped.json" \
+    "${stream_reruns_dropped[@]}"
+  campaign_json_strings "${lists}/confirmsReaped.json" \
+    "${stream_confirms_reaped[@]}"
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
     --argjson rounds "${stream_round}" --argjson steps "${stream_steps}" \
     --argjson generations "${stream_generation}" \
     --argjson answered "$(grep -c '' "${results}" || true)" \
-    --argjson cancelled "$(printf '%s\n' "${stream_cancelled[@]}" \
-      | jq -R 'select(length > 0)' | jq -s -c .)" \
-    --argjson reaped "$(printf '%s\n' "${stream_reaped[@]}" \
-      | jq -R 'select(length > 0)' | jq -s -c .)" \
-    --argjson afterWitness "$(printf '%s\n' "${stream_after_witness[@]}" \
-      | jq -R 'select(length > 0)' | jq -s -c .)" \
-    --argjson rerunsDropped "$(printf '%s\n' \
-      "${stream_reruns_dropped[@]}" | jq -R 'select(length > 0)' \
-      | jq -s -c .)" \
-    --argjson confirmsReaped "$(printf '%s\n' \
-      "${stream_confirms_reaped[@]}" | jq -R 'select(length > 0)' \
-      | jq -s -c .)" \
+    --slurpfile cancelled "${lists}/cancelled.json" \
+    --slurpfile reaped "${lists}/reaped.json" \
+    --slurpfile afterWitness "${lists}/afterWitness.json" \
+    --slurpfile rerunsDropped "${lists}/rerunsDropped.json" \
+    --slurpfile confirmsReaped "${lists}/confirmsReaped.json" \
     --argjson roundDue "${stream_round_due}" \
     --arg roundDropped "${stream_round_dropped}" \
     --slurpfile attempts "${attempts}" \
     '{schemaVersion: 1, kind: "EXPLORATION", stop: $stop, detail: $detail,
       rounds: $rounds, steps: $steps, generations: $generations,
       answered: $answered,
-      witnessAttempts: ($attempts | sort_by(.attempt)), cancelled: $cancelled,
-      reaped: $reaped, rerunsDropped: $rerunsDropped,
-      confirmsReaped: $confirmsReaped, roundDue: $roundDue,
+      witnessAttempts: ($attempts | sort_by(.attempt)),
+      cancelled: $cancelled[0], reaped: $reaped[0],
+      rerunsDropped: $rerunsDropped[0],
+      confirmsReaped: $confirmsReaped[0], roundDue: $roundDue,
       roundDropped: (if $roundDropped == "" then null else $roundDropped end),
-      afterWitness: $afterWitness}' \
+      afterWitness: $afterWitness[0]}' \
     >"${iteration_dir}/exploration.json"
+  rm -rf -- "${lists}"
 }
 
 # The declared bounds this campaign's search touched, as result.json's
@@ -7668,21 +7691,21 @@ campaign_publish_iteration_manifest() {
   : >"${members}"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     worker="${iteration_dir}/workers/${task}"
-    if ! obligations=$(find "${worker}" -mindepth 2 -maxdepth 2 \
+    # The digests on stdin, never an argument (campaign_json_strings).
+    if ! find "${worker}" -mindepth 2 -maxdepth 2 \
         -type d -path '*/obligations-*/*' -printf '%f\n' \
         | LC_ALL=C sort \
-        | jq -R -s 'split("\n") | map(select(length > 0))'); then
+        | jq -R -s -c --arg role "${role}" --arg campaign "${campaign_id}" \
+          --arg region "${region}" --arg occurrence "${occurrence}" \
+          --arg goal "${goal}" --arg task "${task}" --arg dir "${worker}" \
+          '{role: $role, campaignId: $campaign, regionId: $region,
+            occurrenceId: $occurrence, goalId: $goal, taskId: $task,
+            workerDir: $dir,
+            obligationDigests: (split("\n") | map(select(length > 0)))}' \
+          >>"${members}"; then
       campaign_fail EMIT CAMPAIGN "${worker}" \
         "failed to enumerate path obligation digests"
     fi
-    jq -n --arg role "${role}" --arg campaign "${campaign_id}" \
-      --arg region "${region}" --arg occurrence "${occurrence}" \
-      --arg goal "${goal}" --arg task "${task}" --arg dir "${worker}" \
-      --argjson obligations "${obligations}" \
-      '{role: $role, campaignId: $campaign, regionId: $region,
-        occurrenceId: $occurrence, goalId: $goal, taskId: $task,
-        workerDir: $dir, obligationDigests: $obligations}' \
-      >>"${members}"
   done <<<"${campaign_member_rows}"
   if ! plan_sha=$(campaign_digest "${plan}"); then
     campaign_fail EMIT CAMPAIGN "${plan}" \

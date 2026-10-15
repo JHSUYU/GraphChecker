@@ -1628,9 +1628,10 @@ occurrence's keys (PIPELINE §6). EXPLORE flips a decision only where it rests o
 field, a heap read or a chain read (`explore.ZkKeys`): leaves no key covers (a chain path no keys row
 names is the whole document), reads of a store path or of a view of one the chain does not hold, the
 containers a decode builds and nothing classified decide no flip.
-A replay that writes or decodes a chain path's version in an occurrence off the chain, or reads a
-path off it in a chain occurrence, grows the chain for the next generation (`ZK_EDGE`, PIPELINE §7.8):
-the edge's path, its occurrence and their leaf keys join it, and the occurrence runs whole.
+The chain grows by its own fields only (`ZK_EDGE`, PIPELINE §7.8): a replay's write or decode of a
+chain path's version, in an occurrence off the chain, that a chain occurrence of the session consumed
+and that carries a field the chain keys, joins the chain with those keys for the next generation, and
+the occurrence runs whole; no read of a path off the chain grows it.
 
 ## 7. Current limits
 

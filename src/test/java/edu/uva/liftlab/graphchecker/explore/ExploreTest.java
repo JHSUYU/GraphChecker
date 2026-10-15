@@ -6271,91 +6271,119 @@ public class ExploreTest {
     }
 
     /**
-     * A store edge a replay ran past the ZooKeeper chain grows it
-     * ({@code ZkEdges}, {@code ZkChain#grown}): an off-chain writer of a
-     * chain path, named by the admitted replay that showed it and keyed by
-     * the chain's fields of the path; a path off the chain a chain
-     * occurrence read, keyed by the leaves it read there; an edge only the
-     * seed showed, which no replay re-runs, as well.  A chain occurrence's
-     * decode of a chain path is no edge.
+     * The ZooKeeper chain grows by its own fields only ({@code ZkEdges},
+     * {@code ZkChain#grown}): an off-chain decode or write of a chain path's
+     * version a chain occurrence of the same session consumed, whose leaves
+     * lie under a key of the chain, is an edge, keyed by those keys -- named
+     * by the admitted replay that showed it, or by none where only the seed
+     * did.  Not an edge: another node's decode, a version no chain occurrence
+     * consumed, a write touching no chain field, work under no region, a read
+     * of a path off the chain (solr-18413 SGF7: every such one grown, 1099
+     * rows in round 2).
      */
     @Test
-    public void aStoreEdgePastTheChainGrowsIt() throws Exception {
+    public void theChainGrowsByItsOwnFieldsOnly() throws Exception {
         Path iteration = tree.newFolder("zk-edges").toPath();
-        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
-                "/collections/c/state.json");
+        String path = "/collections/c/state.json";
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK", path);
+        LocationId view = LocationId.of(LocationKind.VIEW, "SOLR_ZK@dn0",
+                path);
+        LocationId otherView = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@dn1", path);
         LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
                 "/aliases.json");
-        LocationId view = LocationId.of(LocationKind.VIEW, "SOLR_ZK@nn0",
-                "/collections/c/state.json");
+        OccurrenceAddress role = occurrence("hdfs-case/dn0", "ROLE.UNKNOWN",
+                CausalContext.of(Role.of("UNKNOWN"), "", 1), "o.a.Pool#run#1");
+        OccurrenceAddress router = occurrence("hdfs-case/nn0",
+                "REGION.router", CausalContext.of(Role.of("ROUTER"), "", 1),
+                "o.a.Router#run#1");
         Session seed = new Session(iteration, "s-seed");
-        seed.activations(false, TARGET, READER);
-        seed.write(at(READER, "SOLR_ZK#WRITE:.collections.c.state.json",
-                "ZkStateWriter#write#3"), state, 2L, "");
+        seed.activations(false, TARGET, SIDECAR);
+        seed.read(at(TARGET, "SOLR_ZK#VIEW:|c", "Reader#get#1"), view, 2L,
+                "M_V2", "0");
+        decoded(seed, SIDECAR, view, 2L, "/c/shards/shard1/state");
         seed.flush();
         Session flip = new Session(iteration, "s-flip");
         flip.activation(TARGET, true);
-        flip.activations(false, WRITER);
+        flip.activations(false, READER, WRITER, PRODUCER, BALANCER, router);
         flip.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
                 "s-flip", "the focused prefix reproduced"));
-        flip.write(at(WRITER, "SOLR_ZK#WRITE:.collections.c.state.json",
-                "ZkStateWriter#write#3"), state, 3L, "");
-        flip.write(at(TARGET, "SOLR_ZK#DECODED:.collections.c.state.json",
-                "ZkStateReader#refresh#4"), view, 3L, "");
+        // The chain consumed version 3: its view on dn0 and the store's.
+        flip.read(at(TARGET, "SOLR_ZK#VIEW:|c", "Reader#get#1"), view, 3L,
+                "M_V3", "0");
+        flip.read(at(TARGET, "SOLR_ZK#READ:|c", "SolrZkClient#getData#2"),
+                state, 3L, "M_S3", "0");
+        decoded(flip, READER, view, 3L, "/c/shards/shard1/state");
+        written(flip, WRITER, state, 3L, "/c/shards/shard1/range");
+        written(flip, role, state, 3L, "/c/shards/shard1/range");
+        written(flip, router, state, 3L, "/c/router/name");
+        written(flip, PRODUCER, state, 4L, "/c/shards/shard1/range");
+        decoded(flip, BALANCER, otherView, 3L, "/c/shards/shard1/state");
         flip.read(at(TARGET, "SOLR_ZK#READ:|aliases.json",
                 "SolrZkClient#getData#5"), aliases, 7L, "M_ALIASES", "0");
-        flip.attach(at(TARGET, ContentPort.of("SOLR_ZK", "/aliases.json",
-                "/collection"), "Aliases#fromJSON#6"), "M_ALIAS", "c", null);
         flip.flush();
         Path chainFile = iteration.resolve(ZkChain.FILE);
         RowCodec.writeJsonl(chainFile, Arrays.asList(
                 JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
                         + "\"ZK_CHAIN_PATH\",\"transport\":\"SOLR_ZK\","
-                        + "\"location\":\"/collections/c/state.json\","
-                        + "\"slot\":\"/collections/c/state.json\"}")
-                        .getAsJsonObject(),
+                        + "\"location\":\"" + path + "\",\"slot\":\""
+                        + path + "\"}").getAsJsonObject(),
                 JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
                         + "\"ZK_CHAIN_OCCURRENCE\",\"occurrenceId\":\""
                         + TARGET.render() + "\"}").getAsJsonObject(),
                 JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
                         + "\"ZK_CHAIN_KEYS\",\"occurrenceId\":\""
-                        + TARGET.render() + "\",\"location\":"
-                        + "\"/collections/c/state.json\",\"slot\":"
-                        + "\"/collections/c/state.json\",\"pointers\":"
+                        + TARGET.render() + "\",\"location\":\"" + path
+                        + "\",\"slot\":\"" + path + "\",\"pointers\":"
                         + "[\"|c|shards\"]}").getAsJsonObject()));
         ZkChain chain = ZkChain.read(chainFile);
         List<JsonObject> edges = ZkEdges.of(Corpus.read(iteration, null),
                 chain);
         Map<String, String> named = new LinkedHashMap<String, String>();
         for (JsonObject edge : edges) {
-            named.put(edge.get("occurrence").getAsString() + " "
-                    + edge.get("location").getAsString(),
-                    edge.get("sessionId").getAsString());
+            named.put(edge.get("occurrence").getAsString() + " v"
+                    + edge.get("version").getAsLong() + " "
+                    + edge.get("pointers"), edge.get("sessionId")
+                    .getAsString());
         }
         Map<String, String> expected = new LinkedHashMap<String, String>();
-        expected.put(READER.render() + " /collections/c/state.json", "");
-        expected.put(WRITER.render() + " /collections/c/state.json",
-                "s-flip");
-        expected.put(TARGET.render() + " /aliases.json", "s-flip");
+        expected.put(SIDECAR.render() + " v2 [\"|c|shards\"]", "");
+        expected.put(READER.render() + " v3 [\"|c|shards\"]", "s-flip");
+        expected.put(WRITER.render() + " v3 [\"|c|shards\"]", "s-flip");
         assertEquals(expected, named);
 
         ZkChain grown = chain.grown(edges);
-        for (OccurrenceAddress joined : Arrays.asList(READER, WRITER)) {
+        for (OccurrenceAddress joined : Arrays.asList(SIDECAR, READER,
+                WRITER)) {
             assertTrue(grown.holds(joined.render()));
-            assertEquals("keyed by the chain's fields of the path",
-                    "[{\"location\":\"/collections/c/state.json\",\"slot\":"
-                            + "\"/collections/c/state.json\",\"pointer\":"
-                            + "\"|c|shards\"}]",
+            assertEquals("keyed by the chain's fields it carries",
+                    "[{\"location\":\"" + path + "\",\"slot\":\"" + path
+                            + "\",\"pointer\":\"|c|shards\"}]",
                     grown.contentKeys(joined.render()).toString());
         }
-        assertTrue(grown.holdsPath("SOLR_ZK", "/aliases.json"));
-        assertTrue("a new path keyed by the leaves read there: "
-                        + grown.contentKeys(TARGET.render()),
-                grown.contentKeys(TARGET.render()).toString().contains(
-                        "\"slot\":\"/aliases.json\",\"pointer\":"
-                                + "\"|collection\""));
+        assertFalse(grown.holdsPath("SOLR_ZK", "/aliases.json"));
         assertTrue("and never shrinks", grown.rows().containsAll(
                 chain.rows()));
+    }
+
+    /** One decode of a view's version at an occurrence, and one leaf of
+     *  the document it minted. */
+    private static void decoded(Session session, OccurrenceAddress at,
+                                LocationId view, long version, String leaf) {
+        session.write(at(at, "SOLR_ZK#DECODED:" + view.slot(),
+                "ZkStateReader#refresh#4"), view, version, "");
+        session.attach(at(at, ContentPort.of("SOLR_ZK", view.slot(), leaf),
+                "Utils#fromJSON#6"), "M_LEAF" + session.seq, "0", null);
+    }
+
+    /** One write of a store version at an occurrence, and one leaf of the
+     *  document it exported. */
+    private static void written(Session session, OccurrenceAddress at,
+                                LocationId store, long version, String leaf) {
+        session.write(at(at, "SOLR_ZK#WRITE:" + store.slot(),
+                "ZkStateWriter#write#3"), store, version, "");
+        session.export(at(at, ContentPort.of("SOLR_ZK", store.slot(), leaf),
+                "Utils#toJSON#7"), "", 0L, "0");
     }
 
     /**

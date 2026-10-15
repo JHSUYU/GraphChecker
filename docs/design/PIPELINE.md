@@ -1666,17 +1666,22 @@ two BLOCKING rows withheld the witness's composition). Once nothing runs, the la
 `instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
 
-A replay may also run past the plan's ZooKeeper chain (`zk_chain.jsonl`, SYMBOL-SCOPE §6.4): a row of
-it that names a chain path's version written or decoded by an occurrence off the chain (a STORE write, a
-decode's VIEW write), or a path off the chain read by a chain occurrence (a STORE or VIEW read), is a
-`ZK_EDGE` growth row of the round (`explore.ZkEdges`): transport, location (the row's slot), version,
-occurrence, the leaf pointers the replay named there (its content ports), and the first admitted
-focused replay that showed it with its obligation -- or none (`sessionId` "") where only the seed or
-unadmitted replays did, which no re-run follows. GROW's planner writes the generation's chain beside its
-plan (`generations/g<k>/zk_chain.jsonl`, the iteration's `zk_chain.jsonl` its link from then on): the
-one before it with each edge's path, occurrence and keys appended (`contract.ZkChain#grown`: an
-occurrence keyed by the fields the chain holds of the path, a path new to the chain by the leaves its
-reader read), so the chain grows field by field and never shrinks, a seed's edge as well; the edge's
+A replay may also run past the plan's ZooKeeper chain (`zk_chain.jsonl`, SYMBOL-SCOPE §6.4), which is
+a finite set of (znode, field) and grows by its own fields only: a replay's write of a chain path's
+version by an occurrence off the chain (a STORE write, a decode's VIEW write) is a `ZK_EDGE` growth row
+of the round (`explore.ZkEdges`) where a chain occurrence of the same session consumed that version (a
+STORE read or a chain decode of it, a VIEW read of that node's view) and the occurrence's own leaves of
+the path (its content ports) lie under a key the chain holds of it. Not an edge: another node's decode,
+a version no chain occurrence consumed, a write or decode touching no chain field, a chain path the chain
+keys no field of, a read of a path off the chain (a poll), and work under no region, which no task can
+hold (solr-18413 SGF7, growing every such one: 52, 92 and 1099 rows in rounds 0-2, round 2's over 541
+occurrences; by this rule 2, 0 and 50 over 36). A row states transport, location (the row's slot),
+version, occurrence, the chain's keys it carries (`pointers`), and the first admitted focused replay
+that showed it with its obligation -- or none (`sessionId` "") where only the seed or unadmitted
+replays did, which no re-run follows. GROW's planner writes the generation's chain beside its plan
+(`generations/g<k>/zk_chain.jsonl`, the iteration's `zk_chain.jsonl` its link from then on): the one
+before it with each edge's occurrence and its keys appended (`contract.ZkChain#grown`), so the chain
+never shrinks, a seed's edge as well; the edge's
 occurrence loses its doors-only mark (`campaign_unpauses`), or, where no task holds it and its region
 is a candidate skeleton, is planned `EXPOSED_BY` (work under no candidate region runs as recorded, its
 path on the chain), each such row stating the keys (`contentKeys`); a generation that adds task rows
