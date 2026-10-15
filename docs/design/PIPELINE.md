@@ -939,9 +939,14 @@ and that of a question's own JVM, is its corpus's solver heap (`campaign_solver_
 solvers (2026-10-12) grow to 6-12.5 GB resident over a live set of 0.85 GB (after a full collection),
 one per host and campaign, and they filled every lift's ledger; a fixed 8 GB was outgrown by
 hdfs-adhoc-07's doubled closure (an hour of garbage collection with 24 questions queued, then
-OutOfMemoryError), which the doubling meets. A host holds at most `campaign_stream_solves_per_host` (2) of a
-campaign's solves at once (`campaign_stream_try_host`): more add no answer, only their question
-charges while they wait in the solver's queue. Charged that at its start, a solver waited for room it did not use, and every question of
+OutOfMemoryError), which the doubling meets. A host holds no more of a campaign's solves at once than
+its solver answers at once (`campaign_stream_has_seat`: its seats, `campaign_solver_seats`, one), and a
+host where no solver of the campaign serves yet only one -- that solve starts its solver -- so no
+question is admitted to wait behind a busy or starting solver: more add no answer, only their question
+charges while they wait in the solver's queue (EX1-adhoc-07c: 13-18 per lift, 512 MB each, held 7-9 GB
+of every lift's ledger), and past the solver's patience they became solver JVMs of their own
+(PV7-adhoc-39: 113, "busy past 30s", each reading the corpus again); the rest wait uncharged in the
+pool's queue (§7.7). Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
 questions in the order they came, each from the corpus as it stands when the question is taken:
 read again whenever a session landed in it or left it since (its session listing,
@@ -974,7 +979,8 @@ other start waits -- the first of them a host admits, one of a need no host admi
 another -- and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
 `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB) in a solver JVM
 of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`), charged its footprint and that
-room (`campaign_solver_need_mb ... HARD`), at most `campaign_stream_hard_per_host` (1) per host. Since
+room (`campaign_solver_need_mb ... HARD`), as many at once on a host as its cores and its ledger room
+at that charge hold (§7.7). Since
 the obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end
 the exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there
 lands NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each
@@ -1379,12 +1385,21 @@ then the tail of the solver's, and the planner failed on the line). The head sta
 first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
 ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
-first on a host where it started one within the solver's idle time (`campaign_stream_warm`: that
-host's solver of its corpus likely still serves, so the question needs no solver started and no
-corpus read), a REPLAY on whichever host admits it (its worker is on the shared home): a host is
-taken while it runs fewer of the campaign's starts than it has cores (read once,
-`campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
-for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
+first on a host where one returned answered within the solver's idle time (`campaign_stream_warm`,
+set when a solve returns answered there, cleared when one returns owing a solver JVM of its own: that host's
+solver of its corpus serves, so the question needs no solver started and no corpus read), a REPLAY
+on whichever host admits it (its worker is on the shared home). A host is taken for a start of a
+kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
+start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve, an `ALONE` or a
+`HARD` two, its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
+none takes one whatever its count; `campaign_stream_host_count` counts each start in and out), a
+question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
+of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one), and its
+memory ledger admits the start at its kind's charge (below) -- so each kind runs on a host as many
+at once as its cores and its room at that kind's measured charge hold, with no fixed count beside
+them (two solves and one hard-lane ask per host kept PV7-adhoc-39 alone on the pool far below its
+room); none admitting, the head waits for a return, its step's end or the poll interval
+(`campaign_host_poll_s`). A start runs locally in
 a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --run-obligation`
 with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
 (`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
