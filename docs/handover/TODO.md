@@ -120,9 +120,10 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   `LibraryCatalog.doors`); (4) `Service` taking a question only onto a free seat and an `Outgrown` waiting for the
   seats in flight; a review agent before merge (concurrency in `Corpus`). The live set itself: 39's 6.45 GB is mostly the
   session expression tables as Gson trees (`ExpressionTable`: 40.9 M `LinkedTreeMap$Node`, 2.0 GB, 26 M
-  `JsonPrimitive`, 0.4 GB, and their strings, of 1.8 GB of `char[]`); the same corpus put 39's planner past the 16 GB
-  engine heap (PV7 `PLANNER_HEAP_EXCEEDED` at round 6, 10123 MB of sessions). A compact expression form would
-  shrink every reader of the corpus.
+  `JsonPrimitive`, 0.4 GB, and their strings, of 1.8 GB of `char[]`). The same corpus put 39's planner past the 16 GB
+  engine heap (PV7 `PLANNER_HEAP_EXCEEDED` at round 6, 10123 MB of sessions), mostly in its closure walk, which
+  indexed each member's reads once per overlapping group (now once per walk, `ClosurePlanner.GroupReads`). A compact
+  expression form would shrink every reader of the corpus.
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
 

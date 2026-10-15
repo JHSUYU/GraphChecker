@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 
 /**
  * The target's closure: what its failure can depend on, and the branches
@@ -964,7 +965,7 @@ public final class ClosurePlanner {
      * each answer scans every site of the map, and the walk asks again for
      * every demanded read of a site.
      */
-    private static final class Walk {
+    static final class Walk {
         private final Corpus corpus;
         private final StaticScopeMap map;
         /** What a delivery rests on, as COMPOSE keeps it ({@link
@@ -1007,12 +1008,15 @@ public final class ClosurePlanner {
                 new HashMap<String, List<OccurrenceAddress>>();
         private final Map<String, GroupReads> groupReads =
                 new HashMap<String, GroupReads>();
+        /** occurrence id -> its own reads, indexed once per walk: every
+         *  group it is a member of reads them there ({@link GroupReads}). */
+        private final Map<String, MemberReads> memberReads =
+                new HashMap<String, MemberReads>();
         /** producer endpoint id -> {@link #contribution}. */
         private final Map<String, Contribution> contributions =
                 new HashMap<String, Contribution>();
 
-        private Walk(Corpus corpus, StaticScopeMap map,
-                     OccurrenceAddress anchor) {
+        Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor) {
             this.corpus = corpus;
             this.map = map;
             this.restsOn = new RestsOn(corpus, map, anchor);
@@ -1053,10 +1057,17 @@ public final class ClosurePlanner {
             });
         }
 
-        /** {@link GroupReads} of an occurrence's {@link #group}. */
-        private GroupReads reads(OccurrenceAddress occurrence) {
-            return groupReads.computeIfAbsent(occurrence.id(),
-                    id -> new GroupReads(corpus, group(occurrence)));
+        /** {@link GroupReads} of an occurrence's {@link #group}: its
+         *  members' {@link MemberReads}, each indexed once per walk. */
+        GroupReads reads(OccurrenceAddress occurrence) {
+            return groupReads.computeIfAbsent(occurrence.id(), id -> {
+                List<MemberReads> members = new ArrayList<MemberReads>();
+                for (OccurrenceAddress member : group(occurrence)) {
+                    members.add(memberReads.computeIfAbsent(member.id(),
+                            key -> new MemberReads(corpus, member)));
+                }
+                return new GroupReads(members);
+            });
         }
 
         /** A writer's flip sites: guards of every static write site in the
@@ -1309,8 +1320,8 @@ public final class ClosurePlanner {
                 writersOfVersion(walk, sessionId, demand.occurrence,
                         read.write().location(), read.write().version(),
                         Collections.<String>emptySet(), null,
-                        demand.occurrence.render(),
-                        read.locationKey() + " (read at event "
+                        demand.occurrence.id(), demand.occurrence::render,
+                        () -> read.locationKey() + " (read at event "
                                 + read.readEventId() + ")", into);
             }
         }
@@ -1382,7 +1393,7 @@ public final class ClosurePlanner {
             for (String symbol : new ArrayList<String>(named)) {
                 if (!settled.add(symbol)) continue;
                 for (ReadRow row : reads.of(symbol)) {
-                    grew |= named.addAll(reads.holding(row));
+                    grew |= reads.holding(row, named);
                     for (WriteRow write : corpus.eligibleWrites(
                             row.sessionId(),
                             SmtLowering.locationKey(row.location()),
@@ -1398,13 +1409,11 @@ public final class ClosurePlanner {
     }
 
     /**
-     * One group's read rows, indexed once per {@link #demanded}, which asks
-     * them once per decision at a flip site and once per demanded symbol:
-     * a group holds every read its state-connected factor made (SOLR-18413
-     * r2: 109,016 rows, mostly Lucene streams, and a rescan of them per
-     * decision was two thirds of the wave planner's time).
+     * One occurrence's read rows, every session's, indexed once per walk
+     * ({@link Walk#memberReads}): by symbol, by session and location, and
+     * by the object a reference read returned.
      */
-    private static final class GroupReads {
+    static final class MemberReads {
         private final Map<String, List<ReadRow>> bySymbol =
                 new HashMap<String, List<ReadRow>>();
         /** session|location key -> the symbols its reads stated. */
@@ -1415,32 +1424,50 @@ public final class ClosurePlanner {
         private final Map<String, Set<String>> returning =
                 new HashMap<String, Set<String>>();
 
-        private GroupReads(Corpus corpus, List<OccurrenceAddress> group) {
-            for (OccurrenceAddress member : group) {
-                for (ReadRow row : corpus.readsOn(member)) {
-                    bySymbol.computeIfAbsent(row.symbol(),
-                            symbol -> new ArrayList<ReadRow>()).add(row);
-                    if (row.symbol().isEmpty()) continue;
-                    symbolsAt.computeIfAbsent(row.sessionId() + "|"
-                                    + SmtLowering.locationKey(row.location()),
+        private MemberReads(Corpus corpus, OccurrenceAddress member) {
+            for (ReadRow row : corpus.readsOn(member)) {
+                bySymbol.computeIfAbsent(row.symbol(),
+                        symbol -> new ArrayList<ReadRow>()).add(row);
+                if (row.symbol().isEmpty()) continue;
+                symbolsAt.computeIfAbsent(row.sessionId() + "|"
+                                + SmtLowering.locationKey(row.location()),
+                        key -> new LinkedHashSet<String>())
+                        .add(row.symbol());
+                long object = VmRows.referencedObjectRid(
+                        row.concreteValue());
+                if (object > 0L) {
+                    returning.computeIfAbsent(row.sessionId() + "|"
+                                    + object,
                             key -> new LinkedHashSet<String>())
                             .add(row.symbol());
-                    long object = VmRows.referencedObjectRid(
-                            row.concreteValue());
-                    if (object > 0L) {
-                        returning.computeIfAbsent(row.sessionId() + "|"
-                                        + object,
-                                key -> new LinkedHashSet<String>())
-                                .add(row.symbol());
-                    }
                 }
             }
         }
+    }
+
+    /**
+     * One group's read rows ({@link #demanded} asks them once per decision
+     * at a flip site and once per demanded symbol): its members' {@link
+     * MemberReads}, in group order, each answer the members' own in that
+     * order.  A group holds every read its state-connected factor made
+     * (SOLR-18413 r2: 109,016 rows, mostly Lucene streams, and a rescan of
+     * them per decision was two thirds of the wave planner's time), and the
+     * groups of a closure overlap: indexed per group, every member's reads
+     * were held once per group it is in (solr-adhoc-39 PV7 round 6: past
+     * 14 GB in the closure walk alone).
+     */
+    static final class GroupReads {
+        final List<MemberReads> members;
+
+        private GroupReads(List<MemberReads> members) {
+            this.members = members;
+        }
 
         /**
-         * The reference reads a container's state read rests on: those of
-         * its session that returned the container, the read the VM states as
-         * a relation's owner when the reference rides the query's receiver
+         * The symbols of the reference reads a container's state read rests
+         * on, into {@code named}; whether it grew.  Those of its session
+         * that returned the container, the read the VM states as a
+         * relation's owner when the reference rides the query's receiver
          * slot (VM.md, the owner of a relation).  Through a capture the
          * owner is not stated (hdfs-bugs slowdisk-zero: chooseVolume's
          * filter asks {@code contains} of the list
@@ -1448,19 +1475,35 @@ public final class ClosurePlanner {
          * it), and the store of another list would then be no writer of
          * the state the anchor read.
          */
-        private Set<String> holding(ReadRow row) {
-            if (row.location().kind() != LocationKind.MAP) {
-                return Collections.<String>emptySet();
+        private boolean holding(ReadRow row, Set<String> named) {
+            if (row.location().kind() != LocationKind.MAP) return false;
+            String key = row.sessionId() + "|" + row.location().owner();
+            boolean grew = false;
+            for (MemberReads member : members) {
+                Set<String> found = member.returning.get(key);
+                if (found != null) grew |= named.addAll(found);
             }
-            Set<String> found = returning.get(row.sessionId() + "|"
-                    + row.location().owner());
-            return found == null ? Collections.<String>emptySet() : found;
+            return grew;
         }
 
         /** The rows that stated one symbol, in recorded order. */
-        private List<ReadRow> of(String symbol) {
-            List<ReadRow> rows = bySymbol.get(symbol);
-            return rows == null ? Collections.<ReadRow>emptyList() : rows;
+        List<ReadRow> of(String symbol) {
+            List<ReadRow> rows = Collections.<ReadRow>emptyList();
+            boolean own = false;
+            for (MemberReads member : members) {
+                List<ReadRow> stated = member.bySymbol.get(symbol);
+                if (stated == null) continue;
+                if (rows.isEmpty()) {
+                    rows = stated;
+                    continue;
+                }
+                if (!own) {
+                    rows = new ArrayList<ReadRow>(rows);
+                    own = true;
+                }
+                rows.addAll(stated);
+            }
+            return rows;
         }
 
         /**
@@ -1473,9 +1516,11 @@ public final class ClosurePlanner {
         private void under(Corpus corpus, String sessionId, String term,
                            Set<String> named) {
             for (String location : corpus.readLocations(sessionId, term)) {
-                Set<String> symbols = symbolsAt.get(sessionId + "|"
-                        + location);
-                if (symbols != null) named.addAll(symbols);
+                String key = sessionId + "|" + location;
+                for (MemberReads member : members) {
+                    Set<String> symbols = member.symbolsAt.get(key);
+                    if (symbols != null) named.addAll(symbols);
+                }
             }
         }
     }
@@ -1513,11 +1558,15 @@ public final class ClosurePlanner {
             guards.addAll(site.guards);
         }
         if (attach.producer() == null) {
-            walk.gaps.add(GapRow.of(attach.sessionId(), GapKind.LINEAGE_LOST,
-                    GapClass.DIAGNOSTIC, attach.endpoint().toString(),
-                    "attach is unpaired: no producer endpoint to close over"));
+            // Once per endpoint, as the first session states it.
+            if (walk.cut.add(attach.endpoint().id() + "|unpaired")) {
+                walk.gaps.add(GapRow.of(attach.sessionId(),
+                        GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                        attach.endpoint().toString(), "attach is unpaired:"
+                                + " no producer endpoint to close over"));
+            }
         } else {
-            crossCheck(attach, walk.gaps);
+            crossCheck(walk, attach);
             Demand paired = new Demand(attach.producer().occurrence(),
                     CLOSURE_MEMBER, walk.contribution(attach.producer()));
             paired.flipSites.addAll(guards);
@@ -1555,8 +1604,8 @@ public final class ClosurePlanner {
                 row.location(), row.observedVersion(),
                 walk.map.carriersAt(row.endpoint().site(), row.javaType(),
                         row.location().kind()),
-                row, row.endpoint().toString(),
-                String.valueOf(row.location()), into);
+                row, row.endpoint().id(), row.endpoint()::toString,
+                () -> String.valueOf(row.location()), into);
     }
 
     /**
@@ -1570,16 +1619,22 @@ public final class ClosurePlanner {
      *             states: that read is never re-pointed (COMPOSE re-pairs
      *             the anchor's rows alone), so a query through it is the
      *             run's, whose container read the expression states too
-     * @param subject what a diagnostic about this read is addressed at
-     * @param located how the location reads in that diagnostic
+     * @param readAt the id of what reads (its endpoint, or the occurrence
+     *               an expression states it of): a diagnostic about it is
+     *               said once per field it reads ({@link #field}), not per
+     *               session or object -- every replay repeats the seed's
+     *               reads, of objects of its own
+     * @param subject what that diagnostic is addressed at
+     * @param located how the location reads in it
      */
     private static void writersOfVersion(Walk walk, String sessionId,
                                          OccurrenceAddress reader,
                                          LocationId location,
                                          long observedVersion,
                                          Set<String> readCarriers,
-                                         ReadRow read,
-                                         String subject, String located,
+                                         ReadRow read, String readAt,
+                                         Supplier<String> subject,
+                                         Supplier<String> located,
                                          List<Demand> into) {
         Corpus corpus = walk.corpus;
         String locationKey = SmtLowering.locationKey(location);
@@ -1600,12 +1655,15 @@ public final class ClosurePlanner {
             }
         }
         if (carriers.isEmpty() && walk.map.stated()) {
-            walk.gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
-                    GapClass.DIAGNOSTIC, subject,
-                    "no recorded write of " + located + " matches a "
-                            + "write site of the static map, so this "
-                            + "location's carrier is unnamed and no static "
-                            + "candidate writer of it can be"));
+            if (walk.cut.add(readAt + "|" + field(location) + "|carrier")) {
+                walk.gaps.add(GapRow.of(sessionId,
+                        GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        subject.get(), "no recorded write of "
+                                + located.get() + " matches a write site of"
+                                + " the static map, so this location's "
+                                + "carrier is unnamed and no static "
+                                + "candidate writer of it can be"));
+            }
             return;
         }
         // N1: the heap this read observed is the reader JVM's.
@@ -1830,20 +1888,37 @@ public final class ClosurePlanner {
 
     /** Cross-checks the recorded pairing against the consumer's Anchor context
      *  (identity v3 states it twice). The row is authoritative; a mismatch is
-     *  the runtime's defect, reported. Root/Lost contexts raise nothing. */
-    private static void crossCheck(AttachRow attach, Set<GapRow> gaps) {
+     *  the runtime's defect, reported once per consumer endpoint and
+     *  producer, as the first session states it (every replay repeats the
+     *  seed's pairings). Root/Lost contexts raise nothing. */
+    private static void crossCheck(Walk walk, AttachRow attach) {
         CausalContext context = attach.endpoint().occurrence().context();
         if (!(context instanceof CausalContext.Anchor)) return;
         String anchored = ((CausalContext.Anchor) context)
                 .producerEndpointId();
         String recorded = attach.producer().id();
-        if (anchored.equals(recorded)) return;
-        gaps.add(GapRow.of(attach.sessionId(), GapKind.TOPOLOGY_DIVERGENCE,
+        if (anchored.equals(recorded) || !walk.cut.add(attach.endpoint().id()
+                + "|" + recorded + "|pairing")) {
+            return;
+        }
+        walk.gaps.add(GapRow.of(attach.sessionId(),
+                GapKind.TOPOLOGY_DIVERGENCE,
                 GapClass.DIAGNOSTIC, attach.endpoint().toString(),
                 "the recorded pairing names producer endpoint " + recorded
                         + " and the consumer's causal anchor names "
                         + anchored + "; the closure follows the recorded "
                         + "pairing"));
+    }
+
+    /** A location as a diagnostic about its reads names it once: the field
+     *  it is of, an object's rid dropped (a rid is one run's,
+     *  {@link LocationId}); a static or view owner kept. */
+    private static String field(LocationId location) {
+        boolean rid = location.kind() != LocationKind.STATIC
+                && location.kind() != LocationKind.VIEW
+                && Arms.namedOwner(location);
+        return location.kind() + " " + (rid ? "" : location.owner()) + "."
+                + location.slot();
     }
 
     /** Co-occurrences state-connected to one occurrence (writers/readers of its

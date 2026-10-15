@@ -6131,6 +6131,103 @@ public class ExploreTest {
         return Corpus.read(iteration, null);
     }
 
+    /**
+     * The groups of a closure overlap -- each is an occurrence and its
+     * state-connected factor -- and each member's reads are indexed once
+     * per walk, every group it is in reading that one index, in group order
+     * (solr-adhoc-39 PV7 round 6: indexed per group, the walk passed 14 GB).
+     */
+    @Test
+    public void overlappingGroupsShareTheirMembersReads() throws Exception {
+        Path iteration = tree.newFolder("shared-groups").toPath();
+        for (String sessionId : Arrays.asList("s-seed", "s-two")) {
+            Session session = new Session(iteration, sessionId);
+            session.activations(false, TARGET, WRITER, READER);
+            session.symbolic("e.stored", "M_HOFF_KEY");
+            session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_CHECKED", "0");
+            session.anchored(TARGET);
+            session.flush();
+        }
+        ClosurePlanner.Walk walk = new ClosurePlanner.Walk(
+                Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET);
+        ClosurePlanner.GroupReads target = walk.reads(TARGET);
+        ClosurePlanner.GroupReads reader = walk.reads(READER);
+        assertEquals("every occurrence on the map is in both groups", 3,
+                target.members.size());
+        assertEquals(3, reader.members.size());
+        for (Object member : reader.members) {
+            boolean shared = false;
+            for (Object held : target.members) shared |= held == member;
+            assertTrue("one index per member, shared by its groups", shared);
+        }
+        List<String> stated = new ArrayList<String>();
+        for (ReadRow row : reader.of("M_READ_KEY")) {
+            stated.add(row.sessionId());
+        }
+        assertEquals("a symbol's rows, every session's, in recorded order",
+                Arrays.asList("s-seed", "s-two"), stated);
+    }
+
+    /**
+     * A diagnostic about a read or a pairing that every replay repeats --
+     * the seed's rows again, over objects of its own run -- is said once
+     * per endpoint and field, as the first session states it, not once per
+     * session and object (solr-adhoc-39 PV7 round 5: 75,333 no-carrier rows
+     * of 139,230, a rendered address each).
+     */
+    @Test
+    public void aDiagnosticEveryReplayRepeatsIsSaidOnce() throws Exception {
+        Path iteration = tree.newFolder("said-once").toPath();
+        // The writer's anchor names ROTATED; its attach row pairs another
+        // export: a divergence each session states again.
+        Endpoint other = at(PRODUCER, "XCH.resp.block-key-expiry",
+                "PBHelper#convert#12");
+        Endpoint side = at(TARGET, Endpoint.stateSite(
+                "BlockTokenSecretManager", "retrieveDataEncryptionKey", 9,
+                false), "BlockTokenSecretManager#retrieveDataEncryptionKey#9");
+        int rid = 40;
+        for (String sessionId : Arrays.asList("s-seed", "s-two")) {
+            Session session = new Session(iteration, sessionId);
+            session.activations(false, TARGET, WRITER, PRODUCER);
+            session.constant("e.119992", "119992");
+            session.symbolic("e.stored", "M_HOFF_KEY");
+            session.export(other, "e.119992", 11L, "119992");
+            session.attach(DELIVERED, "M_HOFF_KEY", "119992", other);
+            session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+            // An object of this run's own, which nothing recorded writes.
+            session.read(side, LocationId.of(LocationKind.MAP, "" + rid++,
+                    "-3"), 0L, "M_SIDE", "0");
+            session.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8",
+                    "(and (= M_READ_KEY 0) (= M_SIDE 0))");
+            session.flush();
+        }
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120")));
+        ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                TARGET, map);
+        Map<String, Integer> said = new LinkedHashMap<String, Integer>();
+        for (GapRow gap : plan.gaps) {
+            if (gap.kind() == GapKind.DECLARATION_MISSING
+                    || gap.kind() == GapKind.TOPOLOGY_DIVERGENCE) {
+                said.merge(gap.kind() + " " + gap.subject(), 1, Integer::sum);
+            }
+        }
+        assertTrue("the divergence is named: " + said.keySet(),
+                said.containsKey(GapKind.TOPOLOGY_DIVERGENCE + " "
+                        + DELIVERED.render()));
+        assertTrue("and the uncarried read of the run's own object: "
+                + said.keySet(), said.containsKey(
+                GapKind.DECLARATION_MISSING + " " + side.render()));
+        for (Map.Entry<String, Integer> gap : said.entrySet()) {
+            assertEquals("said once: " + gap.getKey(), 1,
+                    gap.getValue().intValue());
+        }
+    }
+
     /** One anchor's closure, every admitted session a parent of growth but
      *  those whose branch stopped ({@link Branches}). */
     private static ClosurePlanner.Plan closure(Corpus corpus,

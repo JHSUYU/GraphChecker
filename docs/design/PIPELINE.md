@@ -509,8 +509,11 @@ expressions: symbols, leaves, read locations and events, state reads), the stati
 file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
 round asks again of the same corpus is answered once: an arm's dependence per task and decision
 (`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
-the closure's walks of a demand that grew reuse its group, the group's reads and each read's
-eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). Every index across sessions
+the closure's walks of a demand that grew reuse its group, its members' reads and each read's
+eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). A member's reads are indexed once
+per walk, and a group reads its members' indexes in group order (`ClosurePlanner.GroupReads`): the groups
+of a closure overlap, and indexed per group, solr-adhoc-39 PV7 round 6's walk held each member's reads once
+per group it is in, past 14 GB. Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --results ... --output-dir ...`, the offline stages' entry over the
 same code, reading every session its iteration holds; gated by `offline-ab.sh` `EXPLORE.serve`, whose served side
@@ -728,7 +731,11 @@ are counted, never dropped silently: `concreteAnchors` states how many
   demanded, and those doors are control producers. A demand reached both as a door and as a sender
   is the sender (`Demand#absorb`: a connected value reason outranks a door's).
 
-An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
+An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint; so are the
+diagnostics every replay repeats over objects of its own run -- a read whose carrier no write site names
+(once per reader and field, an object's rid dropped), an unpaired attach, a recorded pairing its
+consumer's anchor contradicts (once per consumer endpoint and producer) -- each as the first session
+states it (solr-adhoc-39 PV7 round 5 said the no-carrier gap 75,333 times, a rendered address each). A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
 with no method set, region-id equality. "Activated" means an instrumented activation row: an ambient
 row (a port event outside every admitted activation, `RowRuntime#ambientActivation`) names where the
