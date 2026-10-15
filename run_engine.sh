@@ -4898,8 +4898,10 @@ campaign_obligation_unanswered() {
 #   stream_swaps      re-runs that returned, whose sessions replace the
 #                     exposing ones once no obligation runs
 #   stream_landed     sessions landed since the last round started
-#   stream_hold       GROW's re-runs and swaps still owed: no obligation
-#                     starts and no round is planned while any is
+#   stream_hold       GROW's re-runs and swaps still owed: no round is
+#                     planned while any is, and no solve starts once all
+#                     have returned until they swap
+#                     (campaign_stream_swap_owed)
 # ---------------------------------------------------------------------------
 
 # EXPLORE.  Rounds of explore.ExploreMain over the corpus, each obligation
@@ -6251,7 +6253,7 @@ campaign_stream_dispatch() {
     # and as any solve not while GROW holds the solves: its asks in order,
     # each charged alike (campaign_decide_need_mb).
     if (( ${#stream_queue[@]} == 0 )); then
-      (( stream_hold == 0 )) || return 0
+      ! campaign_stream_swap_owed || return 0
       campaign_stream_admit_host HARD || return 0
       entry=${stream_hard[0]}
       stream_hard=("${stream_hard[@]:1}")
@@ -6262,7 +6264,7 @@ campaign_stream_dispatch() {
     first=-1
     for at in "${!stream_queue[@]}"; do
       entry=${stream_queue[at]}
-      ! campaign_stream_solves "${entry%% *}" || (( stream_hold == 0 )) \
+      ! campaign_stream_solves "${entry%% *}" || ! campaign_stream_swap_owed \
         || continue
       if (( now - ${stream_queued_at[${entry}]:-${now}} \
           >= campaign_stream_wait_bound_s )); then
@@ -6280,7 +6282,8 @@ campaign_stream_dispatch() {
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
-      ! campaign_stream_solves "${kind}" || (( stream_hold == 0 )) || continue
+      ! campaign_stream_solves "${kind}" || ! campaign_stream_swap_owed \
+        || continue
       [[ "${refused}" != *" ${kind} "* ]] || continue
       if campaign_stream_admit_host "${kind}"; then
         started=${at}
@@ -6855,6 +6858,16 @@ campaign_stream_land() {
 # its re-run did not take the flip, and in Z2N the confirmed claim's final
 # COMPOSE lost it).  A confirmed one ends the exploration with
 # the swaps owed (campaign_stream_end); a refuted one lets them swap.
+# Whether GROW holds the solves: every re-run it owes has returned, and its
+# swaps wait only for the solves that run (campaign_stream_swap_due).  While
+# re-runs run, solves go on (SGF7-adhoc-09: 51 min of holds over six GROWs
+# with the queue full, 15 and 16 min behind one re-run the stall rule
+# ended); a replay one of them queued whose path rests on a session the swap
+# withdraws is dropped then (campaign_stream_swap).
+campaign_stream_swap_owed() {
+  (( stream_hold > 0 && ${#stream_swaps[@]} == stream_hold ))
+}
+
 campaign_stream_swap_due() {
   local job
   (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold \
@@ -6933,7 +6946,8 @@ campaign_unpauses() {
 # queued first, to re-run -- on whichever host of the pool admits it, as an
 # obligation does -- in a directory of its own beside its worker; until
 # every re-run has returned and swapped its session in
-# (campaign_stream_swap), no obligation starts and no round is planned.
+# (campaign_stream_swap), no round is planned, and from the last return to
+# the swap no solve starts (campaign_stream_swap_owed).
 # Best effort: an obligation whose re-run was dropped (grow-dropped) is
 # never re-run again.
 campaign_stream_grow() {
@@ -7065,9 +7079,15 @@ campaign_stream_rerun_dir() {
 # as campaign_write_whole relies on.  Best effort: a re-run that did not
 # finish (it failed, stalled or ran past its bound) is not swapped in -- the
 # exposing session stays -- and its obligation is never re-run again
-# (<worker>/grow-dropped, campaign_stream_grow).
+# (<worker>/grow-dropped, campaign_stream_grow).  A replay queued from a
+# solve that read the corpus before the swap, whose path rests on a session
+# the swap withdrew (its pathId is that session's and occurrence's,
+# Corpus#pathId), is dropped before it starts -- no replay, no re-ask: the
+# corpus no longer states its path; one that runs finishes as usual.
 campaign_stream_swap() {
   local swap round id exposing status worker rerun aside file session
+  local entry kind focus path occurrence gone
+  local -a withdrawn=() kept=()
   for swap in "${stream_swaps[@]}"; do
     read -r round id exposing status <<<"${swap}"
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}" \
@@ -7105,9 +7125,36 @@ name obligation ${id}, so it was not withdrawn from the corpus"
     [[ -z "${session}" ]] \
       || stream_staged+=("${worker} ${rerun}/sessions ${session}")
     campaign_record_rerun "${worker}" "${id}" "${exposing}" "${results}"
+    withdrawn+=("${exposing}")
   done
   stream_hold=$((stream_hold - ${#stream_swaps[@]}))
   stream_swaps=()
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id _ <<<"${entry}"
+    gone=""
+    if [[ "${kind}" == REPLAY ]]; then
+      focus="${iteration_dir}/${round}/${id}/focused_task.jsonl"
+      path=$(jq -r '.pathId // ""' "${focus}" 2>/dev/null) || path=""
+      occurrence=$(jq -r '.focusedOccurrenceId // ""' "${focus}" \
+        2>/dev/null) || occurrence=""
+      for session in "${withdrawn[@]}"; do
+        [[ -n "${path}" && "$(printf '%s|%s' "${session}" "${occurrence}" \
+          | sha256sum | cut -c1-16)" == "${path}" ]] && gone=${session}
+      done
+    fi
+    if [[ -z "${gone}" ]]; then
+      kept+=("${entry}")
+      continue
+    fi
+    unset "stream_queued_at[${entry}]"
+    stream_reaped+=("${id}")
+    mkdir -p "${campaign_root}/explore-reaped/${round}"
+    mv -- "${iteration_dir}/${round}/${id}" \
+      "${campaign_root}/explore-reaped/${round}/${id}"
+    campaign_log "obligation ${id}: its replay is dropped before it \
+started: its path rests on ${gone}, which GROW's swap withdrew"
+  done
+  stream_queue=("${kept[@]}")
   stream_dirty=1
 }
 
