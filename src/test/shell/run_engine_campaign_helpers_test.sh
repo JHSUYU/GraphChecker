@@ -1143,7 +1143,8 @@ done
 # (runtime.Confirmation#publishing, campaign_view_hold_max).
 # 56: `reproduce_charge_pct` joined it: a native run's memory charge, in
 # percent of the recording's peak (110 native runs peaked at most 1.27x it).
-[[ "$(print_normalized_config | wc -l)" -eq 56 ]] \
+# 57: `causynth_system_view`, the system's view classes (plan.SystemView).
+[[ "$(print_normalized_config | wc -l)" -eq 57 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
