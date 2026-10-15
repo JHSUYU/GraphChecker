@@ -3076,14 +3076,17 @@ stream_stubs() {
 # obligation whose worker did not finish is its own answer, and what it staged
 # is withdrawn under it.  When nothing is queued or running, a last round over
 # every answer proposes nothing: the fixed point.  An empty host list is this
-# machine, with no ssh.
+# machine, with no ssh; SHORT, its first solve, runs alone there (it starts
+# the host's solver, campaign_stream_has_seat), the others at once on the
+# solver's seats (four here).
 stream_fixture stream-1
 (
   stream_stubs
+  campaign_solver_seats() { printf '4\n'; }
   ssh() { printf '%s\n' "$*" >>"${stream_dir}/ssh-calls.txt"; return 99; }
   stream_round_plan() {
     case "$1" in
-      0) stream_propose "$2" LONG SHORT BROKEN ;;
+      0) stream_propose "$2" SHORT LONG BROKEN ;;
       1) stream_propose "$2" NEXT ;;
     esac
   }
@@ -3884,10 +3887,11 @@ reset_config
 # each share it waits at, and takes its entry with it when it ends; outside
 # a shared pool it keeps no entry and waits for nothing but room (a40: one
 # Solr case's pool held 27-32 replays on all ten lifts while the sweep's
-# other cases waited).  Outside a shared pool the one host still holds no
-# more than campaign_stream_solves_per_host (2) of its solves.  Per row: the
+# other cases waited).  Outside a shared pool the one host, cold, runs its
+# first solve alone -- it starts the host's solver -- and the three after it
+# at once on the solver's seats (campaign_stream_has_seat).  Per row: the
 # campaign's measured peak (- outside a shared pool), the fresh and the stale
-# entries of other explorations, the most of three one-second solves that ran
+# entries of other explorations, the most of four one-second solves that ran
 # at once, and how many explorations the wait names (- for none).
 while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
   stream_fixture "stream-cap-${cap_peak}-${cap_fresh}-${cap_stale}"
@@ -3907,7 +3911,8 @@ while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
   done
   (
     stream_stubs
-    stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+    campaign_solver_seats() { printf '8\n'; }
+    stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C D; }
     campaign_obligation_worker() {
       local id=$1 worker=$4
       date +%s.%N >"${worker}/started-at"
@@ -3932,12 +3937,12 @@ $(cat "${stream_dir}/explore.log")"
 exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
   # One host: its first solve is cold, charged what a solver starts at; the
   # others find its solver serving and are charged a question's z3 run.
-  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged | sort -n \
+  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C,D}/charged | sort -n \
       | paste -sd ' ' -)" == "$(printf '%s\n' "${campaign_question_mb}" \
-      "${campaign_question_mb}" "$(campaign_solver_need_mb)" | sort -n \
-      | paste -sd ' ' -)" ]] \
+      "${campaign_question_mb}" "${campaign_question_mb}" \
+      "$(campaign_solver_need_mb)" | sort -n | paste -sd ' ' -)" ]] \
     || fail "the pool's solves were charged $(cat \
-      "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
+      "${stream_dir}"/obligations-0000/{A,B,C,D}/charged | paste -sd ' ' -), \
 not a solver's start ($(campaign_solver_need_mb) MB) for the cold one and \
 a question's (${campaign_question_mb} MB) for the warm ones"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
@@ -3958,7 +3963,7 @@ naming ${cap_sharers} exploration(s): $(grep 'slot' \
       || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
   fi
 done <<'EOF'
-- 0 0 2 -
+- 0 0 3 -
 5000 0 1 2 1
 5000 1 0 1 2
 8000 2 0 1 3
@@ -4002,10 +4007,12 @@ reset_config
 # lands the obligation is in flight: round 1, planned when B's session
 # landed while A replayed, is handed A and C (C still solving), and round 2
 # C.  Only the replays' answers land (no SAT_MODEL_READY row), each where
-# its replay staged it.
+# its replay staged it.  A, the first solve, runs alone (it starts the host's
+# solver); B and C at once after it, on the solver's seats.
 stream_fixture stream-split
 (
   stream_stubs
+  campaign_solver_seats() { printf '4\n'; }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -4071,10 +4078,15 @@ reset_config
 # the class tree and plan the solve started on even when a GROW wove a newer
 # generation since (g1 here), and the REPLAY starts on them, charged the
 # replay's charge; any other answer, or a solve that did not finish, waits
-# to land.  Per row: the solve's verdict, its exit, the queue's last entry
-# after it, and what waits to land (- nothing).
+# to land.  A solve that returned answered leaves its host warm
+# (campaign_stream_warm: its solver serves there), one that did not finish
+# leaves it as it was, and either gives back the cores and the seat its
+# start counted there.  Per row: the solve's verdict, its exit, its host
+# after it (warm or cold, its busy cores, its seats taken), the queue's last
+# entry after it, and what waits to land (- nothing).
 split_dir="${test_tmp}/split-queue"
-while IFS='|' read -r split_verdict split_status split_first split_pending; do
+while IFS='|' read -r split_verdict split_status split_host split_first \
+    split_pending; do
   rm -rf -- "${split_dir}"
   mkdir -p "${split_dir}/it/obligations-0000/A"
   : >"${split_dir}/jobs"
@@ -4085,7 +4097,7 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     stream_plan=g0/plan.jsonl
     stream_admitted_mb=${campaign_solver_start_mb}
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
-      stream_job_tree=() stream_host_jobs=() stream_solver_seen=() \
+      stream_job_tree=() stream_host_busy=() stream_solver_seen=() \
       stream_host_solves=()
     declare -A stream_queued_at=()
     stream_queue=("OBLIGATION obligations-0000 B")
@@ -4113,11 +4125,14 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
       campaign_stream_start "${stream_queue[-1]}" lift13
       wait "$!" || true
     fi
-    printf '%s|%s' "${stream_queue[-1]}" "${stream_pending[*]:--}"
+    printf '%s %s %s|%s|%s' \
+      "$(campaign_stream_warm lift12 && echo warm || echo cold)" \
+      "${stream_host_busy[lift12]}" "${stream_host_solves[lift12]}" \
+      "${stream_queue[-1]}" "${stream_pending[*]:--}"
   )
-  [[ "${split_said% }" == "${split_first}|${split_pending}" ]] \
+  [[ "${split_said% }" == "${split_host}|${split_first}|${split_pending}" ]] \
     || fail "a ${split_verdict} solve that exited ${split_status} left \
-${split_said}, not ${split_first}|${split_pending}"
+${split_said}, not ${split_host}|${split_first}|${split_pending}"
   if [[ "${split_first}" == REPLAY\ * ]]; then
     grep -q "^REPLAY lift13 .* A ${split_dir}/it/obligations-0000/A A \
 g0/classes ${split_dir}/it/obligations-0000/A \
@@ -4127,9 +4142,9 @@ ${split_dir}/it/obligations-0000/A/sessions g0/plan.jsonl 2048 " \
 $(cat "${split_dir}/jobs")"
   fi
 done <<'EOF'
-SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
-UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
-SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
+SAT_MODEL_READY|0|warm 0 0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
+UNSAT|0|warm 0 0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
+SAT_MODEL_READY|1|cold 0 0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
 EOF
 
 # SOLVE-LANES: what a solve's return does with the lanes.  A first ask
@@ -4157,8 +4172,8 @@ while IFS='|' read -r ln_budget ln_kind ln_detail ln_hard ln_pending ln_aside \
     echo 31583 >"${campaign_host_gate_root}/lift12/total"
     stream_hosts=(lift12)
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
-      stream_job_tree=() stream_host_jobs=() stream_host_solves=() \
-      stream_host_hard=() stream_flying=()
+      stream_job_tree=() stream_host_busy=() stream_host_solves=() \
+      stream_flying=() stream_solver_seen=()
     stream_queue=()
     stream_pending=()
     stream_hard=()
@@ -4176,9 +4191,8 @@ while IFS='|' read -r ln_budget ln_kind ln_detail ln_hard ln_pending ln_aside \
     wait "${ln_pid}"
     stream_jobs[${ln_pid}]="${ln_kind} obligations-0000 A lift12 "
     stream_job_worker[${ln_pid}]=${ln_worker}
-    stream_host_jobs[lift12]=1
+    stream_host_busy[lift12]=2
     stream_host_solves[lift12]=1
-    stream_host_hard[lift12]=1
     campaign_stream_ended "${ln_pid}" 0
     ln_waiting="${stream_pending[*]:--}"
     campaign_stream_land
@@ -4208,10 +4222,13 @@ EOF
 # host's ceiling (70 % of 31583 MB: 22109) less the largest head reservation
 # standing there, idle or busy -- is an answer, landed NOT_ADMITTED naming
 # that charge, with the campaign's gap row; a waiting step's hold, which
-# comes back, is none.  Per row: the ending job's kind, what it owes (need
-# and lane), the corpus's solver heap, the heads on lift12 and lift13 (a
-# reservation, b: busy, +: a waiting step's hold), and the queue, the hard
-# lane and what waits to land after it.
+# comes back, is none.  A solve its host's solver was to answer that
+# returns owing leaves its host cold (no solver served it there,
+# campaign_stream_warm); an ALONE's or a HARD's return, whose JVM was its
+# own, leaves it as it was.  Per row: the ending job's kind, what it owes
+# (need and lane), the corpus's solver heap, the heads on lift12 and lift13
+# (a reservation, b: busy, +: a waiting step's hold), and the queue, the
+# hard lane and what waits to land after it.
 owed_stream="${test_tmp}/stream-owed"
 while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
     os_hard os_pending; do
@@ -4240,8 +4257,8 @@ while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
       [[ "${os_room}" != *b ]] || : >"${os_host}/heads/head.1.1.busy.3"
     done
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
-      stream_job_tree=() stream_host_jobs=() stream_host_solves=() \
-      stream_host_hard=() stream_flying=() stream_queued_at=()
+      stream_job_tree=() stream_host_busy=() stream_host_solves=() \
+      stream_flying=() stream_queued_at=() stream_solver_seen=()
     stream_hosts=(lift12 lift13)
     stream_queue=("REPLAY obligations-0000 C g0/c g0/p")
     stream_pending=()
@@ -4259,18 +4276,21 @@ while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
     wait "${os_pid}"
     stream_jobs[${os_pid}]="${os_kind} obligations-0000 A lift12 "
     stream_job_worker[${os_pid}]=${os_worker}
-    stream_host_jobs[lift12]=1
+    stream_host_busy[lift12]=2
     stream_host_solves[lift12]=1
-    stream_host_hard[lift12]=1
+    stream_solver_seen[lift12]=$(date +%s)
     campaign_stream_ended "${os_pid}" 0
-    printf '%s|%s|%s' "$(IFS=,; echo "${stream_queue[*]}")" \
-      "${stream_hard[*]:--}" "${stream_pending[*]:--}"
+    printf '%s|%s|%s|%s' "$(IFS=,; echo "${stream_queue[*]}")" \
+      "${stream_hard[*]:--}" "${stream_pending[*]:--}" \
+      "$(campaign_stream_warm lift12 && echo warm || echo cold)"
   )
-  [[ "${os_said}" == "${os_queue}|${os_hard}|${os_pending%%:*}" \
+  os_warmth=warm
+  [[ "${os_kind}" != OBLIGATION ]] || os_warmth=cold
+  [[ "${os_said}" == "${os_queue}|${os_hard}|${os_pending%%:*}|${os_warmth}" \
      && ! -e "${os_worker}/solve_owed" ]] \
     || fail "STREAM-OWED: a ${os_kind} owing ${os_need} MB (${os_lane}, \
 heads ${os_heads}) left ${os_said}, not \
-${os_queue}|${os_hard}|${os_pending%%:*}"
+${os_queue}|${os_hard}|${os_pending%%:*}|${os_warmth}"
   if [[ "${os_pending}" == *:* ]]; then
     [[ "$(jq -r '"\(.verdict) \(.detail)"' \
         "${os_worker}/obligation_result.jsonl")" == "NOT_ADMITTED no host \
@@ -4660,11 +4680,12 @@ reset_config
 
 # HOSTS-4: the pool over two peers.  Starts go round-robin from the host
 # after the last one chosen, an obligation first to a host where its
-# campaign's solver still serves (so the four go where the first went), a
-# peer's results and staged session come back and land, and a host whose
-# ledger has no room is given nothing while the other runs everything (a10:
-# one claim sat 30 min on a lift a planner had filled while eight lifts had
-# room).
+# campaign's solver serves -- on each host the first solve, which starts
+# its solver, charged a solver's start and alone there, every later one
+# charged its question -- a peer's results and staged session come back and
+# land, and a host whose ledger has no room is given nothing while the
+# other runs everything (a10: one claim sat 30 min on a lift a planner had
+# filled while eight lifts had room).
 #
 # The stub stands where the network stands and nowhere else: the pool, the
 # host decision, the generated remote script and the bounded wait for what
@@ -4688,8 +4709,8 @@ stream_two_hosts() {
   done
   (
     stream_stubs
-    # Where a solver serves, not how many it holds (the admission table).
-    campaign_stream_solves_per_host=4
+    # Where a solver serves, not how many it answers (the admission table).
+    campaign_solver_seats() { printf '4\n'; }
     campaign_host_available_mb() {
       [[ "$1" == lift13 && "${name}" == stream-room ]] && echo 0 || echo 30000
     }
@@ -4708,7 +4729,9 @@ stream_two_hosts() {
       script=${script#exec /bin/bash }
       script=${script%\'}
       script=${script#\'}
-      printf '%s\t%s\n' "${host}" "${script}" >>"${stream_dir}/ssh-calls.txt"
+      printf '%s\t%s\t%s\n' "${host}" "${script}" "$(awk '$1 == "--" \
+        {print $6; exit}' "${script}" 2>/dev/null)" \
+        >>"${stream_dir}/ssh-calls.txt"
       # The generated script is what a peer is asked to run, so it had
       # better be a script a peer can run.
       [[ -s "${script}" ]] || return 91
@@ -4731,10 +4754,14 @@ stream_two_hosts stream-two
 [[ "$(wc -l <"${stream_dir}/ssh-calls.txt")" -eq 4 ]] \
   || fail "four obligations did not become four remote invocations: \
 $(cat "${stream_dir}/ssh-calls.txt")"
-[[ "$(cut -f1 "${stream_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c \
-    | awk '{print $2 "=" $1}' | paste -sd ' ' -)" == "lift12=4" ]] \
-  || fail "the obligations did not go where their solver serves: \
-$(cut -f1 "${stream_dir}/ssh-calls.txt" | paste -sd ' ' -)"
+[[ "$(awk -F '\t' -v cold="$(campaign_solver_need_mb)" \
+      -v warm="${campaign_question_mb}" '
+      { want = ($1 in seen) ? warm : cold; seen[$1] = 1
+        if ($3 != want) bad = bad " " $1 ":" $3 }
+      END { print bad == "" ? "ok" : bad }' "${stream_dir}/ssh-calls.txt")" \
+    == ok ]] \
+  || fail "a host's solves were not its solver's start, then questions: \
+$(cut -f1,3 "${stream_dir}/ssh-calls.txt" | paste -sd ' ' -)"
 for stream_id in A B C D; do
   [[ -f "${stream_dir}/sessions/SESSION.${stream_id}/manifest.json" ]] \
     || fail "${stream_id}'s staged session did not land from its peer"
@@ -4759,7 +4786,9 @@ reset_config
 # a placed step on lift13 -- not its solve's host -- in A's worker, where it
 # must find the model its solve left (the focus row), on the solve's tree,
 # charged the replay's need; the session it staged lands from there.  B's
-# solve answers UNSAT and replays nothing.  The stub stands where the
+# solve answers UNSAT and replays nothing; it runs on lift12 too, a question
+# of A's solver there, since lift13's ledger has room for a replay's charge
+# but not for a cold solve's, a solver's start.  The stub stands where the
 # network stands, as in HOSTS-4: it reads the generated script's arguments
 # as a peer's shell would.
 stream_fixture stream-split-remote
@@ -4775,6 +4804,10 @@ for split_host in lift12 lift13; do
 done
 (
   stream_stubs
+  # 70 % of 30000 MB less 20000 in use: 1000 MB of room on lift13.
+  campaign_host_available_mb() {
+    [[ "$1" == lift13 ]] && echo 10000 || echo 30000
+  }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B; }
   ssh() {
     local host="" script="" line at
@@ -4841,23 +4874,29 @@ $(cat "${stream_dir}/obligation_results.jsonl")"
 reset_config
 
 # The pool's choice over three hosts that all admit: a replay (a REPLAY, a
-# re-run) goes round-robin; an obligation's solve goes to a host where its
-# campaign's solver still serves (one started there within the solver's idle
-# time), else round-robin; a host already holding
-# campaign_stream_solves_per_host of its solves takes no more (b:2).  {kind,
-# the host warm (- none), the hosts chosen in turn}.
-while IFS='|' read -r admit_kind admit_warm admit_want; do
+# re-run) and a hard-lane ask go round-robin; an obligation's solve goes to
+# a host where its campaign's solver serves (one answered there within the
+# solver's idle time) while a seat of that solver is free (two here), else
+# round-robin to a cold host that runs none -- a cold host's one solve
+# starts its solver, and no question waits behind that start (a:1).
+# {kind, the hosts warm (- none), the solves each runs, the hosts chosen in
+# turn}.
+while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
   (
     stream_hosts=(a b c)
     stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=()
     declare -A stream_host_solves=()
-    [[ "${admit_warm}" != *:* ]] \
-      || stream_host_solves[${admit_warm%%:*}]=${admit_warm#*:}
-    admit_warm=${admit_warm%%:*}
-    [[ "${admit_warm}" == - ]] \
-      || stream_solver_seen[${admit_warm}]=$(date +%s)
+    for admit_host in ${admit_solves//,/ }; do
+      [[ "${admit_host}" == - ]] \
+        || stream_host_solves[${admit_host%%:*}]=${admit_host#*:}
+    done
+    for admit_host in ${admit_warm//,/ }; do
+      [[ "${admit_host}" == - ]] \
+        || stream_solver_seen[${admit_host}]=$(date +%s)
+    done
+    campaign_solver_seats() { printf '2\n'; }
     campaign_stream_has_cores() { return 0; }
     campaign_host_try_charge() { status=0; campaign_host_charge_id=x; }
     chosen=()
@@ -4866,16 +4905,135 @@ while IFS='|' read -r admit_kind admit_warm admit_want; do
       chosen+=("${stream_admitted_host}")
     done
     [[ "${chosen[*]}" == "${admit_want}" ]] \
-      || fail "${admit_kind} with ${admit_warm} warm chose ${chosen[*]}, \
-not ${admit_want}"
-  ) || fail "the pool admitted nothing for ${admit_kind}"
+      || fail "${admit_kind} with ${admit_warm} warm, ${admit_solves} \
+solving chose ${chosen[*]}, not ${admit_want}"
+  ) || fail "the pool admitted nothing for ${admit_kind} with \
+${admit_warm} warm, ${admit_solves} solving"
 done <<'EOF'
-RERUN|b|a b c
-REPLAY|b|a b c
-OBLIGATION|-|a b c
-OBLIGATION|b|b b b
-OBLIGATION|b:2|a c a
-REPLAY|b:2|a b c
+RERUN|b|-|a b c
+REPLAY|b|-|a b c
+HARD|b|b:2|a b c
+OBLIGATION|-|-|a b c
+OBLIGATION|b|-|b b b
+OBLIGATION|b|b:1|b b b
+OBLIGATION|b|b:2|a c a
+OBLIGATION|-|a:1|b c b
+OBLIGATION|b|a:1,b:2|c c c
+REPLAY|b|b:2|a b c
+EOF
+
+# HOST-PAR: how many starts of one kind one host runs at once, as many as
+# its capacity holds: each start charged its kind's charge in the ledger
+# (campaign_host_try_start: at most 70 % of 31583 MB, 22109 MB, charged) and
+# keeping its kind's cores busy (campaign_stream_kind_cores: a solve's two z3
+# engines, a replay's one), a solve only on a free seat of its host's solver
+# (four here), a cold host's one solve alone -- and no fixed count beside
+# them: two solves and one hard-lane ask per host held PV7-adhoc-39 alone on
+# the pool far below its room (113 questions waited past their solver's
+# patience).  {kind, its charge in MB, the host's cores, its solver warm or
+# cold, how many starts it takes}.
+hostpar_dir="${test_tmp}/host-par"
+while IFS='|' read -r par_kind par_mb par_cores par_warm par_most; do
+  rm -rf -- "${hostpar_dir}"
+  par_took=$(
+    campaign_host_gate_root="${hostpar_dir}"
+    campaign_host_max_used_pct=70
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    mkdir -p "${hostpar_dir}/lift12"
+    echo 31583 >"${hostpar_dir}/lift12/total"
+    echo "${par_cores}" >"${hostpar_dir}/lift12/cores"
+    campaign_host_available_mb() { echo 31583; }
+    campaign_solver_seats() { printf '4\n'; }
+    campaign_stream_charge_mb() { printf '%s\n' "${par_mb}"; }
+    campaign_log() { :; }
+    stream_hosts=(lift12)
+    stream_next_host=0
+    stream_waiting=""
+    declare -A stream_solver_seen=() stream_host_unread=() \
+      stream_host_solves=() stream_host_busy=() stream_host_cores=()
+    [[ "${par_warm}" != warm ]] || stream_solver_seen[lift12]=$(date +%s)
+    par_count=0
+    while (( par_count < 64 )) \
+        && campaign_stream_admit_host "${par_kind}" "${par_mb}"; do
+      campaign_stream_host_count "${stream_admitted_host}" "${par_kind}" 1
+      par_count=$((par_count + 1))
+    done
+    printf '%s\n' "${par_count}"
+  )
+  [[ "${par_took}" == "${par_most}" ]] \
+    || fail "HOST-PAR: a ${par_cores}-core host, its solver \
+${par_warm}, ran ${par_took} ${par_kind} start(s) of ${par_mb} MB at once, \
+not ${par_most}"
+done <<'EOF'
+REPLAY|896|48|cold|24
+REPLAY|896|16|cold|16
+CONFIRM|1408|48|cold|15
+HARD|6656|48|cold|3
+HARD|6656|5|cold|2
+HARD|6656|1|cold|1
+ALONE|3712|48|cold|5
+OBLIGATION|1152|48|warm|4
+OBLIGATION|1152|6|warm|3
+OBLIGATION|3712|48|cold|1
+EOF
+# Mixed kinds on one host, offered in turn until a whole turn starts none: a
+# hard-lane ask 6656 MB, a REPLAY 768, a warm solve 1152, a CONFIRM 1408, an
+# ALONE 3712.  What it admits never leaves the host's live charges and the
+# head's reservation there past the ceiling, 22109 MB, and stops only where
+# not even the smallest charge fits.  {the head's reservation in MB, the
+# starts admitted in turn}.
+while IFS='|' read -r mix_head mix_want; do
+  rm -rf -- "${hostpar_dir}"
+  mix_took=$(
+    campaign_host_gate_root="${hostpar_dir}"
+    campaign_host_max_used_pct=70
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    mkdir -p "${hostpar_dir}/lift12/heads"
+    echo 31583 >"${hostpar_dir}/lift12/total"
+    echo 48 >"${hostpar_dir}/lift12/cores"
+    [[ "${mix_head}" == 0 ]] \
+      || echo "${mix_head}" >"${hostpar_dir}/lift12/heads/other.1.1"
+    campaign_host_available_mb() { echo 31583; }
+    campaign_solver_seats() { printf '4\n'; }
+    campaign_stream_charge_mb() {
+      case "$1" in
+        HARD) echo 6656 ;; REPLAY) echo 768 ;; OBLIGATION) echo 1152 ;;
+        CONFIRM) echo 1408 ;; ALONE) echo 3712 ;;
+      esac
+    }
+    campaign_log() { :; }
+    stream_hosts=(lift12)
+    stream_next_host=0
+    stream_waiting=""
+    declare -A stream_solver_seen=([lift12]=$(date +%s)) \
+      stream_host_unread=() stream_host_solves=() stream_host_busy=() \
+      stream_host_cores=()
+    mix_admitted=()
+    mix_more=1
+    while (( mix_more )); do
+      mix_more=0
+      for mix_kind in HARD REPLAY OBLIGATION CONFIRM ALONE; do
+        campaign_stream_admit_host "${mix_kind}" || continue
+        campaign_stream_host_count lift12 "${mix_kind}" 1
+        mix_admitted+=("${mix_kind}")
+        mix_more=1
+      done
+    done
+    mix_charged=$(ls "${hostpar_dir}/lift12/charges" \
+      | awk -F. '{ mb += $1 } END { print mb + 0 }')
+    (( mix_charged + mix_head <= 22109 && mix_charged + mix_head + 768 \
+       > 22109 )) || echo "past or short of the ceiling: ${mix_charged} MB \
+charged and ${mix_head} MB held"
+    echo "${mix_admitted[*]}"
+  )
+  [[ "${mix_took}" == "${mix_want}" ]] \
+    || fail "HOST-PAR: mixed starts beside a ${mix_head} MB head reservation \
+admitted ${mix_took}, not ${mix_want}"
+done <<'EOF'
+4544|HARD REPLAY OBLIGATION CONFIRM ALONE REPLAY OBLIGATION CONFIRM
+0|HARD REPLAY OBLIGATION CONFIRM ALONE HARD REPLAY REPLAY
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
