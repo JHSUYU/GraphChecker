@@ -277,7 +277,7 @@ final class PairingFlip {
                         + " pairing(s)"), "",
                 new LinkedHashMap<String, String>(inherited.clockDeltas),
                 mints, inherited.flips, pairings, holding, gaps, question,
-                true, false);
+                true, false, null);
     }
 
     /** The question a pairing flip asks: the flip, then a digest of the

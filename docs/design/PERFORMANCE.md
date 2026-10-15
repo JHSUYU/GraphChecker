@@ -180,8 +180,9 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    1 s (p90 3-4 s, max 9 s), but 16 READ-door (`SolrZkClient.getData`) and routed-alias
    (`MaintainRoutedAliasCmd.call`, `TimeRoutedAlias.<init>`) flips ran their z3 races 1000-1180 s, holding 10's
    whole solve share: 292 questions queued (median wait 1135 s), throughput from ~250 to ~140 verdicts/h. Now two
-   lanes (PIPELINE §7.5): every question first at 60 s; one undecided goes to a hard lane at the full budget in a
-   JVM of its own once nothing else waits; a question its host's solver leaves untaken 30 s goes to a JVM of its own.
+   lanes (PIPELINE §7.5): every question first at 60 s; one undecided goes to a hard lane at the full budget once
+   nothing else waits, z3 alone over its first ask's query in a JVM that reads no corpus (SGF7-adhoc-39, 2026-10-15:
+   a corpus JVM per hard ask had held one host each, 18-21 GB, for a 15-20 min corpus read before z3 started).
    Gate: the shell rows SOLVE-LANES*, a live solr-adhoc-10. Then the memory those solvers held (SL1-10): host solvers
    at the 16 GB engine heap grew to 6-12.5 GB resident over a live set of 0.85 GB after a full collection, one per
    host and campaign, and filled every lift's ledger; a question's own JVM charged 512 MB was ended at its first

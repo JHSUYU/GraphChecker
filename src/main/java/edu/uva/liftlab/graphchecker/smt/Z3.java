@@ -144,6 +144,13 @@ public final class Z3 {
             this.reason = reason;
         }
 
+        /** A sat answer whose model another run decided: the hard lane's,
+         *  over the same query ({@code ObligationSolverMain --decide}). */
+        public static Answer sat(Map<String, String> values) {
+            return new Answer("sat", values,
+                    Collections.<String>emptyList(), false, "");
+        }
+
         /** The first line z3 printed: sat, unsat, unknown, or neither. */
         public String status() {
             return status;

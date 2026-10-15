@@ -214,8 +214,8 @@ Merged 2026-10-12/13 (lead; through `solr-int`, each merge gated; the owner's or
   path is no producer for it (189a797b6); another version's content rests on the view's choice of it, an unsendable
   version unpaired (2d07350c5; merged memo-safe by the lead, ce92cb6a6: a frame carries what it lowered inside a case,
   a symbol rests on its innermost case's choice).
-- `solr-solve`: the solve's two lanes, a busy solver's question withdrawn after 30 s; host solvers start at 2 GB and
-  double on exit 3; one-question and retry JVMs charged their footprint.
+- `solr-solve`: the solve's two lanes (now `solr-hardlane`: the hard lane is z3 alone over the first ask's query in a
+  corpus-free JVM; no question is answered in a corpus JVM of its own; a cold host's charge goes to its solver).
 - `solr-str`: String.toLowerCase/toUpperCase lowered exactly over ASCII.
 - `solr-str2`: every String arity the VM emits with an exact SMT-LIB form z3 decides: `startsWith(p, off)` (39's
   59 refused paths), `indexOf`/`lastIndexOf` with a from index and code points, `regionMatches`, `compareTo`,

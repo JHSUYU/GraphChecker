@@ -156,9 +156,11 @@ cd ~/gc-run/<snap> && env -u BASH_ENV \
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
-A hard question no longer holds its host: every obligation is first asked at 60 s, an undecided one waits in the
-hard lane for the full budget in a JVM of its own, and a question its host's solver has not taken in 30 s goes to a
-JVM of its own (PIPELINE §7.5; SP4-10: 12 z3 races of up to 30 min had held every solve slot of the case).
+A hard question no longer holds its host: every obligation is first asked at 60 s, and an undecided one waits in the
+hard lane for z3 alone at the full budget over the query its first ask built, in a JVM that reads no corpus (about
+5 GB charged, four to a free lift; PIPELINE §7.5; SP4-10: 12 z3 races of up to 30 min had held every solve slot of
+the case; SGF7-adhoc-39: a corpus JVM per hard ask, 18-21 GB, one per host).  No question is answered in a corpus
+JVM of its own: a cold host's question hands its charge to the solver it starts.
 
 **3. Memory, the one limit.** No lift past 70 % (the ledger). Two charge rules keep the ledger close to real use:
 - an engine JVM at heap H is charged its footprint H + H/16 + 384 MB (`campaign_jvm_footprint_mb`): charged at H, a

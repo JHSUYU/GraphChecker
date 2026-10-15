@@ -974,7 +974,7 @@ round's question needs no session that landed after it was planned, and the head
 few seconds; a re-read of 39's 208 sessions takes 10-16 s), each session the read before already holds
 taken from it unread (`Corpus#read(Path, Path, Corpus)`: a landed session's rows never change, and
 reading them is the read's whole cost, 45 s over hdfs-11741 i1's 175 sessions), else the corpus as read
-(`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of its own, reading that
+(`Corpus#freshLowerings`) -- so each obligation's files are the ones any solver, reading that
 corpus, writes -- into a directory on the host's disk, named by the corpus, that the asking worker moves
 into its worker directory. A read past what its heap holds (`campaign_solver_retire_mb`, its
 `--retire-past-mb`; none at the engine heap) is not made: the solver gives the question back untaken and
@@ -982,70 +982,60 @@ ends (`Service.Outgrown`, `Service#retireOutgrown`, naming itself in `retired`),
 starts the next one, sized anew. It ends once none has
 come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A
 question still waiting when its solver ended starts the next one. A question that waits for its
-solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
-with no room to start a solver now answers the question in a solver JVM of its own at once
-(`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`)
-when the solve's own charge covers that JVM (a cold host's: what a solver starts at, §7.7), what it
-grows past that asked of the host as it grows; a warm host's question is owed one (below).
+solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A cold
+host's question is charged a solver's start (§7.7), and the solver it starts takes that charge over
+whole (`campaign_start_solver <dir> <sessions> <charge>`: the ledger row renamed, held by the solver,
+so the start's release drops nothing): the host is charged one solver, never two -- charged a second
+beside the first, no cold host of SGF7-adhoc-39 (21 GB of sessions) had room, and 24 questions read the
+corpus in JVMs of their own, 14-21 min each, their hosts never warm.
+
+**NO QUESTION IS ANSWERED IN A CORPUS JVM OF ITS OWN.** A question whose host had no room to start its
+solver now (`campaign_solve_obligation` 3), or that its solver took and ended on or failed (1), is no
+answer: its worker asks it again (`campaign_obligation_again`: `solve_again`, why, no answer) and
+returns, and the head queues it again as an OBLIGATION (`campaign_stream_solve_again`,
+`OBLIGATION <round> <id> again`), uncharged while it waits, its host cold, the obligation in flight. A
+question asked again whose solver ends on it or fails again fails the worker by name (`asked_again`,
+§7.7). Only a solver no host of the pool can ever hold -- its start's charge
+(`campaign_solver_need_mb`) past every host's ceiling less the largest head reservation standing there,
+idle or busy (`campaign_pool_can_hold`, `campaign_host_head_reserved`; a waiting step's hold, which comes
+back, is none) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold its solver
+of N MB", with an `OBLIGATION_UNFINISHED` gap row; there is no time bound, which would drop a starved
+solve again (SGF5, 2026-10-14: a solve that placed itself from inside its start waited at most 600 s,
+and on a pool charged past its real use its obligation was answered NOT_ADMITTED for good -- 4 to 69 per
+case, 18413's witness among them). The ask is written before any row it left is removed, and a head
+that still sees such a row reads the ask (`campaign_await_remote_result`). None settles a question
+(`question.txt`/`question.asked` are removed).
 
 **The solve's two lanes.** Every question is first asked at `campaign_solver_first_ms`
 (`campaign_solver_first_tier_ms`, 60 s, never past `solver_timeout_ms`): the host's solver is started
-with that budget, and so is a question asked in a JVM of its own. A question its host's solver has not
-taken within `campaign_solver_busy_patience_s` (30 s) is withdrawn from its queue (the same atomic rename
-`Service` takes one by) and answered in a JVM of its own (`campaign_solve_obligation` 5), as one its host
-had no room for. A
-question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) -- or at its z3s' cap
-(`SOLVER_MEMOUT at <cap> MB`, whatever the budgets) -- lands nothing: the head moves its answer aside
-(`obligation_result.first.jsonl`), keeps the obligation in flight, and queues it in the hard lane
-(`campaign_stream_ended` through `campaign_stream_owed`, as any solve owed a solver JVM of its own, below;
-`stream_hard`, `HARD <round> <id> <need>`), whose asks `campaign_stream_dispatch` starts only once no
-other start waits -- the first of them a host admits, one of a need no host admits now holding none of
-another -- and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
-`solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB) in a solver JVM
-of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`), charged its footprint and that
-room (`campaign_solver_need_mb ... HARD`), as many at once on a host as its cores and its ledger room
-at that charge hold (§7.7). Since
-the obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end
-the exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there
-lands NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each
-a `SOLVER_TIMEOUT` or `SOLVER_MEMOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any claim but a
-SAT_CANDIDATE: a RUN_DEFECT, counted in `defects[]`. Why (SP4-10, 2026-10-12): the answered questions took
-a median 1 s, p90 4 s, but 12 READ-door and routed-alias flips ran their z3 races 1000-1180 s of the
-1810 s budget inside their hosts' solvers, and the 292 questions queued behind them waited up to 1135 s.
-
-A solve that needs a solver JVM of its own its start's charge does not cover -- a warm host's
-question its host had no room for or whose solver stayed busy, or a question the host's solver or that
-JVM could not answer (it ran out of heap on it, died, or was ended at what its host could hold) -- is
-no answer, and never waits for room inside its start: its worker owes it (`campaign_obligation_owe`:
-`solve_owed`, its need and lane, no answer) and returns, and the head queues it as a start charged
-that need (`campaign_stream_owed`), admitted by the ledger as any start, with no patience: an `ALONE`
-among the solves (the first budget and a question's z3 room; first and alone once it waited past
-`campaign_stream_wait_bound_s`, as any start; not while GROW holds the solves; an ALONE of one need
-refused holds none of another), a hard-lane ask's again
-in the hard lane, each `<kind> <round> <id> <need>`, charged that need or what a solver JVM of the
-corpus in its lane needs now where that is more (`campaign_stream_charge_mb`), the obligation in
-flight meanwhile. Its need is a solver JVM's need of its corpus and its z3 room
-(`campaign_solver_need_mb`: at least the heap a solver of the corpus ran out of, if one did), or what
-the first measurably held -- its watched peak -- with the usual margin
-(`campaign_need_of_peak_mb`, ×1.5) and the room where that is more, never what other solvers of the
-corpus held (SL1-10: a question that held 1.2 GB asked the 12.5 GB its campaign's largest host solver
-had reached, and no host had it), at most the engine heap's footprint and the room; a JVM of its own is
-owed again only when its watch grew it past its charge. Only a start no host of the pool can ever hold
--- its admission charge past every host's ceiling less the largest head reservation standing there,
-idle or busy (`campaign_pool_can_hold`, `campaign_host_head_reserved`; a waiting step's hold, which
-comes back, is none) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold
-a solver JVM of its own of N MB", with an `OBLIGATION_UNFINISHED` gap row; there is no time bound, which
-would drop a starved solve again. Why (SGF5, 2026-10-14): a solve that placed itself from inside its
-start waited at most 600 s, and on a pool charged past its real use (lift10: 21 GB charged, 9.4 GB in
-use) its worker died and the obligation was answered NOT_ADMITTED for good -- 4 to 69 per case,
-18413's witness among them. A solver JVM of its own that failed where more memory is no help -- out of
-heap at the engine heap (`campaign_alone_heap_mb`, the heap it ran at), or failed within its charge
-or past one already at the most a solver of its own is given --
-fails the worker by name, its cause what the JVM threw (`campaign_failure_said`: `campaign_thrown`, else
-its last line that is no stack frame and not the watch's `causynth:` peak line) in the obligation's
-unfinished answer (§7.7). The debt is written before any row it left is removed, and a head that still
-sees such a row reads the debt (`campaign_await_remote_result`). None settles a question
-(`question.txt`/`question.asked` are removed).
+with that budget. A question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) -- or at
+its z3s' cap (`SOLVER_MEMOUT at <cap> MB`, whatever the budgets) -- lands nothing: its ask left its
+record beside its query (`obligation_ask.json`, `explore.HardAsk`: the question, the gaps its build
+stated, what an UNSAT says, the model's constants, the query's sha256), and the head moves its answer
+aside (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues its HARD-LANE ask
+(`campaign_stream_hard`, `stream_hard`, `HARD <round> <id>`), which `campaign_stream_dispatch` starts only
+once no other start waits and, as any solve, not while GROW holds the solves: z3 ALONE over that query
+at the full `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB), in a
+JVM that reads no corpus (`campaign_obligation_decide`, `ObligationSolverMain --decide <worker>`, a
+512 MB heap, `hard-host.txt`), charged that and the room (`campaign_decide_need_mb`, 5024 MB), as many at
+once on a host as its cores and ledger room hold (§7.7). It answers as the corpus's ask maps an answer
+(`ObligationFactory#settled`, the one mapping): UNSAT with the record's detail and gaps, settling its
+question; undecided NOT_ADMITTED by name; a sat answer leaves its model (`obligation_model.json`,
+`HardAsk.Model`) and asks the obligation again of a host's solver, which builds the query again and
+finishes the flip with the model where the query's sha256 is the record's (the planted world, the held
+re-ask at its first budget, the focus row: the code after z3), else refuses it by name
+(`HARD_MODEL_STALE`: the corpus moved under it, as GROW's swaps move it). A record over another query
+or obligation is refused by name before any z3 (`HARD_ASK_MISMATCH`), never decided. Since the
+obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end the
+exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there lands
+NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each a
+`SOLVER_TIMEOUT` or `SOLVER_MEMOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any
+claim but a SAT_CANDIDATE: a RUN_DEFECT, counted in `defects[]`. Why the two lanes (SP4-10,
+2026-10-12): the answered questions took a median 1 s, p90 4 s, but 12 READ-door and routed-alias flips
+ran their z3 races 1000-1180 s of the 1810 s budget inside their hosts' solvers, and the 292 questions
+queued behind them waited up to 1135 s. Why z3 alone (SGF7-adhoc-39, 2026-10-15): each hard ask was a
+corpus JVM of its own, 18-21 GB charged, one per host, reading 21 GB of sessions for 15-20 min before its
+z3 started.
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -1447,12 +1437,12 @@ first first, while the exploration runs fewer than its share of a shared pool (b
 counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
 ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
 first on a host where one returned answered within the solver's idle time (`campaign_stream_warm`,
-set when a solve returns answered there, cleared when one returns owing a solver JVM of its own: that host's
+set when a solve returns answered there, cleared when one returns asking again: that host's
 solver of its corpus serves, so the question needs no solver started and no corpus read), a REPLAY
 on whichever host admits it (its worker is on the shared home). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
-start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve, an `ALONE` or a
-`HARD` two, its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
+start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
+its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
 none takes one whatever its count; `campaign_stream_host_count` counts each start in and out), a
 question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
 of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one), and its
@@ -1483,12 +1473,10 @@ leases old is deleted. Every start states its measured need, with no default. A 
 where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
 (`campaign_question_mb`, 1152 MB, the room its two capped z3s run in: the serving solver's JVM is
 charged on its own, §7.5; HI1/HI2's z3 runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host
--- and a hard-lane ask -- what a solver JVM of its corpus needs (`campaign_solver_need_mb`, its
-footprint and its z3 room, 3.6 GB at the start heap, the hard lane's 6.6 GB: its question is
-answered in a JVM of its own under that charge when its host has no room for its solver; a question
-whose start's charge does not cover that need, a warm one, is owed a start of its own charged it
-(an `ALONE`, §7.5), never ended at its first growth: SL1-10's were, at 512 MB on full hosts), an
-`ALONE`'s or a `HARD`'s the need its worker owed, each growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+what a solver JVM of its corpus needs (`campaign_solver_need_mb`, its footprint and a question's z3
+room: the solver its question starts takes that charge over, §7.5), a hard-lane ask its corpus-free
+JVM's footprint and the hard lane's z3 room (`campaign_decide_need_mb`, 5024 MB), each growing as its
+JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
@@ -1595,7 +1583,7 @@ cannot see) is its own answer (`campaign_obligation_unfinished`): every process 
 command line names its worker directory is ended (a peer's replay JVM is in a process group the
 remote wrapper's watchdog does not reach), what it staged moves to `<worker>/unfinished-sessions/`,
 and its row is `NOT_ADMITTED` naming the host, the exit and the last error of the start that failed,
-on its own stderr (`campaign_stream_logs`: a solve's `stderr.log`, an `ALONE`'s `alone-`, a `HARD`'s
+on its own stderr (`campaign_stream_logs`: a solve's `stderr.log`, a `HARD`'s
 `hard-`, a REPLAY's `replay-`; an engine failure's `die` or `campaign_fail` line names its cause, so a
 reading tells a defect from a named bound). An engine failure stays loud: each such obligation files a
 DIAGNOSTIC `ADMISSION_GAP` `OBLIGATION_UNFINISHED` in `campaign_gaps.jsonl`, which EMIT carries,

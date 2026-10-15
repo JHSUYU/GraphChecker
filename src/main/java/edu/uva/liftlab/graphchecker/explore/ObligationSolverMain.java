@@ -37,33 +37,33 @@ import java.util.Set;
 
 /**
  * An obligation's question: build its query, solve it, say what the replay
- * must apply.  One obligation, or every obligation one host's workers ask
- * within an exploration, over the corpus as it stands when each is taken.
+ * must apply.  Every obligation one host's workers ask within an
+ * exploration, over the corpus as it read it ({@link Service}); or one
+ * flip's hard-lane ask, over its first ask's query alone ({@link #decide}).
  *
  * <pre>
- *   --sessions &lt;dir&gt;          the corpus the exploration has landed so far
- *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
- *                             declaration the round was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
  *   --z3-room-mb &lt;n&gt;         what the JVM's charge holds for its z3
  *                             processes, a question's two engines half
  *                             each ({@code smt.Z3}); required
- *   one obligation:
- *   --obligations &lt;file&gt;      the round's obligations.jsonl
- *   --obligation-id &lt;id&gt;      which row of it this worker owns
- *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, gaps.jsonl,
- *                             focused_task.jsonl, the schedule cut, the
- *                             pairings' expected_edges.jsonl, and
- *                             question.txt (a decided verdict of its own
- *                             settles its question) or question.asked (SAT)
- *   or a host's share of them ({@link Service}):
+ *   a host's share of the questions:
+ *   --sessions &lt;dir&gt;          the corpus the exploration has landed so far
+ *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
+ *                             declaration the round was planned under
  *   --serve &lt;dir&gt;             answer the questions put there, each into its
- *                             own output directory, until none has come for
+ *                             own output directory (obligation_result.jsonl,
+ *                             obligation.jsonl, obligation_query.smt2,
+ *                             gaps.jsonl, focused_task.jsonl, the schedule
+ *                             cut, the pairings' expected_edges.jsonl,
+ *                             question.txt or question.asked, and a first
+ *                             ask undecided at its budget its {@link
+ *                             HardAsk}), until none has come for
  *   --idle-seconds &lt;n&gt;
  *   --retire-past-mb &lt;n&gt;     or until a question needs a corpus of more
  *                             than n MB of session files, which the heap it
  *                             was started at does not hold (0: never)
+ *   or one flip's hard-lane ask, no corpus read ({@link #decide}):
+ *   --decide &lt;worker&gt; --obligations &lt;file&gt; --obligation-id &lt;id&gt;
  * </pre>
  *
  * <p>Queries are independent: a question's files are the same whichever
@@ -77,12 +77,6 @@ public final class ObligationSolverMain {
 
     public static void main(String[] argv) throws Exception {
         LongOptions options = LongOptions.parse(argv);
-        Path sessions = options.path("sessions");
-        if (sessions == null) {
-            throw new IllegalArgumentException("--sessions is required");
-        }
-        Path iteration = sessions.getParent();
-        Path rootDomains = options.path("root-domains");
         Path z3 = Paths.get(options.value("z3", "z3"));
         long timeoutMillis = options.number("solver-timeout-ms",
                 Z3.DEFAULT_TIMEOUT_MILLIS);
@@ -91,6 +85,19 @@ public final class ObligationSolverMain {
             throw new IllegalArgumentException("--z3-room-mb is required: "
                     + "what this JVM's charge holds for its z3 processes");
         }
+        Path decide = options.path("decide");
+        if (decide != null) {
+            decide(options.path("obligations"),
+                    options.value("obligation-id", ""), decide, z3,
+                    timeoutMillis, z3RoomMb);
+            return;
+        }
+        Path sessions = options.path("sessions");
+        if (sessions == null) {
+            throw new IllegalArgumentException("--sessions is required");
+        }
+        Path iteration = sessions.getParent();
+        Path rootDomains = options.path("root-domains");
         Path serve = options.path("serve");
         if (serve != null) {
             Service.serve(serve,
@@ -100,17 +107,7 @@ public final class ObligationSolverMain {
                                     << 20));
             return;
         }
-        Path obligations = options.path("obligations");
-        String obligationId = options.value("obligation-id", "");
-        Path out = options.path("output-dir");
-        if (obligations == null || obligationId.isEmpty() || out == null) {
-            throw new IllegalArgumentException("--serve, or --obligations, "
-                    + "--obligation-id and --output-dir, are required");
-        }
-        JsonObject result = solve(Corpus.read(iteration, rootDomains),
-                iteration, obligations, obligationId, out, z3,
-                timeoutMillis, z3RoomMb);
-        System.out.println(ExploreMain.pretty(result));
+        throw new IllegalArgumentException("--serve or --decide is required");
     }
 
     /**
@@ -173,9 +170,14 @@ public final class ObligationSolverMain {
                 } else {
                     corpus.freshLowerings();
                 }
+                // A flip the hard lane found sat, finished with its model.
+                String decided = JsonFields.optionalString(question,
+                        "decided");
                 solve(corpus, iteration, obligations,
                         JsonFields.primitiveString(question, "obligationId"),
-                        out, z3, timeoutMillis, z3RoomMb);
+                        out, z3, timeoutMillis, z3RoomMb, decided.isEmpty()
+                                ? null : HardAsk.Model.read(
+                                Paths.get(decided)));
             }
         };
     }
@@ -238,14 +240,9 @@ public final class ObligationSolverMain {
         return names;
     }
 
-    /** Solves one published obligation over the corpus of {@code
-     *  iteration} and writes every artifact of it. */
-    public static JsonObject solve(Corpus corpus, Path iteration,
-                                   Path obligations, String obligationId,
-                                   Path out, Path z3, long timeoutMillis,
-                                   int z3RoomMb)
+    /** The round's row of one obligation. */
+    private static Obligation proposal(Path obligations, String obligationId)
             throws IOException {
-        Files.createDirectories(out);
         Obligation proposal = null;
         for (Obligation row : RowCodec.readAll(obligations,
                 ExploreCodec::readObligation)) {
@@ -255,6 +252,78 @@ public final class ObligationSolverMain {
             throw new IOException("the round has no obligation " + obligationId
                     + ": " + obligations);
         }
+        return proposal;
+    }
+
+    /** A hard-lane record that does not belong to its worker's query. */
+    static final String HARD_ASK_MISMATCH = "HARD_ASK_MISMATCH";
+
+    /**
+     * THE HARD LANE: one flip's ask at the full budget, z3 alone, over the
+     * query its first ask published and the record beside it ({@link
+     * HardAsk}), in a JVM that reads no corpus.  Its answer is mapped as the
+     * corpus's ask maps one ({@code ObligationFactory#settled}) and published
+     * into the worker as that ask publishes it: UNSAT settling its question,
+     * or no verdict by name.  A sat answer leaves its model ({@link
+     * HardAsk.Model}) and no answer: its host's solver finishes the flip.  A
+     * record of another obligation or another query is refused by name
+     * ({@link #HARD_ASK_MISMATCH}), never decided.
+     */
+    static void decide(Path obligations, String obligationId, Path worker,
+                       Path z3, long timeoutMillis, int z3RoomMb)
+            throws IOException {
+        Obligation proposal = proposal(obligations, obligationId);
+        HardAsk ask = HardAsk.read(worker.resolve(HardAsk.FILE));
+        String query = new String(Files.readAllBytes(worker.resolve(QUERY)),
+                StandardCharsets.UTF_8);
+        String suffix = Z3.modelQuery("", ask.modelSymbols);
+        String sha = ArtifactIO.sha256(query);
+        if (!ask.obligationId.equals(obligationId)
+                || !sha.equals(ask.querySha256) || !query.endsWith(suffix)) {
+            String why = HARD_ASK_MISMATCH + ": the record of "
+                    + ask.obligationId + " over query " + ask.querySha256
+                    + " is not obligation " + obligationId + "'s query "
+                    + sha;
+            List<GapRow> gaps = new ArrayList<GapRow>(ask.gaps);
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, obligationId,
+                    why));
+            publish(worker, proposal, ObligationResult.of(obligationId,
+                    Verdict.NOT_ADMITTED, "", why), query, gaps, null);
+            return;
+        }
+        long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
+                : timeoutMillis;
+        Z3 solver = new Z3(z3, budget, z3RoomMb);
+        Z3.Answer answer = solver.ask(query.substring(0,
+                query.length() - suffix.length()), ask.modelSymbols, false);
+        ObligationFactory.Outcome settled = ObligationFactory.settled(ask,
+                answer, budget, solver, query);
+        if (settled == null) {
+            new HardAsk.Model(ask.querySha256, answer.values())
+                    .write(worker.resolve(HardAsk.Model.FILE));
+            return;
+        }
+        publish(worker, proposal, settled.result, settled.smt2,
+                settled.gaps, null);
+        if (settled.settles) {
+            ask(worker.resolve(ObligationDir.QUESTION), settled.question);
+        }
+    }
+
+    /** The query a worker's ask published. */
+    static final String QUERY = "obligation_query.smt2";
+
+    /** Solves one published obligation over the corpus of {@code
+     *  iteration} and writes every artifact of it; {@code decided}, the
+     *  hard lane's model of its flip, finishes it without z3's verdict. */
+    public static JsonObject solve(Corpus corpus, Path iteration,
+                                   Path obligations, String obligationId,
+                                   Path out, Path z3, long timeoutMillis,
+                                   int z3RoomMb, HardAsk.Model decided)
+            throws IOException {
+        Files.createDirectories(out);
+        Obligation proposal = proposal(obligations, obligationId);
         if (proposal.force()) {
             return force(corpus, iteration, obligations, proposal, out);
         }
@@ -285,10 +354,14 @@ public final class ObligationSolverMain {
                 ? ArtifactIO.sha256(plan) : "");
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis, z3RoomMb, given,
-                ObligationDir.answered(iteration));
+                ObligationDir.answered(iteration), decided);
         if (!outcome.issued()) {
             JsonObject published = publish(out, proposal, outcome.result,
                     outcome.smt2, outcome.gaps, null);
+            // Undecided at its budget: what its hard-lane ask reads.
+            if (outcome.owed != null) {
+                outcome.owed.write(out.resolve(HardAsk.FILE));
+            }
             // Last: a verdict that settles its question says so only once
             // it is written.
             if (outcome.settles) {
@@ -430,7 +503,7 @@ public final class ObligationSolverMain {
                 ExploreMain.distinct(new ArrayList<GapRow>(gaps)),
                 RowCodec::writeGap);
         // Always written: an UNSAT query is the one a reader most needs.
-        Files.write(out.resolve("obligation_query.smt2"),
+        Files.write(out.resolve(QUERY),
                 (smt2.isEmpty()
                         ? "; no query was encoded: " + result.verdict() + " "
                         + result.detail() + System.lineSeparator()
