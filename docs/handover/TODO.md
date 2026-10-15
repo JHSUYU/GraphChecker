@@ -118,12 +118,16 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   maps too) and in `Arms` (`unrowed`, `symbolsByExpression`, `rootGuards`): get, compute outside, putIfAbsent -- never
   a recursive `computeIfAbsent`; (3) the static lazies on the solve's path (`SmtNames.PREAMBLE_NAMES`,
   `LibraryCatalog.doors`); (4) `Service` taking a question only onto a free seat and an `Outgrown` waiting for the
-  seats in flight; a review agent before merge (concurrency in `Corpus`). The live set itself: 39's 6.45 GB is mostly the
-  session expression tables as Gson trees (`ExpressionTable`: 40.9 M `LinkedTreeMap$Node`, 2.0 GB, 26 M
-  `JsonPrimitive`, 0.4 GB, and their strings, of 1.8 GB of `char[]`). The same corpus put 39's planner past the 16 GB
-  engine heap (PV7 `PLANNER_HEAP_EXCEEDED` at round 6, 10123 MB of sessions), mostly in its closure walk, which
-  indexed each member's reads once per overlapping group (now once per walk, `ClosurePlanner.GroupReads`). A compact
-  expression form would shrink every reader of the corpus.
+  seats in flight; a review agent before merge (concurrency in `Corpus`).
+- **The planner's heap still grows with the rounds** (STATUS open defect 37). With the closure walk's reads indexed once
+  per member and the expression tables compact, 39's PV7 round 6 (208 sessions, 9.8 GB) plans in 806 s at 16 GB,
+  peaking near 9.4 GB live. What is left grows with the corpus and the rounds: (1) strings, about half the peak -- the
+  corpus indexes' composed keys (`session|symbol`, `session|location|version`, a location key per row, an id per
+  `Endpoint` instance: rows read in one pool share no `Endpoint` or `LocationId`), the per-session joins'
+  (`SmtLowering#joinOf`), the lowered and canonical texts the naming memos keep for the round; (2) the slot table, whose
+  rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5) and whose round 6 change file was
+  2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same
+  static candidates again; `Walk#holders` dominates its CPU: about half of round 6's 13 minutes).
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
 
