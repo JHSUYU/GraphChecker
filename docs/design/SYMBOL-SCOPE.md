@@ -403,7 +403,9 @@ the one that chose the return.
 The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
 are post-dominance.
 
-Readers: `ConcolicScheduler` (admission, observed sites), `runtime/GuardedStoreSites` (§5.3),
+Readers: `ConcolicScheduler` (admission), the concolic weave (observed sites, §5.2: read off the
+map once per campaign, `CausynthPipeline#observedSites`; a plan states none, since every task would
+carry the same list), `runtime/GuardedStoreSites` (§5.3),
 `explore/ClosurePlanner` (static producers of a port, `#exportsOf`; static candidate writers of a
 demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4). For COMPOSE the map
 states each reference store's construction guards (`#constructionGuards`, §5.6).
@@ -1184,7 +1186,8 @@ referent: carrier and cell are the field, `declaredCallee` the mutator, `publish
 ### 5.2 Observation
 
 `StaticScopeMap#observedSites` lists every access of a tracked cell: its write sites and its read
-sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
+sites, the campaign's (the weave reads them off the map, never off a plan's task). The concolic
+weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
 before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
 atomic's RMW call, before the `getfield`, and before the call of a read through an accessor, on the
 call's receiver: such a `READ_SITE` (an `accessor_field_return` edge) names the accessor as its

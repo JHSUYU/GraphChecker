@@ -45,8 +45,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 final class SymbolizeAction {
     final String symbol;
-    /** Canonical identity of the exact frozen task action row. */
-    final String actionDigest;
+    /** The frozen task action row, whose canonical digest names it
+     *  ({@link #actionDigest}). */
+    private final JsonObject json;
+    private volatile String actionDigest;
     final String cell;
     final String location;
     final int index;
@@ -95,7 +97,7 @@ final class SymbolizeAction {
 
     SymbolizeAction(JsonObject json) {
         this.symbol = optionalString(json, "symbol");
-        this.actionDigest = CanonicalJson.sha256(json);
+        this.json = json;
         this.cell = optionalString(json, "cell");
         this.location = optionalString(json, "location");
         this.index = optionalInteger(json, "index", -1);
@@ -428,5 +430,19 @@ final class SymbolizeAction {
             selected = candidate;
         }
         return selected;
+    }
+
+    /**
+     * Canonical identity of the exact frozen task action row, computed the
+     * first time a mint or a refusal names it: a replay's VM hashes no row
+     * of the many a plan holds and none mints (18413's seed: 605 actions).
+     */
+    String actionDigest() {
+        String digest = actionDigest;
+        if (digest == null) {
+            digest = CanonicalJson.sha256(json);
+            actionDigest = digest;
+        }
+        return digest;
     }
 }

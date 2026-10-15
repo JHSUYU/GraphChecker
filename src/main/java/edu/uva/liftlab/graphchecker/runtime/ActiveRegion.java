@@ -563,7 +563,7 @@ final class ActiveRegion {
         row.addProperty("kind", "MANUAL_SYMBOLIC_INPUT_OBSERVATION");
         row.addProperty("authority", "EXACT_PLANNED_SYMBOLIZATION_ACTION_V1");
         row.addProperty("portId", action.symbol);
-        row.addProperty("actionDigest", action.actionDigest);
+        row.addProperty("actionDigest", action.actionDigest());
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
         // Captured now: frames are gone at publish.  One row per mint

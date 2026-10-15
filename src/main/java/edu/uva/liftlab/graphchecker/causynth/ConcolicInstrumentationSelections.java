@@ -126,8 +126,6 @@ public final class ConcolicInstrumentationSelections {
             rootLoopDemandedUnitIndex = task.rootLoopDemandedUnitIndex();
             rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
-            materializations.addObservedSites(
-                    task.observedSites());
             communicationHandoffs = task.communicationHandoffs();
             configuredSourcePhases = task.configuredSourcePhases();
 
@@ -372,6 +370,20 @@ public final class ConcolicInstrumentationSelections {
         /** Planned observed stores of a declared input's cell, by site. */
         private final Map<String, ObservedSite> observedSitesBySite =
                 new LinkedHashMap<>();
+
+        /**
+         * The campaign's observed sites ({@code StaticScopeMap
+         * #observedSites}): every access of a tracked cell, woven once for
+         * the whole campaign, since whichever occurrence reaches a cell
+         * first starts its log.
+         */
+        static ConcolicMaterializationSelection observed(JsonArray sites)
+                throws IOException {
+            ConcolicMaterializationSelection result =
+                    new ConcolicMaterializationSelection();
+            result.addObservedSites(sites);
+            return result;
+        }
 
         private static ConcolicMaterializationSelection from(
                 JsonArray actions) throws IOException {

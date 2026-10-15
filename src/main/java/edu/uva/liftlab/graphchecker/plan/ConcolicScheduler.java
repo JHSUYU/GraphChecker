@@ -157,16 +157,11 @@ public final class ConcolicScheduler {
 
             result.add(scheduled);
         }
-        // Accesses of tracked cells the replay must observe: campaign-wide,
-        // on every task, since whichever occurrence reaches a cell first
-        // starts its log.
-        JsonArray observed = loaded.staticScopeMap.observedSites();
-        if (observed.size() > 0) {
-            for (ExecutionTask task : result) {
-                task.json().add(ExecutionTask.OBSERVED_SITES,
-                        observed.deepCopy());
-            }
-        }
+        // The accesses of tracked cells a replay observes are the
+        // campaign's, not a task's: the weave reads them off the scope map
+        // once (causynth.CausynthPipeline#instrumentConcolicCampaign).  Copied
+        // onto every task they were 95% of a plan every replay parses
+        // (18413's seed: 59 of 62.5 MB, 301 sites 338 times).
         return result;
     }
 

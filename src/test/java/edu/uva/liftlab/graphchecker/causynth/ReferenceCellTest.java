@@ -285,6 +285,12 @@ public class ReferenceCellTest {
                                 CHECK + "#u7 VALUE field",
                                 CHECK + "#u8 CONTAINER container")),
                         observed(map.observedSites())},
+                {"the weave takes them off the map, once for the"
+                        + " campaign: a plan's task states none",
+                        siteIds(map.observedSites()),
+                        woven(ConcolicInstrumentationSelections
+                                .ConcolicMaterializationSelection.observed(
+                                        map.observedSites()))},
                 {"only the final map's store, by its constructor, is"
                         + " construction-only (no guarded store)",
                         Collections.singleton("<" + POLICY + ": void <init>()>"
@@ -428,6 +434,24 @@ public class ReferenceCellTest {
     private static List<String> guards(List<StaticScopeMap.Guard> guards) {
         List<String> found = new ArrayList<>();
         for (StaticScopeMap.Guard guard : guards) found.add(guard.toString());
+        return found;
+    }
+
+    private static Set<String> siteIds(JsonArray sites) {
+        Set<String> found = new LinkedHashSet<>();
+        for (JsonElement site : sites) {
+            found.add(site.getAsJsonObject().get("siteId").getAsString());
+        }
+        return found;
+    }
+
+    private static Set<String> woven(ConcolicInstrumentationSelections
+            .ConcolicMaterializationSelection selection) {
+        Set<String> found = new LinkedHashSet<>();
+        for (ConcolicInstrumentationSelections.ObservedSite site
+                : selection.observedSites()) {
+            found.add(site.siteId);
+        }
         return found;
     }
 

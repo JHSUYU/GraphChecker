@@ -469,8 +469,10 @@ public final class CausynthPipeline {
         private final List<CommunicationHandoffSpec> exports;
         private LoopBoundPolicy loopBound;
 
-        private CampaignEnvelope(List<InstrumentationPlan> campaign) {
+        private CampaignEnvelope(List<InstrumentationPlan> campaign,
+                                 ConcolicMaterializationSelection observed) {
             this.campaign = campaign;
+            materializations.mergeFrom(observed);
             exports = RuntimeRegionPlanner.exportSites(
                     RegionSkeletonInstrumentationSelection
                             .skeletonsFromEnvironment());
@@ -604,7 +606,8 @@ public final class CausynthPipeline {
     private void instrumentConcolicCampaign(
             List<InstrumentationPlan> campaign) {
         HookCatalog refs = HookCatalog.concolic();
-        CampaignEnvelope envelope = new CampaignEnvelope(campaign);
+        CampaignEnvelope envelope = new CampaignEnvelope(campaign,
+                observedSites());
         envelope.tagSelectedBodies();
         // The campaign's loops, bounded once under its one policy.
         instrumentConcolicLoopBounds(envelope.loopBoundMethods,
@@ -2461,6 +2464,42 @@ public final class CausynthPipeline {
     }
 
     /**
+     * The case's static scope map, in the output directory the campaign
+     * names ({@code causynth.output.dir}), or null where there is none (a
+     * recording before SEED made it).
+     */
+    private static Path declaredScopeMap() {
+        String declared = System.getProperty("causynth.output.dir", "")
+                .trim();
+        Path scopeMap = Paths.get(declared).resolve(StaticScopeMap.FILE);
+        return declared.isEmpty() || !Files.isRegularFile(scopeMap) ? null
+                : scopeMap;
+    }
+
+    /**
+     * The campaign's observed sites, off its scope map ({@code
+     * StaticScopeMap#observedSites}): every access of a tracked cell a
+     * replay observes, whichever occurrence reaches it, so the campaign's
+     * and never a task's (a plan states none).  PLAN read the same map;
+     * none is refused.
+     */
+    private static ConcolicMaterializationSelection observedSites() {
+        Path scopeMap = declaredScopeMap();
+        if (scopeMap == null) {
+            throw new IllegalStateException("OBSERVED_SITES_UNAVAILABLE: no "
+                    + StaticScopeMap.FILE + " in causynth.output.dir "
+                    + System.getProperty("causynth.output.dir", ""));
+        }
+        try {
+            return ConcolicMaterializationSelection.observed(
+                    StaticScopeMap.read(scopeMap).observedSites());
+        } catch (IOException unread) {
+            throw new IllegalStateException("OBSERVED_SITES_UNAVAILABLE: "
+                    + scopeMap + ": " + unread.getMessage(), unread);
+        }
+    }
+
+    /**
      * The recording's half of the provenance sites (SYMBOL-SCOPE §5.7): in
      * a constructor, the object under construction holds what it copies of
      * a decoded receiver, so the recorder states it as that version's
@@ -2470,12 +2509,8 @@ public final class CausynthPipeline {
      */
     private void instrumentRecordedProvenance(HookCatalog refs)
             throws IOException {
-        String declared = System.getProperty("causynth.output.dir", "");
-        Path scopeMap = Paths.get(declared.trim()).resolve(
-                StaticScopeMap.FILE);
-        if (declared.trim().isEmpty() || !Files.isRegularFile(scopeMap)) {
-            return;
-        }
+        Path scopeMap = declaredScopeMap();
+        if (scopeMap == null) return;
         int woven = 0;
         for (StaticScopeMap.Site site
                 : StaticScopeMap.read(scopeMap).provenanceSites()) {
