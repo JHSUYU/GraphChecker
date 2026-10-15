@@ -2331,9 +2331,12 @@ public class ComposerTest {
      * asked without a core answers no question that wants one, unless it
      * was asked under no assertion at all (the self-check), where no pin can
      * be in its core.  The fixture z3 answers the whole query
-     * {@code unknown}, path 0 unsat and path 1 sat, and logs each time it
-     * is asked path 0.  {what refuted path 0 first (null: nothing), the
-     * assertions then asked, whether a core is wanted, path 0 asked again}.
+     * {@code unknown}, path 0 unsat and path 1 sat, and logs each question
+     * it is asked of path 0 by its text, whichever engine asked it -- the
+     * engine that lost a race can ask after the ask returned: path 0 is
+     * asked again when a question of it is new.  {what refuted path 0
+     * first (null: nothing), the assertions then asked, whether a core is
+     * wanted, path 0 asked again}.
      */
     @Test
     public void aRefutedPathIsNotAskedAgain() throws Exception {
@@ -2350,7 +2353,8 @@ public class ComposerTest {
         Files.write(script, Arrays.asList("#!/bin/bash",
                 "input=$(cat)",
                 "case $input in",
-                "  *'(assert " + first + ")'*) echo 0 >> " + log
+                "  *'(assert " + first + ")'*) printf '%s' \"$input\""
+                        + " | grep -v smt.arith.solver | md5sum >> " + log
                         + "; echo unsat; echo '()' ;;",
                 "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
                 "  *) echo unknown ;;",
@@ -2368,6 +2372,8 @@ public class ComposerTest {
                 {more, pinned, false, true},
         };
         for (Object[] row : rows) {
+            // Each row's questions alone: the last row's z3s ended with it.
+            Files.write(log, new byte[0]);
             try (Disjunction asks = new Disjunction(composition,
                     new Z3(ScopedFixture.of(script), 30000L, 8192))) {
                 if ("self-check".equals(row[0])) {
@@ -2377,14 +2383,15 @@ public class ComposerTest {
                     List<String> refuting = (List<String>) row[0];
                     asks.ask(refuting, composition.selectors(), none, false);
                 }
-                long before = asked(log);
+                Set<String> before = new LinkedHashSet<String>(
+                        Files.readAllLines(log));
                 @SuppressWarnings("unchecked")
                 List<String> assertions = (List<String>) row[1];
                 Z3.Answer answer = asks.ask(assertions,
                         composition.selectors(), none, (Boolean) row[2]);
                 assertEquals(Arrays.toString(row), "sat", answer.status());
-                assertEquals(Arrays.toString(row), row[3],
-                        asked(log) > before);
+                assertEquals(Arrays.toString(row), row[3], !before
+                        .containsAll(Files.readAllLines(log)));
             }
         }
     }
