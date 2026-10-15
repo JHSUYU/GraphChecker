@@ -113,12 +113,12 @@ public class RootDemandTest {
 
     /**
      * A reference only the system's view classes write is no tracked cell
-     * ({@value RootDemand#SYSTEM_VIEW}): ZkStateReader.clusterState, woven
+     * ({@link edu.uva.liftlab.graphchecker.plan.SystemView}): ZkStateReader.clusterState, woven
      * for its decodes, is the view's bookkeeping, read as it is.
      */
     @Test
     public void aReferenceOnlyTheViewWritesIsNotTracked() {
-        System.setProperty(RootDemand.SYSTEM_VIEW, T);
+        System.setProperty(edu.uva.liftlab.graphchecker.plan.SystemView.PROPERTY, T);
         try {
             Map<String, List<String>> writers = new LinkedHashMap<>();
             scene(writers);
@@ -145,7 +145,7 @@ public class RootDemandTest {
             }
             assertEquals("PRE_WINDOW", kind);
         } finally {
-            System.clearProperty(RootDemand.SYSTEM_VIEW);
+            System.clearProperty(edu.uva.liftlab.graphchecker.plan.SystemView.PROPERTY);
         }
     }
 

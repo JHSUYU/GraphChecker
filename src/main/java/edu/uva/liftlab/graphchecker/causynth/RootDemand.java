@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
@@ -768,19 +769,6 @@ final class RootDemand {
         }
     }
 
-    /** The system property naming the system's view classes (a system's
-     *  {@code system_scope}), comma-separated class names. */
-    static final String SYSTEM_VIEW = "causynth.system.view";
-
-    /** The view classes {@value #SYSTEM_VIEW} names; none unset. */
-    static Set<String> viewClasses() {
-        Set<String> views = new LinkedHashSet<>();
-        for (String name : System.getProperty(SYSTEM_VIEW, "").split(",")) {
-            if (!name.trim().isEmpty()) views.add(name.trim());
-        }
-        return views;
-    }
-
     /** Which class a cell reached by an edge is, or null to go on. */
     private static final class Classifier {
         private final Map<String, List<Map<String, Object>>> into;
@@ -793,8 +781,8 @@ final class RootDemand {
                 trackedKind;
         private final Predicate<String> constructionOnly;
         private final Predicate<String> systemClass;
-        /** The system's view classes ({@value #SYSTEM_VIEW}). */
-        private final Set<String> views = viewClasses();
+        /** The system's view classes ({@link SystemView}). */
+        private final SystemView view = SystemView.current();
 
         Classifier(Map<String, List<Map<String, Object>>> into,
                    Set<String> carried, Set<String> regionMethods,
@@ -889,7 +877,7 @@ final class RootDemand {
             boolean viewed = !writers.isEmpty();
             for (String writer : writers) {
                 stored |= regionMethods.contains(writer);
-                viewed &= view(writer);
+                viewed &= view.holds(writer);
             }
             boolean container = JavaContainerTypes.shape(type)
                     != JavaContainerTypes.Shape.NONE;
@@ -919,17 +907,6 @@ final class RootDemand {
             if (container) return Kind.TRACK_CONTAINER;
             return tracked == SharedFieldFlow.TrackedKind.VALUE
                     ? Kind.TRACK : Kind.TRACK_IDENTITY;
-        }
-
-        /** Whether a method is one of a view class's (or a nested
-         *  class's of one). */
-        private boolean view(String method) {
-            int colon = method.indexOf(':');
-            if (!method.startsWith("<") || colon < 0) return false;
-            String owner = method.substring(1, colon);
-            int nested = owner.indexOf('$');
-            return views.contains(owner) || nested > 0
-                    && views.contains(owner.substring(0, nested));
         }
 
         private static boolean constants(Collection<String> writers) {

@@ -11254,6 +11254,55 @@ public class ComposerTest {
     }
 
     /**
+     * THE CHAIN'S FIELDS FOLLOW THE ANCHOR'S DATA THROUGH A DECODED OBJECT
+     * (ZkKeysMain#ports): a decode parses a document's leaf and stores a
+     * value derived from it into a field of the object it builds; the
+     * anchor reads that field.  The seed's composition binds the read to
+     * the decode's write, whose expression names the leaf, so the leaf's
+     * port is a key -- read off the run's rows, no field or path named.
+     * Another leaf of the same document, which nothing the anchor reads
+     * derives from, is none.
+     */
+    @Test
+    public void aLeafADecodedObjectsDerivedFieldCarriesToTheAnchorIsAKey()
+            throws Exception {
+        Path iteration = folder.newFolder("derived-leaf").toPath();
+        OccurrenceAddress decode = occurrence("case/nn1", "REGION.decode",
+                CausalContext.of(Role.of("WATCHER"), "", 1),
+                frame("Reader#refresh#4", 0));
+        String carried = ContentPort.of("SOLR_ZK", "/c/state.json",
+                "/c/rules/r/expiry");
+        String other = ContentPort.of("SOLR_ZK", "/c/state.json",
+                "/c/rules/r/ranges");
+        LocationId field = LocationId.of(LocationKind.INSTANCE, "41", "due");
+        Session seed = new Session(iteration, "s-seed", false);
+        seed.activation(decode, "thread#watcher", false);
+        seed.attach(Endpoint.of(decode, carried, at("parse#7", 0), 0),
+                "M_J_leaf_expiry", "J", "120", null);
+        seed.attach(Endpoint.of(decode, other, at("parse#8", 0), 0),
+                "M_J_leaf_ranges", "J", "3", null);
+        // The field the decode builds: a value derived from the leaf.
+        seed.expression("EXPR.00000000000000d1", binary("+",
+                symbol("M_J_leaf_expiry", "J"), integer("J", 0L)));
+        seed.write(Endpoint.of(decode, "Rule#<init>#3:WRITE",
+                at("w#9", 0), 0), field, 9L, "EXPR.00000000000000d1");
+        // The anchor compares that field with a constant.
+        seed.expression("EXPR.00000000000000f1", binary("<",
+                read("INSTANCE_FIELD", "41", "due", 9L, "J"),
+                integer("J", 100L)));
+        seed.target("EXPR.00000000000000f1", false, true);
+        seed.write();
+        Corpus corpus = Corpus.read(iteration, null);
+        Composer.Composition composition = Composer.compose(corpus, ANCHOR,
+                1, StaticScopeMap.empty());
+        Set<String> keys = ZkKeysMain.ports(corpus, composition.body());
+        assertTrue("the derived field's leaf is a key: " + keys,
+                keys.contains(carried));
+        assertFalse("a leaf nothing the anchor reads derives from is not",
+                keys.contains(other));
+    }
+
+    /**
      * The seed's leaves rekey the chain (ZkKeysMain#keys): a path PLAN keyed
      * an occurrence by keeps its row, now with the pointers the seed names
      * there -- none, so its leaves cross as constants --, and every keyed
