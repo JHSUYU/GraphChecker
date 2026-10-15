@@ -4953,6 +4953,11 @@ campaign_explore() {
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -a stream_reruns_dropped=() stream_confirms_reaped=()
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
+  # Seated questions' admissions, and what their returns measured
+  # (campaign_stream_seated_returned).
+  local -A stream_job_since=()
+  local stream_admitted_pass="" stream_seated_ms=0 stream_seated_n=0
+  local stream_read_mb_s=0
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
@@ -6383,8 +6388,10 @@ campaign_stream_admit_host() {
       ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
         || is=warm
       [[ "${is}" == "${pass}" ]] || continue
-      campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
-        && return 0
+      if campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}"; then
+        stream_admitted_pass=${pass}
+        return 0
+      fi
     done
   done
   if [[ -z "${stream_waiting}" ]]; then
@@ -6398,14 +6405,21 @@ campaign_stream_admit_host() {
 # Whether one more host's solver of this campaign is due: none serves or
 # starts yet, or the questions queued for one would take the solvers that
 # serve or start (campaign_stream_warm, or a question of theirs in flight)
-# longer to answer, at campaign_solver_question_s each, than a new solver
-# takes to read the corpus (campaign_corpus_mb at campaign_solver_read_mb_s).
+# longer to answer, at the campaign's measured seat per question, than a new
+# solver takes to read the corpus (campaign_corpus_mb at the campaign's
+# measured read rate; both campaign_stream_seated_returned, seeded until
+# measured).
 # Else a question waits for a seat of a serving solver, and the other hosts
 # keep their room for replays: a solver of a big corpus is most of its host
 # (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
 # round-robin warmed one on all 13 lifts for questions answered in 1 s).
 campaign_stream_solver_due() {
   local host solvers=0 queued=0 entry
+  local seat=${campaign_solver_seat_seed_ms}
+  local rate=${campaign_solver_read_seed_mb_s}
+  (( ${stream_seated_n:-0} < campaign_solver_seat_least )) \
+    || seat=$(( stream_seated_ms / stream_seated_n ))
+  (( ${stream_read_mb_s:-0} <= 0 )) || rate=${stream_read_mb_s}
   for host in "${stream_hosts[@]}"; do
     campaign_stream_warm "${host}" \
       || (( ${stream_host_solves[${host}]:-0} > 0 )) || continue
@@ -6415,17 +6429,43 @@ campaign_stream_solver_due() {
   for entry in "${stream_queue[@]}"; do
     [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
   done
-  (( queued * campaign_solver_question_s * campaign_solver_read_mb_s \
-     > solvers * $(campaign_corpus_mb "${sessions:-}") ))
+  (( queued * seat * rate > solvers * $(campaign_corpus_mb "${sessions:-}") \
+     * 1000 ))
 }
 
-# What a host's solver takes per question, in seconds, and reads its corpus
-# at, in MB/s, when it starts (campaign_stream_solver_due): PV7-adhoc-39's
-# questions took 0.4-8 s, a median under 1 s, on a warm solver; SGF7-adhoc-39's
-# cold solvers read 21140 MB of sessions in 14-21 min with 13 lifts reading
-# at once (17-25 MB/s), PV7's one 9974 MB in 71-244 s.
-campaign_solver_question_s=2
-campaign_solver_read_mb_s=20
+# What a seat of a host's solver is held per question and what a solver
+# reads its corpus at when it starts (campaign_stream_solver_due): this
+# campaign's own, measured as its questions return (campaign_stream_seated_
+# returned): the mean seat of the questions answered on a warm solver,
+# timeouts of the first lane included, once campaign_solver_seat_least have
+# (SGF7-adhoc-39: 102 of ~570 first asks held their seat the whole 60 s, a
+# mean near 12 s where most took 1-2 s), and the corpus's MB over the
+# seconds the first question a solver started for took.  Until then these
+# seeds: PV7-adhoc-39's questions took a median under 1 s on a warm solver;
+# SGF7-adhoc-39's cold solvers read 21140 MB of sessions in 14-21 min with 13
+# lifts reading at once (17-25 MB/s).
+campaign_solver_seat_seed_ms=2000
+campaign_solver_read_seed_mb_s=20
+campaign_solver_seat_least=4
+
+# campaign_stream_seated_returned <pid>: a seated question of job <pid>
+# returned answered: its seat time taken into the campaign's mean (one a
+# warm host's solver answered), or, the first one a solver started for, the
+# read rate (its corpus's MB over its seconds).
+campaign_stream_seated_returned() {
+  local since pass now seconds
+  read -r since pass <<<"${stream_job_since[$1]:-}"
+  [[ -n "${since}" ]] || return 0
+  now=$(date +%s%3N)
+  if [[ "${pass}" == warm ]]; then
+    stream_seated_ms=$(( ${stream_seated_ms:-0} + now - since ))
+    stream_seated_n=$(( ${stream_seated_n:-0} + 1 ))
+  elif (( ${stream_read_mb_s:-0} <= 0 )); then
+    seconds=$(( (now - since + 999) / 1000 ))
+    stream_read_mb_s=$(( $(campaign_corpus_mb "${sessions:-}") / seconds ))
+    (( stream_read_mb_s > 0 )) || stream_read_mb_s=1
+  fi
+}
 
 # Whether a solve of this campaign returned answered on <host> within its
 # solver's idle time (campaign_solver_idle_s; stream_solver_seen, set by
@@ -6631,6 +6671,8 @@ campaign_stream_start() {
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
   stream_job_charge[$!]=${campaign_host_charge_id}
+  ! campaign_stream_seated "${kind}" \
+    || stream_job_since[$!]="$(date +%s%3N) ${stream_admitted_pass:-}"
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
   campaign_stream_host_count "${host}" "${kind}" 1
@@ -6738,6 +6780,7 @@ campaign_stream_ended() {
     # served it, and its host is cold (campaign_stream_warm).
     if campaign_stream_seated "${kind}" && [[ -n "${answer}" ]]; then
       stream_solver_seen[${host}]=$(date +%s)
+      campaign_stream_seated_returned "${pid}"
     elif campaign_stream_seated "${kind}" && [[ -n "${again}" ]]; then
       unset 'stream_solver_seen[$host]'
     fi
@@ -6765,7 +6808,8 @@ campaign_stream_ended() {
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
-    unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' 'stream_job_tree[$pid]'
+    unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' \
+      'stream_job_tree[$pid]' 'stream_job_since[$pid]'
   fi
 }
 

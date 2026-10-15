@@ -4423,13 +4423,19 @@ EOF
 
 # STREAM-SOLVER-DUE: a question starts a host's solver only when none serves
 # or starts yet, or the questions queued per solver serving or starting would
-# take longer to answer (2 s each) than a new one's corpus read (20 MB/s):
-# a 21 GB corpus's solver is most of its lift (SGF7-adhoc-39).  Per row: the
-# warm hosts, the hosts whose solver starts (a question in flight there), the
-# questions queued, the corpus's MB, and whether one more solver is due.
-while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_due; do
+# take longer to answer (the campaign's measured mean seat, 2 s before four
+# returned) than a new one's corpus read (its measured rate, 20 MB/s before
+# one): a 21 GB corpus's solver is most of its lift (SGF7-adhoc-39), and its
+# first lane's 60 s timeouts held a seat 12 s per question on average.  Per
+# row: the warm hosts, the hosts whose solver starts (a question in flight
+# there), the questions queued, the corpus's MB, the questions returned
+# answered by a warm solver (<ms each>x<count>, - none), the seconds the first
+# question a solver started for took (- none returned), and whether one more
+# solver is due (campaign_stream_seated_returned measures the two).
+while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
+    sd_due; do
   sd_said=$(
-    declare -A stream_solver_seen=() stream_host_solves=()
+    declare -A stream_solver_seen=() stream_host_solves=() stream_job_since=()
     stream_hosts=(lift02 lift03 lift04 lift05)
     stream_queue=("REPLAY r X g0/c g0/p")
     for ((sd_at = 0; sd_at < sd_warm; sd_at++)); do
@@ -4442,18 +4448,35 @@ while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_due; do
       stream_queue+=("OBLIGATION r q${sd_at}")
     done
     campaign_corpus_mb() { echo "${sd_mb}"; }
+    stream_seated_ms=0
+    stream_seated_n=0
+    stream_read_mb_s=0
+    if [[ "${sd_seat}" != - ]]; then
+      for ((sd_at = 0; sd_at < ${sd_seat#*x}; sd_at++)); do
+        stream_job_since[${sd_at}]="$(( $(date +%s%3N) - ${sd_seat%x*} )) warm"
+        campaign_stream_seated_returned "${sd_at}"
+      done
+    fi
+    if [[ "${sd_read}" != - ]]; then
+      stream_job_since[c]="$(( $(date +%s%3N) - sd_read * 1000 )) cold"
+      campaign_stream_seated_returned c
+    fi
     campaign_stream_solver_due && echo due || echo wait
   )
   [[ "${sd_said}" == "${sd_due}" ]] \
     || fail "STREAM-SOLVER-DUE: ${sd_warm} warm, ${sd_starting} starting, \
 ${sd_queued} queued over ${sd_mb} MB: ${sd_said}, not ${sd_due}"
 done <<'EOF'
-0|0|5|21140|due
-1|0|100|21140|wait
-1|0|600|21140|due
-2|1|600|21140|wait
-1|0|5|100|due
-0|1|2|100|wait
+0|0|5|21140|-|-|due
+1|0|100|21140|-|-|wait
+1|0|600|21140|-|-|due
+2|1|600|21140|-|-|wait
+1|0|5|100|-|-|due
+0|1|2|100|-|-|wait
+1|0|250|21140|-|-|wait
+1|0|250|21140|12000x10|-|due
+1|0|250|21140|12000x3|-|wait
+1|0|600|21140|-|2000|wait
 EOF
 
 # STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed

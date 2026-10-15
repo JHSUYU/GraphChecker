@@ -1444,11 +1444,14 @@ set when a solve returns answered there, cleared when one returns asking again: 
 solver of its corpus serves, so the question needs no solver started and no corpus read), and on
 a host whose solver it would start only when one more is due (`campaign_stream_solver_due`: none
 serves or starts yet, or the questions queued per solver serving or starting would take longer to
-answer, `campaign_solver_question_s` 2 s each, than a new solver takes to read the corpus,
-`campaign_corpus_mb` at `campaign_solver_read_mb_s` 20 MB/s) -- else it waits for a serving solver's
-seat and the other hosts keep their room for replays (SGF7-adhoc-39: a solver of its 21 GB corpus held
-18.4 GB of a lift's 22.1 GB, one replay beside it, and the round-robin warmed one on all 13 lifts for
-questions answered in about a second); a REPLAY on whichever host admits it (its worker is on the
+answer, at the campaign's mean seat per question answered on a warm solver, first-lane timeouts
+included, than a new solver takes to read the corpus, `campaign_corpus_mb` at the rate the first
+question a solver started for measured, its MB over its seconds -- both measured as questions return,
+`campaign_stream_seated_returned`, the seat from four on, 2 s and 20 MB/s until then, SGF7-adhoc-39's
+first lane holding a seat 12 s per question on average, 102 of about 570 the whole 60 s) -- else it
+waits for a serving solver's seat and the other hosts keep their room for replays (SGF7-adhoc-39: a
+solver of its 21 GB corpus held 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
+round-robin warmed one on all 13 lifts for questions answered in about a second); a REPLAY on whichever host admits it (its worker is on the
 shared home). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
