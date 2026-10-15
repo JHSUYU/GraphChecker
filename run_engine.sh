@@ -2902,15 +2902,21 @@ $(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
 
 # campaign_replay_typical <peak_mb>: one more replay after the seed's
 # returned at <peak_mb>.  Once campaign_replay_typical_after of them have,
-# the stream charges a replay at their 90th percentile times 1.25, rounded up
-# to 128 MB, at least campaign_replay_min_need_mb and at most the need
+# the stream charges a replay at their 90th percentile, rounded up to 128 MB,
+# at least campaign_replay_min_need_mb and at most the need
 # (campaign_stream_charge_mb), while its heap stays sized by the need: one
 # replay that outgrows its charge grows it while its host has real room
 # (campaign_watch_workload).  Charged at the largest peak times 1.5, the
 # lifts' ledgers held 21-22 GB over 8-11 GB of real use and no host admitted
 # one more start (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB,
 # each replay charged 3456 MB; solr-adhoc-40 LD1: p50 1583, max 3454 MB, the
-# seed's).  Said when it moves.
+# seed's); at the 90th percentile times 1.25 a full host's real use was
+# about 60 % of its charges (lift06: 20 GB charged, 12.8 GB in use).  At the
+# 90th percentile itself no host filled with replays of the measured peaks
+# passes its ceiling (SGF7STOPPED-adhoc-39: p90 2108 MB, charged 2176 MB, ten
+# to a lift where eight were; PV7-adhoc-39, SGF7-adhoc-09: none either, of
+# 20000 drawn fills each); at the median the 39s' did (62 % of fills).
+# Said when it moves.
 campaign_replay_typical() {
   local p90 typical
   campaign_replay_peaks+=("$1")
@@ -2919,14 +2925,14 @@ campaign_replay_typical() {
   p90=$(printf '%s\n' "${campaign_replay_peaks[@]}" | LC_ALL=C sort -n \
     | awk '{ peak[NR] = $1 } END { i = int(NR * 0.9); if (i < NR) i++;
              print peak[i] }')
-  typical=$(( (p90 * 5 + 511) / 512 * 128 ))
+  typical=$(( (p90 + 127) / 128 * 128 ))
   (( typical >= campaign_replay_min_need_mb )) \
     || typical=${campaign_replay_min_need_mb}
   (( typical != campaign_replay_typical_mb )) || return 0
   campaign_replay_typical_mb=${typical}
   campaign_log "the replays after the seed's peaked at ${p90} MB or less \
 in 9 of 10 (${#campaign_replay_peaks[@]} returned): a replay of the stream is \
-charged $(campaign_stream_charge_mb REPLAY) MB at its start"
+charged that peak, $(campaign_stream_charge_mb REPLAY) MB, at its start"
 }
 
 # campaign_replay_charge_mb <need>: what a replay of that need is charged at
@@ -6366,6 +6372,9 @@ campaign_stream_admit_host() {
   count=${#stream_hosts[@]}
   for pass in warm cold; do
     [[ "${pass}" == cold ]] || campaign_stream_seated "${kind}" || continue
+    # A question starts a host's solver only when one more is due.
+    [[ "${pass}" == warm ]] || ! campaign_stream_seated "${kind}" \
+      || campaign_stream_solver_due || continue
     mb=$(campaign_stream_charge_mb "${kind}" "${pass}")
     for ((turn = 0; turn < count; turn++)); do
       host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
@@ -6385,6 +6394,38 @@ campaign_stream_admit_host() {
   fi
   return 1
 }
+
+# Whether one more host's solver of this campaign is due: none serves or
+# starts yet, or the questions queued for one would take the solvers that
+# serve or start (campaign_stream_warm, or a question of theirs in flight)
+# longer to answer, at campaign_solver_question_s each, than a new solver
+# takes to read the corpus (campaign_corpus_mb at campaign_solver_read_mb_s).
+# Else a question waits for a seat of a serving solver, and the other hosts
+# keep their room for replays: a solver of a big corpus is most of its host
+# (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
+# round-robin warmed one on all 13 lifts for questions answered in 1 s).
+campaign_stream_solver_due() {
+  local host solvers=0 queued=0 entry
+  for host in "${stream_hosts[@]}"; do
+    campaign_stream_warm "${host}" \
+      || (( ${stream_host_solves[${host}]:-0} > 0 )) || continue
+    solvers=$((solvers + 1))
+  done
+  (( solvers > 0 )) || return 0
+  for entry in "${stream_queue[@]}"; do
+    [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
+  done
+  (( queued * campaign_solver_question_s * campaign_solver_read_mb_s \
+     > solvers * $(campaign_corpus_mb "${sessions:-}") ))
+}
+
+# What a host's solver takes per question, in seconds, and reads its corpus
+# at, in MB/s, when it starts (campaign_stream_solver_due): PV7-adhoc-39's
+# questions took 0.4-8 s, a median under 1 s, on a warm solver; SGF7-adhoc-39's
+# cold solvers read 21140 MB of sessions in 14-21 min with 13 lifts reading
+# at once (17-25 MB/s), PV7's one 9974 MB in 71-244 s.
+campaign_solver_question_s=2
+campaign_solver_read_mb_s=20
 
 # Whether a solve of this campaign returned answered on <host> within its
 # solver's idle time (campaign_solver_idle_s; stream_solver_seen, set by

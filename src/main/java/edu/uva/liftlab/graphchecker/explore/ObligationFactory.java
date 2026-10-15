@@ -285,6 +285,10 @@ public final class ObligationFactory {
                 settles, false, owed);
     }
 
+    /** How a hard lane's model over another query than the one the corpus
+     *  now builds is refused ({@link #solve}). */
+    static final String HARD_MODEL_STALE = "HARD_MODEL_STALE";
+
     /**
      * What an answer to {@code ask} settles of its flip without a model: an
      * UNSAT, which settles its question, or no verdict by name -- the budget
@@ -1123,12 +1127,21 @@ public final class ObligationFactory {
                         + rests.size() + " world(s) its replays refuted "
                         + "(WORLD_REFUTED), on which this rests: "
                         + String.join(", ", rests)),
-                gaps, built.modelSymbols);
-        // The hard lane's model is planted as it is, over whatever query the
-        // corpus builds now: its replay is a real run, and decides.
-        Z3.Answer answer = decided == null
-                ? solver.ask(built.smt2, built.modelSymbols, false)
-                : Z3.Answer.sat(decided.values);
+                gaps, built.modelSymbols, ArtifactIO.sha256(query));
+        Z3.Answer answer;
+        if (decided == null) {
+            answer = solver.ask(built.smt2, built.modelSymbols, false);
+        } else if (decided.querySha256.equals(ask.querySha256)) {
+            // The hard lane's model, over this very query.
+            answer = Z3.Answer.sat(decided.values);
+        } else {
+            // The corpus moved under the model: refused by name, no replay
+            // and no re-ask (a world-only answer, as any refusal of its world).
+            return refused(candidate, Verdict.NOT_ADMITTED, HARD_MODEL_STALE
+                    + ": the hard lane decided query " + decided.querySha256
+                    + ", and this corpus builds " + ask.querySha256, query,
+                    gaps, question, false);
+        }
         Outcome settled = settled(ask, answer, budget, solver, query);
         if (settled != null) return settled;
         Planted planted = planted(corpus, candidate, built, answer.values(),

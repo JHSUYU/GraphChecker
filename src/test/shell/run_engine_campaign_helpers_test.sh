@@ -1989,8 +1989,8 @@ done <<'EOF'
 - 238|512 512|1
 EOF
 # MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
-# the stream is charged their 90th percentile times 1.25 (rounded up to 128
-# MB, at least 512, at most the need), its heap still the need; before that,
+# the stream is charged their 90th percentile (rounded up to 128 MB, at least
+# 512, at most the need), its heap still the need; before that,
 # the need.  Per row: the seed's peak, the later peaks, the need and the
 # stream's replay charge after them.
 while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
@@ -2014,10 +2014,10 @@ while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
     || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
 ${typical_got}, not ${typical_need}|${typical_charge}"
 done <<'EOF'
-2234|918 900 950 1000 880 1242 920 910|3456|1664
+2234|918 900 950 1000 880 1242 920 910|3456|1280
 3454|1583 1600 1500|5248|5248
 2234|300 310 320 330 340 350 360 370|3456|512
-1000|900 950 1000 1100 1200 1300 1400 3000|4608|3840
+1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
@@ -4421,6 +4421,41 @@ done <<'EOF'
 0|1|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;
 EOF
 
+# STREAM-SOLVER-DUE: a question starts a host's solver only when none serves
+# or starts yet, or the questions queued per solver serving or starting would
+# take longer to answer (2 s each) than a new one's corpus read (20 MB/s):
+# a 21 GB corpus's solver is most of its lift (SGF7-adhoc-39).  Per row: the
+# warm hosts, the hosts whose solver starts (a question in flight there), the
+# questions queued, the corpus's MB, and whether one more solver is due.
+while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_due; do
+  sd_said=$(
+    declare -A stream_solver_seen=() stream_host_solves=()
+    stream_hosts=(lift02 lift03 lift04 lift05)
+    stream_queue=("REPLAY r X g0/c g0/p")
+    for ((sd_at = 0; sd_at < sd_warm; sd_at++)); do
+      stream_solver_seen[${stream_hosts[sd_at]}]=$(date +%s)
+    done
+    for ((sd_at = 0; sd_at < sd_starting; sd_at++)); do
+      stream_host_solves[${stream_hosts[sd_warm + sd_at]}]=1
+    done
+    for ((sd_at = 0; sd_at < sd_queued; sd_at++)); do
+      stream_queue+=("OBLIGATION r q${sd_at}")
+    done
+    campaign_corpus_mb() { echo "${sd_mb}"; }
+    campaign_stream_solver_due && echo due || echo wait
+  )
+  [[ "${sd_said}" == "${sd_due}" ]] \
+    || fail "STREAM-SOLVER-DUE: ${sd_warm} warm, ${sd_starting} starting, \
+${sd_queued} queued over ${sd_mb} MB: ${sd_said}, not ${sd_due}"
+done <<'EOF'
+0|0|5|21140|due
+1|0|100|21140|wait
+1|0|600|21140|due
+2|1|600|21140|wait
+1|0|5|100|due
+0|1|2|100|wait
+EOF
+
 # STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed
 # its verdict, and no witness attempt starts meanwhile
 # (campaign_stream_confirm_owed); obligations and replays owe none.  Per
@@ -4887,6 +4922,8 @@ while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
     campaign_solver_seats() { printf '2\n'; }
     campaign_stream_has_cores() { return 0; }
     campaign_host_try_charge() { status=0; campaign_host_charge_id=x; }
+    # One more solver due (STREAM-SOLVER-DUE says when).
+    campaign_stream_solver_due() { return 0; }
     chosen=()
     for _ in 1 2 3; do
       campaign_stream_admit_host "${admit_kind}" || exit 1
