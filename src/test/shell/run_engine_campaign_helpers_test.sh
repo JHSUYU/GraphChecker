@@ -2257,6 +2257,35 @@ $(live_charges "${solver_test}/hosts")"
   [[ "${status}" -eq 5 && $(( SECONDS - started )) -lt 10 \
      && -z "$(ls "${solver_home}/requests")" ]] \
     || fail "a question behind a busy solver was not withdrawn (${status})"
+  # Retired: the solver its asker started gave its corpus up
+  # (Service#retireOutgrown: <dir>/retired names it, the question untaken), so
+  # that asker starts the next one, sized anew, which answers it -- never
+  # "the solver ended before it answered".
+  campaign_solver_busy_patience_s=600
+  mkdir -p "${solver_test}/e"
+  : >"${solver_test}/solvers"
+  campaign_start_solver() {
+    echo "$1" >>"${solver_test}/solvers"
+    if [[ "$(wc -l <"${solver_test}/solvers")" -gt 1 ]]; then
+      solver_started "$@"
+      return
+    fi
+    ( sleep 1
+      until mkdir "$1/lock" 2>/dev/null; do sleep 0.1; done
+      cat "$1/server" >"$1/retired"
+      rm -f -- "$1/server"
+      rmdir "$1/lock" ) &
+    printf '%s\n' "$!" >"$1/server"
+  }
+  status=0
+  campaign_solve_obligation OB.e "${solver_wave}/obligations.jsonl" \
+    "${solver_test}/iteration/sessions" "${solver_test}/e" \
+    >/dev/null 2>"${solver_test}/e.err" || status=$?
+  [[ "${status}" -eq 1 && "$(wc -l <"${solver_test}/solvers")" -eq 2 ]] \
+    && grep -q "the round has no obligation OB.e" "${solver_test}/e.err" \
+    || fail "a retired solver's question was not asked of the next one \
+(${status}, $(wc -l <"${solver_test}/solvers") starts): \
+$(cat "${solver_test}/e.err")"
 )
 
 # SOLVE-OWED: a solve never waits for room on the pool inside its start
@@ -2267,12 +2296,12 @@ $(live_charges "${solver_test}/hosts")"
 # 3712 MB), else owed one (a warm host's 1152 MB): solve_owed, its need and
 # lane, no answer, and the worker returns.  A question its host's solver could
 # not answer (out of heap, died) is owed a solver of its own at its corpus's
-# solver heap (campaign_solver_need_mb: 2048 MB -> 2560 + 1152 MB); what
+# solver need (campaign_solver_need_mb: 2048 MB -> 2560 + 1152 MB); what
 # other solvers of the corpus held places nothing (measured: 6000 MB in
 # solver-lift12.log beside the corpus).  A solver of its own its watch ended
 # past its charge is owed what it held -- its watched peak with the usual
 # margin and the z3 room its peak does not count (4000 MB -> 6016 + 1152);
-# one out of heap doubles the corpus's solver heap and is owed that (4096 MB
+# one out of heap states the heap it outgrew, needed from then on (4096 MB
 # -> 4736 + 1152, in the hard lane + 4096).  One that failed where more
 # memory is no help -- within its charge, or out of heap at the engine heap
 # -- fails the worker by name, its cause what its JVM threw, never the
@@ -2405,44 +2434,64 @@ EOF_OWED
    && ! -e "${retry_test}/warm/alone-asks" ]] \
   || fail "SOLVE-OWED: a solver of its own ran under another charge than its \
 start's, or a warm host's ran one"
-[[ "$(cat "${retry_test}/heap/solver_heap_mb" 2>/dev/null)" == 4096 ]] \
-  || fail "SOLVE-OWED: a solver out of its 2048 MB heap did not double its \
-corpus's (${retry_test}/heap/solver_heap_mb)"
+[[ "$(cat "${retry_test}/heap/solver_outgrown_mb" 2>/dev/null)" == 4096 ]] \
+  || fail "SOLVE-OWED: a solver out of its 4096 MB heap did not state it \
+beside its corpus (${retry_test}/heap/solver_outgrown_mb)"
 owed_why="its host's solver did not answer (ObligationSolverMain: "
 owed_why+="java.lang.OutOfMemoryError: Java heap space)"
 [[ "$(jq -r .why "${retry_test}/fails/solve_owed")" == "${owed_why}" ]] \
   || fail "SOLVE-OWED: an owed solve does not say why: \
 $(cat "${retry_test}/fails/solve_owed")"
 
-# SOLVER-HEAP: a corpus's solvers start at campaign_solver_start_heap_mb, and
-# each out-of-heap exit doubles the next one's heap, up to the engine heap,
-# never below what another solver of the corpus already outgrew; a solver JVM
-# is charged its heap's footprint and a question's z3 room (1152 MB).  Per
-# row: the engine heap, the heaps the
-# corpus's solvers ran out of, in order, and the heap and charge after.
+# SOLVER-HEAP: a corpus's solver is sized by its session files
+# (campaign_corpus_mb, stated beside the corpus): the heap its live set needs
+# now (85 % of them, at 150 % for the collector, at least 2048 MB, never less
+# than a heap a solver of it ran out of), room to grow to twice that, up to
+# the engine heap; charged that need's footprint and a question's z3 room
+# (1152 MB); and a host's solver gives its corpus up past what its heap holds
+# (0 at the engine heap).  Per row: the engine heap, the corpus's MB, the
+# heaps its solvers ran out of, in order, and the heap, charge and retire
+# point after.
 solver_heap_dir=${test_tmp}/solver-heap
-while IFS='|' read -r sh_engine sh_outgrown sh_heap sh_need; do
+while IFS='|' read -r sh_engine sh_corpus sh_outgrown sh_heap sh_need \
+    sh_retire; do
   rm -rf -- "${solver_heap_dir}"
   mkdir -p "${solver_heap_dir}/sessions"
+  printf '%s %s\n' "$(date +%s)" "${sh_corpus}" \
+    >"${solver_heap_dir}/corpus_mb"
   sh_said=$(
     engine_memory_mb=${sh_engine}
     for sh_out in ${sh_outgrown}; do
       campaign_solver_outgrown "${solver_heap_dir}/sessions" "${sh_out}"
     done
-    printf '%s %s' "$(campaign_solver_heap_mb "${solver_heap_dir}/sessions")" \
-      "$(campaign_solver_need_mb "${solver_heap_dir}/sessions")"
+    sh_at=$(campaign_solver_heap_mb "${solver_heap_dir}/sessions")
+    printf '%s %s %s' "${sh_at}" \
+      "$(campaign_solver_need_mb "${solver_heap_dir}/sessions")" \
+      "$(campaign_solver_retire_mb "${sh_at}")"
   )
-  [[ "${sh_said}" == "${sh_heap} ${sh_need}" ]] \
-    || fail "engine ${sh_engine}, outgrown [${sh_outgrown}]: ${sh_said}, not \
-${sh_heap} ${sh_need}"
+  [[ "${sh_said}" == "${sh_heap} ${sh_need} ${sh_retire}" ]] \
+    || fail "engine ${sh_engine}, corpus ${sh_corpus} MB, outgrown \
+[${sh_outgrown}]: ${sh_said}, not ${sh_heap} ${sh_need} ${sh_retire}"
 done <<'EOF_HEAP'
-16384||2048|3712
-16384|2048|4096|5888
-16384|2048 4096 8192|16384|18944
-6144|2048 4096|6144|8064
-1024||1024|2624
-16384|4096 2048|8192|10240
+16384|0||4096|3712|3212
+16384|3000||7650|5600|6000
+16384|9974||16384|15046|0
+16384|0|2048|4096|3712|3212
+16384|0|2048 4096 8192|16384|10240|0
+6144|0|2048 4096|6144|5888|0
+1024|0||1024|2624|0
+16384|0|4096 2048|8192|5888|6425
 EOF_HEAP
+# The corpus's size is read again once its statement is past
+# campaign_corpus_mb_fresh_s, from the session files.
+mkdir -p "${solver_heap_dir}/sessions/s1"
+head -c 3145728 /dev/zero >"${solver_heap_dir}/sessions/s1/rows.jsonl"
+printf '%s 999\n' "$(( $(date +%s) - 61 ))" >"${solver_heap_dir}/corpus_mb"
+sh_read=$(campaign_corpus_mb "${solver_heap_dir}/sessions")
+[[ "${sh_read}" -ge 3 && "${sh_read}" -le 4 \
+   && "$(cut -d' ' -f2 "${solver_heap_dir}/corpus_mb")" == "${sh_read}" ]] \
+  || fail "a stale corpus size was not read again: ${sh_read}, \
+$(cat "${solver_heap_dir}/corpus_mb")"
 
 # SOLVE-LANES-WORKER: a first ask goes to its host's solver (at the first
 # budget, campaign_solver_first_ms); one its host had no room for (3) or whose
@@ -4083,7 +4132,7 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     sessions="${split_dir}/it/sessions"
     stream_classes=g0/classes
     stream_plan=g0/plan.jsonl
-    stream_admitted_mb=${campaign_solver_start_mb}
+    stream_admitted_mb=$(campaign_solver_need_mb)
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
       stream_job_tree=() stream_host_jobs=() stream_solver_seen=() \
       stream_host_solves=()
@@ -4209,7 +4258,8 @@ EOF
 # standing there, idle or busy -- is an answer, landed NOT_ADMITTED naming
 # that charge, with the campaign's gap row; a waiting step's hold, which
 # comes back, is none.  Per row: the ending job's kind, what it owes (need
-# and lane), the corpus's solver heap, the heads on lift12 and lift13 (a
+# and lane), the heap a solver of the corpus needs (stated as one it ran out
+# of, campaign_solver_outgrown), the heads on lift12 and lift13 (a
 # reservation, b: busy, +: a waiting step's hold), and the queue, the hard
 # lane and what waits to land after it.
 owed_stream="${test_tmp}/stream-owed"
@@ -4218,7 +4268,7 @@ while IFS='|' read -r os_kind os_need os_lane os_heap os_heads os_queue \
   rm -rf -- "${owed_stream}"
   os_worker="${owed_stream}/it/obligations-0000/A"
   mkdir -p "${os_worker}"
-  printf '%s\n' "${os_heap}" >"${owed_stream}/it/solver_heap_mb"
+  printf '%s\n' "${os_heap}" >"${owed_stream}/it/solver_outgrown_mb"
   os_said=$(
     iteration_dir="${owed_stream}/it"
     sessions="${owed_stream}/it/sessions"

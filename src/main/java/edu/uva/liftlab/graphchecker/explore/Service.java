@@ -38,6 +38,9 @@ import java.util.List;
  *                          there (the solver: the waiting worker moves them
  *                          into its own directory, the one writer there)
  *   answers/&lt;q&gt;.json      {exit, error}: the answer is complete
+ *   retired                what {@code server} named when the service gave
+ *                          its corpus up ({@link Outgrown}): its askers start
+ *                          the next one, as after an idle end
  * </pre>
  *
  * <p>Questions are answered oldest first (a name starts with the instant it
@@ -48,7 +51,10 @@ import java.util.List;
  * lock, so a question put in after that finds no service and its asker
  * starts one; one given none serves until it is ended.  A question taken by
  * a service that died is its asker's to fail; one still waiting is the next
- * service's.</p>
+ * service's.  An answerer that cannot hold what a question needs ({@link
+ * Outgrown}: the corpus outgrew the heap it was started for) gives the
+ * question back untaken and the service ends at once, naming itself
+ * {@code retired}, so its askers start one sized anew.</p>
  */
 final class Service {
     static final String LOCK = "lock";
@@ -58,6 +64,7 @@ final class Service {
     static final String OUT = "out";
     static final String ASKED = ".json";
     static final String TAKEN = ".taken";
+    static final String RETIRED = "retired";
     /** How often an idle service looks for a question. */
     private static final long POLL_MILLIS = 100L;
     /** A lock older than this was left by a holder that died holding it
@@ -68,6 +75,16 @@ final class Service {
      *  there. */
     interface Answerer {
         void answer(JsonObject question, Path out) throws Exception;
+    }
+
+    /** An answerer's refusal to take a question it cannot hold: the
+     *  question is given back and the service ends. */
+    static final class Outgrown extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        Outgrown(String why) {
+            super(why);
+        }
     }
 
     private Service() {
@@ -95,7 +112,14 @@ final class Service {
                 Thread.sleep(POLL_MILLIS);
                 continue;
             }
-            for (Path question : asked) answer(dir, question, answerer);
+            try {
+                for (Path question : asked) answer(dir, question, answerer);
+            } catch (Outgrown outgrown) {
+                System.err.println("the service ended: "
+                        + outgrown.getMessage());
+                retireOutgrown(dir);
+                return;
+            }
             idleSince = System.currentTimeMillis();
         }
     }
@@ -106,7 +130,7 @@ final class Service {
      * failure is the answer's, never the service's.
      */
     private static void answer(Path dir, Path question, Answerer answerer)
-            throws IOException {
+            throws IOException, Outgrown {
         String name = stem(question, ASKED);
         Path taken = question.resolveSibling(name + TAKEN);
         try {
@@ -123,6 +147,10 @@ final class Service {
         String error = "";
         try {
             answerer.answer(asked, dir.resolve(OUT).resolve(name));
+        } catch (Outgrown outgrown) {
+            // Untaken: its asker sees it still waiting.
+            Files.move(taken, question, StandardCopyOption.ATOMIC_MOVE);
+            throw outgrown;
         } catch (Exception | Error failed) {
             failed.printStackTrace();
             error = deepest(failed).toString();
@@ -163,6 +191,30 @@ final class Service {
             }
             Files.deleteIfExists(dir.resolve(SERVER));
             return true;
+        } finally {
+            Files.deleteIfExists(dir.resolve(LOCK));
+        }
+    }
+
+    /**
+     * Ends the service now, whatever waits ({@link Outgrown}): under the
+     * lock, what {@code server} named is written to {@code retired} before
+     * {@code server} goes, so an asker that saw this service may start the
+     * next one ({@code run_engine.sh campaign_solve_obligation}).
+     */
+    static void retireOutgrown(Path dir) throws IOException,
+            InterruptedException {
+        lock(dir);
+        try {
+            Path server = dir.resolve(SERVER);
+            byte[] named = Files.isRegularFile(server)
+                    ? Files.readAllBytes(server) : new byte[0];
+            Path written = dir.resolve("." + RETIRED + ".part");
+            Files.write(written, named);
+            Files.move(written, dir.resolve(RETIRED),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+            Files.deleteIfExists(server);
         } finally {
             Files.deleteIfExists(dir.resolve(LOCK));
         }

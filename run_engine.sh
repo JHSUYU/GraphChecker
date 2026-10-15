@@ -3142,17 +3142,19 @@ names it; nothing withdrawn"
 # counted.  So the obligations of an exploration that run on one host are
 # answered by ONE solver JVM there (ObligationSolverMain --serve), started
 # when the first of them asks.  It answers each question from the corpus as
-# it stands when it takes the question -- read again whenever a session
-# landed in it or left it since (the head lands sessions as the exploration
-# streams), each question from the corpus as read (Corpus#freshLowerings) --
+# it read it -- read again only when the question's round was planned over a
+# session it does not hold, or one it holds left (the head lands sessions
+# every few seconds as the exploration streams), each question from the
+# corpus as read (Corpus#freshLowerings) --
 # so its files are the ones a JVM of the question's own would write; and it
-# ends once none has come for campaign_solver_idle_s.  Its directory is on
+# ends once none has come for campaign_solver_idle_s, or once its corpus
+# outgrew its heap (campaign_solver_retire_mb).  Its directory is on
 # the host's own disk, named by the corpus it answers from
 # (explore.Service states the layout); its log, solver-<host>.log, is
 # beside the corpus.
 #
-# The service is charged to the host ledger what it holds: a start's worth
-# at its start (campaign_solver_start_mb), and as its resident memory grows
+# The service is charged to the host ledger what it holds: its JVM's need at
+# its start (campaign_solver_need_mb), and as its resident memory grows
 # past that, the growth, as a running JVM's (campaign_watch_workload: refused
 # only when the host's real use would pass the ceiling, and then the JVM is
 # ended and its question asked again of a solver of its own).  Its start
@@ -3161,7 +3163,7 @@ names it; nothing withdrawn"
 # so no question waits behind a start that waits for memory (round x1: 11
 # cases' solvers, each charged its 8 GB heap at its start, held their hosts'
 # questions 50-75 minutes behind "starting" solvers).  An obligation's own
-# charge is a solver's start (campaign_solver_start_mb); its replay is a
+# charge is a solver's start (campaign_solver_need_mb); its replay is a
 # start of its own, charged then (campaign_stream_ended).
 # ---------------------------------------------------------------------------
 
@@ -3171,51 +3173,111 @@ names it; nothing withdrawn"
 # minutes.
 campaign_solver_idle_s=300
 
-# A solver's heap, in MB, for the corpus <sessions> (the host's solver and a
-# question's own JVM alike): campaign_solver_start_heap_mb until a solver of
-# it ran out of heap (-XX:+ExitOnOutOfMemoryError, exit 3), then the heap it
-# outgrew doubled, up to the case's engine heap (engine_memory_mb), as
-# engine_java grows an engine JVM; stated beside the corpus (solver_heap_mb)
-# for every host.  Its live set is the corpus it reads and the query it
-# lowers: 0.2 GB over hdfs-17897's three sessions, 5 GB over hdfs-11741 i1's
-# 175, 0.85 GB after a full collection in a solr-adhoc-10 host solver
-# (SL1-10, 2026-10-12) that the parallel collector had let grow to 6.2 GB
-# resident, and others of it to 10.6-12.5 GB, at a 16 GB heap: one per host
-# and campaign, they filled every lift's ledger.  A fixed 8 GB was outgrown
-# once a closure doubled (hdfs-adhoc-07 EX1, ~1500 sessions: an hour of
-# garbage collection with 24 questions queued, then OutOfMemoryError), which
-# the doubling meets.
-campaign_solver_start_heap_mb=2048
+# A SOLVER'S HEAP IS ITS CORPUS'S.  Its live set is the corpus it reads,
+# about its session files' size (campaign_corpus_mb) times
+# campaign_solver_live_pct, measured after a full collection: solr-adhoc-39
+# PV7 6453 MB over 9974 MB of sessions (65 %), solr-18413 SGF6 4595 over
+# 5450 (84 %), solr-bugs-snapshot-no-active SGF6 3102 over 4950 (63 %); a
+# question's lowering and query add little beside it (39's 20 MB query: 13
+# MB more live).  Started at a fixed 2 GB, 39's host solvers collected
+# garbage until the JVM gave up ("GC overhead limit exceeded") at 2, 4 and 8
+# GB, each death losing every question it held to a solver JVM of its own (a
+# 1-4 min corpus read at 16 GB each: 113 of them).
+campaign_solver_live_pct=85
+# The heap a solver needs for a live set, in % of it: the parallel
+# collector's room to work (at 120 % of 39's live set its corpus read spent
+# 40-61 s of 120-177 s collecting, at 250 % 19 s of 71 s).
+campaign_solver_gc_pct=150
+# The least heap a solver starts at, in MB: a corpus of a few sessions.
+campaign_solver_least_heap_mb=2048
 
+# campaign_corpus_mb <sessions>: the size of the corpus's session files, in
+# MB, as du reads it (0.5-0.7 s over NFS for 200-250 sessions), stated
+# beside the corpus with the time it was read and read again past
+# campaign_corpus_mb_fresh_s: the pool asks it at every admission.
+campaign_corpus_mb_fresh_s=60
+campaign_corpus_mb() {
+  local sessions=$1 stated at="" mb=""
+  [[ -n "${sessions}" && -d "${sessions}" ]] || { printf '0\n'; return 0; }
+  stated="$(dirname "${sessions}")/corpus_mb"
+  { read -r at mb <"${stated}"; } 2>/dev/null || at=""
+  if [[ -n "${at}" && -n "${mb}" ]] \
+      && (( $(date +%s) - at < campaign_corpus_mb_fresh_s )); then
+    printf '%s\n' "${mb}"
+    return 0
+  fi
+  mb=$(du -s --apparent-size -m -- "${sessions}" 2>/dev/null | cut -f1)
+  [[ "${mb}" =~ ^[0-9]+$ ]] || mb=0
+  printf '%s %s\n' "$(date +%s)" "${mb}" >"${stated}.$$" \
+    && mv -f -- "${stated}.$$" "${stated}"
+  printf '%s\n' "${mb}"
+}
+
+# What a solver of the corpus <sessions> needs to hold it now, in MB of heap:
+# its live set at the collector's room, at least the least heap, and never
+# less than a heap a solver of the corpus ran out of (campaign_solver_outgrown,
+# stated beside the corpus for every host: the measure fell short).
+campaign_solver_now_mb() {
+  local now outgrown=0 stated="$(dirname "${1:-.}")/solver_outgrown_mb"
+  now=$(( $(campaign_corpus_mb "${1:-}") * campaign_solver_live_pct \
+    * campaign_solver_gc_pct / 10000 ))
+  [[ ! -s "${stated}" ]] || outgrown=$(<"${stated}")
+  (( now >= outgrown )) || now=${outgrown}
+  (( now >= campaign_solver_least_heap_mb )) \
+    || now=${campaign_solver_least_heap_mb}
+  printf '%s\n' "${now}"
+}
+
+# A solver's heap, in MB, for the corpus <sessions> (the host's solver and a
+# question's own JVM alike): room for the corpus to grow to twice what it
+# needs now (campaign_solver_now_mb) -- so one that ran out of a heap starts
+# at twice it at least -- up to the case's engine heap (engine_memory_mb).
+# A host's solver gives its corpus up once it passes what this heap holds
+# (campaign_solver_retire_mb).
 campaign_solver_heap_mb() {
-  local engine=${engine_memory_mb:-8192} heap=${campaign_solver_start_heap_mb}
-  local stated="$(dirname "${1:-.}")/solver_heap_mb"
-  [[ ! -s "${stated}" ]] || heap=$(<"${stated}")
+  local engine=${engine_memory_mb:-8192} heap
+  heap=$(( 2 * $(campaign_solver_now_mb "${1:-}") ))
   (( heap <= engine )) || heap=${engine}
   printf '%s\n' "${heap}"
 }
 
-# campaign_solver_outgrown <sessions> <heap_mb>: a solver of the corpus ran
-# out of its <heap_mb> heap; every later one starts at twice it, up to the
-# engine heap, never below what another solver already outgrew.
-campaign_solver_outgrown() {
-  local stated="$(dirname "$1")/solver_heap_mb" next=$(( 2 * $2 ))
-  (( next <= ${engine_memory_mb:-8192} )) || next=${engine_memory_mb:-8192}
-  (( next > $(campaign_solver_heap_mb "$1") )) || return 0
-  printf '%s\n' "${next}" >"${stated}.$$" && mv -f -- "${stated}.$$" "${stated}"
+# campaign_solver_retire_mb <heap_mb>: the corpus, in MB of session files,
+# whose live set a solver at <heap_mb> holds at the collector's room: past
+# it, a host's solver gives its corpus up (ObligationSolverMain
+# --retire-past-mb) and the next is sized anew; 0 at the engine heap, past
+# which no solver is given more.
+campaign_solver_retire_mb() {
+  (( $1 < ${engine_memory_mb:-8192} )) || { printf '0\n'; return 0; }
+  printf '%s\n' "$(( $1 * 10000 / (campaign_solver_live_pct \
+    * campaign_solver_gc_pct) ))"
 }
 
-# What a solver JVM of the corpus <sessions> is charged, in MB: its heap's
-# footprint (campaign_jvm_footprint_mb), the host's solver at its start and a
-# question's own JVM alike; what it grows past that is charged as it grows
-# (campaign_solver_jvm).  Charged its 8 GB heap at its start, a solver waited
-# minutes for room it did not use (e2: "one needs 8192 MB and 9474 MB stay
-# free"); charged 1 GB while its heap was 16 GB, a host solver's growth filled
-# the ledger and a question's own JVM charged a question's 512 MB was ended at
-# its first growth on a full host (SL1-10).
+# campaign_solver_outgrown <sessions> <heap_mb>: a solver of the corpus ran
+# out of its <heap_mb> heap (-XX:+ExitOnOutOfMemoryError, exit 3); every
+# later one needs at least that (campaign_solver_now_mb).
+campaign_solver_outgrown() {
+  local stated="$(dirname "$1")/solver_outgrown_mb" held=0
+  [[ ! -s "${stated}" ]] || held=$(<"${stated}")
+  (( $2 > held )) || return 0
+  printf '%s\n' "$2" >"${stated}.$$" && mv -f -- "${stated}.$$" "${stated}"
+}
+
+# What a solver JVM of the corpus <sessions> is charged, in MB: the
+# footprint (campaign_jvm_footprint_mb) of the heap it needs now
+# (campaign_solver_now_mb, at most its heap), the host's solver at its start
+# and a question's own JVM alike, and the z3 room of its lane; what it grows
+# past that is charged as it grows (campaign_solver_jvm).  Charged its 8 GB
+# heap at its start, a solver waited minutes for room it did not use (e2:
+# "one needs 8192 MB and 9474 MB stay free"); charged 1 GB while its heap was
+# 16 GB, a host solver's growth filled the ledger and a question's own JVM
+# charged a question's 512 MB was ended at its first growth on a full host
+# (SL1-10).
 campaign_solver_need_mb() {
-  printf '%s\n' "$(( $(campaign_jvm_footprint_mb \
-    "$(campaign_solver_heap_mb "${1:-}")") \
+  local now heap
+  now=$(campaign_solver_now_mb "${1:-}")
+  heap=$(campaign_solver_heap_mb "${1:-}")
+  (( now <= heap )) || now=${heap}
+  printf '%s\n' "$(( $(campaign_jvm_footprint_mb "${now}") \
     + $(campaign_solver_z3_room_mb "${2:-}") ))"
 }
 
@@ -3244,12 +3306,6 @@ campaign_solver_z3_room_mb() {
 # 1 MB, p90 369 MB, at most 1.8 GB (118 z3 processes, HI1/HI2), and new
 # campaigns waited for room their lifts had.
 campaign_question_mb=1152
-
-# A solver's start on a corpus no solver outgrew, in MB (what the stream
-# charges a solve on a cold host, campaign_stream_charge_mb): its footprint
-# and a question's z3 room.
-campaign_solver_start_mb=$(( $(campaign_jvm_footprint_mb \
-  "${campaign_solver_start_heap_mb}") + campaign_question_mb ))
 
 # THE SOLVE'S TWO LANES.  A question is first asked at campaign_solver_first_ms
 # (campaign_solver_first_tier_ms, never past solver_timeout_ms): a host's
@@ -3303,11 +3359,13 @@ campaign_solver_dir() {
 # A question no living solver will answer starts one: none runs, or the one
 # named ended while the question still waited.  A question a solver took and
 # ended on is not asked again, and a worker starts at most one solver, so a
-# corpus no solver can read fails each obligation once, by name.  A question
-# that waits for its solver says so (campaign_solver_wait_said).
+# corpus no solver can read fails each obligation once, by name -- but for a
+# solver that gave its corpus up (explore.Service#retireOutgrown: <dir>/retired
+# names it), after which its questions wait untaken for one sized anew.  A
+# question that waits for its solver says so (campaign_solver_wait_said).
 campaign_solve_obligation() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4
-  local dir name question answer server pid started=0 file
+  local dir name question answer server pid started=0 file seen=""
   local waited=${SECONDS} said=0
   dir=$(campaign_solver_dir "${sessions}")
   name="$(date +%s%N).${BASHPID}.${obligation_id}"
@@ -3325,6 +3383,7 @@ campaign_solve_obligation() {
     done
     server=$(cat "${dir}/server" 2>/dev/null) || server=""
     pid=${server##* }
+    [[ -z "${server}" ]] || seen=${server}
     if [[ -n "${pid}" && -d "/proc/${pid}" || -e "${answer}" ]]; then
       rmdir "${dir}/lock"
       # Busy past its patience: withdrawn unless the solver took it first
@@ -3341,6 +3400,8 @@ campaign_solve_obligation() {
       continue
     fi
     # No solver answers here any more.
+    [[ -z "${seen}" || "$(cat "${dir}/retired" 2>/dev/null)" != "${seen}" ]] \
+      || started=0
     if [[ -e "${question}.taken" || "${started}" -ge 1 ]]; then
       rm -f -- "${question}.taken" "${question}.json"
       rmdir "${dir}/lock"
@@ -3418,7 +3479,8 @@ campaign_solver_log() {
 campaign_start_solver() {
   local dir=$1 sessions=$2 charge status=0 heap need
   heap=$(campaign_solver_heap_mb "${sessions}")
-  need=$(campaign_jvm_footprint_mb "${heap}")
+  # Its JVM's footprint: each question it answers is charged its z3 room.
+  need=$(( $(campaign_solver_need_mb "${sessions}") - campaign_question_mb ))
   campaign_host_try_charge localhost "${need}"
   (( status == 0 )) || return 1
   charge=${campaign_host_charge_id}
@@ -3432,6 +3494,7 @@ campaign_start_solver() {
       --serve "${dir}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
+      --retire-past-mb "$(campaign_solver_retire_mb "${heap}")" \
       </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || status=$?
     (( status != campaign_jvm_out_of_heap_status )) \
       || campaign_solver_outgrown "${sessions}" "${heap}"
@@ -6317,7 +6380,7 @@ campaign_stream_warm() {
 # (warm: this campaign's solver likely still serves there, campaign_stream_warm;
 # else cold): an OBLIGATION's solve on a warm host what its question's z3 run
 # holds (campaign_question_mb; the host's solver JVM is charged on its own),
-# on a cold one what a solver JVM starts at (campaign_solver_start_mb: its
+# on a cold one what a solver JVM starts at (campaign_solver_need_mb: its
 # question is answered in a JVM of its own, under this charge, when its host
 # has no room for its solver); an ALONE's or a HARD's the <need> its worker
 # owed (campaign_obligation_owe), or what a solver JVM of its corpus in its

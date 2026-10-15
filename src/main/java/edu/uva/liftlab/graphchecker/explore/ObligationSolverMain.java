@@ -29,7 +29,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * An obligation's question: build its query, solve it, say what the replay
@@ -57,6 +61,9 @@ import java.util.List;
  *   --serve &lt;dir&gt;             answer the questions put there, each into its
  *                             own output directory, until none has come for
  *   --idle-seconds &lt;n&gt;
+ *   --retire-past-mb &lt;n&gt;     or until a question needs a corpus of more
+ *                             than n MB of session files, which the heap it
+ *                             was started at does not hold (0: never)
  * </pre>
  *
  * <p>Queries are independent: a question's files are the same whichever
@@ -89,7 +96,8 @@ public final class ObligationSolverMain {
             Service.serve(serve,
                     options.number("idle-seconds", 0L) * 1000L,
                     answerer(sessions, rootDomains, z3, timeoutMillis,
-                            z3RoomMb));
+                            z3RoomMb, options.number("retire-past-mb", 0L)
+                                    << 20));
             return;
         }
         Path obligations = options.path("obligations");
@@ -107,41 +115,112 @@ public final class ObligationSolverMain {
 
     /**
      * A host's answers for one exploration.  The corpus is read when the
-     * first question is taken, and again before one whenever a session
-     * landed in it or left it since (its {@link #listing}: the head lands
-     * sessions while the exploration streams), the sessions it still lists
-     * taken from the read before, unread ({@link Corpus#read(Path, Path,
-     * Corpus, java.util.Collection)}); otherwise the question starts from
-     * the corpus as read ({@link Corpus#freshLowerings}).  Either way its files are the ones a
-     * JVM of its own, reading the corpus then, would write, whatever was
-     * asked before.
+     * first question is taken, and read again only when a question's round
+     * was planned over a session the read did not hold (its {@link
+     * #ROUND_CORPUS}, the sessions that still stand of it), or a session the
+     * read held has left the corpus: a round's question needs no session
+     * that landed after the round was planned, and sessions land every few
+     * seconds while a re-read costs 10-16 s (solr-adhoc-39 PV7, 208
+     * sessions; read again after every landing, a host's solver re-read
+     * before nearly every question).  A read takes every session that
+     * stands then, those the read before held from it, unread ({@link
+     * Corpus#read(Path, Path, Corpus, java.util.Collection)}); otherwise the
+     * question starts from the corpus as read ({@link
+     * Corpus#freshLowerings}).  Either way its files are the ones a JVM of
+     * its own, reading that corpus, would write.  A read past {@code
+     * retirePastBytes} of session files (0: none) is not made: the question
+     * is given back ({@link Service.Outgrown}) for a solver sized anew.
      */
     private static Service.Answerer answerer(Path sessions,
-                                                   Path rootDomains, Path z3,
-                                                   long timeoutMillis,
-                                                   int z3RoomMb) {
+                                             Path rootDomains, Path z3,
+                                             long timeoutMillis,
+                                             int z3RoomMb,
+                                             long retirePastBytes) {
         Path iteration = sessions.getParent();
         return new Service.Answerer() {
-            private List<String> read;
             private Corpus corpus;
+            /** Each session the corpus was read from -> its files' bytes. */
+            private final Map<String, Long> read =
+                    new HashMap<String, Long>();
 
             @Override
             public void answer(JsonObject question, Path out)
                     throws Exception {
+                Path obligations = Paths.get(JsonFields.primitiveString(
+                        question, "obligations"));
                 List<String> now = listing(sessions);
-                if (now.equals(read)) {
-                    corpus.freshLowerings();
-                } else {
+                if (corpus == null || stale(read.keySet(), now,
+                        round(obligations, now))) {
+                    Map<String, Long> reading = new HashMap<String, Long>();
+                    long bytes = 0L;
+                    for (String name : now) {
+                        Long held = read.get(name);
+                        long size = held != null ? held
+                                : bytes(sessions.resolve(name));
+                        reading.put(name, size);
+                        bytes += size;
+                    }
+                    if (retirePastBytes > 0L && bytes > retirePastBytes) {
+                        throw new Service.Outgrown("its corpus is "
+                                + (bytes >> 20) + " MB of sessions, past the "
+                                + (retirePastBytes >> 20) + " MB its heap "
+                                + "was started for");
+                    }
                     corpus = Corpus.read(iteration, rootDomains, corpus,
                             null);
-                    read = now;
+                    read.clear();
+                    read.putAll(reading);
+                } else {
+                    corpus.freshLowerings();
                 }
-                solve(corpus, iteration, Paths.get(JsonFields
-                        .primitiveString(question, "obligations")),
+                solve(corpus, iteration, obligations,
                         JsonFields.primitiveString(question, "obligationId"),
                         out, z3, timeoutMillis, z3RoomMb);
             }
         };
+    }
+
+    /** Whether a corpus read from the sessions {@code read} lacks one the
+     *  {@code round} needs, or holds one that is no longer standing {@code
+     *  now}. */
+    static boolean stale(Set<String> read, List<String> now,
+                         List<String> round) {
+        return !read.containsAll(round) || !now.containsAll(read);
+    }
+
+    /**
+     * The sessions a round was planned over, beside its obligations
+     * ({@code run_engine.sh campaign_stream_round_start}).
+     */
+    static final String ROUND_CORPUS = "corpus.txt";
+
+    /** Of the sessions standing {@code now}, those the round of {@code
+     *  obligations} was planned over; all of them where it names none. */
+    static List<String> round(Path obligations, List<String> now)
+            throws IOException {
+        Path named = obligations.resolveSibling(ROUND_CORPUS);
+        if (!Files.isRegularFile(named)) return now;
+        Set<String> round = new HashSet<String>();
+        for (String line : Files.readAllLines(named,
+                StandardCharsets.UTF_8)) {
+            if (!line.trim().isEmpty()) round.add(line.trim());
+        }
+        List<String> standing = new ArrayList<String>();
+        for (String name : now) {
+            if (round.contains(name)) standing.add(name);
+        }
+        return standing;
+    }
+
+    /** The bytes of one session's files. */
+    private static long bytes(Path session) throws IOException {
+        long bytes = 0L;
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(session)) {
+            for (Path file : files) {
+                if (Files.isRegularFile(file)) bytes += Files.size(file);
+            }
+        }
+        return bytes;
     }
 
     /** The session directory names of a corpus, sorted. */

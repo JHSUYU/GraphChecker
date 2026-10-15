@@ -23,7 +23,8 @@ import static org.junit.Assert.assertTrue;
  * answered last; one whose asker is gone is dropped; a failure is that
  * question's answer, its deepest throwable, never the service's end; a
  * service given an idle time ends once idle with none waiting, naming no
- * service any more, and one given none goes on serving.
+ * service any more, and one given none goes on serving; one that outgrew its
+ * corpus gives its question back and ends.
  */
 public class ServiceTest {
     @Rule
@@ -127,6 +128,97 @@ public class ServiceTest {
         service.interrupt();
         service.join(5000L);
         assertEquals(java.util.Arrays.asList("1", "2"), answered);
+    }
+
+    /**
+     * A service whose answerer cannot hold a question's corpus ({@code
+     * Service.Outgrown}) gives that question back untaken and ends at once,
+     * whatever else waits, naming itself retired so its askers start one
+     * sized anew (solr-adhoc-39 PV7: solvers that ran out of heap lost every
+     * question they held).
+     */
+    @Test
+    public void aServiceThatOutgrewItsCorpusGivesTheQuestionBackAndEnds()
+            throws Exception {
+        Path dir = folder.newFolder("outgrown").toPath();
+        Files.createDirectories(dir.resolve(Service.REQUESTS));
+        Files.write(dir.resolve(Service.SERVER),
+                "4242\n".getBytes(StandardCharsets.UTF_8));
+        String live = ManagementFactory.getRuntimeMXBean().getName()
+                .split("@")[0];
+        for (String name : new String[] {"1.a", "2.b", "3.c"}) {
+            JsonObject asked = new JsonObject();
+            asked.addProperty("obligationId", name);
+            asked.addProperty("waiter", live);
+            Files.write(dir.resolve(Service.REQUESTS)
+                    .resolve(name + Service.ASKED),
+                    asked.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        List<String> order = new ArrayList<String>();
+        Service.serve(dir, 0L, (question, out) -> {
+            String id = question.get("obligationId").getAsString();
+            order.add(id);
+            if ("2.b".equals(id)) {
+                throw new Service.Outgrown("past its heap");
+            }
+        });
+        assertEquals(java.util.Arrays.asList("1.a", "2.b"), order);
+        assertEquals(0, answer(dir, "1.a").get("exit").getAsInt());
+        assertEquals("the outgrown question and the one behind it wait",
+                java.util.Arrays.asList("2.b" + Service.ASKED,
+                        "3.c" + Service.ASKED),
+                names(Service.waiting(dir, Service.ASKED)));
+        assertTrue(Service.waiting(dir, Service.TAKEN).isEmpty());
+        assertFalse(Files.exists(dir.resolve(Service.SERVER)));
+        assertEquals("4242\n", new String(Files.readAllBytes(
+                dir.resolve(Service.RETIRED)), StandardCharsets.UTF_8));
+        assertFalse(Files.exists(dir.resolve(Service.LOCK)));
+    }
+
+    /**
+     * A served solver reads its corpus again only for a question whose round
+     * was planned over a session it did not read (of those still standing),
+     * or when a session it read left; a round that names none needs every
+     * session standing.  Read again after every landing, 39's host solvers
+     * re-read 10-16 s before nearly every question.
+     */
+    @Test
+    public void aServedSolverReadsAgainOnlyForWhatItsRoundNeeds()
+            throws Exception {
+        Path round = folder.newFolder("obligations-0003").toPath();
+        Path obligations = round.resolve("obligations.jsonl");
+        // what the solver read | standing now | the round's corpus.txt
+        // (- none) | stale
+        String[][] rows = {
+                {"a b", "a b c", "a", "false"},
+                {"a b", "a b c", "a b", "false"},
+                {"a b", "a b c", "a c", "true"},
+                {"a b", "a b c", "-", "true"},
+                {"a b", "a b", "-", "false"},
+                {"a b", "a c", "a", "true"},
+                {"a b", "a b", "a x", "false"},
+        };
+        for (String[] row : rows) {
+            Files.deleteIfExists(round.resolve(
+                    ObligationSolverMain.ROUND_CORPUS));
+            if (!"-".equals(row[2])) {
+                Files.write(round.resolve(ObligationSolverMain.ROUND_CORPUS),
+                        (row[2].replace(' ', '\n') + "\n")
+                                .getBytes(StandardCharsets.UTF_8));
+            }
+            List<String> now = java.util.Arrays.asList(row[1].split(" "));
+            assertEquals(java.util.Arrays.toString(row),
+                    Boolean.parseBoolean(row[3]),
+                    ObligationSolverMain.stale(new java.util.HashSet<String>(
+                            java.util.Arrays.asList(row[0].split(" "))), now,
+                            ObligationSolverMain.round(obligations, now)));
+        }
+    }
+
+    private static List<String> names(List<Path> files) {
+        List<String> names = new ArrayList<String>();
+        for (Path file : files) names.add(file.getFileName().toString());
+        return names;
     }
 
     private static JsonObject answer(Path dir, String name) throws Exception {

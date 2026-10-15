@@ -926,31 +926,38 @@ a JVM that answers an exploration's questions in turn over state it keeps, the p
 questions on the serving host's own disk, oldest first, an answer `{exit, error}` whose error is the
 deepest throwable): the first
 question starts it if its host has room for a start's worth now (`campaign_start_solver`:
-`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger its
-heap's footprint (`campaign_solver_need_mb`, `campaign_jvm_footprint_mb`) for as long as it runs (it
+`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger the
+footprint of the heap it needs now (`campaign_solver_need_mb`, `campaign_jvm_footprint_mb`) for as long as it runs (it
 holds the charge itself, `campaign_host_keep`, past the obligation that started it) and what its
 resident memory grows past that as it grows, by a running JVM's rule (`campaign_watch_workload`:
 refused only when the host's real use would pass the ceiling, and then the JVM is ended). Its heap,
-and that of a question's own JVM, is its corpus's solver heap (`campaign_solver_heap_mb`):
-`campaign_solver_start_heap_mb` (2 GB) until a solver of the corpus runs out of it
-(`-XX:+ExitOnOutOfMemoryError`, exit 3), then the heap it outgrew doubled, up to the engine heap
-(`campaign_solver_outgrown`, stated beside the corpus as `solver_heap_mb` for every host), as
-`engine_java` grows an engine JVM. At the 16 GB engine heap the parallel collector let SL1-10's host
-solvers (2026-10-12) grow to 6-12.5 GB resident over a live set of 0.85 GB (after a full collection),
-one per host and campaign, and they filled every lift's ledger; a fixed 8 GB was outgrown by
-hdfs-adhoc-07's doubled closure (an hour of garbage collection with 24 questions queued, then
-OutOfMemoryError), which the doubling meets. A host holds at most `campaign_stream_solves_per_host` (2) of a
+and that of a question's own JVM, is its corpus's (`campaign_solver_heap_mb`): the corpus's session files
+(`campaign_corpus_mb`, du's reading stated beside the corpus for 60 s) times `campaign_solver_live_pct`
+(85 %: the live set after a full collection was 65 % of them on solr-adhoc-39 PV7, 6453 MB over 9974 MB, 84 %
+on solr-18413, 63 % on snapshot-no-active) at `campaign_solver_gc_pct` (150 %) for the collector, at least
+2 GB (`campaign_solver_now_mb`), and room for the corpus to double, up to the engine heap; it is charged the
+footprint of what it needs now (`campaign_solver_need_mb`) and grows as watched. A solver that ran out of a
+heap anyway (`-XX:+ExitOnOutOfMemoryError`, exit 3) states it beside the corpus (`campaign_solver_outgrown`,
+`solver_outgrown_mb`), and every later one needs at least that. Started at a fixed 2 GB, 39's host solvers
+died 20 times of "GC overhead limit exceeded" at 2, 4 and 8 GB (45 solver JVMs on 13 hosts, each a 1-4 min
+corpus read), each death losing every question it held to a JVM of its own. A host holds at most
+`campaign_stream_solves_per_host` (2) of a
 campaign's solves at once (`campaign_stream_try_host`): more add no answer, only their question
 charges while they wait in the solver's queue. Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
-questions in the order they came, each from the corpus as it stands when the question is taken:
-read again whenever a session landed in it or left it since (its session listing,
-`ObligationSolverMain#listing`; the head lands sessions as the exploration streams), each session
-the read before already holds taken from it unread (`Corpus#read(Path, Path, Corpus)`: a landed
-session's rows never change, and reading them is the read's whole cost, 45 s over hdfs-11741 i1's
-175 sessions), else the corpus as read (`Corpus#freshLowerings`) -- so each obligation's files are
-the ones a JVM of its own, reading the corpus then, writes -- into a directory on the host's disk,
-named by the corpus, that the asking worker moves into its worker directory; it ends once none has
+questions in the order they came, each from the corpus as it read it: read again only when the
+question's round was planned over a session the read did not hold (the round's `corpus.txt`, of the
+sessions still standing; `ObligationSolverMain#round`, `#stale`), or a session it held has left (a
+round's question needs no session that landed after it was planned, and the head lands sessions every
+few seconds; a re-read of 39's 208 sessions takes 10-16 s), each session the read before already holds
+taken from it unread (`Corpus#read(Path, Path, Corpus)`: a landed session's rows never change, and
+reading them is the read's whole cost, 45 s over hdfs-11741 i1's 175 sessions), else the corpus as read
+(`Corpus#freshLowerings`) -- so each obligation's files are the ones a JVM of its own, reading that
+corpus, writes -- into a directory on the host's disk, named by the corpus, that the asking worker moves
+into its worker directory. A read past what its heap holds (`campaign_solver_retire_mb`, its
+`--retire-past-mb`; none at the engine heap) is not made: the solver gives the question back untaken and
+ends (`Service.Outgrown`, `Service#retireOutgrown`, naming itself in `retired`), and the question's asker
+starts the next one, sized anew. It ends once none has
 come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A
 question still waiting when its solver ended starts the next one. A question that waits for its
 solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
@@ -994,9 +1001,9 @@ among the solves (the first budget and a question's z3 room; first and alone onc
 refused holds none of another), a hard-lane ask's again
 in the hard lane, each `<kind> <round> <id> <need>`, charged that need or what a solver JVM of the
 corpus in its lane needs now where that is more (`campaign_stream_charge_mb`), the obligation in
-flight meanwhile. Its need is a solver JVM's footprint at its corpus's solver heap and its z3 room
-(the heap doubled first when one ran out of it, up to the engine heap: SL2-10's routed-alias questions
-outgrew 2, 4 and 8 GB), or what the first measurably held -- its watched peak -- with the usual margin
+flight meanwhile. Its need is a solver JVM's need of its corpus and its z3 room
+(`campaign_solver_need_mb`: at least the heap a solver of the corpus ran out of, if one did), or what
+the first measurably held -- its watched peak -- with the usual margin
 (`campaign_need_of_peak_mb`, ×1.5) and the room where that is more, never what other solvers of the
 corpus held (SL1-10: a question that held 1.2 GB asked the 12.5 GB its campaign's largest host solver
 had reached, and no host had it), at most the engine heap's footprint and the room; a JVM of its own is

@@ -110,9 +110,12 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
   (or a smaller one) would lift the solve throughput and the memory every lift gives replays. Branch `solr-solver`
   (solr-adhoc-39 PV7: 113 questions spilled into JVMs of their own): a flip query's build no longer reads its texts
-  once per lowered session (done); still to come there, the solver's heap from its corpus (39: 6.45 GB live over
-  9.9 GB of sessions, the 2 GB start died three times per host), several questions at once per solver, and a corpus
-  re-read only when a question names a session it has not loaded (10-16 s each, after every landing).
+  once per lowered session, a solver's heap is its corpus's and it re-reads only for what a round needs (done);
+  still to come there, several questions at once per solver. The live set itself: 39's 6.45 GB is mostly the
+  session expression tables as Gson trees (`ExpressionTable`: 40.9 M `LinkedTreeMap$Node`, 2.0 GB, 26 M
+  `JsonPrimitive`, 0.4 GB, and their strings, of 1.8 GB of `char[]`); the same corpus put 39's planner past the 16 GB
+  engine heap (PV7 `PLANNER_HEAP_EXCEEDED` at round 6, 10123 MB of sessions). A compact expression form would
+  shrink every reader of the corpus.
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
 
