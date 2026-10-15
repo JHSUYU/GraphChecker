@@ -521,6 +521,15 @@ campaign_jvm_footprint_mb() {
 
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
+# Every engine JVM ends at its first out-of-heap error, and one that only
+# collects is out of heap too: past 70 % of its time in the collector while
+# freeing under 5 % of its heap, its overhead limit throws (the JVM's own
+# 98 %/2 % let SGF7-18413's final composer collect at -Xmx4096m for 47 min --
+# 4587 full collections, 2725 s of 2870 s -- never exiting to be run again at
+# 8192 MB: the compact expression tables' weakly held nodes give a little
+# back every cycle).
+campaign_engine_oom=(-XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70
+  -XX:GCHeapFreeLimit=5)
 # Every engine JVM (a head's, the served planner, a solver) runs at this
 # thread stack: lowering a term recurses once per subterm, and a recorded
 # term ~750 binary operations deep overflowed the JVM's default stack in an
@@ -553,7 +562,7 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
       campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
-      -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
+      "${campaign_engine_oom[@]}" "${campaign_engine_stack}" "$@" \
       >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
       cat -- "${out}"
@@ -574,7 +583,7 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
     campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@"
+    "${campaign_engine_oom[@]}" "${campaign_engine_stack}" "$@"
 }
 
 # THE z3 ROOM.  Every z3 the engine starts is capped (smt/Z3: z3's own
@@ -3563,7 +3572,7 @@ campaign_solver_jvm() {
       "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
       "-Dcausynth.system.doors=${causynth_system_doors}" \
       -cp "${graphchecker_jar}" \
-      -XX:+ExitOnOutOfMemoryError \
+      "${campaign_engine_oom[@]}" \
       edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
       --z3 "${z3_bin}" \
       --solver-timeout-ms "${budget}" \
@@ -5537,7 +5546,7 @@ campaign_planner_serve() {
   require_file "GraphChecker jar" "${graphchecker_jar}"
   (cd "${graphchecker_work_dir}" \
     && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-      -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" \
+      "${campaign_engine_oom[@]}" "${campaign_engine_stack}" \
       "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
       "-Dcausynth.system.doors=${causynth_system_doors}" \
       -cp "${graphchecker_jar}" \

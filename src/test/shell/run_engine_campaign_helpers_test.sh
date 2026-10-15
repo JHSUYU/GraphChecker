@@ -6730,14 +6730,16 @@ EOF
 # engine heap, saying so each time; the reader of its standard output sees
 # the finished run's alone, and later starts of that main begin at the heap
 # it last grew to.  A main with no measured need runs at the engine heap.
-# Every run, at the engine heap too, ends at its first out-of-heap error.
+# Every run, at the engine heap too, ends at its first out-of-heap error, and
+# so does one that only collects (the GC overhead limit at 70 %/5 %).
 engine_test=${test_tmp}/engine-heap
 mkdir -p "${engine_test}"
 cat >"${engine_test}/java" <<'EOF'
 #!/usr/bin/env bash
 oom=n
-[[ "$1" == -XX:+ExitOnOutOfMemoryError ]] && oom=y
-echo "$2" >>"${ENGINE_TEST_LOG}.stack"
+# Out of heap at its first error, and at a collector that only collects.
+[[ " $* " == *" -XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70 -XX:GCHeapFreeLimit=5 "* ]] && oom=y
+for arg; do [[ "${arg}" != -Xss* ]] || echo "${arg}" >>"${ENGINE_TEST_LOG}.stack"; done
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} oom=${oom}" >>"${ENGINE_TEST_LOG}"
 if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 5000 ]]; then
   echo "half of an artifact"
