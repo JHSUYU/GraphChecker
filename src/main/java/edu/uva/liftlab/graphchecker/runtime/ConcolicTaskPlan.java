@@ -961,6 +961,15 @@ final class ConcolicTaskPlan {
          *  #openDoorWindow}). */
         final boolean doorsOnly;
         /**
+         * The leaves of a store's documents this occurrence takes in or
+         * gives out symbolically ({@code contentKeys}: per location, by its
+         * session-row slot, the JSON pointer prefixes, each {@code /} a
+         * {@code |}, the question's slice reads); a leaf outside every
+         * prefix crosses as its value ({@code StoreContent}).  Null where
+         * the row states none: no restriction.
+         */
+        final Map<String, List<String>> contentKeys;
+        /**
          * Whether this non-loop address has completed its goal, which closes
          * its admission; loop-body roots are governed by K_L alone.
          */
@@ -1013,6 +1022,27 @@ final class ConcolicTaskPlan {
         final Set<RefusedCandidate> unaddressedReasons = new LinkedHashSet<>();
         /** How many refusals one unanswered row spells out. */
         private static final int SHOWN_REFUSALS = 4;
+
+        /** A plan row's content keys ({@link #contentKeys}): each
+         *  {@code {location, slot, pointer}} filed by its slot, else its
+         *  location; null where the row states no member. */
+        private static Map<String, List<String>> contentKeys(JsonObject row) {
+            if (row == null || !row.has(CONTENT_KEYS)) return null;
+            Map<String, List<String>> keys =
+                    new LinkedHashMap<String, List<String>>();
+            for (JsonElement element : array(row, CONTENT_KEYS)) {
+                JsonObject key = element.getAsJsonObject();
+                String slot = optionalString(key, "slot");
+                keys.computeIfAbsent(slot.isEmpty()
+                        ? optionalString(key, "location") : slot,
+                        named -> new ArrayList<String>())
+                        .add(optionalString(key, "pointer"));
+            }
+            return keys;
+        }
+
+        /** The plan row member {@link #contentKeys} reads. */
+        static final String CONTENT_KEYS = "contentKeys";
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {
@@ -1075,6 +1105,7 @@ final class ConcolicTaskPlan {
                     .maxBackedgeTraversals(task.rootLoopSiteId());
             this.doorsOnly = optionalBool(task.json(),
                     RuntimeSelectedRegionFinalizer.DOORS_ONLY, false);
+            this.contentKeys = contentKeys(task.json());
             this.readsTrackedState = !doorsOnly && optionalBool(task.json(),
                     ExecutionTask.READS_TRACKED_STATE, false);
             this.capturesTargetReach =

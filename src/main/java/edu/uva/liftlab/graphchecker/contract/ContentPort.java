@@ -69,6 +69,13 @@ public final class ContentPort {
         return site != null && site.indexOf(VIEWED) > 0;
     }
 
+    /** A leaf's JSON pointer as its port spells it ({@link #of}): each
+     *  {@code /} a {@code |}; what a plan's content keys and a recording's
+     *  leaf rows name it by. */
+    public static String pointer(String pointer) {
+        return site(pointer);
+    }
+
     // Java 8's String.replace(CharSequence, CharSequence) compiles a
     // pattern per call: only where there is something to escape.
     private static String site(String path) {

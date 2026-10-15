@@ -108,9 +108,10 @@ final class StoreContent {
         if (bytes != null && document != null) WRITTEN.put(bytes, document);
     }
 
-    /** A fetch of {@code key} returned {@code bytes}. */
+    /** A fetch of {@code key} returned {@code bytes}: in a replay, or in
+     *  the recording's window, which states the parse's leaves. */
     static void fetched(String transport, String key, byte[] bytes) {
-        if (bytes != null && RowRuntime.open()) {
+        if (bytes != null && (RowRuntime.open() || RecordingWindow.opened())) {
             FETCHED.put(bytes, trimmed(transport) + "\n" + trimmed(key));
         }
     }
@@ -119,13 +120,16 @@ final class StoreContent {
 
     /**
      * A write of {@code bytes} made version {@code key}: each leaf of the
-     * document the codec serialized them from is exported on it.
+     * document the codec serialized them from is exported on it, in a
+     * replay.
+     *
+     * @return that document, or null
      */
-    static void stored(String transport, String key, byte[] bytes) {
+    static Object stored(String transport, String key, byte[] bytes) {
         Object document = bytes == null ? null : WRITTEN.remove(bytes);
-        if (document == null || !capturing()) return;
+        if (document == null || !capturing()) return document;
         try {
-            export(transport, key, document);
+            export(transport, key, document, contentKeys(transport, key));
         } catch (Throwable failed) {
             // A door never throws into the workload: what failed is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -133,18 +137,23 @@ final class StoreContent {
                             + " was not exported: "
                             + ConcolicRegionRuntime.rootCause(failed));
         }
+        return document;
     }
 
-    private static void export(String transport, String key,
-                               Object document) {
+    /** Exports each leaf of {@code document} on version {@code key}:
+     *  symbolically at or under {@code keys}' prefixes, as its value
+     *  elsewhere; every leaf symbolically where {@code keys} is null. */
+    static void export(String transport, String key, Object document,
+                       List<String> keys) {
         String location = MessageDoors.location(key);
         Map<String, Exported> leaves = new LinkedHashMap<String, Exported>();
         pauseObservation();
         try {
             OccurrenceAddress producer = occurrenceHere(transport);
             for (Leaf leaf : leaves(transport, location, document)) {
-                Exported exported = export(producer, transport, location,
-                        leaf);
+                Exported exported = under(keys, leaf.pointer)
+                        ? export(producer, transport, location, leaf)
+                        : exportConstant(producer, transport, location, leaf);
                 if (exported != null) leaves.put(leaf.pointer, exported);
             }
         } finally {
@@ -210,6 +219,85 @@ final class StoreContent {
                 crossing, javaType, String.valueOf(leaf.value));
         return endpoint == null ? null
                 : new Exported(endpoint, kind, javaType);
+    }
+
+    /**
+     * A leaf outside the writing occurrence's content keys
+     * ({@link #contentKeys}) goes out as its recorded value, a constant:
+     * the readers that pair with it read that value, whatever the writer's
+     * expression of it was.
+     */
+    private static Exported exportConstant(OccurrenceAddress producer,
+                                           String transport, String location,
+                                           Leaf leaf) {
+        Kind kind = kindOf(leaf.value);
+        if (kind == null) return null;
+        String text = String.valueOf(leaf.value);
+        String javaType;
+        JsonObject crossing;
+        if (kind == Kind.STR) {
+            javaType = "java/lang/String";
+            crossing = new JsonObject();
+            crossing.addProperty("_type", "ConStringSymbolExp");
+            crossing.addProperty("_java_type", javaType);
+            crossing.addProperty("_exp", "Y_L'String'_" + text);
+        } else if (kind == Kind.DEC_LONG) {
+            javaType = "J";
+            crossing = constant(javaType, text);
+        } else if (kind == Kind.BOOL) {
+            javaType = "Z";
+            crossing = constant(javaType, "true".equals(text) ? "1" : "0");
+        } else {
+            javaType = wide(boxType(leaf.value));
+            crossing = constant(javaType, "D".equals(javaType)
+                    ? Double.toString(Double.parseDouble(text))
+                    : "Z".equals(javaType) ? ("true".equals(text) ? "1" : "0")
+                    : text);
+        }
+        long event;
+        try {
+            event = engine().currentEventId();
+        } catch (Throwable unread) {
+            event = 0L;
+        }
+        Endpoint endpoint = RowRuntime.exported(producer, event,
+                port(transport, location, leaf.pointer), 0L, 0, crossing,
+                javaType, text);
+        return endpoint == null ? null
+                : new Exported(endpoint, kind, javaType);
+    }
+
+    /**
+     * The content keys of the occurrence running here for the version
+     * {@code key} (a plan row's {@code contentKeys}: the leaves of a chain
+     * location the question's slice reads, by pointer prefix): null for no
+     * restriction -- no planned occurrence, or one whose row states none --,
+     * else the prefixes stated for this location, none where it states the
+     * occurrence's keys elsewhere.
+     */
+    private static List<String> contentKeys(String transport, String key) {
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (active == null || active.activation.contentKeys == null) {
+            return null;
+        }
+        String slot = MessageDoors.storeLocation(transport,
+                MessageDoors.livePath(transport, key)).slot();
+        List<String> prefixes = active.activation.contentKeys.get(slot);
+        return prefixes == null ? Collections.<String>emptyList() : prefixes;
+    }
+
+    /** Whether a leaf at {@code pointer} lies at or under one of
+     *  {@code keys}' prefixes; every leaf where {@code keys} is null. */
+    static boolean under(List<String> keys, String pointer) {
+        if (keys == null) return true;
+        String spelled = ContentPort.pointer(pointer);
+        for (String prefix : keys) {
+            if (prefix.isEmpty() || spelled.equals(prefix)
+                    || spelled.startsWith(prefix + "|")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -304,12 +392,16 @@ final class StoreContent {
 
     /**
      * The parser built {@code tree} from {@code bytes}: when the bytes are
-     * a version a fetch read, each leaf is minted on its entry, paired with
-     * that version's export of it.
+     * a version a fetch read, in a replay, each leaf is minted on its
+     * entry, paired with that version's export of it.
+     *
+     * @return the version read, as {@code transport\nkey}, or null for
+     *         bytes no fetch named
      */
-    static void parsed(byte[] bytes, Object tree) {
+    static String parsed(byte[] bytes, Object tree) {
         String version = bytes == null ? null : FETCHED.remove(bytes);
-        if (version == null || tree == null || !capturing()) return;
+        if (version == null || tree == null) return null;
+        if (!capturing()) return version;
         int cut = version.indexOf('\n');
         String transport = version.substring(0, cut);
         String key = version.substring(cut + 1);
@@ -321,17 +413,26 @@ final class StoreContent {
             exports = EXPORTS.get(version);
         }
         try {
-            attach(transport, key, exports, tree);
+            attach(transport, key, exports, tree,
+                    contentKeys(transport, key));
         } catch (Throwable failed) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     transport + " " + key, "the version's content was not"
                             + " minted where it was parsed: "
                             + ConcolicRegionRuntime.rootCause(failed));
         }
+        return version;
     }
 
-    private static void attach(String transport, String key,
-                               Map<String, Exported> exports, Object tree) {
+    /**
+     * Mints the parsed leaves of version {@code key} at or under
+     * {@code keys}' prefixes, each paired with {@code exports}' leaf at its
+     * pointer; every other leaf crosses as the value parsed, no attach.
+     * Every leaf where {@code keys} is null.
+     */
+    static void attach(String transport, String key,
+                       Map<String, Exported> exports, Object tree,
+                       List<String> keys) {
         String location = MessageDoors.location(key);
         pauseObservation();
         try {
@@ -341,6 +442,7 @@ final class StoreContent {
                     : occurrenceHere(transport);
             if (consumer == null) return;
             for (Leaf leaf : leaves(transport, location, tree)) {
+                if (!under(keys, leaf.pointer)) continue;
                 attach(active, consumer, transport, key, location, leaf,
                         exports == null ? null : exports.get(leaf.pointer));
             }
@@ -635,6 +737,34 @@ final class StoreContent {
     /** A JSON pointer's reference token (RFC 6901). */
     private static String escaped(String token) {
         return token.replace("~", "~0").replace("/", "~1");
+    }
+
+    /**
+     * The leaves of {@code document} as a recording states them
+     * ({@code CausynthTraceRecorder#storeLeaves}): each {@code [pointer,
+     * leaf object]}, the pointer as a content port spells it; null past the
+     * walk's bound, named, which reads as the whole document.
+     */
+    static List<Object[]> leafRows(String transport, String location,
+                                   Object document) {
+        List<Object[]> rows = new ArrayList<Object[]>();
+        int[] dropped = new int[1];
+        List<Leaf> leaves = new ArrayList<Leaf>();
+        walk(document, "", 0, leaves, dropped);
+        if (dropped[0] > 0) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    "CONTENT_BOUND:" + port(transport, location, ""),
+                    dropped[0] + " leaves of this document lie past "
+                            + MAX_LEAVES + " leaves or " + MAX_DEPTH
+                            + " levels: its leaves are stated as the whole"
+                            + " document");
+            return null;
+        }
+        for (Leaf leaf : leaves) {
+            rows.add(new Object[] {ContentPort.pointer(leaf.pointer),
+                    leaf.value});
+        }
+        return rows;
     }
 
     /** The occurrence a door event runs in, as WireExport names one. */

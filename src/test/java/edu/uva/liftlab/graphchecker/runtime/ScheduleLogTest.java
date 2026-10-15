@@ -675,7 +675,8 @@ public class ScheduleLogTest {
         boolean[] deferred = {true};
         IllegalStateException thrown = null;
         try {
-            MessageDoors.notified("Watcher", () -> {
+            MessageDoors.notified("Watcher", "STORE", null,
+                    "NodeDataChanged", () -> {
                 deferred[0] = MessageDoors.publishing("SOLR_ZK", path, 3L,
                         () -> applied.add("on the publisher"));
                 nap(300L);
@@ -1596,7 +1597,8 @@ public class ScheduleLogTest {
         RuntimeTraceContext.registerSource(owner, NODE);
         MessageDoors.stored("STORE", "/k@1", owner, null);
         written.clear();
-        started(() -> MessageDoors.notified("Watcher", () -> {
+        started(() -> MessageDoors.notified("Watcher", "STORE", null,
+                "NodeDataChanged", () -> {
             MessageDoors.fetched("STORE", "/k@1", owner, null);
             send("y");
         })).join(5000L);
@@ -1645,7 +1647,8 @@ public class ScheduleLogTest {
         assertEquals("and the write names its work", Arrays.asList(true),
                 named);
         long own = MessageDoors.storing("STORE", "/k");
-        MessageDoors.notified("Watcher", () -> {
+        MessageDoors.notified("Watcher", "STORE", null,
+                "NodeDataChanged", () -> {
             MessageDoors.fetched("STORE", "/k@3", owner, null);
             named.add(MessageDoors.current() != null);
         });
@@ -1681,7 +1684,8 @@ public class ScheduleLogTest {
      *  write named its work goes to {@code named}. */
     private static Thread reading(Object owner, String key,
                                   List<Boolean> named) {
-        return started(() -> MessageDoors.notified("Watcher", () -> {
+        return started(() -> MessageDoors.notified("Watcher", "STORE", null,
+                "NodeDataChanged", () -> {
             MessageDoors.fetched("STORE", key, owner, null);
             named.add(MessageDoors.current() != null);
         }));

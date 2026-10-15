@@ -83,7 +83,7 @@ runtime.MessageDoors fetched void string string object byte[]
 runtime.MessageDoors inbound doors.Inbound string string string string string string object boolean
 runtime.MessageDoors jsonRead void byte[] object
 runtime.MessageDoors jsonWritten void byte[] object
-runtime.MessageDoors notified void string runnable
+runtime.MessageDoors notified void string string string string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
 runtime.MessageDoors refreshEnded void long
@@ -97,6 +97,7 @@ runtime.MessageDoors startRecording void
 runtime.MessageDoors startupWindow boolean
 runtime.MessageDoors stopRecording void
 runtime.MessageDoors storeEnded void string long
+runtime.MessageDoors storeRead void string string string object
 runtime.MessageDoors stored void string string object byte[]
 runtime.MessageDoors storing long string string
 runtime.MessageDoors vacant boolean long

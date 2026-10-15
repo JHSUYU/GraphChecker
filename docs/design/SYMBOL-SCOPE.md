@@ -1556,6 +1556,21 @@ by its expression (`EXPORTED`), or held at its version's value where the export 
 wave's answer for a leaf's attach is
 written into the parsed tree before the mint, as the parser would hold it.
 
+Only the leaves a question's slice reads cross symbolically. A planned activation's row may state
+`contentKeys` (`{location, slot, pointer}`: JSON pointer prefixes, each `/` spelled `|`, of the
+locations it writes or parses on the ZooKeeper causal chain, `causynth.ZkCausalGraph`); there a
+parse mints only the leaves at or under a stated prefix of the location and takes every other as
+parsed (no attach), and a write exports those leaves by their expression and every other as its
+value, a constant (`StoreContent#attach`, `#export`, `#under`); a row with no member restricts
+nothing. The recording states what PLAN walks the chain by: each store read at the store's call
+(`STORE_READ`, `MessageDoors#storeRead`: getData's and exists' data version, getChildren's child
+version or -1, at the reading occurrence; a replay states a getData's or an exists' as a read row
+under `<transport>#READ:<location>`), each notification in the occurrence its callback opens first
+(`WATCH_FIRED`, `MessageDoors#notified`, `#regionOpened`; its zxid -1, which ZooKeeper 3.6's
+notifications carry none of), and each document's leaves as written or parsed (`STORE_LEAVES`,
+flat: the pointers TAB-joined, the leaf objects' identities comma-joined, `whole` past the walk's
+bound), every store row with its session-row `slot` named while the recording knows the run's names.
+
 What reads a leaf reads the objects the system builds from the tree: Solr's `ZkNodeProps` keeps the
 parsed map, `Slice` and `DocCollection` copy it (each copy carries the entry's expression), and a
 field derived from it goes through the VM's models (`Replica.State.getState` -> `Enum.valueOf`,
