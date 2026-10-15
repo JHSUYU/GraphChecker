@@ -1667,11 +1667,12 @@ final class FlipQuery {
          *  query must be CAUSALLY CLOSED (every symbol stated by a family or a
          *  pin), so it is refused by that symbol's name. */
         private String unbound() {
+            SmtNames.Named texts = SmtNames.named(asserted());
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
                 for (SmtLowering.Declaration declaration
-                        : lowering.reachedBy(asserted())) {
+                        : lowering.reachedBy(texts)) {
                     if (!declaration.body.isEmpty()) continue;
                     if (corpus.symbolKind(sessionId, declaration.name)
                             == Corpus.SymbolKind.UNKNOWN) {
@@ -1780,7 +1781,7 @@ final class FlipQuery {
          *  variables; a fact over an undeclared name is dropped with a named
          *  gap. */
         private void stateFacts() {
-            List<String> texts = asserted();
+            SmtNames.Named texts = SmtNames.named(asserted());
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
