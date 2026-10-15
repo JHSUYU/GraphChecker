@@ -1570,7 +1570,10 @@ many of the view's classes are woven. No leaf is walked for a STORE_LEAVES row o
 window. The recording states what PLAN walks the chain by: each store read at the store's call
 (`STORE_READ`, `MessageDoors#storeRead`: getData's and exists' data version, getChildren's child
 version or -1, at the reading occurrence; a replay states a getData's or an exists' as a read row
-under `<transport>#READ:<location>`), each notification in the occurrence its callback opens first
+under `<transport>#READ:<location>` only in a planned occurrence that runs tracked, not doors-only,
+of a path on the chain or by an occurrence on it, whose read of a path off the chain is the chain's
+growth, `explore.ZkEdges`: never in a role, a leader poll, which states nothing and opens no
+activation; the chain is the iteration's, `CAUSYNTH_ZK_CHAIN`, `ZkChain#held`), each notification in the occurrence its callback opens first
 (`WATCH_FIRED`, `MessageDoors#notified`, `#regionOpened`; its zxid -1, which ZooKeeper 3.6's
 notifications carry none of), and each document's leaves as written or parsed (`STORE_LEAVES`,
 flat: the pointers TAB-joined, the leaf objects' identities comma-joined, `whole` past the walk's

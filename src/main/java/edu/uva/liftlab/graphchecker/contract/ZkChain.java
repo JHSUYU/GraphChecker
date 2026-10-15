@@ -49,6 +49,13 @@ public final class ZkChain {
     public static final String CONTENT_KEYS = "contentKeys";
     /** A growth row: a store edge a replay ran past the chain. */
     public static final String EDGE = "ZK_EDGE";
+    /**
+     * The variable a campaign names its iteration's chain by for every
+     * replay it starts ({@code run_engine.sh do_campaign}): the chain a
+     * replay states its store reads by ({@code runtime.MessageDoors
+     * #storeRead}, {@link #held}).
+     */
+    public static final String ENVIRONMENT = "CAUSYNTH_ZK_CHAIN";
 
     private final List<JsonObject> rows;
     /** transport + "\n" + slot -> the trace's spelling, each chain path. */
@@ -75,6 +82,22 @@ public final class ZkChain {
     public static ZkChain read(Path file) throws IOException {
         return new ZkChain(file == null || !Files.isRegularFile(file)
                 ? new ArrayList<JsonObject>() : RowCodec.readJsonl(file));
+    }
+
+    /**
+     * The chain a file states but its {@value #KEYS} rows: its paths and
+     * occurrences, all a replay asks of it -- a grown chain's keys rows run
+     * to megabytes, which a replay's interpreted JVM would parse at length.
+     * None (no such file): the empty chain.
+     */
+    public static ZkChain held(Path file) throws IOException {
+        List<JsonObject> rows = new ArrayList<JsonObject>();
+        String keys = "\"" + KEYS + "\"";
+        RowCodec.eachLine(file, line -> {
+            if (!line.contains(keys)) rows.add(RowCodec.fromLine(line));
+            return true;
+        });
+        return new ZkChain(rows);
     }
 
     /** Whether the chain holds a store path, by its row spelling. */

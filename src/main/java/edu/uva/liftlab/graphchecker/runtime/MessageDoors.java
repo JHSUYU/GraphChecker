@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -9,7 +11,10 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 
+import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -771,15 +776,17 @@ public final class MessageDoors {
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
         String node = RuntimeTraceContext.ownedSource(owner).key();
-        OccurrenceAddress writer = Identity.currentOccurrence(node);
-        CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
-                writer);
-        // The leaves only where the recording states them: no replay walks
-        // a document for a row it never writes.
-        if (document != null && RecordingWindow.opened()) {
-            CausynthTraceRecorder.storeLeaves(true, trimmed(transport), path,
-                    version, writer, StoreContent.leafRows(transport, path,
-                            document));
+        // The recording's rows only where it writes them: no replay names an
+        // occurrence or walks a document for a row it never writes.
+        if (CausynthTraceRecorder.tracing()) {
+            OccurrenceAddress writer = Identity.currentOccurrence(node);
+            CausynthTraceRecorder.storeWritten(trimmed(transport), path,
+                    version, writer);
+            if (document != null) {
+                CausynthTraceRecorder.storeLeaves(true, trimmed(transport),
+                        path, version, writer, StoreContent.leafRows(
+                                transport, path, document));
+            }
         }
         if (!RowRuntime.open()) return;
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
@@ -1113,11 +1120,12 @@ public final class MessageDoors {
 
     /**
      * Whether a system's JSON codec hands this thread's documents over
-     * ({@link #jsonWritten}, {@link #jsonRead}): in a replay.  The codec
-     * builds the writer's document only then.
+     * ({@link #jsonWritten}, {@link #jsonRead}): in a replay, and in the
+     * recording's window, which states their leaves.  The codec builds the
+     * writer's document only then.
      */
     public static boolean capturingContent() {
-        return StoreContent.capturing() || RecordingWindow.opened();
+        return StoreContent.capturing() || CausynthTraceRecorder.tracing();
     }
 
     /**
@@ -1144,7 +1152,7 @@ public final class MessageDoors {
     public static void jsonRead(byte[] bytes, Object tree) {
         try {
             String version = StoreContent.parsed(bytes, tree);
-            if (version == null || !RecordingWindow.opened()) return;
+            if (version == null || !CausynthTraceRecorder.tracing()) return;
             // What the recording states the reader parsed, leaf by leaf, in
             // the occurrence parsing it: the version's life, as its decode
             // names it (#decode).
@@ -1255,8 +1263,9 @@ public final class MessageDoors {
         DELIVERING.set(DELIVERING.get() + 1);
         // The notification, stated in the occurrence its callback opens
         // (#regionOpened), else where it ran (below).
-        FIRED.set(path == null ? null : new String[] {trimmed(transport),
-                trimmed(path), trimmed(type)});
+        FIRED.set(path == null || !CausynthTraceRecorder.tracing() ? null
+                : new String[] {trimmed(transport), trimmed(path),
+                        trimmed(type)});
         int owed = Confirmation.notificationBegins();
         try {
             callback.run();
@@ -1265,7 +1274,9 @@ public final class MessageDoors {
             // The callback's own exception is the system's and goes on; an
             // engine fault here would replace it, so it is named instead.
             try {
-                fired(Identity.currentOccurrence(nodeHere()));
+                if (FIRED.get() != null) {
+                    fired(Identity.currentOccurrence(nodeHere()));
+                }
                 // What it published at once is in force now -- Solr's watch
                 // callbacks end right after their constructState -- so its
                 // PUBLISH turns are settled here (#publishing).
@@ -1306,10 +1317,15 @@ public final class MessageDoors {
      * A read of {@code key} -- the location and the version it returned,
      * -1 for no node -- at the store's call ({@code op}: a ZooKeeper
      * getData, exists or getChildren, whose version is the node's children
-     * version): stated in the recording, and in a replay a read row of the
-     * version at the reading occurrence, under the store's own site ({@code
-     * <transport>#READ:<location>}), but for a getChildren, whose version is
-     * no data version a write made.
+     * version): stated in the recording; in a replay, a read row of the
+     * version under the store's own site ({@code <transport>#READ:<location>})
+     * only where the composition reads it: in a planned occurrence that runs
+     * tracked (not doors-only), of a path on the ZooKeeper chain, or by an
+     * occurrence on it (a path off the chain it reads is the chain's growth,
+     * {@code explore.ZkEdges}).  Anywhere else -- a role's poll of a leader
+     * node, a doors-only occurrence -- nothing: no row, no activation (owner
+     * 2026-10-15: what is off the chain costs nothing).  A getChildren's
+     * version is no data version a write made: never a row.
      */
     public static void storeRead(String transport, String key, String op,
                                  Object owner) {
@@ -1327,21 +1343,65 @@ public final class MessageDoors {
     private static void read(String transport, String key, String op,
                              Object owner) {
         long version = version(key);
-        // The path's life as it stands: a read waits for no write in flight
-        // (a decode does, #decode), so its timing is the store's alone.
+        // The path's life as it stands, in both passes alike (a version
+        // read starts the next create's new life): a read waits for no
+        // write in flight (a decode does, #decode), so its timing is the
+        // store's alone.
         String path = life(transport, location(key), version, false);
-        String node = RuntimeTraceContext.ownedSource(owner).key();
-        CausynthTraceRecorder.storeRead(trimmed(transport), path, version, op,
-                Identity.currentOccurrence(node));
-        if (!RowRuntime.open() || version < 0L || "getChildren".equals(op)) {
+        if (CausynthTraceRecorder.tracing()) {
+            CausynthTraceRecorder.storeRead(trimmed(transport), path, version,
+                    op, Identity.currentOccurrence(
+                            RuntimeTraceContext.ownedSource(owner).key()));
+        }
+        if (version < 0L || "getChildren".equals(op) || !RowRuntime.open()) {
+            return;
+        }
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (active == null || active.d3Address == null
+                || active.activation.doorsOnly) {
             return;
         }
         LocationId location = storeLocation(transport, path);
-        RowRuntime.storeRead(RowRuntime.doorOccurrence(node),
-                Identity.enginePosition(), Endpoint.messageSite(
-                        trimmed(transport), "READ", location.slot()
-                                .replace('/', '.').replace('@', '.')),
+        if (!chain().holdsPath(trimmed(transport), location.slot())
+                && !active.onZkChain()) {
+            return;
+        }
+        RowRuntime.storeRead(active.d3Address, Identity.enginePosition(),
+                Endpoint.messageSite(trimmed(transport), "READ",
+                        location.slot().replace('/', '.')
+                                .replace('@', '.')),
                 location, version);
+    }
+
+    /**
+     * The ZooKeeper chain this replay states its store reads by ({@link
+     * #read}): the iteration's, which its campaign names ({@value
+     * ZkChain#ENVIRONMENT}), read once; none named, the empty chain.
+     */
+    private static volatile ZkChain chain;
+
+    static ZkChain chain() {
+        ZkChain held = chain;
+        if (held != null) return held;
+        synchronized (CHAIN_LOCK) {
+            if (chain == null) chain = readChain();
+            return chain;
+        }
+    }
+
+    private static final Object CHAIN_LOCK = new Object();
+
+    private static ZkChain readChain() {
+        String named = trimmed(System.getenv(ZkChain.ENVIRONMENT));
+        try {
+            return ZkChain.held(named.isEmpty() ? null : Paths.get(named));
+        } catch (IOException | RuntimeException unread) {
+            RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING, named,
+                    "the ZooKeeper chain " + named + " could not be read ("
+                            + unread + "), so this replay states no store"
+                            + " read of its store calls");
+            return ZkChain.of(new ArrayList<JsonObject>());
+        }
     }
 
     /** A fetch's version key with its life ({@link #life}), as a decode of

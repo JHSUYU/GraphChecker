@@ -443,7 +443,7 @@ public final class CausynthTraceRecorder {
      */
     static void storeWritten(String transport, String location, long version,
                              OccurrenceAddress writer) {
-        if (!RecordingWindow.opened() || writer == null) return;
+        if (!tracing() || writer == null) return;
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
@@ -466,7 +466,7 @@ public final class CausynthTraceRecorder {
      */
     static void storeRead(String transport, String location, long version,
                           String op, OccurrenceAddress occurrence) {
-        if (!RecordingWindow.opened()) return;
+        if (!tracing()) return;
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
@@ -489,7 +489,7 @@ public final class CausynthTraceRecorder {
      */
     static void watchFired(String transport, String location, String type,
                            long zxid, OccurrenceAddress occurrence) {
-        if (!RecordingWindow.opened()) return;
+        if (!tracing()) return;
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
@@ -517,7 +517,7 @@ public final class CausynthTraceRecorder {
     static void storeLeaves(boolean write, String transport, String location,
                             long version, OccurrenceAddress occurrence,
                             List<Object[]> leaves) {
-        if (!RecordingWindow.opened()) return;
+        if (!tracing()) return;
         synchronized (LOCK) {
             String[] flat = leaves == null ? new String[2] : flat(leaves);
             writeTraceRow(
@@ -559,6 +559,16 @@ public final class CausynthTraceRecorder {
                 nonNull(location)).slot();
     }
 
+    /**
+     * Whether this JVM writes its trace now: the recording, inside its
+     * window.  A replay counts from the same window ({@link
+     * RecordingWindow}) and writes no trace row, so nothing a row would
+     * state -- an occurrence, a document's leaves -- is built there.
+     */
+    static boolean tracing() {
+        return traceWriter != null && RecordingWindow.opened();
+    }
+
     private static String rendered(OccurrenceAddress occurrence) {
         return occurrence == null ? "" : occurrence.render();
     }
@@ -590,7 +600,7 @@ public final class CausynthTraceRecorder {
      */
     static void storeDecoded(String transport, String location, long version,
                              List<Object> objects, OccurrenceAddress fetch) {
-        if (!RecordingWindow.opened() || objects.isEmpty()) return;
+        if (!tracing() || objects.isEmpty()) return;
         synchronized (LOCK) {
             StringBuilder ids = new StringBuilder();
             for (Object object : objects) {
