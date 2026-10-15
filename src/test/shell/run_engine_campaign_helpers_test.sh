@@ -4390,16 +4390,20 @@ iteration $(ls "${end_owed}/it/obligations-0000" | tr '\n' ' ')"
 
 # SOLVE-LANES-DISPATCH: the hard lane starts once no other start waits, its
 # asks in order while a host admits one, and like any solve not while GROW
-# holds the solves.  Per row: GROW's hold, how many hard asks a host admits,
-# and the starts made, in order.
+# holds the solves -- from its re-runs' return to their swap, never while a
+# re-run runs.  Per row: GROW's hold (1: a swap owed, 2: a re-run running),
+# how many hard asks a host admits, and the starts made, in order.
 while IFS='|' read -r ld_hold ld_admits ld_started; do
   ld_said=$(
     declare -A stream_queued_at=()
     stream_queue=("OBLIGATION obligations-0001 B"
       "REPLAY obligations-0000 C g0/c g0/p")
-    [[ "${ld_hold}" -eq 0 ]] || stream_queue=()
+    [[ "${ld_hold}" -ne 1 ]] || stream_queue=()
     stream_hard=("HARD obligations-0000 A" "HARD obligations-0000 D")
-    stream_hold=${ld_hold}
+    # 1: a re-run returned and its swap is owed; 2: a re-run still runs.
+    stream_hold=$(( ld_hold > 0 ? 1 : 0 ))
+    stream_swaps=()
+    [[ "${ld_hold}" -ne 1 ]] || stream_swaps=("obligations-0001 R S 0")
     ld_hard=0
     campaign_stream_collect_jobs() { :; }
     campaign_stream_has_slot() { return 0; }
@@ -4418,6 +4422,7 @@ while IFS='|' read -r ld_hold ld_admits ld_started; do
 done <<'EOF'
 0|2|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;HARD obligations-0000 D;
 1|2|
+2|2|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;HARD obligations-0000 D;
 0|1|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;
 EOF
 
@@ -4606,7 +4611,7 @@ ROWS
 # STREAM-DISPATCH: the first entry a host admits starts, a kind no host
 # admits holding nothing behind it; an entry queued past the wait bound goes
 # first and alone, but a witness's confirmation or a GROW re-run never waits
-# behind it; no solve starts while GROW owes re-runs.  Per row: the queue
+# behind it; no solve starts while GROW owes a swap.  Per row: the queue
 # (kind:age in s), the kinds hosts admit, GROW's hold, and the entries
 # started, in order.
 while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
@@ -4625,6 +4630,8 @@ while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
       stream_queued_at["${d_entry}"]=$((now - d_age))
     done
     stream_hold=${dispatch_hold}
+    stream_swaps=()
+    (( dispatch_hold == 0 )) || stream_swaps=("r R S 0")
     campaign_stream_collect_jobs() { :; }
     campaign_stream_has_slot() { return 0; }
     campaign_stream_admit_host() {
@@ -5762,8 +5769,26 @@ ask's"
     stream_swaps=("obligations-0009 OB.r SESSION.exposing 0")
     stream_staged=()
     stream_hold=1
+    # GROW-SWAP-DROP: two replays queued from solves that read the corpus
+    # before the swap; the one whose path rests on the withdrawn session is
+    # dropped before it starts, the other, and a solve, stay queued.
+    campaign_root=${reask_dir}
+    declare -A stream_queued_at=()
+    stream_reaped=()
+    for queued in OB.on:SESSION.exposing OB.off:SESSION.other; do
+      mkdir -p "${reask_iteration}/obligations-0010/${queued%%:*}"
+      jq -n -c --arg path "$(printf '%s|%s' "${queued#*:}" OCC \
+        | sha256sum | cut -c1-16)" '{pathId: $path,
+        focusedOccurrenceId: "OCC"}' \
+        >"${reask_iteration}/obligations-0010/${queued%%:*}/focused_task.jsonl"
+    done
+    stream_queue=("REPLAY obligations-0010 OB.on g0/c g0/p"
+      "REPLAY obligations-0010 OB.off g0/c g0/p"
+      "OBLIGATION obligations-0010 OB.x")
     campaign_stream_swap
     printf '%s\n' "${stream_staged[@]}" >"${reask_dir}/staged.txt"
+    printf '%s;' "${stream_queue[@]}" "${stream_reaped[@]}" \
+      >"${reask_dir}/queue.txt"
   ) </dev/null >"${reask_dir}/swap.log" 2>&1 \
     || fail "GROW-REASK ${reask_case}: the swap failed: \
 $(cat "${reask_dir}/swap.log")"
@@ -5784,6 +5809,12 @@ $(cat "${reask_dir}/swap.log")"
         == "[[\"NOT_ADMITTED\",\"${reask_first}\"],[\"UNSAT\",\"SESSION.regrown\"]]" ]] \
     || fail "GROW-REASK ${reask_case}: the exposing ask was not the one \
 swapped: $(cat "${reask_results}") $(cat "${reask_dir}/swap.log")"
+  [[ "$(cat "${reask_dir}/queue.txt")" == "REPLAY obligations-0010 OB.off \
+g0/c g0/p;OBLIGATION obligations-0010 OB.x;OB.on;" \
+      && -d "${reask_dir}/explore-reaped/obligations-0010/OB.on" \
+      && -d "${reask_iteration}/obligations-0010/OB.off" ]] \
+    || fail "GROW-SWAP-DROP ${reask_case}: the queue after the swap is \
+$(cat "${reask_dir}/queue.txt")"
 done <<'EOF'
 later|obligations-0004|obligations-0000|
 earlier|obligations-0000|obligations-0004|

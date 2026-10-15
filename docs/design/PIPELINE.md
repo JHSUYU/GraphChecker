@@ -1625,9 +1625,13 @@ ask whose answer names the exposing session (`campaign_obligation_worker_dir`, b
 and, for the re-run and the swap, the one its queue entry carries): an obligation asked again under its id
 has a worker in each round that asked it, and either may be the exposing one (SGF3-adhoc-21: the first
 ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region). Until every
-re-run has returned, no obligation's solve runs that started before them and no witness's
-confirmation is queued, runs or waits for its verdict, no solve starts and no round is planned (a
-REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
+re-run has returned and swapped, no round is planned; solves go on while re-runs run, and from the last
+re-run's return until no solve runs and no witness's confirmation is queued, runs or waits for its
+verdict, no solve starts (`campaign_stream_swap_owed`; SGF7-adhoc-09: holding the solves from GROW to the
+swap cost 51 min over six GROWs, 15 and 16 min behind one re-run the stall rule ended). A REPLAY reads no
+corpus and goes on, on its solve's generation, but one still queued whose path rests on a session the swap
+withdraws is dropped then, before it starts (its `pathId` is that session's and occurrence's: no replay,
+no re-ask). A confirmation confirms against the
 corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
 with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
 (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). A re-run that did
