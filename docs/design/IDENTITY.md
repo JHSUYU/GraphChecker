@@ -789,8 +789,13 @@ order:
   Overseer's `ZkDistributedQueue.peekElements` loop, the replay 512, and a queue write in replayed turn #88 waited at
   recorded #88's slot and, as the earliest waiter, bounded a give-up of 4251 slots). The watchdog lets held waits go
   when the order stalls; a released timed wait still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
-  waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). The slot a stall would give up first -- the one write or read a conflicted
+  waits waiting it lets them go again, a grace apart, whatever computes (solr-adhoc-13, round MB6: a replica poll held at
+  the cut bounded a give-up of the 4560 slots before it; 18413's seed ps1p: a test polling RequestStatus past its recorded
+  count waited a timeout a poll). An IDLE stall -- no CPU look since it began saw anything compute -- stands a grace,
+  not a timeout: with every thread waiting, what the frontier waits for is held by the order itself (ps1p: a
+  MigrateCmd sleep polled once more than recorded and its WAKE waited at the later slot its key found, while the
+  frontier was the CLAIM of the work that thread starts after it; each such event came only after its give-up, 13
+  stalls of 15 s, 32% of the window with no workload thread runnable). The slot a stall would give up first -- the one write or read a conflicted
   write waits behind, else the frontier -- stands a grace, not a timeout, when it is a `READ` or its context family
   -- its node and causal context, a root's turn number, an anchor's endpoint and the start frames left out -- missed
   its event in a stall before: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up
@@ -843,7 +848,7 @@ order:
   that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
   first lets the waits held without a slot go -- a grace into a stall nothing computes toward, before
   the timeout (round SG1: 92 stalls across six Solr study checks each waited a timeout to let a held
-  wait go) --; a grace (`LET_GO_GRACE_MS`, 2 s) after the timeout it gives up
+  wait go) --; a grace (`LET_GO_GRACE_MS`, 2 s) after the timeout (a grace in, when the stall is idle) it gives up
   every open slot before the earliest waiter that waits for a slot. That is one let-go per
   frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
   off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and

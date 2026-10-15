@@ -2900,6 +2900,8 @@ public class ScheduleLogTest {
      * its next frontier -- another turn of the same daemon, another anchor of
      * the same kind of message on the node -- stands a grace, not a timeout
      * (SG2: 69 of solr-adhoc-38's 138 give-up stalls; MB21s: 34 of 10's 58).
+     * The first stall has a thread computing through its timeout: an idle
+     * one would stand a grace anyway.
      */
     @Test(timeout = 60000L)
     public void aContextFamilyThatFailedAStallStandsAGraceNext()
@@ -2918,9 +2920,11 @@ public class ScheduleLogTest {
                 event(SEND, "a"),
                 ScheduleEvent.of(0L, SEND, "gone|Root:G#2", "n2", 0, ""),
                 event(SEND, "b")));
+        Thread busy = started(() -> spin(6500L));
         long before = System.nanoTime();
         send("a");
         long first = since(before);
+        busy.join(5000L);
         before = System.nanoTime();
         send("b");
         long second = since(before);
@@ -3323,6 +3327,49 @@ public class ScheduleLogTest {
                     sites.get(0));
             progress(counted ? " of them let go" : "1 of them let go");
         }
+    }
+
+    /**
+     * An IDLE stall -- nothing has computed since it began -- gives its
+     * frontier up a grace in, not a timeout: an idle run waits only on the
+     * order's own holds (ps1p, 18413's seed: 13 such stalls of 15 s, each
+     * event coming only after its give-up).  Then, with only waits held
+     * without a slot waiting, one let go already, the next is let go a grace
+     * after it whatever computes: none holds a slot's event (ps1p: a test
+     * polling RequestStatus past its recorded count waited a timeout a
+     * poll).
+     */
+    @Test(timeout = 60000L)
+    public void anIdleStallAndARepeatedLetGoStandAGrace() throws Exception {
+        timeout(10000L);
+        enforce(prefix("never", "y"));
+        long started = System.nanoTime();
+        Thread y = observer(SEND, "y");
+        y.join(20000L);
+        long took = since(started);
+        assertFalse("y still waits", y.isAlive());
+        assertTrue("idle: a grace, not the timeout: " + took,
+                took >= ScheduleLog.LET_GO_GRACE_MS - 100L && took < 6000L);
+        progress(" 1 given up");
+
+        restart();
+        enforce(prefix("x"));
+        observer(WAKE, "tick.a").join(20000L);
+        progress("1 of them let go");
+        boolean[] stop = new boolean[1];
+        Thread busy = started(() -> {
+            while (!stop[0]) spin(50L);
+        });
+        started = System.nanoTime();
+        Thread b = observer(WAKE, "tick.b");
+        b.join(20000L);
+        took = since(started);
+        stop[0] = true;
+        busy.join(5000L);
+        assertFalse("b still held", b.isAlive());
+        assertTrue("let go again a grace on, while a thread computes: "
+                + took, took < 6000L);
+        progress("2 of them let go");
     }
 
     /** Burns this thread's CPU for {@code millis}. */
