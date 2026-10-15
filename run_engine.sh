@@ -2456,6 +2456,13 @@ campaign_plan() {
   if [[ -s "${recorded_schedule}" ]]; then
     cp -f "${recorded_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
   fi
+  # And the ZooKeeper chain the plan was cut to (contract.ZkChain): ZKKEYS
+  # rekeys this iteration's copy, GROW grows it.
+  local recorded_chain
+  recorded_chain="$(dirname "${runtime_region_plan}")/zk_chain.jsonl"
+  if [[ -s "${recorded_chain}" ]]; then
+    cp -f "${recorded_chain}" "${iteration_dir}/zk_chain.jsonl"
+  fi
   schedule_output_dir="${iteration_dir}"
   # A refusal of the scheduler's (DECLARED_TARGET_OCCURRENCE_MISSING, ...)
   # ends the stage by name, as any stage's throwable does.
@@ -3033,6 +3040,34 @@ campaign_import_session() {
   campaign_log "sessions: ${count}, rows: $(jq -r -s '[.[].rows] | add // 0' \
     "${census}")"
   campaign_import_gate "${iteration_dir}" "${iteration_id}"
+}
+
+# ZKKEYS: the ZooKeeper chain's fields, read off the seed's own composition
+# (compose.ZkKeysMain): the iteration's chain rekeyed with the store leaves
+# the anchor's question rests on, and each plan row stating contentKeys
+# rekeyed with it, so every replay after the seed crosses only those leaves
+# symbolically (runtime.StoreContent) and EXPLORE flips no decision over
+# off-chain store values alone (explore.ZkKeys).  The plan is rewritten by
+# rename, then linked again as the seed's, as GROW links a generation's.  No
+# chain (a system without ZooKeeper): nothing to key.
+campaign_zk_keys() {
+  local iteration_dir=$1
+  local chain="${iteration_dir}/zk_chain.jsonl"
+  local plan="${iteration_dir}/execution_task_plan.jsonl"
+  local log="${iteration_dir}/zk-keys.log"
+  [[ -s "${chain}" ]] || return 0
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.compose.ZkKeysMain \
+    --sessions "${iteration_dir}/sessions" \
+    --anchor "${declared_target_occurrence}" \
+    --static-scope-map "${causynth_static_scope_map}" \
+    ${causynth_root_domains:+--root-domains "${causynth_root_domains}"} \
+    --zk-chain "${chain}" \
+    --plan "${plan}" >"${log}" 2>&1
+  (( status == 0 )) || campaign_fail ZKKEYS ZkKeysMain "${log}" \
+    "the seed's keys failed with exit ${status}: $(campaign_thrown "${log}")"
+  ln -f "${plan}" "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  campaign_log "$(tail -n 1 "${log}")"
 }
 
 # The row contract, checked once per session, where every row passes through.
@@ -9109,6 +9144,7 @@ do_campaign() {
     campaign_log "stopping after IMPORT: campaign_stop_after=IMPORT"
     return 0
   fi
+  campaign_stage ZKKEYS campaign_zk_keys "${iteration_dir}"
   campaign_stage EXPLORE campaign_explore "${iteration_dir}" "${iteration_id}"
   campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}"
   campaign_claim_stages "${iteration_dir}"

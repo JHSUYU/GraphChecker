@@ -289,15 +289,8 @@ final class StoreContent {
     /** Whether a leaf at {@code pointer} lies at or under one of
      *  {@code keys}' prefixes; every leaf where {@code keys} is null. */
     static boolean under(List<String> keys, String pointer) {
-        if (keys == null) return true;
-        String spelled = ContentPort.pointer(pointer);
-        for (String prefix : keys) {
-            if (prefix.isEmpty() || spelled.equals(prefix)
-                    || spelled.startsWith(prefix + "|")) {
-                return true;
-            }
-        }
-        return false;
+        return keys == null
+                || ContentPort.covers(keys, ContentPort.pointer(pointer));
     }
 
     /**

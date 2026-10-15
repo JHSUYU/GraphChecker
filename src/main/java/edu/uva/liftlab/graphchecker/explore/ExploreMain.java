@@ -336,12 +336,14 @@ public final class ExploreMain {
             frontier.inFlight(RowCodec.readAll(inFlight,
                     ExploreCodec::readObligation));
         }
+        ZkChain chain = ZkChain.read(iteration.resolve(ZkChain.FILE));
+        ZkKeys keys = ZkKeys.of(chain);
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
                     flipSites.get(task.taskId()), bounds, branches, frontier,
-                    gaps));
+                    gaps, keys));
         }
         // The forced replay of the anchor first (PIPELINE §7.10).
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
@@ -399,8 +401,7 @@ public final class ExploreMain {
         }
         // The store edges its replays ran past the plan's ZooKeeper chain.
         int exposed = WaveGraph.writeGrowth(corpus, grown, unpaused, inputs,
-                ZkEdges.of(corpus, ZkChain.read(
-                        iteration.resolve(ZkChain.FILE))), out);
+                ZkEdges.of(corpus, chain), out);
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this round is the fixpoint: then none ever will, and
         // the closure is incomplete.

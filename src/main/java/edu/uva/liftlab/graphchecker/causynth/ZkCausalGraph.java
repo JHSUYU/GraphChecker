@@ -1,6 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -204,25 +207,25 @@ public final class ZkCausalGraph {
             return occurrences.contains(occurrence);
         }
 
-        /** The chain as {@code zk_chain.jsonl} rows: each location
-         *  (ZK_CHAIN_PATH), each occurrence (ZK_CHAIN_OCCURRENCE). */
-        public List<Map<String, Object>> rows() {
-            List<Map<String, Object>> rows = new java.util.ArrayList<>();
+        /** The chain's ZK_CHAIN_PATH and ZK_CHAIN_OCCURRENCE rows ({@link
+         *  ZkChain}). */
+        public List<JsonObject> rows() {
+            List<JsonObject> rows = new java.util.ArrayList<>();
             for (Map.Entry<String, String> path : paths.entrySet()) {
                 int cut = path.getKey().indexOf('\n');
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("schemaVersion", 1);
-                row.put("kind", "ZK_CHAIN_PATH");
-                row.put("transport", path.getKey().substring(0, cut));
-                row.put("location", path.getKey().substring(cut + 1));
-                row.put("slot", path.getValue());
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", ZkChain.PATH);
+                row.addProperty("transport", path.getKey().substring(0, cut));
+                row.addProperty("location", path.getKey().substring(cut + 1));
+                row.addProperty("slot", path.getValue());
                 rows.add(row);
             }
             for (String occurrence : occurrences) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("schemaVersion", 1);
-                row.put("kind", "ZK_CHAIN_OCCURRENCE");
-                row.put("occurrenceId", occurrence);
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", ZkChain.OCCURRENCE);
+                row.addProperty("occurrenceId", occurrence);
                 rows.add(row);
             }
             return rows;

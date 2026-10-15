@@ -1604,6 +1604,14 @@ threads, until the reader's work's region exits, at most VIEW_HOLD_MAX (PIPELINE
 The classes that build a node's view are the system's, woven in every case and named by none
 (Solr: `experiments/solr/system.sh` `system_scope`), and the plan keeps symbolic only the decodes
 and writers on the anchor's backward chain over the store's (path, version) edges (`zk_chain.jsonl`).
+PLAN keys the chain by leaf identity over the recording; once the seed is imported, ZKKEYS rekeys it
+with the leaves the seed's own formula names (`compose.ZkKeysMain`: the composition to the anchor,
+and the decisions of every occurrence the anchor's values came from, over handoffs to producers and
+reads to writers): each occurrence PLAN keyed holds, of every keyed path, the seed's pointers there
+-- none, and its leaves cross as constants -- and each plan row stating `contentKeys` takes its
+occurrence's keys (PIPELINE §6). EXPLORE flips no decision over off-chain store values alone
+(`explore.ZkKeys`): leaves no key covers (a chain path no keys row names is the whole document), and
+reads of a store path, or of a view of one, the chain does not hold.
 A replay that writes or decodes a chain path's version in an occurrence off the chain, or reads a
 path off it in a chain occurrence, grows the chain for the next generation (`ZK_EDGE`, PIPELINE §7.8):
 the edge's path, its occurrence and their leaf keys join it, and the occurrence runs whole.

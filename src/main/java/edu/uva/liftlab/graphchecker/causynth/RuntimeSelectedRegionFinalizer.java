@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -8,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -93,14 +97,6 @@ public final class RuntimeSelectedRegionFinalizer {
      * runtime.ConcolicRegionRuntime}; {@link #stateDoorsOnly}).
      */
     public static final String DOORS_ONLY = "doorsOnly";
-    /**
-     * Activation member: the ZooKeeper causal chain's fields this occurrence
-     * carries ({@link ZkCausalGraph#keys}), each {@code location}, {@code
-     * slot} and {@code pointer} (a JSON pointer prefix, '|' for '/'; ""
-     * the whole document): a leaf it parses or serializes outside every
-     * one crosses as a constant.  None stated: no restriction.
-     */
-    public static final String CONTENT_KEYS = "contentKeys";
     /**
      * {@code admissionBasis} of an activation carried because it exported a
      * value the walk demanded on the other side of a message: the recording
@@ -416,7 +412,8 @@ public final class RuntimeSelectedRegionFinalizer {
         stateSharedAddressClasses(program, sharedAddresses);
         // Declared last, and deliberately after the closure filter.
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
-        return new Result(program.regions, program.planGaps, program.zkChain);
+        return new Result(program.regions, program.planGaps,
+                ZkChain.of(program.zkChain));
     }
 
     /** One declared cut port of one region, built once from its skeleton. */
@@ -1281,13 +1278,13 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * Each chain occurrence's fields ({@link ZkCausalGraph#keys}), stated on
-     * its activation ({@link #CONTENT_KEYS}: a leaf outside them crosses as
+     * its activation ({@link ZkChain#CONTENT_KEYS}: a leaf outside them crosses as
      * a constant, on a parse and on a write) and returned as {@code
      * zk_chain.jsonl}'s ZK_CHAIN_KEYS rows.  Seeded by every object the
      * targets read a field on or read; a location whose decoded objects a
      * target read fields of is carried whole.
      */
-    private static List<Map<String, Object>> contentKeys(
+    private static List<JsonObject> contentKeys(
             StaticProgram program, RecordedStore store, ZkCausalGraph zk,
             ZkCausalGraph.Chain chain, Collection<String> targets) {
         Set<Integer> seeds = new HashSet<>();
@@ -1298,32 +1295,38 @@ public final class RuntimeSelectedRegionFinalizer {
             seeds.addAll(owners);
             seeds.addAll(allObjects(activation, FIELD_REFERENTS));
         }
-        List<Map<String, Object>> rows = new ArrayList<>();
+        List<JsonObject> rows = new ArrayList<>();
         for (Map.Entry<String, Map<String, Set<String>>> held : zk.keys(
                 chain, seeds, store.versionsOf(owners).keySet()).entrySet()) {
             List<Map<String, Object>> stated = new ArrayList<>();
             for (Map.Entry<String, Set<String>> location
                     : held.getValue().entrySet()) {
                 int cut = location.getKey().indexOf('\n');
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("schemaVersion", 1);
-                row.put("kind", "ZK_CHAIN_KEYS");
-                row.put("occurrenceId", held.getKey());
-                row.put("location", location.getKey().substring(cut + 1));
-                row.put("slot", chain.paths.get(location.getKey()));
-                row.put("pointers", new ArrayList<>(location.getValue()));
+                String path = location.getKey().substring(cut + 1);
+                String slot = chain.paths.get(location.getKey());
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", ZkChain.KEYS);
+                row.addProperty("occurrenceId", held.getKey());
+                row.addProperty("location", path);
+                row.addProperty("slot", slot);
+                JsonArray pointers = new JsonArray();
+                for (String pointer : location.getValue()) pointers.add(pointer);
+                row.add("pointers", pointers);
                 rows.add(row);
                 for (String pointer : location.getValue()) {
                     Map<String, Object> key = new LinkedHashMap<>();
-                    key.put("location", row.get("location"));
-                    key.put("slot", row.get("slot"));
+                    key.put("location", path);
+                    key.put("slot", slot);
                     key.put("pointer", pointer);
                     stated.add(key);
                 }
             }
             Map<String, Object> activation = program.activations.get(
                     held.getKey());
-            if (activation != null) activation.put(CONTENT_KEYS, stated);
+            if (activation != null) {
+                activation.put(ZkChain.CONTENT_KEYS, stated);
+            }
         }
         return rows;
     }
@@ -3323,11 +3326,11 @@ public final class RuntimeSelectedRegionFinalizer {
          */
         public final List<Map<String, Object>> gaps;
         /** The ZooKeeper causal chain the plan was cut to: {@code
-         *  zk_chain.jsonl} ({@link ZkCausalGraph.Chain#rows}). */
-        public final List<Map<String, Object>> zkChain;
+         *  zk_chain.jsonl}. */
+        public final ZkChain zkChain;
         private Result(List<Map<String, Object>> regions,
                        List<Map<String, Object>> gaps,
-                       List<Map<String, Object>> zkChain) {
+                       ZkChain zkChain) {
             this.regions = regions;
             this.gaps = gaps;
             this.zkChain = zkChain;

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -202,10 +203,9 @@ public final class ConcolicScheduler {
         // The ZooKeeper causal chain's fields it carries: a leaf it parses
         // or serializes outside them crosses as a constant
         // (runtime.StoreContent).
-        if (plan.json().has(RuntimeSelectedRegionFinalizer.CONTENT_KEYS)) {
-            task.json().add(RuntimeSelectedRegionFinalizer.CONTENT_KEYS,
-                    plan.json().get(RuntimeSelectedRegionFinalizer
-                            .CONTENT_KEYS).deepCopy());
+        if (plan.json().has(ZkChain.CONTENT_KEYS)) {
+            task.json().add(ZkChain.CONTENT_KEYS,
+                    plan.json().get(ZkChain.CONTENT_KEYS).deepCopy());
         }
         List<String> regions = new ArrayList<>(strings(plan.json(),
                 RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));

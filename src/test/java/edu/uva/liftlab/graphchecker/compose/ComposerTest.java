@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -49,6 +50,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
@@ -11249,5 +11251,46 @@ public class ComposerTest {
         assertNotNull("an array identity is placed", first);
         assertEquals(VmTermLowering.Sort.REF, first.sort);
         assertEquals("one array, one identity", first.text, later.text);
+    }
+
+    /**
+     * The seed's leaves rekey the chain (ZkKeysMain#keys): a path PLAN keyed
+     * an occurrence by keeps its row, now with the pointers the seed names
+     * there -- none, so its leaves cross as constants --, and every keyed
+     * occurrence, by PLAN or by its task row, holds the seed's leaves.
+     */
+    @Test
+    public void theSeedsLeavesRekeyTheChain() {
+        String state = "/collections/c/state.json";
+        ZkChain chain = ZkChain.of(Arrays.asList(
+                JsonParser.parseString("{\"kind\":\"ZK_CHAIN_PATH\","
+                        + "\"transport\":\"SOLR_ZK\",\"location\":\""
+                        + state + "\",\"slot\":\"" + state + "\"}")
+                        .getAsJsonObject(),
+                JsonParser.parseString("{\"kind\":\"ZK_CHAIN_KEYS\","
+                        + "\"occurrenceId\":\"o1\",\"location\":"
+                        + "\"/clusterprops.json\",\"slot\":"
+                        + "\"/clusterprops.json\",\"pointers\":[\"|urlScheme\"]}")
+                        .getAsJsonObject()));
+        List<JsonObject> plan = Arrays.asList(JsonParser.parseString(
+                "{\"occurrenceId\":\"o2\",\"contentKeys\":[]}")
+                .getAsJsonObject(), JsonParser.parseString(
+                "{\"occurrenceId\":\"o3\"}").getAsJsonObject());
+        Set<String> ports = new LinkedHashSet<String>(Arrays.asList(
+                ContentPort.of("SOLR_ZK", state, "/c/shards/shard1/state"),
+                ContentPort.of("SOLR_ZK", state, "/c/shards/shard1/range")));
+        ZkChain rekeyed = chain.rekeyed(ZkKeysMain.keys(chain, plan,
+                ZkKeysMain.pointers(ports)));
+        String seed = "[{\"location\":\"" + state + "\",\"slot\":\""
+                + state + "\",\"pointer\":\"|c|shards|shard1|range\"},"
+                + "{\"location\":\"" + state + "\",\"slot\":\"" + state
+                + "\",\"pointer\":\"|c|shards|shard1|state\"}]";
+        assertEquals(seed, rekeyed.contentKeys("o1").toString());
+        assertEquals(seed, rekeyed.contentKeys("o2").toString());
+        assertEquals("no keyed row, no keys", 0,
+                rekeyed.contentKeys("o3").size());
+        assertEquals("PLAN's path is keyed, by nothing",
+                Collections.emptySet(),
+                rekeyed.pointers().get("/clusterprops.json"));
     }
 }

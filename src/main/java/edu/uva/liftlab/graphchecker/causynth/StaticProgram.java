@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -62,8 +64,8 @@ public final class StaticProgram {
      */
     final List<Map<String, Object>> planGaps = new ArrayList<>();
     /** The ZooKeeper causal chain the plan was cut to ({@link
-     *  ZkCausalGraph.Chain#rows}): {@code zk_chain.jsonl}. */
-    final List<Map<String, Object>> zkChain = new ArrayList<>();
+     *  ZkCausalGraph.Chain#rows}, its keys rows): {@code zk_chain.jsonl}. */
+    final List<JsonObject> zkChain = new ArrayList<>();
     /** Callees that are communication boundaries in the selected slice. */
     final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
     /** Each application field's store sites ({@code <method>#u<unit>}) over

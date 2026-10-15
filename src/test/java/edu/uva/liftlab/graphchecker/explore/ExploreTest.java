@@ -74,6 +74,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static org.junit.Assert.assertEquals;
@@ -6355,6 +6356,60 @@ public class ExploreTest {
                                 + "\"|collection\""));
         assertTrue("and never shrinks", grown.rows().containsAll(
                 chain.rows()));
+    }
+
+    /**
+     * A decision over store values off the ZooKeeper chain alone is no flip
+     * ({@code ZkKeys}): a leaf of a chain path no key covers, a read of a
+     * view of a path off the chain.  One over a covered leaf, or over an
+     * off-chain leaf and a root, is; with no chain, every one is.
+     */
+    @Test
+    public void aDecisionOverOffChainStoreValuesAloneIsNoFlip()
+            throws Exception {
+        Path iteration = tree.newFolder("zk-keys").toPath();
+        String state = "/collections/c/state.json";
+        Session seed = new Session(iteration, "s-seed");
+        seed.activations(false, TARGET);
+        seed.attach(at(TARGET, ContentPort.of("SOLR_ZK", state,
+                "/c/shards/shard1/state"), "Decode#1"), "M_ON", "1", null);
+        seed.attach(at(TARGET, ContentPort.of("SOLR_ZK", state,
+                "/c/replicas"), "Decode#2"), "M_OFF", "1", null);
+        seed.read(at(TARGET, "SOLR_ZK#READ:|aliases.json", "View#3"),
+                LocationId.of(LocationKind.VIEW, "SOLR_ZK@nn0",
+                        "/aliases.json"), 7L, "M_VIEW", "1");
+        seed.integral(TARGET, "CASE.R", "M_ROOT", "1", "0", "9");
+        seed.decision(TARGET, "Guard#on", 1, true, "(= M_ON 1)");
+        seed.decision(TARGET, "Guard#off", 1, true, "(= M_OFF 1)");
+        seed.decision(TARGET, "Guard#view", 1, true, "(= M_VIEW 1)");
+        seed.decision(TARGET, "Guard#mixed", 1, true, "(= M_OFF M_ROOT)");
+        seed.flush();
+        Path chainFile = iteration.resolve(ZkChain.FILE);
+        RowCodec.writeJsonl(chainFile, Arrays.asList(
+                JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
+                        + "\"ZK_CHAIN_PATH\",\"transport\":\"SOLR_ZK\","
+                        + "\"location\":\"" + state + "\",\"slot\":\""
+                        + state + "\"}").getAsJsonObject(),
+                JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
+                        + "\"ZK_CHAIN_KEYS\",\"occurrenceId\":\""
+                        + TARGET.render() + "\",\"location\":\"" + state
+                        + "\",\"slot\":\"" + state + "\",\"pointers\":"
+                        + "[\"|c|shards\"]}").getAsJsonObject()));
+        Corpus corpus = Corpus.read(iteration, null);
+        ZkKeys keys = ZkKeys.of(ZkChain.read(chainFile));
+        ZkKeys none = ZkKeys.of(ZkChain.read(null));
+        Map<String, Boolean> flips = new TreeMap<String, Boolean>();
+        for (DecisionRow decision : corpus.decisionsOf("s-seed", TARGET)) {
+            flips.put(decision.siteId(),
+                    keys.flippable(corpus, "s-seed", decision));
+            assertTrue(none.flippable(corpus, "s-seed", decision));
+        }
+        Map<String, Boolean> expected = new TreeMap<String, Boolean>();
+        expected.put("Guard#on", true);
+        expected.put("Guard#off", false);
+        expected.put("Guard#view", false);
+        expected.put("Guard#mixed", true);
+        assertEquals(expected, flips);
     }
 
     /** One anchor's closure, every admitted session a parent of growth but

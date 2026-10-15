@@ -66,6 +66,11 @@ public final class ZkChain {
         for (JsonObject row : rows) take(row);
     }
 
+    /** The chain these rows state (PLAN's, {@code causynth.ZkCausalGraph}). */
+    public static ZkChain of(List<JsonObject> rows) {
+        return new ZkChain(new ArrayList<JsonObject>(rows));
+    }
+
     /** The chain a file states; none (no such file) is the empty one. */
     public static ZkChain read(Path file) throws IOException {
         return new ZkChain(file == null || !Files.isRegularFile(file)
@@ -135,6 +140,30 @@ public final class ZkChain {
             }
         }
         return grown;
+    }
+
+    /**
+     * This chain with its {@value #KEYS} rows replaced by {@code keys}: the
+     * fields read off the seed replay's own composition ({@code
+     * compose.ZkKeysMain}), exact where PLAN's were by leaf identity.
+     */
+    public ZkChain rekeyed(List<JsonObject> keys) {
+        List<JsonObject> kept = new ArrayList<JsonObject>();
+        for (JsonObject row : rows) {
+            if (!KEYS.equals(optionalString(row, "kind"))) kept.add(row);
+        }
+        kept.addAll(keys);
+        return new ZkChain(kept);
+    }
+
+    /** Each slot's pointers, over every keys row. */
+    public Map<String, Set<String>> pointers() {
+        return Collections.unmodifiableMap(pointersOf);
+    }
+
+    /** The chain's paths: transport + "\n" + slot each. */
+    public Set<String> paths() {
+        return Collections.unmodifiableSet(paths.keySet());
     }
 
     /** An occurrence's plan-row keys, {location, slot, pointer} each, in

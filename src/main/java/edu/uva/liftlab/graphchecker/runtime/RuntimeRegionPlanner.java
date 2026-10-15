@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -1461,7 +1462,7 @@ public final class RuntimeRegionPlanner {
                     RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
                     RuntimeSelectedRegionFinalizer.STORE_FETCHES,
                     RuntimeSelectedRegionFinalizer.DOORS_ONLY,
-                    RuntimeSelectedRegionFinalizer.CONTENT_KEYS}) {
+                    ZkChain.CONTENT_KEYS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }

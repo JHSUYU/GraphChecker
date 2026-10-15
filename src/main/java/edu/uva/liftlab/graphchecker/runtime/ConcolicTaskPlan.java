@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
@@ -1027,10 +1028,10 @@ final class ConcolicTaskPlan {
          *  {@code {location, slot, pointer}} filed by its slot, else its
          *  location; null where the row states no member. */
         private static Map<String, List<String>> contentKeys(JsonObject row) {
-            if (row == null || !row.has(CONTENT_KEYS)) return null;
+            if (row == null || !row.has(ZkChain.CONTENT_KEYS)) return null;
             Map<String, List<String>> keys =
                     new LinkedHashMap<String, List<String>>();
-            for (JsonElement element : array(row, CONTENT_KEYS)) {
+            for (JsonElement element : array(row, ZkChain.CONTENT_KEYS)) {
                 JsonObject key = element.getAsJsonObject();
                 String slot = optionalString(key, "slot");
                 keys.computeIfAbsent(slot.isEmpty()
@@ -1040,9 +1041,6 @@ final class ConcolicTaskPlan {
             }
             return keys;
         }
-
-        /** The plan row member {@link #contentKeys} reads. */
-        static final String CONTENT_KEYS = "contentKeys";
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {

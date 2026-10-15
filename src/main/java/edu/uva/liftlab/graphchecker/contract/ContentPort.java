@@ -35,12 +35,19 @@ public final class ContentPort {
         return transport + MARK + site(location) + "#" + site(pointer);
     }
 
-    /** The port a site spells, or null for no content port. */
+    /** The port a site spells, or null for no content port.  The pointer
+     *  starts at the first {@code #} that a {@code |} or the end follows: a
+     *  location's life ({@code <path>#<n>}) is part of the location. */
     public static Parsed parse(String site) {
         if (!is(site)) return null;
         int mark = site.indexOf(MARK);
         String rest = site.substring(mark + MARK.length());
         int cut = rest.indexOf('#');
+        while (cut + 1 < rest.length() && rest.charAt(cut + 1) != '|') {
+            int next = rest.indexOf('#', cut + 1);
+            if (next < 0) break;
+            cut = next;
+        }
         return new Parsed(site.substring(0, mark),
                 path(rest.substring(0, cut)), path(rest.substring(cut + 1)));
     }
@@ -74,6 +81,18 @@ public final class ContentPort {
      *  leaf rows name it by. */
     public static String pointer(String pointer) {
         return site(pointer);
+    }
+
+    /** Whether a leaf's pointer, as its port spells it ({@link #pointer}),
+     *  lies at or under one of {@code prefixes} ("" the whole document). */
+    public static boolean covers(Iterable<String> prefixes, String spelled) {
+        for (String prefix : prefixes) {
+            if (prefix.isEmpty() || spelled.equals(prefix)
+                    || spelled.startsWith(prefix + "|")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Java 8's String.replace(CharSequence, CharSequence) compiles a

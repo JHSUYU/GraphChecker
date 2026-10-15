@@ -463,8 +463,9 @@ public final class Corpus implements Arms.Rows {
      * served ({@code ObligationSolverMain#answerer}); hdfs-adhoc-07 EX1,
      * 140-172 s of a late round's ~900 s, every round its planner planned.
      */
-    static Corpus read(Path iteration, Path rootDomains, Corpus previous,
-                       Collection<String> named) throws IOException {
+    public static Corpus read(Path iteration, Path rootDomains,
+                              Corpus previous, Collection<String> named)
+            throws IOException {
         Corpus corpus = new Corpus(iteration, SessionReader.readAll(
                 iteration, previous == null
                         ? Collections.<SessionReader>emptyList()

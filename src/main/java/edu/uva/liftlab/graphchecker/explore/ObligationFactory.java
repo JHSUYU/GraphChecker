@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import java.math.BigInteger;
@@ -593,13 +594,16 @@ public final class ObligationFactory {
      * @param owed      the one ledger of owed arms ({@link Frontier})
      * @param gaps      receives settled candidates, so a shrinking round is
      * explained
+     * @param keys      the ZooKeeper chain's: a decision over off-chain store
+     *                  values alone is no flip
      */
     public static List<Candidate> candidates(Corpus corpus, Task task,
                                              Set<String> flipSites,
                                              Bounds bounds, Branches branches,
                                              Frontier owed,
-                                             List<GapRow> gaps) {
+                                             List<GapRow> gaps, ZkKeys keys) {
         List<Candidate> candidates = new ArrayList<Candidate>();
+        int offChain = 0;
         Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
         int unread = 0;
@@ -626,6 +630,10 @@ public final class ObligationFactory {
             for (int index : faultFirst(corpus, path)) {
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(decision)) {
+                    continue;
+                }
+                if (!keys.flippable(corpus, path.sessionId, decision)) {
+                    offChain++;
                     continue;
                 }
                 if (flipSites == null
@@ -713,6 +721,14 @@ public final class ObligationFactory {
                             + "planned from " + paths + ": " + unread
                             + " path(s), the ones carrying the largest "
                             + "worlds, wait for a later round"));
+        }
+        if (offChain > 0) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    task.taskId() + " zk-keys", offChain + " decision(s) of"
+                            + " this task's paths decide on store values off"
+                            + " the ZooKeeper causal chain alone ("
+                            + ZkChain.FILE + "): no flip"));
         }
         return candidates;
     }

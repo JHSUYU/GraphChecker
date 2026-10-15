@@ -17,6 +17,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
+| ZKKEYS | `campaign_zk_keys`; `compose.ZkKeysMain` (only where PLAN wrote a ZooKeeper chain) | `zk_chain.jsonl` and `execution_task_plan.jsonl` rekeyed, `zk-keys.log` | ZkKeysMain exits nonzero |
 | EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json`, `compose_inputs.sha256` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
@@ -482,6 +483,13 @@ placed on (§7.7) are 512 MB plus four times the largest session's size on disk 
 16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
 seconds).
 
+ZKKEYS (`campaign_zk_keys`, `compose.ZkKeysMain`; SYMBOL-SCOPE §6.4), where PLAN wrote a ZooKeeper
+chain (`zk_chain.jsonl`, copied into the iteration by PLAN): the seed's own composition to the anchor,
+and the decisions of every occurrence the anchor's values came from, name the store leaves the
+question rests on; the iteration's chain is rekeyed with them, each plan row stating `contentKeys`
+takes its occurrence's keys of it, and the plan is linked again as the seed's, so every replay after
+the seed crosses only those leaves symbolically. A seed that composes no path keeps PLAN's keys.
+
 ## 7. EXPLORE
 
 EXPLORE collects the arms the seed lacks: it flips decisions the anchor's failure can depend on, one
@@ -893,7 +901,9 @@ role and api, without the per-site invocation counts; a sender no row names is u
 difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
-decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
+decisions first; a decision whose symbolic sources are store values off the ZooKeeper chain alone
+(`explore.ZkKeys`: leaves no key of `zk_chain.jsonl` covers, reads of a store path or of a view of
+one the chain does not hold) is none, counted in a DIAGNOSTIC `zk-keys` row. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the
 closure ceiling of 1024), `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is

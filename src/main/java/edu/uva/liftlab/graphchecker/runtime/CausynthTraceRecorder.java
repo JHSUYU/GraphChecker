@@ -1845,7 +1845,8 @@ public final class CausynthTraceRecorder {
         planGaps.addAll(trace.lineageGaps);
         writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
                 activationGraph.runtimeInstances, planGaps);
-        writeZkChain(target.outputDir, closure.zkChain);
+        closure.zkChain.write(new File(target.outputDir,
+                edu.uva.liftlab.graphchecker.contract.ZkChain.FILE).toPath());
     }
 
     /** The recorded decisions as the finalizer reads them (its branch
@@ -2653,22 +2654,6 @@ public final class CausynthTraceRecorder {
                 trace.protocol, planGaps).writeRuntimePlan(
                         new File(directory, "concolic_region_plan.jsonl")
                                 .toPath());
-    }
-
-    /** The ZooKeeper causal chain the plan was cut to, beside the plan
-     *  ({@code zk_chain.jsonl}: ZK_CHAIN_PATH, ZK_CHAIN_OCCURRENCE and
-     *  ZK_CHAIN_KEYS rows, {@code causynth.ZkCausalGraph}). */
-    private static void writeZkChain(File directory,
-                                     List<Map<String, Object>> rows)
-            throws IOException {
-        StringBuilder text = new StringBuilder();
-        com.google.gson.Gson gson = new com.google.gson.Gson();
-        for (Map<String, Object> row : rows) {
-            text.append(gson.toJson(row)).append('\n');
-        }
-        java.nio.file.Files.write(new File(directory, "zk_chain.jsonl")
-                .toPath(), text.toString().getBytes(
-                java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /** The epoch's scope map, refused when it states no site at all. */

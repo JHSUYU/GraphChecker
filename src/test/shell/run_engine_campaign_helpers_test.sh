@@ -1392,8 +1392,8 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   "${stop_after_dir}/labels-full.tsv" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
-    "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE CONFIRM EMIT REPRODUCE " ]] \
+    "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT ZKKEYS \
+EXPLORE COMPOSE SOLVE DECIDE CONFIRM EMIT REPRODUCE " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 

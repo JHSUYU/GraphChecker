@@ -66,6 +66,11 @@ public class StoreContentTest {
         String plain = StoreContent.port("SOLR_ZK", "/clusterstate.json",
                 "/c/shards");
         assertEquals("/c/shards", ContentPort.parse(plain).pointer);
+        // A location's second life (<path>#<n>) stays the location's.
+        ContentPort.Parsed life = ContentPort.parse(ContentPort.of(
+                "SOLR_ZK", "/c/state.json#1", "/c/shards"));
+        assertEquals("/c/state.json#1", life.location);
+        assertEquals("/c/shards", life.pointer);
         for (String site : Arrays.asList(port, plain,
                 "SOLR_ZK#WRITE:.aliases.json", "#CONTENT:|a#|b",
                 "SOLR_ZK#CONTENT:|a", "", null)) {
