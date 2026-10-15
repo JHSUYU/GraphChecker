@@ -1,13 +1,17 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.internal.LazilyParsedNumber;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -189,6 +193,75 @@ public class ContractTest {
         }
         assertTrue(SessionReader.read(bare).incomplete()
                 .startsWith(SessionDir.EXPRESSIONS + " could not be read"));
+    }
+
+    /**
+     * A table is held compact and its nodes are built as they are asked for
+     * ({@link ExpressionTable}): the Gson object of a node is THE object of
+     * that node while anything holds it -- asked again, or reached as the
+     * child of a node built again -- and released once nothing does, then
+     * built again equal, numbers by their spelling and members in order.
+     */
+    @Test
+    public void aTableBuildsEachHeldNodeOnceAndReleasesTheRest()
+            throws IOException {
+        JsonObject leaf = new JsonObject();
+        leaf.addProperty("_type", "SymbolExpression");
+        leaf.addProperty("_exp", "M_KEY");
+        leaf.addProperty("_java_type", "J");
+        JsonObject sum = new JsonObject();
+        sum.addProperty("_type", "BinaryExpression");
+        sum.addProperty("_op", "+");
+        sum.add("_left", leaf);
+        JsonArray params = new JsonArray();
+        params.add(leaf);
+        params.add(new JsonPrimitive(new LazilyParsedNumber("5.0")));
+        params.add(JsonNull.INSTANCE);
+        params.add(new JsonPrimitive(true));
+        sum.add("_param_list", params);
+        JsonObject location = new JsonObject();
+        location.addProperty("kind", "MAP");
+        location.addProperty("rid", 12);
+        sum.add("location", location);
+        Map<String, JsonObject> expressions =
+                new LinkedHashMap<String, JsonObject>();
+        expressions.put("EXPR.sum", sum);
+        expressions.put("EXPR.leaf", leaf);
+        Path file = iteration.getRoot().toPath().resolve(
+                SessionDir.EXPRESSIONS);
+        RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
+        ExpressionTable table = SessionExpressionLog.read(file,
+                new RowPool());
+        assertEquals(Arrays.asList("EXPR.sum", "EXPR.leaf"),
+                new ArrayList<String>(table.refs()));
+
+        JsonObject held = table.expression("EXPR.leaf");
+        assertEquals(leaf.toString(), held.toString());
+        assertSame("asked again while held: the same object", held,
+                table.expression("EXPR.leaf"));
+        WeakReference<JsonObject> built =
+                new WeakReference<JsonObject>(table.expression("EXPR.sum"));
+        assertEquals(sum.toString(), built.get().toString());
+        assertSame("a child is the node itself", held,
+                built.get().get("_left"));
+        released(built);
+        JsonObject again = table.expression("EXPR.sum");
+        assertEquals("built again, equal", sum.toString(), again.toString());
+        assertSame("its child still the object held", held,
+                again.get("_left"));
+        assertSame(held, again.getAsJsonArray("_param_list").get(0));
+        assertEquals("5.0", again.getAsJsonArray("_param_list").get(1)
+                .getAsString());
+        assertEquals(ExpressionTable.of(expressions), table);
+    }
+
+    /** Waits for the collector to clear what nothing holds. */
+    private static void released(WeakReference<?> reference) {
+        for (int collection = 0; collection < 50
+                && reference.get() != null; collection++) {
+            System.gc();
+        }
+        assertNull("released once nothing holds it", reference.get());
     }
 
     /**

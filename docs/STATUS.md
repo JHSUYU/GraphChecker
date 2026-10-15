@@ -672,10 +672,15 @@ Scale and robustness:
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
     text per query, each arm body up to twice.
-37. The planner and the composer hold the whole corpus, every session's expression table parsed
-    (`gc/contract/SessionReader#read`): a40h2 DataStreamer-638's 70 sessions (5.7 GB on disk, 0.9 GB
-    of it expressions) planned round 4 at 9.5 GB resident. Past `engine_memory_mb` the exploration
-    ends (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
+37. The planner and the composer hold the whole corpus, every session's rows and indexes
+    (`gc/contract/SessionReader#read`, `gc/explore/Corpus`); the expression tables compact
+    (`gc/contract/ExpressionTable`: a node built when asked, held weakly). solr-adhoc-39 PV7's 208
+    sessions (9.8 GB on disk) held 6.45 GB as a loaded corpus with Gson expression trees, 3.49 GB
+    compact; its round 6 planned in 806 s at a 16 GB heap, peaking near 9.4 GB live (most of it
+    strings: index keys, lowered and canonical texts), where solr-int ran out of 21 GB in the closure
+    walk. Each round also writes the slot table's changes whole (`slots.jsonl`: 2.9 GB in that round
+    6), which every later planner folds. Past `engine_memory_mb` the exploration ends
+    (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
     at or after the activation's entry event, from any thread; each page goes to the publication
     thread as it is read, once fewer than four pages' text wait there undecoded

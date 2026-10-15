@@ -13,7 +13,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -167,15 +166,15 @@ public final class SessionExpressionLog {
      * ({@code SessionPublisher}), so a missing or headless file was never
      * published, and is refused: read as the empty table, every row's ref
      * came out UNSTATED_VALUE and hid the missing file (hdfs-17960's
-     * offline compose).  Its strings come from {@code pool}.
+     * offline compose).  Its strings come from {@code pool}; each line is
+     * taken into the table as it is read ({@link ExpressionTable.Builder}).
      */
     static ExpressionTable read(Path file, RowPool pool) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException(
                     "the session published no expression log: no " + file);
         }
-        Map<Long, JsonObject> nodes = new LinkedHashMap<Long, JsonObject>();
-        Map<String, JsonObject> refs = new LinkedHashMap<String, JsonObject>();
+        ExpressionTable.Builder table = new ExpressionTable.Builder();
         try (BufferedReader in = Files.newBufferedReader(file,
                 StandardCharsets.UTF_8)) {
             String line;
@@ -191,18 +190,8 @@ public final class SessionExpressionLog {
                                 "unsupported session expression log header");
                     }
                     headed = true;
-                } else if (row.has(REF)) {
-                    refs.put(primitiveString(row, REF), node(nodes, row));
                 } else {
-                    long number = row.get(NODE).getAsLong();
-                    JsonElement expression = row.get(EXPRESSION);
-                    if (expression == null || !expression.isJsonObject()
-                            || nodes.containsKey(number)) {
-                        throw new IllegalArgumentException(
-                                "malformed session expression node " + number);
-                    }
-                    nodes.put(number, resolved(nodes,
-                            expression.getAsJsonObject()));
+                    take(table, row);
                 }
             }
             if (!headed) {
@@ -211,57 +200,29 @@ public final class SessionExpressionLog {
                                 + " states no header");
             }
         }
-        return ExpressionTable.of(refs);
+        return table.build();
     }
 
-    /** One line's node, each child by the node an earlier line defined. */
-    private static JsonObject resolved(Map<Long, JsonObject> nodes,
-                                       JsonObject node) {
-        Deque<JsonElement> inline = new ArrayDeque<JsonElement>();
-        inline.push(node);
-        while (!inline.isEmpty()) {
-            JsonElement value = inline.pop();
-            if (value.isJsonArray()) {
-                JsonArray array = value.getAsJsonArray();
-                for (int index = 0; index < array.size(); index++) {
-                    JsonElement element = array.get(index);
-                    if (numbered(element)) {
-                        array.set(index, node(nodes, element.getAsJsonObject()));
-                    } else if (!element.isJsonPrimitive()) {
-                        inline.push(element);
-                    }
-                }
-            } else if (value.isJsonObject()) {
-                for (Map.Entry<String, JsonElement> member
-                        : value.getAsJsonObject().entrySet()) {
-                    JsonElement element = member.getValue();
-                    if (numbered(element)) {
-                        member.setValue(node(nodes,
-                                element.getAsJsonObject()));
-                    } else if (!element.isJsonPrimitive()
-                            && !element.isJsonNull()) {
-                        inline.push(element);
-                    }
-                }
-            }
+    /** One line after the header, into {@code table}: a ref naming a node,
+     *  or a node, each child by the number of an earlier line's node. */
+    static void take(ExpressionTable.Builder table, JsonObject row) {
+        if (row.has(REF)) {
+            table.ref(primitiveString(row, REF), row.get(NODE).getAsLong());
+            return;
         }
-        return node;
-    }
-
-    private static boolean numbered(JsonElement value) {
-        return value != null && value.isJsonObject() && NODE_TYPE.equals(
-                primitiveString(value.getAsJsonObject(), "_type"));
-    }
-
-    private static JsonObject node(Map<Long, JsonObject> nodes,
-                                   JsonObject naming) {
-        long number = naming.get(NODE).getAsLong();
-        JsonObject node = nodes.get(number);
-        if (node == null) {
+        long number = row.get(NODE).getAsLong();
+        JsonElement expression = row.get(EXPRESSION);
+        if (expression == null || !expression.isJsonObject()) {
             throw new IllegalArgumentException(
-                    "session expression node " + number
-                            + " is named before it is defined");
+                    "malformed session expression node " + number);
         }
-        return node;
+        table.node(number, expression.getAsJsonObject());
+    }
+
+    /** The node number an object names when it stands for a child node
+     *  ({@code {"_type": NODE_TYPE, "node": n}}), else null. */
+    static Long childNumber(JsonObject value) {
+        return NODE_TYPE.equals(primitiveString(value, "_type"))
+                ? Long.valueOf(value.get(NODE).getAsLong()) : null;
     }
 }
