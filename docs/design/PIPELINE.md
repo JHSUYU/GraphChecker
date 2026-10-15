@@ -2440,9 +2440,9 @@ obligation worker's answer with, once it published a session, its focus row (`Ob
 admitted path and decides (§9). Where each top-level command of the body ends, the path selector
 guarding it and whether it asserts a refuted claim (its name closes it, so only its last 64
 characters are read) are found once, as the composition is built (`Composition#commandEnds`,
-`#commandGuards`, `#commandRefuted`); every path's question, the self-check's without its fatal arm
-included (`#pathQuery`, `#withoutFatalArm`), is written from the one body by them, never by
-searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
+`#commandGuards`, `#commandRefuted`); what every path's question shares and each path's own scope,
+the self-check's without its fatal arm included (`#sharedQuery`, `#scopeQuery`,
+`#scopeWithoutFatalArm`), are written from the one body by them, never by searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
 self-check (HR1: 556 sessions, 248 paths, a 26 MB body) past the 5400 s case limit; offline it now
 takes 2-3 minutes: the corpus read 73-130 s (NFS), composing 27-45 s, deciding 13 s over 744 z3 runs
 (`/bigtemp/vnr3ne/ab/hdfs-refactor-compose/c07`).
@@ -2458,16 +2458,25 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
 2. Each path is first asked alone with every root free (60 s, `Disjunction#selfCheck`): an unsat
-   path is refuted for every question. When the composed formula is unsat (4), every path is asked
+   path is refuted for every question. Its verdict alone, no core, unless the body asserts a refuted
+   claim: asked under no pin, its core can name only that (`#refutedBySelfCheck`), so it answers
+   every later ask without one, those that want a core too (SGF6-bugs-snapshot-no-active 0001: 141
+   paths' core runs, 26 of 48 at their cap, each then asked again alone, held the decide for hours).
+   The self-check has a third of the decide budget (`ClaimPolicy#SELF_CHECK_SHARE`,
+   `Z3Incremental#until`): past it no path is self-checked and the one running ends, each
+   undecided -- left in the disjunction, never refuted on it -- and the cap is named (DIAGNOSTIC
+   `self-check cap`), so the recorded valuation, which decides the polarity, and the other
+   valuations are asked in the rest (snapshot 0001: about 28 of 141 paths satisfiable after 20-90 s
+   each, a self-check of 21 of the 30 minutes). When the composed formula is unsat (4), every path is asked
    once more with its fatal arm left out (`ClaimPolicy#contradictions`, `Disjunction#withoutFatalArms`,
-   `Composition#withoutFatalArm`: its `path_fatal__` implication without phi), what its own run
+   `Composition#scopeWithoutFatalArm`: its `path_fatal__` implication without phi), what its own run
    satisfied: a path unsat there (or undecided), or one that observed the fatal arm, contradicts its
    run -- `PATH_SELF_CONTRADICTORY` DIAGNOSTIC, and BLOCKING for the composition, since the UNSAT rests
    on it; refuted by phi alone everywhere, no root of the corpus turns any path to the fatal arm,
    which is the claim's own answer (b20h BlockTokenSecretManager-511, a40s
    BackupCmd-343: the null-checked read is pinned to the object the run read). Then every valuation is asked (4 at
    once; each question is written to its z3s from the one body the composition holds, never copied
-   per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
+   per ask or per arithmetic engine, `Composition#query`/`#scopeQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
    clock cells and the held leaves the arms bind (`Composition#heldSymbols`); a selected state arm
    keeps the states whose selector the model set. An undecided valuation is named DIAGNOSTIC: it
@@ -2478,14 +2487,47 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    same disjunction under more pins (hdfs-11741 i1: 24 of its 31 whole asks ran their 60 s
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
-   second each alone); one that stops at its memory cap goes path by path too. Path by path, the
-   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 768 MB slot of the
-   composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3 peaks measured p90 81-664 MB on three
-   Solr corpora), so a 3 GB room runs two at once, the rest
-   waiting for a slot; the valuations, asked up to four at a time (`PARALLEL_ASKS`, at most as many as
-   there are), ask their whole disjunctions in slots of the room shared that many ways
-   (`Disjunction#asking`, `Z3#shared`), and a lone ask -- the formula's, a refinement's, a path asked
-   alone -- in half of it each engine; an ask at a shared slot's cap is asked once more alone first.
+   second each alone); one that stops at its memory cap goes path by path too, at the slot it was
+   asked in -- never asked again alone first (`Z3#ask`): each path is a smaller question.
+   Every path question -- the self-check, the one without its fatal arm, a path in its own run, free,
+   under its own pins -- is one SCOPE of a long-lived z3 (`smt.Z3Incremental`): one z3 per arithmetic
+   engine reads what every path shares once (`Composition#sharedQuery`: the commands no selector
+   guards and no refuted claim) and asks each path as `(push 1) (set-option :timeout B)` its own
+   commands (`#scopeQuery`: the refuted claims, its guarded commands, its selector, its pins)
+   `(check-sat)`, its model or core read off that check, then `(pop 1)`, every answer read up to an
+   `(echo ...)` mark; the pop takes back all the scope asserted, named or declared, so no question
+   sees another's (SGF6-bugs-snapshot-no-active 0001: 65 of each path's 69 MB shared, read again by
+   every path's own z3 before, about 4 of its 5.5-8 s). z3 answers a scope with its incremental
+   core, far slower on some questions (that corpus: a sat path 73 s scoped, 8 s alone), so after 1 s
+   it falls back to its tactic solver (`combined_solver.solver2_timeout`, `SOLVER2_TIMEOUT_MS`): that
+   path 4 s, unsat ones 0.3-3 s. The engines race as a run's do, the preferred one's decided answer
+   winning within its grace where a model or a core is asked -- a verdict alone is the first decided
+   engine's at once, the same whichever gives it (`Z3#PREFERRED_GRACE_MILLIS`, one-shot runs alike:
+   snapshot 0001, a path engine 6 satisfied in 22 s while engine 2 ran 120 s undecided, answered at
+   44 s before); the other engine's check still running is cancelled by SIGINT, on which
+   z3 ends a `check-sat` and reads on (anywhere else SIGINT ends it: started afresh). Undecided is
+   never a verdict -- a timeout (z3's `:timeout`, or silent 10 s past it: that z3 ended), an
+   `unknown`, a z3 at its cap -- and a z3 that ends mid-question answers it nothing: the questions
+   after it go to a fresh one. A question is asked once more where its z3 ended before reaching it,
+   ran out of memory after answering others, or had a SIGINT meant for an earlier check still to land
+   (sent as that check ended, it cancels the next check -- "interrupted from keyboard", z3 4.14.1 --
+   or, outside a check, ends z3); a cancelled check that shows no verdict within 10 s ends its z3,
+   and a question's silence counts from its send, on a fresh z3 from the end of the shared part's
+   read (which never counts: a large shared part is no timeout of every question).
+   Two decided answers to one question that differ -- its engines' in one run or race, or its verdict's
+   and its model's or core's -- are an error (`Z3#DISAGREE`, the claim refused by name) and the
+   question undecided. A sat whose model its cap cut is undecided, an unsat whose core it cut stands
+   with its core unknown. A core is asked again of a second pair started tracking (`Z3#CORE_TRACKING`
+   slows every question). The paths' questions are put 8 at a time (`PATH_ASKS`) and asked in order,
+   one at a time; a pair holds the composer's whole z3 room while it lives, half each engine (a 2269
+   MB room: two z3s capped at 1070 MB; snapshot 0001's held 420-560 MB, 843 MB at peak), and gives it
+   back to whoever waits for it once it has no question, or between questions after 30 s of it
+   (`YIELD_AFTER_MS`), so the two pairs and the one-shot asks take turns. The valuations, asked up
+   to four at a time (`PARALLEL_ASKS`, at most as many as there are), ask their whole disjunctions in
+   slots of the room shared that many ways (`Disjunction#asking`, `Z3#shared`), and a lone one-shot
+   ask -- the formula's -- in half of it each engine; a model or core run at a shared slot's cap is
+   that run once more alone, never the verdict again (`Z3#payload`): a core cut there too leaves the
+   verdict unsat, its core unknown.
    A composer's room is 3072 MB (its charge at the 4 GB start heap 7.8 GB, at 8 GB once it outgrew 4 GB
    12.2 GB; a 6144 MB room beside an 8 GB start, 15.2 GB that every head held too, kept five bug checks
    of round SGF4 waiting 30 min and more for a host), less where its footprint,
@@ -2493,7 +2535,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
    `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer
    in their order: the first sat path's answer (the asks
-   after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
+   after it stopped, a check still running cancelled), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
    `Composition#ownRun`): its own session's arm of each message the path received and each state
    read's observed writer, selectors only (never the values its handoffs carried, which are on its
@@ -2501,18 +2543,32 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    its own run is refuted or undecided is the path asked free (hdfs-11741 L1: two fatal-observing
    paths sat in about 100 s in their own runs, undecided after 30 minutes free). A path unsat under some assertions is unsat under every set containing them,
    so it is not asked again there: its refutation answers, core and all, one asked without a core
-   only an ask that wants none, unless it was asked under no assertion at all (the self-check: its
-   core can name no pin). hdfs-11741 i1: 155 of 157 paths refute themselves, so every pinned re-ask
-   of its witness asks two paths. A path is asked by `Composition#pathQuery`: the body without the
-   commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
-   partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
-   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared; hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction
-   check and `mechanism`'s pinned re-asks of the selected path read the same text. Selectors are
-   never asserted together: two contradict the partition.
-   An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
-   each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
-   since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
-   rest forces false.
+   only an ask that wants none, unless it was asked under no assertion at all where the body asserts
+   no refuted claim (the self-check: its core can name no pin). hdfs-11741 i1: 155 of 157 paths
+   refute themselves, so every pinned re-ask of its witness asks two paths. A valuation pins every
+   declared root; a path's question names few of them (`Composition#rootsOf`: the roots its own
+   commands name, closed over the commands every path shares that name one of them and another,
+   read off the body once). Each path -- free and in its own run -- is asked first under the pins of
+   those alone (`Disjunction#projected`), a subset of the valuation's assertions: unsat there, it is
+   remembered so and refutes the path under every valuation agreeing on them, so a path is asked once
+   per distinct projection, not once per valuation; sat or undecided there, the whole valuation
+   decides, in its own run too, within the whole budget: the first try takes at most a quarter of it
+   (`Disjunction#PROJECTED_SHARE`), since its roots follow only the shared commands naming two or more
+   of them and it can leave out a pin the path needs. An unsat is only ever read
+   off a subset of the assertions asked, and a memout or a timeout is never one. A path's question is
+   the body without the commands another path's selector guards (`(assert (=> <selector> ...))`,
+   vacuous once the partition forces that selector false), its own selector asserted: the shared
+   part and its scope; 90-98% of a body is guarded (hdfs-17899-bug2 r4: 1.7 of 93 MB shared;
+   hdfs-11741 i1: 4.1 of 124 MB). The self-contradiction check and `mechanism`'s pinned re-asks of
+   the selected path read the same text. Selectors are never asserted together: two contradict the
+   partition.
+   A one-shot ask (`Z3#ask`, the whole disjunction) is a verdict run, then a model run (sat) or a
+   core run (unsat, where a core is wanted), each its own z3 process; only the core run tracks the
+   named assertions (`smt.Z3#CORE_TRACKING`), since tracked z3 simplifies nothing across them and
+   still searches a disjunct whose selector the rest forces false.
+   One composition's claim asks z3 within `DECIDE_BUDGET_MS` (30 min, `ClaimPolicy#decide`,
+   `Z3#until`): past it no question starts and every one running ends, each undecided -- a named
+   bound (DIAGNOSTIC `decide budget`), never a refutation, so no UNSAT stands on it.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
