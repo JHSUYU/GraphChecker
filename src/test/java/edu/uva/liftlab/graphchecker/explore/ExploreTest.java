@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -640,6 +641,27 @@ public class ExploreTest {
         assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertEquals("true",
                 worker.obligation.rootAssignments().get("CASE.MARKER"));
+        // THE HARD LANE'S MODEL, FINISHED BY THE CORPUS: a first ask out of
+        // budget leaves its record, the hard lane decides it with no corpus,
+        // and its model is planted as it is: the same world the corpus's own
+        // ask planted.
+        Path hard = out.resolve("hard");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), hard, Paths.get("z3"), 1L,
+                1152, null);
+        ObligationSolverMain.decide(wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), hard, Paths.get("z3"),
+                10_000L, 1152);
+        Path finish = out.resolve("finish");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), finish, Paths.get("z3"),
+                10_000L, 1152, HardAsk.Model.read(
+                        hard.resolve(HardAsk.Model.FILE)));
+        assertEquals(worker.obligation, RowCodec.readAll(finish.resolve(
+                ObligationDir.OBLIGATION), ExploreCodec::readObligation)
+                .get(0));
         // The focus row is its own file.  execution_task_plan.jsonl is the
         // PLAN's name, and the workload session opener decodes whatever
         // stands under it, so a focus row written there killed every
@@ -6782,6 +6804,74 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * THE HARD LANE READS NO CORPUS ({@code ObligationSolverMain#decide}): z3
+     * alone over the query a first ask published and its record ({@code
+     * HardAsk}), answered as the corpus's ask maps an answer ({@code
+     * ObligationFactory#settled}): UNSAT with the record's detail, gaps and
+     * question, settling it; the budget spent a named SOLVER_TIMEOUT, never
+     * UNSAT; a model left for the host's solver to finish, no answer
+     * (SGF7-adhoc-39: each hard ask was a corpus JVM of 18-21 GB, one per
+     * host).  Per row: the body, the budget, and the verdict and detail
+     * published (MODEL: a model, no answer).
+     */
+    @Test
+    public void theHardLaneAnswersOverItsFirstAsksQueryAlone()
+            throws Exception {
+        String sat = "(declare-const x Int)\n(assert (> x 41))\n";
+        String unsat = "(declare-const x Int)\n(assert (and (> x 1) (< x 0)))\n";
+        String slow = "(declare-const x Int)\n(declare-const y Int)\n"
+                + "(declare-const z Int)\n(assert (and (> x 2) (> y 2) "
+                + "(> z 2) (= (+ (* x x x) (* y y y)) (* z z z))))\n";
+        Object[][] rows = {
+                {unsat, 60_000L, "UNSAT",
+                        "no world of this corpus takes the other arm at s#1"},
+                {slow, 1L, "NOT_ADMITTED", "SOLVER_TIMEOUT after 1ms"},
+                {sat, 60_000L, "MODEL", ""},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            Path worker = tree.newFolder("hard" + at++).toPath();
+            Path obligations = worker.resolve("obligations.jsonl");
+            RowCodec.writeAll(obligations, Collections.singletonList(
+                    Obligation.of("OB.1", "T", "P", "s", 1, true,
+                            Collections.<String, String>emptyMap(),
+                            Collections.<String, String>emptyMap(),
+                            Collections.<String>emptyList())),
+                    ExploreCodec::writeObligation);
+            List<String> symbols = Collections.singletonList("x");
+            String query = Z3.modelQuery((String) row[0], symbols);
+            Files.write(worker.resolve(ObligationSolverMain.QUERY),
+                    query.getBytes(StandardCharsets.UTF_8));
+            GapRow built = GapRow.of("S", GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, "OB.1", "built");
+            new HardAsk("OB.1", "S", "the question",
+                    "no world of this corpus takes the other arm at s#1",
+                    Collections.singletonList(built), symbols)
+                    .write(worker.resolve(HardAsk.FILE));
+            ObligationSolverMain.decide(obligations, "OB.1", worker,
+                    Paths.get("z3"), (Long) row[1], 1152);
+            String says = Arrays.toString(row);
+            if ("MODEL".equals(row[2])) {
+                assertFalse(says, Files.exists(
+                        worker.resolve(ObligationDir.RESULT)));
+                assertEquals(says, "42", HardAsk.Model.read(worker.resolve(
+                        HardAsk.Model.FILE)).values.get("x"));
+                continue;
+            }
+            ObligationResult result = RowCodec.readAll(
+                    worker.resolve(ObligationDir.RESULT),
+                    RowCodec::readObligationResult).get(0);
+            assertEquals(says, row[2], result.verdict().name());
+            assertTrue(says + result.detail(),
+                    result.detail().startsWith((String) row[3]));
+            assertTrue(says, anyGap(worker, gap -> "built".equals(
+                    gap.detail())));
+            assertEquals(says, "UNSAT".equals(row[2]), Files.exists(
+                    worker.resolve(ObligationDir.QUESTION)));
+        }
+    }
+
     private Worker solve(Path iteration, Path waveDir, Obligation proposal,
                          Path out, String name) throws IOException {
         return solve(iteration, null, waveDir, proposal, out, name);
@@ -6795,7 +6885,7 @@ public class ExploreTest {
         ObligationSolverMain.solve(Corpus.read(iteration, domains),
                 iteration, waveDir.resolve("obligations.jsonl"),
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L,
-                1152);
+                1152, null);
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.resolve("obligation_result.jsonl"),
                 RowCodec::readObligationResult);

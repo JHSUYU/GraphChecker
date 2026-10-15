@@ -222,6 +222,9 @@ public final class ObligationFactory {
         /** Whether the flip runs an open decider arm ({@link
          *  Corpus#openArmFlip}): its replay may refute its world. */
         public final boolean openArm;
+        /** Its hard-lane ask, where its first ask was undecided at its budget
+         *  by time or by z3's memory cap; else null. */
+        final HardAsk owed;
 
         Outcome(Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
@@ -230,7 +233,8 @@ public final class ObligationFactory {
                         Map<String, String> pairings,
                         ConfirmMain.Holding holding,
                         List<GapRow> gaps, String question,
-                        boolean settles, boolean openArm) {
+                        boolean settles, boolean openArm, HardAsk owed) {
+            this.owed = owed;
             this.obligation = obligation;
             this.openArm = openArm;
             this.result = result;
@@ -264,13 +268,73 @@ public final class ObligationFactory {
                            String detail, String query,
                            List<GapRow> gaps, String question,
                            boolean settles) {
-        return new Outcome(null, ObligationResult.of(candidate.obligationId,
+        return refused(candidate.obligationId, verdict, detail, query, gaps,
+                question, settles, null);
+    }
+
+    private static Outcome refused(String obligationId, Verdict verdict,
+                                   String detail, String query,
+                                   List<GapRow> gaps, String question,
+                                   boolean settles, HardAsk owed) {
+        return new Outcome(null, ObligationResult.of(obligationId,
                 verdict, "", detail), query,
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
                 Collections.<Corpus.Flip>emptyList(),
                 Collections.<String, String>emptyMap(), null, gaps, question,
-                settles, false);
+                settles, false, owed);
+    }
+
+    /**
+     * What an answer to {@code ask} settles of its flip without a model: an
+     * UNSAT, which settles its question, or no verdict by name -- the budget
+     * spent ({@code SOLVER_TIMEOUT}), z3 at its memory cap ({@code
+     * SOLVER_MEMOUT}), or neither sat nor unsat -- each of the first two
+     * owing its hard-lane ask (the outcome's {@code owed}); null for a sat
+     * answer, which only the corpus finishes.  The one mapping both the
+     * corpus's ask ({@link #solve}) and the hard lane's ({@code
+     * ObligationSolverMain --decide}) answer by, so their files are the same
+     * ({@code query} null: the hard lane keeps the first ask's).
+     */
+    static Outcome settled(HardAsk ask, Z3.Answer answer, long budget,
+                           Z3 solver, String query) {
+        List<GapRow> gaps = new ArrayList<GapRow>(ask.gaps);
+        if (answer.timedOut()) {
+            gaps.add(GapRow.of(ask.gapSession, GapKind.SOLVER_TIMEOUT,
+                    GapClass.DIAGNOSTIC, ask.obligationId,
+                    "no verdict in " + budget + "ms: the flip is an "
+                            + "unexplored sibling, not a closed one"));
+            return refused(ask.obligationId, Verdict.NOT_ADMITTED,
+                    "SOLVER_TIMEOUT after " + budget + "ms", query, gaps,
+                    ask.question, false, ask);
+        }
+        // At its memory cap: no verdict, by name, as a timeout is (its
+        // campaign asks it again with a larger cap, in the hard lane).
+        if (answer.memOut()) {
+            gaps.add(GapRow.of(ask.gapSession, GapKind.SOLVER_MEMOUT,
+                    GapClass.DIAGNOSTIC, ask.obligationId,
+                    answer.reason() + ": the flip is an unexplored sibling,"
+                            + " not a closed one"));
+            return refused(ask.obligationId, Verdict.NOT_ADMITTED,
+                    "SOLVER_MEMOUT at " + solver.capMb() + " MB", query, gaps,
+                    ask.question, false, ask);
+        }
+        // Neither sat nor unsat (error/unknown) is no verdict: refused by name,
+        // never read as UNSAT.
+        if (!answer.decided()) {
+            return refused(ask.obligationId, Verdict.NOT_ADMITTED,
+                    "the solver did not decide this flip: " + answer.status()
+                            + (answer.reason().isEmpty() ? ""
+                            : " " + answer.reason())
+                            + (solver.errors().isEmpty() ? ""
+                            : " " + solver.errors()), query, gaps,
+                    ask.question, false, null);
+        }
+        if (!answer.sat()) {
+            return refused(ask.obligationId, Verdict.UNSAT, ask.unsatDetail,
+                    query, gaps, ask.question, true, null);
+        }
+        return null;
     }
 
     /** {@code reading + skew} as a decimal, or "" if either is not one: the
@@ -964,7 +1028,8 @@ public final class ObligationFactory {
     public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
                                 long timeoutMillis, int z3RoomMb,
                                 String given,
-                                Map<String, ObligationDir.Answer> answered) {
+                                Map<String, ObligationDir.Answer> answered,
+                                HardAsk.Model decided) {
         if (candidate.pairing()) {
             return PairingFlip.solve(corpus, candidate, given, answered);
         }
@@ -1043,56 +1108,29 @@ public final class ObligationFactory {
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
         Z3 solver = new Z3(z3, budget, z3RoomMb);
-        Z3.Answer answer = solver.ask(built.smt2, built.modelSymbols, false);
         // The query as asked (body plus the driver's question), for the
         // artifact.
         String query = Z3.modelQuery(built.smt2, built.modelSymbols);
-        if (answer.timedOut()) {
-            gaps.add(GapRow.of(candidate.path.sessionId,
-                    GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
-                    "no verdict in " + budget + "ms: the flip is an "
-                            + "unexplored sibling, not a closed one"));
-            return refused(candidate, Verdict.NOT_ADMITTED,
-                    "SOLVER_TIMEOUT after " + budget + "ms", query, gaps,
-                    question, false);
-        }
-        // At its memory cap: no verdict, by name, as a timeout is (its
-        // campaign asks it again with a larger cap, in the hard lane).
-        if (answer.memOut()) {
-            gaps.add(GapRow.of(candidate.path.sessionId,
-                    GapKind.SOLVER_MEMOUT, GapClass.DIAGNOSTIC, id,
-                    answer.reason() + ": the flip is an unexplored sibling,"
-                            + " not a closed one"));
-            return refused(candidate, Verdict.NOT_ADMITTED,
-                    "SOLVER_MEMOUT at " + solver.capMb() + " MB", query, gaps,
-                    question, false);
-        }
-        // Neither sat nor unsat (error/unknown) is no verdict: refused by name,
-        // never read as UNSAT.
-        if (!answer.decided()) {
-            return refused(candidate, Verdict.NOT_ADMITTED,
-                    "the solver did not decide this flip: " + answer.status()
-                            + (answer.reason().isEmpty() ? ""
-                            : " " + answer.reason())
-                            + (solver.errors().isEmpty() ? ""
-                            : " " + solver.errors()), query, gaps,
-                    question, false);
-        }
-        if (!answer.sat()) {
-            List<String> rests = new ArrayList<String>();
-            for (Corpus.Refuted world : refuted) rests.add(world.digest);
-            return refused(candidate, Verdict.UNSAT,
-                    (candidate.forced ? "no world of this corpus takes the"
-                            + " forced way to the throw from "
-                            : "no world of this corpus takes the other arm"
-                            + " at ")
-                            + decision.siteId() + "#" + decision.ordinal()
-                            + (rests.isEmpty() ? "" : " but the "
-                            + rests.size() + " world(s) its replays refuted "
-                            + "(WORLD_REFUTED), on which this rests: "
-                            + String.join(", ", rests)),
-                    query, gaps, question);
-        }
+        List<String> rests = new ArrayList<String>();
+        for (Corpus.Refuted world : refuted) rests.add(world.digest);
+        HardAsk ask = new HardAsk(id, candidate.path.sessionId, question,
+                (candidate.forced ? "no world of this corpus takes the"
+                        + " forced way to the throw from "
+                        : "no world of this corpus takes the other arm"
+                        + " at ")
+                        + decision.siteId() + "#" + decision.ordinal()
+                        + (rests.isEmpty() ? "" : " but the "
+                        + rests.size() + " world(s) its replays refuted "
+                        + "(WORLD_REFUTED), on which this rests: "
+                        + String.join(", ", rests)),
+                gaps, built.modelSymbols);
+        // The hard lane's model is planted as it is, over whatever query the
+        // corpus builds now: its replay is a real run, and decides.
+        Z3.Answer answer = decided == null
+                ? solver.ask(built.smt2, built.modelSymbols, false)
+                : Z3.Answer.sat(decided.values);
+        Outcome settled = settled(ask, answer, budget, solver, query);
+        if (settled != null) return settled;
         Planted planted = planted(corpus, candidate, built, answer.values(),
                 gaps);
         if (!planted.refusal.isEmpty()) {
@@ -1106,8 +1144,11 @@ public final class ObligationFactory {
         // the run's own pairings, which no order has to realize.
         if (!planted.pairings.isEmpty()) {
             String held = heldToRecording(built);
+            // A hard lane's flip asks it at the hard lane's budget and room.
+            Z3 asker = decided == null ? solver
+                    : new Z3(z3, decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
-                    : solver.ask(held, built.modelSymbols, false);
+                    : asker.ask(held, built.modelSymbols, false);
             if (again != null && again.decided() && again.sat()) {
                 Planted recorded = planted(corpus, candidate, built,
                         again.values(), gaps);
@@ -1216,7 +1257,7 @@ public final class ObligationFactory {
                         + " planted pairing(s), planted at " + mints.size()
                         + " mint(s)"),
                 query, clockDeltas, mints, inherited.flips, pairings,
-                holding, gaps, question, false, openArm);
+                holding, gaps, question, false, openArm, null);
     }
 
     /**

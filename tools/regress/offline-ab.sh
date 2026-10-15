@@ -18,8 +18,9 @@
 #                                                       artifacts for both sides (ab_seed)
 #             PLAN        do_schedule                   this side's SEED.trace plan
 #             EXPLORE.0   campaign_explore, round 0     the seed session + this side's PLAN
-#             SOLVE.0     campaign_obligation_worker's  each EXPLORE.0 obligation (z3), no replay
-#                         solver
+#             SOLVE.0     campaign_solve_obligation     each EXPLORE.0 obligation (z3), no replay,
+#                                                       one served solver at the first lane's
+#                                                       60 s (no hard lane)
 #   IMPORT    IMPORT      campaign_import_gate          the recorded final corpus
 #   EXPLORE.N EXPLORE.N   campaign_explore, last round  the recorded final corpus, verdicts, slots
 #   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)
@@ -83,7 +84,6 @@
 #                 tools/lib/gc-env.sh; localhost: this machine only)
 #   AB_HEAP_MB    engine JVM heap cap (default 8192; a case's engine_memory_mb
 #                 above it is lowered to it)
-#   AB_SOLVE_JOBS concurrent SOLVE.0 solvers of one side (default 1)
 #   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
 #   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE";
 #                 SEED.static: the static pass alone)
@@ -455,36 +455,38 @@ ab_stage_explore0() {
     --output-dir "${dir}/iteration-0000/obligations-0000" "${ab_explore[@]}"
 }
 
-# One solver per round-0 obligation, over the iteration EXPLORE.0 left (its
-# slot table included), each into its own worker directory: the solver half
-# of campaign_obligation_worker, whose failure the campaign records as that
-# obligation's NOT_ADMITTED -- an outcome, compared by each worker's own
-# status.  The replay half is what this gate is not.
+# Round 0's obligations asked of ONE served solver (run_engine.sh
+# campaign_solve_obligation, the campaign's own first ask), over the
+# iteration EXPLORE.0 left (its slot table included), each into its own
+# worker directory: a failure is that obligation's outcome, compared by each
+# worker's own status.  The replay half is what this gate is not.
 ab_stage_solve0() {
-  local dir wave id running=0 start=${SECONDS}
-  local -a domains=() ids=()
+  local dir wave id start=${SECONDS} code
+  local -a ids=()
   dir=$(ab_stage_dir SOLVE.0)
   wave=${ab_case_dir}/EXPLORE.0/iteration-0000/obligations-0000
-  [[ -z "${ab_root_domains}" ]] || domains=(--root-domains "${ab_root_domains}")
   mapfile -t ids < <(jq -r '.obligationId' "${wave}/obligations.jsonl")
-  for id in "${ids[@]}"; do
-    mkdir -p "${dir}/${id}"
-    ab_java "${dir}/${id}" "$(ab_heap "")" "${ab_jar}" \
-      edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
-      --obligations "${wave}/obligations.jsonl" --obligation-id "${id}" \
-      --sessions "${ab_case_dir}/EXPLORE.0/iteration-0000/sessions" \
-      --output-dir "${dir}/${id}" --z3 "${ab_z3}" \
-      --solver-timeout-ms "$(ab_cfg solver_timeout_ms)" "${domains[@]}" &
-    running=$((running + 1))
-    if (( running >= AB_SOLVE_JOBS )); then
-      wait -n
-      running=$((running - 1))
-    fi
-  done
-  while (( running > 0 )); do
-    wait -n
-    running=$((running - 1))
-  done
+  (
+    java_bin=${ab_java_bin}
+    graphchecker_jar=${ab_jar}
+    graphchecker_work_dir=${dir}
+    causynth_loop_default_bound=${ab_loop_bound}
+    causynth_system_doors=$(ab_cfg causynth_system_doors)
+    causynth_root_domains=${ab_root_domains}
+    z3_bin=${ab_z3}
+    solver_timeout_ms=$(ab_cfg solver_timeout_ms)
+    engine_memory_mb=$(ab_heap "$(ab_cfg engine_memory_mb)")
+    export TMPDIR="${dir}/solver"
+    mkdir -p "${TMPDIR}"
+    for id in "${ids[@]}"; do
+      mkdir -p "${dir}/${id}"
+      code=0
+      campaign_solve_obligation "${id}" "${wave}/obligations.jsonl" \
+        "${ab_case_dir}/EXPLORE.0/iteration-0000/sessions" "${dir}/${id}" \
+        >"${dir}/${id}/stdout.log" 2>"${dir}/${id}/stderr.log" || code=$?
+      printf 'exit=%s\n' "${code}" >"${dir}/${id}/status"
+    done
+  )
   printf 'exit=0 wall_s=%s rss_mb=- host=%s obligations=%s\n' \
     "$(( SECONDS - start ))" "$(hostname -s)" "${#ids[@]}" >"${dir}/status"
 }
@@ -862,8 +864,8 @@ ${AB_EXTRA_CHAINS[*]}"
   # Both jars, frozen, and what every task reads.
   cp "${baseline}" "${AB_OUT}/jars/baseline.jar"
   cp "${candidate}" "${AB_OUT}/jars/candidate.jar"
-  printf 'AB_HEAP_MB=%q\nAB_SOLVE_JOBS=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\nAB_FRESH_SLICE=%q\n' \
-    "${AB_HEAP_MB:-8192}" "${AB_SOLVE_JOBS:-1}" "${AB_STAGE_TIMEOUT_S:-1800}" \
+  printf 'AB_HEAP_MB=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\nAB_FRESH_SLICE=%q\n' \
+    "${AB_HEAP_MB:-8192}" "${AB_STAGE_TIMEOUT_S:-1800}" \
     "${AB_STAGES}" "${AB_HOSTS:-${LIFTS}}" "${AB_FRESH_SLICE:-0}" \
     >"${AB_OUT}/env.sh"
   [[ -z "${AB_Z3:-}" ]] || printf 'AB_Z3=%q\n' "${AB_Z3}" >>"${AB_OUT}/env.sh"
