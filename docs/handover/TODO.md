@@ -108,7 +108,11 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   a late served 07e round's samples: a cached hash needs an immutability audit of the 35 contract values; (3) the
   closure is still built whole each round.
 - **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
-  (or a smaller one) would lift the solve throughput and the memory every lift gives replays.
+  (or a smaller one) would lift the solve throughput and the memory every lift gives replays. Branch `solr-solver`
+  (solr-adhoc-39 PV7: 113 questions spilled into JVMs of their own): a flip query's build no longer reads its texts
+  once per lowered session (done); still to come there, the solver's heap from its corpus (39: 6.45 GB live over
+  9.9 GB of sessions, the 2 GB start died three times per host), several questions at once per solver, and a corpus
+  re-read only when a question names a session it has not loaded (10-16 s each, after every landing).
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
 

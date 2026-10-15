@@ -5,21 +5,7 @@ import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.After;
 import org.junit.Test;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
-import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
-import soot.SootMethod;
-import soot.Type;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.jimple.StringConstant;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,6 +13,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 
 import static org.junit.Assert.assertEquals;
 
@@ -39,9 +27,12 @@ public class RootDemandTest {
     private static final String CHECK = "<t.T: void check()>";
     private static final String RUN = "<t.T: void run()>";
     private static final String HANDLE = "<t.T: void handle(int)>";
-    private static final Jimple J = Jimple.v();
     /** A door's chain: chosen at RUN's store, standing in RUN. */
     private static final List<String> VIA = Collections.singletonList(RUN);
+    private static final String M = "<a.C: void m()>";
+    private static final String OTHER = "<a.D: void n()>";
+    private static final String STORED = "<a.C: long expiry>";
+    private static final String ROOT = M + "::$l0";
 
     @After
     public void resetSoot() {
@@ -192,6 +183,51 @@ public class RootDemandTest {
             // does: its writer is a decode's constructor, maybe out of scope.
             assertEquals("stored=" + stored + ": scope growth takes the copy",
                     "PROVENANCE", demand.frontier().get(copy).kind);
+        }
+    }
+
+    /**
+     * SYMBOL-SCOPE §4.4: where a root an occurrence read goes inside it (its
+     * influence), and its way into what is demanded.
+     */
+    @Test
+    public void aRootReachesTheStoresItDecidesAndTheWiresItFeeds() {
+        List<Map<String, Object>> graph = Arrays.asList(
+                edge("local_def_use", ROOT, M + "::$l1", M),
+                // the arm the root decides stores the location
+                edge("guard_dependency", M + "::$l1", STORED, M),
+                edge("local_def_use", M + "::$l1", M + "::$l2", M),
+                edge("wire_handoff", M + "::$l2", OTHER + "::$i0", OTHER),
+                // an edge of a method this occurrence did not perform
+                edge("local_def_use", ROOT, OTHER + "::$x", OTHER),
+                // past the store: whoever reads the location next
+                edge("field_read", STORED, M + "::$l9", M));
+        Map<String, List<String>> methods = new LinkedHashMap<>();
+        methods.put("REGION.r", Collections.singletonList(M));
+        RootRelevance relevance = new RootRelevance(graph,
+                Collections.singleton(STORED), methods);
+        RootRelevance.Influence influence = relevance.influence(
+                Collections.singletonList("REGION.r"), ROOT);
+        Object[][] rows = {
+            {"the stored locations it reaches", set(STORED),
+                influence.carriers},
+            {"the wire consumers its value is handed to",
+                set(OTHER + "::$i0"), influence.consumers},
+            {"its way into a demanded location",
+                set(ROOT, M + "::$l1", STORED),
+                influence.through(Collections.singleton(STORED))},
+            {"its way into a demanded wire",
+                set(ROOT, M + "::$l1", M + "::$l2", OTHER + "::$i0"),
+                influence.through(Collections.singleton(OTHER + "::$i0"))},
+            {"no way in when nothing is demanded", set(),
+                influence.through(Collections.<String>emptySet())},
+            {"a region that does not hold the method holds none of it",
+                set(), relevance.influence(
+                        Collections.singletonList("REGION.q"), ROOT).carriers},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1],
+                    new HashSet<>((Set<?>) row[2]));
         }
     }
 
@@ -358,6 +394,10 @@ public class RootDemandTest {
         return sorted.toString();
     }
 
+    private static Set<String> set(String... cells) {
+        return new HashSet<>(Arrays.asList(cells));
+    }
+
     private static Map<String, Object> region() {
         Map<String, Object> region = new LinkedHashMap<>();
         region.put("regionId", "REGION.r");
@@ -476,74 +516,45 @@ public class RootDemandTest {
     /** {@code t.T}'s constructor stores {@code flag} and {@code limit}
      *  from a Configuration. */
     private static void scene(Map<String, List<String>> writers) {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null);
-        RefType text = library("java.lang.String", object).getType();
-        SootClass conf = library("org.apache.hadoop.conf.Configuration",
-                object);
-        SootMethod getBoolean = new SootMethod("getBoolean",
-                Arrays.<Type>asList(text, BooleanType.v()), BooleanType.v(),
-                Modifier.PUBLIC | Modifier.NATIVE);
-        conf.addMethod(getBoolean);
-        SootMethod getInt = new SootMethod("getInt",
-                Arrays.<Type>asList(text, IntType.v()), IntType.v(),
-                Modifier.PUBLIC | Modifier.NATIVE);
-        conf.addMethod(getInt);
-        SootClass type = library(T, object);
-        type.setApplicationClass();
-        SootField flag = new SootField("flag", BooleanType.v(), 0);
-        type.addField(flag);
-        type.addField(new SootField("count", IntType.v(), 0));
-        SootField limit = new SootField("limit", IntType.v(), 0);
-        type.addField(limit);
-        SootMethod init = new SootMethod("<init>",
-                Collections.<Type>singletonList(conf.getType()),
-                VoidType.v(), Modifier.PUBLIC);
-        type.addMethod(init);
-        init.setActiveBody(J.newBody(init));
-        Local self = J.newLocal("r0", type.getType());
-        Local source = J.newLocal("r1", conf.getType());
-        Local read = J.newLocal("$z0", BooleanType.v());
-        Local bound = J.newLocal("$i1", IntType.v());
-        init.getActiveBody().getLocals().addAll(Arrays.asList(self, source,
-                read, bound));
-        init.getActiveBody().getUnits().addAll(Arrays.asList(
-                J.newIdentityStmt(self, J.newThisRef(type.getType())),
-                J.newIdentityStmt(source, J.newParameterRef(conf.getType(),
-                        0)),
-                J.newAssignStmt(read, J.newVirtualInvokeExpr(source,
-                        getBoolean.makeRef(), StringConstant.v("k.flag"),
-                        IntConstant.v(0))),
-                J.newAssignStmt(J.newInstanceFieldRef(self, flag.makeRef()),
-                        read),
-                J.newAssignStmt(bound, J.newVirtualInvokeExpr(source,
-                        getInt.makeRef(), StringConstant.v("k.limit"),
-                        IntConstant.v(0))),
-                J.newAssignStmt(J.newInstanceFieldRef(self, limit.makeRef()),
-                        bound),
-                J.newReturnVoidStmt()));
+        String conf = "org.apache.hadoop.conf.Configuration";
+        JimpleScene.load(JimpleScene.OBJECT,
+                "public class java.lang.String extends java.lang.Object { }",
+                "public class " + conf + " extends java.lang.Object {"
+                        + " public native boolean getBoolean(java.lang.String,"
+                        + " boolean); public native int getInt("
+                        + "java.lang.String, int); }",
+                "application public class " + T + " extends java.lang.Object"
+                        + " { boolean flag; int count; int limit;"
+                        + " public void <init>(" + conf + ") { " + T + " r0; "
+                        + conf + " r1; boolean $z0; int $i1; r0 := @this: " + T
+                        + "; r1 := @parameter0: " + conf + "; $z0 ="
+                        + " virtualinvoke r1.<" + conf + ": boolean getBoolean("
+                        + "java.lang.String,boolean)>(\"k.flag\", 0); r0."
+                        + field("boolean flag") + " = $z0; $i1 = virtualinvoke"
+                        + " r1.<" + conf + ": int getInt(java.lang.String,"
+                        + "int)>(\"k.limit\", 0); r0." + field("int limit")
+                        + " = $i1; return; } }");
+        String init = "<" + T + ": void <init>(" + conf + ")>";
         writers.put(field("boolean flag"),
-                Collections.singletonList(init.getSignature() + "#u3"));
+                Collections.singletonList(init + "#u3"));
         writers.put(field("int limit"),
-                Collections.singletonList(init.getSignature() + "#u5"));
-    }
-
-    private static SootClass library(String name, SootClass parent) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
+                Collections.singletonList(init + "#u5"));
     }
 
     private static Map<String, Object> edge(String kind, String from,
-                                            String to, String method,
-                                            int unitIndex, String invoke) {
+                                            String to, String method) {
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("kind", kind);
         edge.put("fromCell", from);
         edge.put("toCell", to);
         edge.put("method", method);
+        return edge;
+    }
+
+    private static Map<String, Object> edge(String kind, String from,
+                                            String to, String method,
+                                            int unitIndex, String invoke) {
+        Map<String, Object> edge = edge(kind, from, to, method);
         edge.put("unitIndex", unitIndex);
         edge.put("siteId", method + "#u" + unitIndex);
         if (invoke != null) edge.put("invoke", invoke);

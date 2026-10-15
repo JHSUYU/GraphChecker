@@ -2,24 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.After;
 import org.junit.Test;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.LongType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
-import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
-import soot.SootMethod;
-import soot.Type;
-import soot.Unit;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.jimple.LongConstant;
-import soot.jimple.StringConstant;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,7 +20,6 @@ import static org.junit.Assert.assertEquals;
 public class ConfigRootsTest {
     private static final String CONF = "org.apache.hadoop.conf.Configuration";
     private static final String MANAGER = "t.Manager";
-    private static final Jimple J = Jimple.v();
 
     @After
     public void resetSoot() {
@@ -197,148 +179,116 @@ public class ConfigRootsTest {
      */
     private static void scene(Map<String, List<String>> writers,
                               List<Map<String, Object>> edges) {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null);
-        SootClass string = library("java.lang.String", object);
-        RefType text = string.getType();
-        SootMethod equals = method(string, "equals",
-                Collections.<Type>singletonList(object.getType()),
-                BooleanType.v(), Modifier.NATIVE);
-        SootClass math = library("java.lang.Math", object);
-        SootMethod max = method(math, "max", Arrays.<Type>asList(
-                IntType.v(), IntType.v()), IntType.v(),
-                Modifier.STATIC | Modifier.NATIVE);
-        SootClass conf = library(CONF, object);
-        RefType confType = conf.getType();
-        SootMethod getBoolean = method(conf, "getBoolean", Arrays.<Type>asList(
-                text, BooleanType.v()), BooleanType.v(), Modifier.NATIVE);
-        SootMethod getInt = method(conf, "getInt", Arrays.<Type>asList(text,
-                IntType.v()), IntType.v(), Modifier.NATIVE);
-        SootMethod getLong = method(conf, "getLong", Arrays.<Type>asList(text,
-                LongType.v()), LongType.v(), Modifier.NATIVE);
-        SootMethod get = method(conf, "get", Collections.<Type>singletonList(
-                text), text, Modifier.NATIVE);
-        SootClass hdfs = library("org.apache.hadoop.hdfs.HdfsConfiguration",
-                conf);
-
-        SootClass manager = library(MANAGER, object);
-        manager.setApplicationClass();
-        RefType self = manager.getType();
-        SootField ordered = field(manager, "ordered", BooleanType.v());
-        SootField limit = field(manager, "limit", IntType.v());
-        SootField counter = field(manager, "counter", IntType.v());
-        SootField legacy = field(manager, "legacy", BooleanType.v());
-        SootField low = field(manager, "low", IntType.v());
-        SootField san = field(manager, "san", IntType.v());
-        SootField debt = field(manager, "debt", IntType.v());
-        SootField min = field(manager, "min", IntType.v());
-        SootField cap = field(manager, "cap", IntType.v());
-
-        SootMethod wrapper = view(manager, "legacy", "k.legacy", "true",
-                confType, text, get, equals);
-        SootMethod isA = view(manager, "isA", "k.mode", "a", confType, text,
-                get, equals);
-        SootMethod isB = view(manager, "isB", "k.mode", "b", confType, text,
-                get, equals);
-        SootMethod limitOf = method(manager, "limitOf",
-                Collections.<Type>singletonList(confType), IntType.v(),
-                Modifier.STATIC);
-        Local l0 = local(limitOf, "r0", confType);
-        Local l1 = local(limitOf, "$i0", IntType.v());
-        Local l2 = local(limitOf, "$i1", IntType.v());
-        body(limitOf, J.newIdentityStmt(l0, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(l1, J.newVirtualInvokeExpr(l0,
-                        getInt.makeRef(), StringConstant.v("k.w"),
-                        IntConstant.v(0))),
-                J.newAssignStmt(l2, J.newStaticInvokeExpr(max.makeRef(), l1,
-                        IntConstant.v(2))),
-                J.newReturnStmt(l2));
-
-        // A wrapper that throws on a value below 2 before it returns it.
-        SootClass failure = library("java.lang.RuntimeException", object);
-        SootMethod minOf = method(manager, "minOf",
-                Collections.<Type>singletonList(confType), IntType.v(),
-                Modifier.STATIC);
-        Local m0 = local(minOf, "r0", confType);
-        Local m1 = local(minOf, "$i0", IntType.v());
-        Local m2 = local(minOf, "$r1", failure.getType());
-        Unit valid = J.newReturnStmt(m1);
-        body(minOf, J.newIdentityStmt(m0, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(m1, J.newVirtualInvokeExpr(m0,
-                        getInt.makeRef(), StringConstant.v("k.min"),
-                        IntConstant.v(1))),
-                J.newIfStmt(J.newGeExpr(m1, IntConstant.v(2)), valid),
-                J.newAssignStmt(m2, J.newNewExpr(failure.getType())),
-                J.newThrowStmt(m2), valid);
-
-        // A wrapper whose check of a value below 3 one return bypasses.
-        SootMethod capOf = method(manager, "capOf",
-                Collections.<Type>singletonList(confType), IntType.v(),
-                Modifier.STATIC);
-        Local c0 = local(capOf, "r0", confType);
-        Local c1 = local(capOf, "$i0", IntType.v());
-        Local c2 = local(capOf, "$r1", failure.getType());
-        Unit checked = J.newReturnStmt(c1);
-        Unit bypassed = J.newReturnStmt(c1);
-        body(capOf, J.newIdentityStmt(c0, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(c1, J.newVirtualInvokeExpr(c0,
-                        getInt.makeRef(), StringConstant.v("k.cap"),
-                        IntConstant.v(1))),
-                J.newIfStmt(J.newLtExpr(c1, IntConstant.v(0)), bypassed),
-                J.newIfStmt(J.newGeExpr(c1, IntConstant.v(3)), checked),
-                J.newAssignStmt(c2, J.newNewExpr(failure.getType())),
-                J.newThrowStmt(c2), checked, bypassed);
-
-        SootMethod init = method(manager, "<init>",
-                Collections.<Type>singletonList(confType), VoidType.v(), 0);
-        Local i0 = local(init, "r0", self);
-        Local i1 = local(init, "r1", confType);
-        Local z0 = local(init, "$z0", BooleanType.v());
-        Local n0 = local(init, "$i0", IntType.v());
-        Local n1 = local(init, "$i1", IntType.v());
-        Local n2 = local(init, "$i2", IntType.v());
-        Local z1 = local(init, "$z1", BooleanType.v());
-        Local n3 = local(init, "$i3", IntType.v());
-        Local n4 = local(init, "$i4", IntType.v());
-        Local n5 = local(init, "$i5", IntType.v());
-        Local n6 = local(init, "$i6", IntType.v());
-        Unit initDone = J.newReturnVoidStmt();
-        body(init, J.newIdentityStmt(i0, J.newThisRef(self)),
-                J.newIdentityStmt(i1, J.newParameterRef(confType, 0)),
-                store(i0, legacy, IntConstant.v(0)),
-                J.newAssignStmt(z0, J.newVirtualInvokeExpr(i1,
-                        getBoolean.makeRef(), StringConstant.v("k.ordered"),
-                        IntConstant.v(0))),
-                store(i0, ordered, z0),
-                J.newAssignStmt(n0, J.newVirtualInvokeExpr(i1,
-                        getInt.makeRef(), StringConstant.v("k.limit"),
-                        IntConstant.v(5))),
-                J.newAssignStmt(n1, J.newStaticInvokeExpr(max.makeRef(), n0,
-                        IntConstant.v(1))),
-                store(i0, limit, n1),
-                J.newAssignStmt(n2, J.newVirtualInvokeExpr(i1,
-                        getInt.makeRef(), StringConstant.v("k.counter"),
-                        IntConstant.v(0))),
-                store(i0, counter, n2),
-                J.newAssignStmt(z1, J.newStaticInvokeExpr(wrapper.makeRef(),
-                        i1)),
-                store(i0, legacy, z1),
-                J.newAssignStmt(n3, J.newVirtualInvokeExpr(i1,
-                        getInt.makeRef(), StringConstant.v("k.low"),
-                        IntConstant.v(0))),
-                J.newAssignStmt(n4, J.newStaticInvokeExpr(max.makeRef(), n3,
-                        IntConstant.v(1))),
-                store(i0, low, n4),
-                J.newAssignStmt(n5, J.newVirtualInvokeExpr(i1,
-                        getInt.makeRef(), StringConstant.v("k.san"),
-                        IntConstant.v(5))),
-                store(i0, san, n5),
-                J.newAssignStmt(n6, J.newInstanceFieldRef(i0, san.makeRef())),
-                J.newIfStmt(J.newGtExpr(n6, IntConstant.v(0)), initDone),
-                store(i0, san, IntConstant.v(1)),
-                initDone);
-        String initSig = init.getSignature();
+        String conf = CONF + " r1; r0 := @this: " + MANAGER
+                + "; r1 := @parameter0: " + CONF + ";";
+        String max = "staticinvoke <java.lang.Math: int max(int,int)>";
+        String store = " r0.<" + MANAGER + ": ";
+        StringBuilder checks = new StringBuilder();
+        for (Object[] check : new Object[][] {{"check", "limit", 10},
+                {"checkCap", "cap", 4}, {"checkLow", "low", 3},
+                {"checkDebt", "debt", 0}, {"checkMin", "min", 5}}) {
+            checks.append(compare((String) check[0], (String) check[1],
+                    (Integer) check[2], edges));
+        }
+        JimpleScene.load(JimpleScene.OBJECT,
+                "public class java.lang.String extends java.lang.Object {"
+                        + " public native boolean equals(java.lang.Object);"
+                        + " }",
+                "public class java.lang.Math extends java.lang.Object {"
+                        + " public static native int max(int, int); }",
+                "public class " + CONF + " extends java.lang.Object {"
+                        + " public native boolean getBoolean(java.lang.String,"
+                        + " boolean); public native int getInt("
+                        + "java.lang.String, int); public native long getLong("
+                        + "java.lang.String, long); public native"
+                        + " java.lang.String get(java.lang.String); }",
+                "public class " + HDFS + " extends " + CONF + " { }",
+                "application public class " + MANAGER + " extends"
+                        + " java.lang.Object { boolean ordered; int limit;"
+                        + " int counter; boolean legacy; int low; int san;"
+                        + " int debt; int min; int cap;"
+                        + view("legacy", "k.legacy", "true")
+                        + view("isA", "k.mode", "a")
+                        + view("isB", "k.mode", "b")
+                        + " public static int limitOf(" + CONF + ") { " + CONF
+                        + " r0; int $i0, $i1; r0 := @parameter0: " + CONF
+                        + "; $i0 = " + getInt("r0", "\"k.w\"", "0") + "; $i1 = "
+                        + max + "($i0, 2); return $i1; }"
+                        // A wrapper that throws on a value below 2 before it
+                        // returns it.
+                        + " public static int minOf(" + CONF + ") { " + CONF
+                        + " r0; int $i0; java.lang.RuntimeException $r1;"
+                        + " r0 := @parameter0: " + CONF + "; $i0 = "
+                        + getInt("r0", "\"k.min\"", "1") + ";"
+                        + " if $i0 >= 2 goto label1;"
+                        + " $r1 = new java.lang.RuntimeException; throw $r1;"
+                        + " label1: return $i0; }"
+                        // A wrapper whose check of a value below 3 one return
+                        // bypasses.
+                        + " public static int capOf(" + CONF + ") { " + CONF
+                        + " r0; int $i0; java.lang.RuntimeException $r1;"
+                        + " r0 := @parameter0: " + CONF + "; $i0 = "
+                        + getInt("r0", "\"k.cap\"", "1") + ";"
+                        + " if $i0 < 0 goto label2; if $i0 >= 3 goto label1;"
+                        + " $r1 = new java.lang.RuntimeException; throw $r1;"
+                        + " label1: return $i0; label2: return $i0; }"
+                        + " public void <init>(" + CONF + ") { " + MANAGER
+                        + " r0; " + CONF + " r1; boolean $z0; int $i0, $i1,"
+                        + " $i2; boolean $z1; int $i3, $i4, $i5, $i6;"
+                        + " r0 := @this: " + MANAGER + "; r1 := @parameter0: "
+                        + CONF + ";" + store + "boolean legacy> = 0;"
+                        + " $z0 = virtualinvoke r1.<" + CONF + ": boolean"
+                        + " getBoolean(java.lang.String,boolean)>("
+                        + "\"k.ordered\", 0);" + store + "boolean ordered>"
+                        + " = $z0; $i0 = " + getInt("r1", "\"k.limit\"", "5")
+                        + "; $i1 = " + max + "($i0, 1);" + store
+                        + "int limit> = $i1; $i2 = " + getInt("r1",
+                        "\"k.counter\"", "0") + ";" + store + "int counter>"
+                        + " = $i2; $z1 = staticinvoke " + view("legacy")
+                        + "(r1);" + store + "boolean legacy> = $z1; $i3 = "
+                        + getInt("r1", "\"k.low\"", "0") + "; $i4 = " + max
+                        + "($i3, 1);" + store + "int low> = $i4; $i5 = "
+                        + getInt("r1", "\"k.san\"", "5") + ";" + store
+                        + "int san> = $i5; $i6 = r0." + field("int san")
+                        + "; if $i6 > 0 goto label1;" + store
+                        + "int san> = 1; label1: return; }"
+                        + " public void bump() { " + MANAGER + " r0;"
+                        + " int $i0, $i1; r0 := @this: " + MANAGER + ";"
+                        + " $i0 = r0." + field("int counter") + ";"
+                        + " $i1 = $i0 + 1;" + store + "int counter> = $i1;"
+                        + " return; }"
+                        + " public void setDebt(" + CONF + ") { " + MANAGER
+                        + " r0; int $i0; " + conf + " $i0 = " + getInt("r1",
+                        "\"k.debt\"", "5") + ";" + store + "int debt> = $i0;"
+                        + " return; }"
+                        + " public void setMin(" + CONF + ") { " + MANAGER
+                        + " r0; int $i0; " + conf + " $i0 = staticinvoke <"
+                        + MANAGER + ": int minOf(" + CONF + ")>(r1);" + store
+                        + "int min> = $i0; return; }"
+                        + " public void setCap(" + CONF + ") { " + MANAGER
+                        + " r0; int $i0; " + conf + " $i0 = staticinvoke <"
+                        + MANAGER + ": int capOf(" + CONF + ")>(r1);" + store
+                        + "int cap> = $i0; return; }" + checks
+                        + " public void run(" + CONF + ") { " + MANAGER
+                        + " r0; " + CONF + " r1; boolean $z0; int $i0; " + HDFS
+                        + " $r2; int $i1; java.lang.String $r3; int $i2, $i3;"
+                        + " long $l0; boolean $z1, $z2; int $i4;"
+                        + " r0 := @this: " + MANAGER + "; r1 := @parameter0: "
+                        + CONF + "; $r2 = (" + HDFS + ") r1;"
+                        + " $z0 = staticinvoke " + view("legacy") + "(r1);"
+                        + " $i0 = " + getInt("r1", "\"k.only\"", "3") + ";"
+                        + " $i1 = virtualinvoke $r2." + SUB_GET_INT
+                        + "(\"k.sub\", 2); $r3 = virtualinvoke r1." + GET
+                        + "(\"k.name\"); $i2 = " + getInt("r1", "$r3", "0")
+                        + "; $i3 = " + getInt("r1", "\"k.only\"", "7") + ";"
+                        + " $l0 = virtualinvoke r1." + GET_LONG
+                        + "(\"k.only\", 3L); $z1 = staticinvoke "
+                        + view("isA") + "(r1); $z2 = staticinvoke "
+                        + view("isB") + "(r1); $i4 = staticinvoke " + LIMIT_OF
+                        + "(r1); return; } }",
+                "public class java.lang.RuntimeException extends"
+                        + " java.lang.Object { }");
+        String initSig = "<" + MANAGER + ": void <init>(" + CONF + ")>";
         writers.put(field("boolean ordered"),
                 Collections.singletonList(initSig + "#u4"));
         writers.put(field("int limit"),
@@ -349,187 +299,89 @@ public class ConfigRootsTest {
                 Collections.singletonList(initSig + "#u14"));
         writers.put(field("int san"),
                 Arrays.asList(initSig + "#u16", initSig + "#u19"));
-
-        SootMethod bump = method(manager, "bump",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local b0 = local(bump, "r0", self);
-        Local b1 = local(bump, "$i0", IntType.v());
-        Local b2 = local(bump, "$i1", IntType.v());
-        body(bump, J.newIdentityStmt(b0, J.newThisRef(self)),
-                J.newAssignStmt(b1, J.newInstanceFieldRef(b0,
-                        counter.makeRef())),
-                J.newAssignStmt(b2, J.newAddExpr(b1, IntConstant.v(1))),
-                store(b0, counter, b2), J.newReturnVoidStmt());
         writers.put(field("int counter"), Arrays.asList(initSig + "#u9",
-                bump.getSignature() + "#u3"));
-
-        SootMethod setDebt = method(manager, "setDebt",
-                Collections.<Type>singletonList(confType), VoidType.v(), 0);
-        Local s0 = local(setDebt, "r0", self);
-        Local s1 = local(setDebt, "r1", confType);
-        Local s2 = local(setDebt, "$i0", IntType.v());
-        body(setDebt, J.newIdentityStmt(s0, J.newThisRef(self)),
-                J.newIdentityStmt(s1, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(s2, J.newVirtualInvokeExpr(s1,
-                        getInt.makeRef(), StringConstant.v("k.debt"),
-                        IntConstant.v(5))),
-                store(s0, debt, s2), J.newReturnVoidStmt());
-        writers.put(field("int debt"), Collections.singletonList(
-                setDebt.getSignature() + "#u3"));
-
-        SootMethod setMin = method(manager, "setMin",
-                Collections.<Type>singletonList(confType), VoidType.v(), 0);
-        Local t0 = local(setMin, "r0", self);
-        Local t1 = local(setMin, "r1", confType);
-        Local t2 = local(setMin, "$i0", IntType.v());
-        body(setMin, J.newIdentityStmt(t0, J.newThisRef(self)),
-                J.newIdentityStmt(t1, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(t2, J.newStaticInvokeExpr(minOf.makeRef(),
-                        t1)),
-                store(t0, min, t2), J.newReturnVoidStmt());
-        writers.put(field("int min"), Collections.singletonList(
-                setMin.getSignature() + "#u3"));
-
-        SootMethod setCap = method(manager, "setCap",
-                Collections.<Type>singletonList(confType), VoidType.v(), 0);
-        Local p0 = local(setCap, "r0", self);
-        Local p1 = local(setCap, "r1", confType);
-        Local p2 = local(setCap, "$i0", IntType.v());
-        body(setCap, J.newIdentityStmt(p0, J.newThisRef(self)),
-                J.newIdentityStmt(p1, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(p2, J.newStaticInvokeExpr(capOf.makeRef(),
-                        p1)),
-                store(p0, cap, p2), J.newReturnVoidStmt());
-        writers.put(field("int cap"), Collections.singletonList(
-                setCap.getSignature() + "#u3"));
-
-        compare(manager, self, "check", limit, 10, bump, edges);
-        compare(manager, self, "checkCap", cap, 4, bump, edges);
-        compare(manager, self, "checkLow", low, 3, bump, edges);
-        compare(manager, self, "checkDebt", debt, 0, bump, edges);
-        compare(manager, self, "checkMin", min, 5, bump, edges);
+                "<" + MANAGER + ": void bump()>#u3"));
+        for (String set : new String[] {"Debt", "Min", "Cap"}) {
+            writers.put(field("int " + set.toLowerCase()),
+                    Collections.singletonList("<" + MANAGER + ": void set"
+                            + set + "(" + CONF + ")>#u3"));
+        }
         String checkSig = "<" + MANAGER + ": void check()>";
         for (String read : new String[]{"boolean ordered", "int counter",
                 "boolean legacy", "int san"}) {
             edges.add(edge("field_read", field(read), checkSig + "::x",
                     checkSig, 1, null));
         }
-
-        SootMethod runs = method(manager, "run",
-                Collections.<Type>singletonList(confType), VoidType.v(), 0);
-        Local r0 = local(runs, "r0", self);
-        Local r1 = local(runs, "r1", confType);
-        Local r2 = local(runs, "$z0", BooleanType.v());
-        Local r3 = local(runs, "$i0", IntType.v());
-        Local r4 = local(runs, "$r2", hdfs.getType());
-        Local r5 = local(runs, "$i1", IntType.v());
-        Local name = local(runs, "$r3", text);
-        Local r6 = local(runs, "$i2", IntType.v());
-        Local r7 = local(runs, "$i3", IntType.v());
-        Local r8 = local(runs, "$l0", LongType.v());
-        Local r9 = local(runs, "$z1", BooleanType.v());
-        Local r10 = local(runs, "$z2", BooleanType.v());
-        Local r11 = local(runs, "$i4", IntType.v());
-        body(runs, J.newIdentityStmt(r0, J.newThisRef(self)),
-                J.newIdentityStmt(r1, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(r4, J.newCastExpr(r1, hdfs.getType())),
-                J.newAssignStmt(r2, J.newStaticInvokeExpr(wrapper.makeRef(),
-                        r1)),
-                J.newAssignStmt(r3, J.newVirtualInvokeExpr(r1,
-                        getInt.makeRef(), StringConstant.v("k.only"),
-                        IntConstant.v(3))),
-                J.newAssignStmt(r5, J.newVirtualInvokeExpr(r4,
-                        Scene.v().makeMethodRef(hdfs, "getInt",
-                                Arrays.<Type>asList(text, IntType.v()),
-                                IntType.v(), false),
-                        StringConstant.v("k.sub"), IntConstant.v(2))),
-                J.newAssignStmt(name, J.newVirtualInvokeExpr(r1,
-                        get.makeRef(), StringConstant.v("k.name"))),
-                J.newAssignStmt(r6, J.newVirtualInvokeExpr(r1,
-                        getInt.makeRef(), name, IntConstant.v(0))),
-                J.newAssignStmt(r7, J.newVirtualInvokeExpr(r1,
-                        getInt.makeRef(), StringConstant.v("k.only"),
-                        IntConstant.v(7))),
-                J.newAssignStmt(r8, J.newVirtualInvokeExpr(r1,
-                        getLong.makeRef(), StringConstant.v("k.only"),
-                        LongConstant.v(3L))),
-                J.newAssignStmt(r9, J.newStaticInvokeExpr(isA.makeRef(), r1)),
-                J.newAssignStmt(r10, J.newStaticInvokeExpr(isB.makeRef(), r1)),
-                J.newAssignStmt(r11, J.newStaticInvokeExpr(limitOf.makeRef(),
-                        r1)),
-                J.newReturnVoidStmt());
-        String runSig = runs.getSignature();
-        String sub = "<org.apache.hadoop.hdfs.HdfsConfiguration: int "
-                + "getInt(java.lang.String,int)>";
-        Object[][] calls = {{3, wrapper, "$z0"}, {4, getInt, "$i0"},
-            {5, sub, "$i1"}, {7, getInt, "$i2"}, {8, getInt, "$i3"},
-            {9, getLong, "$l0"}, {10, isA, "$z1"}, {11, isB, "$z2"},
-            {12, limitOf, "$i4"}};
+        String runSig = run();
+        Object[][] calls = {{3, view("legacy"), "$z0"}, {4, GET_INT, "$i0"},
+            {5, SUB_GET_INT, "$i1"}, {7, GET_INT, "$i2"}, {8, GET_INT, "$i3"},
+            {9, GET_LONG, "$l0"}, {10, view("isA"), "$z1"},
+            {11, view("isB"), "$z2"}, {12, LIMIT_OF, "$i4"}};
         for (Object[] call : calls) {
-            String callee = call[1] instanceof SootMethod
-                    ? ((SootMethod) call[1]).getSignature() : (String) call[1];
-            edges.add(edge("call_return", callee + ".return",
+            edges.add(edge("call_return", call[1] + ".return",
                     runSig + "::" + call[2], runSig, (Integer) call[0],
-                    callee));
+                    (String) call[1]));
         }
-        edges.add(edge("call_return", getInt.getSignature() + ".return",
-                limitOf.getSignature() + "::$i0", limitOf.getSignature(), 1,
-                getInt.getSignature()));
-        edges.add(edge("call_return", getBoolean.getSignature() + ".return",
-                initSig + "::$z0", initSig, 3, getBoolean.getSignature()));
+        edges.add(edge("call_return", GET_INT + ".return",
+                LIMIT_OF + "::$i0", LIMIT_OF, 1, GET_INT));
+        String getBoolean = "<" + CONF + ": boolean getBoolean("
+                + "java.lang.String,boolean)>";
+        edges.add(edge("call_return", getBoolean + ".return",
+                initSig + "::$z0", initSig, 3, getBoolean));
+    }
+
+    private static final String HDFS =
+            "org.apache.hadoop.hdfs.HdfsConfiguration";
+    private static final String GET_INT = "<" + CONF + ": int getInt("
+            + "java.lang.String,int)>";
+    private static final String SUB_GET_INT = "<" + HDFS + ": int getInt("
+            + "java.lang.String,int)>";
+    private static final String GET_LONG = "<" + CONF + ": long getLong("
+            + "java.lang.String,long)>";
+    private static final String GET = "<" + CONF + ": java.lang.String get("
+            + "java.lang.String)>";
+    private static final String LIMIT_OF = "<" + MANAGER + ": int limitOf("
+            + CONF + ")>";
+
+    /** {@code receiver.getInt(key, otherwise)}. */
+    private static String getInt(String receiver, String key,
+                                 String otherwise) {
+        return "virtualinvoke " + receiver + "." + GET_INT + "(" + key + ", "
+                + otherwise + ")";
+    }
+
+    /** The signature of the view {@code name}. */
+    private static String view(String name) {
+        return "<" + MANAGER + ": boolean " + name + "(" + CONF + ")>";
     }
 
     /** {@code static boolean <name>(Configuration c)}: {@code
      *  "<literal>".equals(c.get("<key>"))}. */
-    private static SootMethod view(SootClass owner, String name, String key,
-                                   String literal, RefType confType,
-                                   RefType text, SootMethod get,
-                                   SootMethod equals) {
-        SootMethod view = method(owner, name,
-                Collections.<Type>singletonList(confType), BooleanType.v(),
-                Modifier.STATIC);
-        Local c = local(view, "r0", confType);
-        Local value = local(view, "$r1", text);
-        Local answer = local(view, "$z0", BooleanType.v());
-        Local constant = local(view, "$r2", text);
-        body(view, J.newIdentityStmt(c, J.newParameterRef(confType, 0)),
-                J.newAssignStmt(value, J.newVirtualInvokeExpr(c,
-                        get.makeRef(), StringConstant.v(key))),
-                J.newAssignStmt(constant, StringConstant.v(literal)),
-                J.newAssignStmt(answer, J.newVirtualInvokeExpr(constant,
-                        equals.makeRef(), value)),
-                J.newReturnStmt(answer));
-        return view;
+    private static String view(String name, String key, String literal) {
+        return " public static boolean " + name + "(" + CONF + ") { " + CONF
+                + " r0; java.lang.String $r1; boolean $z0;"
+                + " java.lang.String $r2; r0 := @parameter0: " + CONF + ";"
+                + " $r1 = virtualinvoke r0." + GET + "(\"" + key + "\");"
+                + " $r2 = \"" + literal + "\"; $z0 = virtualinvoke $r2."
+                + "<java.lang.String: boolean equals(java.lang.Object)>($r1);"
+                + " return $z0; }";
     }
 
     /** {@code void <name>()}: {@code if (this.<field> > bound) bump()}, its
      *  read and its guard in the slice. */
-    private static void compare(SootClass owner, RefType self, String name,
-                                SootField read, int bound, SootMethod bump,
-                                List<Map<String, Object>> edges) {
-        SootMethod check = method(owner, name,
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local c0 = local(check, "r0", self);
-        Local c1 = local(check, "$i0", IntType.v());
-        Unit done = J.newReturnVoidStmt();
-        body(check, J.newIdentityStmt(c0, J.newThisRef(self)),
-                J.newAssignStmt(c1, J.newInstanceFieldRef(c0,
-                        read.makeRef())),
-                J.newIfStmt(J.newLeExpr(c1, IntConstant.v(bound)), done),
-                J.newInvokeStmt(J.newVirtualInvokeExpr(c0, bump.makeRef())),
-                done);
-        String signature = check.getSignature();
+    private static String compare(String name, String read, int bound,
+                                  List<Map<String, Object>> edges) {
+        String signature = "<" + MANAGER + ": void " + name + "()>";
         String local = signature + "::$i0";
-        edges.add(edge("field_read", field("int " + read.getName()), local,
+        edges.add(edge("field_read", field("int " + read), local,
                 signature, 1, null));
         edges.add(edge("guard_dependency", local, signature + "#u2",
                 signature, 2, null));
-    }
-
-    private static Unit store(Local owner, SootField field,
-                              soot.Value value) {
-        return J.newAssignStmt(J.newInstanceFieldRef(owner, field.makeRef()),
-                value);
+        return " public void " + name + "() { " + MANAGER + " r0; int $i0;"
+                + " r0 := @this: " + MANAGER + "; $i0 = r0." + field("int "
+                + read) + "; if $i0 <= " + bound + " goto label1;"
+                + " virtualinvoke r0.<" + MANAGER + ": void bump()>();"
+                + " label1: return; }";
     }
 
     private static Map<String, Object> edge(String kind, String from,
@@ -543,40 +395,5 @@ public class ConfigRootsTest {
         edge.put("unitIndex", unitIndex);
         if (invoke != null) edge.put("invoke", invoke);
         return edge;
-    }
-
-    private static SootClass library(String name, SootClass parent) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
-    }
-
-    private static SootField field(SootClass owner, String name, Type type) {
-        SootField field = new SootField(name, type, 0);
-        owner.addField(field);
-        return field;
-    }
-
-    private static SootMethod method(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     int modifiers) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | modifiers);
-        owner.addMethod(method);
-        if ((modifiers & Modifier.NATIVE) == 0) {
-            method.setActiveBody(J.newBody(method));
-        }
-        return method;
-    }
-
-    private static Local local(SootMethod method, String name, Type type) {
-        Local local = J.newLocal(name, type);
-        method.getActiveBody().getLocals().add(local);
-        return local;
-    }
-
-    private static void body(SootMethod method, Unit... units) {
-        method.getActiveBody().getUnits().addAll(Arrays.asList(units));
     }
 }

@@ -58,6 +58,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -233,11 +234,19 @@ public final class Composer {
         /** Every CLOCK root this composition anchors -> its reading. */
         private final Map<String, String> clockRootReadings;
         /** Where each top-level command of the body ends, the path
-         *  selector it is guarded by (null: every path's; #pathQuery), and
-         *  whether it asserts a refuted claim (#withoutFatalArm). */
+         *  selector it is guarded by (null: every path's; #scopeQuery), and
+         *  whether it asserts a refuted claim (#scopeWithoutFatalArm). */
         private final int[] commandEnds;
         private final String[] commandGuards;
         private final boolean[] commandRefuted;
+        /** Each command's declared roots ({@link #rootsOf}), read once off
+         *  the body when first asked: indices into {@link #rootNames}, null
+         *  for a command naming none. */
+        private int[][] commandRoots;
+        private List<String> rootNames;
+        /** Each path's roots ({@link #rootsOf}), by selector. */
+        private final Map<String, Set<String>> pathRoots =
+                new HashMap<String, Set<String>>();
 
         /** The composer's state once every path is composed. */
         private Composition(Composer composed, String body,
@@ -368,21 +377,48 @@ public final class Composer {
         }
 
         /**
-         * One path's question: the body without the commands another path's
-         * selector guards, this path's selector asserted, plus these
-         * assertions.  The partition forces every other selector false, so
-         * each command dropped held vacuously: the answer is
-         * {@link #query}'s with the selector asserted, but z3 reads what
-         * every path shares and this path's own text, not every path's.
+         * What every path's question shares: the body's commands no path
+         * selector guards and that assert no refuted claim, in their order --
+         * every declaration and definition among them.  A long-lived z3
+         * reads it once ({@code smt.Z3Incremental}); each path's question is
+         * then one scope over it ({@link #scopeQuery}).
          */
-        public ArtifactIO.Body pathQuery(String selector,
-                                         List<String> assertions) {
+        public ArtifactIO.Body sharedQuery() {
+            return output -> {
+                int start = 0;
+                for (int index = 0; index < commandEnds.length; index++) {
+                    if (commandGuards[index] == null
+                            && !commandRefuted[index]) {
+                        output.write(body, start, commandEnds[index] - start);
+                    }
+                    start = commandEnds[index];
+                }
+                output.write("\n");
+            };
+        }
+
+        /**
+         * One path's question as a scope over {@link #sharedQuery}: the
+         * refuted claims the body asserts, the commands this path's selector
+         * guards, the selector asserted, and these assertions.  With the
+         * shared part it is the body without the commands another path's
+         * selector guards: the partition forces every other selector false,
+         * so each command left out held vacuously, and the answer is
+         * {@link #query}'s with the selector asserted, but z3 reads what
+         * every path shares once and this path's own text, not every
+         * path's.  Every command left to a scope is an assertion, read after
+         * every declaration as it would be in place.
+         */
+        public ArtifactIO.Body scopeQuery(String selector,
+                                          List<String> assertions) {
             List<String> legal = legal(assertions);
             legal.add(0, "\n(assert " + selector + ")\n");
             return output -> {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
-                    if (kept(index, selector)) {
+                    String guard = commandGuards[index];
+                    if (guard == null ? commandRefuted[index]
+                            : guard.equals(selector)) {
                         output.write(body, start, commandEnds[index] - start);
                     }
                     start = commandEnds[index];
@@ -392,14 +428,14 @@ public final class Composer {
         }
 
         /**
-         * One path's question with its fatal arm left out ({@link
-         * #pathQuery}, its {@code path_fatal__} command replaced by the
-         * same implication without phi) and no refuted claim asserted (a
-         * model CONFIRM refuted is no part of the run itself): what its own
+         * One path's question with its fatal arm left out, as a scope over
+         * {@link #sharedQuery}: its {@code path_fatal__} command replaced by
+         * the same implication without phi, and no refuted claim asserted (a
+         * model CONFIRM refuted is no part of the run itself) -- what its own
          * run satisfied, every root free.  Unsat, the composition
          * contradicts the run itself (ClaimPolicy's self-check).
          */
-        public ArtifactIO.Body withoutFatalArm(String selector) {
+        public ArtifactIO.Body scopeWithoutFatalArm(String selector) {
             Disjunct disjunct = bySelector(selector);
             String own = "\n(assert " + SmtNames.legalSymbols(
                     disjunct.withoutFatalArm) + ")\n";
@@ -408,15 +444,13 @@ public final class Composer {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
                     int end = commandEnds[index];
-                    if (!kept(index, selector) || commandRefuted[index]) {
-                        start = end;
-                        continue;
-                    }
                     if (selector.equals(commandGuards[index])
-                            && body.startsWith(named, end - named.length())) {
-                        output.write(own);
-                    } else {
-                        output.write(body, start, end - start);
+                            && !commandRefuted[index]) {
+                        if (body.startsWith(named, end - named.length())) {
+                            output.write(own);
+                        } else {
+                            output.write(body, start, end - start);
+                        }
                     }
                     start = end;
                 }
@@ -437,9 +471,137 @@ public final class Composer {
             return tail.contains(":named " + REFUTED_CLAIM);
         }
 
-        private boolean kept(int command, String selector) {
-            String guard = commandGuards[command];
-            return guard == null || guard.equals(selector);
+        /**
+         * The declared roots (as a valuation pins them, {@link
+         * Valuation#assertions}) one path's question names: those its own
+         * commands name, closed over the commands every path shares that
+         * name one of them and another.  A pin of any other root asserts a
+         * value nothing of this path reads ({@code Disjunction}: a path is
+         * asked under the pins of these first, and unsat there under every
+         * valuation agreeing on them).  Read off the body once for every
+         * path; whatever it leaves out only makes that first question
+         * weaker, never an unsat it would not be.
+         */
+        public Set<String> rootsOf(String selector) {
+            synchronized (pathRoots) {
+                Set<String> known = pathRoots.get(selector);
+                if (known != null) return known;
+            }
+            int[][] roots = commandRoots();
+            Set<Integer> named = new HashSet<Integer>();
+            for (int index = 0; index < roots.length; index++) {
+                if (roots[index] != null
+                        && selector.equals(commandGuards[index])) {
+                    for (int root : roots[index]) named.add(root);
+                }
+            }
+            boolean grew = !named.isEmpty();
+            while (grew) {
+                grew = false;
+                for (int index = 0; index < roots.length; index++) {
+                    if (roots[index] == null || roots[index].length < 2
+                            || commandGuards[index] != null) {
+                        continue;
+                    }
+                    boolean touches = false;
+                    for (int root : roots[index]) {
+                        touches |= named.contains(root);
+                    }
+                    if (!touches) continue;
+                    for (int root : roots[index]) grew |= named.add(root);
+                }
+            }
+            Set<String> symbols = new HashSet<String>();
+            for (int root : named) symbols.add(rootNames.get(root));
+            Set<String> found = Collections.unmodifiableSet(symbols);
+            synchronized (pathRoots) {
+                pathRoots.put(selector, found);
+            }
+            return found;
+        }
+
+        /** Each command's declared roots, read off the body once. */
+        private synchronized int[][] commandRoots() {
+            if (commandRoots != null) return commandRoots;
+            Map<String, Integer> byLegal = new HashMap<String, Integer>();
+            List<String> names = new ArrayList<String>();
+            Set<Integer> lengths = new HashSet<Integer>();
+            for (RootMintRow row : declaredRoots.values()) {
+                String legal = SmtNames.legalSymbols(row.symbol());
+                if (byLegal.containsKey(legal)) continue;
+                byLegal.put(legal, names.size());
+                names.add(row.symbol());
+                lengths.add(legal.length());
+            }
+            int[][] found = new int[commandEnds.length][];
+            Set<Integer> here = new TreeSet<Integer>();
+            int command = 0;
+            int at = 0;
+            int end = body.length();
+            while (at < end) {
+                while (command < commandEnds.length
+                        && at >= commandEnds[command]) {
+                    found[command++] = indices(here);
+                }
+                char c = body.charAt(at);
+                if (c == ';') {
+                    int line = body.indexOf('\n', at);
+                    at = line < 0 ? end : line + 1;
+                } else if (c == '"') {
+                    at++;
+                    while (at < end) {
+                        if (body.charAt(at) == '"') {
+                            if (at + 1 < end && body.charAt(at + 1) == '"') {
+                                at += 2;
+                                continue;
+                            }
+                            at++;
+                            break;
+                        }
+                        at++;
+                    }
+                } else if (c == '|' || simpleSymbolChar(c)) {
+                    int start = at;
+                    if (c == '|') {
+                        int close = body.indexOf('|', at + 1);
+                        at = close < 0 ? end : close + 1;
+                    } else {
+                        while (at < end && simpleSymbolChar(body.charAt(at))) {
+                            at++;
+                        }
+                    }
+                    if (lengths.contains(at - start)) {
+                        Integer root = byLegal.get(body.substring(start, at));
+                        if (root != null) here.add(root);
+                    }
+                } else {
+                    at++;
+                }
+            }
+            while (command < commandEnds.length) {
+                found[command++] = indices(here);
+            }
+            rootNames = names;
+            commandRoots = found;
+            return found;
+        }
+
+        /** The indices gathered for one command, emptied for the next; null
+         *  where none. */
+        private static int[] indices(Set<Integer> here) {
+            if (here.isEmpty()) return null;
+            int[] indices = new int[here.size()];
+            int at = 0;
+            for (int index : here) indices[at++] = index;
+            here.clear();
+            return indices;
+        }
+
+        /** A character of an SMT-LIB simple symbol ({@code
+         *  SmtNames#legalSymbols} bar-quotes any other). */
+        private static boolean simpleSymbolChar(char c) {
+            return Character.isLetterOrDigit(c) || "~!@$%^&*_-+=<>.?/"
+                    .indexOf(c) >= 0;
         }
 
         /** Each assertion spelled legally, one per line. */
@@ -699,7 +861,7 @@ public final class Composer {
                 String literal = smtLiteral(value, sortOf(root.getValue()));
                 if (literal.isEmpty()) continue;
                 assertions.add("(assert (! (= " + root.getValue().symbol()
-                        + " " + literal + ") :named valuation__"
+                        + " " + literal + ") :named " + VALUATION_PIN
                         + smtName(root.getValue().symbol()) + "))");
             }
             return new Valuation(ordinal, assignment, moved, assertions);
@@ -2596,6 +2758,24 @@ public final class Composer {
                 VmTermLowering.or(alternatives), constant);
     }
 
+    /**
+     * The root a valuation's pin pins (as its symbol is spelled in the pin,
+     * {@link Valuation#assertions}), or null where {@code assertion} is no
+     * such pin -- a clock's, a pairing's, an own run's hold.
+     */
+    static String pinnedRoot(String assertion) {
+        String opening = "(assert (! (= ";
+        if (assertion == null || !assertion.startsWith(opening)
+                || !assertion.contains(":named " + VALUATION_PIN)) {
+            return null;
+        }
+        int end = assertion.indexOf(' ', opening.length());
+        return end < 0 ? null : assertion.substring(opening.length(), end);
+    }
+
+    /** What every valuation's pin is named after ({@link #pinnedRoot}). */
+    static final String VALUATION_PIN = "valuation__";
+
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
     static Sort sortOf(RootMintRow row) {
         return row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT;
@@ -4076,7 +4256,7 @@ public final class Composer {
             String literal = smtLiteral(entry.getValue(), sortOf(row));
             if (literal.isEmpty()) continue;
             assertions.add("(assert (! (= " + row.symbol() + " " + literal
-                    + ") :named valuation__" + smtName(row.symbol())
+                    + ") :named " + VALUATION_PIN + smtName(row.symbol())
                     + "))");
         }
         return new Valuation(ordinal, assignment, moved, assertions);

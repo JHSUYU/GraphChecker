@@ -36,12 +36,13 @@ final class FlipQueryText {
                                           Set<String> lowered, Scope scope,
                                           List<String> texts) {
         Set<String> stated = new LinkedHashSet<String>();
+        SmtNames.Named named = SmtNames.named(texts);
         for (String sessionId : lowered) {
             SmtLowering lowering = corpus.lowering(sessionId);
             if (lowering == null) continue;
             Map<String, String> rename = scope.renamesOf(sessionId);
             for (SmtLowering.Declaration declaration
-                    : lowering.reachedBy(texts)) {
+                    : lowering.reachedBy(named)) {
                 // A recorded symbol the query bound is declared once, by the
                 // query.
                 if (rename.containsKey(declaration.name)) continue;
@@ -86,11 +87,16 @@ final class FlipQueryText {
         reaching.addAll(declarations);
         reaching.addAll(sorts.values());
         Set<String> opening = new LinkedHashSet<String>();
+        SmtNames.Named named = SmtNames.named(reaching);
+        // Each lowering offers the same preamble: reached once per distinct one.
+        Set<List<String>> offered = new LinkedHashSet<List<String>>();
         for (String sessionId : lowered) {
             SmtLowering lowering = corpus.lowering(sessionId);
             if (lowering == null) continue;
-            opening.addAll(SmtNames.reachedPreamble(
-                    lowering.preambleLines(), reaching));
+            List<String> preamble = lowering.preambleLines();
+            if (offered.add(preamble)) {
+                opening.addAll(SmtNames.reachedPreamble(preamble, named));
+            }
         }
         if (opening.isEmpty()) opening.add("(set-logic ALL)");
         for (String line : opening) text.append(line).append('\n');

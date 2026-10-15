@@ -640,72 +640,18 @@ final class ConcolicResultPublisher {
         }
     }
 
-    private static final Object RUN_TOTALS_LOCK = new Object();
-    private static boolean runTotalsHookRegistered;
-
-    static void registerRunTotalsHook() {
-        synchronized (RUN_TOTALS_LOCK) {
-            if (runTotalsHookRegistered) return;
-            runTotalsHookRegistered = true;
-            try {
-                Runtime.getRuntime().addShutdownHook(new Thread(
-                        new Runnable() {
-                            @Override
-                            public void run() {
-                                publishRunTotals();
-                            }
-                        }, "concolic-run-totals"));
-            } catch (IllegalStateException shuttingDown) {
-                // Never replaces the workload's own outcome.
-            }
-        }
-    }
-
     /**
-     * Publishes what only the end of a run can state, once per JVM, and
-     * returns only once it is published, whoever publishes it.
-     *
-     * <p>Two threads end one run when an early end meets the workload's own
-     * (solr-18413 r8: the witness's end and the test's failure).  A second
-     * caller that returned at once went on to {@code System.exit}, which
-     * halted the first inside {@link RowRuntime#closeSession}: the session
-     * lost its verdict rows and the worker's row kept SAT_MODEL_READY.  Not
-     * held under the lock, so a woven thread still filing a candidate
-     * ({@code ConcolicTaskPlan#noteUnaddressedCandidate}: its task's monitor,
-     * then this lock) cannot deadlock against the render.</p>
+     * Publishes what only the end of a run can state: the planned addresses
+     * nothing answered, the window's duration, and the session's close,
+     * which states the replay's verdict ({@link RowRuntime#closeSession}).
+     * Called once, by the run's one end ({@code JUnitMethodRunner#exit}),
+     * after the settle; nothing is published after it.
      */
     static void publishRunTotals() {
-        boolean interrupted = false;
-        synchronized (RUN_TOTALS_LOCK) {
-            if (runTotalsStarted) {
-                while (!runTotalsPublished) {
-                    try {
-                        RUN_TOTALS_LOCK.wait();
-                    } catch (InterruptedException ignored) {
-                        interrupted = true;
-                    }
-                }
-                if (interrupted) Thread.currentThread().interrupt();
-                return;
-            }
-            runTotalsStarted = true;
-        }
-        try {
-            configuration().publishUnansweredAddresses();
-            // Called from every exit path: a halt runs no shutdown hook.
-            RecordingWindow.measured();
-            RowRuntime.closeSession();
-        } finally {
-            synchronized (RUN_TOTALS_LOCK) {
-                runTotalsPublished = true;
-                RUN_TOTALS_LOCK.notifyAll();
-            }
-        }
+        configuration().publishUnansweredAddresses();
+        RecordingWindow.measured();
+        RowRuntime.closeSession();
     }
-
-    /** Guarded by {@link #RUN_TOTALS_LOCK}. */
-    private static boolean runTotalsStarted;
-    private static boolean runTotalsPublished;
 
     /**
      * Decodes one read-out page of {@code chars} on the publication thread

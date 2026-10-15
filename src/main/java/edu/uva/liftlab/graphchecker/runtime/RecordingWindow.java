@@ -86,13 +86,14 @@ final class RecordingWindow {
     /**
      * States the window's wall duration, once, to {@link #WINDOW_MS_FILE}
      * when named: from its open to its close, or -- a run that ends inside
-     * it (a replay halted at its witness or after its selected result) --
+     * it (a replay ended early: at its witness, a refusal or a stall) --
      * to now, marked {@value #CUT}: a cut window measured only part of the
      * workload's, which the campaign names (run_engine.sh
-     * campaign_view_hold_max).  Every exit path of a run calls it ({@code
-     * ConcolicResultPublisher#publishRunTotals}, the recording's shutdown);
-     * a run that never opened its window states nothing, and the campaign
-     * fails by name.
+     * campaign_view_hold_max).  The run's one end calls it ({@code
+     * JUnitMethodRunner#exit}: {@code ConcolicResultPublisher
+     * #publishRunTotals}, {@code CausynthTraceRecorder#closeTrace}); a run
+     * that never opened its window states nothing, and the campaign fails
+     * by name.
      */
     static synchronized void measured() {
         String file = System.getProperty(WINDOW_MS_FILE, "");

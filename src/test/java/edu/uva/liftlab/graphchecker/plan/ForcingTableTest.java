@@ -2,27 +2,12 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.JimpleScene;
 import edu.uva.liftlab.graphchecker.causynth.SiteControlDependence;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import soot.Body;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
-import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
-import soot.SootMethod;
-import soot.Type;
-import soot.Unit;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.options.Options;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -30,7 +15,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -244,40 +228,13 @@ public class ForcingTableTest {
 
     /** {@link #aBranchBothOfWhoseArmsReachTheThrowIsNeverForced}'s body. */
     private static void assertBody() {
-        Options.v().set_allow_phantom_refs(true);
-        SootClass owner = new SootClass("a.A", Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootField disabled = new SootField("$assertionsDisabled",
-                BooleanType.v(), Modifier.STATIC | Modifier.FINAL);
-        owner.addField(disabled);
-        SootMethod check = new SootMethod("check",
-                Collections.<Type>singletonList(IntType.v()), VoidType.v(),
-                Modifier.PUBLIC);
-        owner.addMethod(check);
-        Jimple j = Jimple.v();
-        Body body = j.newBody(check);
-        check.setActiveBody(body);
-        Local x = j.newLocal("i0", IntType.v());
-        Local z = j.newLocal("z0", BooleanType.v());
-        RefType thrown = RefType.v("a.X");
-        Local r = j.newLocal("r1", thrown);
-        body.getLocals().addAll(Arrays.asList(x, z, r));
-        Unit end = j.newReturnVoidStmt();
-        Unit throwing = j.newAssignStmt(r, j.newNewExpr(thrown));
-        Unit afterAssert = j.newIfStmt(j.newGtExpr(x, IntConstant.v(5)),
-                throwing);
-        body.getUnits().addAll(Arrays.asList(
-                j.newIdentityStmt(x, j.newParameterRef(IntType.v(), 0)),
-                j.newAssignStmt(z, j.newStaticFieldRef(disabled.makeRef())),
-                j.newIfStmt(j.newNeExpr(z, IntConstant.v(0)), afterAssert),
-                j.newIfStmt(j.newNeExpr(x, IntConstant.v(0)), afterAssert),
-                j.newReturnVoidStmt(),
-                afterAssert,
-                j.newIfStmt(j.newGeExpr(x, IntConstant.v(-5)), end),
-                throwing,
-                j.newThrowStmt(r),
-                end));
+        JimpleScene.load("application public class a.A { static final"
+                + " boolean $assertionsDisabled; public void check(int) {"
+                + " int i0; boolean z0; a.X r1; i0 := @parameter0: int;"
+                + " z0 = <a.A: boolean $assertionsDisabled>;"
+                + " if z0 != 0 goto label1; if i0 != 0 goto label1; return;"
+                + " label1: if i0 > 5 goto label2; if i0 >= -5 goto label3;"
+                + " label2: r1 = new a.X; throw r1; label3: return; } }");
     }
 
     /**
@@ -340,62 +297,23 @@ public class ForcingTableTest {
     /** {@link #aGuardWhoseArmComesBackOnlyInTheNextIterationIsForced}'s
      *  body. */
     private static void loopBody() {
-        Options.v().set_allow_phantom_refs(true);
-        SootClass owner = new SootClass("a.L", Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootField[] flags = new SootField[3];
-        String[] names = {"first", "active", "leader"};
-        for (int index = 0; index < flags.length; index++) {
-            flags[index] = new SootField(names[index], BooleanType.v(),
-                    Modifier.STATIC);
-            owner.addField(flags[index]);
-        }
-        SootMethod scan = new SootMethod("scan",
-                Collections.<Type>singletonList(IntType.v()), VoidType.v(),
-                Modifier.PUBLIC);
-        owner.addMethod(scan);
-        Jimple j = Jimple.v();
-        Body body = j.newBody(scan);
-        scan.setActiveBody(body);
-        Local i = j.newLocal("i0", IntType.v());
-        Local[] z = {j.newLocal("z1", BooleanType.v()),
-                j.newLocal("z2", BooleanType.v()),
-                j.newLocal("z3", BooleanType.v())};
-        RefType thrown = RefType.v("a.X");
-        Local r = j.newLocal("r1", thrown);
-        Local caught = j.newLocal("r2", RefType.v("java.lang.Throwable"));
-        body.getLocals().addAll(Arrays.asList(i, z[0], z[1], z[2], r,
-                caught));
-        Unit end = j.newReturnVoidStmt();
-        Unit latch = j.newAssignStmt(i, j.newAddExpr(i, IntConstant.v(1)));
-        Unit leader = j.newAssignStmt(z[2],
-                j.newStaticFieldRef(flags[2].makeRef()));
-        Unit head = j.newIfStmt(j.newGeExpr(i, IntConstant.v(10)), end);
-        body.getUnits().addAll(Arrays.asList(
-                j.newIdentityStmt(i, j.newParameterRef(IntType.v(), 0)),
-                head,
-                j.newAssignStmt(z[0], j.newStaticFieldRef(flags[0].makeRef())),
-                j.newIfStmt(j.newEqExpr(z[0], IntConstant.v(0)), leader),
-                j.newAssignStmt(z[1], j.newStaticFieldRef(flags[1].makeRef())),
-                j.newIfStmt(j.newEqExpr(z[1], IntConstant.v(0)), latch),
-                leader,
-                j.newIfStmt(j.newEqExpr(z[2], IntConstant.v(0)), latch),
-                j.newAssignStmt(r, j.newNewExpr(thrown)),
-                j.newThrowStmt(r),
-                latch,
-                j.newGotoStmt(head),
-                end));
-        Unit handler = j.newIdentityStmt(caught, j.newCaughtExceptionRef());
-        body.getUnits().addAll(Arrays.asList(handler,
-                j.newIfStmt(j.newEqExpr(z[0], IntConstant.v(0)), head),
-                j.newGotoStmt(leader)));
-        List<Unit> units = new java.util.ArrayList<Unit>(body.getUnits());
-        SootClass throwable = new SootClass("java.lang.Throwable",
-                Modifier.PUBLIC);
-        Scene.v().addClass(throwable);
-        body.getTraps().add(j.newTrap(throwable, units.get(4), units.get(6),
-                handler));
+        JimpleScene.load("public class java.lang.Throwable { }",
+                "application public class a.L { static boolean first;"
+                        + " static boolean active; static boolean leader;"
+                        + " public void scan(int) { int i0; boolean z1, z2,"
+                        + " z3; a.X r1; java.lang.Throwable r2;"
+                        + " i0 := @parameter0: int;"
+                        + " label1: if i0 >= 10 goto label5;"
+                        + " z1 = <a.L: boolean first>; if z1 == 0 goto label2;"
+                        + " label6: z2 = <a.L: boolean active>;"
+                        + " if z2 == 0 goto label3;"
+                        + " label2: z3 = <a.L: boolean leader>;"
+                        + " if z3 == 0 goto label3; r1 = new a.X; throw r1;"
+                        + " label3: i0 = i0 + 1; goto label1; label5: return;"
+                        + " label4: r2 := @caughtexception;"
+                        + " if z1 == 0 goto label1; goto label2;"
+                        + " catch java.lang.Throwable from label6 to label2"
+                        + " with label4; } }");
     }
 
     @Test

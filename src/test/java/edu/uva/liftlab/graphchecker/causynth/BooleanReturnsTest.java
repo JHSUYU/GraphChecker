@@ -4,22 +4,8 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.After;
 import org.junit.Test;
 import soot.Body;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.Modifier;
-import soot.RefType;
-import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
-import soot.SootMethod;
-import soot.Type;
 import soot.Unit;
-import soot.Value;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.jimple.NullConstant;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,6 +28,11 @@ import static org.junit.Assert.assertEquals;
  */
 public class BooleanReturnsTest {
     private static final String OWNER = "a.Helpers";
+    private static final String STATE = "a.State";
+    private static final String BOOL = "java.lang.Boolean";
+    private static final String CALLABLE = "java.util.concurrent.Callable";
+    private static final String LAMBDA = OWNER + "$lambda_run_0__1";
+    private static final String TIMED_OUT = "j.TimedOut";
 
     @After
     public void resetSoot() {
@@ -50,91 +41,119 @@ public class BooleanReturnsTest {
 
     @Test
     public void aGuardOnAHelpersConstantReturnIsDecidedByTheArmsThatRanToIt() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootClass library = new SootClass("j.Lib", Modifier.PUBLIC);
-        Scene.v().addClass(library);
-        library.setLibraryClass();
-
-        SootClass state = new SootClass("a.State", Modifier.PUBLIC
-                | Modifier.ENUM);
-        Scene.v().addClass(state);
-        state.setApplicationClass();
-        SootClass object = new SootClass("java.lang.Object",
-                Modifier.PUBLIC);
-        Scene.v().addClass(object);
-        object.setLibraryClass();
-        for (String value : new String[]{"COMPLETE", "COMMITTED"}) {
-            state.addField(new SootField(value, state.getType(),
-                    Modifier.PUBLIC | Modifier.STATIC | Modifier.FINAL
-                            | Modifier.ENUM));
-        }
-
-        SootMethod min = twoConstants(owner, "hasMinStorage", 1, 0);
-        SootMethod alike = twoConstants(owner, "alike", 1, 1);
-        SootMethod outside = twoConstants(library, "outside", 1, 0);
-        SootMethod sufficient = sufficient(owner, min);
-        SootMethod lookup = lookup(owner);
-        SootMethod switched = switched(owner);
-        SootMethod uc = ucState(owner, state, min);
-        SootMethod complete = complete(owner, state, uc, object);
-        SootMethod nullable = nullOrComplete(owner, state);
-        SootMethod completeOrThrow = complete(owner, state, nullable, object);
-
-        String suff = sig(sufficient);
-        String has = sig(min);
+        String complete = "<" + STATE + ": " + STATE + " COMPLETE>";
+        String has = sig("boolean hasMinStorage");
+        String suff = sig("boolean isSufficientlyReplicated");
+        String lookup = sig("java.lang.Object lookup");
+        String uc = sig(STATE + " getState");
+        String nullable = sig(STATE + " nullOrComplete");
+        Object[][] rows = {
+            {"one branch, two constant arms: both arms", has, "0", "==",
+                Arrays.asList(has + "#u1=true:true[]",
+                        has + "#u1=false:false[]")},
+            {"a branch of a nested helper's return carries its deciders, a"
+                    + " comparison both of its arms; the arm that runs on to"
+                    + " the comparison is open", suff, "0", "==", null},
+            {"a null return decides a null test, the other arm open",
+                lookup, "null", "==", Arrays.asList(lookup + "#u1=true:open[]",
+                        lookup + "#u1=false:true[]")},
+            {"an enum constant decides a test of another, the arm that"
+                    + " reads the state open", uc, "COMMITTED", "==", null},
+            {"a helper returning h2().equals(c) is the guard h2() == c, its"
+                    + " verdicts read through what it returns",
+                sig("boolean isComplete7"), "0", "!=", null},
+            {"h2().equals(c) throws where h2() returned null: that arm is"
+                    + " open", sig("boolean isComplete9"), "0", "!=",
+                Arrays.asList(nullable + "#u1=true:open[]",
+                        nullable + "#u1=false:true[]")},
+            {"two arms the guard takes alike decide nothing",
+                sig("boolean alike"), "0", "==", Collections.emptyList()},
+            {"a helper with a switch has none", sig("boolean switched"), "0",
+                "==", Collections.emptyList()},
+            {"a library helper's branches are no application's",
+                "<j.Lib: boolean outside(int)>", "0", "==",
+                Collections.emptyList()},
+        };
         String hasArms = "[" + has + "#u1=true:true[], " + has
                 + "#u1=false:false[]]";
         // getState tests min's return with != 0: the verdicts turn.
         String notHasArms = "[" + has + "#u1=true:false[], " + has
                 + "#u1=false:true[]]";
-        Object[][] rows = {
-            {"one branch, two constant arms: both arms", min, null, true,
-                Arrays.asList(has + "#u1=true:true[]",
-                        has + "#u1=false:false[]")},
-            {"a branch of a nested helper's return carries its deciders, a"
-                    + " comparison both of its arms; the arm that runs on to"
-                    + " the comparison is open", sufficient, null, true,
-                Arrays.asList(suff + "#u2=true:open" + hasArms,
-                    suff + "#u2=false:false" + hasArms,
-                    suff + "#u4=true:true[]", suff + "#u4=false:false[]")},
-            {"a null return decides a null test, the other arm open",
-                lookup, NullConstant.v(), true,
-                Arrays.asList(sig(lookup) + "#u1=true:open[]",
-                        sig(lookup) + "#u1=false:true[]")},
-            {"an enum constant decides a test of another, the arm that"
-                    + " reads the state open", uc, "COMMITTED", true,
-                Arrays.asList(sig(uc) + "#u2=true:open" + notHasArms,
-                        sig(uc) + "#u2=false:false" + notHasArms)},
-            {"a helper returning h2().equals(c) is the guard h2() == c, its"
-                    + " verdicts read through what it returns", complete,
-                null, false,
-                Arrays.asList(sig(uc) + "#u2=true:open" + notHasArms,
-                        sig(uc) + "#u2=false:true" + notHasArms)},
-            {"h2().equals(c) throws where h2() returned null: that arm is"
-                    + " open", completeOrThrow, null, false,
-                Arrays.asList(sig(nullable) + "#u1=true:open[]",
-                        sig(nullable) + "#u1=false:true[]")},
-            {"two arms the guard takes alike decide nothing", alike, null,
-                true, Collections.emptyList()},
-            {"a helper with a switch has none", switched, null, true,
-                Collections.emptyList()},
-            {"a library helper's branches are no application's",
-                outside, null, true, Collections.emptyList()},
-        };
-        for (Object[] row : rows) {
-            Object compared = row[2];
-            Body caller = caller(owner, (SootMethod) row[1],
-                    compared instanceof String ? Jimple.v().newStaticFieldRef(
-                            state.getFieldByName((String) compared).makeRef())
-                            : (Value) compared, (Boolean) row[3]);
-            Unit guard = null;
-            for (Unit unit : caller.getUnits()) {
-                if (unit instanceof soot.jimple.IfStmt) guard = unit;
-            }
+        rows[1][4] = Arrays.asList(suff + "#u2=true:open" + hasArms,
+                suff + "#u2=false:false" + hasArms, suff + "#u4=true:true[]",
+                suff + "#u4=false:false[]");
+        rows[3][4] = Arrays.asList(uc + "#u2=true:open" + notHasArms,
+                uc + "#u2=false:false" + notHasArms);
+        rows[4][4] = Arrays.asList(uc + "#u2=true:open" + notHasArms,
+                uc + "#u2=false:true" + notHasArms);
+        StringBuilder callers = new StringBuilder();
+        for (int k = 0; k < rows.length; k++) {
+            callers.append(caller("caller" + k, (String) rows[k][1],
+                    (String) rows[k][2], (String) rows[k][3]));
+        }
+        String isComplete = " int i0; " + STATE + " $r1, $r2; boolean $z0;"
+                + " i0 := @parameter0: int; $r1 = staticinvoke ";
+        String equals = "(i0); $r2 = " + complete + "; $z0 = virtualinvoke"
+                + " $r1.<java.lang.Object: boolean equals(java.lang.Object)>"
+                + "($r2); return $z0; }";
+        JimpleScene.add("application public class " + OWNER + " {"
+                        + twoConstants("hasMinStorage", 1, 0)
+                        + twoConstants("alike", 1, 1)
+                        // if (min(i0)) return true; return i0 >= 5; as javac
+                        // emits it.
+                        + " public static boolean isSufficientlyReplicated("
+                        + "int) { int i0; boolean $z0, $z1;"
+                        + " i0 := @parameter0: int; $z0 = staticinvoke " + has
+                        + "(i0); if $z0 == 0 goto label1; return 1;"
+                        + " label1: if i0 < 5 goto label2; $z1 = 1;"
+                        + " goto label3; label2: $z1 = 0; label3: return $z1;"
+                        + " }"
+                        // if (i0 > 0) return this; return null;
+                        + " public static java.lang.Object lookup(int) {"
+                        + " int i0; java.lang.Object r1; i0 := @parameter0:"
+                        + " int; if i0 > 0 goto label1; return null;"
+                        + " label1: r1 = new java.lang.Object; return r1; }"
+                        // switch (i0) { case 1: return true; default: return
+                        // false; }
+                        + " public static boolean switched(int) { int i0;"
+                        + " i0 := @parameter0: int; lookupswitch(i0) {"
+                        + " case 1: goto label1; default: goto label2; };"
+                        + " label1: return 1; label2: return 0; }"
+                        // if (min(i0)) return state(i0); return
+                        // State.COMPLETE;, as getBlockUCState's uc == null ?
+                        // COMPLETE : uc.getBlockUCState() compiles.
+                        + " public static " + STATE + " state(int) { }"
+                        + " public static " + STATE + " getState(int) {"
+                        + " int i0; boolean $z0; " + STATE + " $r1;"
+                        + " i0 := @parameter0: int; $z0 = staticinvoke " + has
+                        + "(i0); if $z0 != 0 goto label1; $r1 = " + complete
+                        + "; goto label2; label1: $r1 = staticinvoke "
+                        + sig(STATE + " state") + "(i0); label2: return $r1;"
+                        + " }"
+                        // return getState(i0).equals(State.COMPLETE);, as
+                        // isComplete compiles.
+                        + " public static boolean isComplete7(int) {"
+                        + isComplete + uc + equals
+                        // if (i0 <= 0) return null; return State.COMPLETE;
+                        + " public static " + STATE + " nullOrComplete(int) {"
+                        + " int i0; " + STATE + " $r1; i0 := @parameter0: int;"
+                        + " if i0 <= 0 goto label1; $r1 = " + complete + ";"
+                        + " return $r1; label1: return null; }"
+                        + " public static boolean isComplete9(int) {"
+                        + isComplete + nullable + equals + callers + " }",
+                "public class j.Lib {" + twoConstants("outside", 1, 0) + " }",
+                "application public enum class " + STATE + " {"
+                        + " public static final enum " + STATE + " COMPLETE;"
+                        + " public static final enum " + STATE + " COMMITTED;"
+                        + " }",
+                "public class java.lang.Object { }");
+        JimpleScene.method(sig(STATE + " state")).releaseActiveBody();
+        for (int k = 0; k < rows.length; k++) {
+            Object[] row = rows[k];
+            Body caller = JimpleScene.method(sig("void caller" + k))
+                    .getActiveBody();
             List<StaticScopeMap.Guard> found =
-                    BooleanReturns.deciders(caller, guard);
+                    BooleanReturns.deciders(caller, guard(caller));
             assertEquals((String) row[0], row[4], render(found));
             // The plan states them as the map does, verdicts included.
             assertEquals((String) row[0], row[4], render(
@@ -155,89 +174,21 @@ public class BooleanReturnsTest {
      */
     @Test
     public void aGuardOnALambdasBooleanIsDecidedByTheLambdasArms() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootClass object = library("java.lang.Object");
-        SootClass bool = library("java.lang.Boolean");
-        SootClass callable = library("java.util.concurrent.Callable");
-        callable.setModifiers(Modifier.PUBLIC | Modifier.INTERFACE);
-        Jimple j = Jimple.v();
-        RefType boolType = bool.getType();
-
-        SootMethod noop = method(owner, "noop", soot.VoidType.v());
-        noop.getActiveBody().getUnits().add(j.newReturnVoidStmt());
-        SootMethod body = method(owner, "lambda$run$0", boolType);
-        Body lambdaBody = body.getActiveBody();
-        Local i0 = lambdaBody.getParameterLocal(0);
-        Local b = local(lambdaBody, "b", boolType);
-        Unit returnTrue = j.newReturnStmt(b);
-        Unit returnFalse = j.newReturnStmt(b);
-        Unit falseArm = j.newAssignStmt(b, j.newStaticFieldRef(
-                Scene.v().makeFieldRef(bool, "FALSE", boolType, true)));
-        lambdaBody.getUnits().addAll(Arrays.asList(
-                j.newIfStmt(j.newLeExpr(i0, IntConstant.v(0)), falseArm),
-                j.newAssignStmt(b, j.newStaticFieldRef(
-                        Scene.v().makeFieldRef(bool, "TRUE", boolType, true))),
-                j.newIfStmt(j.newEqExpr(i0, IntConstant.v(7)), returnTrue),
-                j.newInvokeStmt(j.newStaticInvokeExpr(noop.makeRef(), i0)),
-                returnTrue,
-                falseArm,
-                j.newIfStmt(j.newEqExpr(i0, IntConstant.v(7)), returnFalse),
-                j.newInvokeStmt(j.newStaticInvokeExpr(noop.makeRef(), i0)),
-                returnFalse));
-
-        SootClass lambda = new SootClass(OWNER + "$lambda_run_0__1",
-                Modifier.PUBLIC);
-        lambda.setSuperclass(object);
-        lambda.addInterface(callable);
-        Scene.v().addClass(lambda);
-        lambda.setApplicationClass();
-        SootMethod call = new SootMethod("call",
-                Collections.<Type>emptyList(), object.getType(),
-                Modifier.PUBLIC);
-        lambda.addMethod(call);
-        Body forward = j.newBody(call);
-        call.setActiveBody(forward);
-        Local self = local(forward, "this", lambda.getType());
-        Local result = local(forward, "$r", boolType);
-        forward.getUnits().addAll(Arrays.asList(
-                j.newIdentityStmt(self, j.newThisRef(lambda.getType())),
-                j.newAssignStmt(result, j.newStaticInvokeExpr(body.makeRef(),
-                        IntConstant.v(1))),
-                j.newReturnStmt(result)));
-        SootMethod bootstrap = new SootMethod("bootstrap$",
-                Collections.<Type>emptyList(), callable.getType(),
-                Modifier.PUBLIC | Modifier.STATIC);
-        lambda.addMethod(bootstrap);
-
-        SootMethod run = method(owner, "run", soot.VoidType.v());
-        Body caller = run.getActiveBody();
-        Local made = local(caller, "$f", callable.getType());
-        Local answer = local(caller, "$o", object.getType());
-        Local boxed = local(caller, "$b", boolType);
-        Local value = local(caller, "$z", BooleanType.v());
-        Unit end = j.newReturnVoidStmt();
-        Unit guard = j.newIfStmt(j.newNeExpr(value, IntConstant.v(0)), end);
-        caller.getUnits().addAll(Arrays.asList(
-                j.newAssignStmt(made, j.newStaticInvokeExpr(
-                        bootstrap.makeRef())),
-                j.newAssignStmt(answer, j.newInterfaceInvokeExpr(made,
-                        Scene.v().makeMethodRef(callable, "call",
-                                Collections.<Type>emptyList(),
-                                object.getType(), false))),
-                j.newAssignStmt(boxed, j.newCastExpr(answer, boolType)),
-                j.newAssignStmt(value, j.newVirtualInvokeExpr(boxed,
-                        Scene.v().makeMethodRef(bool, "booleanValue",
-                                Collections.<Type>emptyList(),
-                                BooleanType.v(), false))),
-                guard,
-                end));
+        String noop = " staticinvoke " + sig("void noop") + "(i0);";
+        lambdaScene(" public static void noop(int) { int i0;"
+                + " i0 := @parameter0: int; return; }",
+                "if i0 <= 0 goto label2; b = " + bool("TRUE")
+                        + "; if i0 == 7 goto label1;" + noop
+                        + " label1: return b; label2: b = " + bool("FALSE")
+                        + "; if i0 == 7 goto label3;" + noop
+                        + " label3: return b;");
+        Body caller = JimpleScene.method(sig("void run")).getActiveBody();
+        String body = sig(BOOL + " lambda$run$0");
         assertEquals("the lambda body's test, each arm with whether the "
                         + "guard holds there; its finally decides nothing",
-                Arrays.asList(sig(body) + "#u1=true:false[]",
-                        sig(body) + "#u1=false:true[]"),
-                render(BooleanReturns.deciders(caller, guard)));
+                Arrays.asList(body + "#u1=true:false[]",
+                        body + "#u1=false:true[]"),
+                render(BooleanReturns.deciders(caller, guard(caller))));
     }
 
     /**
@@ -256,84 +207,66 @@ public class BooleanReturnsTest {
      */
     @Test
     public void aGuardOnAHelperThatReturnsFromACatchIsDecidedByTheCallsThrowArm() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootClass object = library("java.lang.Object");
-        SootClass throwable = library("java.lang.Throwable");
-        throwable.setSuperclass(object);
-        SootClass exception = library("java.lang.Exception");
-        exception.setSuperclass(throwable);
-        SootClass runtime = library("java.lang.RuntimeException");
-        runtime.setSuperclass(exception);
-        SootClass timedOut = library("j.TimedOut");
-        timedOut.setSuperclass(exception);
-        SootMethod init = new SootMethod("<init>",
-                Collections.<Type>emptyList(), soot.VoidType.v(),
-                Modifier.PUBLIC);
-        timedOut.addMethod(init);
-        SootClass lib = library("j.Lib");
-        lib.setSuperclass(object);
-        SootMethod await = new SootMethod("await",
-                Collections.<Type>singletonList(IntType.v()),
-                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        lib.addMethod(await);
-        SootMethod awaitThrowing = new SootMethod("awaitThrowing",
-                Collections.<Type>singletonList(IntType.v()),
-                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        awaitThrowing.addException(timedOut);
-        lib.addMethod(awaitThrowing);
-
-        SootClass subTimedOut = library("j.SubTimedOut");
-        subTimedOut.setSuperclass(timedOut);
-        SootMethod subInit = new SootMethod("<init>",
-                Collections.<Type>emptyList(), soot.VoidType.v(),
-                Modifier.PUBLIC);
-        subTimedOut.addMethod(subInit);
-        SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
-                init, true);
-        SootMethod waitForDeep = waitFor(owner, "waitForDeep", awaitThrowing,
-                timedOut, init, true);
-        SootMethod waitForSub = waitFor(owner, "waitForSub", await,
-                subTimedOut, subInit, true);
-        SootMethod waitForSwallowed = waitFor(owner, "waitForSwallowed",
-                await, timedOut, init, false);
+        String waitFor = sig("void waitFor");
+        String waitForSub = sig("void waitForSub");
+        String waitForSwallowed = sig("void waitForSwallowed");
         Object[][] rows = {
-            {"the called method's own arms decide", gone(owner, "gone",
-                    waitFor, timedOut), Arrays.asList(
-                    sig(waitFor) + "#u1=true:false[]",
-                    sig(waitFor) + "#u1=false:open[]",
-                    sig(waitFor) + "#u3=true:false[]",
-                    sig(waitFor) + "#u3=false:true[]")},
-            {"a trap on Exception decides nothing", gone(owner, "goneAny",
-                    waitFor, exception),
+            {"the called method's own arms decide", gone("gone", waitFor,
+                    TIMED_OUT), Arrays.asList(waitFor + "#u1=true:false[]",
+                    waitFor + "#u1=false:open[]", waitFor + "#u3=true:false[]",
+                    waitFor + "#u3=false:true[]")},
+            {"a trap on Exception decides nothing", gone("goneAny", waitFor,
+                    "java.lang.Exception"), Collections.<String>emptyList()},
+            {"nor a called method a call of which declares E", gone(
+                    "goneDeep", sig("void waitForDeep"), TIMED_OUT),
                     Collections.<String>emptyList()},
-            {"nor a called method a call of which declares E", gone(owner,
-                    "goneDeep", waitForDeep, timedOut),
+            {"nor a trap on a RuntimeException", gone("goneRuntime", waitFor,
+                    "java.lang.RuntimeException"),
                     Collections.<String>emptyList()},
-            {"nor a trap on a RuntimeException", gone(owner, "goneRuntime",
-                    waitFor, runtime), Collections.<String>emptyList()},
             {"catch (SubE) before catch (E): a new SubE is the first trap's"
                     + " (true, as the normal path), so that arm is open",
-                    goneSubFirst(owner, waitForSub, subTimedOut, timedOut),
-                    Arrays.asList(sig(waitForSub) + "#u1=true:false[]",
-                            sig(waitForSub) + "#u1=false:open[]",
-                            sig(waitForSub) + "#u3=true:false[]",
-                            sig(waitForSub) + "#u3=false:open[]")},
-            {"a throw a finally swallows never leaves: open", gone(owner,
-                    "goneSwallowed", waitForSwallowed, timedOut),
-                    Arrays.asList(sig(waitForSwallowed) + "#u1=true:false[]",
-                            sig(waitForSwallowed) + "#u1=false:open[]",
-                            sig(waitForSwallowed) + "#u3=true:false[]",
-                            sig(waitForSwallowed) + "#u3=false:open[]")}};
-        for (Object[] row : rows) {
-            SootMethod helper = (SootMethod) row[1];
-            List<StaticScopeMap.Guard> found = BooleanReturns.deciders(
-                    caller(owner, helper, null, true), callerGuard(owner));
+                    " public static boolean goneSubFirst(int) { int i0;"
+                            + " j.SubTimedOut e; " + TIMED_OUT + " f;"
+                            + " i0 := @parameter0: int; label1: staticinvoke "
+                            + waitForSub + "(i0); label2: goto label5;"
+                            + " label3: e := @caughtexception; return 1;"
+                            + " label4: f := @caughtexception; return 0;"
+                            + " label5: return 1; catch j.SubTimedOut from"
+                            + " label1 to label2 with label3; catch "
+                            + TIMED_OUT + " from label1 to label2 with label4;"
+                            + " }",
+                    Arrays.asList(waitForSub + "#u1=true:false[]",
+                            waitForSub + "#u1=false:open[]",
+                            waitForSub + "#u3=true:false[]",
+                            waitForSub + "#u3=false:open[]")},
+            {"a throw a finally swallows never leaves: open", gone(
+                    "goneSwallowed", waitForSwallowed, TIMED_OUT),
+                    Arrays.asList(waitForSwallowed + "#u1=true:false[]",
+                            waitForSwallowed + "#u1=false:open[]",
+                            waitForSwallowed + "#u3=true:false[]",
+                            waitForSwallowed + "#u3=false:open[]")}};
+        StringBuilder helpers = new StringBuilder();
+        for (int k = 0; k < rows.length; k++) {
+            String helper = (String) rows[k][1];
+            helpers.append(helper).append(caller("caller" + k, sig("boolean "
+                    + nameOf(helper)), "0", "=="));
+        }
+        catchScene(waitFor("waitFor", "await", TIMED_OUT, true)
+                + waitFor("waitForDeep", "awaitThrowing", TIMED_OUT, true)
+                + waitFor("waitForSub", "await", "j.SubTimedOut", true)
+                + waitFor("waitForSwallowed", "await", TIMED_OUT, false)
+                + helpers);
+        for (int k = 0; k < rows.length; k++) {
+            Object[] row = rows[k];
+            String helper = (String) row[1];
+            Body caller = JimpleScene.method(sig("void caller" + k))
+                    .getActiveBody();
+            List<StaticScopeMap.Guard> found =
+                    BooleanReturns.deciders(caller, guard(caller));
             assertEquals((String) row[0], row[2], render(found));
             for (StaticScopeMap.Guard decider : found) {
-                assertEquals("called from the helper", sig(helper),
-                        decider.via());
+                assertEquals("called from the helper", sig("boolean "
+                        + nameOf(helper)), decider.via());
             }
         }
     }
@@ -346,48 +279,22 @@ public class BooleanReturnsTest {
      */
     @Test
     public void aBooleanValueOfAConstantIsThatConstant() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootClass bool = library("java.lang.Boolean");
-        RefType boolType = bool.getType();
-        Jimple j = Jimple.v();
-        SootMethod boxed = method(owner, "boxed", boolType);
-        Body body = boxed.getActiveBody();
-        Local b = local(body, "b", boolType);
-        Unit low = j.newAssignStmt(b, j.newStaticInvokeExpr(
-                Scene.v().makeMethodRef(bool, "valueOf",
-                        Collections.<Type>singletonList(BooleanType.v()),
-                        boolType, true), IntConstant.v(0)));
-        body.getUnits().addAll(Arrays.asList(
-                j.newIfStmt(j.newLeExpr(body.getParameterLocal(0),
-                        IntConstant.v(0)), low),
-                j.newAssignStmt(b, j.newStaticInvokeExpr(
-                        Scene.v().makeMethodRef(bool, "valueOf",
-                                Collections.<Type>singletonList(
-                                        BooleanType.v()), boolType, true),
-                        IntConstant.v(1))),
-                j.newReturnStmt(b),
-                low,
-                j.newReturnStmt(b)));
-        SootMethod run = method(owner, "run", soot.VoidType.v());
-        Body caller = run.getActiveBody();
-        Local answer = local(caller, "$b", boolType);
-        Local value = local(caller, "$z", BooleanType.v());
-        Unit end = j.newReturnVoidStmt();
-        Unit guard = j.newIfStmt(j.newEqExpr(value, IntConstant.v(0)), end);
-        caller.getUnits().addAll(Arrays.asList(
-                j.newAssignStmt(answer, j.newStaticInvokeExpr(boxed.makeRef(),
-                        caller.getParameterLocal(0))),
-                j.newAssignStmt(value, j.newVirtualInvokeExpr(answer,
-                        Scene.v().makeMethodRef(bool, "booleanValue",
-                                Collections.<Type>emptyList(),
-                                BooleanType.v(), false))),
-                guard,
-                end));
-        assertEquals(Arrays.asList(sig(boxed) + "#u1=true:true[]",
-                        sig(boxed) + "#u1=false:false[]"),
-                render(BooleanReturns.deciders(caller, guard)));
+        String valueOf = " staticinvoke <" + BOOL + ": " + BOOL + " valueOf("
+                + "boolean)>";
+        String boxed = sig(BOOL + " boxed");
+        JimpleScene.add("application public class " + OWNER + " {"
+                + " public static " + BOOL + " boxed(int) { int i0; " + BOOL
+                + " b; i0 := @parameter0: int; if i0 <= 0 goto label1; b ="
+                + valueOf + "(1); return b; label1: b =" + valueOf + "(0);"
+                + " return b; } public static void run(int) { int i0; " + BOOL
+                + " $b; boolean $z; i0 := @parameter0: int; $b = staticinvoke "
+                + boxed + "(i0); $z = virtualinvoke $b.<" + BOOL + ": boolean"
+                + " booleanValue()>(); if $z == 0 goto label1; label1: return;"
+                + " } }", "public class " + BOOL + " { }");
+        Body caller = JimpleScene.method(sig("void run")).getActiveBody();
+        assertEquals(Arrays.asList(boxed + "#u1=true:true[]",
+                        boxed + "#u1=false:false[]"),
+                render(BooleanReturns.deciders(caller, guard(caller))));
     }
 
     /**
@@ -403,197 +310,28 @@ public class BooleanReturnsTest {
      */
     @Test
     public void aLambdasTestOfAHelperThatReturnsFromACatchIsDecidedBelow() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootClass object = library("java.lang.Object");
-        SootClass throwable = library("java.lang.Throwable");
-        throwable.setSuperclass(object);
-        SootClass exception = library("java.lang.Exception");
-        exception.setSuperclass(throwable);
-        SootClass runtime = library("java.lang.RuntimeException");
-        runtime.setSuperclass(exception);
-        SootClass timedOut = library("j.TimedOut");
-        timedOut.setSuperclass(exception);
-        SootMethod init = new SootMethod("<init>",
-                Collections.<Type>emptyList(), soot.VoidType.v(),
-                Modifier.PUBLIC);
-        timedOut.addMethod(init);
-        SootClass lib = library("j.Lib");
-        lib.setSuperclass(object);
-        SootMethod await = new SootMethod("await",
-                Collections.<Type>singletonList(IntType.v()),
-                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        lib.addMethod(await);
-        SootClass bool = library("java.lang.Boolean");
-        bool.setSuperclass(object);
-        SootClass callable = library("java.util.concurrent.Callable");
-        callable.setModifiers(Modifier.PUBLIC | Modifier.INTERFACE);
-        Jimple j = Jimple.v();
-        RefType boolType = bool.getType();
-        SootMethod waitFor = waitFor(owner, "waitFor", await, timedOut,
-                init, true);
-        SootMethod gone = gone(owner, "gone", waitFor, timedOut);
-
-        SootMethod body = method(owner, "lambda$run$0", boolType);
-        Body lambdaBody = body.getActiveBody();
-        Local z = local(lambdaBody, "z", BooleanType.v());
-        Local b = local(lambdaBody, "b", boolType);
-        Unit falseArm = j.newAssignStmt(b, j.newStaticFieldRef(
-                Scene.v().makeFieldRef(bool, "FALSE", boolType, true)));
-        lambdaBody.getUnits().addAll(Arrays.asList(
-                j.newAssignStmt(z, j.newStaticInvokeExpr(gone.makeRef(),
-                        lambdaBody.getParameterLocal(0))),
-                j.newIfStmt(j.newEqExpr(z, IntConstant.v(0)), falseArm),
-                j.newAssignStmt(b, j.newStaticFieldRef(
-                        Scene.v().makeFieldRef(bool, "TRUE", boolType, true))),
-                j.newReturnStmt(b),
-                falseArm,
-                j.newReturnStmt(b)));
-
-        SootClass lambda = new SootClass(OWNER + "$lambda_run_0__1",
-                Modifier.PUBLIC);
-        lambda.setSuperclass(object);
-        lambda.addInterface(callable);
-        Scene.v().addClass(lambda);
-        lambda.setApplicationClass();
-        SootMethod call = new SootMethod("call",
-                Collections.<Type>emptyList(), object.getType(),
-                Modifier.PUBLIC);
-        lambda.addMethod(call);
-        Body forward = j.newBody(call);
-        call.setActiveBody(forward);
-        Local self = local(forward, "this", lambda.getType());
-        Local result = local(forward, "$r", boolType);
-        forward.getUnits().addAll(Arrays.asList(
-                j.newIdentityStmt(self, j.newThisRef(lambda.getType())),
-                j.newAssignStmt(result, j.newStaticInvokeExpr(body.makeRef(),
-                        IntConstant.v(1))),
-                j.newReturnStmt(result)));
-        SootMethod bootstrap = new SootMethod("bootstrap$",
-                Collections.<Type>emptyList(), callable.getType(),
-                Modifier.PUBLIC | Modifier.STATIC);
-        lambda.addMethod(bootstrap);
-
-        SootMethod run = method(owner, "run", soot.VoidType.v());
-        Body caller = run.getActiveBody();
-        Local made = local(caller, "$f", callable.getType());
-        Local answer = local(caller, "$o", object.getType());
-        Local boxed = local(caller, "$b", boolType);
-        Local value = local(caller, "$z", BooleanType.v());
-        Unit end = j.newReturnVoidStmt();
-        Unit guard = j.newIfStmt(j.newNeExpr(value, IntConstant.v(0)), end);
-        caller.getUnits().addAll(Arrays.asList(
-                j.newAssignStmt(made, j.newStaticInvokeExpr(
-                        bootstrap.makeRef())),
-                j.newAssignStmt(answer, j.newInterfaceInvokeExpr(made,
-                        Scene.v().makeMethodRef(callable, "call",
-                                Collections.<Type>emptyList(),
-                                object.getType(), false))),
-                j.newAssignStmt(boxed, j.newCastExpr(answer, boolType)),
-                j.newAssignStmt(value, j.newVirtualInvokeExpr(boxed,
-                        Scene.v().makeMethodRef(bool, "booleanValue",
-                                Collections.<Type>emptyList(),
-                                BooleanType.v(), false))),
-                guard,
-                end));
-        String below = "[" + sig(waitFor) + "#u1=true:false[], "
-                + sig(waitFor) + "#u1=false:open[], "
-                + sig(waitFor) + "#u3=true:false[], "
-                + sig(waitFor) + "#u3=false:true[]]";
+        String waitFor = sig("void waitFor");
+        catchScene(waitFor("waitFor", "await", TIMED_OUT, true)
+                + gone("gone", waitFor, TIMED_OUT));
+        lambdaScene("", "z = staticinvoke " + sig("boolean gone")
+                + "(i0); if z == 0 goto label1; b = " + bool("TRUE")
+                + "; return b; label1: b = " + bool("FALSE") + "; return b;");
+        Body caller = JimpleScene.method(sig("void run")).getActiveBody();
+        String below = "[" + waitFor + "#u1=true:false[], "
+                + waitFor + "#u1=false:open[], "
+                + waitFor + "#u3=true:false[], "
+                + waitFor + "#u3=false:true[]]";
+        String body = sig(BOOL + " lambda$run$0");
         List<StaticScopeMap.Guard> found =
-                BooleanReturns.deciders(caller, guard);
-        assertEquals(Arrays.asList(sig(body) + "#u2=true:false" + below,
-                        sig(body) + "#u2=false:true" + below),
+                BooleanReturns.deciders(caller, guard(caller));
+        assertEquals(Arrays.asList(body + "#u2=true:false" + below,
+                        body + "#u2=false:true" + below),
                 render(found));
         assertEquals("the lambda's arms: called from run (past the "
-                + "lambda class and body)", sig(run), found.get(0).via());
-        assertEquals("waitFor's: called from gone", sig(gone),
+                        + "lambda class and body)", sig("void run"),
+                found.get(0).via());
+        assertEquals("waitFor's: called from gone", sig("boolean gone"),
                 found.get(0).deciders().get(0).via());
-    }
-
-    /** waitFor(int i0), void, declaring {@code thrown}: see the test; its
-     *  finally rethrows, or ({@code rethrows} false) swallows. */
-    private static SootMethod waitFor(SootClass owner, String name,
-                                      SootMethod await, SootClass thrown,
-                                      SootMethod init, boolean rethrows) {
-        SootMethod method = method(owner, name, soot.VoidType.v());
-        method.addException(thrown);
-        Body body = method.getActiveBody();
-        Jimple j = Jimple.v();
-        Local z = local(body, "z", BooleanType.v());
-        Local e = local(body, "e", thrown.getType());
-        Local t = local(body, "t", thrown.getSuperclass().getSuperclass()
-                .getType());
-        Unit done = j.newReturnVoidStmt();
-        Unit make = j.newAssignStmt(e, j.newNewExpr(thrown.getType()));
-        Unit rethrow = j.newThrowStmt(t);
-        Unit handler = j.newIdentityStmt(t, j.newCaughtExceptionRef());
-        body.getUnits().addAll(Arrays.asList(
-                j.newIfStmt(j.newLeExpr(body.getParameterLocal(0),
-                        IntConstant.v(0)), done),
-                j.newAssignStmt(z, j.newStaticInvokeExpr(await.makeRef(),
-                        body.getParameterLocal(0))),
-                j.newIfStmt(j.newNeExpr(z, IntConstant.v(0)), done),
-                make,
-                j.newInvokeStmt(j.newSpecialInvokeExpr(e, init.makeRef())),
-                j.newThrowStmt(e),
-                done,
-                // A finally around the throw: it rethrows what it caught,
-                // past its own `if (log.isDebugEnabled())` -- or swallows it.
-                handler));
-        body.getUnits().addAll(rethrows ? Arrays.asList(
-                j.newIfStmt(j.newEqExpr(body.getParameterLocal(0),
-                        IntConstant.v(7)), rethrow),
-                j.newInvokeStmt(j.newStaticInvokeExpr(await.makeRef(),
-                        body.getParameterLocal(0))),
-                rethrow) : Arrays.asList(j.newReturnVoidStmt()));
-        body.getTraps().add(j.newTrap(thrown.getSuperclass().getSuperclass(),
-                make, done, handler));
-        return method;
-    }
-
-    /** gone(int i0): false where {@code waitFor} threw {@code caught}, true
-     *  after it: see the test. */
-    private static SootMethod gone(SootClass owner, String name,
-                                   SootMethod waitFor, SootClass caught) {
-        SootMethod method = method(owner, name, BooleanType.v());
-        Body body = method.getActiveBody();
-        Jimple j = Jimple.v();
-        Local e = local(body, "e", caught.getType());
-        Unit call = j.newInvokeStmt(j.newStaticInvokeExpr(waitFor.makeRef(),
-                body.getParameterLocal(0)));
-        Unit yes = j.newReturnStmt(IntConstant.v(1));
-        Unit after = j.newGotoStmt(yes);
-        Unit handler = j.newIdentityStmt(e, j.newCaughtExceptionRef());
-        body.getUnits().addAll(Arrays.asList(call, after, handler,
-                j.newReturnStmt(IntConstant.v(0)), yes));
-        body.getTraps().add(j.newTrap(caught, call, after, handler));
-        return method;
-    }
-
-    /** goneSubFirst(int i0): true where waitFor threw a {@code sub} (the
-     *  first trap) or nothing, false where it threw another {@code sup}. */
-    private static SootMethod goneSubFirst(SootClass owner,
-                                           SootMethod waitFor,
-                                           SootClass sub, SootClass sup) {
-        SootMethod method = method(owner, "goneSubFirst", BooleanType.v());
-        Body body = method.getActiveBody();
-        Jimple j = Jimple.v();
-        Local e = local(body, "e", sub.getType());
-        Local f = local(body, "f", sup.getType());
-        Unit call = j.newInvokeStmt(j.newStaticInvokeExpr(waitFor.makeRef(),
-                body.getParameterLocal(0)));
-        Unit yes = j.newReturnStmt(IntConstant.v(1));
-        Unit after = j.newGotoStmt(yes);
-        Unit subHandler = j.newIdentityStmt(e, j.newCaughtExceptionRef());
-        Unit supHandler = j.newIdentityStmt(f, j.newCaughtExceptionRef());
-        body.getUnits().addAll(Arrays.asList(call, after, subHandler,
-                j.newReturnStmt(IntConstant.v(1)), supHandler,
-                j.newReturnStmt(IntConstant.v(0)), yes));
-        body.getTraps().add(j.newTrap(sub, call, after, subHandler));
-        body.getTraps().add(j.newTrap(sup, call, after, supHandler));
-        return method;
     }
 
     /**
@@ -603,45 +341,161 @@ public class BooleanReturnsTest {
      */
     @Test
     public void aGuardInALambdasBodyStatesNoVia() {
-        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
-        Scene.v().addClass(owner);
-        owner.setApplicationClass();
-        SootMethod helper = twoConstants(owner, "expired", 1, 0);
-        SootMethod lambda = method(owner, "lambda$check$0",
-                soot.VoidType.v());
-        Body body = lambda.getActiveBody();
-        Local result = local(body, "$r", BooleanType.v());
-        Unit end = Jimple.v().newReturnVoidStmt();
-        Unit guard = Jimple.v().newIfStmt(Jimple.v().newEqExpr(result,
-                IntConstant.v(0)), end);
-        body.getUnits().addAll(Arrays.asList(
-                Jimple.v().newAssignStmt(result, Jimple.v()
-                        .newStaticInvokeExpr(helper.makeRef(),
-                                body.getParameterLocal(0))),
-                guard, end));
+        JimpleScene.add("application public class " + OWNER + " {"
+                + twoConstants("expired", 1, 0) + " public static void"
+                + " lambda$check$0(int) { int i0; boolean $r;"
+                + " i0 := @parameter0: int; $r = staticinvoke "
+                + sig("boolean expired") + "(i0); if $r == 0 goto label1;"
+                + " label1: return; } }");
+        Body body = JimpleScene.method(sig("void lambda$check$0"))
+                .getActiveBody();
         List<StaticScopeMap.Guard> found =
-                BooleanReturns.deciders(body, guard);
+                BooleanReturns.deciders(body, guard(body));
         assertEquals(2, found.size());
         for (StaticScopeMap.Guard decider : found) {
             assertEquals("", decider.via());
         }
     }
 
-    /** The guard {@link #caller} made last: its one if. */
-    private static Unit callerGuard(SootClass owner) {
-        SootMethod last = owner.getMethodByName("caller"
-                + (owner.getMethodCount() - 1));
-        for (Unit unit : last.getActiveBody().getUnits()) {
-            if (unit instanceof soot.jimple.IfStmt) return unit;
+    /** The scene of a catch: the exceptions, {@code j.Lib}'s awaits, and
+     *  the helpers in {@code a.Helpers}. */
+    private static void catchScene(String helpers) {
+        JimpleScene.add("application public class " + OWNER + " {" + helpers
+                        + " }",
+                "public class java.lang.Object { }",
+                "public class java.lang.Throwable extends java.lang.Object"
+                        + " { }",
+                "public class java.lang.Exception extends java.lang.Throwable"
+                        + " { }",
+                "public class java.lang.RuntimeException extends"
+                        + " java.lang.Exception { }",
+                "public class " + TIMED_OUT + " extends java.lang.Exception"
+                        + " { public void <init>() { } }",
+                "public class j.Lib extends java.lang.Object {"
+                        + " public static boolean await(int) { }"
+                        + " public static boolean awaitThrowing(int) throws "
+                        + TIMED_OUT + " { } }",
+                "public class j.SubTimedOut extends " + TIMED_OUT
+                        + " { public void <init>() { } }");
+        for (String bodiless : new String[] {"<" + TIMED_OUT + ": void"
+                + " <init>()>", "<j.Lib: boolean await(int)>",
+                "<j.Lib: boolean awaitThrowing(int)>",
+                "<j.SubTimedOut: void <init>()>"}) {
+            JimpleScene.method(bodiless).releaseActiveBody();
         }
-        return null;
     }
 
-    private static SootClass library(String name) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC);
-        Scene.v().addClass(type);
-        type.setLibraryClass();
-        return type;
+    /**
+     * A desugared lambda's scene: {@code lambda$run$0(int i0)} running
+     * {@code body} over {@code z} and {@code b}, its class's {@code call()}
+     * forwarding to it and {@code bootstrap$} making it, and {@code run}'s
+     * {@code if (!callable.call())}; {@code helpers} beside them.
+     */
+    private static void lambdaScene(String helpers, String body) {
+        JimpleScene.add("application public class " + OWNER + " {" + helpers
+                        + " public static " + BOOL + " lambda$run$0(int) {"
+                        + " int i0; boolean z; " + BOOL + " b;"
+                        + " i0 := @parameter0: int; " + body + " }"
+                        + " public static void run(int) { int i0; " + CALLABLE
+                        + " $f; java.lang.Object $o; " + BOOL + " $b;"
+                        + " boolean $z; i0 := @parameter0: int;"
+                        + " $f = staticinvoke <" + LAMBDA + ": " + CALLABLE
+                        + " bootstrap$()>(); $o = interfaceinvoke $f.<"
+                        + CALLABLE + ": java.lang.Object call()>();"
+                        + " $b = (" + BOOL + ") $o; $z = virtualinvoke $b.<"
+                        + BOOL + ": boolean booleanValue()>();"
+                        + " if $z != 0 goto label1; label1: return; } }",
+                "public class java.lang.Object { }",
+                "public class " + BOOL + " extends java.lang.Object { }",
+                "public interface " + CALLABLE + " { }",
+                "application public class " + LAMBDA + " extends"
+                        + " java.lang.Object implements " + CALLABLE + " {"
+                        + " public java.lang.Object call() { " + LAMBDA
+                        + " r0; " + BOOL + " $r; r0 := @this: " + LAMBDA + ";"
+                        + " $r = staticinvoke " + sig(BOOL + " lambda$run$0")
+                        + "(1); return $r; }"
+                        + " public static " + CALLABLE + " bootstrap$() { } }");
+        JimpleScene.method("<" + LAMBDA + ": " + CALLABLE + " bootstrap$()>")
+                .releaseActiveBody();
+    }
+
+    /** waitFor(int i0), void, declaring {@code thrown}: see the test; its
+     *  finally rethrows, or ({@code rethrows} false) swallows. */
+    private static String waitFor(String name, String await, String thrown,
+                                  boolean rethrows) {
+        // What the finally catches: two levels above what it throws.
+        String caught = thrown.equals(TIMED_OUT) ? "java.lang.Throwable"
+                : "java.lang.Exception";
+        String awaits = "staticinvoke <j.Lib: boolean " + await + "(int)>(i0)";
+        return " public static void " + name + "(int) throws " + thrown
+                + " { int i0; boolean z; " + thrown + " e; " + caught + " t;"
+                + " i0 := @parameter0: int; if i0 <= 0 goto label1; z = "
+                + awaits + "; if z != 0 goto label1; label2: e = new " + thrown
+                + "; specialinvoke e.<" + thrown + ": void <init>()>();"
+                + " throw e; label1: return; label3: t := @caughtexception;"
+                // A finally around the throw: it rethrows what it caught,
+                // past its own `if (log.isDebugEnabled())` -- or swallows it.
+                + (rethrows ? " if i0 == 7 goto label4; " + awaits
+                + "; label4: throw t;" : " return;") + " catch " + caught
+                + " from label2 to label1 with label3; }";
+    }
+
+    /** gone(int i0): false where {@code waitFor} threw {@code caught}, true
+     *  after it: see the test. */
+    private static String gone(String name, String waitFor, String caught) {
+        return " public static boolean " + name + "(int) { int i0; " + caught
+                + " e; i0 := @parameter0: int; label1: staticinvoke " + waitFor
+                + "(i0); label2: goto label4; label3: e := @caughtexception;"
+                + " return 0; label4: return 1; catch " + caught + " from"
+                + " label1 to label2 with label3; }";
+    }
+
+    /** {@code if (h(i0) == c) return} (or {@code !=}): the guard, c 0,
+     *  {@code null} or an enum constant read into a local first. */
+    private static String caller(String name, String helper, String compared,
+                                 String test) {
+        String returned = helper.substring(helper.indexOf(": ") + 2,
+                helper.lastIndexOf(' '));
+        boolean constant = compared.equals("COMMITTED");
+        return " public static void " + name + "(int) { int i0; " + returned
+                + " $r;" + (constant ? " " + STATE + " $c;" : "")
+                + " i0 := @parameter0: int; $r = staticinvoke " + helper
+                + "(i0);" + (constant ? " $c = <" + STATE + ": " + STATE + " "
+                + compared + ">;" : "") + " if $r " + test + " "
+                + (constant ? "$c" : compared) + " goto label1; staticinvoke "
+                + helper + "(1); label1: return; }";
+    }
+
+    /** {@code if (i0 <= 0) return b; return a;} */
+    private static String twoConstants(String name, int a, int b) {
+        return " public static boolean " + name + "(int) { int i0;"
+                + " i0 := @parameter0: int; if i0 <= 0 goto label1; return "
+                + a + "; label1: return " + b + "; }";
+    }
+
+    /** The name a method's text declares. */
+    private static String nameOf(String method) {
+        String head = method.substring(0, method.indexOf('('));
+        return head.substring(head.lastIndexOf(' ') + 1);
+    }
+
+    /** {@code <a.Helpers: <declaration>(int)>}. */
+    private static String sig(String declaration) {
+        return "<" + OWNER + ": " + declaration + "(int)>";
+    }
+
+    /** {@code Boolean}'s constant {@code name}. */
+    private static String bool(String name) {
+        return "<" + BOOL + ": " + BOOL + " " + name + ">";
+    }
+
+    /** The guard of a body: its last if. */
+    private static Unit guard(Body body) {
+        Unit guard = null;
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof soot.jimple.IfStmt) guard = unit;
+        }
+        return guard;
     }
 
     private static List<String> render(List<StaticScopeMap.Guard> guards) {
@@ -651,201 +505,5 @@ public class BooleanReturnsTest {
                     : guard.verdict()) + render(guard.deciders()));
         }
         return rendered;
-    }
-
-    private static String sig(SootMethod method) {
-        return method.getSignature();
-    }
-
-    /** {@code if (h(i0) == c) return} (or {@code !=}): the guard, c 0,
-     *  {@code null} or an enum constant read into a local first. */
-    private static Body caller(SootClass owner, SootMethod helper,
-                               Value compared, boolean equal) {
-        SootMethod method = method(owner, "caller" + owner.getMethodCount(),
-                soot.VoidType.v());
-        Body body = method.getActiveBody();
-        Local result = local(body, "$r", helper.getReturnType());
-        Unit end = Jimple.v().newReturnVoidStmt();
-        body.getUnits().add(Jimple.v().newAssignStmt(result,
-                Jimple.v().newStaticInvokeExpr(helper.makeRef(),
-                        body.getParameterLocal(0))));
-        Value against = compared == null ? IntConstant.v(0) : compared;
-        if (compared instanceof soot.jimple.StaticFieldRef) {
-            against = local(body, "$c", compared.getType());
-            body.getUnits().add(Jimple.v().newAssignStmt(against, compared));
-        }
-        body.getUnits().add(Jimple.v().newIfStmt(equal
-                ? Jimple.v().newEqExpr(result, against)
-                : Jimple.v().newNeExpr(result, against), end));
-        body.getUnits().add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(helper.makeRef(),
-                        IntConstant.v(1))));
-        body.getUnits().add(end);
-        return body;
-    }
-
-    /** {@code if (i0 <= 0) return b; return a;} */
-    private static SootMethod twoConstants(SootClass owner, String name,
-                                           int a, int b) {
-        SootMethod method = method(owner, name, BooleanType.v());
-        Body body = method.getActiveBody();
-        Unit low = Jimple.v().newReturnStmt(IntConstant.v(b));
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newLeExpr(
-                body.getParameterLocal(0), IntConstant.v(0)), low));
-        body.getUnits().add(Jimple.v().newReturnStmt(IntConstant.v(a)));
-        body.getUnits().add(low);
-        return method;
-    }
-
-    /** {@code if (min(i0)) return true; return i0 >= 5;} as javac emits it. */
-    private static SootMethod sufficient(SootClass owner, SootMethod min) {
-        SootMethod method = method(owner, "isSufficientlyReplicated",
-                BooleanType.v());
-        Body body = method.getActiveBody();
-        Local has = local(body, "$z0", BooleanType.v());
-        Local outcome = local(body, "$z1", BooleanType.v());
-        Local live = body.getParameterLocal(0);
-        Unit compare = Jimple.v().newIfStmt(Jimple.v().newLtExpr(live,
-                IntConstant.v(5)), Jimple.v().newNopStmt());
-        Unit low = Jimple.v().newAssignStmt(outcome, IntConstant.v(0));
-        Unit done = Jimple.v().newReturnStmt(outcome);
-        ((soot.jimple.IfStmt) compare).setTarget(low);
-        body.getUnits().add(Jimple.v().newAssignStmt(has,
-                Jimple.v().newStaticInvokeExpr(min.makeRef(), live)));
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newEqExpr(has,
-                IntConstant.v(0)), compare));
-        body.getUnits().add(Jimple.v().newReturnStmt(IntConstant.v(1)));
-        body.getUnits().add(compare);
-        body.getUnits().add(Jimple.v().newAssignStmt(outcome,
-                IntConstant.v(1)));
-        body.getUnits().add(Jimple.v().newGotoStmt(done));
-        body.getUnits().add(low);
-        body.getUnits().add(done);
-        return method;
-    }
-
-    /** {@code if (min(i0)) return state(i0); return State.COMPLETE;}, as
-     *  {@code getBlockUCState}'s {@code uc == null ? COMPLETE :
-     *  uc.getBlockUCState()} compiles. */
-    private static SootMethod ucState(SootClass owner, SootClass state,
-                                      SootMethod min) {
-        SootMethod read = new SootMethod("state",
-                Collections.<Type>singletonList(IntType.v()),
-                state.getType(), Modifier.PUBLIC | Modifier.STATIC);
-        owner.addMethod(read);
-        SootMethod method = method(owner, "getState", state.getType());
-        Body body = method.getActiveBody();
-        Local has = local(body, "$z0", BooleanType.v());
-        Local held = local(body, "$r1", state.getType());
-        Unit open = Jimple.v().newAssignStmt(held,
-                Jimple.v().newStaticInvokeExpr(read.makeRef(),
-                        body.getParameterLocal(0)));
-        Unit done = Jimple.v().newReturnStmt(held);
-        body.getUnits().add(Jimple.v().newAssignStmt(has,
-                Jimple.v().newStaticInvokeExpr(min.makeRef(),
-                        body.getParameterLocal(0))));
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newNeExpr(has,
-                IntConstant.v(0)), open));
-        body.getUnits().add(Jimple.v().newAssignStmt(held,
-                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
-                        .makeRef())));
-        body.getUnits().add(Jimple.v().newGotoStmt(done));
-        body.getUnits().add(open);
-        body.getUnits().add(done);
-        return method;
-    }
-
-    /** {@code if (i0 <= 0) return null; return State.COMPLETE;} */
-    private static SootMethod nullOrComplete(SootClass owner,
-                                             SootClass state) {
-        SootMethod method = method(owner, "nullOrComplete", state.getType());
-        Body body = method.getActiveBody();
-        Local held = local(body, "$r1", state.getType());
-        Unit low = Jimple.v().newReturnStmt(NullConstant.v());
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newLeExpr(
-                body.getParameterLocal(0), IntConstant.v(0)), low));
-        body.getUnits().add(Jimple.v().newAssignStmt(held,
-                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
-                        .makeRef())));
-        body.getUnits().add(Jimple.v().newReturnStmt(held));
-        body.getUnits().add(low);
-        return method;
-    }
-
-    /** {@code return getState(i0).equals(State.COMPLETE);}, as {@code
-     *  isComplete} compiles. */
-    private static SootMethod complete(SootClass owner, SootClass state,
-                                       SootMethod uc, SootClass object) {
-        SootMethod method = method(owner, "isComplete"
-                + owner.getMethodCount(), BooleanType.v());
-        Body body = method.getActiveBody();
-        Local held = local(body, "$r1", state.getType());
-        Local constant = local(body, "$r2", state.getType());
-        Local equal = local(body, "$z0", BooleanType.v());
-        body.getUnits().add(Jimple.v().newAssignStmt(held,
-                Jimple.v().newStaticInvokeExpr(uc.makeRef(),
-                        body.getParameterLocal(0))));
-        body.getUnits().add(Jimple.v().newAssignStmt(constant,
-                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
-                        .makeRef())));
-        body.getUnits().add(Jimple.v().newAssignStmt(equal,
-                Jimple.v().newVirtualInvokeExpr(held, Scene.v().makeMethodRef(
-                        object, "equals", Collections.<Type>singletonList(
-                                RefType.v("java.lang.Object")),
-                        BooleanType.v(), false), constant)));
-        body.getUnits().add(Jimple.v().newReturnStmt(equal));
-        return method;
-    }
-
-    /** {@code if (i0 > 0) return this; return null;} */
-    private static SootMethod lookup(SootClass owner) {
-        SootMethod method = method(owner, "lookup",
-                RefType.v("java.lang.Object"));
-        Body body = method.getActiveBody();
-        Local found = local(body, "r1", RefType.v("java.lang.Object"));
-        Unit hit = Jimple.v().newAssignStmt(found,
-                Jimple.v().newNewExpr(RefType.v("java.lang.Object")));
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newGtExpr(
-                body.getParameterLocal(0), IntConstant.v(0)), hit));
-        body.getUnits().add(Jimple.v().newReturnStmt(NullConstant.v()));
-        body.getUnits().add(hit);
-        body.getUnits().add(Jimple.v().newReturnStmt(found));
-        return method;
-    }
-
-    /** {@code switch (i0) { case 1: return true; default: return false; }} */
-    private static SootMethod switched(SootClass owner) {
-        SootMethod method = method(owner, "switched", BooleanType.v());
-        Body body = method.getActiveBody();
-        Unit one = Jimple.v().newReturnStmt(IntConstant.v(1));
-        Unit other = Jimple.v().newReturnStmt(IntConstant.v(0));
-        body.getUnits().add(Jimple.v().newLookupSwitchStmt(
-                body.getParameterLocal(0),
-                Collections.singletonList(IntConstant.v(1)),
-                Collections.singletonList(one), other));
-        body.getUnits().add(one);
-        body.getUnits().add(other);
-        return method;
-    }
-
-    /** {@code static <type> name(int i0)}, its identity unit first. */
-    private static SootMethod method(SootClass owner, String name,
-                                     Type returned) {
-        SootMethod method = new SootMethod(name,
-                Collections.<Type>singletonList(IntType.v()), returned,
-                Modifier.PUBLIC | Modifier.STATIC);
-        owner.addMethod(method);
-        Body body = Jimple.v().newBody(method);
-        method.setActiveBody(body);
-        Local parameter = local(body, "i0", IntType.v());
-        body.getUnits().add(Jimple.v().newIdentityStmt(parameter,
-                Jimple.v().newParameterRef(IntType.v(), 0)));
-        return method;
-    }
-
-    private static Local local(Body body, String name, Type type) {
-        Local local = Jimple.v().newLocal(name, type);
-        body.getLocals().add(local);
-        return local;
     }
 }

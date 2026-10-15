@@ -62,6 +62,9 @@ public class ContractTest {
     private static final String DECLARED_API =
             "hdfs-17897/client#epoch0/striped-file-checksum";
 
+    private static final String STABLE_TASK = "n0|Root:TASK#4|<A: void"
+            + " call()>@0><H: void submit()>#u9@";
+
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
@@ -1321,6 +1324,81 @@ public class ContractTest {
         }
     }
 
+    /** The one order of a session's rows ({@link RowOrder}). */
+    @Test
+    public void rowsStandBySeqThenEngineTiesThenTheVmEventOfTheSeq() {
+        Object[][] rows = {
+                // seq, tie, other seq, other tie, before?
+                {41L, 0, 42L, 1, true},   // a VM event, then the engine's row
+                {42L, 1, 42L, 0, true},   // the engine's row, then VM event 42
+                {42L, 0, 42L, 1, false},
+                {42L, 1, 42L, 2, true},   // a decode, then the read of it
+                {42L, 2, 42L, 1, false},  // the read, then a newer decode
+                {42L, 1, 42L, 1, false},
+                {42L, 0, 42L, 0, false},
+                {0L, 0, 42L, 1, false},   // no clock orders nothing
+                {42L, 1, 0L, 0, false},
+                {43L, 1, 42L, 5, false},
+        };
+        for (Object[] row : rows) {
+            assertEquals(java.util.Arrays.toString(row), row[4],
+                    RowOrder.before((Long) row[0], (Integer) row[1],
+                            (Long) row[2], (Integer) row[3]));
+        }
+        Object[][] cutoffs = {
+                // seq, tie, the VM event, before it?
+                {41L, 0, 42L, true},
+                {42L, 1, 42L, true},   // the guard's read, then its branch
+                {42L, 0, 42L, false},
+                {43L, 1, 42L, false},
+                {0L, 0, 42L, true},    // no clock: as seq < event
+        };
+        for (Object[] row : cutoffs) {
+            assertEquals(java.util.Arrays.toString(row), row[3],
+                    RowOrder.beforeEvent((Long) row[0], (Integer) row[1],
+                            (Long) row[2]));
+        }
+        Object[][] cuts = {
+                // seq, tie, the cut's seq and tie, before it?
+                {42L, 1, 42L, 2, true},   // read, then the engine's write
+                {42L, 3, 42L, 2, false},  // stated after that write: past
+                {42L, 2, 42L, 2, false},
+                {42L, 0, 42L, 2, false},  // VM event 42 follows its ties
+                {41L, 0, 42L, 2, true},
+                {42L, 3, 42L, 0, true},   // a VM event's cut: beforeEvent
+                {0L, 0, 42L, 2, true},
+        };
+        for (Object[] row : cuts) {
+            assertEquals(java.util.Arrays.toString(row), row[4],
+                    RowOrder.beforeCut((Long) row[0], (Integer) row[1],
+                            (Long) row[2], (Integer) row[3]));
+        }
+    }
+    /** A context's name across runs: no counts, each hop its sender's first
+     *  send. */
+    @Test
+    public void aHopIsItsSendersFirstSendOfTheSiteWhateverCameBefore() {
+        StableEventNames confirmed = new StableEventNames();
+        confirmed.sent(STABLE_TASK + "1", "HTTP:STATUS", "e1");
+        // a poll's second
+        confirmed.sent(STABLE_TASK + "2", "HTTP:STATUS", "e2");
+        confirmed.sent(STABLE_TASK + "3", "HTTP:SPLIT", "e3");
+        StableEventNames nativeRun = new StableEventNames();
+        nativeRun.sent(STABLE_TASK + "1", "HTTP:STATUS", "f1"); // polled once
+        nativeRun.sent(STABLE_TASK + "2", "HTTP:SPLIT", "f2");
+        String split = confirmed.context(
+                "n1|Anchor:e3@HTTP/TASK|<B: void x()>@3");
+        assertEquals("n1|Anchor:{n0|Root:TASK#4|<A: void call()>><H: void"
+                        + " submit()>#u9 >HTTP:SPLIT}@HTTP/TASK|<B: void x()>",
+                split);
+        assertEquals(split, nativeRun.context(
+                "n1|Anchor:f2@HTTP/TASK|<B: void x()>@5"));
+        assertNull("a loop's later send has no fixed name",
+                confirmed.context("n1|Anchor:e2@HTTP/TASK"));
+        assertNull("a send this run never made",
+                nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
+        assertEquals("plain|context", confirmed.context("plain|context@7"));
+    }
     /** How many rows of one kind and class a gate stated. */
     private static int stating(List<GapRow> gaps, GapKind kind,
                                GapClass cls) {

@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.IdentityHashMap;
@@ -1484,7 +1485,16 @@ public final class RowRuntime {
     /** Where a decided replay's session goes, under its worker. */
     static final String REFUSED_SESSIONS = "refused-sessions";
 
-    /** The replay's statement to its worker: one row per obligation. */
+    /**
+     * The replay's statement to its worker: one row per obligation, the
+     * last thing its close does.  ORDER: the session it names is closed --
+     * every row flushed, its own verdict rows among them -- or, naming none,
+     * withdrawn, before the statement exists; and the statement appears
+     * whole, by one rename of a file written beside it.  So a worker that
+     * finds the statement finds the replay decided and its session complete,
+     * even when the replay's JVM was killed after it ({@code run_engine.sh
+     * campaign_obligation_replay}).
+     */
     private static void writeWorkerVerdicts(String worker,
                                             List<ObligationResult> results) {
         if (results.isEmpty() || worker.isEmpty()) return;
@@ -1494,12 +1504,14 @@ public final class RowRuntime {
                     RowCodec.writeObligationResult(result))).append('\n');
         }
         ConcolicVmBroker.asEngineWork(() -> {
+            Path statement = Paths.get(worker, ObligationDir.REPLAY_VERDICT);
+            Path part = Paths.get(worker,
+                    ObligationDir.REPLAY_VERDICT + ".part");
             try {
-                Files.write(
-                        Paths.get(worker,
-                                ObligationDir.REPLAY_VERDICT),
-                        rows.toString().getBytes(
-                                StandardCharsets.UTF_8));
+                Files.write(part, rows.toString().getBytes(
+                        StandardCharsets.UTF_8));
+                Files.move(part, statement,
+                        StandardCopyOption.ATOMIC_MOVE);
             } catch (IOException unwritable) {
                 EngineConsole.println("Causynth could not write the replay's"
                         + " obligation verdict: " + unwritable);

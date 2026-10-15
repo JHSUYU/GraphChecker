@@ -221,51 +221,14 @@ public class Z3Test {
     }
 
     /**
-     * AN ASK AT ITS CAP IN A SHARED SLOT IS ASKED AGAIN ALONE, in half the
-     * room an engine, before it is undecided: a z3 at a path ask's 448 MB
-     * cap, one at the lone cap of a 4096 MB room (1984 MB) answering.
-     * {the caps at which the fixture runs out of memory, the status, the
-     * cap the answer names}.
-     */
-    @Test
-    public void anAskAtItsCapInASharedSlotIsAskedAgainAlone()
-            throws IOException {
-        Object[][] rows = {
-                {"448", "sat", null},
-                {"448|1984", "memout", "1984 MB"},
-        };
-        for (Object[] row : rows) {
-            Path script = folder.newFile("z3-alone-"
-                    + ((String) row[0]).replace('|', '-')).toPath();
-            Files.write(script, Arrays.asList(
-                    "#!/bin/bash",
-                    "cat >/dev/null",
-                    "case \" $* \" in",
-                    "  *' memory_max_size=" + ((String) row[0]).replace("|",
-                            " '*|*' memory_max_size=") + " '*)"
-                            + " echo '(error \"out of memory\")'; exit 101 ;;",
-                    "  *) echo sat ;;",
-                    "esac"), StandardCharsets.UTF_8);
-            assertTrue(script.toFile().setExecutable(true));
-            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512)
-                    .ask("(assert true)\n", Collections.<String>emptyList(),
-                            false);
-            String what = Arrays.toString(row) + ": " + answer;
-            assertEquals(what, row[1], answer.status());
-            assertTrue(what, row[2] == null
-                    || answer.reason().contains((String) row[2]));
-        }
-    }
-
-    /**
-     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THE WHOLE ASK AGAIN
+     * A SHARED SLOT'S CAP ON ITS MODEL OR ITS CORE ASKS THAT RUN AGAIN
      * ALONE: the verdict fits a path ask's 448 MB cap, its model (or core)
-     * run does not; asked again alone, at the room's lone 1984 MB cap, the
-     * ask answers with its model (its core).  {what the fixture caps at 448
-     * MB, the verdict, the model's x or the core}.
+     * run does not; that run asked again alone, at the room's lone 1984 MB
+     * cap, the ask answers with its model (its core).  {what the fixture
+     * caps at 448 MB, the verdict, the model's x or the core}.
      */
     @Test
-    public void aSharedSlotsCapOnItsPayloadAsksTheWholeAskAgainAlone()
+    public void aSharedSlotsCapOnItsPayloadAsksThatRunAgainAlone()
             throws IOException {
         String[][] rows = {{"get-value", "sat", "6"},
                 {"get-unsat-core", "unsat", "[c]"}};
@@ -295,6 +258,44 @@ public class Z3Test {
             assertEquals(what, row[2], row[1].equals("sat")
                     ? answer.values().get("x") : answer.core().toString());
         }
+    }
+
+    /**
+     * A CORE AT ITS CAP LEAVES THE VERDICT UNSAT, ITS CORE UNKNOWN: the
+     * verdict is unsat at a path ask's 448 MB cap, its core run is not
+     * there nor alone at the room's 1984 MB cap -- where the verdict would
+     * not fit either.  The verdict is never asked again for a core: unsat,
+     * the core unknown, never undecided for want of one; the runs a
+     * check-sat, the core run, the core run alone.
+     */
+    @Test
+    public void aCoreAtItsCapLeavesTheVerdictUnsatItsCoreUnknown()
+            throws IOException {
+        Path log = folder.newFile("core-cap.log").toPath();
+        Path script = folder.newFile("z3-core-cap").toPath();
+        Files.write(script, Arrays.asList(
+                "#!/bin/bash",
+                "input=$(cat)",
+                "cap=$(printf '%s' \" $* \" | sed -n"
+                        + " 's/.* memory_max_size=\\([0-9]*\\) .*/\\1/p')",
+                "case \"$input\" in",
+                "  *get-unsat-core*) echo \"core $cap\" >> " + log + ";"
+                        + " echo unsat; echo '(error \"out of memory\")' ;;",
+                "  *) echo \"verdict $cap\" >> " + log + ";"
+                        + " if [ \"$cap\" = 1984 ]; then"
+                        + " echo '(error \"out of memory\")'; exit 101;"
+                        + " fi; echo unsat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512).ask(
+                "(assert true)\n", Collections.<String>emptyList(), true);
+        assertTrue(answer.toString(), answer.unsat());
+        assertTrue("its core unknown: " + answer, !answer.coreKnown());
+        java.util.Set<String> runs = new java.util.TreeSet<String>(
+                Files.readAllLines(log));
+        assertEquals("the verdict at its slot, the core there and alone",
+                new java.util.TreeSet<String>(Arrays.asList("verdict 448",
+                        "core 448", "core 1984")), runs);
     }
 
     /**
@@ -411,6 +412,51 @@ public class Z3Test {
             assertEquals(what, row[3], answer.values().get("x"));
             assertTrue(what + " took " + seconds + " s", seconds < 10L);
         }
+    }
+
+    /**
+     * A VERDICT ALONE IS THE FIRST ENGINE'S THAT DECIDES: asked no model
+     * and no core, the preferred engine gets no grace -- the verdict is the
+     * same whichever engine gives it -- so engine 6's sat answers at once
+     * where engine 2 never answers (within the grace, a second, before).
+     */
+    @Test
+    public void aVerdictAloneIsTheFirstEngineThatDecides() throws IOException {
+        Z3 solver = new Z3(fakeZ3(), 3000L, 8192);
+        long started = System.nanoTime();
+        Z3.Answer answer = solver.ask("; on2 hang\n; on6 sat\n",
+                Collections.<String>emptyList(), false);
+        long millis = (System.nanoTime() - started) / 1_000_000L;
+        assertEquals("sat", answer.status());
+        assertTrue("took " + millis + " ms", millis < 800L);
+    }
+
+    /**
+     * TWO ENGINES THAT DECIDE ONE RUN DIFFERENTLY ARE AN ERROR, NEVER A
+     * VERDICT: engine 6 says unsat at once, engine 2 sat after 0.3 s; the
+     * verdict's run takes engine 6's unsat, its core's run, within the
+     * preferred engine's grace, has both.  The ask is undecided and the
+     * disagreement named among the solver's errors.
+     */
+    @Test
+    public void twoEnginesThatDifferAreAnErrorNeverAVerdict()
+            throws IOException {
+        Path script = folder.newFile("z3-split").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'smt.arith.solver 2)'*) sleep 0.3; echo sat ;;",
+                "  *get-unsat-core*) echo unsat; echo '(c)' ;;",
+                "  *) echo unsat ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3 solver = new Z3(script, 3000L, 8192);
+        Z3.Answer answer = solver.ask("(assert true)\n",
+                Collections.<String>emptyList(), true);
+        assertTrue(answer.toString(), !answer.decided()
+                && answer.status().startsWith(Z3.DISAGREE));
+        assertTrue(solver.errors().toString(),
+                solver.errors().toString().contains("engines disagree"));
     }
 
     /**
