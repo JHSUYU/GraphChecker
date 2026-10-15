@@ -1021,7 +1021,13 @@ sees such a row reads the debt (`campaign_await_remote_result`). None settles a 
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
 it up to the flipped decision, the flipped decision negated, and every inherited flip's prefix through
 its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded polarity; terms are
-lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets one rule:
+lowered by the one lowering, `compose.SmtLowering`). The query states exactly the declarations, facts
+and preamble lines its texts reach in each lowered session's lowering (`FlipQueryText#statedDeclarations`,
+`FlipQuery.Builder#unbound`, `#stateFacts`): its texts are read once per ask (`SmtNames.Named`) and
+each lowering walks from the names it holds (`SmtLowering#reachedBy(Named)`), the preamble reached
+once per distinct preamble -- read again per lowered session, solr-adhoc-39's 20 MB query took
+220-283 s to build and its z3 run 1.3 s (PV7), now 8 s, the query byte-identical. Each symbol it
+names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
   `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's

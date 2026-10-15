@@ -3755,11 +3755,23 @@ public final class SmtLowering {
         private final String name;
         private final Sort sort;
         private final String body;
+        /** What the body names, read once: every reach of a query walks it
+         *  again. */
+        private volatile SmtNames.Named names;
 
         private SharedTerm(String name, Sort sort, String body) {
             this.name = name;
             this.sort = sort;
             this.body = body;
+        }
+
+        private SmtNames.Named names() {
+            SmtNames.Named read = names;
+            if (read == null) {
+                read = SmtNames.named(Collections.singletonList(body));
+                names = read;
+            }
+            return read;
         }
     }
 
@@ -4104,10 +4116,22 @@ public final class SmtLowering {
         private final String formula;
         /** "" for a fact about a name; the core's label otherwise. */
         private final String label;
+        /** {@link SmtNames#names} of the formula, read once ({@link
+         *  #facts}). */
+        private volatile List<String> names;
 
         private Stated(String formula, String label) {
             this.formula = formula;
             this.label = label;
+        }
+
+        private List<String> names() {
+            List<String> read = names;
+            if (read == null) {
+                read = SmtNames.names(formula);
+                names = read;
+            }
+            return read;
         }
 
         private String render() {
@@ -4146,15 +4170,20 @@ public final class SmtLowering {
      * different fact.
      */
     public List<String> facts(Iterable<String> texts) {
+        return facts(SmtNames.named(texts));
+    }
+
+    /** {@link #facts(Iterable)} of texts read once. */
+    public List<String> facts(SmtNames.Named names) {
         Set<String> reached = new LinkedHashSet<String>(SmtNames.preambleNames());
-        for (Declaration declaration : reachedBy(texts)) {
+        for (Declaration declaration : reachedBy(names)) {
             reached.add(declaration.name);
         }
         List<String> stated = new ArrayList<String>();
         for (Stated held : assertions) {
             if (!held.label.isEmpty()) continue;
             boolean whole = true;
-            for (String name : SmtNames.names(held.formula)) {
+            for (String name : held.names()) {
                 if (SmtNames.BUILTIN.contains(name) || reached.contains(name)) {
                     continue;
                 }
@@ -4346,28 +4375,23 @@ public final class SmtLowering {
      * from terms the query does not conjoin; those must not be emitted.
      */
     public List<Declaration> reachedBy(Iterable<String> texts) {
-        List<Declaration> ordered = new ArrayList<Declaration>();
-        Set<String> done = new LinkedHashSet<String>();
-        if (texts != null) {
-            for (String text : texts) {
-                reach(text, done, ordered);
-            }
-        }
-        return ordered;
+        return reachedBy(SmtNames.named(texts));
     }
 
     /**
-     * One text's declarations, a subterm after the ones its body names, on a
-     * stack: a container's mutation chain is one subterm per mutation, and
-     * a cap at depth 512 left the deeper ones undeclared.
+     * {@link #reachedBy(Iterable)} of texts read once: a subterm after the
+     * ones its body names, on a stack (a container's mutation chain is one
+     * subterm per mutation, and a cap at depth 512 left the deeper ones
+     * undeclared).  Walked from the texts' names this lowering holds
+     * ({@link #held}): the others reach nothing here.
      */
-    private void reach(String text, Set<String> done,
-                       List<Declaration> ordered) {
-        if (text == null || text.isEmpty()) return;
+    public List<Declaration> reachedBy(SmtNames.Named texts) {
+        List<Declaration> ordered = new ArrayList<Declaration>();
+        Set<String> done = new HashSet<String>();
         List<Iterator<String>> names = new ArrayList<Iterator<String>>();
-        // The subterm each level of names is the body of; null for the text.
+        // The subterm each level of names is the body of; null for the texts.
         List<SharedTerm> bodies = new ArrayList<SharedTerm>();
-        names.add(SmtNames.names(text).iterator());
+        names.add(held(texts).iterator());
         bodies.add(null);
         while (!names.isEmpty()) {
             int top = names.size() - 1;
@@ -4385,7 +4409,7 @@ public final class SmtLowering {
             SharedTerm shared = sharedByName.get(token);
             if (shared != null) {
                 // Its own dependencies first: a define-fun may name another.
-                names.add(SmtNames.names(shared.body).iterator());
+                names.add(shared.names().iterator());
                 bodies.add(shared);
                 continue;
             }
@@ -4394,6 +4418,34 @@ public final class SmtLowering {
                 ordered.add(new Declaration(token, held.sort.smt, ""));
             }
         }
+        return ordered;
+    }
+
+    /**
+     * The names of {@code texts} this lowering holds a subterm or a
+     * declaration for, in the texts' order.  Read off the smaller side: an
+     * obligation query's texts name what all its lowered sessions hold, each
+     * of which holds a few of them (solr-adhoc-39: a 20 MB query over many
+     * lowered sessions, each walking all of its names).
+     */
+    private List<String> held(SmtNames.Named texts) {
+        List<String> held = new ArrayList<String>();
+        if (sharedByName.size() + declarations.size() >= texts.size()) {
+            for (String name : texts) {
+                if (sharedByName.containsKey(name)
+                        || declarations.containsKey(name)) {
+                    held.add(name);
+                }
+            }
+            return held;
+        }
+        Set<String> own = new HashSet<String>(sharedByName.keySet());
+        own.addAll(declarations.keySet());
+        for (String name : own) {
+            if (texts.position(name) >= 0) held.add(name);
+        }
+        held.sort(Comparator.comparingInt(texts::position));
+        return held;
     }
 
     /**
@@ -4428,7 +4480,7 @@ public final class SmtLowering {
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                names.push(SmtNames.names(shared.body).iterator());
+                names.push(shared.names().iterator());
                 continue;
             }
             // Only recorded names can be asked of the corpus.

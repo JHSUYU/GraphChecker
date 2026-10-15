@@ -5216,6 +5216,49 @@ public class ComposerTest {
     }
 
     /**
+     * A QUERY'S TEXTS ARE READ ONCE ({@code SmtNames.Named}): an obligation
+     * query asks every lowered session's lowering what its texts reach, and
+     * each lowering read the whole text again (solr-adhoc-39 PV7: a 20 MB
+     * query took 220 s to build, its z3 run 1.3 s).  Read once and walked
+     * from what each lowering holds, two thousand lowerings over a text
+     * naming 300,000 names answer within the bound, each exactly the name it
+     * lowered that the text names, in the text's order.
+     */
+    @Test(timeout = 20000)
+    public void aQuerysTextsAreReadOnceForEveryLowering() {
+        StringBuilder text = new StringBuilder("(and");
+        for (int index = 0; index < 300000; index++) {
+            text.append(" (= n").append(index).append(" 0)");
+        }
+        SmtNames.Named named = SmtNames.named(Arrays.asList(
+                text.append(')').toString(), "(= n7 n3)"));
+        assertEquals(300002, named.size());
+        assertEquals(3, named.position("n2") - named.position("="));
+        for (int lowered = 0; lowered < 2000; lowered++) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            String own = "n" + (lowered * 149);
+            String later = "n" + (lowered * 149 + 2);
+            declared.put(later, VmTermLowering.Sort.INT);
+            declared.put(own, VmTermLowering.Sort.INT);
+            declared.put("m" + lowered, VmTermLowering.Sort.INT);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+            for (String name : new String[] {later, own, "m" + lowered}) {
+                lowering.dispatch(vmLeaf("SymbolExpression", name, "I"),
+                        VmTermLowering.Sort.INT, "test");
+            }
+            lowering.end();
+            List<String> reached = new ArrayList<String>();
+            for (SmtLowering.Declaration declaration
+                    : lowering.reachedBy(named)) {
+                reached.add(declaration.name);
+            }
+            assertEquals(Arrays.asList(own, later), reached);
+        }
+    }
+
+    /**
      * A VIEW'S CASES ARE LOWERED ONCE ({@code SmtLowering#throughView}): each
      * case of a view is a leaf read through a view of its own, here twenty
      * levels deep and two cases a level, so lowered anew at every use it

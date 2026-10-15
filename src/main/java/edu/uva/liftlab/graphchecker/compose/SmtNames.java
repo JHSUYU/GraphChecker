@@ -174,6 +174,52 @@ public final class SmtNames {
     }
 
     /**
+     * What several texts NAME: their distinct {@link #names}, each where the
+     * texts, read one after another, first name it -- what a walk of them
+     * meets, without the repeats it skips.  A query's texts are read once
+     * into one of these however many lowerings then reach from them ({@link
+     * SmtLowering#reachedBy(Named)}, {@link SmtLowering#facts(Named)},
+     * {@link #reachedPreamble(List, Named)}): read again per lowered session,
+     * a 20 MB obligation query took 220 s to build and its z3 run 1.3 s
+     * (solr-adhoc-39 PV7).
+     */
+    public static final class Named implements Iterable<String> {
+        private final List<String> names;
+        /** name -> where the texts first name it. */
+        private final Map<String, Integer> position =
+                new java.util.HashMap<String, Integer>();
+
+        private Named(List<String> names) {
+            this.names = Collections.unmodifiableList(names);
+            for (String name : names) position.put(name, position.size());
+        }
+
+        @Override
+        public java.util.Iterator<String> iterator() {
+            return names.iterator();
+        }
+
+        public int size() {
+            return names.size();
+        }
+
+        /** Where the texts first name {@code name}; -1 where they do not. */
+        public int position(String name) {
+            Integer at = position.get(name);
+            return at == null ? -1 : at;
+        }
+    }
+
+    /** The texts read once ({@link Named}); null texts name nothing. */
+    public static Named named(Iterable<String> texts) {
+        Set<String> names = new LinkedHashSet<String>();
+        if (texts != null) {
+            for (String text : texts) names.addAll(names(text));
+        }
+        return new Named(new ArrayList<String>(names));
+    }
+
+    /**
      * The names a {@code let} in this text BINDS, so a caller can exclude
      * them from "names nothing declares" (the associative size model emits
      * {@code let}).  Scope is ignored: over-reporting only withholds a
@@ -215,7 +261,7 @@ public final class SmtNames {
     /** The text's tokens and parentheses, in order. */
     private static List<String> tokens(String text) {
         List<String> tokens = new ArrayList<String>();
-        pass(text, KEEP, tokens, Spelling.AS_WRITTEN);
+        pass(text, KEEP, tokens, Spelling.AS_WRITTEN, null);
         return tokens;
     }
 
@@ -244,7 +290,8 @@ public final class SmtNames {
                                 Predicate<String> stated,
                                 Set<String> unknown) {
         List<String> kept = new ArrayList<String>();
-        String out = pass(text, renames::get, kept, Spelling.AS_WRITTEN);
+        StringBuilder out = new StringBuilder();
+        pass(text, renames::get, kept, Spelling.AS_WRITTEN, out);
         if (text != null && !text.contains("(let ")) {
             for (String name : kept) {
                 if (!name(name) || BUILTIN.contains(name)) continue;
@@ -252,7 +299,7 @@ public final class SmtNames {
                 unknown.add(name);
             }
         }
-        return out.trim();
+        return out.toString().trim();
     }
 
     /**
@@ -261,7 +308,9 @@ public final class SmtNames {
      */
     public static String substitute(String text,
                                     Function<String, String> renames) {
-        return pass(text, renames, null, Spelling.AS_WRITTEN);
+        StringBuilder out = new StringBuilder();
+        pass(text, renames, null, Spelling.AS_WRITTEN, out);
+        return out.toString();
     }
 
     /** Renames nothing. */
@@ -276,28 +325,29 @@ public final class SmtNames {
     }
 
     /**
-     * THE tokenizer: the text copied with each name {@code renames} answers
-     * for replaced.  {@code kept}, if not null, gets every token not
-     * replaced and every parenthesis, in order.  String literals and
-     * comments are copied whole.
+     * THE tokenizer: the text copied into {@code out} with each name {@code
+     * renames} answers for replaced; with {@code out} null, nothing is copied
+     * (a reader of the tokens only).  {@code kept}, if not null, gets every
+     * token not replaced and every parenthesis, in order.  String literals
+     * and comments are copied whole.
      */
-    private static String pass(String text, Function<String, String> renames,
-                               List<String> kept, Spelling spelling) {
-        StringBuilder out = new StringBuilder();
-        if (text == null) return "";
+    private static void pass(String text, Function<String, String> renames,
+                             List<String> kept, Spelling spelling,
+                             StringBuilder out) {
+        if (text == null) return;
         int index = 0;
         while (index < text.length()) {
             char value = text.charAt(index);
             if (value == '"') {
                 int end = pastLiteral(text, index, '"');
-                out.append(text, index, end);
+                if (out != null) out.append(text, index, end);
                 index = end;
                 continue;
             }
             if (value == ';') {
                 int end = text.indexOf('\n', index);
                 end = end < 0 ? text.length() : end;
-                out.append(text, index, end);
+                if (out != null) out.append(text, index, end);
                 index = end;
                 continue;
             }
@@ -312,7 +362,7 @@ public final class SmtNames {
             if (!symbolCharacter(value)) {
                 if (kept != null && value == '(') kept.add(OPEN);
                 if (kept != null && value == ')') kept.add(CLOSE);
-                out.append(value);
+                if (out != null) out.append(value);
                 index++;
                 continue;
             }
@@ -324,7 +374,6 @@ public final class SmtNames {
             index = emit(out, text, index, end, text.substring(index, end),
                     renames, kept, spelling);
         }
-        return out.toString();
     }
 
     /**
@@ -338,7 +387,7 @@ public final class SmtNames {
                             List<String> kept, Spelling spelling) {
         String renamed = name(token) ? renames.apply(token) : null;
         if (renamed != null) {
-            out.append(renamed);
+            if (out != null) out.append(renamed);
             return end;
         }
         append(out, text, start, end, token, spelling);
@@ -348,6 +397,7 @@ public final class SmtNames {
 
     private static void append(StringBuilder out, String text, int start,
                                int end, String token, Spelling spelling) {
+        if (out == null) return;
         if (spelling == Spelling.LEGAL && !simpleSymbol(token)) {
             out.append('|').append(token).append('|');
             return;
@@ -388,6 +438,12 @@ public final class SmtNames {
      */
     public static List<String> reachedPreamble(List<String> preamble,
                                                Iterable<String> texts) {
+        return reachedPreamble(preamble, named(texts));
+    }
+
+    /** {@link #reachedPreamble(List, Iterable)} of texts read once. */
+    public static List<String> reachedPreamble(List<String> preamble,
+                                               Named names) {
         Map<String, String> definition = new LinkedHashMap<String, String>();
         for (String line : preamble) {
             if (line == null || !line.startsWith("(define-fun")) continue;
@@ -396,16 +452,10 @@ public final class SmtNames {
         Set<String> reached = new LinkedHashSet<String>();
         boolean ordered = false;
         Deque<String> pending = new ArrayDeque<String>();
-        if (texts != null) {
-            for (String text : texts) {
-                for (String token : names(text)) {
-                    ordered |= ContainerStateModel.ORDER_READERS
-                            .contains(token);
-                    if (definition.containsKey(token)
-                            && reached.add(token)) {
-                        pending.push(token);
-                    }
-                }
+        for (String token : names) {
+            ordered |= ContainerStateModel.ORDER_READERS.contains(token);
+            if (definition.containsKey(token) && reached.add(token)) {
+                pending.push(token);
             }
         }
         while (!pending.isEmpty()) {
@@ -442,7 +492,9 @@ public final class SmtNames {
      */
     public static String legalSymbols(String query) {
         if (query == null || query.isEmpty()) return query;
-        return pass(query, KEEP, null, Spelling.LEGAL);
+        StringBuilder out = new StringBuilder();
+        pass(query, KEEP, null, Spelling.LEGAL, out);
+        return out.toString();
     }
 
     /** Whether SMT-LIB already spells this token the way it is written. */
