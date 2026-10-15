@@ -823,7 +823,8 @@ order:
   (`schedule-passed-late#<slot>`). The watchdog
   watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
   `WAKE` or `INTERRUPT`), which every wait for a slot or for the line waits on. It acts once the frontier has
-  stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight
+  stood the grace (`LET_GO_GRACE`, 2 s) when nothing has computed since the stall began, or
+  `causynth.schedule.timeout.ms` (default 15 s) when something computes, or eight
   timeouts (`CEILING`) whatever threads do, both counted from the frontier's last move or its
   earliest current waiter's arrival, whichever is later (`ScheduleLog#stallSinceLocked`): the
   frontier owes nothing to a wait that has not begun. A slot taken past the frontier (past the cut
@@ -855,7 +856,7 @@ order:
   waits for no slot's event, so it bounds no give-up; when only such polls wait, they are let go
   again, a grace apart. A let-go does not restart the stall's clock for the waits that remain: a
   wait for a slot is held at most `CEILING` timeouts and a grace, and an event that never comes,
-  with nothing computing toward it, costs a timeout and a grace. After two give-ups past the cut
+  with nothing computing toward it, costs about two graces. After two give-ups past the cut
   the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row. A held
   timed wait asks for its turn once a quantum and spends the quantum in its own wait, before its
   deadline and after it (`ScheduleLog#timedOut` asks, never waits): the monitor or lock it waits on

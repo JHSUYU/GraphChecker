@@ -22,9 +22,10 @@ system_jar_first=false
 # StateWatcher and AliasesManager, ClusterState, DocCollection, Slice,
 # Replica, Aliases, ZkNodeProps), each class and its nested classes.  PLAN
 # keeps symbolic only the decodes on the anchor's backward chain over the
-# store's (path, version) edges, and runs the rest doors-only; a replay that
-# reads a version an off-chain writer or decode made grows the chain (GROW,
-# ZK_EDGE; PIPELINE §7.8, SYMBOL-SCOPE §6.4).
+# store's (path, version) edges, and runs the rest doors-only; the chain grows
+# when a chain occurrence consumes a chain path's version an off-chain writer
+# or decode made under a keyed field (GROW, ZK_EDGE; PIPELINE §7.8,
+# SYMBOL-SCOPE §6.4).
 system_scope=(
   solrj=:org/apache/solr/common/cloud/ZkStateReader
   solrj=:org/apache/solr/common/cloud/ClusterState

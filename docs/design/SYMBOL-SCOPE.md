@@ -1570,13 +1570,13 @@ occurrence whose row states no keys mints and exports no leaf at all (a doors-on
 row's keys: a chain writer run for its doors still writes the chain's fields), and one
 outside every planned occurrence (a role's: a watcher callback) only the chain's keys of its location
 over the whole plan -- every other leaf runs as its value, untracked, however
-many of the view's classes are woven. No leaf is walked for a STORE_LEAVES row outside the recording
-window. The recording states what PLAN walks the chain by: each store read at the store's call
+many of the view's classes are woven. No leaf is walked for a STORE_LEAVES row unless a trace is being
+written (`CausynthTraceRecorder#tracing()`; a replay's recording window is open too). The recording states what PLAN walks the chain by: each store read at the store's call
 (`STORE_READ`, `MessageDoors#storeRead`: getData's and exists' data version, getChildren's child
 version or -1, at the reading occurrence; a replay states a getData's or an exists' as a read row
 under `<transport>#READ:<location>` only in a planned occurrence that runs tracked, not doors-only,
-of a path on the chain or by an occurrence on it, whose read of a path off the chain is the chain's
-growth, `explore.ZkEdges`: never in a role, a leader poll, which states nothing and opens no
+of a path on the chain or by an occurrence on it (the chain grows only by an off-chain write or decode
+of a chain path's version that a chain occurrence consumed, its leaves under a chain key: `explore.ZkEdges`): never in a role, a leader poll, which states nothing and opens no
 activation; the chain is the iteration's, `CAUSYNTH_ZK_CHAIN`, `ZkChain#held`), each notification in the occurrence its callback opens first
 (`WATCH_FIRED`, `MessageDoors#notified`, `#regionOpened`; its zxid -1, which ZooKeeper 3.6's
 notifications carry none of), and each document's leaves as written or parsed (`STORE_LEAVES`,
@@ -1622,8 +1622,12 @@ a target's view read on the decodes of that view on its node at or below the ver
 cell, or any writer of a cell that carries a store version, is admitted on a value rule only where
 the chain holds it (an unplanned chain decode mints the plan's keys of its location, which every
 target row carries). A reference field whose every writer is a method of the system's view classes
-(`system_scope`) is no tracked cell (SEED, `causynth.RootDemand`): which object the view holds is its
-own bookkeeping, and weaving those classes adds no versioned read.
+(`system_scope`) is no tracked cell: no READ_SITE (`StaticScopeMap#keepTrackedReads` through
+`plan.SystemView`, filled from `-Dcausynth.system.view`) and no demand (SEED, `causynth.RootDemand`):
+which object the view holds is its own bookkeeping, and weaving those classes adds no versioned read.
+Open (2026-10-15): the VM still versions the view's map bookkeeping inside planned decodes, and those
+container terms can sit in a fatal condition's own cone (18413's witness-attempt COMPOSE: z3
+"incomplete (theory array)"; handover `analysis/solr-2026-10-15/HANDOVER-2026-10-15.md` §4a).
 PLAN keys the chain by leaf identity over the recording; once the seed is imported, ZKKEYS rekeys it
 with the leaves the seed's own formula names (`compose.ZkKeysMain`: the composition to the anchor,
 and the decisions of every occurrence the anchor's values came from, over handoffs to producers and

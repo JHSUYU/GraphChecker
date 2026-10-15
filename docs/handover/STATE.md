@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr in its last round (2026-10-13)
+# State: HDFS finished; Solr final round stopped for handover (2026-10-15)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,29 +11,40 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the final round SGF5 (2026-10-14 night) -- read this first if you take over Solr
+## S. Solr: the final round SGF7, stopped for handover (2026-10-15 evening) -- read this first if you take over Solr
 
-Lead of 2026-10-13/14 (owner /goal: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/GOAL-next-agent.md`; session log: memory
-`lead-session-2026-10-13-solr`). Read, in order: this section, TODO.md "Solr" (§0 merged, §1 in flight and parked, §3 open
-problems, §4 the rounds and the fork), STATUS.md "Solr checks", and the readings in `.../solr-2026-10-12/readings/`.
+Everything is stopped: no run, no driver, no agent. The handover is
+`/bigtemp/vnr3ne/analysis/solr-2026-10-15/HANDOVER-2026-10-15.md` (lead: goal, rulings, results, code state,
+open bugs, resume commands) plus `HANDOVER-agents.md` beside it (one section per agent: design, branches,
+evidence, next steps). The lead's session log is the memory file `lead-session-2026-10-13-solr`.
 
-- **Code.** `system/solr` = `solr-int` = abd3511e2: TODO Solr §0, including the 2026-10-13 evening merges (exposeid,
-  witfirst, readout, viewwriter, z3mem, pubturn, margin, decider, the offline-ab fixes, 39 at depth 0), each found by the
-  SGF3/PRE4 rounds and reviewed where it touches the schedule, COMPOSE, the ledger or the symbolic scope.
-- **The final round SGF5** runs on `~/gc-run/sgf5` (60de0b60f: abd3511e2 + the composer room, 4 GB heap + 3 GB z3 room; SGF4 on sgf4 deadlocked on 15 GB compose steps and was stopped), tree `gc/solr-final9` (`GC_TREES=/bigtemp/vnr3ne/wt/sg3h-trees`),
-  VM `vm-force8`, `CAUSYNTH_STREAM_SHARED_POOL=true`, `gc-out/solr`, runs `SGF5-<case>`; launched 02:08 with the 8 bug checks
-  (14400 s) and 07 (43200 s), 13, 14, 19, 40 (28800 s); then 05, 10, 31 (28800 s), 09, 21, 38, 39 (14400 s). SGF3 and PRE4
-  (`SGF3-*`, `PRE4-*`) were previews on earlier code.
-- **Tree / fork.** `gc/solr-final9` 0ce3deafed = the fork's `graphchecker/solr-checks` (fast-forwarded 2026-10-13, verified from
-  a fresh clone: 17/17 workloads, 20/20 valid).
-- **Hosts.** lift02-05 (owner) and lift06-15; lift01 lacks `/bigtemp`; lift02/03 cannot reach lift15 (workers, never heads);
-  lift11 is the control host. A transient ssh outage hit several lifts around 2026-10-13 23:50.
-- **Known open (named, TODO §3):** container mutations the VM never sees (§3t, package `solr-vmfp` in development) behind
-  SGF3-09 path 13 and PRE4-21 paths 5/13; cross-run spellings and message closes (§3v, `solr-portname` parked); a sender's
-  arm whose values coincide (§3w); arm-key redundancy (§3s, `solr-armkey` parked).
-- **Tools.** `.../solr-2026-10-12/launch.sh` (one campaign), `.../solr-2026-10-13/launch-batch.sh` (several, shared pool),
-  `.../solr-2026-10-13/st.sh <suffix...>` (status with log age), `watch-remote.sh` on lift07 over `live.txt`,
-  `tools/rounds/round-verify.sh SGF4` (now prints HOLD:<n>), `tools/rounds/stop-run.sh` (pass all hosts in LIFTS).
+- **Goal (owner):** finish the remaining cases of the final round SGF7 and report each case's time breakdown
+  (`analysis/solr-2026-10-14/final-stats.py SGF7`).
+  - One case at a time, ALONE on the cluster.
+  - Bug checks: SAT + CONFIRM + native.
+  - Study checks: a solver SAT or UNSAT, or a named bound.
+  - The standard is relaxed: a roughly-right `.smt`, best-effort merge of path conditions, prefer refusing early to more work.
+- **Kept results** (never rerun): 18406, migrate, restore, lock-leak, tra, reindex (all SAT, native 10/10), and
+  adhoc-38 (SAT, VM-confirmed, native 0/10).
+- **To run:** 18413, snapshot-no-active and adhoc-09 (reruns on the new code), then adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39.
+- **Code:**
+  - `system/solr` = 4866f58a0, also on GitHub.
+  - `solr-int` = 4866f58a0 + viewhold + doorskeys + this doc. Each piece passed its own gate; the merged tree is NOT gated yet.
+  - Tree `gc/solr-zktrace` 8fde6b812c via `GC_TREES=/bigtemp/vnr3ne/wt/sg3i-trees`; the fork must get it.
+  - VM `vm-force8`.
+- **Today's design changes:**
+  - **ZooKeeper causal trace:** only the anchor's chain (znode, field) are symbolic: ZkChain, ZKKEYS, SystemView, ZK_EDGE growth, writers and views up to the read version.
+  - **Solver lanes:** the hard lane is z3 alone, warm solver first, replay charge at p90.
+  - **Flip-query independence cone.**
+  - **Best-effort COMPOSE.**
+  - **Final COMPOSE reuse.**
+  - **GROW:** no solve hold during re-runs.
+  - **Replay speed:** plan slimming, idle stalls, publication split, memos.
+  - **CONFIRM view holds.**
+  - Details: PIPELINE §6-§8, SYMBOL-SCOPE §6.4, PARALLEL, PERFORMANCE, and the agents' sections.
+- **Blocking bugs:**
+  - (a) 18413's witness-attempt COMPOSE gets z3 "incomplete (theory array)" inside the fatal condition's own cone: the view map's container axioms from the system-wide ZkStateReader weave.
+  - (b) snapshot's deliberate pairing witness: its open chain is fixed by doorskeys and its order by viewhold; neither is live-verified.
 
 ## 0. The end state: two branches (owner 2026-10-06)
 

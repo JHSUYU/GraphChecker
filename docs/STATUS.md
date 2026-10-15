@@ -412,7 +412,7 @@ Correctness:
     replay takes 289 s (run TD4; bound 2400 s). hdfs-adhoc-04's still comes from a tracked VALUE read
     of the final `DataChecksum.bytesPerChecksum` (the root demand chose it; §5.1 excludes
     construction-only fields from REFERENCE read sites only). hdfs-adhoc-02's seed replay stalls in
-    the test's own `waitFor` of a new generation stamp (schedule give-ups of 15 s each), not here.
+    the test's own `waitFor` of a new generation stamp (schedule give-ups of a timeout each while something computes; an idle stall stands a grace), not here.
 42. In the systems: Solr's `ZkStateReader` lets a stale state fetch resurrect a deleted collection
     (each watch event runs on its own pool thread; nothing orders one refresh's fetch against its
     apply; still on Solr main, the symptom of SOLR-12544). Under `CausynthBounds` a delete's
