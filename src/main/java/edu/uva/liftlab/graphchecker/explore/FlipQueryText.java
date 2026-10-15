@@ -6,6 +6,8 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -28,14 +30,16 @@ final class FlipQueryText {
     private FlipQueryText() {
     }
 
-    /** Exactly the declarations these texts reach, in this query's variables. A
-     *  cached lowering holds many more; stating them would blur what the query
-     *  rests on. Line-deduplicated: equal minted names mean equal closed terms.
+    /** Exactly the declarations these texts reach, in this query's
+     *  variables, by the name each declares. A cached lowering holds many
+     *  more; stating them would blur what the query rests on. One per name:
+     *  equal minted names mean equal closed terms.
      */
-    static Set<String> statedDeclarations(Corpus corpus,
-                                          Set<String> lowered, Scope scope,
-                                          List<String> texts) {
-        Set<String> stated = new LinkedHashSet<String>();
+    static Map<String, String> statedDeclarations(Corpus corpus,
+                                                  Set<String> lowered,
+                                                  Scope scope,
+                                                  List<String> texts) {
+        Map<String, String> stated = new LinkedHashMap<String, String>();
         SmtNames.Named named = SmtNames.named(texts);
         for (String sessionId : lowered) {
             SmtLowering lowering = corpus.lowering(sessionId);
@@ -45,8 +49,11 @@ final class FlipQueryText {
                     : lowering.reachedBy(named)) {
                 // A recorded symbol the query bound is declared once, by the
                 // query.
-                if (rename.containsKey(declaration.name)) continue;
-                stated.add(declaration.body.isEmpty()
+                if (rename.containsKey(declaration.name)
+                        || stated.containsKey(declaration.name)) {
+                    continue;
+                }
+                stated.put(declaration.name, declaration.body.isEmpty()
                         ? declaration.render()
                         : "(define-fun " + declaration.name + " () "
                         + declaration.sort + " "
@@ -81,8 +88,8 @@ final class FlipQueryText {
         }
         // Preamble: exactly what assertions, declarations and variable sorts
         // reach (SmtNames#reachedPreamble, same rule as the composed query).
-        Set<String> declarations = statedDeclarations(corpus, lowered,
-                scope, assertions);
+        Collection<String> declarations = statedDeclarations(corpus, lowered,
+                scope, assertions).values();
         List<String> reaching = new ArrayList<String>(assertions);
         reaching.addAll(declarations);
         reaching.addAll(sorts.values());

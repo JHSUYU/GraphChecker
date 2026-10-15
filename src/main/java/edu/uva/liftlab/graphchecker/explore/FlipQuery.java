@@ -30,6 +30,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -287,6 +289,185 @@ final class FlipQuery {
         return unknown.isEmpty() ? null : unknown.iterator().next();
     }
 
+    /** The top-level conjuncts of one asserted term: {@code (and a b)} is
+     *  a and b, {@code (not (not a))} is a, {@code (not (or a b))} is
+     *  {@code (not a)} and {@code (not b)}, each split again; any other
+     *  term is itself.  {@code (and)} states nothing. */
+    static List<String> conjuncts(String term) {
+        List<String> conjuncts = new ArrayList<String>();
+        Deque<String> open = new ArrayDeque<String>();
+        open.push(term.trim());
+        while (!open.isEmpty()) {
+            String one = open.pop();
+            List<String> members = members(one);
+            String head = members.isEmpty() ? "" : members.get(0);
+            List<String> inner = "not".equals(head) && members.size() == 2
+                    ? members(members.get(1))
+                    : Collections.<String>emptyList();
+            String under = inner.isEmpty() ? "" : inner.get(0);
+            if ("and".equals(head)) {
+                for (int at = members.size() - 1; at > 0; at--) {
+                    open.push(members.get(at));
+                }
+            } else if ("not".equals(under) && inner.size() == 2) {
+                open.push(inner.get(1));
+            } else if ("or".equals(under)) {
+                for (int at = inner.size() - 1; at > 0; at--) {
+                    open.push("(not " + inner.get(at) + ")");
+                }
+            } else {
+                conjuncts.add(one);
+            }
+        }
+        return conjuncts;
+    }
+
+    /** A list term's members as written, its head first; empty for an
+     *  atom.  Only this level is read: a quoted symbol or string is one
+     *  member, as {@link edu.uva.liftlab.graphchecker.smt.SExpression}
+     *  reads it, and nothing below is parsed. */
+    private static List<String> members(String term) {
+        List<String> members = new ArrayList<String>();
+        if (!term.startsWith("(")) return members;
+        int at = 1;
+        while (true) {
+            while (at < term.length()
+                    && Character.isWhitespace(term.charAt(at))) {
+                at++;
+            }
+            if (at >= term.length() || term.charAt(at) == ')') {
+                return members;
+            }
+            int end = memberEnd(term, at);
+            members.add(term.substring(at, end));
+            at = end;
+        }
+    }
+
+    /** Past the one member that starts at {@code at}. */
+    private static int memberEnd(String term, int at) {
+        int depth = 0;
+        for (int index = at; index < term.length(); index++) {
+            char one = term.charAt(index);
+            if (one == '|' || one == '"') {
+                int close = term.indexOf(one, index + 1);
+                if (close < 0) return term.length();
+                if (depth == 0) return close + 1;
+                index = close;
+            } else if (one == '(') {
+                depth++;
+            } else if (one == ')') {
+                if (depth == 0) return index;
+                if (--depth == 0) return index + 1;
+            } else if (depth == 0 && Character.isWhitespace(one)) {
+                return index;
+            }
+        }
+        return term.length();
+    }
+
+    /**
+     * Which of these conjuncts the {@code seed} reaches ({@code
+     * Builder#cone}): two conjuncts are joined when both reach one name --
+     * one of these {@code variables}, or a declaration of these (name ->
+     * its line), which reaches the names its line names in turn -- closed
+     * to a fixed point from the names the seed reaches; every name reached
+     * is added to {@code names}.  A conjunct that names neither states
+     * constants alone and is kept.  Linear: a name is walked once down
+     * (what it reaches) and once up (what reaches it).
+     */
+    static boolean[] cone(List<String> conjuncts, String seed,
+                          Set<String> variables,
+                          Map<String, String> declarations,
+                          Set<String> names) {
+        Map<String, List<String>> reaches =
+                new HashMap<String, List<String>>();
+        Map<String, List<String>> reachedBy =
+                new HashMap<String, List<String>>();
+        for (Map.Entry<String, String> declaration
+                : declarations.entrySet()) {
+            List<String> under = new ArrayList<String>();
+            for (String name : new LinkedHashSet<String>(
+                    SmtNames.names(declaration.getValue()))) {
+                if (name.equals(declaration.getKey())
+                        || !variables.contains(name)
+                        && !declarations.containsKey(name)) {
+                    continue;
+                }
+                under.add(name);
+                reachedBy.computeIfAbsent(name,
+                        key -> new ArrayList<String>())
+                        .add(declaration.getKey());
+            }
+            reaches.put(declaration.getKey(), under);
+        }
+        boolean[] kept = new boolean[conjuncts.size()];
+        List<List<String>> named = new ArrayList<List<String>>();
+        Map<String, List<Integer>> namedBy =
+                new HashMap<String, List<Integer>>();
+        for (int at = 0; at < conjuncts.size(); at++) {
+            List<String> own = new ArrayList<String>();
+            for (String name : new LinkedHashSet<String>(
+                    SmtNames.names(conjuncts.get(at)))) {
+                if (!variables.contains(name)
+                        && !declarations.containsKey(name)) {
+                    continue;
+                }
+                own.add(name);
+                namedBy.computeIfAbsent(name,
+                        key -> new ArrayList<Integer>()).add(at);
+            }
+            named.add(own);
+            kept[at] = own.isEmpty();
+        }
+        Deque<String> down = new ArrayDeque<String>();
+        for (String name : SmtNames.names(seed)) {
+            if ((variables.contains(name) || declarations.containsKey(name))
+                    && names.add(name)) {
+                down.push(name);
+            }
+        }
+        Set<String> upward = new HashSet<String>();
+        Deque<String> up = new ArrayDeque<String>();
+        while (!down.isEmpty()) {
+            String name = down.pop();
+            for (String under : reaches.getOrDefault(name,
+                    Collections.<String>emptyList())) {
+                if (names.add(under)) down.push(under);
+            }
+            up.push(name);
+            while (!up.isEmpty()) {
+                String over = up.pop();
+                if (!upward.add(over)) continue;
+                for (int at : namedBy.getOrDefault(over,
+                        Collections.<Integer>emptyList())) {
+                    if (kept[at]) continue;
+                    kept[at] = true;
+                    for (String own : named.get(at)) {
+                        if (names.add(own)) down.push(own);
+                    }
+                }
+                up.addAll(reachedBy.getOrDefault(over,
+                        Collections.<String>emptyList()));
+            }
+        }
+        return kept;
+    }
+
+    /** What a query keeps of its conjuncts ({@code Builder#cone}). */
+    private static final class Cone {
+        /** The conjuncts kept, in the order asserted, each once. */
+        final List<String> texts = new ArrayList<String>();
+        /** Of those, the ones the assertions (not the facts) state. */
+        final List<String> assertions = new ArrayList<String>();
+        /** Every variable and declaration they reach. */
+        final Set<String> names;
+
+        private Cone(Set<String> names) {
+            this.names = names;
+        }
+    }
+
     static Built build(Corpus corpus, Task task, Corpus.RecordedPath path,
                        int flipIndex) {
         return new Builder(corpus, task, path).build(flipIndex);
@@ -540,7 +721,8 @@ final class FlipQuery {
             clockOrder();
             stateFacts();
             if (!refusal.isEmpty()) return refused(refusal, flipped);
-            String free = unbound();
+            Cone kept = cone();
+            String free = unbound(kept.texts);
             if (!free.isEmpty()) {
                 return refuse(GapKind.UNPRODUCIBLE_ANSWER, free,
                         "the query would declare this recorded symbol and "
@@ -592,17 +774,82 @@ final class FlipQuery {
                 return refused(NOT_FLIPPABLE + ":" + flipped.siteId() + "#"
                         + flipped.ordinal(), flipped);
             }
-            // One notion of reached for both read-back maps.
-            Set<String> reached = reachedVariables();
+            // One notion of reached for both read-back maps; only the
+            // cone's variables are declared, minimized and read back.
+            Set<String> reached = reachedVariables(kept.assertions);
+            Map<String, String> declared = reached(sorts, kept.names);
+            List<Control> answerable = new ArrayList<Control>();
+            for (Control control : controls.values()) {
+                if (declared.containsKey(control.variable)) {
+                    answerable.add(control);
+                }
+            }
+            List<WriterChoice> chosen = new ArrayList<WriterChoice>();
+            for (WriterChoice choice : choicesByReader.values()) {
+                if (!Collections.disjoint(choice.writes.keySet(),
+                        declared.keySet())) {
+                    chosen.add(choice);
+                }
+            }
             return new Built(FlipQueryText.render(corpus, task,
-                    path, lowered, this, meaning, sorts, asserted(), nearest,
+                    path, lowered, this, reached(meaning, kept.names),
+                    declared, kept.texts, reached(nearest, kept.names),
                     flipped, flipIndex),
-                    new ArrayList<String>(sorts.keySet()), "",
-                    new ArrayList<Control>(controls.values()),
+                    new ArrayList<String>(declared.keySet()), "",
+                    answerable,
                     reached(rootVariables, reached),
                     reached(clockVariables, reached),
-                    new ArrayList<WriterChoice>(choicesByReader.values()),
-                    sorts, gaps);
+                    chosen, declared, gaps);
+        }
+
+        /**
+         * THE CONE (KLEE's constraint independence): of what this query
+         * asserts ({@link #asserted}), split into top-level conjuncts
+         * ({@link FlipQuery#conjuncts}), only those that share a name with
+         * the flipped conjunct, closed to a fixed point ({@link
+         * FlipQuery#cone}): a variable of this query, or a declaration it
+         * states, which shares the names its definition reaches as well.
+         * A preamble function ({@code assoc_*}, {@code string_ref}) is in
+         * every query and shares nothing.
+         *
+         * <p>THE RULE: a dropped conjunct shares no name with the kept ones,
+         * and it holds at the recording's values -- a prefix decision as
+         * the run took it, a writer choice's exactly-one at the run's
+         * choice, a root's or clock's domain or pin at what was read, an
+         * inherited flip as the world this session ran in took it, a stated
+         * fact as recorded.  So the cone UNSAT is the whole query UNSAT, and
+         * a model of the cone with every dropped name at its recorded value
+         * is a model of the whole: no dropped root, clock, handoff or
+         * writer choice is declared, read back or planted, so the replay
+         * runs each as recorded.  SOLR-18413's witness flip
+         * (RoutingRule#isExpired, b616891a77d1afb8): 8 of 245 conjuncts,
+         * SAT at once, where ZkStateReader's map bookkeeping, sharing
+         * nothing with the flip, left the whole query "incomplete (theory
+         * array)".</p>
+         */
+        private Cone cone() {
+            List<String> texts = new ArrayList<String>();
+            for (String assertion : assertions) {
+                texts.addAll(conjuncts(assertion));
+            }
+            int asserted = texts.size();
+            List<String> facts = new ArrayList<String>(rootFacts);
+            facts.addAll(statedFacts);
+            for (String fact : facts) texts.addAll(conjuncts(fact));
+            Map<String, String> declarations =
+                    FlipQueryText.statedDeclarations(corpus, lowered, this,
+                            asserted());
+            Set<String> names = new LinkedHashSet<String>();
+            boolean[] kept = FlipQuery.cone(texts, flippedText,
+                    sorts.keySet(), declarations, names);
+            Cone cone = new Cone(names);
+            Set<String> once = new HashSet<String>();
+            for (int at = 0; at < texts.size(); at++) {
+                if (!kept[at] || !once.add(texts.get(at))) continue;
+                cone.texts.add(texts.get(at));
+                if (at < asserted) cone.assertions.add(texts.get(at));
+            }
+            return cone;
         }
 
         /** A forced flip's demanded conjunct, the forced path condition, in
@@ -758,16 +1005,16 @@ final class FlipQuery {
             return kept;
         }
 
-        /** Every variable the ASSERTIONS reach, including through the renamed
-         *  definitions they mention ({@link FlipQueryText}); never via {@link
-         *  #rootFacts}. */
-        private Set<String> reachedVariables() {
+        /** Every variable these ASSERTIONS reach (the cone's, {@link
+         *  #cone}), including through the renamed definitions they mention
+         *  ({@link FlipQueryText}); never via {@link #rootFacts}. */
+        private Set<String> reachedVariables(List<String> assertions) {
             Set<String> names = new LinkedHashSet<String>();
             for (String assertion : assertions) {
                 SmtNames.symbols(assertion, names);
             }
             for (String line : FlipQueryText.statedDeclarations(corpus,
-                    lowered, this, assertions)) {
+                    lowered, this, assertions).values()) {
                 SmtNames.symbols(line, names);
             }
             return names;
@@ -1665,9 +1912,10 @@ final class FlipQuery {
 
         /** A recorded symbol the query would declare and bind to nothing: the
          *  query must be CAUSALLY CLOSED (every symbol stated by a family or a
-         *  pin), so it is refused by that symbol's name. */
-        private String unbound() {
-            SmtNames.Named texts = SmtNames.named(asserted());
+         *  pin), so it is refused by that symbol's name.  Asked of what the
+         *  query keeps ({@link #cone}): a name it drops is not declared. */
+        private String unbound(List<String> asserted) {
+            SmtNames.Named texts = SmtNames.named(asserted);
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
@@ -1724,7 +1972,8 @@ final class FlipQuery {
             Set<String> cone = new LinkedHashSet<String>(
                     SmtNames.names(flippedText));
             for (String declaration : FlipQueryText.statedDeclarations(corpus,
-                    lowered, this, Collections.singletonList(flippedText))) {
+                    lowered, this, Collections.singletonList(flippedText))
+                    .values()) {
                 cone.addAll(SmtNames.names(declaration));
             }
             return cone;
@@ -1767,9 +2016,9 @@ final class FlipQuery {
         }
 
         /** Every text this query ASSERTS (assertions, root facts, stated
-         *  facts): the one answer used for rendering, reached declarations and
-         *  the closure check. Only the projection asks narrower ({@link
-         *  #reachedVariables}). */
+         *  facts): what the facts are stated over and the cone is cut from
+         *  ({@link #cone}), which renders, reaches declarations and is
+         *  checked closed. */
         private List<String> asserted() {
             List<String> texts = new ArrayList<String>(assertions);
             texts.addAll(rootFacts);

@@ -770,8 +770,8 @@ public class ExploreTest {
         assertNotNull(deeper);
         Worker second = solve(iteration, wave1, deeper, out, "w1");
         assertEquals(Verdict.SAT_MODEL_READY, second.verdict);
-        assertEquals("true",
-                second.obligation.rootAssignments().get("CASE.MARKER"));
+        // The marker's arm shares nothing with the count: held as s-flip
+        // ran it, not asked again (FlipQuery#cone).
         assertTrue(Integer.parseInt(
                 second.obligation.rootAssignments().get("CASE.COUNT")) > 5);
 
@@ -834,9 +834,8 @@ public class ExploreTest {
         // makes the arm owed: the guard does not depend on it.)  Three
         // things follow, and this is 11741's shape: the arm is owed again in
         // THAT world, the obligation cut from that path inherits the world
-        // its path exists in, and the query states the parent's flipped
-        // conjunct -- without which the model would answer for a path that
-        // run never had.
+        // its path exists in, and the parent's flipped conjunct holds by
+        // that world's roots wherever it shares nothing with the flip.
         Session world = new Session(iteration, "s-other-prefix");
         world.activations(true, target, PRODUCER);
         world.marker(target, "CASE.MARKER", "M_MARKER", "true");
@@ -926,9 +925,13 @@ public class ExploreTest {
                 "OBL.other", carried.get("obligationId").getAsString());
         String query = new String(Files.readAllBytes(
                 nested.directory.resolve("obligation_query.smt2")), "UTF-8");
-        assertTrue("and the query ASSERTS the parent's flipped conjunct, so "
-                        + "the model answers for the world this path is in: "
-                        + query, query.contains("(> r_CASE_TICK 3)"));
+        // The parent's flipped conjunct shares nothing with this guard
+        // (FlipQuery#cone): it holds as the world ran it, its root carried
+        // whole, so the query need not state it.
+        assertFalse("the parent's flip is out of this guard's cone: " + query,
+                query.contains("r_CASE_TICK"));
+        assertEquals("and held by the world's own root", "7",
+                nested.obligation.rootAssignments().get("CASE.TICK"));
 
         // ---- the same LOCAL path, in a world that changed what the region
         //      received ---------------------------------------------------
@@ -5050,7 +5053,10 @@ public class ExploreTest {
         child.decision(PRODUCER, "Rotate#u5", 1, true,
                 notBefore("100000", "M_NOW"));
         child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
-        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        // Its predicate reads the clock too, so the inherited flip shares
+        // it (FlipQuery#cone).
+        child.decision(TARGET, "Deeper#u9", 1, false, "(and M_OTHER "
+                + notBefore("300000", "M_NOW") + ")");
         child.answered(ObligationResult.of("OBL.inherit", Verdict.ADMITTED,
                 "s-inherit", "the focused prefix reproduced"));
         child.flush();
@@ -5802,6 +5808,99 @@ public class ExploreTest {
         return found;
     }
 
+    /**
+     * THE CONE (FlipQuery#cone): a flip query asks only the conjuncts its
+     * flipped predicate shares a name with.  A prefix decision over a fault
+     * marker the expiry never reads is dropped, so a z3 that cannot decide
+     * it (here: one that answers unknown whenever the marker is in the
+     * query) still decides the flip, and the marker is neither read back
+     * nor planted (SOLR-18413 b616891a77d1afb8: ZkStateReader's map
+     * bookkeeping left z3 "incomplete (theory array)" on a clock flip it
+     * shared nothing with).
+     */
+    @Test
+    public void aFlipQueryAsksOnlyWhatItsPredicateShares() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("cone").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.clock(TARGET, "CASE.NOW", "M_NOW", "1000");
+        seed.marker(TARGET, "CASE.HARD", "M_HARD", "false");
+        seed.decision(TARGET, "Hard#u7", 1, false, "M_HARD");
+        seed.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("200000", "M_NOW"));
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Expiry#u15"));
+        Path out = tree.newFolder("cone-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Path z3 = out.resolve("z3-undecided-on-the-marker.sh");
+        Files.write(z3, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *HARD*) echo unknown;"
+                        + " echo '(:reason-unknown \"incomplete\")' ;;",
+                "  *) printf '%s\\n' \"$input\" | exec z3 \"$@\" ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(z3.toFile().setExecutable(true));
+        Path worker = out.resolve("w0");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave.resolve("obligations.jsonl"),
+                named(obligations(wave), "Expiry#u15").obligationId(),
+                worker, z3, 10_000L, 1152, null);
+        String query = new String(Files.readAllBytes(worker.resolve(
+                "obligation_query.smt2")), StandardCharsets.UTF_8);
+        assertFalse("the marker's decision shares nothing with the expiry: "
+                + query, query.contains("HARD"));
+        assertEquals(query, Verdict.SAT_MODEL_READY, RowCodec.readAll(
+                worker.resolve("obligation_result.jsonl"),
+                RowCodec::readObligationResult).get(0).verdict());
+        JsonObject focus = RowCodec.readJsonl(worker.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertTrue("the clock moves: " + focus, focus.getAsJsonObject(
+                "clockDeltas").has("CASE.NOW"));
+        assertFalse("and the marker outside the cone is not planted: "
+                + focus, focus.getAsJsonObject("rootAssignments")
+                .has("CASE.HARD"));
+    }
+
+    /**
+     * The cone's split and closure (FlipQuery#conjuncts, #cone): {@code
+     * (and)}, {@code (not (not))} and {@code (not (or))} split; a
+     * conjunct naming a container definition shares what that definition
+     * reaches, never what only reaches it; a preamble function
+     * ({@code assoc_has}) shares nothing; a conjunct naming no variable or
+     * declaration is kept.
+     */
+    @Test
+    public void aConeKeepsWhatAContainerDefinitionShares() {
+        assertEquals(Arrays.asList("(< x 3)", "(not (= j 1))", "(= k x)"),
+                FlipQuery.conjuncts("(and (< x 3) (not (or (= j 1) "
+                        + "(not (not (not (= k x)))))))"));
+        Map<String, String> declarations = new LinkedHashMap<String, String>();
+        declarations.put("c1",
+                "(define-fun c1 () AssocState (assoc_put c0 k x))");
+        declarations.put("c2",
+                "(define-fun c2 () AssocState (assoc_put c3 j x))");
+        declarations.put("c0", "(declare-fun c0 () AssocState)");
+        declarations.put("c3", "(declare-fun c3 () AssocState)");
+        List<String> conjuncts = Arrays.asList("(< x 3)",
+                "(assoc_has c1 7)", "(= k 2)", "(= j 1)",
+                "(assoc_has c3 7)", "(= \"a\" \"a\")");
+        Set<String> names = new LinkedHashSet<String>();
+        boolean[] kept = FlipQuery.cone(conjuncts, "(< x 3)",
+                new LinkedHashSet<String>(Arrays.asList("x", "k", "j")),
+                declarations, names);
+        assertEquals("c1 reaches x, so its conjunct joins, and k with it; "
+                        + "c2 reaches x too, but nothing names c2, so "
+                        + "neither j nor c3 joins: " + names,
+                "[true, true, true, false, false, true]",
+                Arrays.toString(kept));
+        assertEquals("[x, c1, c0, k]", names.toString());
+    }
+
     // ---- (7) a clock moves forward only ------------------------------
 
     /**
@@ -5842,7 +5941,10 @@ public class ExploreTest {
         child.decision(TARGET, "Expiry#u15", 1, true,
                 notBefore("200000", "M_NOW"));
         child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
-        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        // Its predicate reads the clock too, so the clock's domain is in
+        // its cone (FlipQuery#cone).
+        child.decision(TARGET, "Deeper#u9", 1, false, "(and M_OTHER "
+                + notBefore("300000", "M_NOW") + ")");
         child.answered(ObligationResult.of("OBL.later", Verdict.ADMITTED,
                 "s-later", "the focused prefix reproduced"));
         child.flush();
@@ -5871,8 +5973,9 @@ public class ExploreTest {
         // 5ad106c42fcf45f6).
         assertTrue("the cell is floored at what THIS session read, not at "
                         + "0, and ceilinged a window above it: " + query,
-                query.contains("(and (>= clk_CASE_NOW_s_later 5000) (<= "
-                        + "clk_CASE_NOW_s_later 2592005000))"));
+                query.contains("(assert (>= clk_CASE_NOW_s_later 5000))")
+                        && query.contains("(assert (<= clk_CASE_NOW_s_later "
+                        + "2592005000))"));
         assertFalse("so the Java long ceiling is no longer the domain: "
                         + query,
                 query.contains("clk_CASE_NOW_s_later 9223372036854775807"));
