@@ -108,7 +108,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   campaign's measured need (`run_engine.sh` `campaign_replay_need_mb`): the largest resident peak
   its replays stated so far (`workload_rss_mb` in each worker directory; the seed replay's first)
   times 1.5, at least 512 MB (its heap), and once eight have returned after the seed's, their 90th percentile
-  times 1.25 (its charge, `campaign_replay_typical`); the seed replay's heap is sized for seven times the recording's peak and it is charged twice that peak at its start
+  (its charge, `campaign_replay_typical`); the seed replay's heap is sized for seven times the recording's peak and it is charged twice that peak at its start
   (HDFS seed replays peak at 0.5-1.4 times their recording), growing past it while its host has real room; every
   replay at most half a host's ceiling at its start, growing past it while the host has real room.
   The replay logs say it: "the workload JVM's resident memory peaked at X MB; its host was charged Y

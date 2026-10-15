@@ -262,7 +262,9 @@ public final class ObligationSolverMain {
      * corpus's ask maps one ({@code ObligationFactory#settled}) and published
      * into the worker as that ask publishes it: UNSAT settling its question,
      * or no verdict by name.  A sat answer leaves its model ({@link
-     * HardAsk.Model}) and no answer: its host's solver finishes the flip.
+     * HardAsk.Model}) and no answer: its host's solver finishes the flip.  A
+     * record of another obligation or another query is refused by name
+     * ({@link #HARD_ASK_MISMATCH}), with no z3 run.
      */
     static void decide(Path obligations, String obligationId, Path worker,
                        Path z3, long timeoutMillis, int z3RoomMb)
@@ -275,9 +277,20 @@ public final class ObligationSolverMain {
         byte[] suffix = Z3.modelQuery("", ask.modelSymbols)
                 .getBytes(StandardCharsets.UTF_8);
         long body = Files.size(query) - suffix.length;
-        if (!endsWith(query, suffix)) {
-            throw new IOException("the query " + query + " does not end "
-                    + "with its record's model request");
+        String sha = ArtifactIO.sha256(query);
+        if (!ask.obligationId.equals(obligationId)
+                || !sha.equals(ask.querySha256) || !endsWith(query, suffix)) {
+            String why = HARD_ASK_MISMATCH + ": the record of "
+                    + ask.obligationId + " over query " + ask.querySha256
+                    + " is not obligation " + obligationId + "'s query "
+                    + sha;
+            List<GapRow> gaps = new ArrayList<GapRow>(ask.gaps);
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, obligationId,
+                    why));
+            publish(worker, proposal, ObligationResult.of(obligationId,
+                    Verdict.NOT_ADMITTED, "", why), null, gaps, null);
+            return;
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -297,8 +310,8 @@ public final class ObligationSolverMain {
         ObligationFactory.Outcome settled = ObligationFactory.settled(ask,
                 answer, budget, solver, null);
         if (settled == null) {
-            new HardAsk.Model(answer.values(), budget, z3RoomMb)
-                    .write(worker.resolve(HardAsk.Model.FILE));
+            new HardAsk.Model(ask.querySha256, answer.values(), budget,
+                    z3RoomMb).write(worker.resolve(HardAsk.Model.FILE));
             return;
         }
         publish(worker, proposal, settled.result, null, settled.gaps, null);
@@ -348,6 +361,9 @@ public final class ObligationSolverMain {
             return read;
         }
     }
+
+    /** A hard-lane record that does not belong to its worker's query. */
+    static final String HARD_ASK_MISMATCH = "HARD_ASK_MISMATCH";
 
     /** The query a worker's ask published. */
     static final String QUERY = "obligation_query.smt2";

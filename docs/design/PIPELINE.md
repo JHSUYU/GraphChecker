@@ -1022,10 +1022,13 @@ once on a host as its cores and ledger room hold (§7.7). It answers as the corp
 (`ObligationFactory#settled`, the one mapping): UNSAT with the record's detail and gaps, settling its
 question; undecided NOT_ADMITTED by name; a sat answer leaves its model (`obligation_model.json`,
 `HardAsk.Model`, the budget and room it was asked at) and asks the obligation again of a host's
-solver (its diagnostics `again-host.txt`, `again-std*.log` beside the first ask's), which plants the
-model as it is over the query its corpus builds now (the planted world, the held re-ask at the hard
-lane's budget and room, the focus row: the code after z3): the corpus may have moved under it, and its
-replay, a real run, decides. Since the
+solver (its diagnostics `again-host.txt`, `again-std*.log` beside the first ask's), which builds the
+query again and finishes the flip with the model where the query's sha256 is the record's (the planted
+world, the held re-ask at the hard lane's budget and room, the focus row: the code after z3); a query
+the corpus moved is refused by name (`HARD_MODEL_STALE`), with no replay and no re-ask (owner
+2026-10-15: whatever spares a solve or a replay is kept, as long as the case gets its `.smt`), a
+world-only answer as any refusal of its world. A record over another query or obligation is refused by
+name with no z3 run (`HARD_ASK_MISMATCH`). Since the
 obligation stays in flight, no fixed point is declared before its hard ask, nor does a stop end the
 exploration with it unasked (`campaign_stream_idle` counts the hard lane). One undecided there lands
 NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each a
@@ -1438,8 +1441,18 @@ counts like any start), on the next host of `campaign_worker_hosts` (empty: this
 ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
 first on a host where one returned answered within the solver's idle time (`campaign_stream_warm`,
 set when a solve returns answered there, cleared when one returns asking again: that host's
-solver of its corpus serves, so the question needs no solver started and no corpus read), a REPLAY
-on whichever host admits it (its worker is on the shared home). A host is taken for a start of a
+solver of its corpus serves, so the question needs no solver started and no corpus read), and on
+a host whose solver it would start only when one more is due (`campaign_stream_solver_due`: none
+serves or starts yet, or the questions queued per solver serving or starting would take longer to
+answer, at the campaign's mean seat per question answered on a warm solver, first-lane timeouts
+included, than a new solver takes to read the corpus, `campaign_corpus_mb` at the rate the first
+question a solver started for measured, its MB over its seconds -- both measured as questions return,
+`campaign_stream_seated_returned`, the seat from four on, 2 s and 20 MB/s until then, SGF7-adhoc-39's
+first lane holding a seat 12 s per question on average, 102 of about 570 the whole 60 s) -- else it
+waits for a serving solver's seat and the other hosts keep their room for replays (SGF7-adhoc-39: a
+solver of its 21 GB corpus held 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
+round-robin warmed one on all 13 lifts for questions answered in about a second); a REPLAY on whichever host admits it (its worker is on the
+shared home). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
@@ -1483,7 +1496,7 @@ stated so far -- the seed replay's first (HEAD STEPS below), then every obligati
 CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
 times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
 (`campaign_replay_charge_mb`). The need sizes a replay's heap; once eight replays after the seed's
-returned, a replay of the stream is CHARGED their 90th percentile times 1.25 (at most the need,
+returned, a replay of the stream is CHARGED their 90th percentile (at most the need,
 `campaign_replay_typical`): charged at the largest peak, the lifts' ledgers held 21-22 GB over 8-11 GB
 of real use and admitted nothing more (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB). An obligation replay peaks near its own seed replay (round HG4:
 hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation

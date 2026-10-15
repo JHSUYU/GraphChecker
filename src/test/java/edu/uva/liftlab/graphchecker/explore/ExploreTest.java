@@ -653,15 +653,31 @@ public class ExploreTest {
         ObligationSolverMain.decide(wave0.resolve("obligations.jsonl"),
                 proposed.get(0).obligationId(), hard, Paths.get("z3"),
                 10_000L, 1152);
+        HardAsk.Model model = HardAsk.Model.read(
+                hard.resolve(HardAsk.Model.FILE));
         Path finish = out.resolve("finish");
         ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
                 wave0.resolve("obligations.jsonl"),
                 proposed.get(0).obligationId(), finish, Paths.get("z3"),
-                10_000L, 1152, HardAsk.Model.read(
-                        hard.resolve(HardAsk.Model.FILE)));
+                10_000L, 1152, model);
         assertEquals(worker.obligation, RowCodec.readAll(finish.resolve(
                 ObligationDir.OBLIGATION), ExploreCodec::readObligation)
                 .get(0));
+        // A model over another query than the corpus builds now is refused
+        // by name: no replay is owed (no focus row), no re-ask.
+        Path stale = out.resolve("stale");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), stale, Paths.get("z3"),
+                10_000L, 1152, new HardAsk.Model("another", model.values,
+                        10_000L, 1152));
+        ObligationResult staleAnswer = RowCodec.readAll(stale.resolve(
+                ObligationDir.RESULT), RowCodec::readObligationResult).get(0);
+        assertEquals(Verdict.NOT_ADMITTED, staleAnswer.verdict());
+        assertTrue(staleAnswer.detail(), staleAnswer.detail().startsWith(
+                ObligationFactory.HARD_MODEL_STALE + ":"));
+        assertEquals(0L, Files.size(stale.resolve(
+                ObligationDir.FOCUSED_TASK)));
         // The focus row is its own file.  execution_task_plan.jsonl is the
         // PLAN's name, and the workload session opener decodes whatever
         // stands under it, so a focus row written there killed every
@@ -6847,7 +6863,8 @@ public class ExploreTest {
                     GapClass.DIAGNOSTIC, "OB.1", "built");
             new HardAsk("OB.1", "S", "the question",
                     "no world of this corpus takes the other arm at s#1",
-                    Collections.singletonList(built), symbols)
+                    Collections.singletonList(built), symbols,
+                    edu.uva.liftlab.graphchecker.smt.ArtifactIO.sha256(query))
                     .write(worker.resolve(HardAsk.FILE));
             ObligationSolverMain.decide(obligations, "OB.1", worker,
                     Paths.get("z3"), (Long) row[1], 1152);
