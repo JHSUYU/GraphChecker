@@ -277,16 +277,18 @@ final class StoreContent {
      * ALONE (owner 2026-10-15: "有限的zookeeper字段追踪，基于我们的因果追踪"):
      * the only store values that cross symbolically are the (znode, field)
      * the causal trace put on the anchor's chain: a planned occurrence's own
-     * keys -- none for a doors-only one, a row that states none, or one that
-     * states them elsewhere --, and outside every planned occurrence (a
+     * keys -- none for a row that states none, or one that states them
+     * elsewhere; a doors-only one's too, since a chain writer the plan runs
+     * for its doors still writes the chain's fields (solr-bugs-snapshot:
+     * CreateCollectionCmd's configName, exported by no one, left its reader's
+     * leaf open) --, and outside every planned occurrence (a
      * role's parse: a watcher callback a view is re-pointed by) the chain's
      * keys of the location over the whole plan.  Every other leaf runs as
      * its value, untracked.
      */
     private static List<String> contentKeys(String transport, String key) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-        if (active != null && (active.activation.doorsOnly
-                || active.activation.contentKeys == null)) {
+        if (active != null && active.activation.contentKeys == null) {
             return Collections.<String>emptyList();
         }
         String slot = MessageDoors.storeLocation(transport,
