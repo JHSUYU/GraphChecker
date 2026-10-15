@@ -479,10 +479,6 @@ public final class SlotTable {
             this.admitted = admitted;
         }
 
-        public GapClass cls() {
-            return admitted ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
-        }
-
         public String detail() {
             return "the skeleton pairs consumer " + consumerEndpointId
                     + " with producer " + skeletonProducerId + " (slot opened"

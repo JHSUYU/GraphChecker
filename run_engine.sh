@@ -6984,6 +6984,8 @@ campaign_unpauses() {
 # obligation does -- in a directory of its own beside its worker; until
 # every re-run has returned and swapped its session in
 # (campaign_stream_swap), no obligation starts and no round is planned.
+# Best effort: an obligation whose re-run was dropped (grow-dropped) is
+# never re-run again.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
   local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
@@ -7056,6 +7058,11 @@ whole; generation g${stream_generation} weaves nothing new"
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
       "${obligation_id}" "${session}") || exit 1
+    if [[ -e "${worker}/grow-dropped" ]]; then
+      campaign_log "obligation ${obligation_id}: its re-run was dropped \
+before, so it is not re-run again"
+      continue
+    fi
     rerun="${worker}/grow-$(basename "${round_dir}")/${obligation_id}"
     mkdir -p "$(dirname "${rerun}")"
     mkdir "${rerun}" || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
@@ -7105,7 +7112,10 @@ campaign_stream_rerun_dir() {
 # current (Z2M: the import gate on lift06, 8 s after the swap, read the
 # exposing session's answer and found no worker stating the re-run's focus
 # row); a deleted one fails stale and the client looks the name up again,
-# as campaign_write_whole relies on.
+# as campaign_write_whole relies on.  Best effort: a re-run that did not
+# finish (it failed, stalled or ran past its bound) is not swapped in -- the
+# exposing session stays -- and its obligation is never re-run again
+# (<worker>/grow-dropped, campaign_stream_grow).
 campaign_stream_swap() {
   local swap round id exposing status worker rerun aside file session
   for swap in "${stream_swaps[@]}"; do
@@ -7113,8 +7123,12 @@ campaign_stream_swap() {
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}" \
       "${exposing}") || exit 1
     rerun="${worker}/grow-${round}/${id}"
-    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${rerun}" \
-      "the re-run of ${id} did not finish (exit ${status})"
+    if [[ "${status}" -ne 0 ]]; then
+      printf '%s\n' "${round}" >>"${worker}/grow-dropped"
+      campaign_log "obligation ${id}: its re-run under the grown tree did \
+not finish (exit ${status}): dropped, ${exposing} stays in the corpus"
+      continue
+    fi
     aside="${worker}/before-${round}"
     mkdir "${aside}" || campaign_fail EXPLORE CAMPAIGN "${aside}" \
       "obligation ${id} was already swapped for this round"

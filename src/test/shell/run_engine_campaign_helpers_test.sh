@@ -5865,6 +5865,54 @@ both-landed|obligations-0004|obligations-0000|SESSION.first
 EOF
 reset_config
 
+# GROW-DROP: a re-run that did not finish (failed, stalled, past its bound)
+# is not swapped in -- the exposing session stays and the exploration goes
+# on -- and its obligation is never re-run again.
+(
+  drop_iteration="${test_tmp}/grow-drop/iteration-0000"
+  drop_worker="${drop_iteration}/obligations-0001/OB.d"
+  iteration_dir=${drop_iteration}
+  sessions="${drop_iteration}/sessions"
+  results="${drop_iteration}/obligation_results.jsonl"
+  mkdir -p "${sessions}/SESSION.exposing" \
+    "${drop_worker}/grow-obligations-0002/OB.d"
+  printf '{"sessionId":"SESSION.exposing"}\n' \
+    >"${drop_worker}/focused_task.jsonl"
+  jq -n -c '{obligationId: "OB.d", verdict: "ADMITTED",
+    sessionId: "SESSION.exposing"}' >"${drop_worker}/obligation_result.jsonl"
+  stream_swaps=("obligations-0002 OB.d SESSION.exposing 137")
+  stream_staged=()
+  stream_hold=1
+  campaign_stream_swap >/dev/null
+  [[ -d "${sessions}/SESSION.exposing" && -s "${drop_worker}/grow-dropped" \
+      && "${stream_hold}" == 0 && ${#stream_staged[@]} -eq 0 ]] \
+    || fail "GROW-DROP: a re-run that did not finish was swapped in, or \
+not marked dropped"
+  mkdir -p "${drop_iteration}/obligations-0003" \
+    "${drop_iteration}/seed-replay"
+  jq -n -c '{kind: "UNPLANNED_INPUT", taskId: "T", symbol: "S", k: 1,
+    sessionId: "SESSION.exposing", obligationId: "OB.d"}' \
+    >"${drop_iteration}/obligations-0003/growth.jsonl"
+  printf '{"occurrenceId":"W#1","taskId":"T"}\n' \
+    >"${drop_iteration}/execution_task_plan.jsonl"
+  stream_plan="${drop_iteration}/execution_task_plan.jsonl"
+  stream_classes="${drop_iteration}/instrumented-classes"
+  stream_generation=0
+  stream_queue=()
+  declare -A stream_queued_at=()
+  run_java_main() {
+    local args=" $* " output
+    output=${args##* --output }
+    output=${output%% *}
+    cp "${stream_plan}" "${output}"
+  }
+  campaign_stream_grow "${drop_iteration}/obligations-0003" >/dev/null
+  (( ${#stream_queue[@]} == 0 && stream_hold == 0 )) \
+    || fail "GROW-DROP: an obligation whose re-run was dropped was re-run \
+again: ${stream_queue[*]}"
+) || fail "GROW-DROP failed"
+reset_config
+
 # CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
 # task and the replay are stubbed -- the first writes the focus row and the
 # expected edges, the second publishes a session and its verdict -- and the

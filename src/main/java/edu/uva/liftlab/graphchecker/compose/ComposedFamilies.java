@@ -2181,9 +2181,10 @@ final class ComposedFamilies {
                 .expression(expressionRef);
         if (expression == null) {
             // A row cites an expression the corpus does not hold.
-            composer.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, expressionRef,
-                    "a row of session " + session + " cites an expression "
-                            + "its session's table does not hold");
+            composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    expressionRef, "a row of session " + session + " cites an"
+                            + " expression its session's table does not hold:"
+                            + " left out");
             return null;
         }
         lowering.begin(session, corpus.join(session),

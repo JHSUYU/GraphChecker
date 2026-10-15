@@ -1629,7 +1629,10 @@ confirmation is queued, runs or waits for its verdict, no solve starts and no ro
 REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
 corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
 with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
-(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). Then
+(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). A re-run that did
+not finish (failed, stalled, past its bound) is dropped: not swapped in, the exposing session stays,
+and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it failed the
+campaign). Then
 each re-run SWAPS in (`campaign_stream_swap`): the exposing session (that session alone: another ask's
 session of the obligation stays) moves to
 `<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
@@ -1939,10 +1942,16 @@ root_domain__*, clock_domain__*, clock_order__*, identities_distinct__*
 refuted_claim__*:  not(selector_p ∧ its arms ∧ its valuation)       per model CONFIRM refuted (§10)
 ```
 
-Corpus-level BLOCKING gaps: one solver name for two roots, a session not read whole
-(`SESSION_INCOMPLETE`), a session's own verdict disagreeing with the worker's result row, not exactly
-one SEED, an unreadable slot table, one name at two sorts, one name for two identities. Sessions that
-replace a slot (§7.1) give no arms.
+BEST EFFORT (owner 2026-10-15): COMPOSE never withholds the `.smt` for a part it can leave out. A
+session not read whole (`SESSION_INCOMPLETE`) or whose own verdict disagrees with its worker's result
+row is left out (its paths not composed), a path a row refuses is left out (`refusedPaths`), an
+unreadable slot table or refuted-claims file is composed without, one solver name for two roots, at
+two sorts or for two identities is named, and a path whose own question z3 answers with an error is
+left out and the rest composed and decided once more (`ClaimPolicy#REFUSED_PATH`, `ComposeMain#run`)
+-- each a DIAGNOSTIC row. Only a total absence blocks: no session states role SEED, no path reached
+the anchor, the declared occurrence never ran; and a seed that observed the fatal itself
+(SEED_OBSERVED_FATAL: a claim on it would be the recording). Sessions that replace a slot (§7.1) give
+no arms.
 
 **Admission** (`admit`, `settled`): one path per admitted session whose target row at the anchor reached
 it (beside one, a target row that did not reach it is a DIAGNOSTIC gap); whether the anchor was reached
@@ -2794,8 +2803,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `FORMULA_SAT` | a valuation satisfies the formula and none of the above names why: the formula's own claim, which CONFIRM plants (its arms and valuation) and judges |
 | `NO_SUPPORTED_WITNESS` | the composed formula, every root free, is unsat; an answer, not an error |
 
-`ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
-defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
+`ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap (a total
+absence, §8; an undecided formula) leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
 kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's own answer unsat →
 `UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). `UNSAT_CLOSED` means
 exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
@@ -2806,8 +2815,8 @@ a SAT on the path it claims, an UNSAT on every path. Each value the fatal condit
 names that no message family under its selector binds -- or that an arm the witness chose holds FREE
 or HELD -- is an open link of the chain (`compose.Cone`, the set `experiments/accept/cone.py` reads
 off the same formula; `Composition#openChain`, each with the producer occurrence its arrival names):
-an open link leaves no verdict, `RUN_DEFECT` with `openChain` (EMIT: `WITNESS_CHAIN_OPEN` for a
-SAT, `UNSAT_CHAIN_OPEN` for an UNSAT). A SAT's other paths' open links are stated, never gating
+best effort, an open link is free in the formula and named (`openChain`), and the verdict stands:
+`SAT_CANDIDATE` (CONFIRM decides) or `UNSAT_CLOSED`. A SAT's other paths' open links are stated, never gating
 (`unboundOffWitness`, cone.json's too). EXPLORE closes a witness's chain before it ends (§7.9); an
 UNSAT's paths are closed by the exploration's own growth, which plans each demanded producer an
 admitted session exposes (§7.2, §7.8), so a link still open at the fixed point is one growing could
@@ -2996,7 +3005,7 @@ whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (it
 roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`),
 each a false positive read against the code before the UNSAT counts (CHECKING). A core is known only where its own run said unsat and printed its core (`Z3.Answer#coreKnown`; a core run that timed out,
 found no room, answered unknown or stopped at its memory cap names none, which is not the empty core),
-and an UNSAT that excludes refuted claims with its core unknown is `RUN_DEFECT`, its
+and an UNSAT that excludes refuted claims with its core unknown is `UNSAT_CLOSED` with
 `restsOnRefutationsKnown` false (`ComposeMain#campaignClaim`): which of them it rests on is unknown, never
 none. A disjunction's core is known only
 where every path's is, and a path's refutation answers a core-wanting ask only with a known one.

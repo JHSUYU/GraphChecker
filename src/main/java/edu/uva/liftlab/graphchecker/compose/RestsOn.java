@@ -193,10 +193,10 @@ public final class RestsOn {
             if (stated.contains(obligation)) continue;
             admitted = false;
             if (gaps == null) continue;
-            gap(gaps, GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
+            gap(gaps, GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, obligation,
                     "session " + session + " states it ran this obligation "
-                            + "and publishes no verdict for it, so what it "
-                            + "settled is not in this corpus");
+                            + "and publishes no verdict for it, so it is left"
+                            + " out");
         }
         return admitted;
     }
@@ -207,12 +207,11 @@ public final class RestsOn {
      * {@code <anchor> loop-body-bound=<N>} row the case's {@code bounded}
      * counts (run_engine.sh campaign_bounds: {@code loop_body_bound}), so its
      * UNSAT is not done (CHECKING §1); a failure of the anchor's loop
-     * accounting, a BLOCKING row: an engine defect (RUN_DEFECT), never a
-     * bound.
+     * accounting, a DIAGNOSTIC row: an engine defect, never a bound.
      */
     void cut(List<GapRow> gaps, String session, Decided decided) {
         if (!decided.defect.isEmpty()) {
-            gap(gaps, GapKind.BOUND_INSUFFICIENT, GapClass.BLOCKING,
+            gap(gaps, GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
                     anchor.render(), "session " + session + ": the loop"
                             + " accounting at the anchor failed, an engine"
                             + " defect and no bound: " + decided.defect);

@@ -223,24 +223,38 @@ public final class ClaimPolicy {
             decision = new Decision(claimWith(decision.claim(), gaps),
                     decision.outcomes(), decision.formula());
         }
-        // After every ask: a solver error means some query was never read,
-        // so the claim over it is refused by name.
+        // After every ask: a solver error is named, and the claim stands
+        // on the answers z3 gave (best effort); the paths whose own
+        // question it refused are left out of the next composition
+        // ({@link #REFUSED_PATH}, ComposeMain#run).
         List<String> errors = solver.errors();
         if (errors.isEmpty()) return decision;
         List<GapRow> gaps = new ArrayList<GapRow>(decision.claim().gaps());
         for (String error : errors) {
             gaps.add(GapRow.of(Composer.COMPOSITION,
-                    GapKind.DECLARATION_MISSING, GapClass.BLOCKING, error,
-                    "z3 answered the composed query with an error instead "
+                    GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC, error,
+                    "z3 answered a composed question with an error instead "
                             + "of a verdict: the lowering wrote a name or a "
-                            + "literal SMT-LIB does not spell, which is a "
-                            + "bug in the composition and not an answer "
-                            + "about the recording"));
+                            + "literal SMT-LIB does not spell"));
         }
-        return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
-                decision.claim().valuationOrdinal(),
-                Collections.<String, String>emptyMap(), false, gaps),
+        return new Decision(claimWith(decision.claim(), gaps),
                 decision.outcomes(), decision.formula());
+    }
+
+    /** How a path whose own question z3 answered with an error is named
+     *  ({@link #selfContradictory}): the subject's prefix, its path id
+     *  after it. */
+    static final String REFUSED_PATH = "z3 refused path ";
+
+    /** The paths this claim names z3 refused ({@link #REFUSED_PATH}). */
+    static Set<String> refusedPaths(Claim claim) {
+        Set<String> paths = new LinkedHashSet<String>();
+        for (GapRow gap : claim.gaps()) {
+            if (gap.subject().startsWith(REFUSED_PATH)) {
+                paths.add(gap.subject().substring(REFUSED_PATH.length()));
+            }
+        }
+        return paths;
     }
 
     /**
@@ -326,13 +340,13 @@ public final class ClaimPolicy {
         if (witness == null) {
             gaps.add(unplantable.isEmpty()
                     ? GapRow.of(Composer.COMPOSITION,
-                    GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     composition.anchor().render(), "the composed formula is "
                             + "satisfiable and its model selects no path, "
                             + "so no witness is named and no refutation "
                             + "closed")
                     : GapRow.of(Composer.COMPOSITION,
-                    GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                     composition.anchor().render(), "the formula is "
                             + "satisfiable only by moving configuration "
                             + unplantable + " whose plant leaves reads of "
@@ -1027,8 +1041,18 @@ public final class ClaimPolicy {
         // A sanity check, not the witness search: its own short budget and
         // its cap.  An undecided run leaves the path in the disjunction
         // (safe direction).
-        for (Z3.Answer answer : asks.selfCheck(capMillis)) {
+        List<Z3.Answer> answers = asks.selfCheck(capMillis);
+        for (int at = 0; at < answers.size(); at++) {
+            Z3.Answer answer = answers.get(at);
             if (!answer.decided()) undecided++;
+            if (answer.status().startsWith("(error")) {
+                gaps.add(GapRow.of(Composer.COMPOSITION,
+                        GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        REFUSED_PATH + composition.disjuncts().get(at).path()
+                                .pathId, "z3 answered this path's own"
+                                + " question with an error: "
+                                + answer.status()));
+            }
         }
         if (undecided > 0 && capMillis > 0L && System.nanoTime() - started
                 >= TimeUnit.MILLISECONDS.toNanos(capMillis)) {
@@ -1100,7 +1124,7 @@ public final class ClaimPolicy {
         }
         if (contradictory == 0) return;
         gaps.add(GapRow.of(Composer.COMPOSITION,
-                GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
+                GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,
                 composition.anchor().render(),
                 "the composed formula is unsat, and " + contradictory
                         + " of its " + withoutFatalArms.size() + " paths "

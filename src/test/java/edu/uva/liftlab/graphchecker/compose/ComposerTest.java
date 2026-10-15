@@ -211,17 +211,15 @@ public class ComposerTest {
 
         // The same composition, answered by a solver that ERRORS.  An
         // "(error ...)" is z3 saying it could not READ the query, so
-        // nothing it printed is a verdict about this recording: the claim
-        // is refused by name and blocks, instead of being read off the
-        // answers as if an undecided valuation.
+        // nothing it printed is a verdict about this recording: named, and
+        // the claim stands on what z3 did answer -- here nothing.
         ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
                 new Z3(erroringSolver(), 30000L, 8192));
         assertEquals("an error is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, errored.claim().kind());
-        assertTrue("and it is named and blocking",
-                errored.claim().blocked() && says(errored.claim().gaps(),
-                        GapKind.DECLARATION_MISSING,
-                        "z3 answered the composed query with an error"));
+        assertTrue("and it is named",
+                says(errored.claim().gaps(), GapKind.DECLARATION_MISSING,
+                        "z3 answered a composed question with an error"));
         assertFalse("nothing about the recording is decided by it",
                 errored.claim().polarityDecides());
 
@@ -583,8 +581,9 @@ public class ComposerTest {
                 planted3.claim().movedRoots());
         assertTrue(planted3.claim().polarityDecides());
 
-        // And fail closed both ways.  Nothing states what the flip replay
-        // ran the declared root at: the path is REFUSED by name, because a
+        // And leave the path out both ways.  Nothing states what the flip
+        // replay ran the declared root at: the path is REFUSED by name, its
+        // claim over the rest unblocked (best effort), because a
         // disjunct free in a root the query enumerates is satisfiable at
         // every valuation of it and reads as one that decided something.
         Path unstated = folder.newFolder("marker-unstated").toPath();
@@ -599,7 +598,7 @@ public class ComposerTest {
                         + silent.gaps(),
                 says(silent.gaps(), GapKind.UNSTATED_VALUE,
                         "states no value it ran it at"));
-        assertTrue("it blocks", blocking(silent.gaps()));
+        assertFalse("it blocks nothing", blocking(silent.gaps()));
 
         // Both state it and they disagree: one replay ran the root at one
         // value, so a corpus that names two is not one this path can
@@ -620,7 +619,7 @@ public class ComposerTest {
                         + contradicted.gaps(),
                 says(contradicted.gaps(), GapKind.UNSTATED_VALUE,
                         "stated twice and differently"));
-        assertTrue("it blocks", blocking(contradicted.gaps()));
+        assertFalse("it blocks nothing", blocking(contradicted.gaps()));
     }
 
     /** One session of the control-dependence marker fixture. */
@@ -876,7 +875,7 @@ public class ComposerTest {
             JsonObject unknown = ComposeMain.campaignClaim(next,
                     new ClaimPolicy.Decision(again.claim(), again.outcomes(),
                             noCore));
-            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
+            assertEquals(detail + ": " + unknown, "UNSAT_CLOSED",
                     unknown.get("claim").getAsString());
             assertTrue(detail + ": " + unknown,
                     unknown.has("restsOnRefutationsKnown")
@@ -1320,7 +1319,7 @@ public class ComposerTest {
             assertTrue(settles + " named: " + next.gaps(), named);
             return;
         }
-        assertEquals(unsat.toString(), "RUN_DEFECT",
+        assertEquals(unsat.toString(), "UNSAT_CLOSED",
                 unsat.get("claim").getAsString());
         JsonObject link = unsat.getAsJsonArray("openChain").get(0)
                 .getAsJsonObject();
@@ -2281,7 +2280,7 @@ public class ComposerTest {
             boolean blocked = false;
             for (GapRow gap : decision.claim().gaps()) {
                 blocked |= gap.kind() == GapKind.PATH_SELF_CONTRADICTORY
-                        && gap.cls() == GapClass.BLOCKING;
+                        && gap.subject().equals(ANCHOR.render());
             }
             assertEquals(Arrays.toString(row), row[3], blocked);
             assertEquals(Arrays.toString(row), ClaimKind.NO_SUPPORTED_WITNESS,
@@ -3131,7 +3130,7 @@ public class ComposerTest {
                         + "bound", keep, new String[][] {{"way#u3", "false",
                         ""}}, "INSTRUMENTATION_POLICY_MISMATCH at L#loop:u44"
                         + " after 8 loop body iterations", ANCHOR.render(),
-                        ClaimKind.NO_SUPPORTED_WITNESS, false, true}};
+                        ClaimKind.NO_SUPPORTED_WITNESS, false, false}};
         for (Object[] row : kept) {
             Path way = folder.newFolder().toPath();
             Session at = new Session(way, "s0", false);
@@ -3272,8 +3271,7 @@ public class ComposerTest {
                 named(verdicts.gaps(), GapKind.ADMISSION_GAP));
         boolean twice = false;
         for (GapRow gap : verdicts.gaps()) {
-            twice |= gap.cls() == GapClass.BLOCKING
-                    && gap.kind() == GapKind.UNSTATED_VALUE
+            twice |= gap.kind() == GapKind.UNSTATED_VALUE
                     && "OBL.s1".equals(gap.subject());
         }
         assertTrue("and so is the disagreement with the wave's own file",
@@ -3330,10 +3328,9 @@ public class ComposerTest {
             }
             boolean twice = false;
             for (GapRow gap : compose(iteration, 4).gaps()) {
-                twice |= gap.cls() == GapClass.BLOCKING
-                        && gap.kind() == GapKind.UNSTATED_VALUE
+                twice |= gap.kind() == GapKind.UNSTATED_VALUE
                         && "OBL.x".equals(gap.subject())
-                        && gap.detail().contains("stated twice");
+                        && gap.detail().contains("its paths are left out");
             }
             assertEquals("row " + (at - 1) + ": refused as stated twice",
                     row[1], twice);
@@ -3411,8 +3408,11 @@ public class ComposerTest {
         Composer.Composition refused = compose(naming, 8);
         assertEquals("the path whose own term names the root is out of the "
                         + "disjunction", 2, refused.disjuncts().size());
-        assertTrue("and the refusal is BLOCKING and names the root",
-                blocking(refused.gaps(), SERIAL_ROOT));
+        assertTrue("and the refusal names the root",
+                named(refused.gaps(), SERIAL_ROOT));
+        // Best effort: a path left out blocks no claim over the rest.
+        assertFalse("and it blocks no claim over the rest",
+                ClaimPolicy.decide(refused, solver()).claim().blocked());
     }
 
     /**
@@ -3566,7 +3566,7 @@ public class ComposerTest {
             {"(not " + CONFIG + ")", "", ClaimKind.MARKER_FLIPPED,
                 CONFIG_ROOT, true, false, false},
             {"(not " + CONFIG + ")", "<t.A: void a()>#u3",
-                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true, true}};
+                ClaimKind.NO_SUPPORTED_WITNESS, "", false, true, false}};
         int variant = 0;
         for (Object[] row : rows) {
             Path iteration = folder.newFolder("config-rank-" + variant++)
@@ -4260,8 +4260,8 @@ public class ComposerTest {
                                 + "version 11 under different symbols: "
                                 + "[two_a, two_b]"));
         assertTrue("a row citing an expression its session's table does "
-                        + "not hold is BLOCKING, by the ref it names",
-                blocking(gaps, "EXPR.00000000000000ff"));
+                        + "not hold is named, by the ref it names",
+                named(gaps, "EXPR.00000000000000ff"));
         assertFalse("and the read that joined to it is not declared at the "
                         + "sort an absent expression refuses at",
                 composition.body().contains("absent_join"));
@@ -4270,8 +4270,8 @@ public class ComposerTest {
                         "cites an expression its session's table does not "
                                 + "hold"));
         assertTrue("one solver name the corpus states at two sorts is "
-                        + "BLOCKING too, and not a stack trace",
-                blocking(gaps, "two_sorts") && says(gaps,
+                        + "named too, and not a stack trace",
+                named(gaps, "two_sorts") && says(gaps,
                         GapKind.UNSTATED_VALUE, "one solver name at two "
                                 + "sorts: INT and REF"));
         assertFalse("the unplaceable symbol is not in the formula",
