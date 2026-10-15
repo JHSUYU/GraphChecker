@@ -2583,12 +2583,6 @@ public final class ScheduleLog {
                             + " runs free from its first event");
             return;
         }
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                EngineConsole.println("Causynth schedule: " + progress());
-            }
-        }, "causynth-schedule-progress"));
     }
 
     /**
@@ -2756,6 +2750,17 @@ public final class ScheduleLog {
     }
 
     /** The replay's account of its order, at exit. */
+    /**
+     * How the run held the order it was handed, said once by its end
+     * ({@code JUnitMethodRunner#exit}); nothing for a run handed none.
+     */
+    static void stateProgress() {
+        synchronized (LOCK) {
+            if (order.isEmpty()) return;
+        }
+        EngineConsole.println("Causynth schedule: " + progress());
+    }
+
     static String progress() {
         synchronized (LOCK) {
             if (order.isEmpty()) return "no order";

@@ -2689,6 +2689,74 @@ worker: $(cat "${late_worker}/obligation_result.jsonl")"
 [[ ! -e "${late_worker}/question.asked" && ! -e "${late_worker}/question.txt" ]] \
   || fail "REPLAY-BOUND-5: a killed replay's question stands settled"
 
+# REPLAY-BOUND-6: a replay that STATED its verdict is answered by it, even
+# when its JVM never ended and the bound killed it (PV7-adhoc-38: 35 decided
+# replays hung in a cluster's shutdown hook after their statement and were
+# recorded REPLAY_BOUNDED, their sessions withdrawn).  The statement is the
+# run's last write, whole by one rename, after the session it names closed
+# (RowRuntime#writeWorkerVerdicts): the session stays, the question settles.
+# A statement whose rename never came is none: that replay is bounded.
+stated_dir="${bound_dir}/stated"
+for shape in renamed unrenamed; do
+  stated_worker="${stated_dir}/${shape}"
+  mkdir -p "${stated_worker}" "${stated_dir}/sessions-${shape}"
+  cat >"${stated_dir}/replay-${shape}.sh" <<EOF_STATED
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.done", role: "FOCUSED", obligationIds: ["OB.D"]}' \\
+  >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.D",
+  verdict: "ADMITTED", sessionId: "SESSION.done", detail: "flip taken"}' \\
+  | tee "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done/obligations.jsonl" \\
+  >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl.part"
+[[ ${shape} == unrenamed ]] \\
+  || mv "\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl.part" \\
+    "\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+sleep 120
+EOF_STATED
+  chmod +x "${stated_dir}/replay-${shape}.sh"
+  replay_timeout_s=4
+  concolic_replay_command="${stated_dir}/replay-${shape}.sh"
+  printf '{"taskId":"TASK.1"}\n' >"${stated_worker}/focused_task.jsonl"
+  printf 'F:Q\n' >"${stated_worker}/question.asked"
+  (
+    campaign_adapter_kill_grace_s=2
+    campaign_obligation_replay OB.D "${withdraw_dir}/classes" \
+      "${stated_worker}" "${stated_dir}/sessions-${shape}" \
+      "${withdraw_dir}/seed_plan.jsonl" 2500
+  ) >"${stated_worker}/worker.log" 2>&1 \
+    || fail "REPLAY-BOUND-6 (${shape}): the worker failed: \
+$(cat "${stated_worker}/worker.log")"
+done
+stated_worker="${stated_dir}/renamed"
+[[ "$(jq -r '.verdict + " " + .sessionId + " " + .detail' \
+    "${stated_worker}/obligation_result.jsonl")" \
+    == "ADMITTED SESSION.done flip taken" ]] \
+  || fail "REPLAY-BOUND-6: a replay that stated its verdict before the bound \
+killed it is not answered by its statement: \
+$(cat "${stated_worker}/obligation_result.jsonl")"
+[[ -f "${stated_dir}/sessions-renamed/SESSION.done/obligations.jsonl" \
+    && ! -e "${stated_worker}/timed-out-sessions" ]] \
+  || fail "REPLAY-BOUND-6: the session a stated verdict names was withdrawn: \
+$(find "${stated_dir}" | LC_ALL=C sort)"
+[[ "$(cat "${stated_worker}/question.txt" 2>/dev/null)" == F:Q \
+    && ! -e "${stated_worker}/question.asked" ]] \
+  || fail "REPLAY-BOUND-6: the question a stated verdict answers is unsettled"
+grep -q 'the statement is its answer' "${stated_worker}/worker.log" \
+  || fail "REPLAY-BOUND-6: the late kill of a decided replay is not logged: \
+$(cat "${stated_worker}/worker.log")"
+stated_worker="${stated_dir}/unrenamed"
+[[ "$(jq -r '.verdict + " " + .detail' \
+    "${stated_worker}/obligation_result.jsonl")" \
+    == "NOT_ADMITTED REPLAY_BOUNDED: replay exceeded replay_timeout_s=4" ]] \
+  || fail "REPLAY-BOUND-6: a statement whose rename never came was read as \
+one: $(cat "${stated_worker}/obligation_result.jsonl")"
+[[ -f "${stated_worker}/timed-out-sessions/SESSION.done/manifest.json" ]] \
+  || fail "REPLAY-BOUND-6: a bounded replay's session stayed in the corpus: \
+$(find "${stated_dir}" | LC_ALL=C sort)"
+
 # EARLY-END-1: a replay a refusal decided ended there, and its verdict names
 # no session (RowRuntime.closeSession): the session it opened is a prefix of
 # a run and is withdrawn on the host that ran it, under the worker; the

@@ -37,7 +37,6 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -1125,7 +1124,6 @@ final class ConcolicTaskPlan {
                 RefusedCandidate refusal) {
             unaddressedCandidates++;
             unaddressedReasons.add(refusal);
-            registerRunTotalsHook();
         }
 
         /**

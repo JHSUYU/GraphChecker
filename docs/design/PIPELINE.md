@@ -347,10 +347,21 @@ stage reads. Another size or exponent is the JDK's own search; the replay log na
 size. The recording searches as always. The scope map is read once, when the workload session
 opens (`GuardedStoreSites#install`, which hands its rows to `ClockLoops`).
 
-A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
-end and the early ends alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+A run ends before its JVM does, in one end for every workload JVM -- the recording, a focused or
+CONFIRM replay, a native reproduction -- whether its workload ended or an early end came first
+(`runtime.JUnitMethodRunner#exit`): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
 starts after it), live activations settle, the run totals close the session's rows (a closed
-`SessionPublisher` writes nothing more), and only then the VM session closes. The settle
+`SessionPublisher` writes nothing more) and then state the replay's verdict to its worker
+(`RowRuntime#writeWorkerVerdicts`, last, whole by one rename), the schedule states how its order went,
+the recording's trace is flushed and closed (`CausynthTraceRecorder#closeTrace`, its manifest
+`CLOSED`), and the JVM HALTS (`Runtime.halt`; the log's last engine line `Causynth <UTC instant>: the run's
+end halts its JVM (status <n>)`): the engine has no shutdown hook, and no cluster's
+teardown or shutdown hook runs after the end (PV7-adhoc-38: 35 decided replays, verdicts written,
+hung in Jetty's shutdown hook until their bound killed them and recorded `REPLAY_BOUNDED`). The VM
+session is never closed; the halt frees it. A JVM told to end before its run did -- a signal (the
+worker's bound) or the workload's own `System.exit`; the JDK refuses a new shutdown hook from then
+on, before any hook runs (`#shutdownBegun`) -- states nothing and halts: a verdict is only ever a
+decided end's. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
 nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
 finished, no CPU on the publication thread and no garbage collection), so a publication that
@@ -363,10 +374,8 @@ activation is finished, abandoned and moved aside in one step (`ConcolicRegionRu
 under the lock its terminal takes); its VM region is its thread's, so the terminal that thread still
 reaches closes it (`#closeStranded`) and publishes nothing. The end runs once: a
 second thread ending the same run (an early end meeting the workload's own) waits for the first's
-`System.exit`, and a caller of the run totals (`ConcolicResultPublisher#publishRunTotals`, also the
-shutdown hook) returns only once they are published, so no exit halts the close half-done. Cluster threads
-outlive the test, and a region started after the close would open a fresh VM session in which
-every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+halt, so no end halts another's close half-done. Cluster threads outlive the test, and a region they
+start while the end settles and closes the rows would be an occurrence no row states.
 
 A focused replay ends early, once, for one of five reasons (`ConcolicResultPublisher#conclude`):
 
@@ -392,8 +401,8 @@ flip, one submitted after it (the session is read whole up to there, and its sch
 cut there); at a refusal or a stall before any flip, every one (the session is withdrawn, and
 draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
-name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
-`System.exit` ends the in-process cluster (its threads and ports) with the JVM.
+name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose halt
+ends the in-process cluster (its threads and ports) with the JVM.
 
 A read-out repeats what an earlier one stated (every close reads out every location touched since its
 entry), and each event is one row, published by the first activation whose publication walks it
@@ -1278,7 +1287,10 @@ the one writer of the obligation's answer, `obligation_result.jsonl`, and writes
 replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
 launcher gets TERM, the kill grace, then KILL), so no replay JVM writes after it (solr-18406 ra1:
 five JVMs past their bound rewrote the answer ADMITTED during their shutdown hooks, naming sessions
-the worker had withdrawn, and the head waited for them until the campaign failed). `ADMITTED` = the flipped
+the worker had withdrawn, and the head waited for them until the campaign failed). The statement is
+the answer whenever the replay made one, even when the bound killed its JVM after it: it is the
+run's last write, after the session it names is closed (or, naming none, withdrawn), whole by one
+rename, and a JVM told to end before its run did states nothing (§5). `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, every inherited flip held, and every edge of its
 `expected_edges.jsonl` was taken (`runtime.Confirmation`, the world's pairings: a read that did
@@ -1350,7 +1362,8 @@ HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed 
 already deleted, in a tree whose waits never time out) worked about 80 s and then stood still for
 2,320 s.
 
-A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
+A replay killed on its bound before it stated its verdict (one that stated it is answered by its
+statement, above): its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound, its detail opening `REPLAY_BOUNDED:`
 (`ObligationResult#replayBounded`; a replay killed inside its bound, by its memory reservation or a
 signal, too): it answered nothing, of the arm or of its world, so it settles nothing and counts toward
@@ -3117,7 +3130,8 @@ A planted run is not the recording's world, so the workload's checks of that wor
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
 planted, rootsPlanted, ordersHeld, fatal, atAnchor, control, reproduced}` (a control run never reproduced), read off its trace's plant rows
-against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
+(each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
+them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`
 when what it waited for came after all, `MISSING` when it never came; `UNWRITTEN`, `HOLDING` at the
 run's end, `NOT_REACHED`), whether it applied every row, every ROOT and ANSWER row and held every

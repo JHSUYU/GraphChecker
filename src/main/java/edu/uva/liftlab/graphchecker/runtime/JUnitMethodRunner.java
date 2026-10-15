@@ -2,10 +2,10 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 /**
  * The entry point every {@code execute.sh} launches: the workload session
- * opens before the test method and closes after it on every exit path, so
- * an exported expression can outlive its producer's thread.  The method
- * itself is run by {@link JUnitLifecycle}.  A replay draws its RSA key pairs
- * from {@link ReplayKeys}.
+ * opens before the test method and lasts the JVM, so an exported expression
+ * can outlive its producer's thread, and every exit path ends in
+ * {@link #exit}.  The method itself is run by {@link JUnitLifecycle}.  A
+ * replay draws its RSA key pairs from {@link ReplayKeys}.
  */
 public final class JUnitMethodRunner {
     private static final Object ENDING = new Object();
@@ -45,17 +45,36 @@ public final class JUnitMethodRunner {
     }
 
     /**
-     * The one end of a replay, the workload's or its witness's
-     * ({@code ConcolicResultPublisher#concludeAtWitness}).  THE RUN ENDS
-     * BEFORE ITS SESSION DOES: admission ends, what is live settles (the
-     * publications first: closing under a pending one is refused), the run
-     * totals close the rows -- nothing is published after them -- and only
-     * then the VM session closes.  Non-daemon cluster threads outlive the
-     * test, so the exit is explicit.  0 when the method returned, 1 when it,
-     * a publication or the close failed.
+     * The one end of every workload JVM -- the recording, a focused or a
+     * CONFIRM replay, a native reproduction -- whether its workload ended
+     * ({@link #main}) or an early end came first ({@code
+     * ConcolicResultPublisher#conclude}, {@code RecordingPlant#end}).
+     * THE RUN ENDS BEFORE ITS JVM DOES: admission ends, what is live settles
+     * (the publications first, each after the read-out pages queued before
+     * it: closing under a pending one is refused), the run totals close the
+     * session's rows and then state the replay's verdict to its worker --
+     * nothing is published after them -- the schedule states how its order
+     * went, the recording's trace is flushed and closed, and the JVM HALTS.
+     * 0 when the method returned, 1 when it, a publication or the close
+     * failed.
+     *
+     * <p>A halt, not {@code System.exit}: nothing runs after the end.  A
+     * cluster's own shutdown hook may never return: PV7-adhoc-38, 35 decided
+     * replays (stalled after their flip, or refused) whose verdicts were
+     * written, then hung in Jetty's hook while the test thread retried
+     * against the stopped servers, until the worker killed each at
+     * replay_timeout_s and recorded REPLAY_BOUNDED.  Every row the end owes
+     * is written by the steps above, so the JVM has no shutdown hook of the
+     * engine's; and its VM session is freed with it.</p>
+     *
+     * <p>A JVM told to end before its run did -- a signal (the worker's
+     * bound) or the workload's own {@code System.exit} -- states nothing: a
+     * cluster its shutdown stopped is no run that ended by itself, so a
+     * verdict the worker reads is only ever a decided end's
+     * ({@code run_engine.sh campaign_obligation_replay}).</p>
      *
      * <p>ONE END: the first caller ends the run and a later one waits for its
-     * exit.  SOLR-18413 r8: the declared update's throw failed the test, and
+     * halt.  SOLR-18413 r8: the declared update's throw failed the test, and
      * its witness stop and the failed test both ended the run; the witness
      * began the run totals, the test found them begun, closed the session
      * and exited while the verdict was still being written.</p>
@@ -67,11 +86,17 @@ public final class JUnitMethodRunner {
                     try {
                         ENDING.wait();
                     } catch (InterruptedException ignored) {
-                        // The first end exits the JVM; nothing else does.
+                        // The first end halts the JVM; nothing else does.
                     }
                 }
             }
             ending = true;
+        }
+        if (shutdownBegun()) {
+            EngineConsole.println("Causynth: this JVM was told to end (a"
+                    + " signal, or the workload's System.exit) before its run"
+                    + " ended; the run states nothing");
+            halt(status);
         }
         int code = status;
         ConcolicRegionRuntime.endAdmission();
@@ -82,25 +107,49 @@ public final class JUnitMethodRunner {
             code = 1;
         }
         try {
-            // Here, not in a conditional shutdown hook: once per JVM.
             ConcolicResultPublisher.publishRunTotals();
-            reportWorkloadSessionClose();
         } catch (Throwable closeFailure) {
-            // A failure while unwinding must not skip the exit below.
+            // A failure while unwinding must not skip the halt below.
             EngineConsole.trace(closeFailure);
             code = 1;
         }
-        System.exit(code);
+        try {
+            ScheduleLog.stateProgress();
+            CausynthTraceRecorder.closeTrace();
+        } catch (Throwable endFailure) {
+            EngineConsole.trace(endFailure);
+            code = 1;
+        }
+        halt(code);
     }
 
     /**
-     * Closes the workload session; a refusal is printed, not thrown, so it
-     * never hides the workload's own outcome.
+     * Whether this JVM's shutdown has begun.  The JDK takes its hook list
+     * away before it starts any hook, and refuses a new one from then on,
+     * so the answer is known before any cluster's hook has run.
      */
-    private static void reportWorkloadSessionClose() {
-        String refusedClose = ConcolicRegionRuntime.closeWorkloadSession();
-        if (!refusedClose.isEmpty()) {
-            EngineConsole.println(refusedClose);
+    static boolean shutdownBegun() {
+        Thread probe = new Thread("causynth-shutdown-probe");
+        try {
+            Runtime.getRuntime().addShutdownHook(probe);
+            Runtime.getRuntime().removeShutdownHook(probe);
+            return false;
+        } catch (IllegalStateException shuttingDown) {
+            return true;
+        } catch (SecurityException unaskable) {
+            // A workload's security manager that forbids hooks: no signal
+            // is known to have come.
+            return false;
         }
+    }
+
+    /** The replay log's last engine line, as a UTC instant (a workload may
+     *  randomize the JVM's zone), then the halt. */
+    private static void halt(int code) {
+        EngineConsole.println("Causynth " + java.time.Instant.now()
+                + ": the run's end halts its JVM (status " + code + ")");
+        System.out.flush();
+        System.err.flush();
+        Runtime.getRuntime().halt(code);
     }
 }
