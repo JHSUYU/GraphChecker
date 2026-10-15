@@ -111,7 +111,8 @@ final class StoreContent {
     /** A fetch of {@code key} returned {@code bytes}: in a replay, or in
      *  the recording's window, which states the parse's leaves. */
     static void fetched(String transport, String key, byte[] bytes) {
-        if (bytes != null && (RowRuntime.open() || RecordingWindow.opened())) {
+        if (bytes != null && (RowRuntime.open()
+                || CausynthTraceRecorder.tracing())) {
             FETCHED.put(bytes, trimmed(transport) + "\n" + trimmed(key));
         }
     }

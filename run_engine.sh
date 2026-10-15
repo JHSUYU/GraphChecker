@@ -9096,6 +9096,11 @@ do_campaign() {
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
   iteration_dir="${campaign_root}/${iteration_id}"
+  # The ZooKeeper chain every replay of this campaign states its store reads
+  # by (contract.ZkChain#ENVIRONMENT): the iteration's, which PLAN copies,
+  # ZKKEYS rekeys and GROW grows; a replay reads it as it starts.  None (no
+  # ZooKeeper), no store read is stated.
+  export CAUSYNTH_ZK_CHAIN="${iteration_dir}/zk_chain.jsonl"
   # Refused before any work rather than after the seed: a campaign root that
   # already holds an iteration belongs to another run, and its directories are
   # written once.

@@ -155,6 +155,18 @@ final class ActiveRegion {
         return d3Address == null ? "" : d3Address.render();
     }
 
+    /** Whether this occurrence is on the ZooKeeper chain ({@code
+     *  ZkChain#holds}), asked of its address once; null until asked. */
+    private Boolean onZkChain;
+
+    boolean onZkChain() {
+        if (onZkChain == null) {
+            onZkChain = d3Address != null
+                    && MessageDoors.chain().holds(d3Address.render());
+        }
+        return onZkChain;
+    }
+
     /**
      * Charges one body of this fixed-count loop, {@code bound} its {@code
      * K_L}, to the work cap, returning the cut that ends the activation once

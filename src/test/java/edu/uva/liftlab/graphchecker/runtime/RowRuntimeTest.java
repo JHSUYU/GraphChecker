@@ -44,6 +44,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
@@ -104,6 +105,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
         Fixtures.set(ConcolicTaskPlan.class, "plan", null);
+        Fixtures.set(MessageDoors.class, "chain", null);
     }
 
     private void openSession() throws Exception {
@@ -1067,34 +1069,65 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A read at the store's call is a read row of the version it returned
-     * at the reading occurrence, under the store's READ site -- a getData's
-     * (its fetch) and an exists' -- but a getChildren's, whose version is
-     * its children's, and a read of no node.
+     * A replay states a read at the store's call -- the version it
+     * returned, under the store's READ site -- only where the composition
+     * reads it: in a planned occurrence that runs tracked, of a path on the
+     * ZooKeeper chain or by an occurrence on it (the chain's growth).  A
+     * role's poll, a doors-only occurrence, a path neither touches, a
+     * getChildren's children version and a read of no node state nothing,
+     * and no activation.
      */
     @Test
-    public void aStoreCallsReadIsARowOfItsDataVersion() throws Exception {
+    public void aStoreCallsReadIsARowOnlyOnTheChainOfAPlannedOccurrence()
+            throws Exception {
         openSession();
         RecordingWindow.open();
         Identity.clock(() -> 41L);
         Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NN);
-        Identity.occurrence(NN.key(), "REGION.reads", true);
-        MessageDoors.fetched("SOLR_ZK", "/live/one@2", owner, null);
-        MessageDoors.storeRead("SOLR_ZK", "/live/two@5", "exists", owner);
-        MessageDoors.storeRead("SOLR_ZK", "/live/three@-1", "exists", owner);
-        MessageDoors.storeRead("SOLR_ZK", "/live@7", "getChildren", owner);
-        Identity.regionExit(null);
+        String planned = NN.key() + "/region/REGION.reads/ctx:Root:CLIENT#1"
+                + "/idx:";
+        String chained = NN.key() + "/region/REGION.chained/ctx:Root:CLIENT#1"
+                + "/idx:";
+        JsonObject path = json("{'kind':'ZK_CHAIN_PATH','transport':"
+                + "'SOLR_ZK','location':'/live/one','slot':'/live/one'}");
+        JsonObject occurrence = json("{'kind':'ZK_CHAIN_OCCURRENCE',"
+                + "'occurrenceId':'" + OccurrenceAddress.parse(chained)
+                .render() + "'}");
+        Fixtures.set(MessageDoors.class, "chain",
+                ZkChain.of(Arrays.asList(path, occurrence)));
+        // the running occurrence (none: a role), doors-only, the read
+        Object[][] table = {
+                {null, false, "/live/one@2", "getData"},
+                {planned, false, "/live/one@3", "exists"},
+                {planned, true, "/live/one@4", "getData"},
+                {planned, false, "/live/two@5", "getData"},
+                {chained, false, "/live/three@6", "exists"},
+                {planned, false, "/live/one@-1", "exists"},
+                {planned, false, "/live@7", "getChildren"}};
+        long token = 960000L;
+        for (Object[] row : table) {
+            if (row[0] != null) {
+                ActiveRegion active = Fixtures.region(++token,
+                        Fixtures.taskRow(NN.key(), (String) row[0],
+                                "<a.Reader: void read()>", true,
+                                "'doorsOnly':" + row[1]));
+                active.d3Address = OccurrenceAddress.parse((String) row[0]);
+                Fixtures.pushed(active);
+            }
+            MessageDoors.storeRead("SOLR_ZK", (String) row[2],
+                    (String) row[3], owner);
+            Fixtures.release();
+        }
         RowRuntime.closeSession();
         List<String> reads = new ArrayList<String>();
         for (ReadRow read : SessionReader.read(session()).reads()) {
-            if (read.location().kind() == LocationKind.STORE) {
-                reads.add(read.endpoint().site() + "@"
-                        + read.observedVersion());
-            }
+            reads.add(read.endpoint().occurrence().regionId() + " "
+                    + read.endpoint().site() + "@" + read.observedVersion());
         }
-        assertEquals(Arrays.asList("SOLR_ZK#READ:.live.one@2",
-                "SOLR_ZK#READ:.live.two@5"), reads);
+        assertEquals(Arrays.asList("REGION.reads SOLR_ZK#READ:.live.one@3",
+                "REGION.chained SOLR_ZK#READ:.live.three@6"), reads);
+        assertTrue(SessionReader.read(session()).activations().isEmpty());
     }
 
     /**
