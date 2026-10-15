@@ -2333,7 +2333,10 @@ public class ComposerTest {
      * each.  A valuation flipping the marker satisfies it, asked under
      * every pin for its model.  The fixture z3 answers the first path sat
      * exactly when the marker is pinned true, the second never, the whole
-     * query never, and logs each ask of the first.
+     * query never, and logs each question it refutes the first under by
+     * its text, whichever engine asked it -- the engine that lost a race
+     * can ask after it: no question after the first flat valuation's is
+     * new.
      */
     @Test
     public void aPathIsAskedOnceForTheValuationsAgreeingOnItsPins()
@@ -2359,11 +2362,11 @@ public class ComposerTest {
         Files.write(script, Arrays.asList("#!/bin/bash",
                 "input=$(cat)",
                 "case $input in",
-                "  *'(assert " + selector + ")'*) echo path >> " + log + ";"
-                        + " case $input in",
+                "  *'(assert " + selector + ")'*) case $input in",
                 "      *'(= " + MARKER + " true)'*) echo sat;"
                         + " echo '((x 1))' ;;",
-                "      *) echo unsat; echo '()' ;;",
+                "      *) printf '%s' \"$input\" | grep -v smt.arith.solver"
+                        + " | md5sum >> " + log + "; echo unsat; echo '()' ;;",
                 "    esac ;;",
                 "  *'(assert " + other + ")'*) echo unsat; echo '()' ;;",
                 "  *) echo unknown ;;",
@@ -2371,28 +2374,31 @@ public class ComposerTest {
         assertTrue(script.toFile().setExecutable(true));
         List<String> none = Collections.emptyList();
         int flat = 0;
-        int askedFlat = 0;
+        Set<String> first = null;
         try (Disjunction asks = new Disjunction(composition,
                 new Z3(ScopedFixture.of(script), 30000L, 8192))) {
             for (Composer.Valuation valuation : composition.valuations()) {
                 boolean flipped = "true".equals(
                         valuation.assignment().get(MARKER_ROOT));
-                long before = asked(log);
                 Z3.Answer answer = asks.ask(valuation.assertions(),
                         composition.selectors(), none, false);
                 assertEquals(valuation.toString(), flipped ? "sat" : "unsat",
                         answer.status());
                 if (!flipped) {
                     flat++;
-                    // One ask is a z3 per engine, each logging.
-                    if (asked(log) > before) askedFlat++;
+                    if (first == null) {
+                        first = new java.util.TreeSet<String>(
+                                Files.readAllLines(log));
+                    }
                 }
             }
         }
         assertTrue("valuations pinning the marker false: " + flat + " "
                 + composition.valuations(), flat > 2);
-        assertEquals("the path asked once for all " + flat + " of them", 1,
-                askedFlat);
+        assertFalse("the first flat valuation asked it", first.isEmpty());
+        assertEquals("the path asked under one projection for all " + flat
+                        + " of them", first,
+                new java.util.TreeSet<String>(Files.readAllLines(log)));
     }
 
     /**

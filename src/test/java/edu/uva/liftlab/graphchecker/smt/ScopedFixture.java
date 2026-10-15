@@ -13,7 +13,10 @@ import java.util.Arrays;
  * answered by the fixture over the shared part, the scope and that command,
  * as a one-shot ask of that question would be; an input with no mark is a
  * one-shot ask, the fixture's own.  SIGINT is ignored: the fixture answers
- * at once.
+ * at once.  As z3 is one process, nothing of it outlives it: a one-shot
+ * ask execs the fixture, and a scope's fixture is its direct child, ended
+ * with it ({@code setpriv --pdeathsig}), never one left in a subshell to
+ * answer -- and log -- after its z3 was stopped.
  */
 public final class ScopedFixture {
 
@@ -28,6 +31,7 @@ public final class ScopedFixture {
         Files.write(scoped, Arrays.asList("#!/bin/bash",
                 "trap '' INT",
                 "fixture='" + oneShot + "'",
+                "work=$(mktemp -d \"$(dirname \"$fixture\")/scoped.XXXXXX\")",
                 "args=(\"$@\")",
                 "all=''; shared=''; scope=''; command=''; inscope=0; marked=0",
                 "while IFS= read -r line || [[ -n $line ]]; do",
@@ -40,8 +44,10 @@ public final class ScopedFixture {
                 "        suffix=$'(check-sat)\\n'",
                 "        [[ $command == '(check-sat)' ]]"
                         + " || suffix+=\"$command\"$'\\n'",
-                "        out=$(printf '%s' \"$shared$scope$suffix\""
-                        + " | \"$fixture\" \"${args[@]}\"); status=$?",
+                "        printf '%s' \"$shared$scope$suffix\" >\"$work/in\"",
+                "        setpriv --pdeathsig KILL -- \"$fixture\" \"${args[@]}\""
+                        + " <\"$work/in\" >\"$work/out\"; status=$?",
+                "        out=$(<\"$work/out\")",
                 "        [[ $command == '(check-sat)' ]]"
                         + " || out=$(printf '%s\\n' \"$out\" | tail -n +2)",
                 "        [[ -z $out ]] || printf '%s\\n' \"$out\"",
@@ -60,7 +66,8 @@ public final class ScopedFixture {
                 "  esac",
                 "done",
                 "(( marked )) && exit 0",
-                "printf '%s' \"$all\" | exec \"$fixture\" \"${args[@]}\""),
+                "printf '%s' \"$all\" >\"$work/in\"",
+                "exec \"$fixture\" \"${args[@]}\" <\"$work/in\""),
                 StandardCharsets.UTF_8);
         if (!scoped.toFile().setExecutable(true)) {
             throw new IOException("not executable: " + scoped);
