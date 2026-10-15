@@ -601,7 +601,8 @@ public class RuntimeRegionPlannerTest {
         // B#1; 40 runs under no context; 50 serves C#1.  In a second window,
         // 60 serves another A#1; 70 a turn begun in an older window.
         Object[][] calls = {{1L, 1L, 10L, 0L, 0, "A#1", 1},
-                {2L, 1L, 11L, 10L, 100, "A#1", 1}, {3L, 2L, 20L, 0L, 0, "A#1", 1},
+                {2L, 1L, 11L, 10L, 100, "A#1", 1},
+                {3L, 2L, 20L, 0L, 0, "A#1", 1},
                 {4L, 2L, 21L, 20L, 0, "A#1", 1}, {5L, 3L, 30L, 0L, 0, "B#1", 1},
                 {6L, 4L, 40L, 0L, 400, "", 1}, {7L, 1L, 50L, 0L, 0, "C#1", 1},
                 {8L, 1L, 60L, 0L, 600, "A#1", 2},

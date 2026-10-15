@@ -202,7 +202,9 @@ public class PlanTest {
         JsonObject task = new JsonObject();
         task.addProperty("taskId", taskId);
         JsonArray inputs = new JsonArray();
-        for (String action : actions) inputs.add(JsonParser.parseString(action));
+        for (String action : actions) {
+            inputs.add(JsonParser.parseString(action));
+        }
         task.add("inputActions", inputs);
         return task;
     }

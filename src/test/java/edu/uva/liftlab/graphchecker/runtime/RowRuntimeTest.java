@@ -852,7 +852,8 @@ public class RowRuntimeTest {
         openSession();
         OccurrenceAddress producer = address("hdfs-17899/nn0#epoch0",
                 "REGION.2392e4b7", CausalContext.of(Role.of("HEARTBEAT_TICK"),
-                        "", 3), ExecutionIndex.parse("PBHelper.convert()#u2@0"));
+                        "", 3),
+                ExecutionIndex.parse("PBHelper.convert()#u2@0"));
         Endpoint exported = RowRuntime.exported(producer, 61L,
                 "XCH.resp.block-key-id", 4242L, 0, null, "J", "119981");
         assertNotNull(exported);
@@ -1438,7 +1439,8 @@ public class RowRuntimeTest {
                                 + "'_exp':'+','_left':{'_type':"
                                 + "'SymbolExpression','_java_type':'J','_exp':"
                                 + "'M_J_field_REGION.aaa1cfd7.in.fa630d59.occ"
-                                + ".23886999_java/lang/Long'}},'reused':true}")));
+                                + ".23886999_java/lang/Long'}},"
+                                + "'reused':true}")));
         assertTrue(RowCodec.readAll(dir.targets(), RowCodec::readTarget)
                 .get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
@@ -1666,9 +1668,10 @@ public class RowRuntimeTest {
 
     /** {@code Y_I_0 + Y_I_1}, as the VM publishes a linearized RMW. */
     private static JsonObject rmwExpression() {
-        return json("{'_type':'BinaryExpression','_left':{'_type':'ConstExpr',"
-                + "'_java_type':'I','_exp':'Y_I_0'},'_op':'+','_right':{'_type':"
-                + "'ConstExpr','_java_type':'I','_exp':'Y_I_1'}}");
+        return json("{'_type':'BinaryExpression','_left':{'_type':"
+                + "'ConstExpr','_java_type':'I','_exp':'Y_I_0'},'_op':'+',"
+                + "'_right':{'_type':'ConstExpr','_java_type':'I','_exp':"
+                + "'Y_I_1'}}");
     }
 
     /** One manual mint row, as {@code recordManualSymbolization} writes it. */

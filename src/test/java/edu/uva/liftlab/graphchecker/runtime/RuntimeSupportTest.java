@@ -154,7 +154,8 @@ public class RuntimeSupportTest {
     public void anRsaKeyPairIsDrawnFromThePool() throws Exception {
         ReplayKeys.install();
         ReplayKeys.install();
-        assertEquals("CausynthReplayKeys", Security.getProviders()[0].getName());
+        assertEquals("CausynthReplayKeys",
+                Security.getProviders()[0].getName());
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
         KeyPair first = generator.generateKeyPair();
@@ -209,7 +210,8 @@ public class RuntimeSupportTest {
             {"/live_nodes/10.0.0.2:7000_solr", "/live_nodes/10.0.0.2:7000_solr",
                 "10.0.0.2:7000"},
             {"/a/0/b", "/a/0/b", ""},
-            {"/u/http://10.0.0.3:9000/solr", "/u/http://{auto0/node3}/solr", ""},
+            {"/u/http://10.0.0.3:9000/solr", "/u/http://{auto0/node3}/solr",
+                ""},
             {"/q/Task@1a2b", "/q/Task@1a2b", ""},
             {"/q/Task@3c4d", "/q/Task@3c4d", ""}};
         for (String[] row : rows) {

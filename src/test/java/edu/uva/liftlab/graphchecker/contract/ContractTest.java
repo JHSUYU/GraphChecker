@@ -1380,18 +1380,23 @@ public class ContractTest {
     public void aHopIsItsSendersFirstSendOfTheSiteWhateverCameBefore() {
         StableEventNames confirmed = new StableEventNames();
         confirmed.sent(STABLE_TASK + "1", "HTTP:STATUS", "e1");
-        confirmed.sent(STABLE_TASK + "2", "HTTP:STATUS", "e2");     // a poll's second
+        // a poll's second
+        confirmed.sent(STABLE_TASK + "2", "HTTP:STATUS", "e2");
         confirmed.sent(STABLE_TASK + "3", "HTTP:SPLIT", "e3");
         StableEventNames nativeRun = new StableEventNames();
-        nativeRun.sent(STABLE_TASK + "1", "HTTP:STATUS", "f1");     // polled once
+        nativeRun.sent(STABLE_TASK + "1", "HTTP:STATUS", "f1"); // polled once
         nativeRun.sent(STABLE_TASK + "2", "HTTP:SPLIT", "f2");
-        String split = confirmed.context("n1|Anchor:e3@HTTP/TASK|<B: void x()>@3");
-        assertEquals("n1|Anchor:{n0|Root:TASK#4|<A: void call()>><H: void submit()>#u9 >HTTP:SPLIT}@HTTP/TASK|<B: void x()>",
+        String split = confirmed.context(
+                "n1|Anchor:e3@HTTP/TASK|<B: void x()>@3");
+        assertEquals("n1|Anchor:{n0|Root:TASK#4|<A: void call()>><H: void"
+                        + " submit()>#u9 >HTTP:SPLIT}@HTTP/TASK|<B: void x()>",
                 split);
-        assertEquals(split, nativeRun.context("n1|Anchor:f2@HTTP/TASK|<B: void x()>@5"));
+        assertEquals(split, nativeRun.context(
+                "n1|Anchor:f2@HTTP/TASK|<B: void x()>@5"));
         assertNull("a loop's later send has no fixed name",
                 confirmed.context("n1|Anchor:e2@HTTP/TASK"));
-        assertNull("a send this run never made", nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
+        assertNull("a send this run never made",
+                nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
         assertEquals("plain|context", confirmed.context("plain|context@7"));
     }
     /** How many rows of one kind and class a gate stated. */

@@ -310,8 +310,8 @@ public class MintTest {
                 recorded.get("recordedValue").getAsString());
         assertEquals("J", recorded.get("javaType").getAsString());
         assertTrue(recorded.get("minted").getAsBoolean());
-        JsonObject clock = manualRow(clockAction("PORT.now", "1789358343989", false),
-                "1789358344655");
+        JsonObject clock = manualRow(clockAction("PORT.now", "1789358343989",
+                false), "1789358344655");
         assertEquals("the clock the case declared, and its tick", 1_000_000L,
                 clock.get("clock").getAsLong());
         assertEquals("this execution's own instant", "1789358344655",
