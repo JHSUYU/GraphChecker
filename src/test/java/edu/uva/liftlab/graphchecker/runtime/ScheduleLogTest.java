@@ -1,5 +1,14 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.CLAIM;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.END;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.INTERRUPT;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.PUBLISH;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.RECV;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.START;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE;
+import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WRITE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -13,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,9 +30,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
@@ -42,21 +54,21 @@ import org.junit.Test;
 public class ScheduleLogTest {
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
-    private final ScheduleLog.Sink writer = new ScheduleLog.Sink() {
-        @Override
-        public void write(JsonObject row) {
-            written.add(row);
-        }
-    };
+    private final ScheduleLog.Sink writer = written::add;
 
     /**
      * The node every test's threads run for.  An event with no identity
      * holds no place in the order, so the test thread opens one request and
-     * every thread a test starts inherits it, as work a request starts does:
-     * they all state one context.
+     * every thread a test starts inherits it: they all state one context.
      */
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
+    private static final String VIEW_NODE = "auto0/node0#epoch0";
+    private static final LocationId VIEW = view(VIEW_NODE, "/c.json");
+    private static final String V7 = published(7L);
+    private static final String V8 = published(8L);
+    private static final String V9 = published(9L);
+    private static final String WORK = "<C: boolean waitForWork()>#u21";
     private long request;
     private Object node;
 
@@ -85,13 +97,71 @@ public class ScheduleLogTest {
         ScheduleLog.install(writer);
     }
 
+    /** A fresh schedule and publication account. */
+    private void fresh() {
+        restart();
+        Confirmation.resetForTests();
+    }
+
     @After
     public void tearDown() {
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
         Confirmation.resetForTests();
         ScheduleLog.resetForTests();
+        StartupOrder.resetForTests();
         if (request != 0L) RuntimeTraceContext.endRequest(request);
+    }
+
+    private static void send(String site) {
+        ScheduleLog.observe(SEND, site);
+    }
+
+    private static void timeout(long millis) {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                String.valueOf(millis));
+    }
+
+    /** Milliseconds since {@code nanos}. */
+    private static long since(long nanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - nanos);
+    }
+
+    /** The order's account states {@code fragment}. */
+    private static void progress(String fragment) {
+        progress("", fragment);
+    }
+
+    private static void progress(String why, String fragment) {
+        String progress = ScheduleLog.progress();
+        assertTrue(why + progress, progress.contains(fragment));
+    }
+
+    private static Thread started(Runnable work) {
+        Thread thread = new Thread(work);
+        thread.start();
+        return thread;
+    }
+
+    /** Each thread joined and gone. */
+    private static void joined(Thread... threads) throws InterruptedException {
+        for (Thread thread : threads) {
+            thread.join(10000L);
+            assertFalse(thread.getName() + " still runs", thread.isAlive());
+        }
+    }
+
+    /** Sleeps where no InterruptedException may escape. */
+    private static void nap(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static List<String> applied() {
+        return Collections.synchronizedList(new ArrayList<String>());
     }
 
     /**
@@ -99,18 +169,16 @@ public class ScheduleLogTest {
      * (explore.RealizedOrder): an event waits until the event its row orders
      * before it was made in another context; one whose before-event does not
      * come within the order's timeout goes on, and every hold of the run
-     * gives way after it -- a run that broke the confirmed order reproduces
-     * nothing.
+     * gives way after it.
      */
     @Test
     public void aPlantedRunHoldsTheRealizedOrder() throws Exception {
         Object other = new Object();
         RuntimeTraceContext.registerSource(other, new SourceRef(
                 "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
-        // Unplanted, ours runs first: the two contexts as both runs name them.
         runBoth(other, 0L);
         List<ScheduleEvent> free = events();
-        assertEquals("SEND", free.get(0).kind().name());
+        assertEquals(SEND, free.get(0).kind());
         String ours = free.get(0).context();
         String theirs = free.get(1).context();
         restart();
@@ -124,16 +192,13 @@ public class ScheduleLogTest {
         System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "400");
         try {
             runBoth(other, 300L);
-            List<ScheduleEvent> events = events();
-            assertEquals("held until theirs: " + events, "WRITE",
-                    events.get(0).kind().name());
-            assertEquals("SEND", events.get(1).kind().name());
+            assertEquals("held until theirs: " + events(),
+                    Arrays.asList(WRITE, SEND), kinds());
             assertFalse(RecordingPlant.orderGaveWay());
             long started = System.nanoTime();
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+            send("y");
             assertTrue("an order never met goes on at its timeout",
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
-                            - started) >= 300L);
+                    since(started) >= 300L);
             assertTrue(RecordingPlant.orderGaveWay());
         } finally {
             System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
@@ -145,21 +210,20 @@ public class ScheduleLogTest {
     /** Ours SENDs x while another context WRITEs ZK:/a {@code late} ms
      *  after both started. */
     private static void runBoth(Object other, long late) throws Exception {
-        CountDownLatch started = new CountDownLatch(1);
-        Thread theirs = new Thread(() -> {
+        CountDownLatch go = new CountDownLatch(1);
+        Thread theirs = started(() -> {
             long own = RuntimeTraceContext.beginRequest(other, "theirs");
             try {
-                started.await();
+                go.await();
                 Thread.sleep(late + 50L);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
-            ScheduleLog.observe(ScheduleEvent.Kind.WRITE, "ZK:/a");
+            ScheduleLog.observe(WRITE, "ZK:/a");
             RuntimeTraceContext.endRequest(own);
         });
-        theirs.start();
-        started.countDown();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        go.countDown();
+        send("x");
         theirs.join();
     }
 
@@ -171,55 +235,46 @@ public class ScheduleLogTest {
         JsonObject order = new JsonObject();
         order.addProperty(RecordingPlant.KIND, RecordingPlant.ORDER);
         order.addProperty(RecordingPlant.SCOPE, "EVENT");
-        order.add("before", event(beforeKind, beforeContext, beforeSite));
-        order.add("after", event(afterKind, afterContext, afterSite));
+        order.add("before", Fixtures.json("{'kind':'" + beforeKind
+                + "','context':'" + beforeContext + "','site':'" + beforeSite
+                + "','k':0}"));
+        order.add("after", Fixtures.json("{'kind':'" + afterKind
+                + "','context':'" + afterContext + "','site':'" + afterSite
+                + "','k':0}"));
         order.addProperty(RecordingPlant.ROW, row);
         return order.toString();
     }
 
-    private static JsonObject event(String kind, String context,
-                                    String site) {
-        JsonObject event = new JsonObject();
-        event.addProperty("kind", kind);
-        event.addProperty("context", context);
-        event.addProperty("site", site);
-        event.addProperty("k", 0);
-        return event;
-    }
-
+    /** Every unattributed thread shares one context, so its k would be a
+     *  cross-thread counter: an event with no identity holds no place. */
     @Test
     public void anEventWithNoIdentityHoldsNoPlace() {
         RuntimeTraceContext.endRequest(request);
         request = 0L;
         assertTrue(Identity.contextHere().isLost());
-        ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
-        assertTrue("every unattributed thread shares one context, so its k "
-                + "would be a cross-thread counter: " + events(),
-                written.isEmpty());
+        ScheduleLog.observe(START, "<A: void a()>#u1");
+        send("HADOOP_IPC#REQUEST");
+        assertTrue(events().toString(), written.isEmpty());
     }
 
     /**
      * A response stands where its request was received, whichever thread
-     * sends it: a thread serving other work (a deferred RPC response's
-     * sender) writes it under the receipt's context, not its own.
+     * sends it (a deferred RPC response's sender), not under its own.
      */
     @Test
     public void aResponseStandsWhereItsRequestWasReceived() throws Exception {
         ScheduleLog.Stance receipt = ScheduleLog.stanceHere();
-        ScheduleLog.observe(ScheduleEvent.Kind.RECV, "HADOOP_IPC#REQUEST");
+        ScheduleLog.observe(RECV, "HADOOP_IPC#REQUEST");
         Object other = new Object();
         RuntimeTraceContext.registerSource(other, new SourceRef(
                 "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
-        Thread sender = new Thread(() -> {
+        started(() -> {
             long own = RuntimeTraceContext.beginRequest(other, "sync");
-            ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                    "HADOOP_IPC#RESPONSE", "endpoint-at-receipt", receipt);
+            ScheduleLog.observe(START, "<A: void a()>#u1");
+            ScheduleLog.observe(SEND, "HADOOP_IPC#RESPONSE",
+                    "endpoint-at-receipt", receipt);
             RuntimeTraceContext.endRequest(own);
-        });
-        sender.start();
-        sender.join();
+        }).join();
         List<ScheduleEvent> events = events();
         assertEquals(3, events.size());
         assertFalse("the sender has a context of its own",
@@ -229,70 +284,53 @@ public class ScheduleLogTest {
     }
 
     /**
-     * A context's shape over this run's own senders: each anchor's SEND
-     * stance, as PLAN reads the recording's; a sender this run never sent
-     * from is unknown.
+     * A context's shape over this run's own senders (each anchor's SEND
+     * stance, as PLAN reads the recording's; one this run never sent from
+     * is unknown); a receipt's work holds a place only where this run
+     * stated that SEND (hdfs-adhoc-19/35: a block report's reply cut by the
+     * window's opening).
      */
     @Test
-    public void aContextIsShapedByThisRunsSenders() {
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST",
-                "e1");
+    public void aReceiptHoldsAPlaceOnlyWhereThisRunStatedItsSend() {
+        ScheduleLog.observe(SEND, "HADOOP_IPC#REQUEST", "e1");
         assertEquals(Arrays.asList("HADOOP_IPC/check@t/dn0#epoch0",
                 "Root:CLIENT/schedule-test"), ScheduleLog.shape(
                 CausalContext.parse("Anchor:e1@HADOOP_IPC/check")));
         assertEquals(Arrays.asList(ContextShape.UNKNOWN_HOP),
-                ScheduleLog.shape(
-                        CausalContext.parse("Anchor:e2@HADOOP_IPC/check")));
-    }
-
-    /**
-     * A receipt's work holds a place only where this run stated the SEND
-     * that anchored it: a message sent before the window, or by work that
-     * makes no events, anchors a context that makes none (hdfs-adhoc-19/35:
-     * a block report's reply cut by the window's opening).
-     */
-    @Test
-    public void aReceiptHoldsAPlaceOnlyWhereThisRunStatedItsSend() {
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST",
-                "e1");
+                ScheduleLog.shape(CausalContext.parse(
+                        "Anchor:e2@HADOOP_IPC/check")));
         List<Boolean> stood = new ArrayList<Boolean>();
         for (String producer : new String[] {"e1", "cut"}) {
             long hop = Lineage.push(NODE.key(), Role.of("HANDLER"), "check");
             Lineage.anchor(producer, "HADOOP_IPC/check");
             stood.add(ScheduleLog.stanceHere() != null);
-            ScheduleLog.observe(ScheduleEvent.Kind.RECV,
-                    "HADOOP_IPC#REQUEST");
+            ScheduleLog.observe(RECV, "HADOOP_IPC#REQUEST");
             Lineage.pop(hop);
         }
         assertEquals(Arrays.asList(true, false), stood);
-        assertEquals(Arrays.asList(ScheduleEvent.Kind.SEND,
-                ScheduleEvent.Kind.RECV), kinds());
+        assertEquals(Arrays.asList(SEND, RECV), kinds());
     }
 
     /**
-     * A taken item's work stands in its putter's scope, whoever takes it:
-     * the consumer's own start is the queue's scheduling (hdfs-adhoc-46:
-     * which IPC handler took a call moved its CLAIM's context).  And a
-     * start's k counts per hop of the context, not per root hop: the
-     * putter's second anchored hop counts from 0 again (hdfs-adhoc-35).
+     * A taken item's work stands in its putter's scope, whoever takes it
+     * (hdfs-adhoc-46: which IPC handler took a call moved its CLAIM's
+     * context), and a start's k counts per hop of the context: the putter's
+     * second anchored hop counts from 0 again (hdfs-adhoc-35).
      */
     @Test
     public void aTakenItemStandsInItsPuttersScopeCountedPerHop()
             throws Exception {
-        final String put = "<Q: void put(java.lang.Object)>#u7";
-        final BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
+        String put = "<Q: void put(java.lang.Object)>#u7";
+        BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
         List<Thread> consumers = new ArrayList<Thread>();
         for (int i = 0; i < 2; i++) {
-            Thread consumer = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        Identity.claimItem(queue.take());
-                    } catch (InterruptedException stop) {
-                        return;
-                    }
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            Thread consumer = new Thread(() -> {
+                try {
+                    Identity.claimItem(queue.take());
+                } catch (InterruptedException stop) {
+                    return;
                 }
+                send("x");
             });
             Identity.startWork("<S: void start()>#u5", consumer, null);
             consumer.start();
@@ -300,8 +338,7 @@ public class ScheduleLogTest {
         }
         List<String> expected = new ArrayList<String>();
         for (String producer : new String[] {"e1", "e2"}) {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                    "HADOOP_IPC#REQUEST", producer);
+            ScheduleLog.observe(SEND, "HADOOP_IPC#REQUEST", producer);
             long hop = Lineage.push(NODE.key(), Role.of("HANDLER"), "check");
             Lineage.anchor(producer, "HADOOP_IPC/check");
             expected.add(ScheduleLog.contextOf(Identity.contextHere()) + "|"
@@ -311,9 +348,7 @@ public class ScheduleLogTest {
             Lineage.pop(hop);
             queue.put(item);
         }
-        for (Thread consumer : consumers) {
-            consumer.join(5000L);
-        }
+        for (Thread consumer : consumers) consumer.join(5000L);
         List<String> taken = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
             if ("x".equals(event.site())) taken.add(event.context());
@@ -322,14 +357,19 @@ public class ScheduleLogTest {
         assertEquals(expected, taken);
     }
 
-    /** An event survives its row, and a torn last row ends the read. */
+    /**
+     * An event survives its row, and a torn last row ends the read; the
+     * recorder counts k per key, drains what came before it was installed,
+     * and nothing is recorded before the window opens.
+     */
     @Test
-    public void aTruncatedTailEndsTheReadThere() throws Exception {
-        ScheduleEvent event = ScheduleEvent.of(7L, ScheduleEvent.Kind.RECV,
+    public void theRecorderCountsKPerKeyAndDrainsWhatCameFirst()
+            throws Exception {
+        ScheduleEvent event = ScheduleEvent.of(7L, RECV,
                 "hdfs/nn0#epoch0|Anchor:ab12@HADOOP_IPC/heartbeat",
                 "HADOOP_IPC#REQUEST", 3, "occ-1");
-        ScheduleEvent bare = ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE,
-                "", "tick.KEY_MANAGER_TICK", 0, "");
+        ScheduleEvent bare = ScheduleEvent.of(0L, WAKE, "",
+                "tick.KEY_MANAGER_TICK", 0, "");
         String last = RowCodec.toLine(RowCodec.writeScheduleEvent(bare));
         Path file = Files.createTempFile("schedule", ".jsonl");
         Files.write(file, (RowCodec.toLine(RowCodec.writeScheduleEvent(event))
@@ -338,100 +378,85 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList(event, bare),
                 SessionReader.readSchedule(file));
         Files.delete(file);
-    }
 
-    @Test
-    public void theRecorderCountsKPerKeyAndDrainsWhatCameFirst() {
         ScheduleLog.resetForTests();
         written.clear();
-        ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        ScheduleLog.observe(START, "<A: void a()>#u1");
+        send("HADOOP_IPC#REQUEST");
         ScheduleLog.install(writer);
-        ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
+        ScheduleLog.observe(START, "<A: void a()>#u1");
         List<ScheduleEvent> events = events();
         assertEquals(3, events.size());
-        assertEquals(Arrays.asList(0L, 1L, 2L), Arrays.asList(
-                events.get(0).seq(), events.get(1).seq(),
-                events.get(2).seq()));
-        assertEquals(0, events.get(0).k());
-        assertEquals(0, events.get(1).k());
-        assertEquals(1, events.get(2).k());
+        for (int at = 0; at < 3; at++) {
+            assertEquals((long) at, events.get(at).seq());
+            assertEquals(at == 2 ? 1 : 0, events.get(at).k());
+        }
+        assertTrue("observe answers whether it wrote", ScheduleLog.observe(
+                SEND, "x"));
+        RecordingWindow.reset();
+        assertFalse(ScheduleLog.observe(SEND, "HADOOP_IPC#REQUEST"));
+        assertEquals(4, sites().size());
     }
 
     /**
      * Threads started inside one scope count their events apart: the start
-     * frame is part of an event's context, so the k-th send of each thread
-     * is its own whatever the other one did in between (IDENTITY §8).  A
-     * thread no woven start handed work to keeps the scope's context unchanged.
+     * frame is part of an event's context (IDENTITY §8); a thread no woven
+     * start handed work keeps the scope's context.
      */
     @Test
     public void threadsStartedInOneScopeCountTheirOwnEvents() throws Exception {
         written.clear();
-        final String site = "<A: void spawn()>#u2";
-        List<Thread> started = new ArrayList<Thread>();
+        String site = "<A: void spawn()>#u2";
+        List<Thread> spawned = new ArrayList<Thread>();
         for (int index = 0; index < 2; index++) {
-            Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                            "HADOOP_IPC#REQUEST");
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                            "HADOOP_IPC#REQUEST");
-                }
+            Thread thread = new Thread(() -> {
+                send("HADOOP_IPC#REQUEST");
+                send("HADOOP_IPC#REQUEST");
             });
             Identity.startWork(site, thread, null);
-            started.add(thread);
+            spawned.add(thread);
         }
         // The second thread runs first: its sends are still its own 0 and 1.
-        for (int index = started.size() - 1; index >= 0; index--) {
-            started.get(index).start();
-            started.get(index).join();
+        for (int index = spawned.size() - 1; index >= 0; index--) {
+            spawned.get(index).start();
+            spawned.get(index).join();
         }
-        Thread plain = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                        "HADOOP_IPC#REQUEST");
-            }
-        });
-        plain.start();
-        plain.join();
+        started(() -> send("HADOOP_IPC#REQUEST")).join();
         String scope = ScheduleLog.contextOf(Identity.contextHere());
-        List<String> sends = new ArrayList<String>();
-        for (ScheduleEvent event : events()) {
-            if (event.kind() == ScheduleEvent.Kind.SEND) {
-                sends.add(event.context() + " k=" + event.k());
-            }
-        }
         assertEquals(Arrays.asList(
                 scope + "|" + site + "@1 k=0", scope + "|" + site + "@1 k=1",
                 scope + "|" + site + "@0 k=0", scope + "|" + site + "@0 k=1",
-                scope + " k=0"), sends);
+                scope + " k=0"), sends());
+    }
+
+    /** The SENDs written, each by its context and k. */
+    private List<String> sends() {
+        List<String> sends = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if (event.kind() == SEND) {
+                sends.add(event.context() + " k=" + event.k());
+            }
+        }
+        return sends;
     }
 
     /**
      * Threads started through one utility -- each call of it a level of its
      * own, so both starts are its 0th -- are told apart by the frames they
-     * were made under, which a started thread inherits as its starter's
-     * (IDENTITY §8): hdfs-adhoc-02's DataStreamer and LeaseRenewer, both
-     * {@code Daemon.start}ed after one RPC returned.
+     * were made under (hdfs-adhoc-02's DataStreamer and LeaseRenewer, both
+     * {@code Daemon.start}ed after one RPC returned), never by how often
+     * their creator came there.
      */
     @Test
     public void threadsStartedThroughOneUtilityStateWhereTheyWereMade()
             throws Exception {
         written.clear();
-        final String start = "<U: void start()>#u5";
+        String start = "<U: void start()>#u5";
         List<String> makers = Arrays.asList("<A: void stream()>",
                 "<B: void renew()>");
         for (String maker : makers) {
             long made = Identity.enterFrame(maker, null);
-            Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                            "HADOOP_IPC#REQUEST");
-                }
-            });
+            Thread thread = new Thread(() -> send("HADOOP_IPC#REQUEST"));
             Identity.exitFrame(made);
             long utility = Identity.enterFrame("<U: void start()>", null);
             Identity.startWork(start, thread, null);
@@ -440,26 +465,21 @@ public class ScheduleLogTest {
             thread.join();
         }
         String scope = ScheduleLog.contextOf(Identity.contextHere());
-        List<String> sends = new ArrayList<String>();
-        for (ScheduleEvent event : events()) {
-            if (event.kind() == ScheduleEvent.Kind.SEND) {
-                sends.add(event.context() + " k=" + event.k());
-            }
-        }
-        assertEquals("by the sites they were made at, never how often their"
-                + " creator came there", Arrays.asList(
+        assertEquals(Arrays.asList(
                 scope + "|" + makers.get(0) + ">" + start + "@0 k=0",
                 scope + "|" + makers.get(1) + ">" + start + "@0 k=0"),
-                sends);
+                sends());
     }
 
     /**
-     * A start made while a request is in hand -- the thread's last outbound
-     * named its verb and no receipt came since -- hands that request off:
-     * its site, and the start frame its work claims, name the verb, so its
-     * k counts per verb (IDENTITY §3).  A receipt ends the request in hand.
-     * A DataNode turn's heartbeat hand-off to the IPC sender no longer takes
-     * its block report's START and CLAIM (hdfs-adhoc-15).
+     * A start made while a request is in hand hands that request off: its
+     * site, and the start frame its work claims, name the verb, so its k
+     * counts per verb (IDENTITY §3); a receipt ends the request in hand
+     * (hdfs-adhoc-15: a heartbeat's hand-off to the IPC sender no longer
+     * takes its block report's START and CLAIM).  A message door's fault
+     * ends it as a receipt does (hdfs-17899-bug2: the SPS daemon started
+     * after a faulted getBlockKeys); a demanded door's fault and a marker
+     * no door names end no exchange.
      */
     @Test
     public void aStartWithARequestInHandIsThatRequestsHandOff()
@@ -471,279 +491,194 @@ public class ScheduleLogTest {
         for (String verb : verbs) {
             CausynthTraceRecorder.outboundExchange("HADOOP_IPC", "c-" + verb,
                     "0", "REQUEST", null, null, verb);
-            final Object item = new Object();
+            Object item = new Object();
             Identity.startWork(offer, item, null);
-            Thread sender = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    Identity.claimItem(item);
-                }
-            });
-            sender.start();
-            sender.join();
+            started(() -> Identity.claimItem(item)).join();
         }
         CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC", "c-r", "0",
                 "RESPONSE", null);
         Identity.startWork(offer, new Object(), null);
-        List<String> starts = new ArrayList<String>();
-        for (ScheduleEvent event : events()) {
-            if (event.kind() == ScheduleEvent.Kind.START) {
-                starts.add(event.site() + " k=" + event.k());
-            } else if (event.kind() == ScheduleEvent.Kind.CLAIM) {
-                claimed.add(event.site());
-            }
-        }
-        assertEquals(Arrays.asList(offer + ":" + verbs[0] + " k=0",
-                offer + ":" + verbs[1] + " k=0", offer + " k=0"), starts);
-        assertEquals(Arrays.asList(offer + ":" + verbs[0],
-                offer + ":" + verbs[1]), claimed);
-    }
-
-    /**
-     * A message door's fault ends the request in hand as a receipt does --
-     * the exchange ended, in failure -- so the thread's next start hands
-     * nothing off (hdfs-17899-bug2: the SPS daemon started after a faulted
-     * {@code getBlockKeys}).  A demanded door's fault (a local file
-     * operation) and a marker no door names end no exchange.
-     */
-    @Test
-    public void aMessageDoorFaultEndsTheRequestInHand() {
-        written.clear();
-        String offer = "<C$Connection: void sendRpcRequest(C$Call)>#u48";
-        String verb = "P.getBlockKeys";
         Object[][] faults = {
-                {"FAULT:HADOOP_IPC:REQUEST", true},
-                {"FAULT:HADOOP_IPC:REQUEST:ConnectTimeoutException", true},
-                {"FAULT:HDFS_SASL:REQUEST", true},
-                {"FAULT:HDFS_DATA_TRANSFER:RESPONSE:EOFException", true},
-                {"FAULT:ZOOKEEPER:WRITE", true},
-                {"FAULT:LOCAL_IO:WRITE", false},
-                {"FAULT:NO_DOOR:REQUEST", false},
-                {"a-workload-marker", false},
-        };
-        List<String> expected = new ArrayList<String>();
+            {"FAULT:HADOOP_IPC:REQUEST", true},
+            {"FAULT:HADOOP_IPC:REQUEST:ConnectTimeoutException", true},
+            {"FAULT:HDFS_SASL:REQUEST", true},
+            {"FAULT:HDFS_DATA_TRANSFER:RESPONSE:EOFException", true},
+            {"FAULT:ZOOKEEPER:WRITE", true},
+            {"FAULT:LOCAL_IO:WRITE", false},
+            {"FAULT:NO_DOOR:REQUEST", false},
+            {"a-workload-marker", false}};
+        List<String> expected = new ArrayList<String>(Arrays.asList(
+                offer + ":" + verbs[0] + " k=0", offer + ":" + verbs[1]
+                        + " k=0", offer + " k=0"));
         for (Object[] fault : faults) {
             CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
-                    "c-" + fault[0], "0", "REQUEST", null, null, verb);
+                    "c-" + fault[0], "0", "REQUEST", null, null,
+                    "P.getBlockKeys");
             Identity.doorFaulted((String) fault[0]);
             Identity.startWork(offer, new Object(), null);
             expected.add(fault[0] + " " + ((Boolean) fault[1] ? offer
-                    : offer + ":" + verb));
+                    : offer + ":P.getBlockKeys"));
             CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC",
                     "r-" + fault[0], "0", "RESPONSE", null);
         }
         List<String> starts = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
-            if (event.kind() == ScheduleEvent.Kind.START) {
-                starts.add(faults[starts.size()][0] + " " + event.site());
+            if (event.kind() == START) {
+                int at = starts.size();
+                starts.add(at < 3 ? event.site() + " k=" + event.k()
+                        : faults[at - 3][0] + " " + event.site());
+            } else if (event.kind() == CLAIM) {
+                claimed.add(event.site());
             }
         }
         assertEquals(expected, starts);
-    }
-
-    /** And observe answers whether it wrote. */
-    @Test
-    public void nothingIsRecordedBeforeTheWindowOpens() {
-        assertTrue(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
-        RecordingWindow.reset();
-        assertFalse(ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                "HADOOP_IPC#REQUEST"));
-        assertEquals(Collections.singletonList("x"), sites());
+        assertEquals(Arrays.asList(offer + ":" + verbs[0],
+                offer + ":" + verbs[1]), claimed);
     }
 
     /**
      * A NODE'S VIEW PUBLICATION IS AN EVENT OF ITS OWN (PUBLISH; SGF2
-     * snapshot-no-active: the seed replay published v8 after the
-     * CREATESNAPSHOT read the recording ran after it): it stands at the
-     * node's |VIEW stance, whatever free callback made it, and holds its
-     * place -- what the recording made after it waits for it.  A
+     * snapshot-no-active: the seed published v8 after the CREATESNAPSHOT
+     * read the recording ran after it): it stands at the node's |VIEW
+     * stance, whatever callback made it, and holds its place.  A
      * notification's publication whose turn is not due is handed to the
-     * node's publisher, which takes the turn and then applies; the callback
-     * goes on at once (it holds its collection's refresh lock).
+     * node's publisher; the callback goes on at once (it holds its
+     * collection's refresh lock).  Where no order holds it is published at
+     * once, its event written when the callback ends.
      */
     @Test
     public void aViewsPublicationIsHeldAtItsPlaceByTheNodesPublisher()
             throws Exception {
         Confirmation.resetForTests();
-        String viewNode = "auto0/node0#epoch0";
         String path = "/collections/c/state.json";
         String site = ScheduleEvent.published("SOLR_ZK", path, 8L);
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.PUBLISH,
-                        viewNode + "|VIEW", site, 0, ""),
-                event(ScheduleEvent.Kind.SEND, "after")),
-                Collections.<ScheduleEvent>emptyList());
-        ScheduleLog.Stance stance = ScheduleLog.viewStance(viewNode);
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, site),
+                event(SEND, "after")));
         assertFalse("behind the SEND the recording made first",
-                ScheduleLog.dueNow(ScheduleEvent.Kind.PUBLISH, site, stance));
-        LocationId view = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@" + viewNode, path);
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
+                ScheduleLog.dueNow(PUBLISH, site,
+                        ScheduleLog.viewStance(VIEW_NODE)));
+        LocationId view = view(VIEW_NODE, path);
+        List<String> applied = applied();
         long started = System.nanoTime();
         assertTrue("handed to the node's publisher", door(view, 8L,
-                viewNode, () -> applied.add("v8"), site));
-        assertTrue("the callback goes on at once", TimeUnit.NANOSECONDS
-                .toMillis(System.nanoTime() - started) < 200L);
+                () -> applied.add("v8"), site));
+        assertTrue("the callback goes on at once", since(started) < 200L);
         boolean[] sawApplied = new boolean[1];
-        Thread after = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        Thread after = started(() -> {
+            send("after");
             sawApplied[0] = applied.contains("v8");
         });
-        after.start();
         Thread.sleep(200L);
         assertTrue("nothing applied before its turn: " + applied,
                 applied.isEmpty());
-        assertTrue("nothing written past the frontier: " + sites(),
-                sites().isEmpty());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        after.join(5000L);
-        assertFalse("after waits for the publication, then goes",
-                after.isAlive());
-        long deadline = System.currentTimeMillis() + 5000L;
-        while (applied.isEmpty() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20L);
-        }
+        assertTrue("nothing past the frontier: " + sites(), sites().isEmpty());
+        send("before");
+        joined(after);
+        awaitSize(applied, 1);
         assertEquals(Arrays.asList("v8"), applied);
-        assertTrue("the successor is let go only once v8 is in force",
+        assertTrue("the successor is let go once v8 is in force",
                 sawApplied[0]);
         assertEquals(Arrays.asList("before", site, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
 
-        // Recorded where no order holds: published at once, the event
-        // written at the node's view stance once it is in force, when the
-        // callback ends -- after what its publish made, as a replay takes it.
-        restart();
-        Confirmation.resetForTests();
+        fresh();
         String next = ScheduleEvent.published("SOLR_ZK", path, 9L);
-        assertFalse("no order: in force at once", door(view, 9L, viewNode,
-                () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "inside"),
-                next));
-        List<ScheduleEvent> recorded = events();
+        assertFalse("no order: in force at once", door(view, 9L,
+                () -> send("inside"), next));
         assertEquals(Arrays.asList("inside", next), sites());
-        assertEquals(ScheduleEvent.Kind.PUBLISH, recorded.get(1).kind());
-        assertEquals(viewNode + "|VIEW", recorded.get(1).context());
+        assertEquals(PUBLISH, events().get(1).kind());
+        assertEquals(VIEW_NODE + "|VIEW", events().get(1).context());
     }
 
     /**
      * A DUE PUBLICATION'S TURN IS TAKEN ONCE ITS CALLBACK HAS PUBLISHED IT
-     * (SGF3 snapshot-no-active: node0's v8 turn was taken at the callback's
-     * door, and the Overseer's task read the cluster state before the
-     * callback's constructState): what the order lets go after the turn
-     * sees the publication.  A publish on the notification's own thread that
-     * waits on a lock owned by a thread waiting for its turn behind it has
-     * its turn taken for it a grace in (review R2), as a publisher's does.
+     * (SGF3 snapshot-no-active: node0's v8 turn was taken at the door, and
+     * the Overseer read the cluster state before constructState).  A publish
+     * on the notification's thread that waits on a lock a thread waiting
+     * for its turn behind it owns has its turn taken a grace in (review R2).
      */
     @Test(timeout = 30000L)
     public void aDuePublicationsTurnIsTakenOnceItIsInForce()
             throws Exception {
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        List<ScheduleEvent> order = Arrays.asList(publish(viewNode, v8),
-                event(ScheduleEvent.Kind.SEND, "after"));
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-
+        List<ScheduleEvent> order = Arrays.asList(publish(VIEW_NODE, V8),
+                event(SEND, "after"));
+        List<String> applied = applied();
         Confirmation.resetForTests();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
+        enforce(order);
         boolean[] sawApplied = new boolean[1];
-        Thread after = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        Thread after = started(() -> {
+            send("after");
             sawApplied[0] = applied.contains("v8");
         });
-        after.start();
         Thread.sleep(100L);
-        assertFalse("due at the door: its caller publishes", door(view, 8L,
-                viewNode, () -> {
-                    try {
-                        Thread.sleep(300L);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
+        assertFalse("due at the door: its caller publishes", door(VIEW, 8L,
+                () -> {
+                    nap(300L);
                     applied.add("v8");
-                }, v8));
+                }, V8));
         assertEquals("applied on the notification's thread",
                 Arrays.asList("v8"), applied);
-        after.join(5000L);
-        assertFalse(after.isAlive());
-        assertTrue("the successor is let go only once v8 is in force",
-                sawApplied[0]);
-        assertEquals(Arrays.asList(v8, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        joined(after);
+        assertTrue("let go only once v8 is in force", sawApplied[0]);
+        assertEquals(Arrays.asList(V8, "after"), sites());
+        progress(" 0 given up");
 
-        restart();
-        Confirmation.resetForTests();
+        fresh();
         applied.clear();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
+        enforce(order);
         Object lock = new Object();
         CountDownLatch holding = new CountDownLatch(1);
-        Thread refresh = new Thread(() -> {
+        Thread refresh = started(() -> {
             synchronized (lock) {
                 holding.countDown();
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+                send("after");
             }
         });
-        refresh.start();
         holding.await();
         long started = System.nanoTime();
-        assertFalse(door(view, 8L, viewNode, () -> {
+        assertFalse(door(VIEW, 8L, () -> {
             synchronized (lock) {
                 applied.add("v8");
             }
-        }, v8));
-        assertTrue("a grace in, not the order's timeout", TimeUnit.NANOSECONDS
-                .toMillis(System.nanoTime() - started) < 5000L);
-        refresh.join(10000L);
-        assertFalse(refresh.isAlive());
+        }, V8));
+        assertTrue("a grace in, not the order's timeout",
+                since(started) < 5000L);
+        joined(refresh);
         assertEquals(Arrays.asList("v8"), applied);
         assertEquals("one PUBLISH, written when its turn was taken for it",
-                Arrays.asList(v8, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+                Arrays.asList(V8, "after"), sites());
+        progress(" 0 given up");
     }
 
     /**
      * THE DOOR ITSELF, in its callback ({@code MessageDoors#notified},
      * {@code #publishing}): a publication due at its door is published by
      * the caller, its turn taken when the callback ends -- one that throws
-     * after its publish included, the throw the system's, going on -- and a
-     * deferred publication whose apply throws still takes its turn on the
-     * node's publisher (review NIT7).
+     * after its publish included, the throw going on -- and a deferred one
+     * whose apply throws still takes its turn on the publisher (NIT7).
      */
     @Test(timeout = 30000L)
     public void aNotificationsTurnIsSettledWhenItsCallbackEndsAThrowIncluded()
             throws Exception {
         Confirmation.resetForTests();
-        String viewNode = NODE.key();
         String path = "/collections/settled/state.json";
-        String v3 = ScheduleEvent.published("SOLR_ZK",
-                MessageDoors.storeLocation("SOLR_ZK", path).slot(), 3L);
-        enforce(Arrays.asList(publish(viewNode, v3),
-                event(ScheduleEvent.Kind.SEND, "after")),
-                Collections.<ScheduleEvent>emptyList());
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
+        String slot = MessageDoors.storeLocation("SOLR_ZK", path).slot();
+        String v3 = ScheduleEvent.published("SOLR_ZK", slot, 3L);
+        enforce(Arrays.asList(publish(NODE.key(), v3), event(SEND, "after")));
+        List<String> applied = applied();
         boolean[] sawApplied = new boolean[1];
-        Thread after = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        Thread after = started(() -> {
+            send("after");
             sawApplied[0] = applied.contains("v3");
         });
-        after.start();
         Thread.sleep(100L);
-        boolean[] deferred = new boolean[] {true};
+        boolean[] deferred = {true};
         IllegalStateException thrown = null;
         try {
             MessageDoors.notified("Watcher", () -> {
                 deferred[0] = MessageDoors.publishing("SOLR_ZK", path, 3L,
                         () -> applied.add("on the publisher"));
-                try {
-                    Thread.sleep(300L);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
+                nap(300L);
                 applied.add("v3");
                 throw new IllegalStateException("the system's own failure");
             });
@@ -752,61 +687,45 @@ public class ScheduleLogTest {
         }
         assertFalse("due at its door: the caller publishes", deferred[0]);
         assertNotNull("the callback's throw goes on", thrown);
-        after.join(5000L);
-        assertFalse(after.isAlive());
+        joined(after);
         assertTrue("let go only once the callback ended", sawApplied[0]);
         assertEquals(Arrays.asList(v3, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
 
-        restart();
-        Confirmation.resetForTests();
+        fresh();
         applied.clear();
-        String v4 = ScheduleEvent.published("SOLR_ZK",
-                MessageDoors.storeLocation("SOLR_ZK", path).slot(), 4L);
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v4), event(ScheduleEvent.Kind.SEND,
-                        "after")), Collections.<ScheduleEvent>emptyList());
-        assertTrue("not due: handed to the publisher", door(
-                view(viewNode, path), 4L, viewNode, () -> {
+        String v4 = ScheduleEvent.published("SOLR_ZK", slot, 4L);
+        enforce(Arrays.asList(event(SEND, "before"), publish(NODE.key(), v4),
+                event(SEND, "after")));
+        assertTrue("not due: handed to the publisher", door(view(NODE.key(),
+                path), 4L, () -> {
                     applied.add("v4");
                     throw new IllegalStateException("thrown in the apply");
                 }, v4));
-        Thread next = new Thread(() -> ScheduleLog.observe(
-                ScheduleEvent.Kind.SEND, "after"));
-        next.start();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        next.join(5000L);
-        assertFalse(next.isAlive());
+        Thread next = started(() -> send("after"));
+        send("before");
+        joined(next);
         assertEquals(Arrays.asList("v4"), applied);
         assertEquals(Arrays.asList("before", v4, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
     }
 
     /**
      * A NEWER VERSION'S DOOR NEVER GIVES UP AN OLDER ONE IN FLIGHT (review
-     * SA): v8's callback has begun its turn and is still publishing (between
-     * its refresh lock and its constructState) when v9's callback reaches its
-     * door.  v8's slot is on its way, so v9's turn is not due: v9 goes to the
-     * node's publisher, the order stays v8 then v9, and what v8 holds back
-     * sees v8.  Given up at v9's door, v8's slot let it go to read v7.
+     * SA): v8's callback has begun its turn and is still publishing when
+     * v9's reaches its door.  v8's slot is on its way, so v9's turn is not
+     * due: v9 goes to the publisher, the order stays v8 then v9, and what v8
+     * holds back sees v8.  Given up at v9's door, v8's slot let it read v7.
      */
     @Test(timeout = 30000L)
     public void aNewerVersionsDoorKeepsAnOlderOneInFlight() throws Exception {
         Confirmation.resetForTests();
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        String v9 = ScheduleEvent.published("SOLR_ZK", "/c.json", 9L);
-        enforce(Arrays.asList(publish(viewNode, v8), publish(viewNode, v9),
-                event(ScheduleEvent.Kind.SEND, "after")),
-                Collections.<ScheduleEvent>emptyList());
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
+        enforce(Arrays.asList(publish(VIEW_NODE, V8), publish(VIEW_NODE, V9),
+                event(SEND, "after")));
+        List<String> applied = applied();
         CountDownLatch publishing = new CountDownLatch(1);
         CountDownLatch constructed = new CountDownLatch(1);
-        Thread first = new Thread(() -> door(view, 8L, viewNode, () -> {
+        Thread first = started(() -> door(VIEW, 8L, () -> {
             publishing.countDown();
             try {
                 constructed.await();
@@ -814,173 +733,122 @@ public class ScheduleLogTest {
                 Thread.currentThread().interrupt();
             }
             applied.add("v8");
-        }, v8));
-        first.start();
+        }, V8));
         publishing.await();
         boolean[] sawV8 = new boolean[1];
-        Thread after = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        Thread after = started(() -> {
+            send("after");
             sawV8[0] = applied.contains("v8");
         });
-        after.start();
         assertTrue("v8 in flight: v9's turn is not due, handed to the"
-                + " publisher", door(view, 9L, viewNode,
-                () -> applied.add("v9"), v9));
+                + " publisher", door(VIEW, 9L, () -> applied.add("v9"), V9));
         Thread.sleep(200L);
         assertTrue("nothing past v8 before it is in force: " + applied,
                 applied.isEmpty());
         constructed.countDown();
         first.join(5000L);
-        after.join(5000L);
-        assertFalse(after.isAlive());
+        joined(after);
         assertTrue("what v8 holds back sees it", sawV8[0]);
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("v8", "v9"), applied);
-        assertEquals(Arrays.asList(v8, v9, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        assertEquals(Arrays.asList(V8, V9, "after"), sites());
+        progress(" 0 given up");
     }
 
     /**
      * THE PUBLISHER NEVER BLOCKS ON A TURN (review B2): two views of one
-     * node arrive in the reverse of their recorded order -- X@8's callback
-     * first, behind the SEND the recording made first, then Y@3's, whose
-     * slot came before X's -- and each applies at its own turn, Y then X,
-     * with nothing given up.  Blocking on X's turn, the one publisher held
-     * Y's slot until the watchdog gave the run's open slots up.
+     * node arrive in the reverse of their recorded order, and each applies
+     * at its own turn, with nothing given up.  Blocking on X's turn, the one
+     * publisher held Y's slot until the watchdog gave the run's slots up.
      */
     @Test
     public void twoViewsOfANodeApplyEachAtItsOwnTurn() throws Exception {
         Confirmation.resetForTests();
-        String viewNode = "auto0/node0#epoch0";
         String y = ScheduleEvent.published("SOLR_ZK", "/y.json", 3L);
         String x = ScheduleEvent.published("SOLR_ZK", "/x.json", 8L);
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, y), publish(viewNode, x)),
-                Collections.<ScheduleEvent>emptyList());
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-        assertTrue(door(view(viewNode, "/x.json"), 8L, viewNode,
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, y),
+                publish(VIEW_NODE, x)));
+        List<String> applied = applied();
+        assertTrue(door(view(VIEW_NODE, "/x.json"), 8L,
                 () -> applied.add("x"), x));
-        assertTrue(door(view(viewNode, "/y.json"), 3L, viewNode,
+        assertTrue(door(view(VIEW_NODE, "/y.json"), 3L,
                 () -> applied.add("y"), y));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        send("before");
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("y", "x"), applied);
         assertEquals(Arrays.asList("before", y, x), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
     }
 
     /**
      * A VERSION A NODE NEVER PUBLISHES IS GIVEN UP AT THE NEWER ONE'S DOOR
      * (review S2, R3), by name, and what the recording made after it goes
      * without a stall: a v8 that holds no slot, in force at once, over v7's
-     * turn; a callback that fetched v9 and never published v8, whose own
-     * turn came after v8's (given up only once v9 was in force, v9 waited
-     * for it: a stall a timeout long); and the system's own publication at
-     * once in a replay no pairing holds, its own version's turn with them
-     * (Z3Q's seed: a command's refresh published v4 before the recorded
-     * callback, whose turn stood 15 s).  A version deferred on the node's
-     * publisher is on its way: its turn stands, and it applies at it.
+     * turn; a callback that fetched v9 and never published v8; and the
+     * system's own publication at once in a replay no pairing holds, its
+     * own version's turn with them (Z3Q's seed: a 15 s stall).  A version
+     * deferred on the publisher is on its way: its turn stands.
      */
     @Test(timeout = 30000L)
     public void anOlderVersionsTurnIsGivenUpWhenANewerReachesItsDoor()
             throws Exception {
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String v7 = ScheduleEvent.published("SOLR_ZK", "/c.json", 7L);
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        String v9 = ScheduleEvent.published("SOLR_ZK", "/c.json", 9L);
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-
-        // v8 holds no slot: in force at once, v7's turn given up.
+        List<String> applied = applied();
         Confirmation.resetForTests();
-        enforce(Arrays.asList(publish(viewNode, v7),
-                event(ScheduleEvent.Kind.SEND, "after")),
-                Collections.<ScheduleEvent>emptyList());
+        enforce(Arrays.asList(publish(VIEW_NODE, V7), event(SEND, "after")));
         assertFalse("v8 holds no slot: in force at once",
-                door(view, 8L, viewNode, () -> { }, v8));
-        assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                "after"));
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+                door(VIEW, 8L, () -> { }, V8));
+        assertNoStall(() -> send("after"));
+        progress(" 1 given up");
 
-        // The callback fetched v9: v8's turn is given up at v9's door.
-        restart();
-        Confirmation.resetForTests();
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v8), event(ScheduleEvent.Kind.SEND, "mid"),
-                publish(viewNode, v9), event(ScheduleEvent.Kind.SEND,
-                        "after")), Collections.<ScheduleEvent>emptyList());
+        fresh();
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, V8),
+                event(SEND, "mid"), publish(VIEW_NODE, V9),
+                event(SEND, "after")));
         assertTrue("v9's turn is not due: handed to the publisher",
-                door(view, 9L, viewNode, () -> applied.add("v9"), v9));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                "mid"));
-        assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                "after"));
+                door(VIEW, 9L, () -> applied.add("v9"), V9));
+        send("before");
+        assertNoStall(() -> send("mid"));
+        assertNoStall(() -> send("after"));
         assertEquals(Arrays.asList("v9"), applied);
-        assertEquals(Arrays.asList("before", "mid", v9, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        assertEquals(Arrays.asList("before", "mid", V9, "after"), sites());
+        progress(" 1 given up");
 
-        // The system's own publication of v9 at once, no pairing held: v9's
-        // own turn too, as no notification publishes it after that fetch.
-        restart();
-        Confirmation.resetForTests();
-        enforce(Arrays.asList(publish(viewNode, v8), publish(viewNode, v9),
-                event(ScheduleEvent.Kind.SEND, "after")),
-                Collections.<ScheduleEvent>emptyList());
-        Confirmation.published(view, 9L, null, "a forced refresh", viewNode,
-                v9);
-        assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                "after"));
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 2 given up"));
+        fresh();
+        enforce(Arrays.asList(publish(VIEW_NODE, V8), publish(VIEW_NODE, V9),
+                event(SEND, "after")));
+        Confirmation.published(VIEW, 9L, null, "a forced refresh", VIEW_NODE,
+                V9);
+        assertNoStall(() -> send("after"));
+        progress(" 2 given up");
 
-        // v8 deferred on the publisher when v9 reaches its door: on its way.
-        restart();
-        Confirmation.resetForTests();
+        fresh();
         applied.clear();
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v8), publish(viewNode, v9)),
-                Collections.<ScheduleEvent>emptyList());
-        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
-        assertTrue("behind v8", door(view, 9L, viewNode,
-                () -> applied.add("v9"), v9));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, V8),
+                publish(VIEW_NODE, V9)));
+        assertTrue(door(VIEW, 8L, () -> applied.add("v8"), V8));
+        assertTrue("behind v8", door(VIEW, 9L, () -> applied.add("v9"), V9));
+        send("before");
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("v8", "v9"), applied);
-        assertEquals(Arrays.asList("before", v8, v9), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        assertEquals(Arrays.asList("before", V8, V9), sites());
+        progress(" 0 given up");
     }
 
     /**
      * THE PUBLISHER WAITS AS THE ORDER'S WAITER (review R1): a deferred
      * publication whose predecessor never comes gives way by the watchdog,
-     * named, though no other thread waits -- polling on its own, it waited
-     * for ever; and where another thread waits further on, the publisher's
-     * place bounds the give-up, so only the missing predecessor is given up,
-     * not the publication's own turn with it.
+     * named, though no other thread waits; where another thread waits
+     * further on, the publisher's place bounds the give-up, so only the
+     * missing predecessor is given up, not the publication's own turn.
      */
     @Test(timeout = 30000L)
     public void aPublicationsTurnWaitsWhereTheWatchdogSeesIt()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-
+        timeout(300L);
+        List<String> applied = applied();
         Confirmation.resetForTests();
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "never"),
-                publish(viewNode, v8)),
-                Collections.<ScheduleEvent>emptyList());
-        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
+        enforce(Arrays.asList(event(SEND, "never"), publish(VIEW_NODE, V8)));
+        assertTrue(door(VIEW, 8L, () -> applied.add("v8"), V8));
         awaitSize(applied, 1, 10000L);
         assertEquals("given way, alone", Arrays.asList("v8"), applied);
         // The publisher states the publication once its apply has run: the
@@ -989,185 +857,127 @@ public class ScheduleLogTest {
         while (sites().isEmpty() && System.currentTimeMillis() < stated) {
             Thread.sleep(20L);
         }
-        assertEquals(Arrays.asList(v8), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        assertEquals(Arrays.asList(V8), sites());
+        progress(" 1 given up");
 
-        restart();
-        Confirmation.resetForTests();
+        fresh();
         applied.clear();
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "never"),
-                publish(viewNode, v8), event(ScheduleEvent.Kind.SEND,
-                        "after")), Collections.<ScheduleEvent>emptyList());
-        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
-        Thread after = new Thread(() -> ScheduleLog.observe(
-                ScheduleEvent.Kind.SEND, "after"));
-        after.start();
-        after.join(10000L);
-        assertFalse(after.isAlive());
+        enforce(Arrays.asList(event(SEND, "never"), publish(VIEW_NODE, V8),
+                event(SEND, "after")));
+        assertTrue(door(VIEW, 8L, () -> applied.add("v8"), V8));
+        joined(started(() -> send("after")));
         assertEquals(Arrays.asList("v8"), applied);
-        assertEquals(Arrays.asList(v8, "after"), sites());
-        assertTrue("the publication's own turn is not given up: "
-                        + ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        assertEquals(Arrays.asList(V8, "after"), sites());
+        progress("the publication's own turn is not given up: ",
+                " 1 given up");
     }
 
     /**
-     * AN APPLY THAT WAITS ON A LOCK THE ORDER HOLDS (review R2): the
-     * publisher's apply takes a lock a thread owns that waits for its turn
-     * behind the publication (Solr's update lock, held by a forced refresh
-     * waiting at a store turn).  Its turn is taken for it a grace in, named,
-     * so the thread goes, its lock is released and the publication lands --
-     * not after the order's timeout, a misread then.  An apply that
-     * computes, or waits past the grace on a lock a thread the order does
-     * not hold owns (review R2a) -- one merely entering the order's own lock
-     * too (R2b) -- holds its turn until it is in force: what comes after it
-     * sees it.
+     * AN APPLY THAT WAITS ON A LOCK THE ORDER HOLDS (review R2): the apply
+     * takes a lock owned by a thread that waits for its turn behind the
+     * publication (Solr's update lock, held by a forced refresh); its turn is
+     * taken a grace in, named, so the thread goes and the publication lands.
+     * An apply that computes, or waits on a lock a thread the order does not
+     * hold owns (R2a) -- one merely entering the order's own lock too (R2b)
+     * -- holds its turn until it is in force: what comes after sees it.
      */
     @Test(timeout = 40000L)
     public void anApplyGivesItsTurnOnlyWhenTheOrderHoldsWhatItWaitsOn()
             throws Exception {
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-        List<ScheduleEvent> order = Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v8), event(ScheduleEvent.Kind.SEND,
-                        "after"));
-
+        List<String> applied = applied();
+        List<ScheduleEvent> order = Arrays.asList(event(SEND, "before"),
+                publish(VIEW_NODE, V8), event(SEND, "after"));
         Confirmation.resetForTests();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
+        enforce(order);
         Object lock = new Object();
         CountDownLatch holding = new CountDownLatch(1);
-        Thread refresh = new Thread(() -> {
+        Thread refresh = started(() -> {
             synchronized (lock) {
                 holding.countDown();
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+                send("after");
             }
         });
-        refresh.start();
         holding.await();
-        assertTrue(door(view, 8L, viewNode, () -> {
+        assertTrue(door(VIEW, 8L, () -> {
             synchronized (lock) {
                 applied.add("v8");
             }
-        }, v8));
+        }, V8));
         long started = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        refresh.join(10000L);
-        assertFalse(refresh.isAlive());
-        assertTrue("a grace in, not the order's timeout", TimeUnit.NANOSECONDS
-                .toMillis(System.nanoTime() - started) < 5000L);
+        send("before");
+        joined(refresh);
+        assertTrue("a grace in, not the order's timeout",
+                since(started) < 5000L);
         awaitSize(applied, 1);
         assertEquals(Arrays.asList("v8"), applied);
         assertEquals("one PUBLISH, written when its turn was taken",
-                Arrays.asList("before", v8, "after"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+                Arrays.asList("before", V8, "after"), sites());
+        progress(" 0 given up");
 
-        restart();
-        Confirmation.resetForTests();
-        applied.clear();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
-        assertTrue(door(view, 8L, viewNode, () -> {
-            long until = System.nanoTime()
-                    + TimeUnit.MILLISECONDS.toNanos(1200L);
-            long spin = 0L;
-            while (System.nanoTime() < until) spin++;
-            applied.add("v8 " + (spin >= 0L));
-        }, v8));
-        boolean[] sawApplied = new boolean[1];
-        Thread after = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
-            sawApplied[0] = !applied.isEmpty();
-        });
-        after.start();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        after.join(10000L);
-        assertFalse(after.isAlive());
-        assertTrue("what comes after a computing apply sees it",
-                sawApplied[0]);
-
-        // A free thread -- no turn awaited -- holds the apply's lock 1.5 s.
-        restart();
-        Confirmation.resetForTests();
-        applied.clear();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
+        // A computing apply (R2a); a free thread, waiting on no turn,
+        // holding the apply's lock 1.5 s; and its owner entering the
+        // order's own lock meanwhile (R2b: blocked there on the watchdog,
+        // which is no cycle).
         Object busy = new Object();
-        CountDownLatch held = new CountDownLatch(1);
-        Thread free = new Thread(() -> {
-            synchronized (busy) {
-                held.countDown();
-                try {
-                    Thread.sleep(1500L);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+        for (int owner = 0; owner < 3; owner++) {
+            fresh();
+            applied.clear();
+            enforce(order);
+            boolean computing = owner == 0;
+            if (!computing) {
+                boolean asking = owner == 2;
+                CountDownLatch entered = new CountDownLatch(1);
+                started(() -> {
+                    synchronized (busy) {
+                        entered.countDown();
+                        if (asking) {
+                            held(1500L, true);
+                        } else {
+                            nap(1500L);
+                        }
+                    }
+                });
+                entered.await();
+            }
+            assertTrue(door(VIEW, 8L, () -> {
+                if (computing) {
+                    held(1200L, false);
+                    applied.add("v8");
+                } else {
+                    synchronized (busy) {
+                        applied.add("v8");
+                    }
                 }
+            }, V8));
+            boolean[] sawApplied = new boolean[1];
+            Thread after = started(() -> {
+                send("after");
+                sawApplied[0] = !applied.isEmpty();
+            });
+            send("before");
+            joined(after);
+            assertTrue("owner " + owner + ": what comes after sees the "
+                    + "publication", sawApplied[0]);
+            if (owner == 1) {
+                assertEquals(Arrays.asList("before", V8, "after"), sites());
             }
-        });
-        free.start();
-        held.await();
-        assertTrue(door(view, 8L, viewNode, () -> {
-            synchronized (busy) {
-                applied.add("v8");
-            }
-        }, v8));
-        sawApplied[0] = false;
-        Thread next = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
-            sawApplied[0] = !applied.isEmpty();
-        });
-        next.start();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        next.join(10000L);
-        assertFalse(next.isAlive());
-        assertTrue("a lock no turn holds is waited out: what comes after"
-                + " sees the publication", sawApplied[0]);
-        assertEquals(Arrays.asList("before", v8, "after"), sites());
+        }
+    }
 
-        // Its owner, waiting on no turn, keeps entering the order's own lock
-        // (review R2b): blocked there on the watchdog, which is no cycle.
-        restart();
-        Confirmation.resetForTests();
-        applied.clear();
-        enforce(order, Collections.<ScheduleEvent>emptyList());
-        CountDownLatch entering = new CountDownLatch(1);
-        Thread asking = new Thread(() -> {
-            synchronized (busy) {
-                entering.countDown();
-                long until = System.nanoTime()
-                        + TimeUnit.MILLISECONDS.toNanos(1500L);
-                while (System.nanoTime() < until) ScheduleLog.waitsNoMore();
-            }
-        });
-        asking.start();
-        entering.await();
-        assertTrue(door(view, 8L, viewNode, () -> {
-            synchronized (busy) {
-                applied.add("v8");
-            }
-        }, v8));
-        sawApplied[0] = false;
-        Thread last = new Thread(() -> {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
-            sawApplied[0] = !applied.isEmpty();
-        });
-        last.start();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
-        last.join(10000L);
-        assertFalse(last.isAlive());
-        assertTrue("an owner entering the order's lock is no cycle",
-                sawApplied[0]);
+    /** Spins {@code millis}, asking the order between spins where
+     *  {@code asking} (review R2b: blocked on the watchdog, no cycle). */
+    private static void held(long millis, boolean asking) {
+        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+        while (System.nanoTime() < until) {
+            if (asking) ScheduleLog.waitsNoMore();
+        }
     }
 
     /** Asserts {@code event} returns without a stall. */
     private static void assertNoStall(Runnable event) {
         long started = System.nanoTime();
         event.run();
-        assertTrue("no stall", TimeUnit.NANOSECONDS.toMillis(
-                System.nanoTime() - started) < 1000L);
+        assertTrue("no stall", since(started) < 1000L);
     }
 
     /**
@@ -1178,82 +988,65 @@ public class ScheduleLogTest {
     public void aSupersededPublicationsTurnIsSettled() throws Exception {
         Confirmation.resetForTests();
         handHold(view("auto0/node9#epoch0", "/other.json"), 0L, "", "", "u");
-        String viewNode = "auto0/node0#epoch0";
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v8), event(ScheduleEvent.Kind.SEND,
-                        "after")), Collections.<ScheduleEvent>emptyList());
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
-        assertTrue(door(view(viewNode, "/c.json"), 8L, viewNode,
-                () -> applied.add("v8"), v8));
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, V8),
+                event(SEND, "after")));
+        List<String> applied = applied();
+        assertTrue(door(VIEW, 8L, () -> applied.add("v8"), V8));
         // The system's own removal at once drops what was deferred.
-        Confirmation.published(view(viewNode, "/c.json"), -1L, null,
-                "a removal at once", viewNode, null);
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+        Confirmation.published(VIEW, -1L, null, "a removal at once",
+                VIEW_NODE, null);
+        send("before");
         long started = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
-        assertTrue("no stall", TimeUnit.NANOSECONDS.toMillis(
-                System.nanoTime() - started) < 500L);
+        send("after");
+        assertTrue("no stall", since(started) < 500L);
         Thread.sleep(100L);
         assertTrue(applied.toString(), applied.isEmpty());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        progress(" 1 given up");
     }
 
     /**
      * A HOLD AND A TURN ON ONE PUBLICATION (review S9c): held past the paired
      * version, its turn due once the SEND before it ran, it applies only
-     * when the hold ends, then takes its turn.  And the paired version's own
-     * publication (S4) is put in force at once, whatever its turn, which is
-     * given up by name: the reader past the cut is held by nothing.
+     * when the hold ends.  The paired version's own publication (S4) is in
+     * force at once, its turn given up by name.
      */
     @Test
     public void aHoldWinsOverATurnAndThePairedVersionGoesAtOnce()
             throws Exception {
         Confirmation.resetForTests();
-        String viewNode = "auto0/node0#epoch0";
-        LocationId view = view(viewNode, "/c.json");
-        String until = "u-reader";
-        handHold(view, 7L, "auto0/node1#epoch0|Root:OVERSEER_TASK#3", "r",
-                until);
-        String v7 = ScheduleEvent.published("SOLR_ZK", "/c.json", 7L);
-        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
-        enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
-                publish(viewNode, v7), publish(viewNode, v8)),
-                Collections.<ScheduleEvent>emptyList());
-        List<String> applied = Collections.synchronizedList(
-                new ArrayList<String>());
+        handHold(VIEW, 7L, "auto0/node1#epoch0|Root:OVERSEER_TASK#3", "r",
+                "u-reader");
+        enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, V7),
+                publish(VIEW_NODE, V8)));
+        List<String> applied = applied();
         assertFalse("the paired version: in force at once",
-                door(view, 7L, viewNode, () -> applied.add("v7"), v7));
-        assertEquals("published by its caller, its turn given up after it",
-                Arrays.asList("v7"), applied);
-        assertTrue("past it: held", door(view, 8L, viewNode,
-                () -> applied.add("v8"), v8));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
+                door(VIEW, 7L, () -> applied.add("v7"), V7));
+        assertEquals("published by its caller", Arrays.asList("v7"), applied);
+        assertTrue("past it: held", door(VIEW, 8L, () -> applied.add("v8"),
+                V8));
+        send("before");
         Thread.sleep(200L);
         assertEquals("the hold stands", Arrays.asList("v7"), applied);
-        Confirmation.exited(until);
+        Confirmation.exited("u-reader");
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("v7", "v8"), applied);
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        progress(" 1 given up");
     }
 
     /**
      * A notification's publication at its node's door, as a store
-     * notification's callback makes it ({@code MessageDoors#notified},
-     * {@code #publishing}): deferred to the node's publisher, or published by
-     * the caller, its turn settled when the callback ends.
+     * notification's callback makes it: deferred to the node's publisher,
+     * or published by the caller, its turn settled when the callback ends.
      *
      * @return whether it was deferred to the node's publisher
      */
-    private static boolean door(LocationId view, long version, String node,
-                                Runnable apply, String turn) {
+    private static boolean door(LocationId view, long version, Runnable apply,
+                                String turn) {
         int callback = Confirmation.notificationBegins();
         try {
             boolean deferred = Confirmation.publishing(view, version, null,
-                    node, null, apply, turn);
+                    view.owner().substring("SOLR_ZK@".length()), null, apply,
+                    turn);
             if (!deferred) apply.run();
             return deferred;
         } finally {
@@ -1261,9 +1054,12 @@ public class ScheduleLogTest {
         }
     }
 
+    private static String published(long version) {
+        return ScheduleEvent.published("SOLR_ZK", "/c.json", version);
+    }
+
     private static ScheduleEvent publish(String node, String site) {
-        return ScheduleEvent.of(0L, ScheduleEvent.Kind.PUBLISH,
-                node + "|VIEW", site, 0, "");
+        return ScheduleEvent.of(0L, PUBLISH, node + "|VIEW", site, 0, "");
     }
 
     private static LocationId view(String node, String path) {
@@ -1276,11 +1072,11 @@ public class ScheduleLogTest {
                                  String until) throws java.io.IOException {
         Path worker = Files.createTempDirectory("schedule-hold");
         Files.write(worker.resolve("focused_task.jsonl"), new byte[0]);
-        Files.write(worker.resolve(Confirmation.FILE), ("{\"kind\":"
-                + "\"VIEW_HOLD\",\"view\":\"" + Confirmation.viewKey(view)
-                + "\",\"above\":" + above + ",\"readerContext\":\""
-                + readerContext + "\",\"reader\":\"" + reader
-                + "\",\"until\":\"" + until + "\"}\n")
+        Files.write(worker.resolve(Confirmation.FILE), (Fixtures.json(
+                "{'kind':'VIEW_HOLD','view':'" + Confirmation.viewKey(view)
+                        + "','above':" + above + ",'readerContext':'"
+                        + readerContext + "','reader':'" + reader
+                        + "','until':'" + until + "'}") + "\n")
                 .getBytes(StandardCharsets.UTF_8));
         Path plan = worker.resolve("execution_task_plan.jsonl");
         Files.write(plan, new byte[0]);
@@ -1300,89 +1096,69 @@ public class ScheduleLogTest {
         }
     }
 
+    /**
+     * A thread whose event is not next waits for its turn; an interrupt
+     * while it waits is the workload's to see, and the order stands; a
+     * stalled slot is given up and z takes it, an event the order lacks runs
+     * free, and so does everything once the prefix is used up.
+     */
     @Test
     public void aThreadWhoseEventIsNotNextWaitsForItsTurn() throws Exception {
         enforce(prefix("x", "y"));
-        final CountDownLatch waiting = new CountDownLatch(1);
-        Thread late = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                waiting.countDown();
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-            }
+        CountDownLatch waiting = new CountDownLatch(1);
+        Thread late = started(() -> {
+            waiting.countDown();
+            send("y");
         });
-        late.start();
         waiting.await();
         Thread.sleep(200L);
         assertTrue("y must wait for x", written.isEmpty());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        late.join(5000L);
-        assertFalse(late.isAlive());
+        send("x");
+        joined(late);
         assertEquals(Arrays.asList("x", "y"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
         assertFalse("the prefix is used up", ScheduleLog.enforcing());
+
+        restart();
+        enforce(prefix("x", "y"));
+        boolean[] flagged = new boolean[1];
+        Thread waiter = started(() -> {
+            send("y");
+            flagged[0] = Thread.currentThread().isInterrupted();
+        });
+        Thread.sleep(200L);
+        waiter.interrupt();
+        joined(waiter);
+        assertTrue("the interrupt is the workload's to see", flagged[0]);
+        progress(" 0 given up");
+        assertTrue("the prefix still stands", ScheduleLog.enforcing());
     }
 
     @Test
     public void aStalledSlotIsGivenUpAndAnEventTheOrderLacksRunsFree()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+        timeout(300L);
         enforce(prefix("x", "z"));
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "w");
+        send("w");
         assertTrue("no slot holds w: it runs free at once",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 200L);
-        Thread waiter = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "z");
-            }
-        });
-        waiter.start();
-        waiter.join(10000L);
-        assertFalse("the idle stall gives x up and z takes its slot",
-                waiter.isAlive());
+                since(before) < 200L);
+        joined(started(() -> send("z")));
         assertEquals(Arrays.asList("w", "z"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        progress(" 1 given up");
         assertFalse(ScheduleLog.enforcing());
         before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "q");
-        assertTrue("a free run admits at once",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 200L);
-    }
-
-    @Test
-    public void anInterruptedAdmissionTakesItsSlotAndTheOrderStands() throws Exception {
-        enforce(prefix("x", "y"));
-        final boolean[] flagged = new boolean[1];
-        Thread waiter = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-                flagged[0] = Thread.currentThread().isInterrupted();
-            }
-        });
-        waiter.start();
-        Thread.sleep(200L);
-        waiter.interrupt();
-        waiter.join(5000L);
-        assertFalse(waiter.isAlive());
-        assertTrue("the interrupt is the workload's to see", flagged[0]);
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
-        assertTrue("the prefix still stands", ScheduleLog.enforcing());
+        send("q");
+        assertTrue("a free run admits at once", since(before) < 200L);
     }
 
     @Test
     public void aMonitorHoldingWaitAsksWithoutBlocking() {
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "x"),
-                event(ScheduleEvent.Kind.WAKE, "<L: void loop()>#u2")));
+        enforce(Arrays.asList(event(SEND, "x"),
+                event(WAKE, "<L: void loop()>#u2")));
         ScheduleLog.Wake wake = ScheduleLog.wake("<L: void loop()>#u2");
         assertEquals(ScheduleLog.Turn.NOT_YET, ScheduleLog.turn(wake));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        send("x");
         assertEquals(ScheduleLog.Turn.ADMITTED, ScheduleLog.turn(wake));
         assertEquals(Arrays.asList("x", "<L: void loop()>#u2"), sites());
     }
@@ -1391,31 +1167,24 @@ public class ScheduleLogTest {
     public void aWaitBegunBeforeTheWindowConvertsWhenItOpens()
             throws Exception {
         RecordingWindow.reset();
-        final String site = "<L: void idle()>#u3";
-        enforce(Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, site)));
-        final long[] took = new long[1];
-        Thread idle = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                long before = System.nanoTime();
-                try {
-                    TimedWaits.sleep(1500L, site);
-                } catch (InterruptedException interrupted) {
-                    return;
-                }
-                took[0] = TimeUnit.NANOSECONDS.toMillis(
-                        System.nanoTime() - before);
+        String site = "<L: void idle()>#u3";
+        enforce(Collections.singletonList(event(WAKE, site)));
+        long[] took = new long[1];
+        Thread idle = started(() -> {
+            long before = System.nanoTime();
+            try {
+                TimedWaits.sleep(1500L, site);
+            } catch (InterruptedException interrupted) {
+                return;
             }
+            took[0] = since(before);
         });
-        idle.start();
         Thread.sleep(200L);
         assertTrue("before the window it waits on the wall clock",
                 idle.isAlive());
         RecordingWindow.open();
         TimedWaits.windowOpened();
-        idle.join(5000L);
-        assertFalse("the window's opening converts it", idle.isAlive());
+        joined(idle);
         assertTrue("its turn, and no sooner than its own 1.5 s: " + took[0],
                 took[0] >= 1450L && took[0] < 5000L);
         assertEquals(Collections.singletonList(site), sites());
@@ -1427,7 +1196,7 @@ public class ScheduleLogTest {
      */
     @Test
     public void aSignalledWaitIsNoEventAndATimedOutOneIs() throws Exception {
-        final Object monitor = new Object();
+        Object monitor = new Object();
         for (boolean held : new boolean[] {false, true}) {
             restart();
             if (held) enforce(prefix("x"));
@@ -1440,14 +1209,11 @@ public class ScheduleLogTest {
             synchronized (monitor) {
                 monitor.notifyAll();
             }
-            woken.join(5000L);
-            assertFalse(woken.isAlive());
-            assertTrue("a notify ended it: another thread's doing, no turn",
-                    written.isEmpty());
+            joined(woken);
+            assertTrue("a notify ended it: no turn", written.isEmpty());
             if (held) {
                 assertTrue("the prefix still stands", ScheduleLog.enforcing());
-                assertTrue(ScheduleLog.progress(),
-                        ScheduleLog.progress().contains(" 0 given up"));
+                progress(" 0 given up");
             }
         }
         restart();
@@ -1466,22 +1232,19 @@ public class ScheduleLogTest {
     @Test(timeout = 20000L)
     public void aWaitNoSlotHoldsWaitsAtTheCutUntilTheRunIdles()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        final String site = "<C: boolean waitForWork()>#u21";
+        timeout(300L);
         enforce(prefix("x"));
-        final Object monitor = new Object();
+        Object monitor = new Object();
         long before = System.nanoTime();
         synchronized (monitor) {
-            TimedWaits.waitOn(monitor, 1500L, site);
+            TimedWaits.waitOn(monitor, 1500L, WORK);
         }
         assertTrue("held, then its own deadline ended it",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        >= 1400L);
-        assertEquals(Collections.singletonList(site), sites());
+                since(before) >= 1400L);
+        assertEquals(Collections.singletonList(WORK), sites());
         assertTrue("nothing made x, and no one waits for it",
                 ScheduleLog.enforcing());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("1 of them let go"));
+        progress("1 of them let go");
     }
 
     /**
@@ -1494,18 +1257,16 @@ public class ScheduleLogTest {
     @Test(timeout = 20000L)
     public void aTimedOutWakeAsksForItsTurnWithTheMonitorReleased()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
-        final String site = "<C: void waitTillNextIBR(long)>#u18";
+        timeout(3000L);
+        String site = "<C: void waitTillNextIBR(long)>#u18";
         enforce(prefix("x"));
         ScheduleLog.Wake held = ScheduleLog.wake(site);
         long asked = System.nanoTime();
         assertFalse("held at the cut: not yet", ScheduleLog.timedOut(held));
-        assertTrue("one ask, no wait", TimeUnit.NANOSECONDS.toMillis(
-                System.nanoTime() - asked) < 1000L);
+        assertTrue("one ask, no wait", since(asked) < 1000L);
         ScheduleLog.withdraw(held);
-
-        final Object monitor = new Object();
-        Thread waiter = new Thread(() -> {
+        Object monitor = new Object();
+        Thread waiter = started(() -> {
             synchronized (monitor) {
                 try {
                     TimedWaits.waitOn(monitor, 50L, site);
@@ -1514,7 +1275,6 @@ public class ScheduleLogTest {
                 }
             }
         });
-        waiter.start();
         Thread.sleep(300L);
         long before = System.nanoTime();
         synchronized (monitor) {
@@ -1522,8 +1282,7 @@ public class ScheduleLogTest {
                     waiter.isAlive());
         }
         assertTrue("the monitor was free while the WAKE was held",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 1000L);
+                since(before) < 1000L);
         waiter.join();
         assertEquals(Collections.singletonList(site), sites());
     }
@@ -1535,22 +1294,19 @@ public class ScheduleLogTest {
 
     /**
      * A wait whose recorded WAKE slot is due before its own deadline takes
-     * the slot at once, so the order moves on (the next slot's event, made
-     * by another thread meanwhile, goes), and returns only once its deadline
-     * passed, whatever its primitive: a WAKE is a timeout, the recording's
-     * wait ran its whole time (hdfs-adhoc-29: a DataNode actor woken at its
-     * slot found its heartbeat not due).  Replaces the virtual-time test that
-     * ended a 60 s wait at its turn.
+     * the slot at once, so the order moves on, and returns only once its
+     * deadline passed, whatever its primitive: a WAKE is a timeout, the
+     * recording's wait ran its whole time (hdfs-adhoc-29: a DataNode actor
+     * woken at its slot found its heartbeat not due).
      */
     @Test(timeout = 30000L)
     public void aWaitAdmittedAtItsSlotReturnsNoSoonerThanItsDeadline()
             throws Exception {
-        final long waitMs = 800L;
-        final Object monitor = new Object();
-        final ReentrantLock lock = new ReentrantLock();
-        final Condition condition = lock.newCondition();
-        java.util.Map<String, TimedWait> table =
-                new java.util.LinkedHashMap<String, TimedWait>();
+        long waitMs = 800L;
+        Object monitor = new Object();
+        ReentrantLock lock = new ReentrantLock();
+        Condition condition = lock.newCondition();
+        Map<String, TimedWait> table = new LinkedHashMap<String, TimedWait>();
         table.put("sleep", site -> TimedWaits.sleep(waitMs, site));
         table.put("monitor", site -> {
             synchronized (monitor) {
@@ -1571,28 +1327,20 @@ public class ScheduleLogTest {
         table.put("poll", site -> TimedWaits.poll(
                 new LinkedBlockingQueue<Object>(), waitMs,
                 TimeUnit.MILLISECONDS, site));
-        for (java.util.Map.Entry<String, TimedWait> row : table.entrySet()) {
+        for (Map.Entry<String, TimedWait> row : table.entrySet()) {
             // Each row on a fresh runtime, as each test is.
             tearDown();
             written.clear();
             reset();
             String site = "<C: void " + row.getKey() + "()>#u18";
-            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
-            order.add(event(ScheduleEvent.Kind.WAKE, site));
-            order.addAll(prefix("x"));
-            enforce(order);
-            final long began = System.nanoTime();
-            final long[] moved = new long[1];
-            Thread next = new Thread(() -> {
-                try {
-                    Thread.sleep(200L);
-                } catch (InterruptedException interrupted) {
-                    return;
-                }
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            enforce(order(event(WAKE, site), prefix("x")));
+            long began = System.nanoTime();
+            long[] moved = new long[1];
+            Thread next = started(() -> {
+                nap(200L);
+                send("x");
                 moved[0] = System.nanoTime();
             });
-            next.start();
             row.getValue().run(site);
             long returned = System.nanoTime();
             next.join();
@@ -1605,53 +1353,44 @@ public class ScheduleLogTest {
         }
     }
 
+    /** {@code first}, then {@code rest}. */
+    private static List<ScheduleEvent> order(ScheduleEvent first,
+                                             List<ScheduleEvent> rest) {
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+        order.add(first);
+        order.addAll(rest);
+        return order;
+    }
+
     /**
-     * A wait the recording made, polled once more than recorded (what it
-     * polls for came later on a free thread), goes once its context's next
-     * slot is due: only its next turn makes that slot's event.
+     * A wait the recording made, polled once more than recorded, goes once
+     * its context's next slot is due: only its next turn makes that slot's
+     * event.  A loop polling past its recorded count whose next slot is the
+     * frontier owes it: it polls again with no move of the order, never held
+     * to the watchdog (solr-adhoc-19 SG1: a waitForCoreNodeName loop, 66
+     * stalls).
      */
     @Test(timeout = 20000L)
     public void aRecordedWaitPolledOnceMoreGoesWhenItsNextSlotIsDue()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        String site = "tick.poll";
-        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
-        order.add(event(ScheduleEvent.Kind.WAKE, site));
-        order.addAll(prefix("x"));
-        enforce(order);
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        assertEquals(Arrays.asList(site, site, "x"), sites());
-        assertEquals("a WAKE is the clock's, the SEND a step", 1L,
-                ScheduleLog.steps());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("2 taken, 0 given up"));
-    }
-
-    /**
-     * A loop polling past its recorded count in the context whose next slot
-     * is the frontier owes the frontier: it polls again with no move of the
-     * order, never held to the watchdog (solr-adhoc-19 SG1: a waitForCore
-     * NodeName loop, 66 stalls).
-     */
-    @Test(timeout = 20000L)
-    public void aPollOwingTheFrontierPollsWithoutAMove() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        String site = "tick.poll";
-        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
-        order.add(event(ScheduleEvent.Kind.WAKE, site));
-        order.addAll(prefix("x"));
-        enforce(order);
-        long before = System.nanoTime();
-        for (int poll = 0; poll < 4; poll++) {
-            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        timeout(30000L);
+        for (int polls : new int[] {2, 4}) {
+            restart();
+            enforce(order(event(WAKE, "tick.poll"), prefix("x")));
+            long before = System.nanoTime();
+            for (int poll = 0; poll < polls; poll++) {
+                ScheduleLog.observe(WAKE, "tick.poll");
+            }
+            send("x");
+            if (polls == 4) assertTrue("no stall", since(before) < 2000L);
+            if (polls == 2) {
+                assertEquals(Arrays.asList("tick.poll", "tick.poll", "x"),
+                        sites());
+                assertEquals("a WAKE is the clock's, the SEND a step", 1L,
+                        ScheduleLog.steps());
+            }
+            progress("2 taken, 0 given up");
         }
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-        assertTrue("no stall: " + took, took < 2000L);
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("2 taken, 0 given up"));
     }
 
     /**
@@ -1662,21 +1401,18 @@ public class ScheduleLogTest {
     @Test(timeout = 30000L)
     public void anIdleStallLetsAHeldWaitGoAGraceIn() throws Exception {
         noRequest();
-        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("a", () -> send("x"));
         List<ScheduleEvent> recorded = events();
         noRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "10000");
+        timeout(10000L);
         enforce(recorded);
         long before = System.nanoTime();
-        Thread b = new Thread(() -> request("b",
-                () -> ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.b")));
-        b.start();
-        b.join(20000L);
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        started(() -> request("b", () -> ScheduleLog.observe(WAKE, "tick.b")))
+                .join(20000L);
+        long took = since(before);
         assertTrue("a grace, not the timeout: " + took,
                 took >= ScheduleLog.LET_GO_GRACE_MS - 100L && took < 8000L);
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("1 of them let go"));
+        progress("1 of them let go");
     }
 
     /**
@@ -1686,17 +1422,15 @@ public class ScheduleLogTest {
      */
     @Test(timeout = 20000L)
     public void anIdleRunLetsTheCutsWaitsGoBeforeGivingUp() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-        String site = "tick.once";
+        timeout(1000L);
         enforce(prefix("x"));
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        ScheduleLog.observe(WAKE, "tick.once");
         assertTrue("a turn let go is vacant", ScheduleLog.vacated());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        send("x");
         assertFalse("a slotted event is not", ScheduleLog.vacated());
-        assertEquals(Arrays.asList(site, "x"), sites());
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("1 taken, 0 given up"));
-        assertTrue(progress, progress.contains("1 of them let go"));
+        assertEquals(Arrays.asList("tick.once", "x"), sites());
+        progress("1 taken, 0 given up");
+        progress("1 of them let go");
     }
 
     /**
@@ -1704,44 +1438,32 @@ public class ScheduleLogTest {
      * counts the loop's wakes, a timing fact) waits at the slot its key
      * found like a poll past its count: with the run idle it is let go a
      * grace in and takes that slot, and the unmade x before it is never
-     * given up on its account (solr-adhoc-39 MB29s: a queue write in replayed
-     * turn #88 at recorded #88's slot bounded a give-up of 4251 slots).  The
-     * same event in a request is a plain waiter: the stall gives x up.
+     * given up on its account (solr-adhoc-39 MB29s: turn #88 at recorded
+     * #88's slot bounded a give-up of 4251 slots).  The same event in a
+     * request is a plain waiter: the stall gives x up.
      */
     @Test(timeout = 30000L)
     public void aTimedWaitTurnsEventAtItsSlotBoundsNoGiveUp()
             throws Exception {
-        Object[][] rows = {
-                {true, "1 taken, 0 given up"},
-                {false, "1 taken, 1 given up"},
-        };
-        for (Object[] row : rows) {
-            boolean turn = (Boolean) row[0];
+        for (boolean turn : new boolean[] {true, false}) {
             noRequest();
-            request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                    "x"));
+            request("a", () -> send("x"));
             List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
-            Runnable y = () -> turnOrRequest(turn, "y");
+            Runnable y = () -> turnOrRequest(turn, () -> send("y"));
             y.run();
             order.add(events().get(1));
             assertEquals(turn, ScheduleLog.timedWaitTurn(order.get(1)
                     .context()));
             noRequest();
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "4000");
+            timeout(4000L);
             enforce(order);
             long before = System.nanoTime();
-            Thread waiter = new Thread(y);
-            waiter.start();
-            waiter.join(20000L);
-            long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
-                    - before);
-            String progress = ScheduleLog.progress();
-            assertTrue(turn + " " + progress, progress.contains(
-                    (String) row[1]));
+            started(y).join(20000L);
+            long took = since(before);
+            progress(turn ? "1 taken, 0 given up" : "1 taken, 1 given up");
             if (turn) {
-                assertTrue("a grace, not the timeout: " + took,
-                        took < 3500L);
-                assertTrue(progress, progress.contains("1 of them let go"));
+                assertTrue("a grace, not the timeout: " + took, took < 3500L);
+                progress("1 of them let go");
             }
         }
     }
@@ -1757,41 +1479,27 @@ public class ScheduleLogTest {
         noRequest();
         request("a", () -> written("L"));
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
-        long frame = Identity.enterFrame("<L: void loop()>#u1", node);
-        long wake = RuntimeTraceContext.beginWake("L.poll");
-        written("L");
-        RuntimeTraceContext.endWakeIfInnermost(wake);
-        Identity.exitFrame(frame);
+        turnOrRequest(true, () -> written("L"));
         order.add(events().get(1));
         assertTrue(ScheduleLog.timedWaitTurn(order.get(1).context()));
         noRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
+        timeout(3000L);
         enforce(order);
-        Thread waiter = new Thread(() -> {
-            long inner = Identity.enterFrame("<L: void loop()>#u1", node);
-            long turn = RuntimeTraceContext.beginWake("L.poll");
-            written("L");
-            RuntimeTraceContext.endWakeIfInnermost(turn);
-            Identity.exitFrame(inner);
-        });
-        waiter.start();
-        waiter.join(20000L);
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("1 taken, 1 given up"));
+        started(() -> turnOrRequest(true, () -> written("L"))).join(20000L);
+        progress("1 taken, 1 given up");
     }
 
-    /** {@code site} sent in a timed-wait loop's first turn on the node,
-     *  else in a request of the node. */
-    private void turnOrRequest(boolean turn, String site) {
+    /** {@code inside} run in a timed-wait loop's turn on the node, else in a
+     *  request of the node. */
+    private void turnOrRequest(boolean turn, Runnable inside) {
         if (!turn) {
-            request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                    site));
+            request("b", inside);
             return;
         }
         long frame = Identity.enterFrame("<L: void loop()>#u1", node);
         long wake = RuntimeTraceContext.beginWake("L.poll");
         try {
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, site);
+            inside.run();
         } finally {
             RuntimeTraceContext.endWakeIfInnermost(wake);
             Identity.exitFrame(frame);
@@ -1801,44 +1509,47 @@ public class ScheduleLogTest {
     /** The workload closes its window: what the order still holds goes. */
     @Test(timeout = 20000L)
     public void closingTheWindowLetsTheOrderGo() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         enforce(prefix("x", "y"));
-        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+        Thread y = observer(SEND, "y");
         Thread.sleep(200L);
         assertTrue("y waits for x", y.isAlive());
         CausynthTraceRecorder.stopRecording();
-        y.join(5000L);
-        assertFalse(y.isAlive());
+        joined(y);
         assertFalse(ScheduleLog.enforcing());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("2 open at the window's close"));
+        progress("2 open at the window's close");
     }
 
     /**
      * A store's notification is awaited by no order, and neither is the
-     * work it causes: an event after the callback's read is free.
+     * work it causes; a queue item its consumer takes is the message the
+     * thread serves, as its write sent it (its key, REQUEST), the next item
+     * replacing it, one no write of the window filed naming nothing.
      */
     @Test(timeout = 20000L)
     public void aStoreNotificationsWorkIsNoPartOfTheOrder() throws Exception {
-        final Object owner = new Object();
+        Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NODE);
         MessageDoors.stored("STORE", "/k@1", owner, null);
         written.clear();
-        Thread callback = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                MessageDoors.notified("Watcher", new Runnable() {
-                    @Override
-                    public void run() {
-                        MessageDoors.fetched("STORE", "/k@1", owner, null);
-                        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-                    }
-                });
-            }
-        });
-        callback.start();
-        callback.join(5000L);
+        started(() -> MessageDoors.notified("Watcher", () -> {
+            MessageDoors.fetched("STORE", "/k@1", owner, null);
+            send("y");
+        })).join(5000L);
         assertTrue(sites().toString(), sites().isEmpty());
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner, null);
+        MessageDoors.stored("STORE", "/q/qn-2@0", owner, null);
+        String[][] rows = {{"/q/qn-1@0", "/q/qn-1@0"},
+                {"/q/qn-2@0", "/q/qn-2@0"}, {"/q/qn-9@0", null}};
+        for (String[] row : rows) {
+            MessageDoors.consumed("STORE", row[0]);
+            MessageDoors.Inbound served = MessageDoors.current();
+            assertEquals(row[0], row[1],
+                    served == null ? null : served.correlationId);
+            if (served != null) {
+                assertEquals(MessageDoors.REQUEST, served.half);
+            }
+        }
     }
 
     /**
@@ -1847,15 +1558,17 @@ public class ScheduleLogTest {
      * the version meanwhile waits for the write in flight at its location
      * and is named by it.  A write elsewhere holds nothing; a version no
      * other thread's write in flight files names nothing and waits for
-     * nothing, not even for the reader's own write; and a write that never
-     * files it holds the read {@link MessageDoors#FILED_WAIT_MS} at most.
+     * nothing; a write that never files holds the read FILED_WAIT_MS at
+     * most.  One FILING ({@code stored} began, 18413 Z2V: exporting the
+     * document's leaves takes seconds) holds it past that bound, up to
+     * FILING_WAIT_MS, and the read pairs with the write once it files.
      */
-    @Test(timeout = 20000L)
+    @Test(timeout = 30000L)
     public void aNotificationWaitsForTheWriteInFlightToFileItsVersion()
             throws Exception {
-        final Object owner = new Object();
+        Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NODE);
-        final List<Boolean> named = Collections.synchronizedList(
+        List<Boolean> named = Collections.synchronizedList(
                 new ArrayList<Boolean>());
         long elsewhere = MessageDoors.storing("STORE", "/other");
         long store = MessageDoors.storing("STORE", "/k");
@@ -1868,88 +1581,79 @@ public class ScheduleLogTest {
         assertEquals("and the write names its work", Arrays.asList(true),
                 named);
         long own = MessageDoors.storing("STORE", "/k");
-        MessageDoors.notified("Watcher", new Runnable() {
-            @Override
-            public void run() {
-                MessageDoors.fetched("STORE", "/k@3", owner, null);
-                named.add(MessageDoors.current() != null);
-            }
+        MessageDoors.notified("Watcher", () -> {
+            MessageDoors.fetched("STORE", "/k@3", owner, null);
+            named.add(MessageDoors.current() != null);
         });
         MessageDoors.storeEnded("STORE", own);
         assertEquals(Arrays.asList(true, false), named);
-        long unfiled = MessageDoors.storing("STORE", "/k");
-        long began = System.currentTimeMillis();
-        reading(owner, "/k@4", named).join(10000L);
-        long waited = System.currentTimeMillis() - began;
-        MessageDoors.storeEnded("STORE", unfiled);
-        MessageDoors.storeEnded("STORE", elsewhere);
-        assertEquals(Arrays.asList(true, false, false), named);
-        assertTrue("a write that never files holds the read a bound, not "
-                        + "for ever: " + waited,
-                waited >= MessageDoors.FILED_WAIT_MS - 100L
-                        && waited < MessageDoors.FILED_WAIT_MS + 3000L);
-    }
-
-    /**
-     * How long a read waits for the write in flight that made its version,
-     * per row: one still before its store's call holds it {@link
-     * MessageDoors#FILED_WAIT_MS} (a writer the schedule may hold behind the
-     * reader), and the read pairs with no write; one filing ({@code
-     * stored} began, solr-18413 Z2V: exporting the document's leaves under
-     * the VM takes seconds) holds it past that bound, up to {@link
-     * MessageDoors#FILING_WAIT_MS}, and the read pairs with the write once
-     * it files.
-     */
-    @Test(timeout = 30000L)
-    public void aReadWaitsLongerForAWriteThatIsFiling() throws Exception {
-        final Object owner = new Object();
-        RuntimeTraceContext.registerSource(owner, NODE);
         long hold = MessageDoors.FILED_WAIT_MS + 1500L;
         for (boolean filing : new boolean[] {false, true}) {
+            named.clear();
             String location = "/q" + filing;
-            final List<Boolean> named = Collections.synchronizedList(
-                    new ArrayList<Boolean>());
             long bracket = MessageDoors.storing("STORE", location);
             long filed = filing
                     ? MessageDoors.filingBegins("STORE", location) : -1L;
             long began = System.currentTimeMillis();
-            Thread callback = reading(owner, location + "@1", named);
-            callback.join(hold);
+            Thread reader = reading(owner, location + "@1", named);
+            reader.join(hold);
             assertEquals("filing " + filing + ": still waiting past "
                     + MessageDoors.FILED_WAIT_MS + " ms", filing,
-                    callback.isAlive());
+                    reader.isAlive());
             MessageDoors.stored("STORE", location + "@1", owner, null);
             if (filing) MessageDoors.storeEnded("STORE", filed);
             MessageDoors.storeEnded("STORE", bracket);
-            callback.join(5000L);
+            reader.join(5000L);
             long waited = System.currentTimeMillis() - began;
             assertEquals("filing " + filing + ": paired with the write",
                     Arrays.asList(filing), named);
             assertTrue("filing " + filing + ": " + waited, filing
                     ? waited >= hold : waited < hold);
         }
+        MessageDoors.storeEnded("STORE", elsewhere);
+    }
+
+    /** A notification on a thread of its own reading {@code key}: whether a
+     *  write named its work goes to {@code named}. */
+    private static Thread reading(Object owner, String key,
+                                  List<Boolean> named) {
+        return started(() -> MessageDoors.notified("Watcher", () -> {
+            MessageDoors.fetched("STORE", key, owner, null);
+            named.add(MessageDoors.current() != null);
+        }));
+    }
+
+    /**
+     * A write that never files holds the read a bound, not for ever.
+     */
+    @Test(timeout = 20000L)
+    public void aWriteThatNeverFilesHoldsTheReadABound() throws Exception {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        List<Boolean> named = Collections.synchronizedList(
+                new ArrayList<Boolean>());
+        long unfiled = MessageDoors.storing("STORE", "/k");
+        long began = System.currentTimeMillis();
+        reading(owner, "/k@4", named).join(10000L);
+        long waited = System.currentTimeMillis() - began;
+        MessageDoors.storeEnded("STORE", unfiled);
+        assertEquals(Arrays.asList(false), named);
+        assertTrue("a bound, not for ever: " + waited,
+                waited >= MessageDoors.FILED_WAIT_MS - 100L
+                        && waited < MessageDoors.FILED_WAIT_MS + 3000L);
     }
 
     /**
      * A WRITE takes its turn before the store's call, and never passes an
      * earlier held write to its location -- until that write is taken or
-     * the watchdog gives it up, as any slot: no wait is unbounded.  Per row:
-     * the writes the recording made (request:location), the replay's (a
-     * request after a '<' writes only once the first request's write
-     * returned: the Overseer's poll for the core-admin CREATE it sent), the
-     * order they are written in, and whether a slot was given up.
-     *
-     * <ul>
-     * <li>SOLR-18413 on solr-bug-reindex: the Overseer task wrote its queue
-     *     item before the CREATE's in the recording, but makes it only once
-     *     its poll sees that CREATE complete -- a stall, then the CREATE goes
-     *     and the Overseer's write takes its given-up slot late;</li>
-     * <li>the same with the CREATE's write unrecorded there;</li>
-     * <li>a write the order lacks waits for the write that was next at its
-     *     location, and goes once it is made, with no stall;</li>
-     * <li>one whose write never comes goes after a stall;</li>
-     * <li>one elsewhere waits for nothing.</li>
-     * </ul>
+     * the watchdog gives it up: no wait is unbounded.  Per row: the writes
+     * the recording made (request:location), the replay's (a request after
+     * a '<' writes only once the first request's write returned: the
+     * Overseer's poll for the core-admin CREATE it sent), the order they are
+     * written in, and whether a slot was given up.  SOLR-18413 on
+     * solr-bug-reindex (with the CREATE's write recorded, and not); a write
+     * the order lacks waits for the next write at its location; one whose
+     * write never comes goes after a stall; one elsewhere waits for nothing.
      */
     @Test(timeout = 60000L)
     public void aWriteNeverPassesAnEarlierWriteToItsLocationForLongerThanAStall()
@@ -1960,72 +1664,81 @@ public class ScheduleLogTest {
             {"o:" + q, "c:" + q + " o<c:" + q, "c o", "1"},
             {"o:/p", "c:/p o:/p", "o c", "0"},
             {"o:/p", "c:/p", "c", "1"},
-            {"o:/p", "c:/q o:/p", "c o", "0"},
-        };
+            {"o:/p", "c:/q o:/p", "c o", "0"}};
         for (String[] row : rows) {
-            noRequest();
-            for (String write : row[0].split(" ")) {
-                String[] at = write.split(":", 2);
-                request(at[0], () -> written(at[1]));
-            }
-            List<ScheduleEvent> recorded = events();
-            noRequest();
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-            enforce(recorded);
-            final CountDownLatch first = new CountDownLatch(1);
-            final Map<String, String> apis =
-                    new java.util.concurrent.ConcurrentHashMap<>();
-            List<Thread> writers = new ArrayList<Thread>();
+            enforceRecorded(row[0], 1000L, at -> written(at));
+            CountDownLatch first = new CountDownLatch(1);
             long before = System.nanoTime();
-            for (String write : row[1].split(" ")) {
-                String[] at = write.split(":", 2);
-                final boolean after = at[0].endsWith("<c");
-                final String api = after ? at[0].substring(0, 1) : at[0];
-                Thread writer = new Thread(() -> request(api, () -> {
-                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
-                            api);
-                    try {
-                        if (after) first.await();
-                        written(at[1]);
-                        first.countDown();
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                }));
-                writer.start();
-                writers.add(writer);
-                Thread.sleep(300L);
-            }
-            for (Thread writer : writers) writer.join(20000L);
-            long took = TimeUnit.NANOSECONDS.toMillis(
-                    System.nanoTime() - before);
-            String progress = ScheduleLog.progress();
-            List<String> made = new ArrayList<String>();
-            for (ScheduleEvent event : events()) {
-                made.add(apis.get(event.context()));
-            }
+            List<String> made = replayed(row[1], (api, at) -> {
+                try {
+                    if (api.endsWith("<c")) first.await();
+                    written(at);
+                    first.countDown();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }, 20000L);
+            long took = since(before);
             assertEquals(row[1], Arrays.asList(row[2].split(" ")), made);
-            assertTrue(row[1] + ": " + progress, progress.contains(
-                    " " + row[3] + " given up"));
+            progress(" " + row[3] + " given up");
             assertTrue(row[1] + " a stall at most, never for ever: " + took,
                     took < (row[3].equals("1") ? 12000L : 3000L));
         }
+    }
+
+    /** A fresh run held to the recording of {@code turns} (request:at),
+     *  each made by {@code make}. */
+    private void enforceRecorded(String turns, long timeout,
+                                 java.util.function.Consumer<String> make) {
+        noRequest();
+        for (String turn : turns.split(" ")) {
+            String[] at = turn.split(":", 2);
+            request(at[0], () -> make.accept(at[1]));
+        }
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        timeout(timeout);
+        enforce(recorded);
+    }
+
+    /**
+     * The replay's {@code turns} (request:at; a request after a '<' its
+     * first letter's), each a thread of its own 300 ms after the last,
+     * making it; the requests in the order their events were written.
+     */
+    private List<String> replayed(String turns,
+            java.util.function.BiConsumer<String, String> make, long within)
+            throws InterruptedException {
+        Map<String, String> apis = new ConcurrentHashMap<>();
+        List<Thread> threads = new ArrayList<Thread>();
+        for (String turn : turns.split(" ")) {
+            String[] at = turn.split(":", 2);
+            String api = at[0].substring(0, 1);
+            threads.add(started(() -> request(api, () -> {
+                apis.put(ScheduleLog.contextOf(Identity.contextHere()), api);
+                make.accept(at[0], at[1]);
+            })));
+            Thread.sleep(300L);
+        }
+        for (Thread thread : threads) thread.join(within);
+        List<String> made = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            made.add(apis.get(event.context()));
+        }
+        return made;
     }
 
     /**
      * A store read takes its turn at its location as a write does (READ):
      * it waits behind the write the recording made there before it, and the
      * write the recording made after it waits behind it, so a
-     * create-if-absent's check, a compare-and-set's version or a client's
-     * view of an alias sees what the recording's read saw (solr-adhoc-39,
-     * MB23s).  Per row: the recording's turns (request:W or R); the
-     * replay's, in the order its threads come; the run (a seed, cut at its
+     * create-if-absent's check or a client's view of an alias sees what the
+     * recording's read saw (solr-adhoc-39, MB23s).  Per row: the recording's
+     * turns (request:W or R); the replay's; the run (a seed, cut at its
      * end; a run the model orders, cut after the write or at its end; a
      * replay no model orders, cut after the write); the order the turns are
-     * made in; and the order's account.  Past the cut of a model's order (a
-     * world's planted pairings, CONFIRM) a read takes no slot: the model's
-     * ORDER rows place it.  A read of a location no write of the order
-     * wrote takes none either.
+     * made in; the account.  Past the cut of a model's order a read takes no
+     * slot; a read of a location no write of the order wrote takes none.
      */
     @Test(timeout = 60000L)
     public void aReadTakesItsTurnAtItsLocation() throws Exception {
@@ -2034,143 +1747,106 @@ public class ScheduleLogTest {
             {"r:R w:W", "w:W r:R", "seed", "r w", "2 taken, 0 given up"},
             {"w:W r:R", "r:R w:W", "model", "r w", "1 slot(s) (prefix 1)"},
             {"w:W r:R", "r:R w:W", "suffix", "w r", "2 taken, 0 given up"},
-            {"w:W r:R", "r:R w:W", "model prefix", "w r", "2 taken, 0 given up"},
+            {"w:W r:R", "r:R w:W", "model prefix", "w r",
+                "2 taken, 0 given up"},
             {"r:R", "r:R", "seed", "r", "no order"},
             // The write never comes: the read is let go, the write's slot
             // kept; the read never comes: the write gives it up, a grace in.
             {"w:W r:R", "r:R", "seed", "r", "1 taken, 0 given up"},
-            {"r:R w:W", "w:W", "seed", "w", "1 taken, 1 given up"},
-        };
+            {"r:R w:W", "w:W", "seed", "w", "1 taken, 1 given up"}};
         for (String[] row : rows) {
             noRequest();
             for (String turn : row[0].split(" ")) {
                 String[] at = turn.split(":", 2);
-                request(at[0], () -> turn(at[1], "/p"));
+                request(at[0], () -> turn(at[1]));
             }
             List<ScheduleEvent> recorded = events();
             noRequest();
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            timeout(30000L);
             int cut = row[2].equals("model") || row[2].equals("suffix")
                     ? 1 : recorded.size();
             ScheduleLog.enforceForTests(recorded.subList(0, cut),
                     recorded.subList(cut, recorded.size()), false,
                     !row[2].startsWith("model"));
-            final Map<String, String> apis =
-                    new java.util.concurrent.ConcurrentHashMap<>();
-            List<Thread> turns = new ArrayList<Thread>();
-            for (String turn : row[1].split(" ")) {
-                String[] at = turn.split(":", 2);
-                Thread thread = new Thread(() -> request(at[0], () -> {
-                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
-                            at[0]);
-                    turn(at[1], "/p");
-                }));
-                thread.start();
-                turns.add(thread);
-                Thread.sleep(300L);
-            }
-            for (Thread thread : turns) thread.join(10000L);
-            List<String> made = new ArrayList<String>();
-            for (ScheduleEvent event : events()) {
-                made.add(apis.get(event.context()));
-            }
-            assertEquals(Arrays.toString(row), Arrays.asList(row[3].split(" ")),
-                    made);
-            String progress = ScheduleLog.progress();
-            assertTrue(progress, progress.contains(row[4]));
+            assertEquals(Arrays.toString(row), Arrays.asList(row[3].split(
+                    " ")), replayed(row[1], (api, kind) -> turn(kind),
+                    10000L));
+            progress(row[4]);
         }
     }
 
-    /** A write ("W") or a read ("R") of {@code location} at its turn. */
-    private static void turn(String kind, String location) {
+    /** A write ("W") or a read ("R") of /p at its turn. */
+    private static void turn(String kind) {
         if (kind.equals("W")) {
-            written(location);
+            written("/p");
         } else {
-            MessageDoors.reading("STORE", location);
+            MessageDoors.reading("STORE", "/p");
         }
     }
 
     /**
      * A write waiting behind the write to its location gives that one write
      * up when it stalls, never the run of other nodes' events before it: x
-     * and y stay open and are taken when their threads come, and only o's
-     * write, which never came, is given up.
+     * and y stay open and are taken when their threads come.
      */
     @Test(timeout = 30000L)
     public void aWriteWaitingBehindAnotherGivesUpThatWriteAlone()
             throws Exception {
         noRequest();
-        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
-        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        request("a", () -> send("x"));
+        request("b", () -> send("y"));
         request("o", () -> written("/p"));
         List<ScheduleEvent> recorded = events();
         noRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "500");
+        timeout(500L);
         enforce(recorded);
-        Thread c = new Thread(() -> request("c", () -> written("/p")));
-        c.start();
-        c.join(10000L);
-        assertFalse("c's write goes once o's alone is given up", c.isAlive());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
-        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
-        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("2 taken, 1 given up"));
+        joined(started(() -> request("c", () -> written("/p"))));
+        progress(" 1 given up");
+        request("a", () -> send("x"));
+        request("b", () -> send("y"));
+        progress("2 taken, 1 given up");
     }
 
     /**
      * The one write a conflicted waiter needs is given up once: another
      * waiter asking the watchdog before the conflicted one sees it settled
      * -- the frontier, x, standing still -- finds nothing more to do there,
-     * and its own stall (x and y) comes a timeout later (solr-18413 MB3: 628
-     * stalls given at one settled slot, a spin).
+     * and its own stall comes a timeout later (solr-18413 MB3: 628 stalls
+     * given at one settled slot, a spin).
      */
     @Test(timeout = 30000L)
     public void aSettledConflictIsGivenUpOnceWhoeverAsks() throws Exception {
         noRequest();
-        request("x", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("x", () -> send("x"));
         request("o", () -> written("/p"));
-        request("y", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        request("y", () -> send("y"));
         String[] waiting = {"d", "e", "f", "g"};
-        for (String waiter : waiting) {
-            request(waiter, () -> ScheduleLog.observe(
-                    ScheduleEvent.Kind.SEND, "z"));
-        }
+        for (String waiter : waiting) request(waiter, () -> send("z"));
         List<ScheduleEvent> recorded = events();
         noRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "100");
+        timeout(100L);
         enforce(recorded);
-        // x's context at work (its loop's events run free), so the stall
-        // stands to its ceiling, where nothing defers the watchdog.
-        final boolean[] stop = new boolean[1];
-        Thread busy = new Thread(() -> request("x", () -> {
+        // x's context at work, so the stall stands to its ceiling.
+        boolean[] stop = new boolean[1];
+        Thread busy = started(() -> request("x", () -> {
             while (!stop[0]) {
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x2");
+                send("x2");
                 spin(20L);
             }
         }));
-        busy.start();
-        // Other waiters, later in the order, ask the watchdog too: whichever
-        // asks after the write was given up must find nothing to do there.
         List<Thread> others = new ArrayList<Thread>();
         for (String waiter : waiting) {
-            Thread other = new Thread(() -> request(waiter,
-                    () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "z")));
-            other.start();
-            others.add(other);
+            others.add(started(() -> request(waiter, () -> send("z"))));
         }
         Thread.sleep(200L);
-        Thread c = new Thread(() -> request("c", () -> written("/p")));
-        c.start();
+        Thread c = started(() -> request("c", () -> written("/p")));
         c.join(10000L);
         for (Thread other : others) other.join(10000L);
         stop[0] = true;
         busy.join(10000L);
-        assertFalse(c.isAlive());
-        for (Thread other : others) assertFalse(other.isAlive());
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("3 given up in 2 stall(s)"));
+        joined(c);
+        joined(others.toArray(new Thread[0]));
+        progress("3 given up in 2 stall(s)");
     }
 
     /**
@@ -2185,77 +1861,63 @@ public class ScheduleLogTest {
         request("c", () -> written("/p"));
         List<ScheduleEvent> recorded = events();
         noRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         enforce(recorded.subList(0, 1), recorded.subList(1, 2));
-        Thread c = new Thread(() -> request("c", () -> written("/p")));
-        c.start();
+        Thread c = started(() -> request("c", () -> written("/p")));
         Thread.sleep(500L);
         assertTrue("c's rest write waits for o's prefix write", c.isAlive());
         request("o", () -> written("/p"));
-        c.join(10000L);
-        assertFalse(c.isAlive());
+        joined(c);
         assertEquals(Arrays.asList(recorded.get(0).context(),
                 recorded.get(1).context()), Arrays.asList(
                 events().get(0).context(), events().get(1).context()));
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
     }
 
     /**
-     * The 18413 cycle with its poll: the Overseer task's write stands first
-     * at the queue's location, and the Overseer makes it only once its poll
+     * The 18413 cycle with its poll: the Overseer's write stands first at
+     * the queue's location, and the Overseer makes it only once its poll
      * sees the core-admin CREATE complete, whose write waits behind it.  The
      * poll's requests are the frontier owner at work, so the stall is
-     * deferred to its ceiling, CEILING timeouts (120 s at the 15 s default),
-     * then the Overseer's write is given up and both go; never longer.
+     * deferred to its ceiling, CEILING timeouts, then the Overseer's write
+     * is given up and both go; never longer.
      */
     @Test(timeout = 60000L)
     public void theCycleWithAPollCostsAtMostTheStallsCeiling()
             throws Exception {
         String q = "/overseer/queue/qn-";
-        noRequest();
-        request("o", () -> written(q));
-        request("c", () -> written(q));
-        List<ScheduleEvent> recorded = events();
-        noRequest();
-        long timeout = 300L;
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
-                String.valueOf(timeout));
-        enforce(recorded);
-        final CountDownLatch completed = new CountDownLatch(1);
+        enforceRecorded("o:" + q + " c:" + q, 300L, at -> written(at));
+        CountDownLatch completed = new CountDownLatch(1);
         long before = System.nanoTime();
-        Thread overseer = new Thread(() -> request("o", () -> {
+        Thread overseer = started(() -> request("o", () -> {
             try {
                 while (!completed.await(50L, TimeUnit.MILLISECONDS)) {
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                            "SOLR_HTTP#REQUEST:admin.cores:REQUESTSTATUS");
+                    send("SOLR_HTTP#REQUEST:admin.cores:REQUESTSTATUS");
                 }
                 written(q);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
         }));
-        Thread create = new Thread(() -> request("c", () -> {
+        Thread create = started(() -> request("c", () -> {
             written(q);
             completed.countDown();
         }));
-        overseer.start();
-        create.start();
         overseer.join(30000L);
         create.join(30000L);
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        long took = since(before);
         assertFalse(overseer.isAlive() || create.isAlive());
         assertTrue("the ceiling, not for ever: " + took,
-                took >= ScheduleLog.CEILING * timeout
-                        && took < ScheduleLog.CEILING * timeout + 5000L);
+                took >= ScheduleLog.CEILING * 300L
+                        && took < ScheduleLog.CEILING * 300L + 5000L);
     }
 
     /**
      * A leader election's node is created under its node's store session,
      * whose id differs from run to run: stated by the adapter as the node's
      * own spelling, the location keys by the node's name, so the replay's
-     * creates take their recorded slots in the recorded order.  A session
-     * no adapter stated keys alike in no two runs: its write takes no turn.
+     * creates take their recorded slots in order.  A session no adapter
+     * stated keys alike in no two runs: its write takes no turn.
      */
     @Test(timeout = 20000L)
     public void anElectionPrefixKeysByItsNodeAcrossRunsWithOtherSessions()
@@ -2271,28 +1933,24 @@ public class ScheduleLogTest {
         noRequest();
         MessageDoors.spelledAs("auto0/node0", "72089999000000001");
         MessageDoors.spelledAs("auto0/node1", "72089999000000002");
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         enforce(recorded);
-        Thread b = new Thread(() -> request("b", () -> written(
+        Thread b = started(() -> request("b", () -> written(
                 "/elect/72089999000000002-core_node6-n_")));
-        b.start();
         Thread.sleep(500L);
         assertTrue("node1's create waits for node0's", b.isAlive());
         request("a", () -> written("/elect/72089999000000001-core_node3-n_"));
         b.join(10000L);
         assertEquals(recorded.get(0).context(), events().get(0).context());
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("2 taken, 0 given up"));
+        progress("2 taken, 0 given up");
         written.clear();
         request("c", () -> written("/elect/72089999000000003-core_node9-n_"));
         assertTrue("an unstated session takes no turn: " + sites(),
                 sites().isEmpty());
     }
 
-    /**
-     * A fresh run on this thread, its schedule empty, with no request
-     * standing, so the next one roots its lineage.
-     */
+    /** A fresh run on this thread, its schedule empty, with no request
+     *  standing, so the next one roots its lineage. */
     private void noRequest() {
         written.clear();
         reset();
@@ -2317,84 +1975,28 @@ public class ScheduleLogTest {
                 location));
     }
 
-    /**
-     * A queue item its consumer takes is the message the thread serves, as
-     * its write sent it (its key, REQUEST), so an element it carried pairs
-     * by the item; the next item replaces it, and one no write of the window
-     * filed names nothing.
-     */
-    @Test(timeout = 20000L)
-    public void aConsumedItemIsTheMessageItsConsumerServes() {
-        Object owner = new Object();
-        RuntimeTraceContext.registerSource(owner, NODE);
-        MessageDoors.stored("STORE", "/q/qn-1@0", owner, null);
-        MessageDoors.stored("STORE", "/q/qn-2@0", owner, null);
-        String[][] rows = {
-            {"/q/qn-1@0", "/q/qn-1@0"},
-            {"/q/qn-2@0", "/q/qn-2@0"},
-            {"/q/qn-9@0", null},
-        };
-        for (String[] row : rows) {
-            MessageDoors.consumed("STORE", row[0]);
-            MessageDoors.Inbound served = MessageDoors.current();
-            assertEquals(row[0], row[1],
-                    served == null ? null : served.correlationId);
-            if (served != null) {
-                assertEquals(MessageDoors.REQUEST, served.half);
-            }
-        }
-    }
-
-    /** A notification on a thread of its own reading {@code key}: whether a
-     *  write named its work goes to {@code named}. */
-    private static Thread reading(final Object owner, final String key,
-                                  final List<Boolean> named) {
-        Thread callback = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                MessageDoors.notified("Watcher", new Runnable() {
-                    @Override
-                    public void run() {
-                        MessageDoors.fetched("STORE", key, owner, null);
-                        named.add(MessageDoors.current() != null);
-                    }
-                });
-            }
-        });
-        callback.start();
-        return callback;
-    }
-
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<D: void offerService()>#u4";
+        timeout(30000L);
+        String site = "<D: void offerService()>#u4";
         enforce(prefix("x"));
-        Thread daemon = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    TimedWaits.sleep(10L, site);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
+        Thread daemon = started(() -> {
+            try {
+                TimedWaits.sleep(10L, site);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             }
         });
-        daemon.start();
-        Thread turn = observer(ScheduleEvent.Kind.WAKE, "tick.e");
+        Thread turn = observer(WAKE, "tick.e");
         Thread.sleep(500L);
         assertTrue("its 10 ms are long past on the wall clock, and the "
                 + "recording made no such WAKE before x", daemon.isAlive());
         assertTrue("nor such a turn: it waits at the cut", turn.isAlive());
         assertTrue(written.isEmpty());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        daemon.join(5000L);
-        turn.join(5000L);
-        assertFalse("the prefix settled: the wait is the clock's again",
-                daemon.isAlive());
-        assertFalse(turn.isAlive());
+        send("x");
+        joined(daemon, turn);
         List<String> sites = sites();
         assertEquals(sites.toString(), 3, sites.size());
         assertEquals("x", sites.get(0));
@@ -2410,29 +2012,23 @@ public class ScheduleLogTest {
     @Test(timeout = 20000L)
     public void nobodyWaitsForALateWakeOrInterruptAndItStillTakesItsSlot()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        Object[][] rows = {
-                {ScheduleEvent.Kind.WAKE, "tick.d"},
-                {ScheduleEvent.Kind.INTERRUPT, "<S: void run()>#u12"},
-        };
+        timeout(30000L);
+        Object[][] rows = {{WAKE, "tick.d"},
+                {INTERRUPT, "<S: void run()>#u12"}};
         for (Object[] row : rows) {
-            ScheduleEvent.Kind kind = (ScheduleEvent.Kind) row[0];
+            Kind kind = (Kind) row[0];
             String site = (String) row[1];
             restart();
-            enforce(Arrays.asList(
-                    event(kind, site),
-                    event(ScheduleEvent.Kind.SEND, "x"),
-                    event(ScheduleEvent.Kind.SEND, "y")));
+            enforce(Arrays.asList(event(kind, site), event(SEND, "x"),
+                    event(SEND, "y")));
             long before = System.nanoTime();
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            send("x");
             assertTrue(kind + ": x did not wait for the slot before it",
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                            < 5000L);
+                    since(before) < 5000L);
             ScheduleLog.observe(kind, site);
-            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+            send("y");
             assertEquals(kind.name(), Arrays.asList("x", site, "y"), sites());
-            assertTrue(kind + ": " + ScheduleLog.progress(),
-                    ScheduleLog.progress().contains(" 0 given up"));
+            progress(" 0 given up");
             assertFalse(kind + ": every slot taken", ScheduleLog.enforcing());
         }
     }
@@ -2440,28 +2036,23 @@ public class ScheduleLogTest {
     /** A held wait, and a held poll, outlive the prefix's end. */
     @Test
     public void aHeldWaitOutlivesThePrefixOnTheWallClock() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         enforce(prefix("x"));
-        final Object monitor = new Object();
-        Thread idle = waits(monitor, "<C: boolean waitForWork()>#u21", 1,
-                true).get(0);
-        final BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
-        final Object[] taken = new Object[1];
-        Thread sender = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    taken[0] = TimedWaits.poll(queue, 60L, TimeUnit.SECONDS,
-                            "<S: void run()>#u12");
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
+        Object monitor = new Object();
+        Thread idle = waits(monitor, WORK, 1, true).get(0);
+        BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
+        Object[] taken = new Object[1];
+        Thread sender = started(() -> {
+            try {
+                taken[0] = TimedWaits.poll(queue, 60L, TimeUnit.SECONDS,
+                        "<S: void run()>#u12");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             }
         });
-        sender.start();
         Thread.sleep(200L);
         // The prefix's last event: the run is free from here.
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        send("x");
         assertFalse(ScheduleLog.enforcing());
         Thread.sleep(500L);
         assertTrue("the prefix's end is no timeout of this wait",
@@ -2471,10 +2062,7 @@ public class ScheduleLogTest {
             TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
         }
         queue.put("call");
-        idle.join(5000L);
-        sender.join(5000L);
-        assertFalse(idle.isAlive());
-        assertFalse(sender.isAlive());
+        joined(idle, sender);
         assertEquals("the poll takes what arrives", "call", taken[0]);
         assertEquals("a signal ended each: only the prefix's event is written",
                 Collections.singletonList("x"), sites());
@@ -2489,63 +2077,53 @@ public class ScheduleLogTest {
     @Test
     public void aNotifySentWhileAHeldWaitIsOutOfTheWaitSetIsNotLost()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<C: boolean waitForWork()>#u21";
-        final Object monitor = new Object();
+        timeout(30000L);
+        Object monitor = new Object();
         for (boolean opening : new boolean[] {false, true}) {
             restart();
             // Opening: the wait starts free, on the wall clock, in the set.
             if (opening) RecordingWindow.reset();
             enforce(prefix("x"));
-            Thread idle = waits(monitor, site, 1, true).get(0);
+            Thread idle = waits(monitor, WORK, 1, true).get(0);
             if (opening) Thread.sleep(100L);
             synchronized (monitor) {
                 if (opening) {
                     // The opening takes the wait out of the wait set; the
-                    // notify that follows, before it can re-enter, reaches
-                    // only its mark.
+                    // notify that follows reaches only its mark.
                     RecordingWindow.open();
                     TimedWaits.windowOpened();
                 } else {
-                    // Held longer than a quantum: the wait's quantum ends
-                    // and it stands outside the wait set, blocked on the
-                    // monitor this thread holds, when the notify is sent.
+                    // Held past a quantum: the wait stands outside the wait
+                    // set, blocked on this monitor, when the notify is sent.
                     Thread.sleep(200L);
                 }
                 TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
             }
-            idle.join(5000L);
             String row = opening ? "the window opened" : "a quantum ran out";
+            idle.join(5000L);
             assertFalse(row + ": the notify was state the wait read",
                     idle.isAlive());
             assertTrue(row + ": and it is no event", written.isEmpty());
-            assertTrue(ScheduleLog.progress(),
-                    ScheduleLog.progress().contains(" 0 given up"));
+            progress(" 0 given up");
         }
-
         restart();
         enforce(prefix("x"));
-        final ReentrantLock lock = new ReentrantLock();
-        final Condition ready = lock.newCondition();
-        final boolean[] signalled = new boolean[1];
-        final CountDownLatch waiting = new CountDownLatch(1);
-        Thread taker = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                lock.lock();
-                try {
-                    waiting.countDown();
-                    signalled[0] = TimedWaits.await(ready, 60L,
-                            TimeUnit.SECONDS,
-                            "<Q: java.lang.Object take()>#u8");
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    lock.unlock();
-                }
+        ReentrantLock lock = new ReentrantLock();
+        Condition ready = lock.newCondition();
+        boolean[] signalled = new boolean[1];
+        CountDownLatch waiting = new CountDownLatch(1);
+        Thread taker = started(() -> {
+            lock.lock();
+            try {
+                waiting.countDown();
+                signalled[0] = TimedWaits.await(ready, 60L, TimeUnit.SECONDS,
+                        "<Q: java.lang.Object take()>#u8");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                lock.unlock();
             }
         });
-        taker.start();
         waiting.await();
         lock.lock();
         try {
@@ -2554,9 +2132,8 @@ public class ScheduleLogTest {
         } finally {
             lock.unlock();
         }
-        taker.join(5000L);
-        assertFalse("the signal was state the await read", taker.isAlive());
-        assertTrue(signalled[0]);
+        joined(taker);
+        assertTrue("the signal was state the await read", signalled[0]);
         assertTrue(written.isEmpty());
     }
 
@@ -2567,8 +2144,8 @@ public class ScheduleLogTest {
      */
     @Test
     public void aNotifyEndsOneWaitAndANotifyAllEndsEvery() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final Object monitor = new Object();
+        timeout(30000L);
+        Object monitor = new Object();
         for (boolean held : new boolean[] {true, false}) {
             restart();
             if (held) enforce(prefix("x"));
@@ -2584,20 +2161,15 @@ public class ScheduleLogTest {
             synchronized (monitor) {
                 TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
             }
-            join(first);
-            assertEquals(row, 0, alive(first));
+            joined(first.toArray(new Thread[0]));
             List<Thread> second = waits(monitor, "<C: void loop()>#u7", 2,
                     held);
             synchronized (monitor) {
                 TimedWaits.notifyAllOn(monitor, "<C: void n()>#u2");
             }
-            join(second);
-            assertEquals(row, 0, alive(second));
+            joined(second.toArray(new Thread[0]));
             assertTrue(row, written.isEmpty());
-            if (held) {
-                assertTrue(ScheduleLog.progress(),
-                        ScheduleLog.progress().contains(" 0 given up"));
-            }
+            if (held) progress(" 0 given up");
         }
     }
 
@@ -2615,7 +2187,6 @@ public class ScheduleLogTest {
         RecordingWindow.open();
         RuntimeTraceContext.endTick(setUp);
         assertTrue("the set-up's turn is not the window's", written.isEmpty());
-
         Object daemon = new Object();
         RuntimeTraceContext.registerSource(daemon, NODE);
         for (int spin = 0; spin < 3; spin++) {
@@ -2627,25 +2198,21 @@ public class ScheduleLogTest {
         }
         assertTrue("empty turns hold no slot", written.isEmpty());
         long tick = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        send("HADOOP_IPC#REQUEST");
         RuntimeTraceContext.endTick(tick);
         List<ScheduleEvent> events = events();
-        assertEquals(Arrays.asList(ScheduleEvent.Kind.WAKE,
-                ScheduleEvent.Kind.SEND, ScheduleEvent.Kind.END),
-                Arrays.asList(events.get(0).kind(), events.get(1).kind(),
-                        events.get(2).kind()));
+        assertEquals(Arrays.asList(WAKE, SEND, END), kinds());
         assertTrue(events.get(0).context(),
                 events.get(0).context().contains("Root:HEARTBEAT_TICK#1"));
         assertEquals("the END stands in the turn's own context",
                 events.get(0).context(), events.get(2).context());
         assertEquals("tick.HEARTBEAT_TICK", events.get(2).site());
-
         long carrying = RuntimeTraceContext.beginTick(daemon,
                 "HEARTBEAT_TICK");
         Lineage.capture();
         RuntimeTraceContext.endTick(carrying);
         long next = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        send("HADOOP_IPC#REQUEST");
         RuntimeTraceContext.endTick(next);
         assertTrue("work captured in a turn keeps its k: " + events(),
                 events().get(3).context().contains("Root:HEARTBEAT_TICK#3"));
@@ -2655,100 +2222,83 @@ public class ScheduleLogTest {
     public void aTurnsEndIsHeldToItsPlaceInThePrefix() throws Exception {
         // One free turn: its WAKE and END as this JVM computes them.  The
         // prefix below is a discovering run whose turn ended AFTER a send.
-        final Object monitor = new Object();
-        Thread turn = daemonTurn(monitor, null);
-        turn.start();
-        turn.join(5000L);
+        Object monitor = new Object();
+        daemonTurn(monitor, null).join(5000L);
         List<ScheduleEvent> free = events();
-        ScheduleEvent wake = free.get(0);
-        ScheduleEvent beat = free.get(1);
-        ScheduleEvent end = free.get(2);
-        assertEquals(ScheduleEvent.Kind.END, end.kind());
-
+        assertEquals(END, free.get(2).kind());
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
         restart();
         openRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        enforce(Arrays.asList(wake, beat,
-                event(ScheduleEvent.Kind.SEND, "y"), end));
-        final CountDownLatch ending = new CountDownLatch(1);
+        timeout(30000L);
+        enforce(Arrays.asList(free.get(0), free.get(1), event(SEND, "y"),
+                free.get(2)));
+        CountDownLatch ending = new CountDownLatch(1);
         Thread held = daemonTurn(monitor, ending);
-        held.start();
         assertTrue(ending.await(5L, TimeUnit.SECONDS));
         Thread.sleep(200L);
         assertTrue("the turn's END waits for the send before it",
                 held.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-        held.join(5000L);
-        assertFalse(held.isAlive());
+        send("y");
+        joined(held);
         assertEquals(Arrays.asList("tick.HEARTBEAT_TICK", "beat", "y",
                 "tick.HEARTBEAT_TICK"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
+        progress(" 0 given up");
     }
 
+    /**
+     * JLS 17.2.4: a notify is never lost to an interrupt -- the interrupted
+     * wait returns normally with its interrupt pending, or it throws and
+     * the other wait is woken.  A wait the wall clock ended is out of the
+     * wait set already: the notify goes to the one still in it, and the
+     * clock's is a timeout, a WAKE.
+     */
     @Test
     public void aWaitAWovenNotifyMarkedKeepsItThroughAnInterrupt()
             throws Exception {
-        final Object monitor = new Object();
-        final String[] outcome = new String[2];
-        final CountDownLatch waiting = new CountDownLatch(2);
+        Object monitor = new Object();
+        String[] outcome = new String[2];
+        CountDownLatch waiting = new CountDownLatch(2);
         Thread first = untimedWaiter(monitor, outcome, 0, waiting);
-        first.start();
         waitUntilWaiting(first);
         Thread second = untimedWaiter(monitor, outcome, 1, waiting);
-        second.start();
         waiting.await();
         waitUntilWaiting(second);
         synchronized (monitor) {
-            // The first wait leaves the wait set on its interrupt, and
-            // stands on the monitor this thread holds when the notify comes.
             first.interrupt();
             Thread.sleep(200L);
             TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
         }
         first.join(5000L);
         second.join(300L);
-        // JLS 17.2.4: a notify is never lost to an interrupt.  Either the
-        // interrupted wait returns NORMALLY with its interrupt pending, or
-        // it throws and the other wait is woken.
-        boolean kept = "normal+interrupted".equals(outcome[0])
-                || ("threw".equals(outcome[0]) && "normal".equals(outcome[1]));
-        assertTrue("the notify was lost: " + Arrays.toString(outcome), kept);
+        assertTrue("the notify was lost: " + Arrays.toString(outcome),
+                "normal+interrupted".equals(outcome[0])
+                        || ("threw".equals(outcome[0])
+                        && "normal".equals(outcome[1])));
         synchronized (monitor) {
             TimedWaits.notifyAllOn(monitor, "<C: void n()>#u1");
         }
-        second.join(5000L);
-        assertFalse(second.isAlive());
-    }
+        joined(second);
 
-    @Test
-    public void aWaitTheWallClockEndedTakesNoNotify() throws Exception {
-        final Object monitor = new Object();
-        final String[] outcome = new String[2];
-        final CountDownLatch waiting = new CountDownLatch(1);
-        Thread timed = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                synchronized (monitor) {
-                    try {
-                        TimedWaits.waitOn(monitor, 100L, "<C: void t()>#u2");
-                        outcome[0] = "returned";
-                    } catch (InterruptedException interrupted) {
-                        outcome[0] = "threw";
-                    }
+        restart();
+        Arrays.fill(outcome, null);
+        Thread timed = started(() -> {
+            synchronized (monitor) {
+                try {
+                    TimedWaits.waitOn(monitor, 100L, "<C: void t()>#u2");
+                    outcome[0] = "returned";
+                } catch (InterruptedException interrupted) {
+                    outcome[0] = "threw";
                 }
             }
         });
-        timed.start();
         waitUntilWaiting(timed);
-        Thread untimed = untimedWaiter(monitor, outcome, 1, waiting);
-        untimed.start();
-        waiting.await();
+        CountDownLatch untimedWaiting = new CountDownLatch(1);
+        Thread untimed = untimedWaiter(monitor, outcome, 1, untimedWaiting);
+        untimedWaiting.await();
         waitUntilWaiting(untimed);
         synchronized (monitor) {
-            // The timed wait's 100 ms run out while this thread holds the
-            // monitor: the JDK has taken it out of the wait set already.
+            // The timed wait's 100 ms run out while this thread holds it.
             Thread.sleep(300L);
             TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
         }
@@ -2767,48 +2317,39 @@ public class ScheduleLogTest {
      */
     @Test(timeout = 20000L)
     public void aSleepWithNoEventToMakeRunsOnTheWallClock() throws Exception {
-        // A wait at a site the identity cannot name makes no event
-        // (ScheduleLog.pending), so no order holds it.
+        // A wait at a site the identity cannot name makes no event.
         enforce(prefix("x"));
         assertTrue(ScheduleLog.enforcing());
         long before = System.nanoTime();
         TimedWaits.sleep(300L, "");
-        long took = TimeUnit.NANOSECONDS.toMillis(
-                System.nanoTime() - before);
+        long took = since(before);
         assertTrue("neither skipped nor spun forever: " + took,
                 took >= 250L && took < 5000L);
 
         restart();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<L: void loop()>#u9";
-        enforce(prefix("x"), Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, "tick.d")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        timeout(30000L);
+        String site = "<L: void loop()>#u9";
+        enforce(prefix("x"), Collections.singletonList(event(WAKE, "tick.d")));
+        send("x");
         before = System.nanoTime();
         TimedWaits.sleep(500L, site);
-        took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-        assertTrue("to its own deadline, not at once: " + took,
-                took >= 450L);
+        took = since(before);
+        assertTrue("to its own deadline, not at once: " + took, took >= 450L);
         assertTrue("and not held for the rest: " + took, took < 5000L);
         assertEquals(Arrays.asList("x", site), sites());
 
-        // A poll(0) takes what another thread offers right now.  A DataNode
-        // proxy's IPC sender polls its SynchronousQueue at maxIdleTime 0,
-        // and the caller's offer is only ever taken that way.
-        final SynchronousQueue<String> queue = new SynchronousQueue<String>();
-        Thread caller = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    while (!queue.offer("call", 1L, TimeUnit.SECONDS)) {
-                        // As Client.Connection.sendRpcRequest does.
-                    }
-                } catch (InterruptedException stopped) {
-                    Thread.currentThread().interrupt();
+        // A poll(0) takes what another thread offers right now: a DataNode
+        // proxy's IPC sender polls its SynchronousQueue at maxIdleTime 0.
+        SynchronousQueue<String> queue = new SynchronousQueue<String>();
+        Thread caller = started(() -> {
+            try {
+                while (!queue.offer("call", 1L, TimeUnit.SECONDS)) {
+                    // As Client.Connection.sendRpcRequest does.
                 }
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
             }
         });
-        caller.start();
         Object taken = null;
         long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10L);
         while (taken == null && System.nanoTime() < end) {
@@ -2827,151 +2368,130 @@ public class ScheduleLogTest {
      */
     @Test
     public void aHeldWaitAnInterruptEndsWritesItsWake() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<C: boolean waitForWork()>#u21";
+        timeout(30000L);
         enforce(prefix("x"));
-        final Object monitor = new Object();
-        final String[] outcome = new String[1];
-        Thread waiter = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                synchronized (monitor) {
-                    try {
-                        TimedWaits.waitOn(monitor, 60000L, site);
-                        outcome[0] = "returned";
-                    } catch (InterruptedException interrupted) {
-                        outcome[0] = "threw";
-                    }
+        Object monitor = new Object();
+        String[] outcome = new String[1];
+        Thread waiter = started(() -> {
+            synchronized (monitor) {
+                try {
+                    TimedWaits.waitOn(monitor, 60000L, WORK);
+                    outcome[0] = "returned";
+                } catch (InterruptedException interrupted) {
+                    outcome[0] = "threw";
                 }
             }
         });
-        waiter.start();
         waitUntilWaiting(waiter);
         waiter.interrupt();
         waiter.join(5000L);
         assertEquals("the interrupt ends the held wait by throwing", "threw",
                 outcome[0]);
-        assertEquals("and writes its INTERRUPT where it stands",
-                Collections.singletonList(site), sites());
-        assertEquals(ScheduleEvent.Kind.INTERRUPT, events().get(0).kind());
-
-        final String spin = "<P: void spin()>#u3";
+        assertEquals(Collections.singletonList(WORK), sites());
+        assertEquals(INTERRUPT, events().get(0).kind());
+        String spin = "<P: void spin()>#u3";
         for (boolean held : new boolean[] {false, true}) {
             restart();
             if (held) enforce(prefix("x"));
-            final boolean[] flagged = new boolean[1];
-            Thread parker = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    // JDK 8 hands a new thread a finished thread's park
-                    // state with its permit still set: an inherited permit
-                    // would return the first park at once, an unpark.
-                    LockSupport.parkNanos(1L);
-                    TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(20L), spin);
-                    flagged[0] = Thread.currentThread().isInterrupted();
-                }
+            boolean[] flagged = new boolean[1];
+            Thread parker = started(() -> {
+                // JDK 8 hands a new thread a finished thread's park state
+                // with its permit still set: an inherited permit would
+                // return the first park at once, an unpark.
+                LockSupport.parkNanos(1L);
+                TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(20L), spin);
+                flagged[0] = Thread.currentThread().isInterrupted();
             });
-            parker.start();
             waitUntilWaiting(parker);
             Thread.sleep(30L);
             parker.interrupt();
-            parker.join(5000L);
-            assertFalse(parker.isAlive());
+            joined(parker);
             assertTrue("the park leaves the flag", flagged[0]);
             assertEquals((held ? "held" : "free") + ": the interrupt that "
-                            + "ended the park writes its WAKE",
+                    + "ended the park writes its WAKE",
                     Collections.singletonList(spin), sites());
         }
+    }
+
+    /** One wait, entered interrupted, that throws. */
+    private interface Interruptible {
+        void run() throws InterruptedException;
     }
 
     /**
      * Entered with an interrupt pending, a wait does what the JDK's does:
      * a park returns at once with no event and the flag left; sleep(0),
      * poll(0) and awaitNanos(0) throw, and so does Object.wait, turn or no
-     * turn.
+     * turn, clearing the flag.
      */
     @Test
     public void aTimedWaitEnteredInterruptedThrowsEvenWhenItsTurnIsNext()
             throws Exception {
-        final String site = "<L: void loop()>#u4";
-        enforce(Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, site)));
+        String site = "<L: void loop()>#u4";
+        enforce(Collections.singletonList(event(WAKE, site)));
         Thread.currentThread().interrupt();
         long before = System.nanoTime();
         TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(10L),
                 "<P: void spin()>#u3");
         assertTrue("a park returns at once for an interrupted thread",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 5000L);
+                since(before) < 5000L);
         assertTrue("and leaves the flag for its caller",
                 Thread.interrupted());
         assertTrue("a loop around it would spin: no event per spin",
                 written.isEmpty());
-
-        Thread.currentThread().interrupt();
-        boolean threw = false;
-        try {
-            TimedWaits.sleep(0L, "<L: void loop()>#u9");
-        } catch (InterruptedException interrupted) {
-            threw = true;
-        }
-        assertTrue("Thread.sleep(0) throws on a pending interrupt", threw);
-        Thread.currentThread().interrupt();
-        threw = false;
-        try {
-            TimedWaits.poll(new LinkedBlockingQueue<Object>(), 0L,
-                    TimeUnit.MILLISECONDS, "<S: void run()>#u12");
-        } catch (InterruptedException interrupted) {
-            threw = true;
-        }
-        assertTrue("so does a timed poll(0)", threw);
-
-        final Object monitor = new Object();
-        Thread.currentThread().interrupt();
-        threw = false;
-        synchronized (monitor) {
-            try {
+        Object monitor = new Object();
+        ReentrantLock lock = new ReentrantLock();
+        Condition ready = lock.newCondition();
+        Map<String, Interruptible> waits = new LinkedHashMap<>();
+        waits.put("Thread.sleep(0)", () -> TimedWaits.sleep(0L,
+                "<L: void loop()>#u9"));
+        waits.put("a timed poll(0)", () -> TimedWaits.poll(
+                new LinkedBlockingQueue<Object>(), 0L, TimeUnit.MILLISECONDS,
+                "<S: void run()>#u12"));
+        waits.put("Object.wait, turn or no turn", () -> {
+            synchronized (monitor) {
                 TimedWaits.waitOn(monitor, 60000L, site);
+            }
+        });
+        waits.put("awaitNanos(0), as AQS's does", () -> {
+            lock.lock();
+            try {
+                TimedWaits.awaitNanos(ready, 0L, "<Q: void take()>#u8");
+            } finally {
+                lock.unlock();
+            }
+        });
+        for (Map.Entry<String, Interruptible> wait : waits.entrySet()) {
+            Thread.currentThread().interrupt();
+            boolean threw = false;
+            try {
+                wait.getValue().run();
             } catch (InterruptedException interrupted) {
                 threw = true;
             }
+            assertTrue(wait.getKey() + " throws on a pending interrupt",
+                    threw);
+            if (wait.getKey().startsWith("Object.wait")) {
+                assertFalse("and clears the flag, as the JDK's does",
+                        Thread.currentThread().isInterrupted());
+            }
+            Thread.interrupted();
         }
-        assertTrue("Object.wait entered interrupted throws, turn or no turn",
-                threw);
-        assertFalse("and clears the flag, as the JDK's does",
-                Thread.currentThread().isInterrupted());
-
-        ReentrantLock lock = new ReentrantLock();
-        Condition ready = lock.newCondition();
-        Thread.currentThread().interrupt();
-        threw = false;
-        lock.lock();
-        try {
-            TimedWaits.awaitNanos(ready, 0L, "<Q: void take()>#u8");
-        } catch (InterruptedException interrupted) {
-            threw = true;
-        } finally {
-            lock.unlock();
-        }
-        assertTrue("so does awaitNanos(0), as AQS's does", threw);
     }
 
-    /** An untimed woven wait that writes how it ended into outcome[at]. */
-    private static Thread untimedWaiter(final Object monitor,
-                                        final String[] outcome, final int at,
-                                        final CountDownLatch waiting) {
-        return new Thread(new Runnable() {
-            @Override
-            public void run() {
-                synchronized (monitor) {
-                    waiting.countDown();
-                    try {
-                        TimedWaits.waitOn(monitor, "<C: void w()>#u5");
-                        outcome[at] = Thread.currentThread().isInterrupted()
-                                ? "normal+interrupted" : "normal";
-                    } catch (InterruptedException interrupted) {
-                        outcome[at] = "threw";
-                    }
+    /** An untimed woven wait, started, that writes how it ended into
+     *  outcome[at]. */
+    private static Thread untimedWaiter(Object monitor, String[] outcome,
+                                        int at, CountDownLatch waiting) {
+        return started(() -> {
+            synchronized (monitor) {
+                waiting.countDown();
+                try {
+                    TimedWaits.waitOn(monitor, "<C: void w()>#u5");
+                    outcome[at] = Thread.currentThread().isInterrupted()
+                            ? "normal+interrupted" : "normal";
+                } catch (InterruptedException interrupted) {
+                    outcome[at] = "threw";
                 }
             }
         });
@@ -2990,18 +2510,14 @@ public class ScheduleLogTest {
         }
     }
 
-    /** One daemon turn on a thread of its own; counts down before its end. */
-    private static Thread daemonTurn(final Object owner,
-                                     final CountDownLatch ending) {
-        return new Thread(new Runnable() {
-            @Override
-            public void run() {
-                long tick = RuntimeTraceContext.beginTick(owner,
-                        "HEARTBEAT_TICK");
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "beat");
-                if (ending != null) ending.countDown();
-                RuntimeTraceContext.endTick(tick);
-            }
+    /** One daemon turn on a thread of its own, started; counts down before
+     *  its end. */
+    private static Thread daemonTurn(Object owner, CountDownLatch ending) {
+        return started(() -> {
+            long tick = RuntimeTraceContext.beginTick(owner, "HEARTBEAT_TICK");
+            send("beat");
+            if (ending != null) ending.countDown();
+            RuntimeTraceContext.endTick(tick);
         });
     }
 
@@ -3009,31 +2525,26 @@ public class ScheduleLogTest {
      * {@code count} woven waits at {@code site} on {@code monitor}, each
      * standing in it: a minute long when {@code timed}, else untimed.
      */
-    private static List<Thread> waits(final Object monitor, final String site,
-                                      int count, final boolean timed)
+    private static List<Thread> waits(Object monitor, String site, int count,
+                                      boolean timed)
             throws InterruptedException {
-        final CountDownLatch waiting = new CountDownLatch(count);
+        CountDownLatch waiting = new CountDownLatch(count);
         List<Thread> threads = new ArrayList<Thread>();
         for (int index = 0; index < count; index++) {
-            Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    synchronized (monitor) {
-                        waiting.countDown();
-                        try {
-                            if (timed) {
-                                TimedWaits.waitOn(monitor, 60000L, site);
-                            } else {
-                                TimedWaits.waitOn(monitor, site);
-                            }
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
+            threads.add(started(() -> {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
+                        if (timed) {
+                            TimedWaits.waitOn(monitor, 60000L, site);
+                        } else {
+                            TimedWaits.waitOn(monitor, site);
                         }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
                     }
                 }
-            });
-            threads.add(thread);
-            thread.start();
+            }));
         }
         waiting.await();
         synchronized (monitor) {
@@ -3050,13 +2561,6 @@ public class ScheduleLogTest {
         return alive;
     }
 
-    private static void join(List<Thread> threads)
-            throws InterruptedException {
-        for (Thread thread : threads) {
-            thread.join(5000L);
-        }
-    }
-
     /**
      * Past the prefix a timeout the rest holds waits for the events it
      * followed -- a daemon's turn and a held wait's WAKE alike.
@@ -3064,61 +2568,50 @@ public class ScheduleLogTest {
     @Test
     public void pastThePrefixATimeoutWaitsForTheEventsItFollowed()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<C: boolean waitForWork()>#u21";
-        enforce(prefix("x"), Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "a"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d"),
-                event(ScheduleEvent.Kind.WAKE, site)));
+        timeout(30000L);
+        enforce(prefix("x"), Arrays.asList(event(SEND, "a"),
+                event(WAKE, "tick.d"), event(WAKE, WORK)));
         long before = System.nanoTime();
-        final Object monitor = new Object();
-        Thread idle = new Thread(() -> {
+        Object monitor = new Object();
+        Thread idle = started(() -> {
             synchronized (monitor) {
                 try {
-                    TimedWaits.waitOn(monitor, 1500L, site);
+                    TimedWaits.waitOn(monitor, 1500L, WORK);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
             }
         });
-        idle.start();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        send("x");
         assertTrue("the rest's timeouts are still to come",
                 ScheduleLog.enforcing());
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        Thread daemon = observer(WAKE, "tick.d");
         Thread.sleep(300L);
         assertTrue("the daemon's turn waits for what it followed",
                 daemon.isAlive());
         assertTrue("and so does the held wait's timeout", idle.isAlive());
         assertEquals(Collections.singletonList("x"), sites());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
-        daemon.join(5000L);
-        idle.join(5000L);
-        assertFalse(daemon.isAlive());
-        assertFalse(idle.isAlive());
-        assertTrue("its own 1.5 s, no sooner",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        >= 1450L);
-        assertEquals(Arrays.asList("x", "a", "tick.d", site), sites());
+        send("a");
+        joined(daemon, idle);
+        assertTrue("its own 1.5 s, no sooner", since(before) >= 1450L);
+        assertEquals(Arrays.asList("x", "a", "tick.d", WORK), sites());
         assertFalse("no timeout of the rest is still to come",
                 ScheduleLog.enforcing());
     }
 
     @Test
     public void pastThePrefixEverythingButTheRestsTimeoutsRunsFree() {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        enforce(prefix("x"), Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "a"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        timeout(30000L);
+        enforce(prefix("x"), Arrays.asList(event(SEND, "a"),
+                event(WAKE, "tick.d")));
+        send("x");
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "unnamed");
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.other");
+        send("unnamed");
+        ScheduleLog.observe(WAKE, "tick.other");
         assertEquals(ScheduleLog.Turn.FREE,
                 ScheduleLog.turn(ScheduleLog.wake("<L: void other()>#u1")));
         assertTrue("nothing the rest does not hold waits",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 200L);
+                since(before) < 200L);
         assertEquals(ScheduleLog.Turn.NOT_YET,
                 ScheduleLog.turn(ScheduleLog.wake("tick.d")));
         assertEquals(Arrays.asList("x", "unnamed", "tick.other"), sites());
@@ -3130,25 +2623,23 @@ public class ScheduleLogTest {
      * not list before the witness, so a WAKE it never made -- a daemon's
      * first turn -- waits until the order has drained, even in the unheld
      * order CONFIRM writes (hdfs-17967-pathC r1b: the target DataNode's
-     * first BP_SERVICE_ACTOR turn ran free before the anchor and refreshed
-     * the keys the witness had failed on).  Any other event it lacks runs
-     * free, as past any cut.
+     * first actor turn ran free before the anchor and refreshed the keys the
+     * witness had failed on).  Any other event it lacks runs free.
      */
     @Test(timeout = 20000L)
     public void anOrderCutAtItsWitnessHoldsAWakeItNeverMadeToItsEnd()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         ScheduleLog.enforceForTests(Collections.<ScheduleEvent>emptyList(),
                 prefix("a", "anchor"), true);
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.first");
+        Thread daemon = observer(WAKE, "tick.first");
         Thread.sleep(300L);
         assertTrue("the daemon's first turn waits for the witness's order",
                 daemon.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "unnamed");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "anchor");
-        daemon.join(5000L);
-        assertFalse(daemon.isAlive());
+        send("unnamed");
+        send("a");
+        send("anchor");
+        joined(daemon);
         assertEquals(Arrays.asList("unnamed", "a", "anchor", "tick.first"),
                 sites());
     }
@@ -3161,66 +2652,51 @@ public class ScheduleLogTest {
     @Test
     public void theRestGivesUpOnlyWhatCameBeforeTheEarliestWaitingTimeout()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-        enforce(prefix("x"), Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "never"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d"),
-                event(ScheduleEvent.Kind.SEND, "y"),
-                event(ScheduleEvent.Kind.WAKE, "tick.e")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        Thread later = observer(ScheduleEvent.Kind.WAKE, "tick.e");
-        Thread earlier = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        timeout(1000L);
+        enforce(prefix("x"), Arrays.asList(event(SEND, "never"),
+                event(WAKE, "tick.d"), event(SEND, "y"),
+                event(WAKE, "tick.e")));
+        send("x");
+        Thread later = observer(WAKE, "tick.e");
+        Thread earlier = observer(WAKE, "tick.d");
         earlier.join(10000L);
         assertFalse("the earliest waiting timeout gives up what it followed",
                 earlier.isAlive());
-        assertTrue("the later one still waits for y, which is no older than"
-                + " the give-up", later.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-        later.join(5000L);
-        assertFalse(later.isAlive());
+        assertTrue("the later one still waits for y", later.isAlive());
+        send("y");
+        joined(later);
         assertEquals(Arrays.asList("x", "tick.d", "y", "tick.e"), sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        progress(" 1 given up");
 
         // Inside the prefix: the same give-up, and the rest still to come.
         restart();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "never"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d"),
-                event(ScheduleEvent.Kind.SEND, "y")),
-                Collections.singletonList(
-                        event(ScheduleEvent.Kind.WAKE, "tick.e")));
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
-        daemon.join(10000L);
-        assertFalse(daemon.isAlive());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        timeout(300L);
+        enforce(Arrays.asList(event(SEND, "never"), event(WAKE, "tick.d"),
+                event(SEND, "y")), Collections.singletonList(
+                event(WAKE, "tick.e")));
+        joined(observer(WAKE, "tick.d"));
+        progress(" 1 given up");
         assertTrue("tick.e is still to come", ScheduleLog.enforcing());
-        Thread other = observer(ScheduleEvent.Kind.WAKE, "tick.e");
+        Thread other = observer(WAKE, "tick.e");
         Thread.sleep(100L);
         assertTrue("tick.e follows y", other.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-        other.join(5000L);
-        assertFalse(other.isAlive());
+        send("y");
+        joined(other);
         assertEquals(Arrays.asList("tick.d", "y", "tick.e"), sites());
         assertFalse(ScheduleLog.enforcing());
     }
 
     @Test
-    public void aStallGivesUpOnlyTheSlotThatNeverCame()
-            throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+    public void aStallGivesUpOnlyTheSlotThatNeverCame() throws Exception {
+        timeout(300L);
         for (int round = 0; round < 5; round++) {
             restart();
-            enforce(Arrays.asList(
-                    event(ScheduleEvent.Kind.SEND, "never"),
-                    event(ScheduleEvent.Kind.SEND, "refresh"),
-                    event(ScheduleEvent.Kind.WAKE, "tick.hb")));
+            enforce(Arrays.asList(event(SEND, "never"),
+                    event(SEND, "refresh"), event(WAKE, "tick.hb")));
             // Whichever of them the watchdog wakes first, the heartbeat
             // does not jump the refresh the prefix held back.
-            Thread heartbeat = observer(ScheduleEvent.Kind.WAKE, "tick.hb");
-            Thread refresh = observer(ScheduleEvent.Kind.SEND, "refresh");
+            Thread heartbeat = observer(WAKE, "tick.hb");
+            Thread refresh = observer(SEND, "refresh");
             heartbeat.join(5000L);
             refresh.join(5000L);
             assertFalse(heartbeat.isAlive() || refresh.isAlive());
@@ -3229,137 +2705,132 @@ public class ScheduleLogTest {
         }
     }
 
+    /** A turn that found its heartbeat not due -- WAKE, then END -- settles
+     *  what it did not do: the next turn waits for none of it. */
     @Test
     public void aTurnsEndSettlesWhatTheTurnDidNotDo() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        enforce(prefix("x"), Arrays.asList(
-                event(ScheduleEvent.Kind.WAKE, "tick.a"),
-                event(ScheduleEvent.Kind.SEND, "heartbeat"),
-                event(ScheduleEvent.Kind.START, "call"),
-                event(ScheduleEvent.Kind.END, "tick.a"),
-                event(ScheduleEvent.Kind.WAKE, "tick.b")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        timeout(30000L);
+        enforce(prefix("x"), Arrays.asList(event(WAKE, "tick.a"),
+                event(SEND, "heartbeat"), event(START, "call"),
+                event(END, "tick.a"), event(WAKE, "tick.b")));
+        send("x");
         long before = System.nanoTime();
-        // The turn found its heartbeat not due: WAKE, then END.
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.a");
-        ScheduleLog.observe(ScheduleEvent.Kind.END, "tick.a");
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.b");
-        assertTrue("the next turn does not wait for what this one skipped",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 1000L);
+        ScheduleLog.observe(WAKE, "tick.a");
+        ScheduleLog.observe(END, "tick.a");
+        ScheduleLog.observe(WAKE, "tick.b");
+        assertTrue(since(before) < 1000L);
         assertEquals(Arrays.asList("x", "tick.a", "tick.a", "tick.b"),
                 sites());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains("2 settled"));
+        progress("2 settled");
     }
 
     @Test
     public void theRestIsLetGoAfterItsStalls() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+        timeout(300L);
         List<ScheduleEvent> after = new ArrayList<ScheduleEvent>();
         for (int turn = 1; turn <= 4; turn++) {
-            after.add(event(ScheduleEvent.Kind.SEND, "never" + turn));
-            after.add(event(ScheduleEvent.Kind.WAKE, "tick.d" + turn));
+            after.add(event(SEND, "never" + turn));
+            after.add(event(WAKE, "tick.d" + turn));
         }
         enforce(prefix("x"), after);
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        send("x");
         for (int turn = 1; turn <= ScheduleLog.REST_STALLS; turn++) {
-            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d" + turn);
+            ScheduleLog.observe(WAKE, "tick.d" + turn);
             assertTrue("stall " + turn + " holds", ScheduleLog.enforcing());
         }
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE,
-                "tick.d" + (ScheduleLog.REST_STALLS + 1));
+        ScheduleLog.observe(WAKE, "tick.d" + (ScheduleLog.REST_STALLS + 1));
         assertFalse("the stall after them lets the rest go",
                 ScheduleLog.enforcing());
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d4");
-        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                < 200L);
+        ScheduleLog.observe(WAKE, "tick.d4");
+        assertTrue(since(before) < 200L);
     }
 
+    /** Released by the watchdog, not by an ask gone stale. */
     @Test
     public void aWaitASignalEndedNoLongerDefersAGiveUp() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "400");
-        final String site = "<C: boolean waitForWork()>#u21";
-        enforce(prefix("x"), Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "never"),
-                event(ScheduleEvent.Kind.WAKE, site),
-                event(ScheduleEvent.Kind.SEND, "never2"),
-                event(ScheduleEvent.Kind.WAKE, "tick.e")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        final Object monitor = new Object();
-        Thread idle = waits(monitor, site, 1, true).get(0);
+        timeout(400L);
+        enforce(prefix("x"), Arrays.asList(event(SEND, "never"),
+                event(WAKE, WORK), event(SEND, "never2"),
+                event(WAKE, "tick.e")));
+        send("x");
+        Object monitor = new Object();
+        Thread idle = waits(monitor, WORK, 1, true).get(0);
         Thread.sleep(200L);
         synchronized (monitor) {
             TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
         }
-        idle.join(5000L);
-        assertFalse(idle.isAlive());
+        joined(idle);
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.e");
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-        assertTrue("released by the watchdog, not by an ask gone stale: "
-                + took, took < 5000L);
+        ScheduleLog.observe(WAKE, "tick.e");
+        assertTrue(since(before) < 5000L);
         assertEquals(Arrays.asList("x", "tick.e"), sites());
     }
 
     /**
      * An occurrence's close settles the slots it held and made nothing
      * for, and only those: another occurrence's close shifts none of them.
+     * A write whose slot its occurrence's close settled runs free: it is no
+     * write the recording never made there, waiting behind another
+     * context's next write, and a poll whose slot died is no poll past its
+     * count (solr-adhoc-19 MB8s: the Overseer's state.json write waited
+     * behind its own write 110 slots on).
      */
-    @Test
+    @Test(timeout = 30000L)
     public void anOccurrencesCloseSettlesWhatItDidNotMake() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        // The recording: a send inside occurrence o1 that the replay never
-        // makes (a stale connection's attempt), a connection set-up, then
-        // the retry's send inside o2.
-        enforce(Arrays.asList(
-                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o1"),
-                event(ScheduleEvent.Kind.START, "conn"),
-                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o2")));
-        Thread setUp = observer(ScheduleEvent.Kind.START, "conn");
+        timeout(30000L);
+        // A send inside o1 the replay never makes (a stale connection's
+        // attempt), a connection set-up, then the retry's send inside o2.
+        enforce(Arrays.asList(inOccurrence(SEND, "req", "o1"),
+                event(START, "conn"), inOccurrence(SEND, "req", "o2")));
+        Thread setUp = observer(START, "conn");
         Thread.sleep(200L);
         assertTrue("conn waits for the slot before it", setUp.isAlive());
         long before = System.nanoTime();
         ScheduleLog.closed("o1");
-        setUp.join(5000L);
-        assertFalse(setUp.isAlive());
-        assertTrue("no watchdog: the close settled it",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 2000L);
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "req");
+        joined(setUp);
+        assertTrue("no watchdog: the close settled it", since(before) < 2000L);
+        send("req");
         assertEquals(Arrays.asList("conn", "req"), sites());
-        assertFalse("the retry took o2's slot, not the dead one",
-                ScheduleLog.enforcing());
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 settled by their"
-                        + " occurrence's close"));
+        assertFalse("the retry took o2's slot", ScheduleLog.enforcing());
+        progress(" 1 settled by their occurrence's close");
 
         restart();
-        enforce(Arrays.asList(
-                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o1"),
-                event(ScheduleEvent.Kind.START, "a"),
-                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o2"),
-                event(ScheduleEvent.Kind.START, "b")));
+        enforce(Arrays.asList(inOccurrence(SEND, "req", "o1"),
+                event(START, "a"), inOccurrence(SEND, "req", "o2"),
+                event(START, "b")));
         ScheduleLog.closed("o2");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "req");
-        ScheduleLog.observe(ScheduleEvent.Kind.START, "a");
+        send("req");
+        ScheduleLog.observe(START, "a");
         before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.START, "b");
-        assertTrue("o2's dead slot does not hold b",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 1000L);
+        ScheduleLog.observe(START, "b");
+        assertTrue("o2's dead slot does not hold b", since(before) < 1000L);
         assertEquals(Arrays.asList("req", "a", "b"), sites());
         assertFalse(ScheduleLog.enforcing());
+
+        restart();
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        String p = ScheduleEvent.written("STORE", "/p");
+        enforce(Arrays.asList(ScheduleEvent.of(0L, WRITE, here, p, 0, "o1"),
+                ScheduleEvent.of(0L, WAKE, here, "tick.w", 0, "o1"),
+                event(SEND, "x"), ScheduleEvent.of(0L, WRITE, "other|Root:X",
+                        p, 0, ""), event(SEND, "y")));
+        ScheduleLog.closed("o1");
+        send("x");
+        before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(WAKE, "tick.w");
+        assertTrue("no wait behind the other context's write, no hold",
+                since(before) < 2000L);
+        progress("2 settled by their occurrence's close");
+        progress("2 event(s) ran free");
     }
 
     /**
      * A context family whose frontier event a stall gave up has diverged:
      * its next frontier -- another turn of the same daemon, another anchor of
      * the same kind of message on the node -- stands a grace, not a timeout
-     * (SG2: 69 of solr-adhoc-38's 138 give-up stalls stood on a context that
-     * had failed one; MB21s: 34 of 10's 58 on another turn or anchor of a
-     * family that had).
+     * (SG2: 69 of solr-adhoc-38's 138 give-up stalls; MB21s: 34 of 10's 58).
      */
     @Test(timeout = 60000L)
     public void aContextFamilyThatFailedAStallStandsAGraceNext()
@@ -3368,102 +2839,57 @@ public class ScheduleLogTest {
                 "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0"));
         assertEquals("n|Anchor:*@SOLR_HTTP/test", ScheduleLog.familyOf(
                 "n|Anchor:813cbf610082e340@SOLR_HTTP/test"));
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
+        timeout(6000L);
         enforce(Arrays.asList(
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#1",
-                        "n1", 0, ""),
-                event(ScheduleEvent.Kind.SEND, "a"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#2",
-                        "n2", 0, ""),
-                event(ScheduleEvent.Kind.SEND, "b")));
+                ScheduleEvent.of(0L, SEND, "gone|Root:G#1", "n1", 0, ""),
+                event(SEND, "a"),
+                ScheduleEvent.of(0L, SEND, "gone|Root:G#2", "n2", 0, ""),
+                event(SEND, "b")));
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
-        long first = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        send("a");
+        long first = since(before);
         before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
-        long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        send("b");
+        long second = since(before);
         assertTrue("the first stall a timeout: " + first, first >= 6000L);
         assertTrue("the failed family's next a grace: " + second,
                 second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
+        progress("2 taken, 2 given up in 2");
     }
 
     /**
      * A write the order lacks whose own context holds an open slot before
      * the next write to its location owes that slot: it goes at once, never
-     * behind that later write (another context's), which held the order --
-     * and every later slot of its context -- until the watchdog
-     * (solr-adhoc-19 MB14s: a node's extra compare-and-set retry at its
-     * terms node).  Per row: whether its own slot is the frontier; one that
-     * owes nothing before the write still waits for it.
+     * behind that later write, which held the order until the watchdog
+     * (solr-adhoc-19 MB14s: a node's extra compare-and-set retry at its terms
+     * node).  One that owes nothing before the write still waits for it.
      */
     @Test(timeout = 60000L)
     public void aWriteOwingASlotBeforeTheNextWriteThereGoes() throws Exception {
-        String here = ScheduleLog.contextOf(Identity.contextHere());
-        ScheduleEvent other = ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE,
-                "other|Root:X", ScheduleEvent.written("STORE", "/p"), 0, "");
-        ScheduleEvent far = ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
-                "far|Root:F", "f", 0, "");
+        ScheduleEvent other = ScheduleEvent.of(0L, WRITE, "other|Root:X",
+                ScheduleEvent.written("STORE", "/p"), 0, "");
+        ScheduleEvent far = ScheduleEvent.of(0L, SEND, "far|Root:F", "f", 0,
+                "");
         Object[][] rows = {
             {"its own slot the frontier",
-                Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"), other), true},
+                Arrays.asList(event(SEND, "x"), other), true},
             {"its own slot behind another's",
-                Arrays.asList(far, event(ScheduleEvent.Kind.SEND, "x"), other),
-                true},
+                Arrays.asList(far, event(SEND, "x"), other), true},
             {"no own slot before the write",
-                Arrays.asList(far, other, event(ScheduleEvent.Kind.SEND, "x")),
-                false},
-        };
+                Arrays.asList(far, other, event(SEND, "x")), false}};
         for (Object[] row : rows) {
             restart();
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            timeout(30000L);
             @SuppressWarnings("unchecked")
             List<ScheduleEvent> order = (List<ScheduleEvent>) row[1];
             enforce(order);
-            Thread writer = new Thread(() -> written("/p"));
-            writer.start();
+            Thread writer = started(() -> written("/p"));
             writer.join(2000L);
-            assertEquals(row[0] + ": " + here, !(Boolean) row[2],
+            assertEquals((String) row[0], !(Boolean) row[2],
                     writer.isAlive());
             writer.interrupt();
             writer.join(5000L);
         }
-    }
-
-    /**
-     * A write whose slot its occurrence's close settled runs free: it is no
-     * write the recording never made there, which would wait behind the
-     * next write to its location (another context's, that may never come),
-     * and a poll whose slot died is no poll past its count (solr-adhoc-19
-     * MB8s: the Overseer's state.json write waited behind its own write 110
-     * slots on).
-     */
-    @Test(timeout = 30000L)
-    public void anEventWhoseSlotDiedRunsFree() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        String here = ScheduleLog.contextOf(Identity.contextHere());
-        String p = ScheduleEvent.written("STORE", "/p");
-        enforce(Arrays.asList(
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, here, p, 0, "o1"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, here, "tick.w", 0,
-                        "o1"),
-                event(ScheduleEvent.Kind.SEND, "x"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
-                        p, 0, ""),
-                event(ScheduleEvent.Kind.SEND, "y")));
-        ScheduleLog.closed("o1");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        long before = System.nanoTime();
-        written("/p");
-        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.w");
-        assertTrue("no wait behind the other context's write, no hold",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 2000L);
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains("2 settled by their"
-                + " occurrence's close"));
-        assertTrue(progress, progress.contains("2 event(s) ran free"));
     }
 
     /**
@@ -3472,26 +2898,22 @@ public class ScheduleLogTest {
      */
     @Test
     public void aWaiterGivesUpWhatItsOwnOccurrencePassed() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        timeout(30000L);
         Identity.occurrence(NODE.key(), "REGION.handler", true);
         String own = Identity.innermostRegionId();
         written.clear();
-        enforce(Arrays.asList(
-                inOccurrence(ScheduleEvent.Kind.START, "enqueue", own),
-                event(ScheduleEvent.Kind.SEND, "x"),
-                inOccurrence(ScheduleEvent.Kind.SEND, "response", own)));
-        Thread other = observer(ScheduleEvent.Kind.SEND, "x");
+        enforce(Arrays.asList(inOccurrence(START, "enqueue", own),
+                event(SEND, "x"), inOccurrence(SEND, "response", own)));
+        Thread other = observer(SEND, "x");
         Thread.sleep(200L);
         assertTrue("x waits behind the handler's enqueue", other.isAlive());
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "response");
+        send("response");
         other.join(5000L);
         assertTrue("no watchdog: the handler passed its enqueue",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 2000L);
+                since(before) < 2000L);
         assertEquals(Arrays.asList("x", "response"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress()
-                .contains(" 1 passed by their own occurrence"));
+        progress(" 1 passed by their own occurrence");
     }
 
     /**
@@ -3504,41 +2926,28 @@ public class ScheduleLogTest {
     @Test
     public void aWaiterNoOccurrenceNamesPassesTheRestOfItsOwnLoop()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "poll"),
-                event(ScheduleEvent.Kind.SEND, "poll"),
-                event(ScheduleEvent.Kind.SEND, "other"),
-                inOccurrence(ScheduleEvent.Kind.START, "named", "o1"),
-                event(ScheduleEvent.Kind.SEND, "after")));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "poll");
-        Thread other = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Thread.sleep(300L);
-                } catch (InterruptedException stop) {
-                    return;
-                }
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "other");
-                ScheduleLog.observe(ScheduleEvent.Kind.START, "named");
-            }
+        timeout(30000L);
+        enforce(Arrays.asList(event(SEND, "poll"), event(SEND, "poll"),
+                event(SEND, "other"), inOccurrence(START, "named", "o1"),
+                event(SEND, "after")));
+        send("poll");
+        Thread other = started(() -> {
+            nap(300L);
+            send("other");
+            ScheduleLog.observe(START, "named");
         });
-        other.start();
         long before = System.nanoTime();
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+        send("after");
         assertTrue("after waited for other and the named start",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        >= 250L);
+                since(before) >= 250L);
         other.join(5000L);
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "poll");
+        send("poll");
         assertEquals(Arrays.asList("poll", "other", "named", "after",
                 "poll"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(
-                " 0 given up in 0 stall(s), 0 settled by their occurrence's"
-                        + " close, 0 settled by their turn's END, 1 passed"
-                        + " by their own occurrence or context (1 context(s)"
-                        + " without an occurrence)"));
+        progress(" 0 given up in 0 stall(s), 0 settled by their occurrence's"
+                + " close, 0 settled by their turn's END, 1 passed by their"
+                + " own occurrence or context (1 context(s) without an"
+                + " occurrence)");
     }
 
     /**
@@ -3551,71 +2960,54 @@ public class ScheduleLogTest {
     @Test
     public void aComputingWorkloadThreadDefersAStallAnEngineThreadDoesNot()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "700");
-        final String w = "w";
-        final String p = "tick.poll";
+        timeout(700L);
+        String w = "w";
+        String p = "tick.poll";
         // row: what the worker made before it computes, the order's first
         // event, the worker's name, the sites written, whether x was given up.
         Object[][] rows = {
-            {"made w", Arrays.asList(ScheduleEvent.Kind.SEND), w, "worker",
-                    Arrays.asList(w, "x", "tick.d"), false},
+            {"made w", Arrays.asList(SEND), w, "worker",
+                Arrays.asList(w, "x", "tick.d"), false},
             {"made nothing", Collections.emptyList(), w, "worker",
-                    Arrays.asList(w, "x", "tick.d"), false},
-            {"polled once past its recorded count",
-                    Arrays.asList(ScheduleEvent.Kind.WAKE,
-                            ScheduleEvent.Kind.WAKE), p, "worker",
-                    Arrays.asList(p, p, "x", "tick.d"), false},
+                Arrays.asList(w, "x", "tick.d"), false},
+            {"polled once past its recorded count", Arrays.asList(WAKE, WAKE),
+                p, "worker", Arrays.asList(p, p, "x", "tick.d"), false},
             {"is the engine's", Collections.emptyList(), w,
-                    "causynth-test-publication",
-                    Arrays.asList(w, "tick.d", "x"), true},
-        };
+                "causynth-test-publication", Arrays.asList(w, "tick.d", "x"),
+                true}};
         for (Object[] row : rows) {
             restart();
-            final String name = "a thread that " + row[0] + " computes";
+            String name = "a thread that " + row[0] + " computes";
             @SuppressWarnings("unchecked")
-            final List<ScheduleEvent.Kind> before =
-                    (List<ScheduleEvent.Kind>) row[1];
-            final String first = (String) row[2];
-            enforce(Arrays.asList(
-                    event(first.equals(w) ? ScheduleEvent.Kind.SEND
-                            : ScheduleEvent.Kind.WAKE, first),
-                    event(ScheduleEvent.Kind.SEND, "x"),
-                    event(ScheduleEvent.Kind.WAKE, "tick.d")));
-            if (before.isEmpty()) {
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, w);
-            }
-            Thread worker = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    for (ScheduleEvent.Kind kind : before) {
-                        ScheduleLog.observe(kind, first);
-                    }
-                    spin(3500L);
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-                }
+            List<Kind> before = (List<Kind>) row[1];
+            String first = (String) row[2];
+            enforce(Arrays.asList(event(first.equals(w) ? SEND : WAKE, first),
+                    event(SEND, "x"), event(WAKE, "tick.d")));
+            if (before.isEmpty()) send(w);
+            Thread worker = new Thread(() -> {
+                for (Kind kind : before) ScheduleLog.observe(kind, first);
+                spin(3500L);
+                send("x");
             }, (String) row[3]);
             worker.start();
-            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            Thread daemon = observer(WAKE, "tick.d");
             worker.join(10000L);
             daemon.join(10000L);
             assertFalse(name, worker.isAlive() || daemon.isAlive());
             assertEquals(name, row[4], sites());
-            assertTrue(name + ": " + ScheduleLog.progress(),
-                    ScheduleLog.progress().contains(
-                            (Boolean) row[5] ? " 1 given up" : " 0 given up"));
+            progress((Boolean) row[5] ? " 1 given up" : " 0 given up");
         }
     }
 
     /**
      * The stall is the frontier's.  A daemon waits at tick.d behind x, which
      * x's owner makes in the test's context, while a thread in a context of
-     * its own runs on elsewhere for longer than {@link ScheduleLog#CEILING}
-     * timeouts, burning CPU: making events the order lacks, or taking the
-     * order's slots past x (a test's polling loop past the cut).  Neither
-     * moves the frontier nor defers the give-up: x is given up a timeout and
-     * a CPU look after it stood, not at the ceiling or when the loop ends
-     * (hdfs-17899-bug2 w4d1 CONFIRM).  x's owner seen at work in x's context
-     * defers it however little CPU it gets: here a third of one.
+     * its own runs on elsewhere for longer than CEILING timeouts, burning
+     * CPU: making events the order lacks, or taking the order's slots past x.
+     * Neither moves the frontier nor defers the give-up: x is given up a
+     * timeout and a CPU look after it stood (hdfs-17899-bug2 w4d1 CONFIRM).
+     * x's owner seen at work in x's context defers it however little CPU it
+     * gets: here a third of one.
      */
     @Test(timeout = 60000L)
     public void aThreadRunningElsewhereDefersNoStallTheFrontiersOwnerDoes()
@@ -3625,73 +3017,55 @@ public class ScheduleLogTest {
         Object[][] rows = {
             {"runs free", "free", false},
             {"takes the slots past x", "e", false},
-            {"takes the slots past x while x's owner works", "e", true},
-        };
+            {"takes the slots past x while x's owner works", "e", true}};
         for (Object[] row : rows) {
             restart();
-            final String name = "a thread that " + row[0];
-            final String site = (String) row[1];
-            final boolean owner = (Boolean) row[2];
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
-                    String.valueOf(timeout));
-            final String[] context = new String[1];
-            final CountDownLatch placed = new CountDownLatch(1);
-            final CountDownLatch go = new CountDownLatch(1);
-            final boolean[] stop = new boolean[1];
-            Thread elsewhere = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    long own = RuntimeTraceContext.beginRequest(NODE,
-                            "elsewhere", true);
-                    context[0] = ScheduleLog.contextOf(Identity.contextHere());
-                    placed.countDown();
-                    try {
-                        go.await();
-                        while (!stop[0]) {
-                            ScheduleLog.observe(ScheduleEvent.Kind.SEND, site);
-                            spin(100L);
-                        }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        RuntimeTraceContext.endRequest(own);
+            String name = "a thread that " + row[0];
+            String site = (String) row[1];
+            boolean owner = (Boolean) row[2];
+            timeout(timeout);
+            String[] context = new String[1];
+            CountDownLatch placed = new CountDownLatch(1);
+            CountDownLatch go = new CountDownLatch(1);
+            boolean[] stop = new boolean[1];
+            Thread elsewhere = started(() -> {
+                long own = RuntimeTraceContext.beginRequest(NODE, "elsewhere",
+                        true);
+                context[0] = ScheduleLog.contextOf(Identity.contextHere());
+                placed.countDown();
+                try {
+                    go.await();
+                    while (!stop[0]) {
+                        send(site);
+                        spin(100L);
                     }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    RuntimeTraceContext.endRequest(own);
                 }
             });
-            elsewhere.start();
             placed.await();
             List<ScheduleEvent> rest = new ArrayList<ScheduleEvent>(
-                    Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"),
-                            event(ScheduleEvent.Kind.WAKE, "tick.d")));
+                    Arrays.asList(event(SEND, "x"), event(WAKE, "tick.d")));
             for (int poll = 0; poll < 200; poll++) {
-                rest.add(ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
-                        context[0], "e", 0, ""));
+                rest.add(ScheduleEvent.of(0L, SEND, context[0], "e", 0, ""));
             }
-            enforce(
-                    Collections.<ScheduleEvent>emptyList(), rest);
-            Thread works = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        for (int step = 0; step < 30; step++) {
-                            spin(30L);
-                            Thread.sleep(70L);
-                            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
-                                    "work");
-                        }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            enforce(Collections.<ScheduleEvent>emptyList(), rest);
+            Thread works = new Thread(() -> {
+                for (int step = 0; step < 30; step++) {
+                    spin(30L);
+                    nap(70L);
+                    send("work");
                 }
+                send("x");
             });
             long before = System.nanoTime();
             go.countDown();
             if (owner) works.start();
-            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            Thread daemon = observer(WAKE, "tick.d");
             daemon.join(15000L);
-            long took = TimeUnit.NANOSECONDS.toMillis(
-                    System.nanoTime() - before);
+            long took = since(before);
             boolean held = daemon.isAlive();
             stop[0] = true;
             elsewhere.join(5000L);
@@ -3700,16 +3074,13 @@ public class ScheduleLogTest {
             assertFalse(name + ": tick.d went while it ran", held);
             List<String> sites = sites();
             sites.retainAll(Arrays.asList("x", "tick.d"));
-            String progress = ScheduleLog.progress();
             if (owner) {
                 assertEquals(name, Arrays.asList("x", "tick.d"), sites);
-                assertTrue(name + ": " + progress,
-                        progress.contains(" 0 given up"));
+                progress(" 0 given up");
                 assertTrue(name + ", held for x: " + took, took >= 2900L);
             } else {
                 assertEquals(name, Collections.singletonList("tick.d"), sites);
-                assertTrue(name + ": " + progress,
-                        progress.contains(" 1 given up"));
+                progress(" 1 given up");
                 assertTrue(name + ", well inside the ceiling: " + took,
                         took < ScheduleLog.CEILING * timeout - 1000L);
             }
@@ -3723,42 +3094,32 @@ public class ScheduleLogTest {
      */
     @Test(timeout = 30000L)
     public void aStallIsTimedFromItsEarliestWaiter() throws Exception {
-        long timeout = 1500L;
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
-                String.valueOf(timeout));
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "x"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d")));
-        Thread.sleep(timeout + 500L);
+        timeout(1500L);
+        enforce(Arrays.asList(event(SEND, "x"), event(WAKE, "tick.d")));
+        Thread.sleep(2000L);
         long before = System.nanoTime();
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
-        daemon.join(10000L);
-        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
-        assertFalse(daemon.isAlive());
-        assertTrue("a timeout from its arrival: " + took, took >= timeout);
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+        joined(observer(WAKE, "tick.d"));
+        long took = since(before);
+        assertTrue("a timeout from its arrival: " + took, took >= 1500L);
+        progress(" 1 given up");
     }
 
     /**
      * A loop polling past its recorded count, its context's next slot due,
-     * does not spin: its first poll past the count goes (its last recorded
-     * WAKE's slot moved the order), and every later one waits for the order
-     * to move again -- another context's event -- or for the watchdog to let
-     * it go when the run idles.  A loop that reads a CLOCK root waits for
-     * time only the clock brings, and is never held so.
+     * does not spin: its first poll past the count goes, and every later one
+     * waits for the order to move again -- another context's event -- or for
+     * the watchdog to let it go when the run idles.  A loop that reads a
+     * CLOCK root waits for time only the clock brings, and is never held so.
      */
     @Test(timeout = 30000L)
     public void aPollPastItsRecordedCountWaitsForTheOrderToMove()
             throws Exception {
-        final String loop = "<L: boolean poll()>#u5";
-        final String clock = ScheduleLogTest.class.getName() + "#pollLoop";
+        String loop = "<L: boolean poll()>#u5";
+        String clock = ScheduleLogTest.class.getName() + "#pollLoop";
         // A clock loop's method, as the scope map declares its CLOCK root.
-        JsonObject root = new JsonObject();
-        root.addProperty("kind", "STATIC_SCOPE_SITE");
-        root.addProperty("role", "DECLARED_SITE");
-        root.addProperty("inputKind", "CLOCK");
-        root.addProperty("vmSite", "org.a.RoutingRule#isExpired()Z");
+        JsonObject root = Fixtures.json("{'kind':'STATIC_SCOPE_SITE','role':"
+                + "'DECLARED_SITE','inputKind':'CLOCK','vmSite':"
+                + "'org.a.RoutingRule#isExpired()Z'}");
         assertEquals("org.a.RoutingRule#isExpired",
                 ClockLoops.clockMethod(root));
         StackTraceElement[] atTheRule = {new StackTraceElement(
@@ -3771,51 +3132,35 @@ public class ScheduleLogTest {
         assertFalse(ClockLoops.reads(atTheRule));
         // row: released by, timeout, the loop reads a clock, the sites.
         Object[][] rows = {
-            {"another context's event", "30000", false,
-                    Arrays.asList(loop, loop, "tick.d", loop, "y")},
-            {"the run idling", "300", false,
-                    Arrays.asList(loop, loop, loop, "y")},
-            {"nothing: its loop reads a CLOCK root", "30000", true,
-                    Arrays.asList(loop, loop, loop, "y")},
-        };
+            {"another context's event", 30000L, false,
+                Arrays.asList(loop, loop, "tick.d", loop, "y")},
+            {"the run idling", 300L, false,
+                Arrays.asList(loop, loop, loop, "y")},
+            {"nothing: its loop reads a CLOCK root", 30000L, true,
+                Arrays.asList(loop, loop, loop, "y")}};
         for (Object[] row : rows) {
             restart();
             String name = "released by " + row[0];
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, (String) row[1]);
+            timeout((Long) row[1]);
             boolean reads = (Boolean) row[2];
             ClockLoops.useForTests(reads ? Collections.singleton(clock)
                     : Collections.<String>emptySet());
-            enforce(Arrays.asList(
-                    event(ScheduleEvent.Kind.WAKE, loop),
-                    event(ScheduleEvent.Kind.WAKE, "tick.d"),
-                    event(ScheduleEvent.Kind.SEND, "y")));
+            enforce(Arrays.asList(event(WAKE, loop), event(WAKE, "tick.d"),
+                    event(SEND, "y")));
             long before = System.nanoTime();
-            Thread poller = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    pollLoop(loop, 3);
-                }
-            });
-            poller.start();
+            Thread poller = started(() -> pollLoop(loop, 3));
             if (name.contains("event")) {
                 Thread.sleep(500L);
                 assertTrue(name + ": the third poll waits", poller.isAlive());
-                ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d");
+                ScheduleLog.observe(WAKE, "tick.d");
             }
-            poller.join(10000L);
-            long took = TimeUnit.NANOSECONDS.toMillis(
-                    System.nanoTime() - before);
-            assertFalse(name, poller.isAlive());
+            joined(poller);
+            long took = since(before);
             assertEquals(name, row[3], sites());
-            String progress = ScheduleLog.progress();
-            assertTrue(name + ": " + progress, progress.contains(
-                    name.contains("idling") ? "1 of them let go"
-                            : "0 of them let go"));
-            if (reads) {
-                assertTrue(name + ", at its own pace: " + took, took < 2000L);
-            } else {
-                assertTrue(name + ", held: " + took, took >= 300L);
-            }
+            progress(name.contains("idling") ? "1 of them let go"
+                    : "0 of them let go");
+            assertTrue(name + ": " + took, reads ? took < 2000L
+                    : took >= 300L);
         }
     }
 
@@ -3832,117 +3177,79 @@ public class ScheduleLogTest {
             Thread.currentThread().interrupt();
             return;
         }
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+        send("y");
     }
 
     /**
      * An event that never comes costs a timeout, then a grace after the
-     * waits held without a slot are let go -- not {@link
-     * ScheduleLog#CEILING} timeouts twice over while an engine thread
-     * computes.  A wait held at the cut is let go once; a poll past its
-     * recorded count whose context's next slot is the stalled frontier owes
-     * it and is not held at all, and it does not hide that slot from the
-     * give-up y waits for, however long it keeps polling: a timeout alone.
+     * waits held without a slot are let go -- not CEILING timeouts twice
+     * over while an engine thread computes.  A wait held at the cut is let
+     * go once; a poll past its recorded count whose context's next slot is
+     * the stalled frontier owes it and is not held at all, and it does not
+     * hide that slot from the give-up y waits for: a timeout alone.  A poll
+     * held at the cut bounds no give-up (solr-adhoc-13 MB6: a replica poll
+     * held at the cut bounded a give-up of 4560 slots at once): with
+     * nothing else waiting, the watchdog gives up nothing; once y waits, the
+     * frontier's slot alone is given up and y takes its own.
      */
     @Test(timeout = 60000L)
     public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
-        final String loop = "<L: boolean poll()>#u5";
-        for (final boolean polls : new boolean[] {false, true}) {
+        String loop = "<L: boolean poll()>#u5";
+        for (String row : new String[] {"a wait at the cut",
+                "a poll past its count", "a poll held at the cut"}) {
             restart();
-            String row = polls ? "a poll past its count" : "a wait at the cut";
-            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+            timeout(1000L);
             ClockLoops.useForTests(Collections.<String>emptySet());
-            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
-            if (polls) order.add(event(ScheduleEvent.Kind.WAKE, loop));
-            order.addAll(prefix("never", "y"));
-            enforce(order);
-            final boolean[] stop = new boolean[1];
-            Thread busy = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    while (!stop[0]) spin(50L);
-                }
-            }, "causynth-test-publication");
-            busy.start();
-            long before = System.nanoTime();
-            Thread held = polls ? new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        while (!stop[0]) TimedWaits.sleep(50L, loop);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            }) : observer(ScheduleEvent.Kind.WAKE, "tick.idle");
-            if (polls) held.start();
-            Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+            boolean counted = row.equals("a poll past its count");
+            enforce(counted ? order(event(WAKE, loop), prefix("never", "y"))
+                    : prefix("never", "y"));
+            boolean[] stop = new boolean[1];
+            Thread busy = row.equals("a poll held at the cut") ? null
+                    : new Thread(() -> {
+                        while (!stop[0]) spin(50L);
+                    }, "causynth-test-publication");
+            if (busy != null) busy.start();
+            long started = System.nanoTime();
+            Thread held = row.equals("a wait at the cut")
+                    ? observer(WAKE, "tick.idle") : started(() -> {
+                        try {
+                            while (!stop[0]) TimedWaits.sleep(50L, loop);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+            String before = "";
+            if (busy == null) {
+                // Past a timeout and two let-go graces: a give-up was due.
+                Thread.sleep(1000L + 2 * ScheduleLog.LET_GO_GRACE_MS + 500L);
+                before = ScheduleLog.progress();
+            }
+            Thread y = observer(SEND, "y");
             y.join(20000L);
-            long took = TimeUnit.NANOSECONDS.toMillis(
-                    System.nanoTime() - before);
+            long took = since(started);
             boolean waited = y.isAlive();
             stop[0] = true;
-            busy.join();
+            if (busy != null) busy.join();
             held.join(5000L);
             y.join(5000L);
             assertFalse(row + ": y went while the loop still polled", waited);
             assertFalse(row, y.isAlive() || held.isAlive());
+            List<String> sites = sites();
+            assertTrue(row + ": " + sites, sites.contains("y"));
+            progress(" 1 given up");
+            if (busy == null) {
+                assertTrue(before, before.contains(" 0 given up"));
+                continue;
+            }
             assertTrue(row + ", a timeout, then any let-go's grace: " + took,
-                    took >= 1000L + (polls ? 0L : ScheduleLog.LET_GO_GRACE_MS));
+                    took >= 1000L + (counted ? 0L
+                            : ScheduleLog.LET_GO_GRACE_MS));
             assertTrue(row + ", well inside the ceiling: " + took,
                     took < ScheduleLog.CEILING * 1000L - 500L);
-            List<String> sites = sites();
-            assertEquals(row + ": " + sites, polls ? loop : "tick.idle",
+            assertEquals(row + ": " + sites, counted ? loop : "tick.idle",
                     sites.get(0));
-            assertTrue(row + ": " + sites, sites.contains("y"));
-            String progress = ScheduleLog.progress();
-            assertTrue(row + ": " + progress, progress.contains(" 1 given up"));
-            assertTrue(row + ": " + progress, progress.contains(
-                    polls ? " of them let go" : "1 of them let go"));
+            progress(counted ? " of them let go" : "1 of them let go");
         }
-    }
-
-    /**
-     * A poll held at the cut -- an unrecorded WAKE, its context with no slot
-     * left -- bounds no give-up, as a poll held at its context's slot does
-     * not: with the frontier's event never coming and nothing else waiting,
-     * the watchdog lets it go again, a grace apart, and gives up nothing;
-     * once y waits behind the frontier, the frontier's slot alone is given
-     * up and y takes its own (solr-adhoc-13 MB6: a replica poll held at the
-     * cut bounded a give-up of 4560 slots at once).
-     */
-    @Test(timeout = 60000L)
-    public void aPollHeldAtTheCutBoundsNoGiveUp() throws Exception {
-        final String loop = "<P: java.lang.Boolean call()>#u33";
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-        ClockLoops.useForTests(Collections.<String>emptySet());
-        enforce(prefix("never", "y"));
-        final boolean[] stop = new boolean[1];
-        Thread poll = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    while (!stop[0]) TimedWaits.sleep(50L, loop);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        });
-        poll.start();
-        // Past a timeout and two let-go graces: the line's give-up was due.
-        Thread.sleep(1000L + 2 * ScheduleLog.LET_GO_GRACE_MS + 500L);
-        String before = ScheduleLog.progress();
-        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
-        y.join(20000L);
-        boolean waited = y.isAlive();
-        stop[0] = true;
-        poll.join(5000L);
-        assertFalse("y went", waited);
-        assertFalse("the poll ended", poll.isAlive());
-        assertTrue(before, before.contains(" 0 given up"));
-        String after = ScheduleLog.progress();
-        assertTrue(after, after.contains(" 1 given up"));
-        assertTrue(sites().toString(), sites().contains("y"));
     }
 
     /** Burns this thread's CPU for {@code millis}. */
@@ -3956,55 +3263,87 @@ public class ScheduleLogTest {
     @Test
     public void aWaitTheRecordingSawInterruptedIsNoTurnOfTime()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<D: void run()>#u29";
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.INTERRUPT, site),
-                event(ScheduleEvent.Kind.SEND, "x")));
-        final boolean[] threw = new boolean[1];
-        Thread daemon = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    TimedWaits.sleep(60000L, site);
-                } catch (InterruptedException interrupted) {
-                    threw[0] = true;
-                }
+        timeout(30000L);
+        String site = "<D: void run()>#u29";
+        enforce(Arrays.asList(event(INTERRUPT, site), event(SEND, "x")));
+        boolean[] threw = new boolean[1];
+        Thread daemon = started(() -> {
+            try {
+                TimedWaits.sleep(60000L, site);
+            } catch (InterruptedException interrupted) {
+                threw[0] = true;
             }
         });
-        daemon.start();
         Thread.sleep(300L);
         assertTrue("no WAKE slot: virtual time does not end it",
                 daemon.isAlive());
         daemon.interrupt();
         daemon.join(5000L);
         assertTrue(threw[0]);
-        assertEquals(ScheduleEvent.Kind.INTERRUPT, events().get(0).kind());
+        assertEquals(INTERRUPT, events().get(0).kind());
         assertTrue("x still holds the order", ScheduleLog.enforcing());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(": 2 taken"));
+        send("x");
+        progress(": 2 taken");
+    }
+
+    /**
+     * A replay holds a taker at a startup step to the order its recording
+     * completed it in (hdfs-adhoc-01/43: DataNodes added in another order
+     * placed every pipeline elsewhere), whatever either run's window; a
+     * taker the order does not mark and one whose predecessor never comes
+     * go on.
+     */
+    @Test
+    public void aReplayTakesTheStepInItsRecordingsOrder() throws Exception {
+        RecordingWindow.reset();
+        Path order = Files.createTempFile("startup", ".jsonl");
+        RowCodec.writeJsonl(order, Arrays.asList(
+                RowCodec.writeScheduleStartup("register", "dn1"),
+                RowCodec.writeScheduleStartup("register", "dn0")));
+        System.setProperty(ScheduleLog.PREFIX_PROPERTY, order.toString());
+        timeout(30000L);
+        try {
+            List<String> took = Collections.synchronizedList(
+                    new ArrayList<String>());
+            Thread dn0 = started(() -> take("dn0", took));
+            Thread.sleep(200L);
+            assertTrue("dn0 waits for dn1, marked before it", dn0.isAlive());
+            take("dn1", took);
+            dn0.join(5000L);
+            assertEquals(Arrays.asList("dn1", "dn0"), took);
+            for (String row : new String[] {"never comes", "unmarked",
+                    "in the window"}) {
+                StartupOrder.resetForTests();
+                timeout(300L);
+                if (row.equals("in the window")) RecordingWindow.open();
+                long before = System.nanoTime();
+                take(row.equals("unmarked") ? "dn9" : "dn0", took);
+                assertEquals("a predecessor that " + row, !row.equals(
+                        "unmarked"), since(before) >= 250L);
+            }
+        } finally {
+            System.clearProperty(ScheduleLog.PREFIX_PROPERTY);
+            Files.delete(order);
+        }
+    }
+
+    private static void take(String node, List<String> took) {
+        String[] pass = StartupOrder.begin("register", node);
+        took.add(node);
+        StartupOrder.done(pass);
     }
 
     /** One event of this thread's context inside a recorded occurrence. */
-    private static ScheduleEvent inOccurrence(ScheduleEvent.Kind kind,
-                                              String site, String occurrence) {
+    private static ScheduleEvent inOccurrence(Kind kind, String site,
+                                              String occurrence) {
         return ScheduleEvent.of(0L, kind,
                 ScheduleLog.contextOf(Identity.contextHere()), site, 0,
                 occurrence);
     }
 
     /** A thread that makes one event, blocking for its turn; started. */
-    private static Thread observer(final ScheduleEvent.Kind kind,
-                                   final String site) {
-        Thread thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ScheduleLog.observe(kind, site);
-            }
-        });
-        thread.start();
-        return thread;
+    private static Thread observer(Kind kind, String site) {
+        return started(() -> ScheduleLog.observe(kind, site));
     }
 
     /** Holds this run to {@code prefix}, with no rest after it. */
@@ -4021,17 +3360,13 @@ public class ScheduleLogTest {
     /** A prefix of SEND events at these sites, on this thread's context. */
     private static List<ScheduleEvent> prefix(String... sites) {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
-        for (String site : sites) {
-            events.add(event(ScheduleEvent.Kind.SEND, site));
-        }
+        for (String site : sites) events.add(event(SEND, site));
         return events;
     }
 
-    /**
-     * One event as this JVM's threads compute it: every one of them runs in
-     * the test's one request, so every one states the same context.
-     */
-    private static ScheduleEvent event(ScheduleEvent.Kind kind, String site) {
+    /** One event as this JVM's threads compute it: every one of them runs
+     *  in the test's one request, so every one states the same context. */
+    private static ScheduleEvent event(Kind kind, String site) {
         return inOccurrence(kind, site, "");
     }
 
@@ -4045,19 +3380,15 @@ public class ScheduleLogTest {
         return events;
     }
 
-    private List<ScheduleEvent.Kind> kinds() {
-        List<ScheduleEvent.Kind> kinds = new ArrayList<ScheduleEvent.Kind>();
-        for (ScheduleEvent event : events()) {
-            kinds.add(event.kind());
-        }
+    private List<Kind> kinds() {
+        List<Kind> kinds = new ArrayList<Kind>();
+        for (ScheduleEvent event : events()) kinds.add(event.kind());
         return kinds;
     }
 
     private List<String> sites() {
         List<String> sites = new ArrayList<String>();
-        for (ScheduleEvent event : events()) {
-            sites.add(event.site());
-        }
+        for (ScheduleEvent event : events()) sites.add(event.site());
         return sites;
     }
 }

@@ -4,6 +4,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.carrotsearch.randomizedtesting.annotations.TestMethodProviders;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -30,7 +32,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * The one invocation of a parameterized test a case names, {@code m[k]}
  * ({@link JUnitInvocation}), run by the workload runner: which arguments
  * reach the method, the constructor and the {@code @Parameter} fields, and
- * what is refused by name before anything of the test runs.
+ * what is refused by name before anything of the test runs; and which
+ * method the adapter may run as the named test ({@link JUnitLifecycle}).
  */
 public class JUnitInvocationTest {
     private static final List<String> LOG = new ArrayList<>();
@@ -128,6 +131,52 @@ public class JUnitInvocationTest {
         assertEquals("null, 2, [1, 2], " + Methods.class.getName(),
                 JUnitInvocation.rendered(new Object[] {null, 2,
                         new int[] {1, 2}, new Methods()}));
+    }
+
+    /** {test class, method, accepted}: Lucene's runner takes public
+     *  test*() methods, JUnit 4's the marked ones. */
+    @Test
+    public void aTestMethodIsWhatTheClassRunnerTakes() throws Exception {
+        Object[][] rows = {
+            {Junit3.class, "testAddDocs", true},
+            {Junit3.class, "helper", false},
+            {Plain.class, "testAddDocs", false},
+            {Plain.class, "marked", true}};
+        for (Object[] row : rows) {
+            String detail = ((Class<?>) row[0]).getSimpleName() + "#" + row[1];
+            try {
+                assertEquals(detail, row[1], JUnitLifecycle.testMethod(
+                        (Class<?>) row[0], (String) row[1]).getName());
+                if (!(Boolean) row[2]) fail(detail + " was taken as a test");
+            } catch (NoSuchMethodException refused) {
+                if ((Boolean) row[2]) fail(detail + " was refused: " + refused);
+            }
+        }
+    }
+
+    /** A provider of JUnit 3 style methods, by its name. */
+    public static final class FakeJUnit3MethodProvider {
+    }
+
+    @TestMethodProviders({FakeJUnit3MethodProvider.class})
+    public static class Base {
+    }
+
+    public static class Junit3 extends Base {
+        public void testAddDocs() {
+        }
+
+        public void helper() {
+        }
+    }
+
+    public static class Plain {
+        public void testAddDocs() {
+        }
+
+        @Test
+        public void marked() {
+        }
     }
 
     private static void run(Class<?> workload, String name) throws Exception {

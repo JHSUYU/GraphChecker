@@ -11,24 +11,9 @@ import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import soot.BooleanType;
 import soot.G;
-import soot.Local;
-import soot.LongType;
-import soot.Modifier;
-import soot.RefType;
 import soot.Scene;
-import soot.SootClass;
-import soot.SootField;
 import soot.SootMethod;
-import soot.Type;
-import soot.Unit;
-import soot.Value;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.jimple.LongConstant;
-import soot.jimple.NullConstant;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -473,169 +458,85 @@ public class ReferenceCellTest {
 
     /** The scene, and the declared throw in {@code check}. */
     private static CausynthTargetContext scene() {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        SootClass map = library("java.util.Map", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootClass chm = library(CHM, object, 0);
-        chm.addInterface(map);
-        SootClass atomic = library(BOOL, object, 0);
-        atomic.addField(new SootField("value", soot.IntType.v(),
-                Modifier.PRIVATE | Modifier.VOLATILE));
-        library("java.lang.IllegalStateException", object, 0);
-        RefType objectType = object.getType();
-        SootMethod put = method(map, "put", Arrays.<Type>asList(objectType,
-                objectType), objectType, Modifier.ABSTRACT);
-        SootMethod get = method(map, "get", Collections.<Type>singletonList(
-                objectType), objectType, Modifier.ABSTRACT);
-        SootMethod init = method(chm, "<init>", Collections.<Type>emptyList(),
-                VoidType.v(), 0);
-        SootMethod orDefault = method(chm, "getOrDefault", Arrays.<Type>asList(
-                objectType, objectType), objectType, 0);
-        SootMethod atomicGet = method(atomic, "get",
-                Collections.<Type>emptyList(), BooleanType.v(), 0);
-        SootMethod atomicSet = method(atomic, "set",
-                Collections.<Type>singletonList(BooleanType.v()),
-                VoidType.v(), 0);
-
-        SootClass commit = application("s.Commit", object);
-        SootField deleted = new SootField("deleted", BooleanType.v(), 0);
-        SootField gen = new SootField("gen", LongType.v(), 0);
-        commit.addField(deleted);
-        commit.addField(gen);
-        SootClass policy = application(POLICY, object);
-        SootField known = new SootField("known", map.getType(),
-                Modifier.VOLATILE);
-        SootField latest = new SootField("latest", commit.getType(), 0);
-        SootField reserves = new SootField("reserves", chm.getType(),
-                Modifier.FINAL);
-        SootField enabled = new SootField("enabled", atomic.getType(),
-                Modifier.FINAL);
-        for (SootField field : Arrays.asList(known, latest, reserves,
-                enabled)) {
-            policy.addField(field);
-        }
-        RefType self = policy.getType();
-        RefType commitType = commit.getType();
-
-        SootMethod update = method(policy, "update",
-                Collections.<Type>singletonList(commitType), VoidType.v(), 0);
-        Local u0 = local(update, "r0", self);
-        Local u1 = local(update, "r1", commitType);
-        Local built = local(update, "$r2", chm.getType());
-        Local gone = local(update, "$z0", BooleanType.v());
-        Unit publish = Jimple.v().newAssignStmt(Jimple.v()
-                .newInstanceFieldRef(u0, known.makeRef()), built);
-        body(update, Jimple.v().newIdentityStmt(u0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newIdentityStmt(u1,
-                        Jimple.v().newParameterRef(commitType, 0)),
-                Jimple.v().newAssignStmt(built,
-                        Jimple.v().newNewExpr(chm.getType())),
-                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(
-                        built, init.makeRef())),
-                Jimple.v().newAssignStmt(gone, Jimple.v()
-                        .newInstanceFieldRef(u1, deleted.makeRef())),
-                Jimple.v().newIfStmt(Jimple.v().newNeExpr(gone,
-                        IntConstant.v(0)), publish),
-                Jimple.v().newInvokeStmt(Jimple.v().newInterfaceInvokeExpr(
-                        built, put.makeRef(), Arrays.<Value>asList(u1, u1))),
-                publish,
-                Jimple.v().newReturnVoidStmt());
-
-        // The final map, stored once, by the constructor.
-        SootMethod construct = method(policy, "<init>",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local i0 = local(construct, "r0", self);
-        Local fresh = local(construct, "$r1", chm.getType());
-        body(construct, Jimple.v().newIdentityStmt(i0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newAssignStmt(fresh,
-                        Jimple.v().newNewExpr(chm.getType())),
-                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(
-                        fresh, init.makeRef())),
-                Jimple.v().newAssignStmt(Jimple.v().newInstanceFieldRef(i0,
-                        reserves.makeRef()), fresh),
-                Jimple.v().newReturnVoidStmt());
-
-        SootMethod setLatest = method(policy, "setLatest",
-                Collections.<Type>singletonList(commitType), VoidType.v(), 0);
-        Local s0 = local(setLatest, "r0", self);
-        Local s1 = local(setLatest, "r1", commitType);
-        body(setLatest, Jimple.v().newIdentityStmt(s0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newIdentityStmt(s1,
-                        Jimple.v().newParameterRef(commitType, 0)),
-                Jimple.v().newAssignStmt(Jimple.v().newInstanceFieldRef(s0,
-                        latest.makeRef()), s1),
-                Jimple.v().newReturnVoidStmt());
-
-        SootMethod enable = method(policy, "enable",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local e0 = local(enable, "r0", self);
-        Local flag = local(enable, "$r1", atomic.getType());
-        body(enable, Jimple.v().newIdentityStmt(e0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newAssignStmt(flag, Jimple.v()
-                        .newInstanceFieldRef(e0, enabled.makeRef())),
-                Jimple.v().newInvokeStmt(Jimple.v().newVirtualInvokeExpr(
-                        flag, atomicSet.makeRef(), IntConstant.v(1))),
-                Jimple.v().newReturnVoidStmt());
-
-        SootMethod check = method(policy, "check",
-                Collections.<Type>singletonList(objectType), VoidType.v(), 0);
-        Local c0 = local(check, "r0", self);
-        Local key = local(check, "r1", objectType);
-        Local held = local(check, "$r2", map.getType());
-        Local found = local(check, "$r3", objectType);
-        Local last = local(check, "$r4", commitType);
-        Local generation = local(check, "$l0", LongType.v());
-        Local on = local(check, "$r5", atomic.getType());
-        Local enabledNow = local(check, "$z1", BooleanType.v());
-        Local reserved = local(check, "$r7", chm.getType());
-        Local until = local(check, "$r8", objectType);
-        Local order = local(check, "$b0", soot.ByteType.v());
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(check, "$r6", failure);
-        Unit done = Jimple.v().newReturnVoidStmt();
-        body(check, Jimple.v().newIdentityStmt(c0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newIdentityStmt(key,
-                        Jimple.v().newParameterRef(objectType, 0)),
-                Jimple.v().newAssignStmt(held, Jimple.v()
-                        .newInstanceFieldRef(c0, known.makeRef())),
-                Jimple.v().newAssignStmt(found, Jimple.v()
-                        .newInterfaceInvokeExpr(held, get.makeRef(), key)),
-                Jimple.v().newAssignStmt(last, Jimple.v()
-                        .newInstanceFieldRef(c0, latest.makeRef())),
-                Jimple.v().newAssignStmt(generation, Jimple.v()
-                        .newInstanceFieldRef(last, gen.makeRef())),
-                Jimple.v().newAssignStmt(on, Jimple.v()
-                        .newInstanceFieldRef(c0, enabled.makeRef())),
-                Jimple.v().newAssignStmt(enabledNow, Jimple.v()
-                        .newVirtualInvokeExpr(on, atomicGet.makeRef())),
-                Jimple.v().newAssignStmt(reserved, Jimple.v()
-                        .newInstanceFieldRef(c0, reserves.makeRef())),
-                Jimple.v().newAssignStmt(until, Jimple.v()
-                        .newVirtualInvokeExpr(reserved, orDefault.makeRef(),
-                                key, key)),
-                Jimple.v().newIfStmt(Jimple.v().newNeExpr(found,
-                        NullConstant.v()), done),
-                Jimple.v().newAssignStmt(order, Jimple.v().newCmpExpr(
-                        generation, LongConstant.v(5L))),
-                Jimple.v().newIfStmt(Jimple.v().newLeExpr(order,
-                        IntConstant.v(0)), done),
-                Jimple.v().newIfStmt(Jimple.v().newEqExpr(enabledNow,
-                        IntConstant.v(0)), done),
-                Jimple.v().newIfStmt(Jimple.v().newEqExpr(until,
-                        NullConstant.v()), done),
-                Jimple.v().newAssignStmt(thrown,
-                        Jimple.v().newNewExpr(failure)),
-                Jimple.v().newThrowStmt(thrown),
-                done);
+        String policy = "s.Policy";
+        JimpleScene.load(JimpleScene.OBJECT,
+                "public abstract interface java.util.Map {"
+                        + " public abstract java.lang.Object put("
+                        + "java.lang.Object, java.lang.Object);"
+                        + " public abstract java.lang.Object get("
+                        + "java.lang.Object); }",
+                "public class " + CHM + " extends java.lang.Object"
+                        + " implements java.util.Map {"
+                        + " public void <init>() { }"
+                        + " public java.lang.Object getOrDefault("
+                        + "java.lang.Object, java.lang.Object) { } }",
+                "public class " + BOOL + " extends java.lang.Object {"
+                        + " private volatile int value;"
+                        + " public boolean get() { }"
+                        + " public void set(boolean) { } }",
+                JimpleScene.FAILURE,
+                "application public class s.Commit extends java.lang.Object"
+                        + " { boolean deleted; long gen; }",
+                "application public class s.Policy extends java.lang.Object"
+                        + " { volatile java.util.Map known; s.Commit latest;"
+                        + " final " + CHM + " reserves;"
+                        + " final " + BOOL + " enabled;"
+                        + " public void update(s.Commit) {"
+                        + " s.Policy r0; s.Commit r1; " + CHM + " $r2;"
+                        + " boolean $z0;"
+                        + " r0 := @this: s.Policy;"
+                        + " r1 := @parameter0: s.Commit;"
+                        + " $r2 = new " + CHM + ";"
+                        + " specialinvoke $r2.<" + CHM + ": void <init>()>();"
+                        + " $z0 = r1.<s.Commit: boolean deleted>;"
+                        + " if $z0 != 0 goto label1;"
+                        + " interfaceinvoke $r2." + PUT + "(r1, r1);"
+                        + " label1: r0." + KNOWN + " = $r2; return; }"
+                        // The final map, stored once, by the constructor.
+                        + " public void <init>() { s.Policy r0; " + CHM
+                        + " $r1; r0 := @this: s.Policy;"
+                        + " $r1 = new " + CHM + ";"
+                        + " specialinvoke $r1.<" + CHM + ": void <init>()>();"
+                        + " r0.<s.Policy: " + CHM + " reserves> = $r1;"
+                        + " return; }"
+                        + " public void setLatest(s.Commit) { s.Policy r0;"
+                        + " s.Commit r1; r0 := @this: s.Policy;"
+                        + " r1 := @parameter0: s.Commit;"
+                        + " r0." + LATEST + " = r1; return; }"
+                        + " public void enable() { s.Policy r0; " + BOOL
+                        + " $r1; r0 := @this: s.Policy;"
+                        + " $r1 = r0.<s.Policy: " + BOOL + " enabled>;"
+                        + " virtualinvoke $r1.<" + BOOL + ": void set("
+                        + "boolean)>(1); return; }"
+                        + " public void check(java.lang.Object) {"
+                        + " s.Policy r0; java.lang.Object r1;"
+                        + " java.util.Map $r2; java.lang.Object $r3;"
+                        + " s.Commit $r4; long $l0; " + BOOL + " $r5;"
+                        + " boolean $z1; " + CHM + " $r7;"
+                        + " java.lang.Object $r8; byte $b0;"
+                        + " java.lang.IllegalStateException $r6;"
+                        + " r0 := @this: s.Policy;"
+                        + " r1 := @parameter0: java.lang.Object;"
+                        + " $r2 = r0." + KNOWN + ";"
+                        + " $r3 = interfaceinvoke $r2.<java.util.Map:"
+                        + " java.lang.Object get(java.lang.Object)>(r1);"
+                        + " $r4 = r0." + LATEST + ";"
+                        + " $l0 = $r4.<s.Commit: long gen>;"
+                        + " $r5 = r0.<s.Policy: " + BOOL + " enabled>;"
+                        + " $z1 = virtualinvoke $r5.<" + BOOL
+                        + ": boolean get()>();"
+                        + " $r7 = r0.<s.Policy: " + CHM + " reserves>;"
+                        + " $r8 = virtualinvoke $r7.<" + CHM
+                        + ": java.lang.Object getOrDefault(java.lang.Object,"
+                        + "java.lang.Object)>(r1, r1);"
+                        + " if $r3 != null goto label1;"
+                        + " $b0 = $l0 cmp 5L; if $b0 <= 0 goto label1;"
+                        + " if $z1 == 0 goto label1;"
+                        + " if $r8 == null goto label1;"
+                        + " $r6 = new java.lang.IllegalStateException;"
+                        + " throw $r6; label1: return; } }");
         return new CausynthTargetContext(Paths.get("unused"),
-                new ExceptionTargetSite("t", POLICY, "check",
+                new ExceptionTargetSite("t", policy, "check",
                         "(Ljava/lang/Object;)V", CHECK,
                         "java.lang.IllegalStateException", 0));
     }
@@ -644,184 +545,82 @@ public class ReferenceCellTest {
      *  excluded.contains(v)).collect(toList()).size() < 1) throw}, with the
      *  lambda as Soot desugars it (a class, its {@code bootstrap$}). */
     private static CausynthTargetContext functionalScene() {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        RefType objectType = object.getType();
-        SootClass set = library("java.util.Set", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootClass list = library("java.util.List", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootClass stream = library("java.util.stream.Stream", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootClass collector = library("java.util.stream.Collector", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        SootClass collectors = library("java.util.stream.Collectors",
-                object, 0);
-        SootClass predicate = library("java.util.function.Predicate", null,
-                Modifier.INTERFACE | Modifier.ABSTRACT);
-        library("java.lang.IllegalStateException", object, 0);
-        SootMethod test = method(predicate, "test",
-                Collections.<Type>singletonList(objectType),
-                BooleanType.v(), Modifier.ABSTRACT);
-        SootMethod contains = method(set, "contains",
-                Collections.<Type>singletonList(objectType),
-                BooleanType.v(), Modifier.ABSTRACT);
-        SootMethod toStream = method(list, "stream",
-                Collections.<Type>emptyList(), stream.getType(),
-                Modifier.ABSTRACT);
-        SootMethod size = method(list, "size",
-                Collections.<Type>emptyList(), soot.IntType.v(),
-                Modifier.ABSTRACT);
-        SootMethod filter = method(stream, "filter",
-                Collections.<Type>singletonList(predicate.getType()),
-                stream.getType(), Modifier.ABSTRACT);
-        SootMethod collect = method(stream, "collect",
-                Collections.<Type>singletonList(collector.getType()),
-                objectType, Modifier.ABSTRACT);
-        SootMethod toList = method(collectors, "toList",
-                Collections.<Type>emptyList(), collector.getType(),
-                Modifier.STATIC);
-        SootMethod objectInit = method(object, "<init>",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-
-        SootClass chooser = application("s.Chooser", object);
-        SootField excluded = new SootField("excluded", set.getType(), 0);
-        chooser.addField(excluded);
-        SootClass lambda = application("s.Chooser$lambda_choose_0__1",
-                object);
-        lambda.addInterface(predicate);
-        SootField cap0 = new SootField("cap0", set.getType(), 0);
-        lambda.addField(cap0);
-        SootMethod lambdaInit = method(lambda, "<init>",
-                Collections.<Type>singletonList(set.getType()), VoidType.v(),
-                0);
-        Local i0 = local(lambdaInit, "r0", lambda.getType());
-        Local i1 = local(lambdaInit, "r1", set.getType());
-        body(lambdaInit, Jimple.v().newIdentityStmt(i0,
-                        Jimple.v().newThisRef(lambda.getType())),
-                Jimple.v().newIdentityStmt(i1,
-                        Jimple.v().newParameterRef(set.getType(), 0)),
-                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(i0,
-                        objectInit.makeRef())),
-                Jimple.v().newAssignStmt(Jimple.v().newInstanceFieldRef(i0,
-                        cap0.makeRef()), i1),
-                Jimple.v().newReturnVoidStmt());
-        SootMethod bootstrap = method(lambda, "bootstrap$",
-                Collections.<Type>singletonList(set.getType()),
-                predicate.getType(), Modifier.STATIC);
-        Local b0 = local(bootstrap, "r0", set.getType());
-        Local b1 = local(bootstrap, "$r1", lambda.getType());
-        body(bootstrap, Jimple.v().newIdentityStmt(b0,
-                        Jimple.v().newParameterRef(set.getType(), 0)),
-                Jimple.v().newAssignStmt(b1,
-                        Jimple.v().newNewExpr(lambda.getType())),
-                Jimple.v().newInvokeStmt(Jimple.v().newSpecialInvokeExpr(b1,
-                        lambdaInit.makeRef(), b0)),
-                Jimple.v().newReturnStmt(b1));
-        SootMethod lambdaTest = method(lambda, "test",
-                Collections.<Type>singletonList(objectType),
-                BooleanType.v(), 0);
-        Local t0 = local(lambdaTest, "r0", lambda.getType());
-        Local t1 = local(lambdaTest, "r2", objectType);
-        Local captured = local(lambdaTest, "$r1", set.getType());
-        Local answer = local(lambdaTest, "$z0", BooleanType.v());
-        body(lambdaTest, Jimple.v().newIdentityStmt(t0,
-                        Jimple.v().newThisRef(lambda.getType())),
-                Jimple.v().newIdentityStmt(t1,
-                        Jimple.v().newParameterRef(objectType, 0)),
-                Jimple.v().newAssignStmt(captured, Jimple.v()
-                        .newInstanceFieldRef(t0, cap0.makeRef())),
-                Jimple.v().newAssignStmt(answer, Jimple.v()
-                        .newInterfaceInvokeExpr(captured, contains.makeRef(),
-                                t1)),
-                Jimple.v().newReturnStmt(answer));
-
-        RefType self = chooser.getType();
-        SootMethod choose = method(chooser, "choose",
-                Collections.<Type>singletonList(list.getType()),
-                VoidType.v(), 0);
-        Local c0 = local(choose, "r0", self);
-        Local c1 = local(choose, "r1", list.getType());
-        Local held = local(choose, "$r2", set.getType());
-        Local made = local(choose, "$r3", predicate.getType());
-        Local source = local(choose, "$r4", stream.getType());
-        Local kept = local(choose, "$r5", stream.getType());
-        Local gather = local(choose, "$r6", collector.getType());
-        Local gathered = local(choose, "$r7", objectType);
-        Local chosen = local(choose, "$r8", list.getType());
-        Local count = local(choose, "$i0", soot.IntType.v());
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(choose, "$r9", failure);
-        Unit done = Jimple.v().newReturnVoidStmt();
-        body(choose, Jimple.v().newIdentityStmt(c0,
-                        Jimple.v().newThisRef(self)),
-                Jimple.v().newIdentityStmt(c1,
-                        Jimple.v().newParameterRef(list.getType(), 0)),
-                Jimple.v().newAssignStmt(held, Jimple.v()
-                        .newInstanceFieldRef(c0, excluded.makeRef())),
-                Jimple.v().newAssignStmt(made, Jimple.v()
-                        .newStaticInvokeExpr(bootstrap.makeRef(), held)),
-                Jimple.v().newAssignStmt(source, Jimple.v()
-                        .newInterfaceInvokeExpr(c1, toStream.makeRef())),
-                Jimple.v().newAssignStmt(kept, Jimple.v()
-                        .newInterfaceInvokeExpr(source, filter.makeRef(),
-                                made)),
-                Jimple.v().newAssignStmt(gather, Jimple.v()
-                        .newStaticInvokeExpr(toList.makeRef())),
-                Jimple.v().newAssignStmt(gathered, Jimple.v()
-                        .newInterfaceInvokeExpr(kept, collect.makeRef(),
-                                gather)),
-                Jimple.v().newAssignStmt(chosen, Jimple.v()
-                        .newCastExpr(gathered, list.getType())),
-                Jimple.v().newAssignStmt(count, Jimple.v()
-                        .newInterfaceInvokeExpr(chosen, size.makeRef())),
-                Jimple.v().newIfStmt(Jimple.v().newGtExpr(count,
-                        IntConstant.v(0)), done),
-                Jimple.v().newAssignStmt(thrown,
-                        Jimple.v().newNewExpr(failure)),
-                Jimple.v().newThrowStmt(thrown),
-                done);
+        String lambda = "s.Chooser$lambda_choose_0__1";
+        String stream = "java.util.stream.Stream";
+        String predicate = "java.util.function.Predicate";
+        String collector = "java.util.stream.Collector";
+        JimpleScene.load("public class java.lang.Object {"
+                        + " public void <init>() { } }",
+                "public abstract interface java.util.Set {"
+                        + " public abstract boolean contains("
+                        + "java.lang.Object); }",
+                "public abstract interface java.util.List {"
+                        + " public abstract " + stream + " stream();"
+                        + " public abstract int size(); }",
+                "public abstract interface " + stream + " {"
+                        + " public abstract " + stream + " filter("
+                        + predicate + "); public abstract java.lang.Object"
+                        + " collect(" + collector + "); }",
+                "public abstract interface " + collector + " { }",
+                "public class java.util.stream.Collectors extends"
+                        + " java.lang.Object { public static " + collector
+                        + " toList() { } }",
+                "public abstract interface " + predicate + " {"
+                        + " public abstract boolean test(java.lang.Object);"
+                        + " }",
+                JimpleScene.FAILURE,
+                "application public class s.Chooser extends java.lang.Object"
+                        + " { java.util.Set excluded;"
+                        + " public void choose(java.util.List) {"
+                        + " s.Chooser r0; java.util.List r1;"
+                        + " java.util.Set $r2; " + predicate + " $r3;"
+                        + " " + stream + " $r4, $r5; " + collector + " $r6;"
+                        + " java.lang.Object $r7; java.util.List $r8;"
+                        + " int $i0; java.lang.IllegalStateException $r9;"
+                        + " r0 := @this: s.Chooser;"
+                        + " r1 := @parameter0: java.util.List;"
+                        + " $r2 = r0.<s.Chooser: java.util.Set excluded>;"
+                        + " $r3 = staticinvoke <" + lambda + ": " + predicate
+                        + " bootstrap$(java.util.Set)>($r2);"
+                        + " $r4 = interfaceinvoke r1.<java.util.List: "
+                        + stream + " stream()>();"
+                        + " $r5 = interfaceinvoke $r4.<" + stream + ": "
+                        + stream + " filter(" + predicate + ")>($r3);"
+                        + " $r6 = staticinvoke <java.util.stream.Collectors: "
+                        + collector + " toList()>();"
+                        + " $r7 = interfaceinvoke $r5.<" + stream
+                        + ": java.lang.Object collect(" + collector
+                        + ")>($r6); $r8 = (java.util.List) $r7;"
+                        + " $i0 = interfaceinvoke $r8.<java.util.List:"
+                        + " int size()>(); if $i0 > 0 goto label1;"
+                        + " $r9 = new java.lang.IllegalStateException;"
+                        + " throw $r9; label1: return; } }",
+                "application public class " + lambda + " extends"
+                        + " java.lang.Object implements " + predicate
+                        + " { java.util.Set cap0;"
+                        + " public void <init>(java.util.Set) { " + lambda
+                        + " r0; java.util.Set r1; r0 := @this: " + lambda
+                        + "; r1 := @parameter0: java.util.Set;"
+                        + " specialinvoke r0.<java.lang.Object: void"
+                        + " <init>()>(); r0.<" + lambda + ": java.util.Set"
+                        + " cap0> = r1; return; }"
+                        + " public static " + predicate + " bootstrap$("
+                        + "java.util.Set) { java.util.Set r0; " + lambda
+                        + " $r1; r0 := @parameter0: java.util.Set;"
+                        + " $r1 = new " + lambda + "; specialinvoke $r1.<"
+                        + lambda + ": void <init>(java.util.Set)>(r0);"
+                        + " return $r1; }"
+                        + " public boolean test(java.lang.Object) { " + lambda
+                        + " r0; java.lang.Object r2; java.util.Set $r1;"
+                        + " boolean $z0; r0 := @this: " + lambda + ";"
+                        + " r2 := @parameter0: java.lang.Object;"
+                        + " $r1 = r0.<" + lambda + ": java.util.Set cap0>;"
+                        + " $z0 = interfaceinvoke $r1.<java.util.Set: boolean"
+                        + " contains(java.lang.Object)>(r2); return $z0; } }");
         return new CausynthTargetContext(Paths.get("unused"),
                 new ExceptionTargetSite("t", "s.Chooser", "choose",
                         "(Ljava/util/List;)V",
                         "<s.Chooser: void choose(java.util.List)>",
                         "java.lang.IllegalStateException", 0));
-    }
-
-    private static SootClass application(String name, SootClass parent) {
-        SootClass type = library(name, parent, 0);
-        type.setApplicationClass();
-        return type;
-    }
-
-    private static SootClass library(String name, SootClass parent,
-                                     int modifiers) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC | modifiers);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
-    }
-
-    private static SootMethod method(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     int modifiers) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | modifiers);
-        owner.addMethod(method);
-        if ((modifiers & Modifier.ABSTRACT) == 0) {
-            method.setActiveBody(Jimple.v().newBody(method));
-        }
-        return method;
-    }
-
-    private static Local local(SootMethod method, String name, Type type) {
-        Local local = Jimple.v().newLocal(name, type);
-        method.getActiveBody().getLocals().add(local);
-        return local;
-    }
-
-    private static void body(SootMethod method, Unit... units) {
-        method.getActiveBody().getUnits().addAll(Arrays.asList(units));
     }
 }

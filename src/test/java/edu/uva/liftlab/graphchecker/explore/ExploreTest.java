@@ -118,6 +118,8 @@ public class ExploreTest {
                     CausalContext.of(Role.of("BALANCER"), "", 1),
                     "o.a.h.h.b.Balancer#run#3");
     /** The map addKeys writes and the target reads: one location, one node. */
+    /** No roots, no clock deltas. */
+    private static final Map<String, String> NONE = Collections.emptyMap();
     /** {@code Corpus#inputShape} of a guard stating no handoff. */
     private static final List<String> NONE_STATED =
             Collections.<String>emptyList();
@@ -201,10 +203,8 @@ public class ExploreTest {
         Path iteration = tree.newFolder("forced").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
-                null, true);
-        seed.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0", "10",
-                true);
+        seed.marker(TARGET, "CASE.A", "M_A", "false");
+        seed.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
         seed.decision(TARGET, "Guard#u8", 1, false, "M_A");
         seed.flush();
         JsonObject target = com.google.gson.JsonParser.parseString(
@@ -217,8 +217,7 @@ public class ExploreTest {
                 "[{\"siteId\":\"Guard#u8\",\"outcome\":true}]"));
         scopeMap(iteration, target.toString());
         Path out = tree.newFolder("forced-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
 
         // Round 0: the FORCE run first, the seed's flip of a beside it.
         Path wave0 = out.resolve("obligations-0000");
@@ -248,9 +247,7 @@ public class ExploreTest {
         RowCodec.writeAll(flying, Arrays.asList(force, seedFlip),
                 ExploreCodec::writeObligation);
         Path again = out.resolve("obligations-0000b");
-        JsonObject waiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
-                again, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+        JsonObject waiting = plan(iteration, results, flying, again, 1,
                 DEFAULT_BOUNDS);
         assertTrue(obligations(again).isEmpty());
         assertEquals("IN_FLIGHT",
@@ -260,10 +257,8 @@ public class ExploreTest {
         // target standing at a with the whole way to the throw as phi.
         Session forced = new Session(iteration, "s-forced");
         forced.activation(TARGET, true);
-        forced.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
-                null, true);
-        forced.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
-                "10", true);
+        forced.marker(TARGET, "CASE.A", "M_A", "false");
+        forced.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
         forced.forcedDecision(TARGET, "Guard#u8", 1, true, "M_A");
         forced.forcedDecision(TARGET, "Guard#u19", 1, true, "(> M_B 5)");
         forced.forcedTarget(TARGET, "Guard#u19", 3L,
@@ -285,9 +280,7 @@ public class ExploreTest {
         RowCodec.writeAll(flying, Collections.singletonList(seedFlip),
                 ExploreCodec::writeObligation);
         Path wave1 = out.resolve("obligations-0001");
-        JsonObject asking = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
-                wave1, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+        JsonObject asking = plan(iteration, results, flying, wave1, 1,
                 DEFAULT_BOUNDS);
         List<Obligation> next = obligations(wave1);
         assertEquals("the forced flip alone: " + next, 1, next.size());
@@ -349,8 +342,7 @@ public class ExploreTest {
             Path iteration = tree.newFolder(name).toPath();
             Session seed = new Session(iteration, "s-seed");
             seed.activation(TARGET, false);
-            seed.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
-                    null, true);
+            seed.marker(TARGET, "CASE.A", "M_A", "false");
             seed.decision(TARGET, "Guard#u8", 1, false, "M_A");
             seed.flush();
             JsonObject target = com.google.gson.JsonParser.parseString(
@@ -360,8 +352,7 @@ public class ExploreTest {
                     "[{\"siteId\":\"Guard#u8\",\"arm\":true}]"));
             scopeMap(iteration, target.toString());
             Path out = tree.newFolder(name + "-out").toPath();
-            Path results = out.resolve("obligation_results.jsonl");
-            Files.write(results, new byte[0]);
+            Path results = results(out);
             String[] replays = (String[]) row[0];
             JsonObject manifest = null;
             for (int k = 0; k <= replays.length; k++) {
@@ -415,15 +406,13 @@ public class ExploreTest {
     public void aForcedSessionReachesNoOtherPath() throws Exception {
         Path iteration = tree.newFolder("fence").toPath();
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
+        seed.activations(false, WRITER, PRODUCER);
         seed.constant("e.seed", "1");
         seed.export(ROTATED, "e.seed", 11L, "1");
         seed.attach(DELIVERED, "M_HOFF_KEY", "1", ROTATED);
         seed.flush();
         Session stray = new Session(iteration, "s-stray");
-        stray.activation(WRITER, false);
-        stray.activation(PRODUCER, false);
+        stray.activations(false, WRITER, PRODUCER);
         stray.constant("e.stray", "2");
         stray.export(ROTATED, "e.stray", 12L, "2");
         stray.attach(DELIVERED, "M_HOFF_KEY", "2", ROTATED);
@@ -431,8 +420,7 @@ public class ExploreTest {
         stray.forcedDecision(TARGET, "Guard#u8", 1, true, "M_A");
         stray.flush();
         Session forced = new Session(iteration, "s-forced");
-        forced.activation(WRITER, false);
-        forced.activation(PRODUCER, false);
+        forced.activations(false, WRITER, PRODUCER);
         forced.constant("e.before", "3");
         forced.constant("e.after", "4");
         forced.export(ROTATED, "e.before", 13L, "3");
@@ -494,10 +482,8 @@ public class ExploreTest {
             throws Exception {
         Path iteration = tree.newFolder("own-arms").toPath();
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
-        seed.root(PRODUCER, "CASE.A", "M_A", RootKind.INTEGRAL, "1", "0",
-                "10", true);
+        seed.activations(false, WRITER, PRODUCER);
+        seed.integral(PRODUCER, "CASE.A", "M_A", "1", "0", "10");
         seed.constant("e.seed.const", "1");
         seed.symbolic("e.seed.named", "M_A");
         seed.export(ROTATED, "e.seed.const", 11L, "1");
@@ -505,8 +491,7 @@ public class ExploreTest {
         seed.attach(DELIVERED, "M_HOFF_KEY", "1", ROTATED);
         seed.flush();
         Session other = new Session(iteration, "s-other");
-        other.activation(WRITER, false);
-        other.activation(PRODUCER, false);
+        other.activations(false, WRITER, PRODUCER);
         other.constant("e.other.const", "2");
         other.symbolic("e.other.named", "M_A");
         other.export(ROTATED, "e.other.const", 13L, "2");
@@ -566,22 +551,17 @@ public class ExploreTest {
         OccurrenceAddress target = TARGET;
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, false);
-        seed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
-                null, null, true);
-        seed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        seed.marker(target, "CASE.MARKER", "M_MARKER", "false");
+        seed.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         // Three more declared roots the recording minted, none of them named
         // by any predicate of the seed's own path: the rotation's tick,
         // whose guard a LATER session flips; a clock; and one root no term
         // ever reaches.  A world is inherited whole, so the wave that
         // extends one has to find every root of it minted here -- an
         // assignment is planted at the recording's mint and nowhere else.
-        seed.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "1",
-                "0", "10", true);
-        seed.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
-        seed.root(target, "CASE.SPARE", "M_SPARE", RootKind.INTEGRAL, "3",
-                "0", "10", true);
+        seed.integral(PRODUCER, "CASE.TICK", "M_TICK", "1", "0", "10");
+        seed.clock(target, "CASE.NOW", "M_NOW", "1000");
+        seed.integral(target, "CASE.SPARE", "M_SPARE", "3", "0", "10");
         // if (a) if (b) throw: the recording took not-a and never reached b.
         // The predicate is published the way the VM publishes one over a
         // propagated value: a REFERENCE into the session's expression
@@ -604,14 +584,7 @@ public class ExploreTest {
         // same node writes the map the target reads, so it is a
         // STATE-CONNECTED member of the target's factor -- one symbolic unit,
         // and what it received is what the target reads.
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
-        seed.constant("e.119992", "119992");
-        seed.symbolic("e.stored", "M_HOFF_KEY");
-        seed.export(ROTATED, "e.119992", 11L, "119992");
-        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
-        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.keyChain();
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
         // declared target, and nothing else (PIPELINE §7.2).  The target's
@@ -649,8 +622,7 @@ public class ExploreTest {
         assertTrue("and the query states exactly what it reaches", reaches);
 
         Path out = tree.newFolder("depth-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
 
         Path wave0 = out.resolve("obligations-0000");
         JsonObject first = plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
@@ -706,23 +678,14 @@ public class ExploreTest {
         // recorded the second one, which had never executed before.
         Session flipped = new Session(iteration, "s-flip");
         flipped.activation(target, true);
-        flipped.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
-        flipped.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        flipped.marker(target, "CASE.MARKER", "M_MARKER", "true");
+        flipped.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         flipped.decision(target, "Guard#u8", 1, true, "M_MARKER");
         flipped.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
         // A replay records every instrumented occurrence it ran, so what the
         // target's factor received and wrote is here as it was in the seed:
         // the flip changed nothing the target received.
-        flipped.activation(WRITER, false);
-        flipped.activation(PRODUCER, false);
-        flipped.constant("e.119992", "119992");
-        flipped.symbolic("e.stored", "M_HOFF_KEY");
-        flipped.export(ROTATED, "e.119992", 11L, "119992");
-        flipped.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        flipped.write(STORED, ALL_KEYS, 5L, "e.stored");
-        flipped.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        flipped.keyChain();
         // The replay states its own verdict: only an ADMITTED session's
         // path is cut from.
         flipped.answered(ObligationResult.of(proposed.get(0).obligationId(),
@@ -755,14 +718,10 @@ public class ExploreTest {
             assertFalse("an arm the corpus already holds is not re-flipped: "
                             + sites, "Guard#u8".equals(obligation.siteId()));
         }
-        boolean held = false;
-        for (GapRow gap : RowCodec.readAll(wave1.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            held |= gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().startsWith("Guard#u8#1 -> ")
-                    && gap.detail().contains("arm already recorded by");
-        }
-        assertTrue("and the wave says which session holds it", held);
+        assertTrue("and the wave says which session holds it",
+                anyGap(wave1, gap -> gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().startsWith("Guard#u8#1 -> ")
+                        && gap.detail().contains("arm already recorded by")));
         // The deeper obligation carries the earlier wave's answer in its own
         // prefix: it needs the marker true AND the count above five.
         Obligation deeper = named(next, "Guard#u19");
@@ -789,10 +748,8 @@ public class ExploreTest {
                 + " Guard#u19"));
         Session other = new Session(iteration, "s-flip-2");
         other.activation(target, true);
-        other.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
-        other.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        other.marker(target, "CASE.MARKER", "M_MARKER", "true");
+        other.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         other.decision(target, "Guard#u8", 1, true, "M_MARKER");
         other.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
         other.flush();
@@ -813,26 +770,17 @@ public class ExploreTest {
         assertTrue("an answered arm is never re-proposed out of a new "
                         + "session's path: " + obligations(wave2),
                 obligations(wave2).isEmpty());
-        boolean owedOnce = false;
-        for (GapRow gap : RowCodec.readAll(wave2.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            owedOnce |= gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().equals("Guard#u19#1 -> true")
-                    && gap.detail().contains("already answered NOT_ADMITTED")
-                    && gap.detail().contains("owed once per planned "
-                            + "occurrence");
-        }
-        assertTrue("and the wave says which answer settled it", owedOnce);
-        boolean moved = false;
-        for (GapRow gap : RowCodec.readAll(wave2.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            moved |= gap.kind() == GapKind.ADDRESS_UNSTABLE
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().equals("task-REGION.spare")
-                    && gap.detail().contains("answered at 2 addresses");
-        }
+        assertTrue("and the wave says which answer settled it",
+                anyGap(wave2, gap -> gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().equals("Guard#u19#1 -> true")
+                        && gap.detail().contains("already answered "
+                                + "NOT_ADMITTED") && gap.detail().contains(
+                                "owed once per planned occurrence")));
         assertTrue("and a planned task answered at two addresses is named",
-                moved);
+                anyGap(wave2, gap -> gap.kind() == GapKind.ADDRESS_UNSTABLE
+                        && gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().equals("task-REGION.spare")
+                        && gap.detail().contains("answered at 2 addresses")));
 
         // ---- the same arm, another world --------------------------------
         //
@@ -848,14 +796,10 @@ public class ExploreTest {
         // conjunct -- without which the model would answer for a path that
         // run never had.
         Session world = new Session(iteration, "s-other-prefix");
-        world.activation(target, true);
-        world.activation(PRODUCER, true);
-        world.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
-        world.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
-        world.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "7",
-                "0", "10", true);
+        world.activations(true, target, PRODUCER);
+        world.marker(target, "CASE.MARKER", "M_MARKER", "true");
+        world.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
+        world.integral(PRODUCER, "CASE.TICK", "M_TICK", "7", "0", "10");
         world.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         world.decision(target, "Concrete#u3", 1, true, "");
         world.decision(target, "Guard#u8", 1, true, "M_MARKER");
@@ -880,10 +824,8 @@ public class ExploreTest {
         // was admitted.
         Session refused = new Session(iteration, "s-refused");
         refused.activation(target, true);
-        refused.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
-        refused.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL,
-                "0", "0", "10", true);
+        refused.marker(target, "CASE.MARKER", "M_MARKER", "true");
+        refused.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         refused.decision(target, "Concrete#u3", 1, false, "");
         refused.decision(target, "Concrete#u7", 1, true, "");
         refused.decision(target, "Guard#u8", 1, true, "M_MARKER");
@@ -964,10 +906,8 @@ public class ExploreTest {
         Session zed = new Session(iteration, "s-world-z");
         zed.activation(target, true);
         zed.activation(WRITER, false);
-        zed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "true",
-                null, null, true);
-        zed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        zed.marker(target, "CASE.MARKER", "M_MARKER", "true");
+        zed.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         zed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         zed.symbolic("e.stored", "M_HOFF_KEY");
         zed.constant("e.119992", "119992");
@@ -982,8 +922,7 @@ public class ExploreTest {
         zed.flush();
         worker(iteration, "obligations-0001", "ob-world-z", "OBL.world-z",
                 "s-world-z", target, "Guard#u8",
-                Collections.singletonMap("CASE.MARKER", "true"),
-                Collections.<String, String>emptyMap());
+                Collections.singletonMap("CASE.MARKER", "true"), NONE);
 
         // Y: nn0's rotation flipped.  Its rows AT THE TARGET are the seed's,
         // letter for letter; what its world changed is the STRUCTURE of what
@@ -994,14 +933,10 @@ public class ExploreTest {
         // no line: it is no conjunct of the guard's query.)
         Session wye = new Session(iteration, "s-world-y");
         wye.activation(PRODUCER, true);
-        wye.activation(target, false);
-        wye.activation(WRITER, false);
-        wye.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "7",
-                "0", "10", true);
-        wye.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
-                null, null, true);
-        wye.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        wye.activations(false, target, WRITER);
+        wye.integral(PRODUCER, "CASE.TICK", "M_TICK", "7", "0", "10");
+        wye.marker(target, "CASE.MARKER", "M_MARKER", "false");
+        wye.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         wye.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         wye.constant("e.kept", "119992");
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
@@ -1022,8 +957,7 @@ public class ExploreTest {
         wye.flush();
         worker(iteration, "obligations-0001", "ob-world-y", "OBL.world-y",
                 "s-world-y", PRODUCER, "Rotate#u5",
-                Collections.singletonMap("CASE.TICK", "7"),
-                Collections.<String, String>emptyMap());
+                Collections.singletonMap("CASE.TICK", "7"), NONE);
 
         // W: a world all the same -- a flip on a node of its own -- that
         // changed nothing this region received.  Its rows at the target and
@@ -1035,20 +969,15 @@ public class ExploreTest {
         // every run for reasons no flip caused.
         Session unmoved = new Session(iteration, "s-world-w");
         unmoved.activation(BALANCER, true);
-        unmoved.activation(target, false);
-        unmoved.activation(WRITER, false);
-        unmoved.root(BALANCER, "CASE.MOVE", "M_MOVE", RootKind.INTEGRAL, "2",
-                "0", "10", true);
-        unmoved.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
-        unmoved.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
-                "0", "10", true);
+        unmoved.activations(false, target, WRITER);
+        unmoved.integral(BALANCER, "CASE.MOVE", "M_MOVE", "2", "0", "10");
+        unmoved.marker(target, "CASE.MARKER", "M_MARKER", "false");
+        unmoved.integral(target, "CASE.COUNT", "M_COUNT", "0", "0", "10");
         unmoved.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         unmoved.symbolic("e.stored", "M_HOFF_KEY");
         unmoved.constant("e.887766", "887766");
         unmoved.decision(BALANCER, "Balance#u2", 1, true, "(> M_MOVE 1)");
-        unmoved.decision(target, "Guard#u8", 1, false,
-                "EXPR.0000000000000001");
+        unmoved.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         unmoved.decision(target, "Concrete#u3", 1, false, "");
         unmoved.export(ROTATED, "e.887766", 11L, "887766");
         unmoved.attach(DELIVERED, "M_HOFF_KEY", "887766", ROTATED);
@@ -1058,9 +987,7 @@ public class ExploreTest {
                 "s-world-w", "the focused prefix reproduced"));
         unmoved.flush();
         worker(iteration, "obligations-0001", "ob-world-w", "OBL.world-w",
-                "s-world-w", BALANCER, "Balance#u2",
-                Collections.<String, String>emptyMap(),
-                Collections.<String, String>emptyMap());
+                "s-world-w", BALANCER, "Balance#u2", NONE, NONE);
 
         Corpus worlds = Corpus.read(iteration, null);
         Task anchored = ClosurePlanner.taskOf(worlds,
@@ -1177,26 +1104,18 @@ public class ExploreTest {
         // a wave that nests no deeper than the seed cuts nothing from it --
         // and says how many paths that left unread.
         Path shallow = out.resolve("obligations-0005");
-        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, null,
-                iteration.resolve(StaticScopeMap.FILE), shallow, 5, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
-                new ObligationFactory.Bounds(
-                        ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
-                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0));
+        plan(iteration, results, null, shallow, 5, bounds(
+                ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK, 0));
         for (Obligation obligation : obligations(shallow)) {
             assertFalse("no obligation is cut from a world deeper than the "
                             + "bound: " + obligation,
                     Corpus.pathId("s-world-y", target)
                             .equals(obligation.pathId()));
         }
-        boolean stated = false;
-        for (GapRow gap : RowCodec.readAll(shallow.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            stated |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().endsWith("max-world-depth=0");
-        }
-        assertTrue("and the bound states what it left unread", stated);
+        assertTrue("and the bound states what it left unread",
+                anyGap(shallow, gap -> gap.kind() == GapKind.ADMISSION_GAP
+                        && gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().endsWith("max-world-depth=0")));
 
         // THE PATH BOUND counts new work, never repetition: a path whose
         // arms are all settled or offered by a path before it is skipped
@@ -1215,12 +1134,8 @@ public class ExploreTest {
         assertEquals("of eight", 8,
                 Corpus.read(iteration, null).pathsOf(target).size());
         Path one = out.resolve("obligations-0007");
-        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, null,
-                iteration.resolve(StaticScopeMap.FILE), one, 7, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
-                new ObligationFactory.Bounds(1,
-                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
-                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        plan(iteration, results, null, one, 7, bounds(1,
+                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
         Set<String> cut = new LinkedHashSet<String>();
         for (Obligation obligation : obligations(one)) {
             if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
@@ -1246,12 +1161,8 @@ public class ExploreTest {
         RowCodec.writeAll(flying, obligations(one),
                 ExploreCodec::writeObligation);
         Path later = out.resolve("obligations-0008");
-        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, flying,
-                iteration.resolve(StaticScopeMap.FILE), later, 8, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
-                new ObligationFactory.Bounds(1,
-                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
-                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        plan(iteration, results, flying, later, 8, bounds(1,
+                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
         Set<String> deferred = new LinkedHashSet<String>();
         for (Obligation obligation : obligations(later)) {
             if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
@@ -1280,23 +1191,14 @@ public class ExploreTest {
         Path iteration = tree.newFolder("served").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
         seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
-        seed.constant("e.119992", "119992");
-        seed.symbolic("e.stored", "M_HOFF_KEY");
-        seed.export(ROTATED, "e.119992", 11L, "119992");
-        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
-        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.keyChain();
         seed.flush();
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8"));
-        Path results = iteration.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(iteration);
         Path fresh = tree.newFolder("served-fresh").toPath();
         ExploreMain served = new ExploreMain(iteration, TARGET_SELECTOR, null,
                 iteration.resolve(StaticScopeMap.FILE), "epoch0",
@@ -1311,11 +1213,9 @@ public class ExploreTest {
             String[] landing = landings[round];
             if (landing.length > 0 && landing[0].equals("land")) {
                 landed(iteration, landing[1]);
-                worker(iteration, String.format("obligations-%04d",
-                        round - 1), "w-" + landing[1], "o-" + landing[1],
-                        landing[1], TARGET, "Guard#u8",
-                        Collections.<String, String>emptyMap(),
-                        Collections.<String, String>emptyMap());
+                worker(iteration, String.format("obligations-%04d", round - 1),
+                        "w-" + landing[1], "o-" + landing[1], landing[1],
+                        TARGET, "Guard#u8", NONE, NONE);
             } else if (landing.length > 0 && landing[0].equals("leave")) {
                 deleteTree(iteration.resolve("sessions").resolve(landing[1]));
             }
@@ -1363,17 +1263,9 @@ public class ExploreTest {
             throws IOException {
         Session world = new Session(iteration, id);
         world.activation(TARGET, true);
-        world.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
+        world.marker(TARGET, "CASE.MARKER", "M_MARKER", "true");
         world.decision(TARGET, "Guard#u8", 1, true, "M_MARKER");
-        world.activation(WRITER, false);
-        world.activation(PRODUCER, false);
-        world.constant("e.119992", "119992");
-        world.symbolic("e.stored", "M_HOFF_KEY");
-        world.export(ROTATED, "e.119992", 11L, "119992");
-        world.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        world.write(STORED, ALL_KEYS, 5L, "e.stored");
-        world.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        world.keyChain();
         world.answered(ObligationResult.of("o-" + id, Verdict.ADMITTED, id,
                 "the flip ran"));
         world.flush();
@@ -1475,8 +1367,7 @@ public class ExploreTest {
         Path iteration = tree.newFolder("witness").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
-                null, null, true);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
         seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
         seed.flush();
@@ -1487,17 +1378,14 @@ public class ExploreTest {
                 "s-fatal", "the focused prefix reproduced"));
         fatal.flush();
         worker(iteration, "obligations-0002", "OBL.s-fatal", "OBL.s-fatal",
-                "s-fatal", TARGET, "Guard#u8",
-                Collections.<String, String>emptyMap(),
-                Collections.<String, String>emptyMap());
+                "s-fatal", TARGET, "Guard#u8", NONE, NONE);
         Files.write(iteration.resolve("obligations-0002")
                         .resolve(ExploreMain.MANIFEST_FILE),
                 "{\"wave\": 1}\n".getBytes(StandardCharsets.UTF_8));
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8"));
         Path out = tree.newFolder("witness-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
 
         Path asked = out.resolve("obligations-0003");
         JsonObject manifest = plan(iteration, TARGET_SELECTOR, null, results,
@@ -1518,14 +1406,12 @@ public class ExploreTest {
         RowCodec.writeAll(flying, Arrays.asList(Obligation.of("OBL.moved",
                 first.taskId(), first.pathId(), first.siteId(),
                 first.ordinal(), first.flippedOutcome(),
-                Collections.<String, String>emptyMap(),
-                Collections.<String, String>emptyMap(),
+                NONE,
+                NONE,
                 Collections.<String>emptyList())),
                 ExploreCodec::writeObligation);
         Path held = out.resolve("obligations-0004");
-        JsonObject awaiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
-                held, 4, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+        JsonObject awaiting = plan(iteration, results, flying, held, 4,
                 DEFAULT_BOUNDS);
         assertEquals(proposed.size() - 1, obligations(held).size());
         assertEquals(1, awaiting.get("heldInFlight").getAsInt());
@@ -1609,20 +1495,12 @@ public class ExploreTest {
             throws Exception {
         Path iteration = tree.newFolder("reaching").toPath();
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
-        seed.activation(BALANCER, false);
-        seed.activation(READER, false);
-        seed.activation(SIDECAR, false);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
-                null, null, true);
-        seed.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "1",
-                "0", "10", true);
-        seed.root(BALANCER, "CASE.MOVE", "M_MOVE", RootKind.INTEGRAL, "1",
-                "0", "10", true);
-        seed.root(SIDECAR, "CASE.SEND", "M_SEND", RootKind.INTEGRAL, "1",
-                "0", "10", true);
+        seed.activations(false, TARGET, WRITER, PRODUCER, BALANCER, READER,
+                SIDECAR);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        seed.integral(PRODUCER, "CASE.TICK", "M_TICK", "1", "0", "10");
+        seed.integral(BALANCER, "CASE.MOVE", "M_MOVE", "1", "0", "10");
+        seed.integral(SIDECAR, "CASE.SEND", "M_SEND", "1", "0", "10");
         seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.symbolic("e.token", "M_HOFF_TOKEN");
@@ -1656,22 +1534,19 @@ public class ExploreTest {
         heldTo(iteration, "s-through-factor", SIDECAR);
         worker(iteration, "obligations-0000", "ob-up", "OBL.up", "s-up",
                 PRODUCER, "Rotate#u5",
-                Collections.singletonMap("CASE.TICK", "7"),
-                Collections.<String, String>emptyMap());
+                Collections.singletonMap("CASE.TICK", "7"), NONE);
         worker(iteration, "obligations-0000", "ob-aside", "OBL.aside",
                 "s-aside", BALANCER, "Balance#u2",
-                Collections.singletonMap("CASE.MOVE", "2"),
-                Collections.<String, String>emptyMap());
+                Collections.singletonMap("CASE.MOVE", "2"), NONE);
         worker(iteration, "obligations-0000", "ob-both", "OBL.both",
                 "s-up-and-aside", PRODUCER, "Rotate#u5",
                 Collections.singletonMap("CASE.TICK", "7"),
-                Collections.<String, String>emptyMap(),
+                NONE,
                 Collections.singletonList(new Corpus.Flip(BALANCER.id(),
                         "Balance#u2", 1, true, "OBL.aside")));
         worker(iteration, "obligations-0000", "ob-factor", "OBL.factor",
                 "s-through-factor", SIDECAR, "Send#u4",
-                Collections.singletonMap("CASE.SEND", "0"),
-                Collections.<String, String>emptyMap());
+                Collections.singletonMap("CASE.SEND", "0"), NONE);
 
         Corpus corpus = Corpus.read(iteration, null);
         Task task = ClosurePlanner.taskOf(corpus,
@@ -1702,8 +1577,7 @@ public class ExploreTest {
 
         // ---- so the wave asks the arm once per delivered structure -----
         Path out = tree.newFolder("reaching-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
         Path wave = out.resolve("obligations-0001");
         JsonObject manifest = plan(iteration, TARGET_SELECTOR, null, results,
                 wave, 1);
@@ -1768,10 +1642,8 @@ public class ExploreTest {
             Session session = new Session(iteration, row[0]);
             session.activation(TARGET, !"s-seed".equals(row[0]));
             session.activation(WRITER, false);
-            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0",
-                    "0", "10", true);
-            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0",
-                    "0", "10", true);
+            session.integral(TARGET, "CASE.A", "M_A", "0", "0", "10");
+            session.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
             session.symbolic("e.stored", "M_A");
             for (int i = 0; i < Integer.parseInt(row[3]); i++) {
                 session.write(STORED, ALL_KEYS, 5L + i, "e.stored");
@@ -1800,10 +1672,8 @@ public class ExploreTest {
         Session afterGuard = new Session(iteration, "s-later");
         afterGuard.activation(TARGET, true);
         afterGuard.activation(WRITER, false);
-        afterGuard.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
-                "10", true);
-        afterGuard.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
-                "10", true);
+        afterGuard.integral(TARGET, "CASE.A", "M_A", "0", "0", "10");
+        afterGuard.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
         afterGuard.symbolic("e.stored", "M_A");
         afterGuard.write(STORED, ALL_KEYS, 5L, "e.stored");
         afterGuard.write(negotiated, qop, 1L, "e.stored");
@@ -1844,10 +1714,8 @@ public class ExploreTest {
             Session session = new Session(iteration, (String) row[0]);
             session.activation(TARGET, true);
             session.activation(WRITER, false);
-            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
-                    "10", true);
-            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
-                    "10", true);
+            session.integral(TARGET, "CASE.A", "M_A", "0", "0", "10");
+            session.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
             session.symbolic("e.stored", "M_A");
             session.expression("EXPR.00000000000000e2", (JsonObject) row[1]);
             session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e2");
@@ -1875,10 +1743,8 @@ public class ExploreTest {
             Session session = new Session(iteration, written[0]);
             session.activation(TARGET, true);
             session.activation(WRITER, false);
-            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
-                    "10", true);
-            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
-                    "10", true);
+            session.integral(TARGET, "CASE.A", "M_A", "0", "0", "10");
+            session.integral(TARGET, "CASE.B", "M_B", "0", "0", "10");
             session.symbolic("e.stored", "M_A");
             session.constant("EXPR.00000000000000e1", written[1]);
             session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e1");
@@ -1893,9 +1759,7 @@ public class ExploreTest {
             session.flush();
         }
         worker(iteration, "obligations-0000", "ob-later", "OBL.later",
-                "s-later", TARGET, "Later#u20",
-                Collections.<String, String>emptyMap(),
-                Collections.<String, String>emptyMap());
+                "s-later", TARGET, "Later#u20", NONE, NONE);
         Corpus corpus = Corpus.read(iteration, null);
         Task task = ClosurePlanner.taskOf(corpus,
                 ClosurePlanner.taskId(TARGET));
@@ -2003,8 +1867,8 @@ public class ExploreTest {
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,
                 Obligation.of("OBL.as-the-wave-named-it", task.taskId(),
                         Corpus.pathId("s-seed", TARGET), "Guard#u8", 1, true,
-                        Collections.<String, String>emptyMap(),
-                        Collections.<String, String>emptyMap(),
+                        NONE,
+                        NONE,
                         Collections.<String>emptyList()));
         assertEquals("OBL.as-the-wave-named-it", located.obligationId);
     }
@@ -2082,8 +1946,7 @@ public class ExploreTest {
                 session.attach(DELIVERED, "M_HOFF_KEY", "119992", exported);
                 session.write(STORED, ALL_KEYS, 5L, "e.stored");
                 session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
-                session.target(TARGET, "BlockTokenSecretManager"
-                        + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+                session.anchored(TARGET);
                 if (sessionId.equals("s-flip")) {
                     session.answered(ObligationResult.of("OBL.s-flip",
                             Verdict.ADMITTED, "s-flip",
@@ -2174,14 +2037,9 @@ public class ExploreTest {
                 Files.write(results, new byte[0]);
                 assertEquals("FIXED_POINT", plan(iteration, TARGET_SELECTOR,
                         null, results, wave, 0).get("state").getAsString());
-                boolean incomplete = false;
-                for (GapRow gap : RowCodec.readAll(
-                        wave.resolve("gaps.jsonl"), RowCodec::readGap)) {
-                    incomplete |= gap.cls() == GapClass.BLOCKING
-                            && gap.subject().equals(producer.render());
-                }
                 assertTrue("so at the fixpoint the closure is incomplete",
-                        incomplete);
+                        anyGap(wave, gap -> gap.cls() == GapClass.BLOCKING
+                                && gap.subject().equals(producer.render())));
             }
         }
     }
@@ -2253,8 +2111,7 @@ public class ExploreTest {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
             session.activation(WRITER, false);
-            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
-                    "10", true);
+            session.integral(TARGET, "CASE.A", "M_A", "0", "0", "10");
             String guardValue = "0";
             if (name.startsWith("h-")) {
                 session.activation(PRODUCER, false);
@@ -2277,8 +2134,7 @@ public class ExploreTest {
                         name.endsWith("minus") ? "-" : "+", leaf("M_GHOST", "I"),
                         literal(name.endsWith("minus") ? 1 : 10)));
                 String arrival = name.equals("g-twelve") ? "12" : "11";
-                session.export(ROTATED, "EXPR.00000000000000f1", 11L,
-                        arrival);
+                session.export(ROTATED, "EXPR.00000000000000f1", 11L, arrival);
                 session.attach(DELIVERED, "M_HOFF_KEY", arrival, ROTATED);
                 session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
             } else if (name.startsWith("r-") || name.startsWith("b-")) {
@@ -2372,12 +2228,10 @@ public class ExploreTest {
                             ringed[at], 100L + 2 * at, ref);
                     session.write(at(ring[at], "Ring#u1:WRITE", "Ring#u1"),
                             ringed[(at + ringSize - 1) % ringSize],
-                            101L + 2 * ((at + ringSize - 1) % ringSize),
-                            ref);
+                            101L + 2 * ((at + ringSize - 1) % ringSize), ref);
                     int next = (at + 1) % ringSize;
                     session.read(at(ring[at], "Ring#u2:READ", "Ring#u2"),
-                            ringed[next], 100L + 2 * next, "M_RING" + at,
-                            "1");
+                            ringed[next], 100L + 2 * next, "M_RING" + at, "1");
                 }
                 session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
                         ringed[0], 100L, "M_RINGED",
@@ -2398,9 +2252,8 @@ public class ExploreTest {
                 if (name.equals("i-two")) {
                     session.activation(concurrent, false, true, "extra");
                     session.constant("EXPR.00000000000000f4", "9");
-                    session.write(at(concurrent, "Extra#u1:WRITE",
-                            "Extra#u1"), chain[0], 8L,
-                            "EXPR.00000000000000f4");
+                    session.write(at(concurrent, "Extra#u1:WRITE", "Extra#u1"),
+                            chain[0], 8L, "EXPR.00000000000000f4");
                 }
                 session.read(at(innerReader, "Inner#u2:READ", "Inner#u2"),
                         chain[0], 7L, "M_INNER", "3");
@@ -2420,8 +2273,7 @@ public class ExploreTest {
                     String ref = String.format("EXPR.00000000000000%02x",
                             0xa0 + at);
                     if (at == 3) {
-                        session.constant(ref, name.equals("d-one") ? "1"
-                                : "2");
+                        session.constant(ref, name.equals("d-one") ? "1" : "2");
                     } else {
                         session.symbolic(ref, "M_CHAIN" + (at + 1), "I");
                         session.read(at(writers[at], "Chain" + at
@@ -2705,8 +2557,7 @@ public class ExploreTest {
         };
         for (Object[] row : sessions) {
             Session session = new Session(iteration, (String) row[0]);
-            session.activation(TARGET, false);
-            session.activation(WRITER, false);
+            session.activations(false, TARGET, WRITER);
             session.constant("e.stored", "1");
             session.write(STORED, ALL_KEYS, 5L, "e.stored");
             for (int k : (int[]) row[1]) {
@@ -2878,14 +2729,11 @@ public class ExploreTest {
                         OccurrenceAddress focused) throws IOException {
         Session session = new Session(iteration, sessionId);
         session.activation(focused, true);
-        session.activation(TARGET, false);
-        session.activation(WRITER, false);
-        session.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
+        session.activations(false, TARGET, WRITER);
+        session.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
         session.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         session.constant("e.kept", "119992");
-        session.decision(TARGET, "Guard#u8", 1, false,
-                "EXPR.0000000000000001");
+        session.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
         session.write(STORED, ALL_KEYS, 5L, "e.kept");
         session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         session.answered(ObligationResult.of("OBL." + sessionId,
@@ -2905,8 +2753,7 @@ public class ExploreTest {
         Path iteration = tree.newFolder("dag").toPath();
         Session session = new Session(iteration, "s-dag");
         session.activation(TARGET, false);
-        session.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
+        session.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
         JsonObject marked = leaf("M_MARKER", "I");
         JsonObject unmarked = leaf("M_OTHER", "I");
         for (int depth = 0; depth < 64; depth++) {
@@ -2917,10 +2764,8 @@ public class ExploreTest {
                 binary("==", marked, literal(0)));
         session.expression("EXPR.00000000000000d2",
                 binary("==", unmarked, literal(0)));
-        session.decision(TARGET, "Guard#u8", 1, false,
-                "EXPR.00000000000000d1");
-        session.decision(TARGET, "Guard#u9", 1, false,
-                "EXPR.00000000000000d2");
+        session.decision(TARGET, "Guard#u8", 1, false, "EXPR.00000000000000d1");
+        session.decision(TARGET, "Guard#u9", 1, false, "EXPR.00000000000000d2");
         session.flush();
         Corpus corpus = Corpus.read(iteration, null);
         assertEquals(Collections.singleton("Guard#u8"),
@@ -2944,8 +2789,7 @@ public class ExploreTest {
                 "PBHelper#convert#9");
 
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, false);
-        seed.activation(producer, false);
+        seed.activations(false, target, producer);
         // The recording mints the producer's own root: every instrumented
         // region of the seed runs symbolically ({@code Arms#attested}), so
         // the rotation that put a serial on the wire minted it.  That row
@@ -2955,8 +2799,8 @@ public class ExploreTest {
         // the case's whole hypothesis (11741 declares SERIAL_NO +0..+3):
         // undeclared it is pinned to this reading, and then no arm a
         // rotation delivered under another reading is available at all.
-        seed.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                "119992", null, null, true);
+        seed.integral(producer, "CASE.SERIAL", "M_SERIAL", "119992", null,
+                null);
         seed.constant("e.119992", "119992");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
@@ -2981,8 +2825,7 @@ public class ExploreTest {
         rotated.constant("e.119995", "119995");
         rotated.export(exported, "e.119995", 12L, "119995");
         rotated.attach(attached, "M_HOFF_KEY", "119995", exported);
-        rotated.decision(producer, "After#u9", 1, true,
-                "(> M_SERIAL 1000000)");
+        rotated.decision(producer, "After#u9", 1, true, "(> M_SERIAL 1000000)");
         rotated.flush();
         scopeMap(iteration,
                 targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
@@ -3040,8 +2883,7 @@ public class ExploreTest {
         // corpus delivers is UNSAT, not answered out of the family.
         Path other = tree.newFolder("family-unsat").toPath();
         Session lone = new Session(other, "s-seed");
-        lone.activation(target, false);
-        lone.activation(producer, false);
+        lone.activations(false, target, producer);
         lone.constant("e.119992", "119992");
         lone.export(exported, "e.119992", 11L, "119992");
         lone.attach(attached, "M_HOFF_KEY", "119992", exported);
@@ -3086,13 +2928,10 @@ public class ExploreTest {
         assertEquals(Collections.singletonList(attached.id()),
                 worker.obligation.unproducible());
         assertEquals("5", worker.obligation.answers().get(attached.id()));
-        boolean named = false;
-        for (GapRow gap : RowCodec.readAll(worker.directory
-                .resolve("gaps.jsonl"), RowCodec::readGap)) {
-            named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
-                    && gap.subject().contains("XCH.req.key-id");
-        }
-        assertTrue("the obligation announces the control it invented", named);
+        assertTrue("the obligation announces the control it invented",
+                anyGap(worker.directory, gap -> gap.kind()
+                        == GapKind.UNPRODUCIBLE_ANSWER
+                        && gap.subject().contains("XCH.req.key-id")));
     }
 
     // ---- an open decider arm: asked at one decision, named until closed --
@@ -3141,8 +2980,7 @@ public class ExploreTest {
                     + (row[3] == null ? "" : "-" + row[3])).toPath();
             Session seed = new Session(iteration, "s-seed");
             seed.activation(TARGET, false);
-            seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                    "7", null, null, true);
+            seed.integral(TARGET, "CASE.SERIAL", "M_SERIAL", "7", null, null);
             // An earlier call of the helper, and the one that fed the guard.
             seed.decision(TARGET, helper, 1, true, "(> M_SERIAL 3)");
             seed.decision(TARGET, helper, 2, false, "(> M_SERIAL 10)");
@@ -3258,8 +3096,7 @@ public class ExploreTest {
         Path iteration = tree.newFolder("refuted-arm").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL, "7",
-                "7", "11", true);
+        seed.integral(TARGET, "CASE.SERIAL", "M_SERIAL", "7", "7", "11");
         seed.decision(TARGET, helper, 1, false, "(> M_SERIAL 10)");
         seed.targets.add(TargetRow.of("s-seed", 99L, TARGET, "Throw#u30",
                 "false", false, true, TargetRow.OpenArm.of(helper, 1, true,
@@ -3370,8 +3207,7 @@ public class ExploreTest {
         Path declared = tree.newFolder("declared").toPath();
         Session open = new Session(declared, "s-seed");
         open.activation(target, false);
-        open.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL, "7",
-                null, null, true);
+        open.integral(target, "CASE.SERIAL", "M_SERIAL", "7", null, null);
         open.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         open.flush();
         scopeMap(declared, targetSite("REGION.target", "Throw#u30",
@@ -3405,10 +3241,8 @@ public class ExploreTest {
         // asking for another one.
         Path elsewhere = tree.newFolder("minted-elsewhere").toPath();
         Session across = new Session(elsewhere, "s-seed");
-        across.activation(target, false);
-        across.activation(PRODUCER, false);
-        across.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                "7", null, null, true);
+        across.activations(false, target, PRODUCER);
+        across.integral(PRODUCER, "CASE.SERIAL", "M_SERIAL", "7", null, null);
         across.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         across.flush();
         scopeMap(elsewhere, targetSite("REGION.target", "Throw#u30",
@@ -3443,8 +3277,7 @@ public class ExploreTest {
         recording.flush();
         Session replayed = new Session(unminted, "s-flip");
         replayed.activation(target, true);
-        replayed.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                "7", null, null, true);
+        replayed.integral(target, "CASE.SERIAL", "M_SERIAL", "7", null, null);
         replayed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         replayed.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
                 "s-flip", "the focused prefix reproduced"));
@@ -3466,16 +3299,12 @@ public class ExploreTest {
         assertTrue("and no focus row is written for it",
                 RowCodec.readJsonl(unmintable.directory
                         .resolve(ObligationDir.FOCUSED_TASK)).isEmpty());
-        boolean unmintableNamed = false;
-        for (GapRow gap : RowCodec.readAll(unmintable.directory
-                .resolve("gaps.jsonl"), RowCodec::readGap)) {
-            unmintableNamed |= gap.kind() == GapKind.ASSIGNMENT_UNMINTABLE
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().equals(orphan.obligationId())
-                    && gap.detail().equals("CASE.SERIAL");
-        }
         assertTrue("the obligation is named, and so is the root",
-                unmintableNamed);
+                anyGap(unmintable.directory, gap -> gap.kind()
+                        == GapKind.ASSIGNMENT_UNMINTABLE
+                        && gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().equals(orphan.obligationId())
+                        && gap.detail().equals("CASE.SERIAL")));
 
         // A clock has no domain either, and is not pinned for it: it is free
         // with a floor.  What the focus row states for one is the SKEW the
@@ -3485,8 +3314,7 @@ public class ExploreTest {
         Path ticking = tree.newFolder("clock").toPath();
         Session ticks = new Session(ticking, "s-seed");
         ticks.activation(target, false);
-        ticks.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "700",
-                null, null, true);
+        ticks.clock(target, "CASE.NOW", "M_NOW", "700");
         ticks.decision(target, "Arrival#u8", 1, false, "(> M_NOW 1000)");
         ticks.flush();
         scopeMap(ticking, targetSite("REGION.target", "Throw#u30",
@@ -3542,10 +3370,8 @@ public class ExploreTest {
         Path pinnedClock = tree.newFolder("clock-pinned").toPath();
         Session both = new Session(pinnedClock, "s-seed");
         both.activation(target, false);
-        both.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "700",
-                null, null, true);
-        both.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                "182907", null, null, true);
+        both.clock(target, "CASE.NOW", "M_NOW", "700");
+        both.integral(target, "CASE.SERIAL", "M_SERIAL", "182907", null, null);
         both.decision(target, "Arrival#u8", 1, false,
                 "(and (> M_NOW 1000) (= M_SERIAL 182907))");
         both.flush();
@@ -3621,8 +3447,7 @@ public class ExploreTest {
 
             ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
                     TARGET, StaticScopeMap.empty());
-            List<String> focused = new ArrayList<String>();
-            for (Task task : plan.tasks) focused.add(task.focused().render());
+            List<String> focused = focused(plan);
             assertTrue("the store's writer: " + focused,
                     focused.contains(WRITER.render()));
             assertEquals("the state the read saw through the store: "
@@ -3645,8 +3470,7 @@ public class ExploreTest {
                 "88");
         LocationId list = LocationId.of(LocationKind.MAP, "20", "-3");
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(WRITER, false);
+        seed.activations(false, TARGET, WRITER);
         seed.symbolic("e.list", "M_LIST");
         seed.write(at(WRITER, "Metrics#run#2:WRITE", "Metrics#run#2"),
                 reference, 2L, "e.list");
@@ -3659,8 +3483,7 @@ public class ExploreTest {
 
         ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
                 TARGET, StaticScopeMap.empty());
-        List<String> focused = new ArrayList<String>();
-        for (Task task : plan.tasks) focused.add(task.focused().render());
+        List<String> focused = focused(plan);
         assertTrue("the writer of the reference that returned the list: "
                 + focused, focused.contains(WRITER.render()));
         assertTrue(plan.unpaused.isEmpty());
@@ -3705,25 +3528,16 @@ public class ExploreTest {
                 "PBHelper#convert#9");
 
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, false);
-        seed.activation(writer, false);
-        seed.activation(producer, false);
+        seed.activations(false, target, writer, producer);
         seed.constant("e.119992", "119992");
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
-        seed.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.stored");
-        seed.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
-                        "retrieveDataEncryptionKey", 8, false),
-                        "BlockTokenSecretManager"
-                                + "#retrieveDataEncryptionKey#8"), allKeys,
-                5L, "M_READ_KEY", "119992");
+        seed.write(stored(writer), allKeys, 5L, "e.stored");
+        seed.read(lookedUp(target), allKeys, 5L, "M_READ_KEY", "119992");
         // What makes this occurrence an anchor: the predicate whose fatal arm
         // the composition asks about, over the value it read.
-        seed.target(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.anchored(target);
         seed.flush();
         Path mapFile = scopeMap(iteration,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
@@ -3736,8 +3550,7 @@ public class ExploreTest {
 
         Corpus corpus = Corpus.read(iteration, null);
         ClosurePlanner.Plan plan = closure(corpus, target, map);
-        List<String> focused = new ArrayList<String>();
-        for (Task task : plan.tasks) focused.add(task.focused().render());
+        List<String> focused = focused(plan);
         assertTrue("the writer of the version the anchor read is in the "
                 + "closure: " + focused, focused.contains(writer.render()));
         assertTrue("and so is the producer of what that writer attached: "
@@ -3806,39 +3619,20 @@ public class ExploreTest {
                 "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"),
                         "", 2), "o.a.h.h.s.d.DataXceiver#run#13");
         Session spread = new Session(perNode, "s-seed");
-        spread.activation(target, false);
-        spread.activation(writer, false);
-        spread.activation(producer, false);
-        spread.activation(sibling, false);
-        spread.activation(foreignWriter, false);
-        spread.activation(foreignExporter, false);
-        spread.activation(elsewhereOnly, false);
-        spread.activation(otherMap, false);
-        spread.activation(coReader, false);
+        spread.activations(false, target, writer, producer, sibling,
+                foreignWriter, foreignExporter, elsewhereOnly, otherMap,
+                coReader);
         spread.constant("e.other", "7");
-        spread.write(at(otherMap, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), LocationId.of(LocationKind.MAP, "34",
+        spread.write(stored(otherMap), LocationId.of(LocationKind.MAP, "34",
                 "allKeys"), 6L, "e.other");
-        spread.read(at(coReader, Endpoint.stateSite("BlockTokenSecretManager",
-                        "retrieveDataEncryptionKey", 8, false),
-                        "BlockTokenSecretManager"
-                                + "#retrieveDataEncryptionKey#8"), allKeys,
-                5L, "M_READ_KEY_2", "119992");
+        spread.read(lookedUp(coReader), allKeys, 5L, "M_READ_KEY_2", "119992");
         spread.constant("e.119992", "119992");
         spread.symbolic("e.stored", "M_HOFF_KEY");
         spread.export(exported, "e.119992", 11L, "119992");
         spread.attach(attached, "M_HOFF_KEY", "119992", exported);
-        spread.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.stored");
-        spread.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
-                        "retrieveDataEncryptionKey", 8, false),
-                        "BlockTokenSecretManager"
-                                + "#retrieveDataEncryptionKey#8"), allKeys,
-                5L, "M_READ_KEY", "119992");
-        spread.target(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        spread.write(stored(writer), allKeys, 5L, "e.stored");
+        spread.read(lookedUp(target), allKeys, 5L, "M_READ_KEY", "119992");
+        spread.anchored(target);
         spread.flush();
         StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
@@ -3856,11 +3650,7 @@ public class ExploreTest {
                         "XCH.resp.block-key-id")));
         ClosurePlanner.Plan scoped = closure(Corpus.read(perNode, null),
                 target, spreadMap);
-        Map<String, String> scopedWhy = new LinkedHashMap<String, String>();
-        for (Task task : scoped.tasks) {
-            scopedWhy.put(task.focused().render(),
-                    scoped.why.get(task.taskId()));
-        }
+        Map<String, String> scopedWhy = why(scoped);
         assertEquals("a static write site of the read's carrier is a "
                         + "candidate on the READER'S node: " + scopedWhy,
                 ClosurePlanner.STATIC_CANDIDATE_WRITER,
@@ -3895,8 +3685,7 @@ public class ExploreTest {
                             Collections.singletonList(target),
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet());
-            List<String> kept = new ArrayList<String>();
-            for (Task task : cut.tasks) kept.add(task.focused().render());
+            List<String> kept = focused(cut);
             List<String> expected = new ArrayList<String>(Arrays.asList(
                     target.render(), writer.render(), producer.render()));
             if (bound > 0) expected.add(sibling.render());
@@ -3972,11 +3761,7 @@ public class ExploreTest {
                 "BlockTokenSecretManager", "removeExpiredKeys", 16, true),
                 "BlockTokenSecretManager#removeExpiredKeys#16");
         Session rests = new Session(restsOnState, "s-seed");
-        rests.activation(target, false);
-        rests.activation(writer, false);
-        rests.activation(producer, false);
-        rests.activation(scanning, false);
-        rests.activation(farExpiry, false);
+        rests.activations(false, target, writer, producer, scanning, farExpiry);
         rests.symbolic("e.scan", "M_SCANNED", "L");
         rests.symbolic("e.stored", "M_HOFF_KEY");
         // What the rotation DELIVERED: a projection out of the map, over
@@ -3986,16 +3771,9 @@ public class ExploreTest {
         rests.write(scanned, nnKeys, 25L, "e.scan", "L");
         rests.export(exported, "e.exported", 11L, "119992");
         rests.attach(attached, "M_HOFF_KEY", "119992", exported);
-        rests.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.stored");
-        rests.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
-                        "retrieveDataEncryptionKey", 8, false),
-                        "BlockTokenSecretManager"
-                                + "#retrieveDataEncryptionKey#8"), allKeys,
-                5L, "M_READ_KEY", "119992");
-        rests.target(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        rests.write(stored(writer), allKeys, 5L, "e.stored");
+        rests.read(lookedUp(target), allKeys, 5L, "M_READ_KEY", "119992");
+        rests.anchored(target);
         rests.flush();
         StaticScopeMap restsMap = StaticScopeMap.read(scopeMap(restsOnState,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
@@ -4045,17 +3823,13 @@ public class ExploreTest {
                                 .id(), "DatanodeProtocol#registerDatanode"),
                 "o.a.h.h.s.d.BPServiceActor#offerService#41");
         Session other = new Session(split, "s-seed");
-        other.activation(target, false);
-        other.activation(confused, false);
-        other.activation(producer, false);
+        other.activations(false, target, confused, producer);
         other.constant("e.119992", "119992");
         other.symbolic("e.stored", "M_HOFF_KEY");
         other.export(exported, "e.119992", 11L, "119992");
         other.attach(at(confused, "XCH.resp.block-key-id",
                 "PBHelper#convert#9"), "M_HOFF_KEY", "119992", exported);
-        other.write(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.stored");
+        other.write(stored(confused), allKeys, 5L, "e.stored");
         other.read(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
                         "get", 3, false), "BlockTokenSecretManager#get#3"),
                 allKeys, 5L, "M_READ_KEY", "119992");
@@ -4064,10 +3838,7 @@ public class ExploreTest {
         other.flush();
         ClosurePlanner.Plan divergent = closure(Corpus.read(split, null),
                 confused, map);
-        List<String> divergentFocused = new ArrayList<String>();
-        for (Task task : divergent.tasks) {
-            divergentFocused.add(task.focused().render());
-        }
+        List<String> divergentFocused = focused(divergent);
         assertTrue("the closure follows the recorded pairing: "
                         + divergentFocused,
                 divergentFocused.contains(producer.render()));
@@ -4103,16 +3874,13 @@ public class ExploreTest {
         Endpoint otherPort = at(producer, "XCH.resp.block-key-expiry",
                 "PBHelper#convert#12");
         Session paired = new Session(twoWays, "s-seed");
-        paired.activation(target, false);
-        paired.activation(writer, false);
-        paired.activation(producer, false);
+        paired.activations(false, target, writer, producer);
         paired.constant("e.119992", "119992");
         paired.export(exported, "e.119992", 11L, "119992");
         paired.attach(attached, "M_HOFF_KEY", "119992", exported);
         paired.flush();
         Session repaired = new Session(twoWays, "s-two");
-        repaired.activation(writer, false);
-        repaired.activation(producer, false);
+        repaired.activations(false, writer, producer);
         repaired.constant("e.119993", "119993");
         repaired.export(otherPort, "e.119993", 13L, "119993");
         repaired.attach(attached, "M_HOFF_KEY", "119993", otherPort);
@@ -4140,16 +3908,14 @@ public class ExploreTest {
         // session the old slot stood on is no longer the corpus's.
         Path before = tree.newFolder("closure-before-grow").toPath();
         Session exposing = new Session(before, "s-seed");
-        exposing.activation(writer, false);
-        exposing.activation(producer, false);
+        exposing.activations(false, writer, producer);
         exposing.constant("e.119992", "119992");
         exposing.export(exported, "e.119992", 11L, "119992");
         exposing.attach(attached, "M_HOFF_KEY", "119992", exported);
         exposing.flush();
         Path after = tree.newFolder("closure-after-grow").toPath();
         Session rerun = new Session(after, "s-two");
-        rerun.activation(writer, false);
-        rerun.activation(producer, false);
+        rerun.activations(false, writer, producer);
         rerun.constant("e.119993", "119993");
         rerun.export(otherPort, "e.119993", 13L, "119993");
         rerun.attach(attached, "M_HOFF_KEY", "119993", otherPort);
@@ -4214,16 +3980,13 @@ public class ExploreTest {
         Path unadmitted = tree.newFolder("closure-replaced-unadmitted")
                 .toPath();
         Session held = new Session(unadmitted, "s-seed");
-        held.activation(target, false);
-        held.activation(writer, false);
-        held.activation(producer, false);
+        held.activations(false, target, writer, producer);
         held.constant("e.119992", "119992");
         held.export(exported, "e.119992", 11L, "119992");
         held.attach(attached, "M_HOFF_KEY", "119992", exported);
         held.flush();
         Session wrongWorld = new Session(unadmitted, "s-unadmitted");
-        wrongWorld.activation(writer, true);
-        wrongWorld.activation(producer, true);
+        wrongWorld.activations(true, writer, producer);
         wrongWorld.constant("e.119993", "119993");
         wrongWorld.export(otherPort, "e.119993", 13L, "119993");
         wrongWorld.attach(attached, "M_HOFF_KEY", "119993", otherPort);
@@ -4265,17 +4028,13 @@ public class ExploreTest {
                 "BlockTokenSecretManager", "get", 3, false),
                 "BlockTokenSecretManager#get#3");
         Session firstArm = new Session(arms, "s-seed");
-        firstArm.activation(target, false);
-        firstArm.activation(writer, false);
+        firstArm.activations(false, target, writer);
         firstArm.symbolic("e.a", "M_A");
-        firstArm.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.a");
+        firstArm.write(stored(writer), allKeys, 5L, "e.a");
         firstArm.read(reader, allKeys, 5L, "M_READ_KEY", "119992");
         firstArm.flush();
         Session flipping = new Session(arms, "s-flip");
-        flipping.activation(target, true);
-        flipping.activation(otherWriter, true);
+        flipping.activations(true, target, otherWriter);
         flipping.symbolic("e.b", "M_B");
         flipping.write(at(otherWriter, Endpoint.stateSite(
                         "BlockTokenSecretManager", "removeKeys", 19, true),
@@ -4318,8 +4077,7 @@ public class ExploreTest {
                 CausalContext.of("00112233445566aa", "HDFS_SASL/checksum"),
                 "o.a.h.h.s.d.DataXceiver#run#44");
         Session bothRan = new Session(requests, "s-seed");
-        bothRan.activation(firstRequest, false);
-        bothRan.activation(secondRequest, false);
+        bothRan.activations(false, firstRequest, secondRequest);
         bothRan.flush();
         assertFalse("two requests at one code point are growth",
                 new SlotTable().reconcile(Corpus.read(requests, null),
@@ -4440,8 +4198,7 @@ public class ExploreTest {
             Path oneMember = tree.newFolder("closure-one-member-"
                     + alone.context().render().hashCode()).toPath();
             Session seedBoth = new Session(oneMember, "s-seed");
-            seedBoth.activation(firstRequest, false);
-            seedBoth.activation(secondRequest, false);
+            seedBoth.activations(false, firstRequest, secondRequest);
             seedBoth.flush();
             Session ranOne = new Session(oneMember, "s-flip");
             ranOne.activation(alone, true);
@@ -4468,8 +4225,7 @@ public class ExploreTest {
         OccurrenceAddress stranger = wake1;
         Path strangerAlone = tree.newFolder("closure-stranger-alone").toPath();
         Session seedTwo = new Session(strangerAlone, "s-seed");
-        seedTwo.activation(firstCall, false);
-        seedTwo.activation(secondCall, false);
+        seedTwo.activations(false, firstCall, secondCall);
         seedTwo.flush();
         Session ranStranger = new Session(strangerAlone, "s-flip");
         ranStranger.activation(stranger, true);
@@ -4483,8 +4239,7 @@ public class ExploreTest {
         Path strangerBeside = tree.newFolder("closure-stranger-beside")
                 .toPath();
         Session seedThree = new Session(strangerBeside, "s-seed");
-        seedThree.activation(firstCall, false);
-        seedThree.activation(secondCall, false);
+        seedThree.activations(false, firstCall, secondCall);
         seedThree.flush();
         Session ranBeside = new Session(strangerBeside, "s-flip");
         ranBeside.activation(secondCall, true);
@@ -4542,8 +4297,7 @@ public class ExploreTest {
                 "BlockTokenSecretManager", "get", 3, false),
                 "BlockTokenSecretManager#get#3");
         Session stated = new Session(viaRef, "s-seed");
-        stated.activation(target, false);
-        stated.activation(writer, false);
+        stated.activations(false, target, writer);
         stated.symbolic("e.stored", "M_HOFF_KEY");
         stated.symbolic("EXPR.0000000000000002", "M_READ_KEY");
         stated.write(at(writer, Endpoint.stateSite(
@@ -4584,15 +4338,11 @@ public class ExploreTest {
         LocationId counter = LocationId.of(LocationKind.INSTANCE, "2",
                 "24");
         Session apart = new Session(aside, "s-seed");
-        apart.activation(target, false);
-        apart.activation(writer, false);
-        apart.activation(deferring, false);
-        apart.activation(undeclared, false);
+        apart.activations(false, target, writer, deferring, undeclared);
         apart.symbolic("e.count", "M_COUNT_IN");
         apart.symbolic("EXPR.0000000000000003", "M_MARKER", "Z");
         apart.symbolic("EXPR.0000000000000004", "M_READ_COUNT");
-        apart.root(deferring, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "true", null, null, true);
+        apart.marker(deferring, "CASE.MARKER", "M_MARKER", "true");
         // The increment the seed DID run, and the anchor's read of it.
         apart.write(at(writer, Endpoint.stateSite("SnapshotManager",
                         "createSnapshot", 621, true),
@@ -4604,8 +4354,7 @@ public class ExploreTest {
                 "M_READ_COUNT", "2");
         apart.target(target, "SnapshotManager#getNumSnapshots#2",
                 "(not EXPR.0000000000000004)");
-        apart.decision(target, "Section#u61", 1, true,
-                "EXPR.0000000000000004");
+        apart.decision(target, "Section#u61", 1, true, "EXPR.0000000000000004");
         // The deletion region decided the marker and wrote NOTHING.
         apart.decision(deferring, "SnapshotManager#u7", 1, false,
                 "EXPR.0000000000000003");
@@ -4664,16 +4413,12 @@ public class ExploreTest {
                 + whyTask, whyTask.containsKey(undeclared.render()));
         // A candidate region no session ran is NAMED and is not a task:
         // there is no run to focus (PIPELINE §7.2).
-        boolean grow = false;
-        for (GapRow gap : RowCodec.readAll(asideWave.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            grow |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().equals("REGION.neverran")
-                    && gap.detail().contains("retained set would have to "
-                            + "grow");
-        }
-        assertTrue("the unrun candidate region is named", grow);
+        assertTrue("the unrun candidate region is named",
+                anyGap(asideWave, gap -> gap.kind() == GapKind.ADMISSION_GAP
+                        && gap.cls() == GapClass.DIAGNOSTIC
+                        && gap.subject().equals("REGION.neverran")
+                        && gap.detail().contains(
+                                "retained set would have to grow")));
 
         List<Obligation> beyond = obligations(asideWave);
         List<String> flips = new ArrayList<String>();
@@ -4732,9 +4477,7 @@ public class ExploreTest {
                                         "java/util/HashMap"))),
                 literal(119992), leaf("M_HOFF_KEY", "I"));
         Session container = new Session(inlined, "s-seed");
-        container.activation(target, false);
-        container.activation(writer, false);
-        container.activation(expiring, false);
+        container.activations(false, target, writer, expiring);
         container.expression("e.map", chain);
         container.expression("EXPR.0000000000000005", binary("==",
                 guardedRead(allKeys, 5L, "L", relation("ASSOCIATIVE", "READ",
@@ -4844,13 +4587,10 @@ public class ExploreTest {
                 "BlockTokenSecretManager", "get", 3, false),
                 "BlockTokenSecretManager#get#3");
         Session loop = new Session(collided, "s-seed");
-        loop.activation(target, false);
-        loop.activation(writer, false);
+        loop.activations(false, target, writer);
         loop.symbolic("e.first", "M_FIRST");
         loop.symbolic("e.second", "M_SECOND");
-        loop.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
-                        "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.first");
+        loop.write(stored(writer), allKeys, 5L, "e.first");
         loop.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
                         "addKeys", 13, true), "BlockTokenSecretManager"
                         + "#addKeys#13"), allKeys, 6L, "e.second");
@@ -4983,8 +4723,7 @@ public class ExploreTest {
                                 OccurrenceAddress producer, Endpoint attached,
                                 Endpoint port) throws IOException {
         Session session = new Session(iteration, chain[0]);
-        session.activation(writer, false);
-        session.activation(producer, false);
+        session.activations(false, writer, producer);
         session.constant("e." + chain[1], chain[1]);
         session.export(port, "e." + chain[1], Long.parseLong(chain[2]),
                 chain[1]);
@@ -5060,15 +4799,11 @@ public class ExploreTest {
                 elsewhere.resolve(StaticScopeMap.FILE), absentWave, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 DEFAULT_BOUNDS);
-        boolean named = false;
-        for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            named |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.BLOCKING
-                    && gap.subject().equals(TARGET.render())
-                    && gap.detail().contains("published no activation");
-        }
-        assertTrue("the anchor's absence is BLOCKING and named", named);
+        assertTrue("the anchor's absence is BLOCKING and named",
+                anyGap(absentWave, gap -> gap.kind() == GapKind.ADMISSION_GAP
+                        && gap.cls() == GapClass.BLOCKING
+                        && gap.subject().equals(TARGET.render())
+                        && gap.detail().contains("published no activation")));
     }
 
     // ---- (6) a demanded clock comparison is asked with room to spare ----
@@ -5190,8 +4925,7 @@ public class ExploreTest {
         Path margin = tree.newFolder("margin").toPath();
         Session clocked = new Session(margin, "s-seed");
         clocked.activation(TARGET, false);
-        clocked.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
+        clocked.clock(TARGET, "CASE.NOW", "M_NOW", "1000");
         clocked.decision(TARGET, "Expiry#u15", 1, true,
                 notBefore("1500", "M_NOW"));
         clocked.flush();
@@ -5222,8 +4956,7 @@ public class ExploreTest {
         Path branched = tree.newFolder("margin-ite").toPath();
         Session other = new Session(branched, "s-seed");
         other.activation(TARGET, false);
-        other.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
+        other.clock(TARGET, "CASE.NOW", "M_NOW", "1000");
         other.decision(TARGET, "Expiry#u15", 1, false,
                 "(= (ite (< 1500 M_NOW) 1 0) 1)");
         other.flush();
@@ -5238,16 +4971,13 @@ public class ExploreTest {
         assertEquals(Verdict.SAT_MODEL_READY, asIs.verdict);
         assertFalse("no margin is invented for it: " + query(asIs),
                 query(asIs).contains("(+ "));
-        boolean named = false;
-        for (GapRow gap : RowCodec.readAll(asIs.directory.resolve(
-                "gaps.jsonl"), RowCodec::readGap)) {
-            named |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && ExploreCodec.EXPLORATION.equals(gap.sessionId())
-                    && gap.detail().contains("clock margin")
-                    && gap.detail().contains("(< 1500 clk_");
-        }
-        assertTrue("and the wave says which atom it could not reach", named);
+        assertTrue("and the wave says which atom it could not reach",
+                anyGap(asIs.directory, gap -> gap.kind()
+                        == GapKind.ADMISSION_GAP
+                        && gap.cls() == GapClass.DIAGNOSTIC
+                        && ExploreCodec.EXPLORATION.equals(gap.sessionId())
+                        && gap.detail().contains("clock margin")
+                        && gap.detail().contains("(< 1500 clk_")));
 
         // The inherited flip.
         Path iteration = tree.newFolder("inherited-margin").toPath();
@@ -5255,14 +4985,10 @@ public class ExploreTest {
         // the child was later held to, and the target never reached the
         // guard this obligation flips.
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(PRODUCER, false);
-        seed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
-        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
-                "false", null, null, true);
+        seed.activations(false, TARGET, PRODUCER);
+        seed.clock(PRODUCER, "CASE.NOW", "M_NOW", "1000");
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        seed.marker(TARGET, "CASE.OTHER", "M_OTHER", "false");
         seed.decision(PRODUCER, "Before#u3", 1, true,
                 notBefore("200000", "M_NOW"));
         seed.decision(PRODUCER, "Rotate#u5", 1, false,
@@ -5274,12 +5000,9 @@ public class ExploreTest {
         Session child = new Session(iteration, "s-inherit");
         child.activation(PRODUCER, true);
         child.activation(TARGET, false);
-        child.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
-        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
-        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
-                "false", null, null, true);
+        child.clock(PRODUCER, "CASE.NOW", "M_NOW", "1000");
+        child.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        child.marker(TARGET, "CASE.OTHER", "M_OTHER", "false");
         child.decision(PRODUCER, "Before#u3", 1, true,
                 notBefore("200000", "M_NOW"));
         child.decision(PRODUCER, "Rotate#u5", 1, true,
@@ -5290,8 +5013,7 @@ public class ExploreTest {
                 "s-inherit", "the focused prefix reproduced"));
         child.flush();
         worker(iteration, "obligations-0000", "ob-inherit", "OBL.inherit",
-                "s-inherit", PRODUCER, "Rotate#u5",
-                Collections.<String, String>emptyMap(),
+                "s-inherit", PRODUCER, "Rotate#u5", NONE,
                 Collections.singletonMap("CASE.NOW", "0"));
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Deeper#u9"));
@@ -5675,8 +5397,7 @@ public class ExploreTest {
                 "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"), "",
                         2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(WRITER, false);
+        seed.activations(false, TARGET, WRITER);
         seed.activation(again, false, true, "fixture#key-updater");
         seed.constant("e.1", "1");
         if ("Z".equals(secondType)) {
@@ -5700,8 +5421,7 @@ public class ExploreTest {
         seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
                 literal(1)), literal(2)));
         if (limit != null) {
-            seed.root(TARGET, "CASE.LIMIT", "M_LIMIT", RootKind.INTEGRAL,
-                    limit, "0", "10", true);
+            seed.integral(TARGET, "CASE.LIMIT", "M_LIMIT", limit, "0", "10");
         }
         seed.decision(TARGET, "Lookup#u8", 1, false, term);
         seed.flush();
@@ -5858,8 +5578,7 @@ public class ExploreTest {
                         2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
         LocationId other = LocationId.of(LocationKind.INSTANCE, "21", "41");
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(WRITER, false);
+        seed.activations(false, TARGET, WRITER);
         seed.activation(again, false, true, "fixture#key-updater");
         seed.constant("e.1", "1");
         seed.constant("e.2", "2");
@@ -5923,11 +5642,9 @@ public class ExploreTest {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("pinned-handoff").toPath();
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(WRITER, false);
-        seed.activation(PRODUCER, false);
-        seed.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
-                "119992", null, null, true);
+        seed.activations(false, TARGET, WRITER, PRODUCER);
+        seed.integral(PRODUCER, "CASE.SERIAL", "M_SERIAL", "119992", null,
+                null);
         seed.constant("e.119992", "119992");
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.export(ROTATED, "e.119992", 11L, "119992");
@@ -5941,8 +5658,7 @@ public class ExploreTest {
         // A second recording of the same interaction delivered 119995.
         Session rotated = new Session(iteration, "s-rot");
         rotated.activation(PRODUCER, true);
-        rotated.activation(WRITER, false);
-        rotated.activation(TARGET, false);
+        rotated.activations(false, WRITER, TARGET);
         rotated.answered(ObligationResult.of("OBL.s-rot", Verdict.ADMITTED,
                 "s-rot", "the focused prefix reproduced"));
         rotated.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
@@ -5997,19 +5713,15 @@ public class ExploreTest {
         // run's arm moves with that clock, which the replay plants.
         Path clocked = tree.newFolder("own-run-clock").toPath();
         Session timed = new Session(clocked, "s-seed");
-        timed.activation(TARGET, false);
-        timed.activation(WRITER, false);
-        timed.activation(PRODUCER, false);
-        timed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "119992",
-                null, null, true);
+        timed.activations(false, TARGET, WRITER, PRODUCER);
+        timed.clock(PRODUCER, "CASE.NOW", "M_NOW", "119992");
         timed.symbolic("e.now", "M_NOW");
         timed.symbolic("e.stored", "M_HOFF_KEY");
         timed.export(ROTATED, "e.now", 11L, "119992");
         timed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
         timed.write(STORED, ALL_KEYS, 5L, "e.stored");
         timed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
-        timed.decision(TARGET, "Lookup#u8", 1, false,
-                "(= M_READ_KEY 119995)");
+        timed.decision(TARGET, "Lookup#u8", 1, false, "(= M_READ_KEY 119995)");
         timed.flush();
         scopeMap(clocked,
                 targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
@@ -6069,12 +5781,9 @@ public class ExploreTest {
         Path iteration = tree.newFolder("clock-floor").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
-                null, null, true);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
-        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
-                "false", null, null, true);
+        seed.clock(TARGET, "CASE.NOW", "M_NOW", "1000");
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        seed.marker(TARGET, "CASE.OTHER", "M_OTHER", "false");
         seed.decision(TARGET, "Expiry#u15", 1, true,
                 notBefore("200000", "M_NOW"));
         seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
@@ -6085,12 +5794,9 @@ public class ExploreTest {
         // records what it then read.
         Session child = new Session(iteration, "s-later");
         child.activation(TARGET, true);
-        child.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
-                null, null, true);
-        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                "false", null, null, true);
-        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
-                "false", null, null, true);
+        child.clock(TARGET, "CASE.NOW", "M_NOW", "5000");
+        child.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        child.marker(TARGET, "CASE.OTHER", "M_OTHER", "false");
         child.decision(TARGET, "Expiry#u15", 1, true,
                 notBefore("200000", "M_NOW"));
         child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
@@ -6099,8 +5805,7 @@ public class ExploreTest {
                 "s-later", "the focused prefix reproduced"));
         child.flush();
         worker(iteration, "obligations-0000", "ob-later", "OBL.later",
-                "s-later", TARGET, "Expiry#u15",
-                Collections.<String, String>emptyMap(),
+                "s-later", TARGET, "Expiry#u15", NONE,
                 Collections.singletonMap("CASE.NOW", "4000"));
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8", "Deeper#u9"));
@@ -6146,8 +5851,7 @@ public class ExploreTest {
             Path back = tree.newFolder("clock-back").toPath();
             Session only = new Session(back, "s-seed");
             only.activation(TARGET, false);
-            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
-                    null, null, true);
+            only.clock(TARGET, "CASE.NOW", "M_NOW", "5000");
             only.decision(TARGET, "Early#u7", 1, false,
                     notBefore("4000", "M_NOW"));
             only.flush();
@@ -6172,10 +5876,8 @@ public class ExploreTest {
             Path order = tree.newFolder("clock-order").toPath();
             Session only = new Session(order, "s-seed");
             only.activation(TARGET, false);
-            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
-                    null, null, true);
-            only.root(TARGET, "CASE.LATER", "M_LATER", RootKind.CLOCK,
-                    "5004", null, null, true);
+            only.clock(TARGET, "CASE.NOW", "M_NOW", "5000");
+            only.clock(TARGET, "CASE.LATER", "M_LATER", "5004");
             only.decision(TARGET, "Late#u6", 1, true,
                     notBefore("6000", "M_LATER"));
             only.decision(TARGET, "Now#u7", 1, true,
@@ -6234,6 +5936,23 @@ public class ExploreTest {
                 iteration.resolve(StaticScopeMap.FILE), roundDir, round,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 DEFAULT_BOUNDS);
+    }
+
+    /** The same, of the case's target, with {@code inFlight} held and
+     *  {@code bounds} its round's. */
+    private static JsonObject plan(Path iteration, Path results,
+            Path inFlight, Path roundDir, int round,
+            ObligationFactory.Bounds bounds) throws IOException {
+        return ExploreMain.plan(iteration, TARGET_SELECTOR, null, results,
+                inFlight, iteration.resolve(StaticScopeMap.FILE), roundDir,
+                round, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS, bounds);
+    }
+
+    /** A round's bounds: {@code maxPaths} per task, {@code maxDepth} deep. */
+    private static ObligationFactory.Bounds bounds(int maxPaths,
+                                                   int maxDepth) {
+        return new ObligationFactory.Bounds(maxPaths,
+                ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, maxDepth);
     }
 
     /**
@@ -6312,10 +6031,8 @@ public class ExploreTest {
         for (Session session : refused ? new Session[]{seed, chain}
                 : new Session[]{seed}) {
             session.activation(REST_ANCHOR, session == chain && refused);
-            session.activation(REST_KEYS, false);
-            session.activation(REST_HANDLER, false);
-            session.activation(REST_W1, false);
-            session.activation(REST_P, false);
+            session.activations(false, REST_KEYS, REST_HANDLER, REST_W1,
+                    REST_P);
         }
         Endpoint sent = at(REST_HANDLER, "XCH.resp.expiry-date",
                 "PBHelper#convert#9");
@@ -6469,8 +6186,7 @@ public class ExploreTest {
                         "retrieveDataEncryptionKey", 8, false),
                         "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
                 allKeys, 5L, "M_READ_KEY", "119992");
-        seed.target(TARGET, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.anchored(TARGET);
         seed.flush();
         StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
@@ -6565,8 +6281,7 @@ public class ExploreTest {
                 served, guarded, producer)) {
             seed.activation(at, false);
         }
-        seed.root(door, "CASE.DOOR", "M_DOOR", RootKind.MARKER, "false",
-                null, null, true);
+        seed.marker(door, "CASE.DOOR", "M_DOOR", "false");
         seed.decision(door, "Client#u7", 1, false, "M_DOOR");
         seed.constant("e.one", "1");
         seed.export(exported, "e.one", 21L, "1");
@@ -6579,8 +6294,7 @@ public class ExploreTest {
                         "retrieveDataEncryptionKey", 8, false),
                         "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
                 allKeys, 5L, "M_READ_KEY", "7");
-        seed.target(TARGET, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.anchored(TARGET);
         seed.flush();
         RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
                 Collections.singletonList(RowCodec.writeScheduleEvent(
@@ -6663,8 +6377,7 @@ public class ExploreTest {
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u19"));
         Path out = tree.newFolder("unplanned-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
         List<String> grown = new ArrayList<String>();
@@ -6742,16 +6455,12 @@ public class ExploreTest {
                 "BlockTokenSecretManager#addKeys#12");
 
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.activation(enclosing, false);
-        seed.activation(holder, false);
-        seed.activation(unrelated, false);
+        seed.activations(false, TARGET, enclosing, holder, unrelated);
         seed.activation(ambient, false, false);
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.write(stored, ALL_KEYS, 5L, "e.stored");
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
-        seed.target(TARGET, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.anchored(TARGET);
         seed.flush();
 
         // The map names the carrier at the recorded write's own site, and a
@@ -6803,6 +6512,26 @@ public class ExploreTest {
         assertFalse("nor is an ambient one, which nothing waits on either: "
                         + plan.waiting, plan.waiting.contains(ambient)
                 || plan.exposed.containsKey(ambient));
+    }
+
+    /** The occurrences one plan's tasks focus, in its order. */
+    private static List<String> focused(ClosurePlanner.Plan plan) {
+        List<String> focused = new ArrayList<String>();
+        for (Task task : plan.tasks) focused.add(task.focused().render());
+        return focused;
+    }
+
+    /** addKeys' store of the key map, in {@code occurrence}. */
+    private static Endpoint stored(OccurrenceAddress occurrence) {
+        return at(occurrence, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12");
+    }
+
+    /** The key lookup's read of the key map, in {@code occurrence}. */
+    private static Endpoint lookedUp(OccurrenceAddress occurrence) {
+        return at(occurrence, Endpoint.stateSite("BlockTokenSecretManager",
+                "retrieveDataEncryptionKey", 8, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#8");
     }
 
     /** Which rule proposed each task of one plan, by focused occurrence. */
@@ -6903,15 +6632,13 @@ public class ExploreTest {
         Path iteration = tree.newFolder(name).toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
-                recorded, null, null, true);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", recorded);
         seed.decision(TARGET, "Guard#u8", 1, outcome, term);
         seed.flush();
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u8"));
         Path out = tree.newFolder(name + "-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
         Path wave = out.resolve("obligations-0000");
         plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
         List<Obligation> proposed = obligations(wave);
@@ -6923,25 +6650,19 @@ public class ExploreTest {
         if (expected == null) {
             assertEquals("a model that is the recording is not an arm the "
                     + "seed lacks", Verdict.NOT_ADMITTED, solved.verdict);
-            boolean refused = false;
-            for (GapRow gap : RowCodec.readAll(
-                    solved.directory.resolve("gaps.jsonl"),
-                    RowCodec::readGap)) {
-                // THE WAVE'S, and DIAGNOSTIC.  "This flip does not depend
-                // on the declared roots on this prefix" is a fact about
-                // the question the wave asked and about no execution, so
-                // it is not a blocking defect and it is not filed under
-                // the session whose path the flip was cut from -- which
-                // for a wave-0 flip is the SEED, whose ledger then said
-                // the recording had a blocking defect and made
-                // campaign_write_gaps exit 3.
-                refused |= gap.cls() == GapClass.DIAGNOSTIC
-                        && ExploreCodec.EXPLORATION.equals(gap.sessionId())
-                        && gap.detail().contains(
-                                "the model is the valuation");
-            }
+            // THE WAVE'S, and DIAGNOSTIC.  "This flip does not depend on the
+            // declared roots on this prefix" is a fact about the question
+            // the wave asked and about no execution, so it is not a blocking
+            // defect and it is not filed under the session whose path the
+            // flip was cut from -- which for a wave-0 flip is the SEED,
+            // whose ledger then said the recording had a blocking defect
+            // and made campaign_write_gaps exit 3.
             assertTrue("and the refusal is named, as the wave's own "
-                    + "diagnostic", refused);
+                    + "diagnostic", anyGap(solved.directory, gap ->
+                    gap.cls() == GapClass.DIAGNOSTIC
+                            && ExploreCodec.EXPLORATION.equals(gap.sessionId())
+                            && gap.detail().contains(
+                                    "the model is the valuation")));
             return;
         }
         assertEquals(Verdict.SAT_MODEL_READY, solved.verdict);
@@ -7003,6 +6724,20 @@ public class ExploreTest {
                         asked.ordinal(), asked.flippedOutcome()) + ":asked")
                 .getBytes(StandardCharsets.UTF_8));
         record(worker.resolve(ObligationDir.RESULT), answer);
+    }
+
+    /** Whether a directory's gap rows hold one {@code named} matches. */
+    private static boolean anyGap(Path dir,
+            java.util.function.Predicate<GapRow> named) throws IOException {
+        return RowCodec.readAll(dir.resolve("gaps.jsonl"), RowCodec::readGap)
+                .stream().anyMatch(named);
+    }
+
+    /** The results file of a case's rounds, empty. */
+    private static Path results(Path out) throws IOException {
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        return results;
     }
 
     private static void record(Path results, ObligationResult result)
@@ -7107,8 +6842,7 @@ public class ExploreTest {
             // Named by the seed either way; instrumented only if captured.
             seed.activation(door, false, captured);
             if (faulted) {
-                seed.root(door, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
-                        "false", null, null, true);
+                seed.marker(door, "CASE.DOOR", "M_DOOR", "false");
                 seed.decision(door, "Client#u7", 1, false, "M_DOOR");
             } else if (captured) {
                 seed.decision(door, "Actor#u3", 1, true, "");
@@ -7189,16 +6923,13 @@ public class ExploreTest {
             boolean before = (Boolean) row[2];
             Path iteration = tree.newFolder("concrete-" + at).toPath();
             Session seed = new Session(iteration, "s-seed");
-            seed.activation(TARGET, false);
-            seed.activation(WRITER, false);
-            seed.root(WRITER, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.activations(false, TARGET, WRITER);
+            seed.marker(WRITER, "CASE.DOOR", "M_DOOR", "false");
             seed.decision(WRITER, "Door#u3", 1, false, "M_DOOR");
             seed.constant("e.wrote", "7");
             seed.write(at(WRITER, "Keys#put#4:WRITE", "Keys#put#4"), stored,
                     1L, "e.wrote");
-            seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.INTEGRAL,
-                    "1", "0", "9", true);
+            seed.integral(TARGET, "CASE.OTHER", "M_OTHER", "1", "0", "9");
             Endpoint read = at(TARGET, "Lookup#get#2:READ", "Lookup#get#2");
             if (before) seed.read(read, stored, 1L, "M_READ", "7");
             if (row[4] != null) {
@@ -7227,8 +6958,7 @@ public class ExploreTest {
                     "Guard#u8"), lookup.toString());
 
             Path out = tree.newFolder("concrete-" + at + "-out").toPath();
-            Path results = out.resolve("obligation_results.jsonl");
-            Files.write(results, new byte[0]);
+            Path results = results(out);
             Path wave = out.resolve("obligations-0000");
             JsonObject manifest = plan(iteration, TARGET_SELECTOR, null,
                     results, wave, 0);
@@ -7307,15 +7037,13 @@ public class ExploreTest {
             seed.activation(first, false, true, "updater");
             seed.activation(last, false, true, "updater");
             seed.activation(restore, false, true, "runner");
-            seed.root(restore, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.marker(restore, "CASE.DOOR", "M_DOOR", "false");
             seed.decision(restore, "Door#u3", 1, false, "M_DOOR");
             seed.write(at(first, "SOLR_ZK#WRITE:.collections.t.state.json",
                     "Overseer#run#1"), state, 1L, "", "[B");
             seed.write(at(last, "SOLR_ZK#WRITE:.collections.t.state.json",
                     "Overseer#run#2"), state, 2L, "", "[B");
-            seed.root(client, "CASE.OTHER", "M_OTHER", RootKind.INTEGRAL,
-                    "1", "0", "9", true);
+            seed.integral(client, "CASE.OTHER", "M_OTHER", "1", "0", "9");
             seed.read(at(client, "Router#hash#u2", "Router#hash#2"), state,
                     2L, "S_state2", null);
             seed.target(client, "Guard#u8#1", phi);
@@ -7348,8 +7076,7 @@ public class ExploreTest {
                     "Router#hash#u2", "Router#hash",
                     "<D: Slice[] active>", "<D: Slice[] active>", ""));
             Path out = tree.newFolder("store-" + at + "-out").toPath();
-            Path results = out.resolve("obligation_results.jsonl");
-            Files.write(results, new byte[0]);
+            Path results = results(out);
             Path wave = out.resolve("obligations-0000");
             JsonObject manifest = plan(iteration,
                     "solr-case/client0#epoch0/region/REGION.target#1", null,
@@ -7407,11 +7134,9 @@ public class ExploreTest {
             seed.activation(processor, false);
             seed.activation(fetched, false, true, "watch2");
             seed.activation(elsewhere, false, true, "watch1");
-            seed.root(fetched, "CASE.READ2", "M_READ2", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.marker(fetched, "CASE.READ2", "M_READ2", "false");
             seed.decision(fetched, "Read#u12", 1, false, "M_READ2");
-            seed.root(elsewhere, "CASE.READ1", "M_READ1", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.marker(elsewhere, "CASE.READ1", "M_READ1", "false");
             seed.decision(elsewhere, "Read#u17", 1, false, "M_READ1");
             seed.read(at(processor, "Aliases#props#u2", "Aliases#props#2"),
                     aliases, 1L, "S_aliases1", null);
@@ -7432,8 +7157,7 @@ public class ExploreTest {
                             + "\"location\":\"SOLR_ZK:/aliases.json\",\"version\":1}]}\n")
                             .getBytes("UTF-8"));
             Path out = tree.newFolder("fetch-" + at + "-out").toPath();
-            Path results = out.resolve("obligation_results.jsonl");
-            Files.write(results, new byte[0]);
+            Path results = results(out);
             Path wave = out.resolve("obligations-0000");
             plan(iteration, "solr-case/node2#epoch0/region/REGION.target#1",
                     null, results, wave, 0);
@@ -7491,12 +7215,10 @@ public class ExploreTest {
             seed.activation(client, false);
             seed.activation(runner, false, true, "runner");
             seed.activation(marking, false, true, "queue");
-            seed.root(marking, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.marker(marking, "CASE.DOOR", "M_DOOR", "false");
             seed.decision(marking, "Mark#u3", 1, false, "M_DOOR");
             seed.activation(sibling, false, true, "runner");
-            seed.root(sibling, "CASE.SIB", "M_SIB", RootKind.MARKER,
-                    "false", null, null, true);
+            seed.marker(sibling, "CASE.SIB", "M_SIB", "false");
             seed.decision(sibling, "Sib#u5", 1, false, "M_SIB");
             seed.write(at(runner, "SOLR_ZK#WRITE:.collections.c.state.json",
                     "Runner#run#1"), state, 1L, "", "[B");
@@ -7521,8 +7243,7 @@ public class ExploreTest {
                     "Processor#ro#u1", "Processor#ro",
                     "<P: boolean readOnly>", "<P: boolean readOnly>", ""));
             Path out = tree.newFolder("turn-" + at + "-out").toPath();
-            Path results = out.resolve("obligation_results.jsonl");
-            Files.write(results, new byte[0]);
+            Path results = results(out);
             Path wave = out.resolve("obligations-0000");
             plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1",
                     null, results, wave, 0);
@@ -7609,8 +7330,8 @@ public class ExploreTest {
             OccurrenceAddress at = (OccurrenceAddress) door[0];
             String site = (String) door[2];
             seed.activation(at, false, true, (String) door[1]);
-            seed.root(at, "CASE." + site, "M_" + site.replace("#", "_"),
-                    RootKind.MARKER, "false", null, null, true);
+            seed.marker(at, "CASE." + site, "M_" + site.replace("#", "_"),
+                    "false");
             seed.decision(at, site, 1, false, "M_" + site.replace("#", "_"));
         }
         seed.write(at(setup, "SOLR_ZK#WRITE:.collections.c.state.json",
@@ -7659,8 +7380,7 @@ public class ExploreTest {
                 "Processor#ro#u1", "Processor#ro", "<P: boolean readOnly>",
                 "<P: boolean readOnly>", ""));
         Path out = tree.newFolder("item-sender-out").toPath();
-        Path results = out.resolve("obligation_results.jsonl");
-        Files.write(results, new byte[0]);
+        Path results = results(out);
         Path wave = out.resolve("obligations-0000");
         plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1", null,
                 results, wave, 0);
@@ -8146,6 +7866,14 @@ public class ExploreTest {
                     thread));
         }
 
+        /** Several occurrences, each its own activation. */
+        private void activations(boolean focused,
+                                 OccurrenceAddress... occurrences) {
+            for (OccurrenceAddress occurrence : occurrences) {
+                activation(occurrence, focused);
+            }
+        }
+
         /** {@code spelling} is node {@code node}'s in this run. */
         private void spelled(String node, String spelling) {
             spelled.put(spelling, node);
@@ -8168,6 +7896,12 @@ public class ExploreTest {
                             String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
                     false, true));
+        }
+
+        /** The key lookup's anchor: fatal where the key read was 0. */
+        private void anchored(OccurrenceAddress occurrence) {
+            target(occurrence, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
         }
 
         /** A FORCE run's decision, forced off the arm its operands took. */
@@ -8207,6 +7941,28 @@ public class ExploreTest {
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
+        /** A declared fault marker the recording minted as {@code recorded}. */
+        private void marker(OccurrenceAddress at, String rootId,
+                            String symbol, String recorded) {
+            root(at, rootId, symbol, RootKind.MARKER, recorded, null, null,
+                    true);
+        }
+
+        /** A declared integral root, its recorded value and its domain. */
+        private void integral(OccurrenceAddress at, String rootId,
+                              String symbol, String recorded, String min,
+                              String max) {
+            root(at, rootId, symbol, RootKind.INTEGRAL, recorded, min, max,
+                    true);
+        }
+
+        /** A declared clock reading. */
+        private void clock(OccurrenceAddress at, String rootId,
+                           String symbol, String recorded) {
+            root(at, rootId, symbol, RootKind.CLOCK, recorded, null, null,
+                    true);
+        }
+
         private void export(Endpoint endpoint, String ref, long handle,
                             String recorded) {
             exports.add(ExportRow.of(sessionId, ++seq, endpoint, ref, "I",
@@ -8237,6 +7993,22 @@ public class ExploreTest {
                           long version, String symbol, String concrete) {
             reads.add(ReadRow.of(sessionId, ++seq, endpoint, location, version,
                     symbol, "I", concrete));
+        }
+
+        /**
+         * The key chain as every session of the target's factor records it:
+         * the rotation exports a key, addKeys receives it as M_HOFF_KEY and
+         * stores it in the map, the target reads it back.
+         */
+        private void keyChain() {
+            activation(WRITER, false);
+            activation(PRODUCER, false);
+            constant("e.119992", "119992");
+            symbolic("e.stored", "M_HOFF_KEY");
+            export(ROTATED, "e.119992", 11L, "119992");
+            attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+            write(STORED, ALL_KEYS, 5L, "e.stored");
+            read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         }
 
         /** The value a handoff minted, as the VM propagated it. */

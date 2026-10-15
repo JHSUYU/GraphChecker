@@ -3,23 +3,12 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import org.junit.After;
 import org.junit.Test;
-import soot.BooleanType;
 import soot.G;
-import soot.IntType;
-import soot.Local;
-import soot.LongType;
-import soot.Modifier;
-import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
-import soot.SootField;
 import soot.SootMethod;
-import soot.Type;
 import soot.Unit;
-import soot.VoidType;
-import soot.jimple.IntConstant;
-import soot.jimple.Jimple;
-import soot.jimple.StringConstant;
+import soot.Local;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,7 +25,17 @@ import static org.junit.Assert.assertEquals;
 public class FaultPropagationTest {
     private static final String IOE = "java.io.IOException";
     private static final String SEND = "<f.Door: void send()>";
-    private static final Jimple J = Jimple.v();
+    private static final String ZK =
+            "org.apache.solr.common.cloud.SolrZooKeeper";
+    private static final String THROWABLE = "public class java.lang.Throwable"
+            + " extends java.lang.Object { }";
+    private static final String EXCEPTION = "public class java.lang.Exception"
+            + " extends java.lang.Throwable { }";
+    private static final String DEBUG_CLASS =
+            "edu.uva.liftlab.graphchecker.annotation.Debug";
+    private static final String DEBUG = "public class " + DEBUG_CLASS
+            + " extends java.lang.Object { public static native boolean"
+            + " makeSymbolicBoolean(java.lang.String); }";
 
     @After
     public void resetSoot() {
@@ -88,29 +87,23 @@ public class FaultPropagationTest {
      */
     @Test
     public void aDoorAtCallsIsWovenInEveryAnalysedCaller() {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        SootClass throwable = library("java.lang.Throwable", object, 0);
-        SootClass exception = library("java.lang.Exception", throwable, 0);
-        SootClass ioe = library(IOE, exception, 0);
-        for (SootClass kind : new SootClass[]{ioe,
-                library("java.io.EOFException", ioe, 0),
-                library("java.net.SocketTimeoutException", ioe, 0)}) {
-            method(kind, "<init>", Collections.<Type>singletonList(
-                    RefType.v("java.lang.String")), VoidType.v(), 0);
-        }
-        SootClass stream = library("java.io.InputStream", object, 0);
-        SootClass ack = library(
-                "org.apache.hadoop.hdfs.protocol.datatransfer.PipelineAck",
-                object, 0);
-        SootMethod readFields = method(ack, "readFields",
-                Collections.<Type>singletonList(stream.getType()),
-                VoidType.v(), Modifier.NATIVE);
-        SootMethod analysed = reader(application("g.Reader", object), ack,
-                stream, readFields, ioe);
-        SootMethod unanalysed = reader(library("g.Library", object, 0), ack,
-                stream, readFields, ioe);
+        String ack = "org.apache.hadoop.hdfs.protocol.datatransfer"
+                + ".PipelineAck";
+        JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,
+                ioe(IOE, "java.lang.Exception"),
+                ioe("java.io.EOFException", IOE),
+                ioe("java.net.SocketTimeoutException", IOE),
+                "public class java.io.InputStream extends java.lang.Object"
+                        + " { }",
+                "public class " + ack + " extends java.lang.Object {"
+                        + " public native void readFields("
+                        + "java.io.InputStream); }",
+                "application " + reader("g.Reader", ack),
+                reader("g.Library", ack));
+        SootMethod analysed = Scene.v().getMethod("<g.Reader: void read("
+                + ack + ",java.io.InputStream)>");
+        SootMethod unanalysed = Scene.v().getMethod("<g.Library: void read("
+                + ack + ",java.io.InputStream)>");
 
         DoorWeave.apply();
         List<String> names = new ArrayList<>();
@@ -172,51 +165,46 @@ public class FaultPropagationTest {
     @Test
     public void aMovedDoorIsADoorAtEveryOtherCallItsHookFollows()
             throws Exception {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        SootClass throwable = library("java.lang.Throwable", object, 0);
-        SootClass exception = library("java.lang.Exception", throwable, 0);
-        for (String kind : new String[]{"ConnectionLossException",
-                "SessionExpiredException"}) {
-            method(library("org.apache.zookeeper.KeeperException$" + kind,
-                    exception, 0), "<init>", Collections.<Type>emptyList(),
-                    VoidType.v(), 0);
-        }
-        RefType string = RefType.v("java.lang.String");
-        RefType mode = RefType.v("org.apache.zookeeper.CreateMode");
-        List<Type> created = Arrays.<Type>asList(string,
-                soot.ArrayType.v(soot.ByteType.v(), 1),
-                RefType.v("java.util.List"), mode);
-        SootClass zooKeeper = library("org.apache.zookeeper.ZooKeeper",
-                object, 0);
-        method(zooKeeper, "create", created, string, Modifier.NATIVE);
-        SootClass solrZooKeeper = library(
-                "org.apache.solr.common.cloud.SolrZooKeeper", zooKeeper, 0);
-        SootClass client = application(
-                "org.apache.solr.common.cloud.SolrZkClient", object);
-        SootMethod wrote = method(client, "causynthWrote",
-                Arrays.<Type>asList(string, IntType.v(),
-                        soot.ArrayType.v(soot.ByteType.v(), 1)),
-                VoidType.v(), Modifier.STATIC | Modifier.NATIVE);
-        List<Type> one = Collections.<Type>singletonList(string);
-        SootMethod hook = writer(client, "create", Arrays.<Type>asList(string,
-                soot.ArrayType.v(soot.ByteType.v(), 1), mode,
-                BooleanType.v()), string, solrZooKeeper, created, wrote, 1,
-                true);
-        SootMethod retried = writer(client, "lambda$create$1", one,
-                VoidType.v(), solrZooKeeper, created, wrote, 1, false);
-        SootMethod makePath = writer(client, "makePath", one, VoidType.v(),
-                solrZooKeeper, created, wrote, 1, true);
-        SootMethod lambda = writer(client, "lambda$makePath$0", one,
-                VoidType.v(), solrZooKeeper, created, wrote, 1, true);
-        SootMethod twice = writer(client, "createTwo", one, VoidType.v(),
-                solrZooKeeper, created, wrote, 2, true);
-        SootMethod hookOnly = writer(client, "delete", one, VoidType.v(),
-                solrZooKeeper, created, wrote, 0, true);
-        SootMethod outside = writer(application("org.apache.solr.cloud.Other",
-                object), "write", one, VoidType.v(), solrZooKeeper, created,
-                wrote, 1, true);
+        String client = "org.apache.solr.common.cloud.SolrZkClient";
+        String hookSig = "<" + client + ": java.lang.String create("
+                + "java.lang.String,byte[],org.apache.zookeeper.CreateMode,"
+                + "boolean)>";
+        JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,
+                keeper("ConnectionLossException"),
+                keeper("SessionExpiredException"),
+                "public class org.apache.zookeeper.ZooKeeper extends"
+                        + " java.lang.Object { public native java.lang.String"
+                        + " create(java.lang.String, byte[], java.util.List,"
+                        + " org.apache.zookeeper.CreateMode); }",
+                "public class " + ZK + " extends"
+                        + " org.apache.zookeeper.ZooKeeper { }",
+                "application public class " + client + " extends"
+                        + " java.lang.Object { public static native void"
+                        + " causynthWrote(java.lang.String, int, byte[]);"
+                        + writer("java.lang.String create(java.lang.String,"
+                        + " byte[], org.apache.zookeeper.CreateMode,"
+                        + " boolean)", 1, true)
+                        + writer("void lambda$create$1(java.lang.String)", 1,
+                        false)
+                        + writer("void makePath(java.lang.String)", 1, true)
+                        + writer("void lambda$makePath$0(java.lang.String)",
+                        1, true)
+                        + writer("void createTwo(java.lang.String)", 2, true)
+                        + writer("void delete(java.lang.String)", 0, true)
+                        + " }",
+                "application public class org.apache.solr.cloud.Other extends"
+                        + " java.lang.Object {"
+                        + writer("void write(java.lang.String)", 1, true)
+                        + " }");
+        SootMethod wrote = Scene.v().getMethod("<" + client + ": void"
+                + " causynthWrote(java.lang.String,int,byte[])>");
+        SootMethod hook = Scene.v().getMethod(hookSig);
+        SootMethod retried = zk(client, "lambda$create$1");
+        SootMethod makePath = zk(client, "makePath");
+        SootMethod lambda = zk(client, "lambda$makePath$0");
+        SootMethod twice = zk(client, "createTwo");
+        SootMethod hookOnly = zk(client, "delete");
+        SootMethod outside = zk("org.apache.solr.cloud.Other", "write");
         List<LibraryCatalog.Hook> hooks;
         try (java.io.BufferedReader reader = java.nio.file.Files
                 .newBufferedReader(java.nio.file.Paths.get("experiments",
@@ -282,42 +270,47 @@ public class FaultPropagationTest {
         }
     }
 
-    /** A method making {@code creates} creates through {@code keeper}'s
-     *  class, each followed by its store hook when {@code hooked}; with
-     *  none, the hook alone. */
-    private static SootMethod writer(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     SootClass keeper, List<Type> created,
-                                     SootMethod wrote, int creates,
-                                     boolean hooked) {
-        SootMethod method = method(owner, name, parameters, returned,
-                Modifier.STATIC);
-        Local path = local(method, "r0", RefType.v("java.lang.String"));
-        Local held = local(method, "r1", keeper.getType());
-        List<Unit> units = new ArrayList<>();
-        units.add(J.newIdentityStmt(path, J.newParameterRef(
-                RefType.v("java.lang.String"), 0)));
-        units.add(J.newAssignStmt(held, soot.jimple.NullConstant.v()));
-        soot.SootMethodRef create = Scene.v().makeMethodRef(keeper, "create",
-                created, RefType.v("java.lang.String"), false);
+    /** A static method of that declaration making {@code creates} creates
+     *  through the SolrZooKeeper its {@code r1} holds, each followed by its
+     *  store hook when {@code hooked}; with none, the hook alone. */
+    private static String writer(String declaration, int creates,
+                                 boolean hooked) {
+        StringBuilder body = new StringBuilder(" public static "
+                + declaration + " { java.lang.String r0; " + ZK + " r1;"
+                + " r0 := @parameter0: java.lang.String; r1 = null;");
         for (int write = 0; write < Math.max(1, creates); write++) {
             if (creates > 0) {
-                units.add(J.newInvokeStmt(J.newVirtualInvokeExpr(held, create,
-                        Arrays.<soot.Value>asList(path,
-                                soot.jimple.NullConstant.v(),
-                                soot.jimple.NullConstant.v(),
-                                soot.jimple.NullConstant.v()))));
+                body.append(" virtualinvoke r1.<" + ZK + ": java.lang.String"
+                        + " create(java.lang.String,byte[],java.util.List,"
+                        + "org.apache.zookeeper.CreateMode)>(r0, null, null,"
+                        + " null);");
             }
             if (hooked) {
-                units.add(J.newInvokeStmt(J.newStaticInvokeExpr(
-                        wrote.makeRef(), path, IntConstant.v(0),
-                        soot.jimple.NullConstant.v())));
+                body.append(" staticinvoke <org.apache.solr.common.cloud"
+                        + ".SolrZkClient: void causynthWrote(java.lang.String,"
+                        + "int,byte[])>(r0, 0, null);");
             }
         }
-        units.add(returned instanceof VoidType ? J.newReturnVoidStmt()
-                : J.newReturnStmt(soot.jimple.NullConstant.v()));
-        body(method, units.toArray(new Unit[0]));
-        return method;
+        return body.append(declaration.startsWith("void") ? " return; }"
+                : " return null; }").toString();
+    }
+
+    /** The one-path method {@code name} of {@code owner}. */
+    private static SootMethod zk(String owner, String name) {
+        return Scene.v().getMethod("<" + owner + ": void " + name
+                + "(java.lang.String)>");
+    }
+
+    /** A KeeperException kind, built with no message. */
+    private static String keeper(String kind) {
+        return "public class org.apache.zookeeper.KeeperException$" + kind
+                + " extends java.lang.Exception { public void <init>() { } }";
+    }
+
+    /** An exception class built with a message. */
+    private static String ioe(String name, String parent) {
+        return "public class " + name + " extends " + parent
+                + " { public void <init>(java.lang.String) { } }";
     }
 
     /** The {@code ordinal}-th call of {@code hook} in {@code method}. */
@@ -436,77 +429,42 @@ public class FaultPropagationTest {
      * ({@code awaitNanos}, a timed wait's door), then stores {@code ok}.
      */
     private static SootMethod store() {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        SootClass throwable = library("java.lang.Throwable", object, 0);
-        SootClass exception = library("java.lang.Exception", throwable, 0);
-        library("java.lang.RuntimeException", exception, 0);
-        SootClass ioe = library(IOE, exception, 0);
-        SootClass missing = library("java.io.FileNotFoundException", ioe, 0);
-        for (SootClass kind : new SootClass[]{ioe, missing}) {
-            method(kind, "<init>", Collections.<Type>singletonList(
-                    RefType.v("java.lang.String")), VoidType.v(), 0);
-        }
-        SootClass debug = library(
-                "edu.uva.liftlab.graphchecker.annotation.Debug", object, 0);
-        method(debug, "makeSymbolicBoolean", Collections.<Type>singletonList(
-                RefType.v("java.lang.String")), BooleanType.v(),
-                Modifier.STATIC | Modifier.NATIVE);
-        SootClass file = library("java.io.File", object, 0);
-        SootMethod renameTo = method(file, "renameTo",
-                Collections.<Type>singletonList(file.getType()),
-                BooleanType.v(), Modifier.NATIVE);
-        SootClass stream = library("java.io.FileOutputStream", object, 0);
-        SootMethod init = method(stream, "<init>",
-                Collections.<Type>singletonList(file.getType()),
-                VoidType.v(), Modifier.NATIVE);
-        SootClass condition = library("java.util.concurrent.locks.Condition",
-                object, Modifier.INTERFACE);
-        SootMethod awaitNanos = method(condition, "awaitNanos",
-                Collections.<Type>singletonList(LongType.v()), LongType.v(),
-                Modifier.ABSTRACT);
-        SootClass lib = library("g.Lib", object, 0);
-        SootMethod flush = method(lib, "flush",
-                Collections.<Type>emptyList(), VoidType.v(),
-                Modifier.STATIC | Modifier.NATIVE);
-        flush.addException(ioe);
-
-        SootClass owner = application("g.Store", object);
-        SootField ok = new SootField("ok", IntType.v(), 0);
-        owner.addField(ok);
-        SootMethod save = method(owner, "save", Arrays.<Type>asList(
-                file.getType(), file.getType()), VoidType.v(), 0);
-        Local r0 = local(save, "r0", owner.getType());
-        Local r1 = local(save, "r1", file.getType());
-        Local r2 = local(save, "r2", file.getType());
-        Local out = local(save, "$r3", stream.getType());
-        Local renamed = local(save, "$z0", BooleanType.v());
-        Local thrown = local(save, "$r4", ioe.getType());
-        Local waits = local(save, "$r5", condition.getType());
-        Local left = local(save, "$l0", LongType.v());
-        Unit flushed = J.newInvokeStmt(J.newStaticInvokeExpr(
-                flush.makeRef()));
-        body(save, J.newIdentityStmt(r0, J.newThisRef(owner.getType())),
-                J.newIdentityStmt(r1, J.newParameterRef(file.getType(), 0)),
-                J.newIdentityStmt(r2, J.newParameterRef(file.getType(), 1)),
-                J.newAssignStmt(out, J.newNewExpr(stream.getType())),
-                J.newInvokeStmt(J.newSpecialInvokeExpr(out, init.makeRef(),
-                        r1)),
-                J.newAssignStmt(renamed, J.newVirtualInvokeExpr(r1,
-                        renameTo.makeRef(), r2)),
-                J.newIfStmt(J.newNeExpr(renamed, IntConstant.v(0)), flushed),
-                J.newAssignStmt(thrown, J.newNewExpr(ioe.getType())),
-                J.newInvokeStmt(J.newSpecialInvokeExpr(thrown, ioe
-                        .getMethodByName("<init>").makeRef(),
-                        StringConstant.v("rename"))),
-                J.newThrowStmt(thrown), flushed,
-                J.newAssignStmt(waits, soot.jimple.NullConstant.v()),
-                J.newAssignStmt(left, J.newInterfaceInvokeExpr(waits,
-                        awaitNanos.makeRef(), soot.jimple.LongConstant.v(5L))),
-                J.newAssignStmt(J.newInstanceFieldRef(r0, ok.makeRef()),
-                        IntConstant.v(1)), J.newReturnVoidStmt());
-        return save;
+        JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,
+                "public class java.lang.RuntimeException extends"
+                        + " java.lang.Exception { }",
+                ioe(IOE, "java.lang.Exception"),
+                ioe("java.io.FileNotFoundException", IOE), DEBUG,
+                "public class java.io.File extends java.lang.Object {"
+                        + " public native boolean renameTo(java.io.File); }",
+                "public class java.io.FileOutputStream extends"
+                        + " java.lang.Object { public native void <init>("
+                        + "java.io.File); }",
+                "public interface java.util.concurrent.locks.Condition"
+                        + " extends java.lang.Object { public abstract long"
+                        + " awaitNanos(long); }",
+                "public class g.Lib extends java.lang.Object { public static"
+                        + " native void flush() throws " + IOE + "; }",
+                "application public class g.Store extends java.lang.Object {"
+                        + " int ok; public void save(java.io.File,"
+                        + " java.io.File) { g.Store r0; java.io.File r1, r2;"
+                        + " java.io.FileOutputStream $r3; boolean $z0; " + IOE
+                        + " $r4; java.util.concurrent.locks.Condition $r5;"
+                        + " long $l0; r0 := @this: g.Store;"
+                        + " r1 := @parameter0: java.io.File;"
+                        + " r2 := @parameter1: java.io.File;"
+                        + " $r3 = new java.io.FileOutputStream;"
+                        + " specialinvoke $r3.<java.io.FileOutputStream: void"
+                        + " <init>(java.io.File)>(r1); $z0 = virtualinvoke"
+                        + " r1.<java.io.File: boolean renameTo(java.io.File)>"
+                        + "(r2); if $z0 != 0 goto label1; $r4 = new " + IOE
+                        + "; specialinvoke $r4.<" + IOE + ": void <init>("
+                        + "java.lang.String)>(\"rename\"); throw $r4;"
+                        + " label1: staticinvoke <g.Lib: void flush()>();"
+                        + " $r5 = null; $l0 = interfaceinvoke $r5.<java.util"
+                        + ".concurrent.locks.Condition: long awaitNanos(long)>"
+                        + "(5L); r0.<g.Store: int ok> = 1; return; } }");
+        return Scene.v().getMethod("<g.Store: void save(java.io.File,"
+                + "java.io.File)>");
     }
 
     private static String handlersOf(FaultPropagation faults, String method,
@@ -516,33 +474,21 @@ public class FaultPropagationTest {
         return found.toString();
     }
 
-    /** {@code void read(PipelineAck, InputStream)}: {@code readFields}
-     *  under an IOException handler, a store on each arm. */
-    private static SootMethod reader(SootClass owner, SootClass ack,
-                                     SootClass stream, SootMethod readFields,
-                                     SootClass ioe) {
-        SootField ok = new SootField("ok", IntType.v(), 0);
-        owner.addField(ok);
-        SootMethod read = method(owner, "read", Arrays.<Type>asList(
-                ack.getType(), stream.getType()), VoidType.v(), 0);
-        Local r0 = local(read, "r0", owner.getType());
-        Local r1 = local(read, "r1", ack.getType());
-        Local r2 = local(read, "r2", stream.getType());
-        Local caught = local(read, "$r3", ioe.getType());
-        Unit called = J.newInvokeStmt(J.newVirtualInvokeExpr(r1,
-                readFields.makeRef(), r2));
-        Unit left = J.newReturnVoidStmt();
-        Unit handler = J.newIdentityStmt(caught, J.newCaughtExceptionRef());
-        body(read, J.newIdentityStmt(r0, J.newThisRef(owner.getType())),
-                J.newIdentityStmt(r1, J.newParameterRef(ack.getType(), 0)),
-                J.newIdentityStmt(r2, J.newParameterRef(stream.getType(), 1)),
-                called, J.newAssignStmt(J.newInstanceFieldRef(r0,
-                        ok.makeRef()), IntConstant.v(1)), left, handler,
-                J.newAssignStmt(J.newInstanceFieldRef(r0, ok.makeRef()),
-                        IntConstant.v(0)), J.newReturnVoidStmt());
-        read.getActiveBody().getTraps().add(J.newTrap(ioe, called, left,
-                handler));
-        return read;
+    /** {@code void read(PipelineAck, InputStream)} of {@code owner}:
+     *  {@code readFields} under an IOException handler, a store on each
+     *  arm. */
+    private static String reader(String owner, String ack) {
+        return "public class " + owner + " extends java.lang.Object {"
+                + " int ok; public void read(" + ack + ", java.io.InputStream)"
+                + " { " + owner + " r0; " + ack + " r1; java.io.InputStream r2;"
+                + " " + IOE + " $r3; r0 := @this: " + owner + ";"
+                + " r1 := @parameter0: " + ack + ";"
+                + " r2 := @parameter1: java.io.InputStream;"
+                + " label1: virtualinvoke r1.<" + ack + ": void readFields("
+                + "java.io.InputStream)>(r2); r0.<" + owner + ": int ok> = 1;"
+                + " label2: return; label3: $r3 := @caughtexception;"
+                + " r0.<" + owner + ": int ok> = 0; return;"
+                + " catch " + IOE + " from label1 to label2 with label3; } }";
     }
 
     private static String markers(java.util.Collection<FaultPropagation.Raise>
@@ -568,145 +514,46 @@ public class FaultPropagationTest {
      * serves ({@code use}).
      */
     private static Scene scene() {
-        G.reset();
-        soot.options.Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        SootClass throwable = library("java.lang.Throwable", object, 0);
-        SootClass exception = library("java.lang.Exception", throwable, 0);
-        SootClass ioe = library(IOE, exception, 0);
-        method(ioe, "<init>", Collections.<Type>singletonList(
-                RefType.v("java.lang.String")), VoidType.v(), 0);
-        SootClass debug = library(
-                "edu.uva.liftlab.graphchecker.annotation.Debug", object, 0);
-        SootMethod marker = method(debug, "makeSymbolicBoolean",
-                Collections.<Type>singletonList(RefType.v("java.lang.String")),
-                BooleanType.v(), Modifier.STATIC | Modifier.NATIVE);
-        SootClass handlerType = library("java.lang.reflect.InvocationHandler",
-                null, Modifier.INTERFACE | Modifier.ABSTRACT);
-
-        SootClass door = application("f.Door", object);
-        SootMethod send = method(door, "send",
-                Collections.<Type>emptyList(), VoidType.v(), 0);
-        Local d0 = local(send, "r0", door.getType());
-        Local chosen = local(send, "$z0", BooleanType.v());
-        Local thrown = local(send, "$r1", ioe.getType());
-        Unit done = J.newReturnVoidStmt();
-        body(send, J.newIdentityStmt(d0, J.newThisRef(door.getType())),
-                J.newAssignStmt(chosen, J.newStaticInvokeExpr(
-                        marker.makeRef(),
-                        StringConstant.v("FAULT:HADOOP_IPC:REQUEST"))),
-                J.newIfStmt(J.newEqExpr(chosen, IntConstant.v(0)), done),
-                J.newAssignStmt(thrown, J.newNewExpr(ioe.getType())),
-                J.newInvokeStmt(J.newSpecialInvokeExpr(thrown, ioe
-                        .getMethodByName("<init>").makeRef(),
-                        StringConstant.v("symbolic"))),
-                J.newThrowStmt(thrown), done);
-
-        SootClass proto = application("f.Proto", null);
-        proto.setModifiers(Modifier.PUBLIC | Modifier.INTERFACE
-                | Modifier.ABSTRACT);
-        SootMethod op = method(proto, "op", Collections.<Type>emptyList(),
-                VoidType.v(), Modifier.ABSTRACT);
-        op.addException(ioe);
-        SootClass served = application("f.Handler", object);
-        served.addInterface(handlerType);
-        SootMethod invoke = method(served, "invoke", Arrays.<Type>asList(
-                object.getType(), object.getType(), object.getType()),
-                object.getType(), 0);
-        Local h1 = local(invoke, "r1", door.getType());
-        body(invoke, J.newAssignStmt(h1, J.newNewExpr(door.getType())),
-                J.newInvokeStmt(J.newVirtualInvokeExpr(h1, send.makeRef())),
-                J.newReturnStmt(h1));
-
-        SootClass caller = application("f.Caller", object);
-        SootField ok = new SootField("ok", IntType.v(), 0);
-        caller.addField(ok);
-        RefType self = caller.getType();
-
-        SootMethod call = method(caller, "call",
-                Collections.<Type>singletonList(door.getType()),
-                VoidType.v(), 0);
-        Local c0 = local(call, "r0", self);
-        Local c1 = local(call, "r1", door.getType());
-        Local caught = local(call, "$r2", ioe.getType());
-        Unit sent = J.newInvokeStmt(J.newVirtualInvokeExpr(c1,
-                send.makeRef()));
-        Unit stored = J.newAssignStmt(J.newInstanceFieldRef(c0,
-                ok.makeRef()), IntConstant.v(1));
-        Unit left = J.newReturnVoidStmt();
-        Unit handler = J.newIdentityStmt(caught,
-                J.newCaughtExceptionRef());
-        body(call, J.newIdentityStmt(c0, J.newThisRef(self)),
-                J.newIdentityStmt(c1, J.newParameterRef(door.getType(), 0)),
-                sent, stored, left, handler,
-                J.newAssignStmt(J.newInstanceFieldRef(c0, ok.makeRef()),
-                        IntConstant.v(0)), J.newReturnVoidStmt());
-        call.getActiveBody().getTraps().add(J.newTrap(ioe, sent, left,
-                handler));
-
-        SootMethod relay = method(caller, "relay",
-                Collections.<Type>singletonList(door.getType()),
-                VoidType.v(), 0);
-        Local r1 = local(relay, "r1", door.getType());
-        Local any = local(relay, "$r2", throwable.getType());
-        Local copy = local(relay, "$r3", throwable.getType());
-        Unit relayed = J.newInvokeStmt(J.newVirtualInvokeExpr(r1,
-                send.makeRef()));
-        Unit relayEnd = J.newReturnVoidStmt();
-        Unit relayHandler = J.newIdentityStmt(any, J.newCaughtExceptionRef());
-        body(relay, J.newIdentityStmt(r1,
-                        J.newParameterRef(door.getType(), 0)),
-                relayed, relayEnd, relayHandler,
-                J.newAssignStmt(copy, any), J.newThrowStmt(copy));
-        relay.getActiveBody().getTraps().add(J.newTrap(throwable, relayed,
-                relayEnd, relayHandler));
-
-        SootMethod use = method(caller, "use",
-                Collections.<Type>singletonList(proto.getType()),
-                VoidType.v(), 0);
-        Local u0 = local(use, "r0", self);
-        Local u1 = local(use, "r1", proto.getType());
-        body(use, J.newIdentityStmt(u0, J.newThisRef(self)),
-                J.newIdentityStmt(u1, J.newParameterRef(proto.getType(), 0)),
-                J.newInvokeStmt(J.newInterfaceInvokeExpr(u1, op.makeRef())),
-                J.newReturnVoidStmt());
-
+        String send = "virtualinvoke r1." + SEND + "();";
+        JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,
+                ioe(IOE, "java.lang.Exception"), DEBUG,
+                "public abstract interface java.lang.reflect"
+                        + ".InvocationHandler { }",
+                "application public class f.Door extends java.lang.Object {"
+                        + " public void send() { f.Door r0; boolean $z0; " + IOE
+                        + " $r1; r0 := @this: f.Door; $z0 = staticinvoke <"
+                        + DEBUG_CLASS + ": boolean makeSymbolicBoolean("
+                        + "java.lang.String)>(\"FAULT:HADOOP_IPC:REQUEST\");"
+                        + " if $z0 == 0 goto label1; $r1 = new " + IOE + ";"
+                        + " specialinvoke $r1.<" + IOE + ": void <init>("
+                        + "java.lang.String)>(\"symbolic\"); throw $r1;"
+                        + " label1: return; } }",
+                "application public abstract interface f.Proto {"
+                        + " public abstract void op() throws " + IOE + "; }",
+                "application public class f.Handler extends java.lang.Object"
+                        + " implements java.lang.reflect.InvocationHandler {"
+                        + " public java.lang.Object invoke(java.lang.Object,"
+                        + " java.lang.Object, java.lang.Object) { f.Door r1;"
+                        + " r1 = new f.Door; " + send + " return r1; } }",
+                "application public class f.Caller extends java.lang.Object {"
+                        + " int ok; public void call(f.Door) { f.Caller r0;"
+                        + " f.Door r1; " + IOE + " $r2; r0 := @this: f.Caller;"
+                        + " r1 := @parameter0: f.Door; label1: " + send
+                        + " r0.<f.Caller: int ok> = 1; label2: return;"
+                        + " label3: $r2 := @caughtexception;"
+                        + " r0.<f.Caller: int ok> = 0; return; catch " + IOE
+                        + " from label1 to label2 with label3; }"
+                        + " public void relay(f.Door) { f.Door r1;"
+                        + " java.lang.Throwable $r2, $r3;"
+                        + " r1 := @parameter0: f.Door; label1: " + send
+                        + " label2: return; label3: $r2 := @caughtexception;"
+                        + " $r3 = $r2; throw $r3; catch java.lang.Throwable"
+                        + " from label1 to label2 with label3; }"
+                        + " public void use(f.Proto) { f.Caller r0;"
+                        + " f.Proto r1; r0 := @this: f.Caller;"
+                        + " r1 := @parameter0: f.Proto;"
+                        + " interfaceinvoke r1.<f.Proto: void op()>(); return;"
+                        + " } }");
         return Scene.v();
-    }
-
-    private static SootClass application(String name, SootClass parent) {
-        SootClass type = library(name, parent, 0);
-        type.setApplicationClass();
-        return type;
-    }
-
-    private static SootClass library(String name, SootClass parent,
-                                     int modifiers) {
-        SootClass type = new SootClass(name, Modifier.PUBLIC | modifiers);
-        if (parent != null) type.setSuperclass(parent);
-        Scene.v().addClass(type);
-        return type;
-    }
-
-    private static SootMethod method(SootClass owner, String name,
-                                     List<Type> parameters, Type returned,
-                                     int modifiers) {
-        SootMethod method = new SootMethod(name, parameters, returned,
-                Modifier.PUBLIC | modifiers);
-        owner.addMethod(method);
-        if ((modifiers & (Modifier.ABSTRACT | Modifier.NATIVE)) == 0) {
-            method.setActiveBody(J.newBody(method));
-        }
-        return method;
-    }
-
-    private static Local local(SootMethod method, String name, Type type) {
-        Local local = J.newLocal(name, type);
-        method.getActiveBody().getLocals().add(local);
-        return local;
-    }
-
-    private static void body(SootMethod method, Unit... units) {
-        method.getActiveBody().getUnits().addAll(Arrays.asList(units));
     }
 }
