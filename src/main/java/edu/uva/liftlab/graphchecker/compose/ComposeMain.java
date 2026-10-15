@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * COMPOSE, SOLVE and DECIDE for one declared occurrence: one anchor, one
@@ -95,9 +96,9 @@ public final class ComposeMain {
                 + " session(s) in " + seconds(System.nanoTime() - started)
                 + " s");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
+        StaticScopeMap scope = StaticScopeMap.read(arguments.scopeMap);
         Composer.Composition composition = Composer.compose(corpus, anchor,
-                arguments.maxValuations,
-                StaticScopeMap.read(arguments.scopeMap));
+                arguments.maxValuations, scope);
         long lowered = System.nanoTime();
         System.err.println("compose: " + composition.disjuncts().size()
                 + " path(s) composed, a " + composition.body().length()
@@ -108,6 +109,20 @@ public final class ComposeMain {
                 arguments.z3RoomMb);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
+        // BEST EFFORT: the paths whose own question z3 answered with an
+        // error are left out, and the rest is composed and decided once
+        // more -- a smaller question with a verdict.
+        Set<String> refused = ClaimPolicy.refusedPaths(decision.claim());
+        if (!refused.isEmpty()
+                && refused.size() < composition.disjuncts().size()) {
+            System.err.println("compose: z3 refused " + refused.size()
+                    + " path(s)' own question; composing without them");
+            composition = Composer.compose(corpus, anchor,
+                    arguments.maxValuations, scope, refused);
+            solver = new Z3(arguments.z3, arguments.timeoutMillis,
+                    arguments.z3RoomMb);
+            decision = ClaimPolicy.decide(composition, solver);
+        }
         long decided = System.nanoTime();
         System.err.println("compose: decided " + decision.claim().kind()
                 + " with " + solver.runs() + " z3 run(s) in "
@@ -327,10 +342,10 @@ public final class ComposeMain {
                     + (claim.polarityDecides()
                     ? ", and the recorded valuation refutes the recording"
                     : "");
-            // A claim never stands on a value no attested producer made: the
-            // witness's chain is closed first (EXPLORE grows its producers,
-            // PIPELINE §7.9), else no verdict, named.  A SAT is judged on the
-            // path it claims; the other paths' open links are stated.
+            // A SAT is judged on the path it claims, its open links -- values
+            // no attested producer made, free in the formula -- named (EXPLORE
+            // grows their producers first, PIPELINE §7.9); CONFIRM decides
+            // (best effort).  The other paths' open links are stated.
             ClaimPolicy.Outcome witness = witness(decision);
             for (JsonObject link : composition.openChain(witness)) {
                 openChain.add(link);
@@ -338,14 +353,12 @@ public final class ComposeMain {
             for (JsonObject link : composition.offWitness(witness)) {
                 offWitness.add(link);
             }
-            if (openChain.size() == 0) {
-                kind = "SAT_CANDIDATE";
-            } else {
-                kind = "RUN_DEFECT";
-                reason += ", but its causal chain is open: the claimed"
-                        + " path's fatal condition rests on "
-                        + openChain.size() + " handoff value(s) no producer"
-                        + " the corpus attests made (openChain)";
+            kind = "SAT_CANDIDATE";
+            if (openChain.size() > 0) {
+                reason += "; its causal chain is open: the claimed path's"
+                        + " fatal condition rests on " + openChain.size()
+                        + " handoff value(s) no producer the corpus attests"
+                        + " made (openChain)";
             }
         } else if (decision.formula() != null
                 && decision.formula().unsat()) {
@@ -384,25 +397,21 @@ public final class ComposeMain {
             }
             restsOnRefutations = rests;
             if (restsUnknown) restsKnown = false;
-            // An UNSAT rests on every path: each one's fatal condition is
-            // closed, or there is no verdict, its open links named.
+            // An UNSAT rests on every path; the open links of their fatal
+            // conditions are free in the formula, named (best effort).
             for (JsonObject link : composition.openChain(null)) {
                 openChain.add(link);
             }
             if (openChain.size() > 0) {
-                kind = "RUN_DEFECT";
-                reason = "the composed formula is unsat, but the fatal"
-                        + " conditions it rests on name " + openChain.size()
-                        + " handoff value(s) no producer the corpus attests"
-                        + " made (openChain): no verdict";
-            } else if (restsUnknown) {
-                kind = "RUN_DEFECT";
-                reason = "the composed formula is unsat, but it excludes"
-                        + " refuted claim(s) and its core is not known ("
-                        + decision.formula().status() + "; its core run ran"
-                        + " past its budget or its memory cap): which of"
-                        + " them the UNSAT rests on is not known"
-                        + " (restsOnRefutationsKnown false), so no verdict";
+                reason += ", over " + openChain.size() + " handoff value(s)"
+                        + " no producer the corpus attests made, free in it"
+                        + " (openChain)";
+            }
+            if (restsUnknown) {
+                reason += "; it excludes refuted claim(s) and its core is not"
+                        + " known (" + decision.formula().status() + "), so"
+                        + " which of them it rests on is not known"
+                        + " (restsOnRefutationsKnown false)";
             } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";

@@ -1544,11 +1544,17 @@ public final class Composer {
     /** What a path or an arm rests on ({@link RestsOn}). */
     final RestsOn restsOn;
 
+    /** The paths a composition before this one left out: z3 refused a
+     *  query over them (ComposeMain#run). */
+    private final Set<String> leftOutPaths;
+
     private Composer(Corpus corpus, OccurrenceAddress anchor,
-                     int maxValuations, StaticScopeMap scope) {
+                     int maxValuations, StaticScopeMap scope,
+                     Set<String> leftOutPaths) {
         this.corpus = corpus;
         this.anchor = anchor;
         this.scope = scope;
+        this.leftOutPaths = leftOutPaths;
         this.restsOn = new RestsOn(corpus, scope, anchor);
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
@@ -1570,33 +1576,50 @@ public final class Composer {
                                       OccurrenceAddress anchor,
                                       int maxValuations,
                                       StaticScopeMap scope) {
-        return new Composer(corpus, anchor, maxValuations, scope).run();
+        return compose(corpus, anchor, maxValuations, scope,
+                Collections.<String>emptySet());
+    }
+
+    /** The same, the paths {@code leftOutPaths} names left out, named. */
+    public static Composition compose(Corpus corpus,
+                                      OccurrenceAddress anchor,
+                                      int maxValuations,
+                                      StaticScopeMap scope,
+                                      Set<String> leftOutPaths) {
+        return new Composer(corpus, anchor, maxValuations, scope,
+                leftOutPaths).run();
     }
 
     /** Every how many admitted paths the composer says how far it is. */
     private static final int PROGRESS_PATHS = 25;
 
     private Composition run() {
-        // One symbol for two roots makes paths unsat; refuse it.
+        // BEST EFFORT (owner 2026-10-15): nothing but a total absence -- no
+        // seed, no path -- withholds the .smt and its verdict.  A defective
+        // session or path is left out and named (DIAGNOSTIC), and the rest
+        // is composed: a smaller question.
         for (Map.Entry<String, Set<String>> collision
                 : corpus.collidingRootSymbols().entrySet()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     collision.getKey(), "one solver name for "
                             + collision.getValue().size() + " roots: "
                             + collision.getValue());
         }
 
-        // A session read short would hide missing decisions.
+        // A session read short would hide missing decisions: left out.
+        Set<String> leftOutSessions = new LinkedHashSet<String>();
         for (SessionReader session : corpus.sessions()) {
             if (session.incomplete().isEmpty()) continue;
-            gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
+            leftOutSessions.add(session.sessionId());
+            gap(GapKind.SESSION_INCOMPLETE, GapClass.DIAGNOSTIC,
                     session.sessionId(), "this session could not be read "
-                            + "whole: " + session.incomplete());
+                            + "whole, so its paths are left out: "
+                            + session.incomplete());
         }
 
         // A verdict is the session's own row; the wave's aggregate copy (the
         // row of the worker that landed this session) is checked against it,
-        // and a disagreement is BLOCKING.
+        // and a session whose two disagree is left out.
         for (SessionReader session : corpus.sessions()) {
             for (ObligationResult settled : session.obligations()) {
                 ObligationResult wave = corpus.waveVerdict(
@@ -1604,27 +1627,27 @@ public final class Composer {
                 if (wave == null || wave.verdict() == settled.verdict()) {
                     continue;
                 }
-                gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                leftOutSessions.add(session.sessionId());
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         settled.obligationId(), "the replay that ran this "
                                 + "obligation states " + settled.verdict()
                                 + " in session " + session.sessionId()
                                 + " and the wave's own file states "
-                                + wave.verdict() + ", so what it settled is "
-                                + "stated twice and differently");
+                                + wave.verdict() + ": its paths are left out");
             }
         }
 
-        // Exactly one session must STATE role SEED (manifest.json); never
-        // infer it from "focused nothing".
+        // One session STATES role SEED (manifest.json); never inferred
+        // from "focused nothing".  None is a total absence.
         List<String> seeds = corpus.seedSessionIds();
         if (seeds.size() != 1 && !corpus.sessions().isEmpty()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, seeds.toString(),
+            gap(GapKind.UNSTATED_VALUE, seeds.isEmpty() ? GapClass.BLOCKING
+                            : GapClass.DIAGNOSTIC, seeds.toString(),
                     seeds.isEmpty()
                             ? "no session of this corpus states role SEED, "
                             + "so none of them is the recording"
                             : seeds.size() + " sessions of this corpus state "
-                            + "role SEED, so which one is the recording has "
-                            + "no answer");
+                            + "role SEED; the first is the recording");
         }
 
         // The skeleton first: a replacing session's rows must not reach a
@@ -1632,21 +1655,20 @@ public final class Composer {
         try {
             slots = SlotTable.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
-            // Unreadable skeleton: named, and composition fails closed.
+            // Unreadable skeleton: named, and composed without it.
             slots = null;
-            gap(GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+            gap(GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
                     SlotTable.FILE, "this epoch's slot table could not be "
-                            + "read: " + unreadable);
+                            + "read, so no session is known to replace a"
+                            + " slot: " + unreadable);
         }
         if (slots != null) {
             for (SlotTable.Replacement replacement
                     : slots.replacements(corpus)) {
-                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM: its arms never
-                // reach a family, but only an ADMITTED replay's replacement
-                // blocks ({@link SessionReader#admitted}).
+                // Its arms never reach a family; named.
                 replacing.add(replacement.sessionId);
                 gaps.add(GapRow.of(replacement.sessionId,
-                        GapKind.TOPOLOGY_DIVERGENCE, replacement.cls(),
+                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
                         replacement.consumerEndpointId,
                         replacement.detail()));
             }
@@ -1660,7 +1682,18 @@ public final class Composer {
         int done = 0;
         long started = System.nanoTime();
         for (Corpus.RecordedPath path : admitted) {
-            Disjunct disjunct = compose(path, ordinal);
+            boolean defective = leftOutSessions.contains(path.sessionId);
+            if (defective || leftOutPaths.contains(path.pathId)) {
+                refused(path, Collections.singletonList(GapRow.of(
+                        path.sessionId, GapKind.ADMISSION_GAP,
+                        GapClass.DIAGNOSTIC, path.pathId, "left out (best"
+                                + " effort): " + (defective ? "its session is"
+                                + " defective" : "z3 refused a query over"
+                                + " it"))));
+            }
+            Disjunct disjunct = defective
+                    || leftOutPaths.contains(path.pathId) ? null
+                    : compose(path, ordinal);
             if (disjunct != null) {
                 disjuncts.add(disjunct);
                 entries.add(PathEntry.of(path.pathId, path.sessionId,
@@ -1706,16 +1739,17 @@ public final class Composer {
         refutations(disjuncts, clockCells, clockReadings, clockBefore);
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
-        // two identities) are BLOCKING gaps, not exceptions.
+        // two identities) are named; a query z3 refuses over them leaves
+        // the paths it names out (ComposeMain#run).
         for (Map.Entry<String, String> conflict
                 : lowering.sortConflicts().entrySet()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     conflict.getKey(), "this corpus states one solver name "
                             + "at two sorts: " + conflict.getValue());
         }
         for (Map.Entry<String, String> collision
                 : lowering.nameCollisions().entrySet()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     collision.getKey(), "one solver name for two "
                             + "identities of this corpus: "
                             + collision.getValue());
@@ -2350,7 +2384,7 @@ public final class Composer {
             // only this pin declares a marker).
             if (ran.isEmpty() && row.declared()) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, any.rootId(),
+                        GapClass.DIAGNOSTIC, any.rootId(),
                         "this replay minted a declared root and states no "
                                 + "value it ran it at: its mint states none "
                                 + "and no obligation it ran under assigns "
@@ -2361,7 +2395,7 @@ public final class Composer {
             String read = corpus.rootReading(session, row.rootId());
             if (!read.isEmpty() && !read.equals(ran)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, any.rootId(),
+                        GapClass.DIAGNOSTIC, any.rootId(),
                         "this session's mint states \"" + read + "\" and the "
                                 + "obligation it ran under assigns \"" + ran
                                 + "\", so what this replay ran the root at "
@@ -2411,7 +2445,7 @@ public final class Composer {
             for (String symbol : root.getValue()) {
                 if (!named.contains(symbol)) continue;
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, root.getKey(),
+                        GapClass.DIAGNOSTIC, root.getKey(),
                         "this path's own terms name this declared root ("
                                 + symbol + ") and this session minted no "
                                 + "value for it, so what the path rests on "
@@ -3409,7 +3443,7 @@ public final class Composer {
             if (write != null && corpus.expression(session,
                     write.expressionRef()) == null) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, write.expressionRef(),
+                        GapClass.DIAGNOSTIC, write.expressionRef(),
                         "a write row of " + key + "@" + version + " cites an "
                                 + "expression its session's table does not "
                                 + "hold, so the chain this read joins to is "
@@ -3946,9 +3980,9 @@ public final class Composer {
         try {
             refuted = Refutations.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
-            gap(GapKind.CLAIM_REFUTED, GapClass.BLOCKING, Refutations.FILE,
-                    "this iteration's refuted claims could not be read, so a claim over it may be "
-                            + "one CONFIRM decided against: " + unreadable);
+            gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, Refutations.FILE,
+                    "this iteration's refuted claims could not be read, so"
+                            + " none is excluded: " + unreadable);
             return;
         }
         int ordinal = 0;

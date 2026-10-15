@@ -154,7 +154,11 @@ recommendation.
   cone holds an unattested handoff. Not a per-case or per-variable exemption.
 - **A witness ends exploration only when its own chain is closed** (lead, 2026-10-06): when the first witness's fatal
   cone names a HELD/unbound handoff, EXPLORE grows only that chain's producers, re-composes, then claims; a chain that
-  growing cannot close is a named `WITNESS_CHAIN_OPEN` RUN_DEFECT.
+  growing cannot close is named (`WITNESS_CHAIN_OPEN` in EMIT's `defects[]`), and best effort (owner 2026-10-15)
+  the verdict stands, CONFIRM deciding a SAT.
+- **COMPOSE is best effort** (owner 2026-10-15): a defective session, path or part is left out and named
+  (DIAGNOSTIC), the rest composed; only a total absence (no seed, no path) or SEED_OBSERVED_FATAL blocks.
+  Exploration refusals stay (they shrink the work); a GROW re-run that did not finish is dropped, never re-run.
 - **An arm the bug may live in is never closed silently** (lead, 2026-10-06): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
