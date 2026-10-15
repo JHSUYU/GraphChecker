@@ -6,6 +6,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -262,6 +263,35 @@ public class RowRuntimeTest {
         Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
         session.gap(late);
         assertFalse(Files.exists(layout.dir()));
+    }
+
+    /**
+     * A capture keeps each node's view by identity across the captures of
+     * one store: a subtree two predicates share is viewed once, and each
+     * capture reads as a fresh one does.
+     */
+    @Test
+    public void aSharedSubtreeIsViewedOnceAcrossCaptures() {
+        JsonObject shared = json("{'_type':'X','a':1,'gone':null}");
+        JsonObject first = new JsonObject();
+        first.add("_left", shared);
+        first.add("_right", json("{'k':2}"));
+        JsonObject second = new JsonObject();
+        second.add("_left", shared);
+        Map<JsonElement, JsonElement> views =
+                new java.util.IdentityHashMap<JsonElement, JsonElement>();
+        JsonObject a = edu.uva.liftlab.graphchecker.plan.BranchWitness
+                .immutablePredicate(first, views).toImmutableJsonView();
+        JsonObject b = edu.uva.liftlab.graphchecker.plan.BranchWitness
+                .immutablePredicate(second, views).toImmutableJsonView();
+        assertSame(a.getAsJsonObject("sourceSatisfiedPredicate").get("_left"),
+                b.getAsJsonObject("sourceSatisfiedPredicate").get("_left"));
+        assertEquals(edu.uva.liftlab.graphchecker.plan.BranchWitness
+                .immutablePredicate(second,
+                        new java.util.IdentityHashMap<JsonElement,
+                                JsonElement>()).toImmutableJsonView()
+                .toString(), b.toString());
+        assertFalse(b.toString().contains("gone"));
     }
 
     /**
@@ -2417,7 +2447,9 @@ public class RowRuntimeTest {
             assertTrue(depth + " levels",
                     RowPublication.nestedRead(wrapped) == read);
             JsonObject witness = edu.uva.liftlab.graphchecker.plan
-                    .BranchWitness.immutablePredicate(chain)
+                    .BranchWitness.immutablePredicate(chain,
+                            new java.util.IdentityHashMap<JsonElement,
+                                    JsonElement>())
                     .toImmutableJsonView()
                     .getAsJsonObject("sourceSatisfiedPredicate");
             assertFalse(witness.has("_guard"));

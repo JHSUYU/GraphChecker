@@ -4,13 +4,17 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
@@ -217,6 +221,33 @@ final class BranchObservation {
         }
     }
 
+    /**
+     * The witness of one decision's condition, its view taken through its
+     * expression store's views ({@link #VIEWS}): the nodes a store decoded
+     * are shared by its predicates and never change, so each is viewed once
+     * while held.  One capture at a time per store: a clear past
+     * {@link #VIEWS_HELD} never meets a capture under way.
+     */
+    private static BranchWitness witness(ActiveRegion active,
+                                         JsonElement condition) {
+        Map<JsonElement, JsonElement> views = VIEWS.computeIfAbsent(
+                active.expressionStore,
+                store -> new IdentityHashMap<JsonElement, JsonElement>());
+        synchronized (views) {
+            if (views.size() >= VIEWS_HELD) views.clear();
+            return BranchWitness.immutablePredicate(condition, views);
+        }
+    }
+
+    /** Each expression store's canonical views of its nodes, by identity;
+     *  a store the run replaced goes with its views. */
+    private static final Map<VmExpressionTable.Store,
+            Map<JsonElement, JsonElement>> VIEWS =
+            Collections.synchronizedMap(new WeakHashMap<VmExpressionTable.Store,
+                    Map<JsonElement, JsonElement>>());
+    /** The most views one store holds before it starts over. */
+    private static final int VIEWS_HELD = 1 << 16;
+
     /** Reads and attests one decision's VM event, binary or multiway. */
     private static Capture capture(
             ActiveRegion active, ConcolicVmBroker api, String siteId,
@@ -297,8 +328,8 @@ final class BranchObservation {
             JsonElement semanticCondition =
                     VmBranchAttestation.semanticCondition(
                             expression, observedOutcome, condition);
-            mapping.add("witness", BranchWitness.immutablePredicate(
-                    semanticCondition).toImmutableJsonView());
+            mapping.add("witness", witness(active, semanticCondition)
+                    .toImmutableJsonView());
             // The term is the predicate under which the JUMP is taken,
             // fixed across replays and arms (CONTRACT-SPEC §2.2: a
             // consumer forms `outcome ? term : (not term)`).  The VM
@@ -340,10 +371,9 @@ final class BranchObservation {
         for (Integer conditionIndex : conditionIndices) {
             JsonObject predicate = decisionRow(method, unitIndex, occurrence,
                     vmEventId, null, mappingBaseline, mappingLimit);
-            predicate.add("witness",
-                    BranchWitness.immutablePredicate(
-                            read.conditions.get(conditionIndex))
-                            .toImmutableJsonView());
+            predicate.add("witness", witness(active,
+                    read.conditions.get(conditionIndex))
+                    .toImmutableJsonView());
             active.branchMappings.add(predicate);
         }
         active.lastPathConditionSize = Math.max(

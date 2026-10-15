@@ -7,7 +7,6 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,11 +22,14 @@ public final class BranchPredicateAlgebra {
      *  Copy-on-write: untouched subtrees keep their identity (decoder anchors).
      *  Each node once, children first, on a stack: the capture runs on the
      *  workload's thread, whose stack a recursion along a deep predicate
-     *  would overflow. */
-    static JsonElement canonicalView(JsonElement predicate) {
+     *  would overflow.  {@code views} holds each node's view by identity,
+     *  kept by the caller across captures: a node never changes once
+     *  decoded, so its view is a function of it, and the predicates of one
+     *  store share their subtrees (a replay's branches walked them again
+     *  each, 17 s of 18413's seed). */
+    static JsonElement canonicalView(JsonElement predicate,
+                                     Map<JsonElement, JsonElement> views) {
         if (predicate == null) return JsonNull.INSTANCE;
-        Map<JsonElement, JsonElement> views =
-                new IdentityHashMap<JsonElement, JsonElement>();
         List<JsonElement> pending = new ArrayList<JsonElement>();
         pending.add(predicate);
         while (!pending.isEmpty()) {

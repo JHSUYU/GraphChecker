@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.Map;
+
 /**
  * The one satisfied predicate (phi) of one observed branch, nothing else.
  *
@@ -15,20 +17,24 @@ public final class BranchWitness {
 
     private final JsonElement sourceSatisfiedPredicate;
 
-    private BranchWitness(JsonElement sourceSatisfiedPredicate) {
+    private BranchWitness(JsonElement sourceSatisfiedPredicate,
+                          Map<JsonElement, JsonElement> views) {
         if (sourceSatisfiedPredicate == null
                 || sourceSatisfiedPredicate.isJsonNull()) {
             throw new IllegalArgumentException(
                     "sourceSatisfiedPredicate is required");
         }
         this.sourceSatisfiedPredicate = BranchPredicateAlgebra.canonicalView(
-                sourceSatisfiedPredicate);
+                sourceSatisfiedPredicate, views);
     }
 
     /** Copy-on-write capture: untouched nodes keep their decoder anchor, so
-     *  deep predicates are not rebuilt. */
-    public static BranchWitness immutablePredicate(JsonElement predicate) {
-        return new BranchWitness(predicate);
+     *  deep predicates are not rebuilt; {@code views} holds the views of
+     *  nodes captured before, by identity ({@link
+     *  BranchPredicateAlgebra#canonicalView}). */
+    public static BranchWitness immutablePredicate(
+            JsonElement predicate, Map<JsonElement, JsonElement> views) {
+        return new BranchWitness(predicate, views);
     }
 
     /** The witness as the branch mapping carries it. */
