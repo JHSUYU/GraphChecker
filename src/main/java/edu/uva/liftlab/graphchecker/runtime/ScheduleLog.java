@@ -76,7 +76,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * order's FRONTIER -- its first open slot that is no WAKE or INTERRUPT,
  * which every wait for a slot or the line waits on -- has stood a timeout,
  * counted from its last move or its earliest waiter's arrival, whichever is
- * later, with no thread computing toward it, first lets the waits held
+ * later, with no thread computing toward it (a grace when nothing has
+ * computed since the stall began: an idle run waits only on the order's
+ * own holds), first lets the waits held
  * without a slot go, then, a grace later, gives up every open slot before
  * the earliest waiter a slot holds.  A slot taken past the frontier or an event run free moves
  * no such wait (a poll past its recorded count goes on any move, but waits
@@ -307,6 +309,10 @@ public final class ScheduleLog {
     private static long collectedSeen;
     private static long cpuSampledAt;
     private static boolean computing;
+    /** Whether a look that measured, since the current stall began, saw
+     *  something computing: a stall none did is IDLE ({@link
+     *  #watchdogLocked}). */
+    private static boolean computedInStall;
 
     private ScheduleLog() {
     }
@@ -2254,11 +2260,21 @@ public final class ScheduleLog {
      * thread computing toward it ({@link #computingLocked}), or {@link
      * #CEILING} timeouts whatever threads do; both are measured from {@link
      * #stallSinceLocked}, which neither a let-go nor a slot taken past the
-     * frontier moves, and the stall's CPU is looked at from its start.  Its
-     * first answer lets the waits held without a slot go; a grace later, the
+     * frontier moves, and the stall's CPU is looked at from its start.  An
+     * IDLE stall -- no look since it began saw anything compute ({@link
+     * #computedInStall}) -- stands a grace, not a timeout: with every thread
+     * of the run waiting, what the frontier waits for is held by the order
+     * itself (ps1p, 18413's seed: a MigrateCmd sleep polled once more than
+     * recorded, its WAKE held at the later slot its key found, while the
+     * frontier was the CLAIM of the work that thread starts after it -- each
+     * such event came only after its give-up, 13 stalls of 15 s each in all,
+     * 32% of the window with no workload thread runnable).  Its first
+     * answer lets the waits held without a slot go; a grace later, the
      * slots before the earliest waiter a slot holds are given up.  With only
      * waits held without a slot waiting (polls past their recorded count,
-     * waits at the line), it lets them go again, a grace apart.  A PUBLISH
+     * waits at the line), it lets them go again, a grace apart, whatever
+     * computes (ps1p: a test polling RequestStatus past its recorded count
+     * waited a timeout a poll).  A PUBLISH
      * whose apply is in flight at the frontier is looked at first ({@link
      * #inFlightLocked}): no wait held behind it is let go meanwhile, to read
      * the version before it.
@@ -2275,6 +2291,7 @@ public final class ScheduleLog {
             // from a look at most CPU_SAMPLE_MS older.
             stallSince = since;
             computing = true;
+            computedInStall = false;
             if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, false);
         }
         long stood = now - since;
@@ -2301,6 +2318,15 @@ public final class ScheduleLog {
                 earliest = Math.min(earliest, waiter.getValue());
             }
         }
+        // Only such waits wait, one let go already: again a grace after it
+        // and into their own stand, whatever computes -- none holds a slot's
+        // event, so waiting longer keeps nothing in order.
+        if (!HELD.isEmpty() && letGoSinceProgress
+                && earliest == Integer.MAX_VALUE
+                && stood >= LET_GO_GRACE_MS) {
+            letGoHeldLocked(stood, now);
+            return true;
+        }
         // What the stall gives up first: the one slot a conflicted write
         // waits behind, else the frontier.  A read stands a grace, not a
         // timeout: its slot holds no frontier.  So does a slot in a context
@@ -2312,17 +2338,20 @@ public final class ScheduleLog {
         // that had; MB29s: 102 of 39's 145 conflicts stood the timeout, the
         // family judged by the waiting write's context, not by the one it
         // waited for).
+        // An idle stall stands a grace too: no thread computed since it
+        // began, so only the order's own release can bring its event.
         boolean conflicted = earliest != Integer.MAX_VALUE
                 && onlyConflictedAtLocked(earliest);
         int first = conflicted ? earliest - 1 : firstBlocking;
-        long bound = first < order.size()
+        boolean idle = stood >= LET_GO_GRACE_MS && !computingLocked(now)
+                && !computedInStall;
+        long bound = idle || first < order.size()
                 && (order.get(first).kind() == ScheduleEvent.Kind.READ
                 || FAILED.contains(familyOf(order.get(first).context())))
                 ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
         if (stood < bound) return false;
         if (stood < CEILING * bound && computingLocked(now)) return false;
-        if (!HELD.isEmpty() && (!letGoSinceProgress
-                || earliest == Integer.MAX_VALUE)) {
+        if (!HELD.isEmpty() && !letGoSinceProgress) {
             letGoHeldLocked(stood, now);
             return true;
         }
@@ -2503,6 +2532,7 @@ public final class ScheduleLog {
         long stopped = TimeUnit.MILLISECONDS.toNanos(collected - collectedSeen);
         computing = !measure || ownerAtWork || 2L * (most + stopped)
                 >= TimeUnit.MILLISECONDS.toNanos(now - cpuSampledAt);
+        computedInStall |= measure && computing;
         CPU_SEEN.clear();
         CPU_SEEN.putAll(seen);
         collectedSeen = collected;
@@ -2954,6 +2984,7 @@ public final class ScheduleLog {
             collectedSeen = 0L;
             cpuSampledAt = 0L;
             computing = false;
+            computedInStall = false;
             LOCK.notifyAll();
         }
     }
