@@ -365,7 +365,7 @@ on, before any hook runs (`#shutdownBegun`) -- states nothing and halts: a verdi
 decided end's. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
 nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
-finished, no CPU on the publication thread and no garbage collection), so a publication that
+finished, no CPU on the publication or the decoding thread and no garbage collection), so a publication that
 computes is never cut and one blocked is: every activation still live is then stranded, and the
 publication left running and every one queued behind it (the one publication thread reaches none)
 are each a `TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED`, a seed's or a confirmation's session

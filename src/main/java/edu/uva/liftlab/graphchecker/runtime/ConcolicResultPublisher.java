@@ -44,30 +44,35 @@ final class ConcolicResultPublisher {
      * interpreter was still hashing the expressions of earlier ones.
      */
     private static final ThreadPoolExecutor RESULT_PUBLICATION_EXECUTOR =
-            new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                    new LinkedBlockingQueue<Runnable>(),
-                    new ThreadFactory() {
-                        @Override
-                        public Thread newThread(Runnable runnable) {
-                            // In the JVM's root group, not the group of the
-                            // test that first published: a test framework
-                            // fails its suite on a thread its group leaks.
-                            ThreadGroup root =
-                                    Thread.currentThread().getThreadGroup();
-                            while (root.getParent() != null) {
-                                root = root.getParent();
-                            }
-                            // Compaction recurses along an expression
-                            // chain: the engine's stack (java.sh -Xss).
-                            Thread thread = new Thread(root, runnable,
-                                    "causynth-result-publication-"
-                                            + PUBLICATION_THREAD_COUNTER
-                                            .incrementAndGet(),
-                                    512L << 20);
-                            thread.setDaemon(true);
-                            return thread;
-                        }
-                    });
+            engineThread("causynth-result-publication-");
+    /**
+     * Decodes the read-out pages, in the order they were read, beside the
+     * publications: an activation's publication waits for its own pages
+     * only ({@code SharedStateCapture.SharedStateReadOut#awaitDecoded}).
+     * On the one publication thread the two took turns, and a seed's
+     * read-outs kept it busy past the workload's end (18413: half decode,
+     * half publication, 29 s after the test).
+     */
+    private static final ThreadPoolExecutor READ_OUT_DECODE_EXECUTOR =
+            engineThread("causynth-read-out-decode-");
+
+    /** One engine thread, its tasks in order: in the JVM's root group, not
+     *  the group of the test that first published (a test framework fails
+     *  its suite on a thread its group leaks); with the engine's stack, as
+     *  compaction recurses along an expression chain (java.sh -Xss). */
+    private static ThreadPoolExecutor engineThread(String name) {
+        ThreadFactory threads = runnable -> {
+            ThreadGroup root = Thread.currentThread().getThreadGroup();
+            while (root.getParent() != null) root = root.getParent();
+            Thread thread = new Thread(root, runnable, name
+                    + PUBLICATION_THREAD_COUNTER.incrementAndGet(),
+                    512L << 20);
+            thread.setDaemon(true);
+            return thread;
+        };
+        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<Runnable>(), threads);
+    }
     /** Guarded by {@link #PUBLICATION_LOCK}. */
     private static int resultPublicationsInFlight;
     /** Live selected activations not yet publishing. */
@@ -102,7 +107,8 @@ final class ConcolicResultPublisher {
      * the wait is bounded by progress: it gives up once nothing has moved
      * for {@link #TERMINAL_GRACE_MILLIS} ({@link #progressLocked}: no loop
      * body charged, no activation settled, no publication finished, no CPU
-     * on the publication thread and no garbage collection), so a
+     * on the publication or the decoding thread and no garbage
+     * collection), so a
      * publication that computes is never cut and one blocked is
      * (unbounded, a stuck publication kept a decided replay running to its
      * {@code replay_timeout_s}).  Then every activation still live is
@@ -210,18 +216,22 @@ final class ConcolicResultPublisher {
 
     /**
      * What moves while a run settles: what {@link #movedLocked} counts, the
-     * CPU the publication thread spent, and the JVM's time in garbage
-     * collection (a collection stops that thread too).
+     * CPU the publication and the decoding threads spent, and the JVM's
+     * time in garbage collection (a collection stops them too).
      * Called under {@link #PUBLICATION_LOCK}.
      */
     private static long[] progressLocked() {
         long[] moved = movedLocked();
-        long[] progress = Arrays.copyOf(moved, moved.length + 2);
-        progress[moved.length] = publishingThread == null ? 0L
-                : ManagementFactory.getThreadMXBean()
-                .getThreadCpuTime(publishingThread.getId());
-        progress[moved.length + 1] = ScheduleLog.collectedMillis();
+        long[] progress = Arrays.copyOf(moved, moved.length + 3);
+        progress[moved.length] = cpu(publishingThread);
+        progress[moved.length + 1] = cpu(decodingThread);
+        progress[moved.length + 2] = ScheduleLog.collectedMillis();
         return progress;
+    }
+
+    private static long cpu(Thread thread) {
+        return thread == null ? 0L : ManagementFactory.getThreadMXBean()
+                .getThreadCpuTime(thread.getId());
     }
 
     /**
@@ -446,12 +456,14 @@ final class ConcolicResultPublisher {
      *  thread, how many have finished, and whether a settle gave up. */
     private static ActiveRegion publishingNow;
     private static Thread publishingThread;
+    /** The thread decoding read-out pages ({@link #decodeBeforePublication}). */
+    private static Thread decodingThread;
     /** Submitted and not yet started, in submission order. */
     private static final Set<ActiveRegion> queued =
             new LinkedHashSet<ActiveRegion>();
     private static long publicationsFinished;
     private static boolean gaveUp;
-    /** Read-out text handed to the publication thread and not yet decoded,
+    /** Read-out text handed to the decoding thread and not yet decoded,
      *  in chars ({@link #decodeBeforePublication}). */
     private static long undecodedChars;
 
@@ -654,15 +666,15 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * Decodes one read-out page of {@code chars} on the publication thread
-     * ahead of every publication queued after it, in order (one thread, one
-     * queue): an activation's pages are decoded there as they are read,
-     * before its publication ({@code SharedStateCapture
+     * Decodes one read-out page of {@code chars} on the decoding thread, in
+     * the order the pages were read ({@link #READ_OUT_DECODE_EXECUTOR}): an
+     * activation's pages are decoded there as they are read, and its
+     * publication waits for them ({@code SharedStateCapture
      * #captureRecordedSharedState}).  The page is handed on once the pages
      * before it, not yet decoded, leave room for it under
      * {@link #UNDECODED_BOUND_CHARS} (or none is left); until then the
      * reading thread waits, bounded by progress as the settle is
-     * ({@link Grace}), so a stuck publication delays it, never holds it.
+     * ({@link Grace}), so a stuck decoding delays it, never holds it.
      *
      * @return false when the executor refused the work
      */
@@ -688,9 +700,9 @@ final class ConcolicResultPublisher {
         }
         if (interrupted) Thread.currentThread().interrupt();
         try {
-            RESULT_PUBLICATION_EXECUTOR.execute(() -> {
+            READ_OUT_DECODE_EXECUTOR.execute(() -> {
                 synchronized (PUBLICATION_LOCK) {
-                    publishingThread = Thread.currentThread();
+                    decodingThread = Thread.currentThread();
                 }
                 try {
                     decode.run();
@@ -713,7 +725,7 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * The most read-out text the publication thread may hold undecoded:
+     * The most read-out text the decoding thread may hold undecoded:
      * four pages ({@code SharedStateCapture#READ_OUT_PAGE_BYTES}), 128 MB
      * of chars.  Unbounded, an owner that reads faster than one thread
      * decodes queues without end: SB12's obligation 0a1a085e98d056aa,
@@ -776,6 +788,8 @@ final class ConcolicResultPublisher {
                         + ", and the replay ended there");
                 return;
             }
+            // Its own pages, decoded beside the publications before it.
+            if (sharedState != null) sharedState.awaitDecoded();
             assembleRecordedSharedState(active, sharedState);
             // Here, where the write log is assembled: once, on one thread.
             RowPublication.publish(active);

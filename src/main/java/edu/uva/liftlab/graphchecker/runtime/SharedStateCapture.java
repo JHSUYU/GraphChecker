@@ -48,10 +48,10 @@ final class SharedStateCapture {
     /**
      * Reads out every location this activation touched, paging until the VM
      * says the answer is complete.  Called while the owner thread holds the VM
-     * context.  Each page goes to the publication thread as soon as it is
+     * context.  Each page goes to the decoding thread as soon as it is
      * read ({@link SharedStateReadOut#decodeLater}), where it is decoded
-     * while the next is read and ahead of this activation's publication,
-     * which that thread runs later, in order; no page waits for the rest of
+     * while the next is read, and this activation's publication waits for
+     * its pages ({@link SharedStateReadOut#awaitDecoded}); no page waits for the rest of
      * the read-out, and none outlives its decoding (SB12's obligation
      * replay held 8 pages, 220 MB, a fifth of its live heap at its peak,
      * awaiting decoding once the region closed).  The next page is read
@@ -81,7 +81,7 @@ final class SharedStateCapture {
             }
             if (!readOut.decodeLater(serialized, active)) {
                 fault = "a tracked-location read-out page could not be"
-                        + " handed to the publication thread";
+                        + " handed to the decoding thread";
                 break;
             }
             JsonObject header = pageHeader(serialized);
@@ -110,7 +110,7 @@ final class SharedStateCapture {
 
     /** What the region closes' read-outs cost this session ({@link
      *  #readOutSummary}): the pages, their text, the VM's time serializing
-     *  them on the closing threads, the publication thread's decoding, the
+     *  them on the closing threads, the decoding thread's work, the
      *  versions they listed. */
     private static final AtomicLong READ_OUT_PAGES = new AtomicLong();
     private static final AtomicLong READ_OUT_CHARS = new AtomicLong();
@@ -425,7 +425,7 @@ final class SharedStateCapture {
     }
 
     /**
-     * The refusals of the page the publication thread is decoding, held for
+     * The refusals of the page the decoding thread is decoding, held for
      * its activation's publication ({@link #assembleRecordedSharedState}),
      * or null outside a page's decoding.
      */
@@ -434,25 +434,31 @@ final class SharedStateCapture {
 
     /**
      * One activation's read-out: its pages are decoded into the activation
-     * on the publication thread as they are read; what is left for its
-     * publication is what that decoding refused, and the read-out's fault.
+     * on the decoding thread as they are read; what is left for its
+     * publication, once they are ({@link #awaitDecoded}), is what that
+     * decoding refused, and the read-out's fault.
      */
     static final class SharedStateReadOut {
         /** Written by the owner thread before the publication is queued. */
         private String fault = "";
-        /** Appended to and read on the publication thread only. */
+        /** Appended to on the decoding thread, read by the publication
+         *  once every page is decoded. */
         private final List<Runnable> refusals = new ArrayList<>();
+        /** Pages handed to the decoding thread and not yet decoded. */
+        private int pending;
 
         /**
-         * Queues one page's decoding on the publication thread, ahead of
-         * this activation's publication, once the pages queued before it
-         * leave room ({@code ConcolicResultPublisher
+         * Queues one page's decoding on the decoding thread, once the pages
+         * queued before it leave room ({@code ConcolicResultPublisher
          * #decodeBeforePublication}).
          *
-         * @return false when the publication thread refused the work
+         * @return false when the decoding thread refused the work
          */
         private boolean decodeLater(String page, ActiveRegion active) {
-            return ConcolicResultPublisher.decodeBeforePublication(
+            synchronized (this) {
+                pending++;
+            }
+            boolean handed = ConcolicResultPublisher.decodeBeforePublication(
                     page.length(), () -> {
                         DECODING.set(refusals);
                         try {
@@ -462,8 +468,32 @@ final class SharedStateCapture {
                                     rootCause(throwable));
                         } finally {
                             DECODING.remove();
+                            decoded();
                         }
                     });
+            if (!handed) decoded();
+            return handed;
+        }
+
+        private synchronized void decoded() {
+            pending--;
+            notifyAll();
+        }
+
+        /**
+         * Waits until every page handed on is decoded: the publication reads
+         * what they filed into its activation, and what they refused.
+         */
+        synchronized void awaitDecoded() {
+            boolean interrupted = false;
+            while (pending > 0) {
+                try {
+                    wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
