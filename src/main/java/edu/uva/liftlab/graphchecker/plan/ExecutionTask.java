@@ -129,7 +129,8 @@ public final class ExecutionTask extends PlanRow {
     }
 
     /** Drops a {@code fieldPaths} that only repeats the action's {@code
-     *  fieldPath}. */
+     *  fieldPath}, and states each action's digest
+     *  ({@link InputActionCatalog#stamp}). */
     private static JsonArray compactInputActions(JsonArray actions) {
         JsonArray result = new JsonArray();
         for (JsonElement element : actions) {
@@ -145,7 +146,7 @@ public final class ExecutionTask extends PlanRow {
                     && path.equals(paths.get(0).getAsJsonArray())) {
                 action.remove("fieldPaths");
             }
-            result.add(action);
+            result.add(InputActionCatalog.stamp(action));
         }
         return result;
     }

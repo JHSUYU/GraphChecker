@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
 
 /**
@@ -34,6 +36,13 @@ public final class InputActionCatalog {
      *  ({@code FAULT:<TRANSPORT>:<DIRECTION>[:<Kind>]}): the replay that
      *  answers it {@code true} knows which door failed. */
     public static final String DECLARED_FAULT_MARKER = "marker";
+    /**
+     * An action's canonical identity ({@link #stamp}): the SHA-256 of its
+     * canonical rendering as a plan file states it, without this member.
+     * PLAN computes it once; a replay reads it, and never hashes a row in
+     * its interpreter (18413's seed: 605 actions, about 8 s).
+     */
+    public static final String DIGEST = "actionDigest";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY
@@ -77,6 +86,18 @@ public final class InputActionCatalog {
             index++;
         }
         return new InputActionCatalog(all, symbolic);
+    }
+
+    /**
+     * States {@code action}'s digest on it ({@link #DIGEST}), over the
+     * action as a plan file's reader holds it, every other member as it
+     * stands: an action changed since (a grown invocation) is stamped again.
+     */
+    public static JsonObject stamp(JsonObject action) {
+        action.remove(DIGEST);
+        action.addProperty(DIGEST, CanonicalJson.sha256(
+                JsonParser.parseString(action.toString())));
+        return action;
     }
 
     /** The catalog's own rows (read-only); {@link #symbolic()} aliases them. */

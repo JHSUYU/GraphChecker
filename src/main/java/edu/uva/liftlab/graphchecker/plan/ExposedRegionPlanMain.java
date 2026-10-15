@@ -156,7 +156,7 @@ public final class ExposedRegionPlanMain {
             invocation.addProperty("replayOccurrence", input.k());
             invocation.addProperty("observed", false);
             for (String recorded : RECORDED) invocation.remove(recorded);
-            actions.add(invocation);
+            actions.add(InputActionCatalog.stamp(invocation));
         }
         return rows;
     }

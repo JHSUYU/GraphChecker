@@ -287,6 +287,29 @@ public class MintTest {
     }
 
     /**
+     * An action's digest is PLAN's ({@code InputActionCatalog#stamp}): its
+     * canonical identity over the row as a plan file states it, which the
+     * replay reads and never computes; an action changed after (a grown
+     * invocation) is stamped again.
+     */
+    @Test
+    public void anActionsDigestIsStatedByThePlan() {
+        JsonObject planned = action("CASE.PLANNED");
+        planned.remove(InputActionCatalog.DIGEST);
+        String identity = edu.uva.liftlab.graphchecker.smt.CanonicalJson
+                .sha256(com.google.gson.JsonParser.parseString(
+                        planned.toString()));
+        InputActionCatalog.stamp(planned);
+        JsonObject read = com.google.gson.JsonParser.parseString(
+                planned.toString()).getAsJsonObject();
+        assertEquals(identity, new SymbolizeAction(read).actionDigest);
+        planned.addProperty("symbol", "CASE.GROWN");
+        InputActionCatalog.stamp(planned);
+        assertFalse(identity.equals(planned.get(InputActionCatalog.DIGEST)
+                .getAsString()));
+    }
+
+    /**
      * A mint publishes the value it read -- every mint, a clock and a
      * focused one included (INVARIANT 8): the seed replay IS the reference
      * execution the deltas are relative to, and the value a mint states is

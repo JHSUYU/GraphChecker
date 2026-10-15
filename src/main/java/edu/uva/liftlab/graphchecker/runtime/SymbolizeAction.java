@@ -10,7 +10,6 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.Validity;
-import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
@@ -45,10 +44,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 final class SymbolizeAction {
     final String symbol;
-    /** The frozen task action row, whose canonical digest names it
-     *  ({@link #actionDigest}). */
-    private final JsonObject json;
-    private volatile String actionDigest;
+    /** Canonical identity of the exact frozen task action row, as PLAN
+     *  states it ({@code InputActionCatalog#DIGEST}). */
+    final String actionDigest;
     final String cell;
     final String location;
     final int index;
@@ -97,7 +95,7 @@ final class SymbolizeAction {
 
     SymbolizeAction(JsonObject json) {
         this.symbol = optionalString(json, "symbol");
-        this.json = json;
+        this.actionDigest = optionalString(json, InputActionCatalog.DIGEST);
         this.cell = optionalString(json, "cell");
         this.location = optionalString(json, "location");
         this.index = optionalInteger(json, "index", -1);
@@ -430,19 +428,5 @@ final class SymbolizeAction {
             selected = candidate;
         }
         return selected;
-    }
-
-    /**
-     * Canonical identity of the exact frozen task action row, computed the
-     * first time a mint or a refusal names it: a replay's VM hashes no row
-     * of the many a plan holds and none mints (18413's seed: 605 actions).
-     */
-    String actionDigest() {
-        String digest = actionDigest;
-        if (digest == null) {
-            digest = CanonicalJson.sha256(json);
-            actionDigest = digest;
-        }
-        return digest;
     }
 }

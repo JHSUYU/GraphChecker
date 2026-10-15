@@ -383,7 +383,7 @@ final class RootMint {
                 // Stated, never swallowed: a failed mint and an undeclared
                 // cell otherwise read identically from the corpus.
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        firstNonBlank(action.symbol, action.actionDigest()),
+                        firstNonBlank(action.symbol, action.actionDigest),
                         "the declared heap-field input at "
                                 + SiteId.render(method, unitIndex)
                                 + " was not minted, so the region reads it"
@@ -1174,7 +1174,7 @@ final class RootMint {
             if (value != null && mintRefused(expression, label,
                     jvmShared(api, value), "this declared input (a "
                             + value.getClass().getName() + ")",
-                    firstNonBlank(action.symbol, action.actionDigest()))) {
+                    firstNonBlank(action.symbol, action.actionDigest))) {
                 readConcretely(active, action.symbol, value);
                 return;
             }
@@ -1185,7 +1185,7 @@ final class RootMint {
         } catch (Throwable throwable) {
             readConcretely(active, action.symbol, value);
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    firstNonBlank(action.symbol, action.actionDigest()),
+                    firstNonBlank(action.symbol, action.actionDigest),
                     "this declared input was not minted, so the region reads"
                             + " it concretely and no row states a value for"
                             + " it: " + ConcolicRegionRuntime.rootCause(throwable));
