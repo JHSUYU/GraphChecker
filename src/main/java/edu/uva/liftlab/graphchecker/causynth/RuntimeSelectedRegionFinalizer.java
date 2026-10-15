@@ -1299,6 +1299,7 @@ public final class RuntimeSelectedRegionFinalizer {
             seeds.addAll(allObjects(activation, FIELD_REFERENTS));
         }
         List<JsonObject> rows = new ArrayList<>();
+        Set<Map<String, Object>> union = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Set<String>>> held : zk.keys(
                 chain, seeds, store.versionsOf(owners).keySet()).entrySet()) {
             List<Map<String, Object>> stated = new ArrayList<>();
@@ -1329,6 +1330,38 @@ public final class RuntimeSelectedRegionFinalizer {
                     held.getKey());
             if (activation != null) {
                 activation.put(ZkChain.CONTENT_KEYS, stated);
+            }
+            union.addAll(stated);
+        }
+        // Each target carries every field of the chain: a chain decode PLAN
+        // does not plan (a watcher callback re-pointing the target's view)
+        // mints the plan's keys of its location (ConcolicTaskPlan#chainKeys).
+        Map<String, JsonObject> byLocation = new LinkedHashMap<>();
+        for (Map<String, Object> key : union) {
+            String location = (String) key.get("location");
+            String slot = (String) key.get("slot");
+            JsonObject row = byLocation.computeIfAbsent(location + "\n"
+                    + slot, ignored -> {
+                JsonObject keys = new JsonObject();
+                keys.addProperty("schemaVersion", 1);
+                keys.addProperty("kind", ZkChain.KEYS);
+                keys.addProperty("location", location);
+                keys.addProperty("slot", slot);
+                keys.add("pointers", new JsonArray());
+                return keys;
+            });
+            row.getAsJsonArray("pointers").add((String) key.get("pointer"));
+        }
+        for (String target : targets) {
+            Map<String, Object> activation = program.activations.get(target);
+            if (activation == null || union.isEmpty()) continue;
+            activation.put(ZkChain.CONTENT_KEYS, new ArrayList<>(union));
+            rows.removeIf(row -> target.equals(
+                    row.get("occurrenceId").getAsString()));
+            for (JsonObject keys : byLocation.values()) {
+                JsonObject row = keys.deepCopy();
+                row.addProperty("occurrenceId", target);
+                rows.add(row);
             }
         }
         return rows;
@@ -2200,16 +2233,21 @@ public final class RuntimeSelectedRegionFinalizer {
                                         occurrenceId, cell, site)) {
                             continue;
                         }
-                        // A store's value reaches a cell only along the
-                        // ZooKeeper causal chain (owner 2026-10-15: weaving
-                        // the view's classes adds no writer): another
-                        // decode, read or callback writing the cell (a node's
-                        // cluster state, re-pointed by every collection's
-                        // decode), and any off-chain writer of a cell that
-                        // carries a store version, carries nothing the
-                        // targets rest on.
-                        if ((stored || zk.zkCarried(writerOccurrence))
-                                && !chain.holds(writerOccurrence)) {
+                        // A store's value reaches a cell only as the
+                        // ZooKeeper causal chain's fields (owner 2026-10-15:
+                        // "有限的zookeeper字段追踪"; weaving the view's classes
+                        // adds no writer): a decode, read or callback writing
+                        // the cell (a node's cluster state, re-pointed by
+                        // every collection's decode) carries its fields as
+                        // the chain's leaves and its views, never as heap
+                        // state another occurrence reads -- the chain's
+                        // decodes mint their keys unplanned too
+                        // (runtime.StoreContent) --, and neither does any
+                        // off-chain writer of a cell that carries a store
+                        // version.  A chain writer of the store is crossed
+                        // to as one (#crossStore).
+                        if (zk.zkCarried(writerOccurrence)
+                                || stored && !chain.holds(writerOccurrence)) {
                             offChain.add(writerOccurrence);
                             continue;
                         }
