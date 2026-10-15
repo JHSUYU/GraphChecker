@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -396,8 +397,10 @@ public final class ExploreMain {
                                 + " inputs for: it stays concrete"));
             }
         }
+        // The store edges its replays ran past the plan's ZooKeeper chain.
         int exposed = WaveGraph.writeGrowth(corpus, grown, unpaused, inputs,
-                out);
+                ZkEdges.of(corpus, ZkChain.read(
+                        iteration.resolve(ZkChain.FILE))), out);
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this round is the fixpoint: then none ever will, and
         // the closure is incomplete.

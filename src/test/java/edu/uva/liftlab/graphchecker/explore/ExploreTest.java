@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -26,6 +27,8 @@ import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
@@ -6264,6 +6267,94 @@ public class ExploreTest {
             assertEquals("said once: " + gap.getKey(), 1,
                     gap.getValue().intValue());
         }
+    }
+
+    /**
+     * A store edge a replay ran past the ZooKeeper chain grows it
+     * ({@code ZkEdges}, {@code ZkChain#grown}): an off-chain writer of a
+     * chain path, named by the admitted replay that showed it and keyed by
+     * the chain's fields of the path; a path off the chain a chain
+     * occurrence read, keyed by the leaves it read there; an edge only the
+     * seed showed, which no replay re-runs, as well.  A chain occurrence's
+     * decode of a chain path is no edge.
+     */
+    @Test
+    public void aStoreEdgePastTheChainGrowsIt() throws Exception {
+        Path iteration = tree.newFolder("zk-edges").toPath();
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/c/state.json");
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        LocationId view = LocationId.of(LocationKind.VIEW, "SOLR_ZK@nn0",
+                "/collections/c/state.json");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activations(false, TARGET, READER);
+        seed.write(at(READER, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "ZkStateWriter#write#3"), state, 2L, "");
+        seed.flush();
+        Session flip = new Session(iteration, "s-flip");
+        flip.activation(TARGET, true);
+        flip.activations(false, WRITER);
+        flip.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
+        flip.write(at(WRITER, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "ZkStateWriter#write#3"), state, 3L, "");
+        flip.write(at(TARGET, "SOLR_ZK#DECODED:.collections.c.state.json",
+                "ZkStateReader#refresh#4"), view, 3L, "");
+        flip.read(at(TARGET, "SOLR_ZK#READ:|aliases.json",
+                "SolrZkClient#getData#5"), aliases, 7L, "M_ALIASES", "0");
+        flip.attach(at(TARGET, ContentPort.of("SOLR_ZK", "/aliases.json",
+                "/collection"), "Aliases#fromJSON#6"), "M_ALIAS", "c", null);
+        flip.flush();
+        Path chainFile = iteration.resolve(ZkChain.FILE);
+        RowCodec.writeJsonl(chainFile, Arrays.asList(
+                JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
+                        + "\"ZK_CHAIN_PATH\",\"transport\":\"SOLR_ZK\","
+                        + "\"location\":\"/collections/c/state.json\","
+                        + "\"slot\":\"/collections/c/state.json\"}")
+                        .getAsJsonObject(),
+                JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
+                        + "\"ZK_CHAIN_OCCURRENCE\",\"occurrenceId\":\""
+                        + TARGET.render() + "\"}").getAsJsonObject(),
+                JsonParser.parseString("{\"schemaVersion\":1,\"kind\":"
+                        + "\"ZK_CHAIN_KEYS\",\"occurrenceId\":\""
+                        + TARGET.render() + "\",\"location\":"
+                        + "\"/collections/c/state.json\",\"slot\":"
+                        + "\"/collections/c/state.json\",\"pointers\":"
+                        + "[\"|c|shards\"]}").getAsJsonObject()));
+        ZkChain chain = ZkChain.read(chainFile);
+        List<JsonObject> edges = ZkEdges.of(Corpus.read(iteration, null),
+                chain);
+        Map<String, String> named = new LinkedHashMap<String, String>();
+        for (JsonObject edge : edges) {
+            named.put(edge.get("occurrence").getAsString() + " "
+                    + edge.get("location").getAsString(),
+                    edge.get("sessionId").getAsString());
+        }
+        Map<String, String> expected = new LinkedHashMap<String, String>();
+        expected.put(READER.render() + " /collections/c/state.json", "");
+        expected.put(WRITER.render() + " /collections/c/state.json",
+                "s-flip");
+        expected.put(TARGET.render() + " /aliases.json", "s-flip");
+        assertEquals(expected, named);
+
+        ZkChain grown = chain.grown(edges);
+        for (OccurrenceAddress joined : Arrays.asList(READER, WRITER)) {
+            assertTrue(grown.holds(joined.render()));
+            assertEquals("keyed by the chain's fields of the path",
+                    "[{\"location\":\"/collections/c/state.json\",\"slot\":"
+                            + "\"/collections/c/state.json\",\"pointer\":"
+                            + "\"|c|shards\"}]",
+                    grown.contentKeys(joined.render()).toString());
+        }
+        assertTrue(grown.holdsPath("SOLR_ZK", "/aliases.json"));
+        assertTrue("a new path keyed by the leaves read there: "
+                        + grown.contentKeys(TARGET.render()),
+                grown.contentKeys(TARGET.render()).toString().contains(
+                        "\"slot\":\"/aliases.json\",\"pointer\":"
+                                + "\"|collection\""));
+        assertTrue("and never shrinks", grown.rows().containsAll(
+                chain.rows()));
     }
 
     /** One anchor's closure, every admitted session a parent of growth but

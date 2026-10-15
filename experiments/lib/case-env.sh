@@ -29,7 +29,10 @@
 #                       for a bug whose fatal value is set while it starts
 #                       (owner-approved opt-in for that class of bug only;
 #                       the system's cluster adapter must support it)
-# system.sh defines, after the case is read,
+# system.sh may set
+#   system_scope        scope entries every case of the system adds to its
+#                       own, in the same spelling (a system-wide weave)
+# and defines, after the case is read,
 #   system_paths        sets module, report, test_classes, lineage_roots
 #   system_root <name>  a compiled class root the scope names
 #   system_classpath    prints the workload's classpath
@@ -49,6 +52,7 @@ target_spec=${case_dir}/target.yaml
 target_occurrence=
 recording_window=
 scope=()
+system_scope=()
 # Where the trees and their Maven repositories are (GC_TREES, GC_M2), which
 # every case.sh names its tree under.
 # shellcheck source=../../tools/lib/gc-env.sh

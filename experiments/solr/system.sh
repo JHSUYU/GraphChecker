@@ -17,6 +17,23 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
+# The ZooKeeper-carried state, woven in every Solr case alike, never named by
+# a case: the views a node decodes from the store (ZkStateReader with its
+# StateWatcher and AliasesManager, ClusterState, DocCollection, Slice,
+# Replica, Aliases, ZkNodeProps), each class and its nested classes.  PLAN
+# keeps symbolic only the decodes on the anchor's backward chain over the
+# store's (path, version) edges, and runs the rest doors-only; a replay that
+# reads a version an off-chain writer or decode made grows the chain (GROW,
+# ZK_EDGE; PIPELINE §7.8, SYMBOL-SCOPE §6.4).
+system_scope=(
+  solrj=:org/apache/solr/common/cloud/ZkStateReader
+  solrj=:org/apache/solr/common/cloud/ClusterState
+  solrj=:org/apache/solr/common/cloud/DocCollection
+  solrj=:org/apache/solr/common/cloud/Slice
+  solrj=:org/apache/solr/common/cloud/Replica
+  solrj=:org/apache/solr/common/cloud/Aliases
+  solrj=:org/apache/solr/common/cloud/ZkNodeProps
+)
 # The tree's own sources, as "<root>:<tree-relative source dir>": where
 # tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(

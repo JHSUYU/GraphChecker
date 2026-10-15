@@ -30,9 +30,7 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/cloud/api/collections/DeleteCollectionCmd
       core:org/apache/solr/cloud/api/collections/ReindexCollectionCmd
       core:org/apache/solr/cloud/api/collections/DeleteAliasCmd
-      core:org/apache/solr/cloud/api/collections/OverseerCollectionMessageHandler
-      solrj:org/apache/solr/common/cloud/Aliases
-      solrj:org/apache/solr/common/cloud/ZkStateReader)
+      core:org/apache/solr/cloud/api/collections/OverseerCollectionMessageHandler)
     ;;
   # Bug study #17: MIGRATE has the target leader buffer updates first and
   # applies them only at its end; a failure between leaves the target
@@ -69,8 +67,7 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/cloud/LockTree
       core:org/apache/solr/cloud/DistributedMap
       core:org/apache/solr/cloud/api/collections/OverseerCollectionMessageHandler
-      core:org/apache/solr/update/processor/DistributedZkUpdateProcessor
-      solrj:org/apache/solr/common/cloud/SolrZkClient)
+      core:org/apache/solr/update/processor/DistributedZkUpdateProcessor)
     ;;
   # Bug study #16: CREATESNAPSHOT asks only the replicas its Overseer sees
   # ACTIVE and records success while no request it sent failed.  The workload
@@ -79,20 +76,12 @@ case "${1:?usage: case.sh <bug>}" in
   # own view), snapshots the shard, deletes the leader replica, and backs up
   # from the snapshot (non-incremental, the path that reads it).  The
   # witness: the Overseer's view of the added replica not ACTIVE yet at
-  # CREATESNAPSHOT.  The target: the backup's search for a live replica with
-  # the snapshot, the window's only one.  The chain starts at the Overseer's
-  # view of a replica's state, which Replica.<init> derives from the decoded
-  # leaf: outside every region it runs with no VM model, and
-  # CreateSnapshotCmd's ACTIVE test decided concretely in every occurrence
-  # (SGF, 168 of 168).  The scope holds the classes that build the view, as
-  # solr-18413's: with them the node's watch callback is a region and the
-  # decode runs in it; Replica alone, Slice with it or ClusterState with it
-  # root no region the decode runs (rounds Z3A, Z3B, Z3C).  Their lookup and
-  # construction paths took round 1 from 2 obligations to 3384 over 101
-  # (site, ordinal, arm) triples (round Z2T), so flips are asked from the
-  # seed's paths only (world depth 0, named BOUNDED): the bug's mechanism is
-  # one flip there, a pairing of the Overseer's view at CREATESNAPSHOT with
-  # an older decode of state.json (round Z3D: round 1 198 obligations).
+  # CREATESNAPSHOT, a pairing of that view with an older decode of
+  # state.json.  The target: the backup's search for a live replica with the
+  # snapshot, the window's only one.  The chain starts at the Overseer's view
+  # of a replica's state, which Replica.<init> derives from the decoded leaf
+  # in the node's watch callback (the system's ZooKeeper-state weave,
+  # system.sh).
   snapshot-no-active)
     test_class=org.apache.solr.cloud.TestCausynthSnapshotBackup
     test_method=backupFromASnapshotAfterItsLeaderIsGone
@@ -101,13 +90,7 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/cloud/api/collections/CreateSnapshotCmd
       core:org/apache/solr/cloud/api/collections/BackupCmd
       core:org/apache/solr/core/snapshots/SolrSnapshotManager
-      core:org/apache/solr/core/snapshots/CollectionSnapshotMetaData
-      solrj:org/apache/solr/common/cloud/ZkStateReader
-      solrj:org/apache/solr/common/cloud/ClusterState
-      solrj:org/apache/solr/common/cloud/DocCollection
-      solrj:org/apache/solr/common/cloud/Slice
-      solrj:org/apache/solr/common/cloud/Replica)
-    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+      core:org/apache/solr/core/snapshots/CollectionSnapshotMetaData)
     ;;
   # Bug study #26: a RESTORE into a new collection marks its shards
   # CONSTRUCTION and ACTIVE only at its end; a retry into the collection it
@@ -123,8 +106,7 @@ case "${1:?usage: case.sh <bug>}" in
     target_occurrence='auto0/client0#epoch0/region/REGION.9c74b1fc-0155-3e44-b37f-0634809064c9#3'
     scope=(
       core:org/apache/solr/cloud/api/collections/RestoreCmd
-      solrj:org/apache/solr/common/cloud/HashBasedRouter
-      solrj:org/apache/solr/common/cloud/Slice)
+      solrj:org/apache/solr/common/cloud/HashBasedRouter)
     ;;
   # Bug study #20: a time routed alias's first document fixes the start its
   # date math names by writing the routing node's captured view of every
@@ -140,8 +122,6 @@ case "${1:?usage: case.sh <bug>}" in
     target_occurrence='auto0/client0#epoch0/region/REGION.d05f0711-30a1-3795-816a-5d70c9e38216#6'
     scope=(
       core:org/apache/solr/cloud/api/collections/TimeRoutedAlias
-      solrj:org/apache/solr/common/cloud/ZkStateReader
-      solrj:org/apache/solr/common/cloud/Aliases
       solrj:org/apache/solr/client/solrj/impl/BaseCloudSolrClient)
     ;;
   *)

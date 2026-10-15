@@ -69,6 +69,12 @@ public final class ContentPort {
         return site != null && site.indexOf(VIEWED) > 0;
     }
 
+    /** A path or pointer as a site spells it ({@code |} for {@code /}):
+     *  a plan's content keys name their pointers so. */
+    public static String spelled(String path) {
+        return site(path);
+    }
+
     // Java 8's String.replace(CharSequence, CharSequence) compiles a
     // pattern per call: only where there is something to escape.
     private static String site(String path) {

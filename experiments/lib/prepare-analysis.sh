@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prepare-analysis.sh <case-dir> <case-id> -- copies the case's analysis
-# scope, as its case.sh declares it, into the classes directory the weave
-# reads.  One copy of the helpers for every case.
+# scope, as its case.sh declares it, and its system's (system_scope) into the
+# classes directory the weave reads.  One copy of the helpers for every case.
 set -euo pipefail
 lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
@@ -39,7 +39,7 @@ copy() {
   echo "${case_name}/case.sh declares no analysis scope for '${case_id}'" >&2
   exit 2
 }
-for entry in "${scope[@]}"; do
+for entry in "${scope[@]}" "${system_scope[@]}"; do
   rootname=${entry%%:*}
   path=${entry#*:}
   exact=false

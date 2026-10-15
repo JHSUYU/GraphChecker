@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
@@ -9,6 +10,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
@@ -28,11 +30,16 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** GROW's planner (PIPELINE §7.8): the next generation's whole plan, {@code
  *  --iteration <dir> --plan <the generation's plan> --growth <growth.jsonl>
- *  --output <jsonl>}.  Its rows are the plan's, each UNPLANNED_INPUT row's
- *  invocation added to its task as an input of its own ({@link #grown}),
- *  then one row per EXPOSED_REGION row: a region-path task on that exact
- *  address, with static inputs only (cut ports, declared CALL_RETURN sites),
- *  sharing the plan's {@code replayGroupId}. */
+ *  --output <jsonl> [--zk-chain <the chain> --zk-chain-output <jsonl>]}.
+ *  Its rows are the plan's, each UNPLANNED_INPUT row's invocation added to
+ *  its task as an input of its own ({@link #grown}), then one row per
+ *  EXPOSED_REGION row, and per {@value ZkChain#EDGE} row whose occurrence
+ *  the plan holds no task for and whose region is a candidate skeleton: a
+ *  region-path task on that exact address, with static inputs only (cut
+ *  ports, declared CALL_RETURN sites), sharing the plan's {@code
+ *  replayGroupId}.  The generation's ZooKeeper chain is the one before it
+ *  with each ZK_EDGE row's path and occurrence appended ({@link
+ *  ZkChain#grown}), a seed's edge (no session) as well as a replay's. */
 public final class ExposedRegionPlanMain {
     /** The growth row kinds this main answers. */
     public static final String EXPOSED_REGION = "EXPOSED_REGION";
@@ -47,7 +54,8 @@ public final class ExposedRegionPlanMain {
 
     public static void main(String[] args) throws Exception {
         Map<String, String> values = ConcolicScheduler.parseArgs(args,
-                "iteration", "static-scope-map", "plan", "growth", "output");
+                "iteration", "static-scope-map", "plan", "growth", "output",
+                "zk-chain", "zk-chain-output");
         Path iteration = ConcolicScheduler.requiredPath(values, "iteration");
         Path scopeMap = ConcolicScheduler.requiredPath(values,
                 "static-scope-map");
@@ -56,8 +64,48 @@ public final class ExposedRegionPlanMain {
         Path output = ConcolicScheduler.requiredPath(values, "output");
         List<JsonObject> rows = ArtifactIO.readJsonl(growth);
         List<JsonObject> generation = grown(ArtifactIO.readJsonl(plan), rows);
-        generation.addAll(plan(iteration, scopeMap, rows));
+        generation.addAll(plan(iteration, scopeMap, rows, generation));
+        // A chain the plan states, or one its edges start: a system with
+        // none (no ZooKeeper) gets none.
+        ZkChain chain = ZkChain.read(values.containsKey("zk-chain")
+                ? ConcolicScheduler.requiredPath(values, "zk-chain")
+                : null).grown(rows);
+        if (values.containsKey("zk-chain-output") && !chain.empty()) {
+            keyed(generation, rows, chain);
+            chain.write(ConcolicScheduler.requiredPath(values,
+                    "zk-chain-output"));
+        }
         ArtifactIO.replaceJsonl(output, generation);
+    }
+
+    /**
+     * Each task row of a {@value ZkChain#EDGE} row's occurrence states the
+     * leaf prefixes the grown chain keys it by ({@value
+     * ZkChain#CONTENT_KEYS}, added to any it stated): a leaf outside them
+     * crosses as its value.  The chain stating none for it, the row keeps
+     * what it had (no member: the whole document).
+     */
+    static void keyed(List<JsonObject> generation, List<JsonObject> growth,
+                      ZkChain chain) {
+        Set<String> edged = new LinkedHashSet<>();
+        for (JsonObject row : growth) {
+            if (ZkChain.EDGE.equals(optionalString(row, "kind"))) {
+                edged.add(optionalString(row, "occurrence"));
+            }
+        }
+        for (JsonObject task : generation) {
+            String occurrence = optionalString(task, "occurrenceId");
+            JsonArray grown = edged.contains(occurrence)
+                    ? chain.contentKeys(occurrence) : new JsonArray();
+            if (grown.size() == 0) continue;
+            JsonArray keys = task.has(ZkChain.CONTENT_KEYS)
+                    ? task.getAsJsonArray(ZkChain.CONTENT_KEYS)
+                    : new JsonArray();
+            for (JsonElement key : grown) {
+                if (!keys.contains(key)) keys.add(key);
+            }
+            task.add(ZkChain.CONTENT_KEYS, keys);
+        }
     }
 
     /**
@@ -120,15 +168,25 @@ public final class ExposedRegionPlanMain {
 
     /** Growth runs mid-exploration: the scope map is the one the wave
      *  planner read, never the iteration manifest (written only once the
-     *  exploration ends). */
+     *  exploration ends).  {@code planned}: the generation's rows so far,
+     *  whose occurrences a ZK_EDGE row plans no second task for. */
     static List<JsonObject> plan(Path iteration, Path scopeMapFile,
-                                 List<JsonObject> growth)
+                                 List<JsonObject> growth,
+                                 List<JsonObject> planned)
             throws IOException {
-        boolean exposedAny = false;
-        for (JsonObject row : growth) {
-            exposedAny |= EXPOSED_REGION.equals(optionalString(row, "kind"));
+        Set<String> tasked = new LinkedHashSet<>();
+        for (JsonObject task : planned) {
+            tasked.add(optionalString(task, "occurrenceId"));
         }
-        if (!exposedAny) return new ArrayList<>();
+        List<JsonObject> exposures = new ArrayList<>();
+        for (JsonObject row : growth) {
+            String kind = optionalString(row, "kind");
+            if (EXPOSED_REGION.equals(kind) || ZkChain.EDGE.equals(kind)
+                    && !tasked.contains(optionalString(row, "occurrence"))) {
+                exposures.add(row);
+            }
+        }
+        if (exposures.isEmpty()) return new ArrayList<>();
         StaticScopeMap scopeMap = StaticScopeMap.read(scopeMapFile);
         if (!scopeMap.stated()) {
             throw new IOException("static scope map states no site: "
@@ -155,20 +213,29 @@ public final class ExposedRegionPlanMain {
         List<RegionInstancePlan> exposed = new ArrayList<>();
         List<String> exposedBy = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
-        for (JsonObject row : growth) {
-            if (!EXPOSED_REGION.equals(optionalString(row, "kind"))) continue;
+        for (JsonObject row : exposures) {
             OccurrenceAddress address = OccurrenceAddress.parse(
                     optionalString(row, "occurrence"));
-            String regionId = optionalString(row, "regionId");
+            String regionId = address.regionId();
             String sessionId = optionalString(row, "sessionId");
-            if (!regionId.equals(address.regionId())
+            boolean edge = ZkChain.EDGE.equals(optionalString(row, "kind"));
+            if (!edge && (!optionalString(row, "regionId").equals(regionId)
                     || !optionalString(row, "node").equals(
-                    address.node().render()) || sessionId.isEmpty()) {
+                    address.node().render()) || sessionId.isEmpty())) {
                 throw new IOException("EXPOSED_REGION row contradicts its "
                         + "occurrence address or names no session: " + row);
             }
             if (!seen.add(address.render())) continue;
             StaticProgram.RegionRow skeleton = skeletons.get(regionId);
+            if (skeleton == null && edge) {
+                // Work under no candidate region (a role's, a test
+                // thread's) runs as recorded: its path joins the chain,
+                // and no task can hold it.
+                System.out.println(ZkChain.EDGE + " " + address.render()
+                        + ": no candidate skeleton is " + regionId
+                        + ", so no task holds it; its path joins the chain");
+                continue;
+            }
             if (skeleton == null) {
                 throw new IOException("EXPOSED_REGION_UNKNOWN: no candidate "
                         + "skeleton is " + regionId + " (" + skeletonFile

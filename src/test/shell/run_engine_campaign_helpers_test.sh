@@ -5612,6 +5612,60 @@ printf '%s\n' \
 ) || fail "GROW-2 failed"
 reset_config
 
+# GROW-2 ZK_EDGE: store edges past the ZooKeeper chain that only the seed
+# showed (no re-run): the doors-only occurrence loses its mark, GROW's
+# planner writes the generation's plan and its chain (the iteration's chain
+# linked to it), a task row it adds is woven, and a round is owed.
+growzk="${test_tmp}/growzk"
+mkdir -p "${growzk}/obligations-0003" "${growzk}/instrumented-classes" \
+  "${growzk}/seed-replay"
+printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
+  >"${growzk}/execution_task_plan.jsonl"
+printf '%s\n' '{"schemaVersion":1,"kind":"ZK_CHAIN_OCCURRENCE","occurrenceId":"A#1"}' \
+  >"${growzk}/zk_chain.jsonl"
+printf '%s\n' \
+  '{"kind":"ZK_EDGE","transport":"SOLR_ZK","location":"/s","version":2,"occurrence":"W#1","sessionId":"","obligationId":""}' \
+  '{"kind":"ZK_EDGE","transport":"SOLR_ZK","location":"/s","version":3,"occurrence":"Z#1","sessionId":"","obligationId":""}' \
+  >"${growzk}/obligations-0003/growth.jsonl"
+(
+  iteration_dir=${growzk}
+  stream_plan=${growzk}/execution_task_plan.jsonl
+  stream_classes=${growzk}/instrumented-classes
+  stream_generation=0
+  stream_dirty=0
+  stream_hold=0
+  stream_queue=()
+  declare -A stream_queued_at=()
+  run_java_main() {
+    local args=" $* " plan output
+    [[ "${args}" == *" --zk-chain ${growzk}/zk_chain.jsonl "* \
+        && "${args}" == *" --zk-chain-output ${growzk}/generations/g1/zk_chain.jsonl "* ]] \
+      || fail "GROW's planner was not handed the chain and the generation's: $*"
+    plan=${args##* --plan }
+    plan=${plan%% *}
+    output=${args##* --output }
+    output=${output%% *}
+    { cat "${plan}"; printf '{"occurrenceId":"Z#1","taskId":"T.Z"}\n'; } \
+      >"${output}"
+    { cat "${growzk}/zk_chain.jsonl"
+      printf '{"schemaVersion":1,"kind":"ZK_CHAIN_OCCURRENCE","occurrenceId":"Z#1"}\n'
+    } >"${growzk}/generations/g1/zk_chain.jsonl"
+  }
+  campaign_instrument() { : >"${growzk}/wove"; }
+  campaign_stream_grow "${growzk}/obligations-0003" >/dev/null
+  jq -e -s 'length == 2 and .[0].doorsOnly == null and .[1].taskId == "T.Z"' \
+    "${growzk}/generations/g1/execution_task_plan.jsonl" >/dev/null \
+    || fail "the generation did not unpause W#1 and plan Z#1"
+  [[ "$(stat -c %i "${growzk}/zk_chain.jsonl")" \
+      == "$(stat -c %i "${growzk}/generations/g1/zk_chain.jsonl")" ]] \
+    || fail "the iteration's chain is not the generation's"
+  [[ -f "${growzk}/wove" && ${#stream_queue[@]} -eq 0 \
+      && "${stream_dirty}" == 1 ]] \
+    || fail "a new task row wove nothing, a seed edge queued a re-run, or \
+no round was owed"
+) || fail "GROW-2 ZK_EDGE failed"
+reset_config
+
 
 # GROW-CONFIRM: a witness's confirmation holds GROW's swap (Z2M).  OB.x's
 # session observed the fatal and exposed a region: its attempt claims and
