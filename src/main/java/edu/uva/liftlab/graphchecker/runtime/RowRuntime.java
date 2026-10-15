@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Digests;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -697,7 +698,7 @@ public final class RowRuntime {
         READERS.computeIfAbsent(Confirmation.key(view, version),
                 key -> new Readers(at, view, version)).count.incrementAndGet();
         session.read(ReadRow.of(sessionId(), sequence(position.seq), at, view,
-                version, "V_" + ArtifactIO.digest(at.id(), 16), "J",
+                version, "V_" + Digests.digest(at.id(), 16), "J",
                 Long.toString(version)).withTie(position.tie));
         Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
         FocusedReplay.viewRead(at, version);
@@ -711,7 +712,7 @@ public final class RowRuntime {
 
     /** The symbol of one store version's reads. */
     static String storeSymbol(LocationId location, long version) {
-        return "S_" + ArtifactIO.digest(location.owner() + "#"
+        return "S_" + Digests.digest(location.owner() + "#"
                 + location.slot() + "#" + version, 16);
     }
 

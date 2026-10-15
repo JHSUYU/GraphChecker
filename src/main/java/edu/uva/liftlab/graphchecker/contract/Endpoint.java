@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -129,7 +128,7 @@ public final class Endpoint extends Value {
     public String id() {
         String digested = id;
         if (digested == null) {
-            digested = ArtifactIO.digest(occurrence.id() + "/" + site + "/"
+            digested = Digests.digest(occurrence.id() + "/" + site + "/"
                     + siteIndex.hash() + "/" + attempt, 16);
             id = digested;
         }

@@ -5,6 +5,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.Digests;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
@@ -15,7 +16,6 @@ import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -1325,8 +1325,7 @@ final class RootMint {
             throw new IllegalArgumentException(
                     "manual primitive mint requires symbol and occurrence");
         }
-        return requested + ".occ."
-                + ArtifactIO.sha256(occurrence);
+        return requested + ".occ." + Digests.sha256(occurrence);
     }
 
     /**

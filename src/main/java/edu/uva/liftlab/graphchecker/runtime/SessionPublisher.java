@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -227,16 +228,20 @@ public final class SessionPublisher {
     }
 
     /** The rows, each a line of its file, as engine work ({@link
-     *  ConcolicVmBroker#asEngineWork}). */
+     *  ConcolicVmBroker#asEngineWork}): serialized before the session's
+     *  lock, which every thread that states a row takes, so it is held only
+     *  while the lines are written. */
     private void append(Path file, List<JsonObject> rows) {
         ConcolicVmBroker.asEngineWork(() -> {
+            List<String> lines = new ArrayList<String>(rows.size());
+            for (JsonObject row : rows) lines.add(RowCodec.toLine(row));
             synchronized (LOCK) {
                 if (failed || closed) return;
                 try {
                     BufferedWriter writer = writer(file);
                     if (writer == null) return;
-                    for (JsonObject row : rows) {
-                        writer.write(RowCodec.toLine(row));
+                    for (String line : lines) {
+                        writer.write(line);
                         writer.newLine();
                     }
                     writer.flush();

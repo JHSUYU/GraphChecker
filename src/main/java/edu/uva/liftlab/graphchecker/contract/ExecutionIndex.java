@@ -4,8 +4,6 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * CONTRACT-SPEC §1, IDENTITY §3: where in a component's control structure a
@@ -17,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * indices a replay builds are only rendered (a logged event's site index),
  * and a SHA-256 per frame per index was the publication thread's hot spot
  * in the concolic interpreter.  Folds repeat wherever indices share a
- * prefix, so each one is memoized.</p>
+ * prefix, so each one is held ({@link Digests}).</p>
  */
 public final class ExecutionIndex extends Value {
     /** The fold's seed: the hash of the index with no frames at all. */
@@ -90,22 +88,9 @@ public final class ExecutionIndex extends Value {
         return text;
     }
 
-    /** The most folds {@link #FOLDS} holds before it starts over. */
-    private static final int FOLDS_HELD = 1 << 14;
-
-    /** Each fold by its SHA-256 input. */
-    private static final Map<String, String> FOLDS =
-            new ConcurrentHashMap<String, String>();
-
     private static String fold(String hash, Frame frame) {
-        String input = hash + "/" + frame.callSite() + "@" + frame.iteration();
-        String folded = FOLDS.get(input);
-        if (folded == null) {
-            folded = ArtifactIO.digest(input, 16);
-            if (FOLDS.size() >= FOLDS_HELD) FOLDS.clear();
-            FOLDS.put(input, folded);
-        }
-        return folded;
+        return Digests.digest(hash + "/" + frame.callSite() + "@"
+                + frame.iteration(), 16);
     }
 
     @Override

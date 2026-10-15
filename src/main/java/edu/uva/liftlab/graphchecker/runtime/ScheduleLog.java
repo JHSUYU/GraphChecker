@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -1999,6 +2000,26 @@ public final class ScheduleLog {
      * misses each of them in turn.
      */
     static String familyOf(String context) {
+        String held = FAMILIES.get(context);
+        if (held != null) return held;
+        String family = family(context);
+        if (FAMILIES.size() >= FAMILIES_HELD) FAMILIES.clear();
+        FAMILIES.put(context, family);
+        return family;
+    }
+
+    /**
+     * Each context's family, computed once while held: the watchdog asks
+     * the family of the frontier's context at every turn it watches, and a
+     * regular expression per ask in the concolic interpreter was a fifth of
+     * 18413's seed's schedule time.  Bounded: past {@link #FAMILIES_HELD}
+     * contexts it starts over.
+     */
+    private static final Map<String, String> FAMILIES =
+            new ConcurrentHashMap<String, String>();
+    private static final int FAMILIES_HELD = 1 << 14;
+
+    private static String family(String context) {
         int node = context.indexOf('|');
         int frames = node < 0 ? -1 : context.indexOf('|', node + 1);
         String shape = frames < 0 ? context : context.substring(0, frames);

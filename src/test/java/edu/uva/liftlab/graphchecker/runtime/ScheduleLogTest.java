@@ -12,6 +12,7 @@ import static edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WRITE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonObject;
@@ -2907,6 +2908,10 @@ public class ScheduleLogTest {
                 "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0"));
         assertEquals("n|Anchor:*@SOLR_HTTP/test", ScheduleLog.familyOf(
                 "n|Anchor:813cbf610082e340@SOLR_HTTP/test"));
+        // Computed once per context: the watchdog asks at every turn.
+        String context = "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0";
+        assertSame(ScheduleLog.familyOf(context),
+                ScheduleLog.familyOf(new String(context)));
         timeout(6000L);
         enforce(Arrays.asList(
                 ScheduleEvent.of(0L, SEND, "gone|Root:G#1", "n1", 0, ""),

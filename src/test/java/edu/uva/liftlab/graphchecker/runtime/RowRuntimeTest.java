@@ -265,6 +265,34 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A row is written whole, as its codec spells it, under the session's
+     * lock -- spelled before it, since every thread stating a row takes it,
+     * so it is held only while lines are written: a row stated while
+     * another thread holds the lock lands once that thread lets go.
+     */
+    @Test(timeout = 60000L)
+    public void aRowIsWrittenWholeUnderTheSessionLock() throws Exception {
+        GapRow row = GapRow.of("s", GapKind.UNSTATED_VALUE,
+                GapClass.DIAGNOSTIC, "held", "stated while the lock is held");
+        SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
+                "locked");
+        SessionPublisher session = SessionPublisher.at(layout);
+        Thread stating = new Thread(() -> session.gap(row));
+        synchronized (Fixtures.get(SessionPublisher.class, "LOCK")) {
+            stating.start();
+            while (stating.getState() != Thread.State.BLOCKED) {
+                Thread.yield();
+            }
+            assertEquals(0L, Files.size(layout.gaps()));
+        }
+        stating.join();
+        assertEquals(RowCodec.toLine(RowCodec.writeGap(row))
+                        + System.lineSeparator(),
+                new String(Files.readAllBytes(layout.gaps()),
+                        StandardCharsets.UTF_8));
+    }
+
+    /**
      * An occurrence opened Lost folds what is entered still Lost; a hop that
      * gives the thread a context names its region for the hop's life, and
      * what is entered under it folds into that occurrence (a DataXceiver

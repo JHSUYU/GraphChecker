@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 /**
  * CONTRACT-SPEC §1, IDENTITY §1: the one address of a region occurrence,
@@ -149,7 +148,7 @@ public final class OccurrenceAddress extends Value {
     public String id() {
         String digested = id;
         if (digested == null) {
-            digested = ArtifactIO.digest(node.render() + "/" + regionId + "/"
+            digested = Digests.digest(node.render() + "/" + regionId + "/"
                     + context.render() + "/" + index.hash(), 16);
             id = digested;
         }

@@ -709,6 +709,9 @@ public class ContractTest {
         assertEquals(anchored.id(),
                 OccurrenceAddress.parse(anchored.render()).id());
         assertEquals(16, anchored.id().length());
+        // An id built anew of the same input is hashed once (Digests).
+        assertSame(anchored.id(),
+                OccurrenceAddress.parse(anchored.render()).id());
         assertFalse(anchored.lineageLost());
         assertEquals(3, anchored.index().frames().size());
 
