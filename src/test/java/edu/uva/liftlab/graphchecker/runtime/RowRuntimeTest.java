@@ -295,6 +295,45 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A read-out page is decoded on its own thread, beside the publications:
+     * a publication runs while a page decodes (on the one publication thread
+     * it waited), and a read-out's publication reads it once every page it
+     * handed on is decoded, refusals included.
+     */
+    @Test(timeout = 60000L)
+    public void aReadOutDecodesBesideThePublications() throws Exception {
+        java.util.concurrent.CountDownLatch decoding =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        String[] ran = new String[1];
+        assertTrue(ConcolicResultPublisher.decodeBeforePublication(1L, () -> {
+            ran[0] = Thread.currentThread().getName();
+            decoding.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        decoding.await();
+        java.util.concurrent.CountDownLatch published =
+                new java.util.concurrent.CountDownLatch(1);
+        ((java.util.concurrent.Executor) Fixtures.get(
+                ConcolicResultPublisher.class,
+                "RESULT_PUBLICATION_EXECUTOR")).execute(published::countDown);
+        assertTrue(published.await(30L, TimeUnit.SECONDS));
+        release.countDown();
+        assertTrue(ran[0], ran[0].startsWith("causynth-read-out-decode-"));
+        SharedStateCapture.SharedStateReadOut readOut =
+                new SharedStateCapture.SharedStateReadOut();
+        assertTrue((Boolean) call(readOut, "decodeLater", new Class<?>[] {
+                String.class, ActiveRegion.class}, "{}", null));
+        readOut.awaitDecoded();
+        assertEquals(1, ((List<?>) Fixtures.get(readOut, "refusals")).size());
+    }
+
+    /**
      * A row is written whole, as its codec spells it, under the session's
      * lock -- spelled before it, since every thread stating a row takes it,
      * so it is held only while lines are written: a row stated while

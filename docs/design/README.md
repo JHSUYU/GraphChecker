@@ -140,7 +140,8 @@ to the message object, and a getter attaches the element of the message it reads
 exported where the weave captured it. The engine's own plumbing (its runtime classes, generated messages and
 builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
 
-*Read-out.* Read-out pages stream to the publication thread as they are captured.
+*Read-out.* Read-out pages stream to their own decoding thread as they are captured; an activation's
+publication, on the publication thread, waits for its own pages only.
 
 **6. IMPORT** checks the row invariants and publishes the seed session.
 

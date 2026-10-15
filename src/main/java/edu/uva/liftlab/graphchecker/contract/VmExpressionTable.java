@@ -63,7 +63,7 @@ public final class VmExpressionTable {
     /**
      * Decodes a region's VM envelopes, each VM node one object however many
      * envelopes name it.  Shared by the threads that decode into it (a
-     * region's owner, its branch windows; the publication thread, its
+     * region's owner, its branch windows; the decoding thread, its
      * read-out pages), it is locked only while a node is expanded or an
      * envelope's table is imported, never while text is parsed or a decoded
      * record is consumed: held across a whole read-out page, its decoding

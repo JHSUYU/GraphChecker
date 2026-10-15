@@ -622,8 +622,10 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   resume neither repeats nor skips a location (`SFV`). A page is cut only between locations, once
   its text and table reach `maxBytes` (its first location goes whatever its size), and carries the
   expression table of what its locations name, last: every page repeats the closure its locations
-  share. The engine hands each page to its publication thread as it is read, once fewer than four
-  pages' text wait there undecoded, and decodes it there one location at a time
+  share. The engine hands each page to its decoding thread as it is read, once fewer than four
+  pages' text wait there undecoded, and decodes it there one location at a time, beside the
+  publications (an activation's publication waits for its own pages,
+  `SharedStateCapture.SharedStateReadOut#awaitDecoded`)
   (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
   (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
   its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`).
