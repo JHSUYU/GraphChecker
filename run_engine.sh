@@ -3207,15 +3207,16 @@ campaign_solver_idle_s=300
 
 # A SOLVER'S HEAP IS ITS CORPUS'S.  Its live set is the corpus it reads,
 # about its session files' size (campaign_corpus_mb) times
-# campaign_solver_live_pct, measured after a full collection: solr-adhoc-39
-# PV7 6453 MB over 9974 MB of sessions (65 %), solr-18413 SGF6 4595 over
-# 5450 (84 %), solr-bugs-snapshot-no-active SGF6 3102 over 4950 (63 %); a
-# question's lowering and query add little beside it (39's 20 MB query: 13
-# MB more live).  Started at a fixed 2 GB, 39's host solvers collected
-# garbage until the JVM gave up ("GC overhead limit exceeded") at 2, 4 and 8
-# GB, each death losing every question it held to a solver JVM of its own (a
-# 1-4 min corpus read at 16 GB each: 113 of them).
-campaign_solver_live_pct=85
+# campaign_solver_live_pct, measured after a full collection with the
+# expression tables compact (ExpressionTable): solr-adhoc-39 PV7 3493 MB over
+# 9974 MB of sessions (35 %), solr-18413 SGF6 2527 over 5450 (46 %),
+# solr-bugs-snapshot-no-active SGF6 1554 over 4792 (32 %) -- as gson trees
+# 6453, 4576 and 3086 MB; a question's lowering and query add little beside
+# it (39's 20 MB query: 13 MB more live).  Started at a fixed 2 GB, 39's host
+# solvers collected garbage until the JVM gave up ("GC overhead limit
+# exceeded") at 2, 4 and 8 GB, each death losing every question it held to a
+# solver JVM of its own (a 1-4 min corpus read at 16 GB each: 113 of them).
+campaign_solver_live_pct=50
 # The heap a solver needs for a live set, in % of it: the parallel
 # collector's room to work (at 120 % of 39's live set its corpus read spent
 # 40-61 s of 120-177 s collecting, at 250 % 19 s of 71 s).

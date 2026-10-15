@@ -2445,7 +2445,7 @@ $(cat "${retry_test}/fails/solve_owed")"
 
 # SOLVER-HEAP: a corpus's solver is sized by its session files
 # (campaign_corpus_mb, stated beside the corpus): the heap its live set needs
-# now (85 % of them, at 150 % for the collector, at least 2048 MB, never less
+# now (50 % of them, at 150 % for the collector, at least 2048 MB, never less
 # than a heap a solver of it ran out of), room to grow to twice that, up to
 # the engine heap; charged that need's footprint and a question's z3 room
 # (1152 MB); and a host's solver gives its corpus up past what its heap holds
@@ -2473,14 +2473,15 @@ while IFS='|' read -r sh_engine sh_corpus sh_outgrown sh_heap sh_need \
     || fail "engine ${sh_engine}, corpus ${sh_corpus} MB, outgrown \
 [${sh_outgrown}]: ${sh_said}, not ${sh_heap} ${sh_need} ${sh_retire}"
 done <<'EOF_HEAP'
-16384|0||4096|3712|3212
-16384|3000||7650|5600|6000
-16384|9974||16384|15046|0
-16384|0|2048|4096|3712|3212
+16384|0||4096|3712|5461
+16384|3000||4500|3926|6000
+16384|9974||14960|9483|19946
+16384|20000||16384|17473|0
+16384|0|2048|4096|3712|5461
 16384|0|2048 4096 8192|16384|10240|0
 6144|0|2048 4096|6144|5888|0
 1024|0||1024|2624|0
-16384|0|4096 2048|8192|5888|6425
+16384|0|4096 2048|8192|5888|10922
 EOF_HEAP
 # The corpus's size is read again once its statement is past
 # campaign_corpus_mb_fresh_s, from the session files.

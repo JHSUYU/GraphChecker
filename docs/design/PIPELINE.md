@@ -951,9 +951,9 @@ resident memory grows past that as it grows, by a running JVM's rule (`campaign_
 refused only when the host's real use would pass the ceiling, and then the JVM is ended). Its heap,
 and that of a question's own JVM, is its corpus's (`campaign_solver_heap_mb`): the corpus's session files
 (`campaign_corpus_mb`, du's reading stated beside the corpus for 60 s) times `campaign_solver_live_pct`
-(85 %: the live set after a full collection was 65 % of them on solr-adhoc-39 PV7, 6453 MB over 9974 MB, 84 %
-on solr-18413, 63 % on snapshot-no-active) at `campaign_solver_gc_pct` (150 %) for the collector, at least
-2 GB (`campaign_solver_now_mb`), and room for the corpus to double, up to the engine heap; it is charged the
+(50 %: with the expression tables compact, the live set after a full collection was 35 % of them on
+solr-adhoc-39 PV7, 3493 MB over 9974 MB, 46 % on solr-18413, 32 % on snapshot-no-active; 65-84 % as gson
+trees) at `campaign_solver_gc_pct` (150 %) for the collector, at least 2 GB (`campaign_solver_now_mb`), and room for the corpus to double, up to the engine heap; it is charged the
 footprint of what it needs now (`campaign_solver_need_mb`) and grows as watched. A solver that ran out of a
 heap anyway (`-XX:+ExitOnOutOfMemoryError`, exit 3) states it beside the corpus (`campaign_solver_outgrown`,
 `solver_outgrown_mb`), and every later one needs at least that. Started at a fixed 2 GB, 39's host solvers
