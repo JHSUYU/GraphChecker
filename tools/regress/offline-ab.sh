@@ -142,12 +142,12 @@ ab_heap() {
 # wall time, peak RSS and host go to <stage-dir>/status.
 ab_props=()
 ab_java() {
-  local dir=$1 heap=$2 cp=$3 main=$4 code=0 wall rss zheap
+  local dir=$1 heap=$2 cp=$3 main=$4 code=0 wall rss zheap room
   shift 4
-  # A main that starts z3 is told its z3 room and charged it beside its
-  # heap, the room the campaign gives it (run_engine.sh campaign_z3_room_mb):
-  # a composer's for the heap the case's composer starts at, whatever
-  # AB_HEAP_MB caps this one's at, so both ask at the same caps.
+  # A main that starts z3 is placed with its z3 room beside its heap and
+  # given what its host admits then, as the campaign places it (run_engine.sh
+  # campaign_z3_room_mb, campaign_z3_room_grant): a composer's for the heap
+  # the case's composer starts at, whatever AB_HEAP_MB caps this one's at.
   zheap=${heap}
   [[ "${main}" != *.ComposeMain ]] \
     || zheap=$(engine_memory_mb=$(ab_cfg engine_memory_mb) \
@@ -158,9 +158,14 @@ ab_java() {
     "${ab_java_bin}" "${campaign_engine_stack}"
     "-Dcausynth.loop.default.bound=${ab_loop_bound}"
     "-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)"
-    "${ab_props[@]}" -cp "${cp}" "${main}" "$@"
-    $(campaign_z3_room_args "${main}" "${zheap}"))
-  ab_place "$(( heap + $(campaign_z3_room_mb "${main}" "${zheap}") ))"
+    "${ab_props[@]}" -cp "${cp}" "${main}" "$@")
+  room=$(campaign_z3_room_mb "${main}" "${zheap}")
+  ab_place "$(( heap + room ))"
+  campaign_z3_room_grant_id=""
+  if (( room > 0 )); then
+    campaign_z3_room_grant "${ab_placed_host}" "${room}"
+    run+=(--z3-room-mb "${campaign_z3_room_granted_mb}")
+  fi
   if campaign_host_is_local "${ab_placed_host}"; then
     (cd "${dir}" && "${run[@]}") \
       >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?
@@ -169,6 +174,8 @@ ab_java() {
 && $(printf '%q ' "${run[@]}")" \
       >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?
   fi
+  [[ -z "${campaign_z3_room_grant_id}" ]] \
+    || campaign_host_release "${ab_placed_host}" "${campaign_z3_room_grant_id}"
   campaign_host_release "${ab_placed_host}" "${ab_placed_charge}"
   read -r wall rss < <(tail -n 1 "${dir}/time.txt" 2>/dev/null) || true
   printf 'exit=%s wall_s=%s rss_mb=%s host=%s\n' "${code}" "${wall:-?}" \

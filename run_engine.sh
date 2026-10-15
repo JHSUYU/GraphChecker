@@ -531,6 +531,7 @@ campaign_engine_stack=-Xss512m
 engine_java() {
   local heap=${engine_memory_mb:-8192} main="" start index next status
   local out
+  local -a room=()
   for (( index = 1; index < $#; index++ )); do
     [[ "${!index}" == -cp ]] || continue
     next=$((index + 2))
@@ -546,12 +547,13 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "$(campaign_jvm_charge_mb "${main}" "${start}")" \
+    campaign_z3_room_flag room "${main}" "${start}"
+    campaign_head_charged "${room[@]}" \
+      "$(campaign_jvm_charge_mb "${main}" "${start}")" \
       campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
-      $(campaign_z3_room_args "${main}" "${start}") \
       >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
       cat -- "${out}"
@@ -566,12 +568,13 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "$(campaign_jvm_charge_mb "${main}" "${heap}")" \
+  campaign_z3_room_flag room "${main}" "${heap}"
+  campaign_head_charged "${room[@]}" \
+    "$(campaign_jvm_charge_mb "${main}" "${heap}")" \
     campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
-    $(campaign_z3_room_args "${main}" "${heap}")
+    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@"
 }
 
 # THE z3 ROOM.  Every z3 the engine starts is capped (smt/Z3: z3's own
@@ -579,20 +582,26 @@ ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
 # the JVM that starts it is charged its footprint and a z3 room, the caps it
 # may run at once, so the ledger sees its z3s (SGF3-adhoc-13: a composer
 # charged its 8.9 GB footprint ran a z3 that grew to 10.9 GB in 20 minutes,
-# swap full, its host unreachable for a minute).  A composer's room is
-# campaign_compose_z3_room_mb, less where its footprint, the room and
-# campaign_z3_room_margin_mb would not fit under the host's ceiling
-# (CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal; the lifts are alike),
-# so its charge always leaves real room a host can admit -- a composer whose
-# footprint leaves less than campaign_z3_least_room_mb runs in that, saying
-# so (engine_java): a lone ask's engines take half the room each, four
-# valuations asked together an eighth, a path ask 768 MB (smt/Z3#shared,
-# #slotted), so 3072 MB holds two path asks at once (6144 MB beside an 8 GB
-# start heap, every head reserving it too, found no host on a full pool:
-# campaign_engine_need_mb).  A solver's is a question's, in its first lane
+# swap full, its host unreachable for a minute).  A composer's room is what
+# its host admits beside it when its step runs: placed with
+# campaign_compose_z3_least_room_mb, one pair of scoped z3s at 1024 MB each
+# (smt/Z3Incremental#PAIR_SLOT_MB) -- less where its footprint and that
+# would not fit under the host's ceiling (CAUSYNTH_HOST_MAX_USED_PCT of this
+# host's MemTotal; the lifts are alike), at least campaign_z3_least_room_mb,
+# said (engine_java) -- it is given on the host its step was placed on
+# whatever the ledger admits there beside it then, up to
+# campaign_compose_z3_most_room_mb, the most its z3s run at once
+# (campaign_z3_room_grant, campaign_head_charged --room): its scoped z3s run
+# as many plain pairs as the room holds beside the tracking one, a lone
+# ask's engines take half of it each, four valuations asked together an
+# eighth (smt/Z3Incremental, Z3#shared).  A fixed 3072 MB held one pair of
+# z3s on any host, however much of a 30 GB lift stood idle beside the
+# composer.  A solver's is a question's, in its first lane
 # (campaign_solver_z3_room_mb).  A main that starts no z3 has none.
-campaign_compose_z3_room_mb=3072
-campaign_z3_room_margin_mb=2048
+campaign_compose_z3_least_room_mb=2048
+# Eight plain pairs (compose.Disjunction#PATH_ASKS) and the tracking one, at
+# 1024 MB a z3.
+campaign_compose_z3_most_room_mb=18432
 # The least room smt/Z3 holds a run in (Z3.Room).
 campaign_z3_least_room_mb=256
 campaign_z3_room_mb() {
@@ -608,12 +617,45 @@ campaign_z3_room_mb() {
   esac
   limit=$(campaign_host_limit_mb "$(campaign_host_total_mb localhost \
     | tail -n 1)")
-  room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") \
-    - campaign_z3_room_margin_mb ))
-  (( room <= campaign_compose_z3_room_mb )) \
-    || room=${campaign_compose_z3_room_mb}
+  room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") ))
+  (( room <= campaign_compose_z3_least_room_mb )) \
+    || room=${campaign_compose_z3_least_room_mb}
   (( room >= campaign_z3_least_room_mb )) || room=${campaign_z3_least_room_mb}
   printf '%s\n' "${room}"
+}
+
+# campaign_z3_room_flag <array> <main> <heap_mb>: <array> set to what
+# campaign_head_charged is told of a JVM of <main> at <heap_mb>'s z3 room --
+# --room and the room it is placed with, given what its host admits
+# (campaign_z3_room_grant) -- or to nothing for a main that starts no z3.
+campaign_z3_room_flag() {
+  local -n flag=$1
+  local mb
+  mb=$(campaign_z3_room_mb "$2" "$3")
+  flag=()
+  (( mb == 0 )) || flag=(--room "${mb}")
+}
+
+# campaign_z3_room_grant <host> <room_mb>: a JVM placed on <host> with a z3
+# room of <room_mb> is given what the ledger admits there beside it now
+# (campaign_host_room: under the host's ceiling, less what a head holds
+# there), up to campaign_compose_z3_most_room_mb in all, charged and held by
+# this shell: its room campaign_z3_room_granted_mb, the charge added
+# campaign_z3_room_grant_id (empty: none).
+campaign_z3_room_granted_mb=0
+campaign_z3_room_grant_id=""
+campaign_z3_room_grant() {
+  local host=$1 room=$2 more status=0
+  campaign_z3_room_granted_mb=${room}
+  campaign_z3_room_grant_id=""
+  more=$(campaign_host_room "${host}") || return 0
+  (( room + more <= campaign_compose_z3_most_room_mb )) \
+    || more=$(( campaign_compose_z3_most_room_mb - room ))
+  (( more > 0 )) || return 0
+  campaign_host_head_start=1 campaign_host_try_charge "${host}" "${more}"
+  (( status == 0 )) || return 0
+  campaign_z3_room_granted_mb=$(( room + more ))
+  campaign_z3_room_grant_id=${campaign_host_charge_id}
 }
 
 # What a JVM of <main> at <heap_mb> is charged and held at, in MB: its
@@ -621,15 +663,6 @@ campaign_z3_room_mb() {
 campaign_jvm_charge_mb() {
   printf '%s\n' "$(( $(campaign_jvm_footprint_mb "$2") \
     + $(campaign_z3_room_mb "$1" "$2") ))"
-}
-
-# The arguments that tell a JVM of <main> at <heap_mb> its z3 room
-# (--z3-room-mb, what its charge holds for its z3s); none for a main that
-# starts no z3.
-campaign_z3_room_args() {
-  local room
-  room=$(campaign_z3_room_mb "$1" "$2")
-  (( room == 0 )) || printf -- '--z3-room-mb %s\n' "${room}"
 }
 
 # campaign_engine_jvm <peak_file> <command...>: one engine JVM of a head
@@ -4545,11 +4578,14 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
     || echo " and took ${held} MB as it grew")" >&2
 }
 
-# campaign_head_charged <need_mb> <command...>: one heavy start of
-# a campaign head -- an engine JVM of any stage, the seed or the CONFIRM
-# replay, a native run of REPRODUCE -- goes where there is room
+# campaign_head_charged [--room <room_mb>] <need_mb> <command...>: one heavy
+# start of a campaign head -- an engine JVM of any stage, the seed or the
+# CONFIRM replay, a native run of REPRODUCE -- goes where there is room
 # (campaign_head_place), is charged there while it runs, and is released
-# when it returns.  Every such step reads and writes only the run's shared
+# when it returns.  One placed --room with a z3 room among its need is given
+# what its host admits beside it then (campaign_z3_room_grant), charged and
+# released with it, and told the room it holds (--z3-room-mb, after its
+# arguments); outside a head it is told the room it was placed with.  Every such step reads and writes only the run's shared
 # directories (the case's scope copy among them, experiments/lib/case-env.sh)
 # and takes the rest of what it reads of the head as its arguments, so it
 # runs alike on whichever host it was placed on: here, or through the remote
@@ -4559,10 +4595,15 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
 # command, so errexit means inside it what it meant before: a failure that
 # ends the shell leaves the charge to lapse with its lease.
 campaign_head_charged() {
-  local need=$1 id status busy="" host
+  local need id status busy="" host room="" grant=""
+  if [[ "$1" == --room ]]; then
+    room=$2
+    shift 2
+  fi
+  need=$1
   shift
   if [[ "${campaign_head_charging}" != 1 ]]; then
-    "$@"
+    "$@" ${room:+--z3-room-mb "${room}"}
     return
   fi
   # Its words go to stderr: the command's stdout is often its artifact
@@ -4571,11 +4612,18 @@ campaign_head_charged() {
   campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   id=${campaign_host_charge_id}
+  # Busy before its room grows: the head's own reservation is the step.
+  if campaign_host_is_local "${host}" \
+      && [[ -n "${campaign_head_reservation}" ]]; then
+    busy="${campaign_head_reservation}.busy.${BASHPID}"
+    : >"${busy}"
+  fi
+  if [[ -n "${room}" ]]; then
+    campaign_z3_room_grant "${host}" "${room}"
+    grant=${campaign_z3_room_grant_id}
+    set -- "$@" --z3-room-mb "${campaign_z3_room_granted_mb}"
+  fi
   if campaign_host_is_local "${host}"; then
-    if [[ -n "${campaign_head_reservation}" ]]; then
-      busy="${campaign_head_reservation}.busy.${BASHPID}"
-      : >"${busy}"
-    fi
     "$@"
     status=$?
   else
@@ -4584,6 +4632,7 @@ campaign_head_charged() {
   fi
   [[ -z "${busy}" ]] || rm -f -- "${busy}"
   campaign_head_heartbeat
+  [[ -z "${grant}" ]] || campaign_host_release "${host}" "${grant}"
   campaign_host_release "${host}" "${id}"
   return "${status}"
 }

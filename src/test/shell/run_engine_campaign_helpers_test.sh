@@ -6677,6 +6677,52 @@ done <<'EOF'
 31000 34000 34000 2000 lift14
 EOF
 
+# ROOM-GRANT: a head step placed with a z3 room (campaign_head_charged
+# --room, a composer) is given on its host what the ledger admits there
+# beside it then -- under the 70% ceiling of a 100000 MB host, the live
+# charges or the real use, whichever is more -- up to
+# campaign_compose_z3_most_room_mb in all, charged beside its need while it
+# runs and released after, and told the room it holds after its arguments;
+# outside a head, the room it was placed with.  Per row: the host's
+# MemAvailable, the room the step is told, how many charges stand while it
+# runs.
+grant_dir="${memory_dir}/grant"
+while read -r grant_available grant_room grant_charges; do
+  rm -rf -- "${grant_dir}"
+  mkdir -p "${grant_dir}"
+  (
+    campaign_host_gate_root="${grant_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_worker_hosts="gate-head"
+    campaign_host_total_mb() { echo 100000; }
+    campaign_host_available_mb() { echo "${grant_available}"; }
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=0
+    campaign_head_charging=1
+    grant_probe() {
+      printf '%s %s %s' "$(live_charges "${campaign_host_gate_root}" \
+        | wc -l)" "${@: -2}"
+    }
+    grant_said=$(campaign_head_charged --room 2048 3000 grant_probe argument)
+    [[ "${grant_said}" == "${grant_charges} --z3-room-mb ${grant_room}" ]] \
+      || fail "a step with a 2048 MB room on a host with ${grant_available} \
+MB available was told, charged: ${grant_said}, not ${grant_charges} \
+--z3-room-mb ${grant_room}"
+    [[ -z "$(live_charges "${campaign_host_gate_root}")" ]] \
+      || fail "a step's room outlived it"
+    campaign_head_charging=0
+    grant_said=$(campaign_head_charged --room 2048 3000 grant_probe argument)
+    [[ "${grant_said}" == "0 --z3-room-mb 2048" ]] \
+      || fail "a step outside a head was not told the room it was placed \
+with: ${grant_said}"
+  ) || exit 1
+done <<'EOF'
+100000 18432 2
+45000 17048 2
+33000 5048 2
+EOF
+
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
 # that, and only a run that outgrows it -- the JVM's exit 3 under
 # -XX:+ExitOnOutOfMemoryError -- runs again at twice its heap, up to the
@@ -6731,10 +6777,11 @@ $(sort -u "${engine_test}/log.stack" | tr '\n' ' ')"
 reset_config
 
 # ENGINE-HEAP-COMPOSE: a composer starts at 4096 MB, charged its footprint and
-# its z3 room (3072 MB on a 30000 MB host), and told the room; one that runs
-# out of heap there runs again at 8192 MB, charged and told the same room,
-# and its case's later composers start at 8192, as does the room its head
-# holds (campaign_head_need_mb).
+# the z3 room it is placed with (one pair's 2048 MB on a 30000 MB host), and
+# told the room (campaign_head_charged --room); one that runs out of heap
+# there runs again at 8192 MB, charged and told the same room, and its
+# case's later composers start at 8192, as does the room its head holds
+# (campaign_head_need_mb).
 cat >"${engine_test}/compose-java" <<'EOF_JAVA'
 #!/usr/bin/env bash
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} ${*: -2}" >>"${ENGINE_TEST_LOG}"
@@ -6748,9 +6795,11 @@ chmod +x "${engine_test}/compose-java"
   campaign_root=""
   campaign_host_total_mb() { echo 30000; }
   campaign_head_charged() {
+    local room=""
+    [[ "$1" != --room ]] || { room=$2; shift 2; }
     printf '%s ' "$1" >>"${engine_test}/compose-charges"
     shift
-    "$@"
+    "$@" ${room:+--z3-room-mb "${room}"}
   }
   compose_main=edu.uva.liftlab.graphchecker.compose.ComposeMain
   [[ "$(campaign_head_need_mb)" == 9088 ]] \
@@ -6765,12 +6814,12 @@ $(cat "${engine_test}/compose-err")"
 $(cat "${engine_test}/compose-err")"
   engine_java -cp jar "${compose_main}" >/dev/null 2>&1 \
     || fail "a later composer failed"
-  [[ "$(tr '\n' ' ' <"${ENGINE_TEST_LOG}")" == "heap=4096 --z3-room-mb 3072 \
-heap=8192 --z3-room-mb 3072 heap=8192 --z3-room-mb 3072 " \
-     && "$(cat "${engine_test}/compose-charges")" == "7808 12160 12160 " ]] \
+  [[ "$(tr '\n' ' ' <"${ENGINE_TEST_LOG}")" == "heap=4096 --z3-room-mb 2048 \
+heap=8192 --z3-room-mb 2048 heap=8192 --z3-room-mb 2048 " \
+     && "$(cat "${engine_test}/compose-charges")" == "6784 11136 11136 " ]] \
     || fail "composers ran at $(tr '\n' ' ' <"${ENGINE_TEST_LOG}")charged \
 $(cat "${engine_test}/compose-charges")"
-  [[ "$(campaign_head_need_mb)" == 12160 ]] \
+  [[ "$(campaign_head_need_mb)" == 11136 ]] \
     || fail "a head held $(campaign_head_need_mb) MB after its composer grew"
 ) || exit 1
 reset_config
@@ -6795,8 +6844,9 @@ done
 # Z3-ROOM: a JVM that starts z3 is charged its footprint and its z3 room, and
 # told the room (--z3-room-mb), so the ledger sees every z3 it may run at once
 # (SGF3-adhoc-13: a composer charged its footprint alone ran a z3 to 10.9
-# GB): a composer 3072 MB, less where its footprint, the room and a 2048 MB
-# margin would not fit under the host's ceiling (70 % of 30000 MB here), the
+# GB): a composer is placed with one pair's 2048 MB (given what its host
+# admits beside it once placed: ROOM-GRANT), less where its footprint and
+# that would not fit under the host's ceiling (70 % of 30000 MB here), the
 # least room (256 MB) where nothing is left; a solver a question's room, its
 # hard lane 4096 MB; a main that starts no z3 none.  Per row: the main (or a
 # solver lane), the heap, the room, the charge.  A composer at 8 and at 16 GB
@@ -6820,20 +6870,24 @@ done
       || fail "Z3-ROOM: ${z3_main} at ${z3_heap} MB: ${z3_said}, not \
 ${z3_room}|${z3_charge}"
   done <<'EOF'
-compose.ComposeMain|4096|3072|7808
-compose.ComposeMain|8192|3072|12160
-compose.ComposeMain|16384|1160|18952
-compose.ComposeMain|18000|256|19765
+compose.ComposeMain|4096|2048|6784
+compose.ComposeMain|8192|2048|11136
+compose.ComposeMain|16384|2048|19840
+compose.ComposeMain|18000|1491|21000
+compose.ComposeMain|20000|256|21890
 explore.ExploreMain|8192|0|9088
 explore.ObligationSolverMain|2048|1152|3712
 solver|2048|1152|3712
 HARD|2048|4096|6656
 EOF
-  [[ "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.compose.ComposeMain \
-      8192)" == "--z3-room-mb 3072" \
-     && -z "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.explore.ExploreMain \
-      8192)" ]] \
-    || fail "Z3-ROOM: a composer is not told its room, or a planner is"
+  campaign_z3_room_flag z3_flag edu.uva.liftlab.graphchecker.compose.ComposeMain \
+    8192
+  z3_composer="${z3_flag[*]}"
+  campaign_z3_room_flag z3_flag edu.uva.liftlab.graphchecker.explore.ExploreMain \
+    8192
+  [[ "${z3_composer}" == "--room 2048" && "${#z3_flag[@]}" -eq 0 ]] \
+    || fail "Z3-ROOM: a composer is not placed with its room, or a planner \
+is: ${z3_composer} / ${z3_flag[*]}"
   campaign_host_gate_root=${test_tmp}/z3-room-idle/hosts
   campaign_host_total_mb() { echo 31583; }
   campaign_host_available_mb() { echo 31583; }
@@ -6855,7 +6909,7 @@ idle host (${z3_status}): ${campaign_host_wait_reason}"
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
 # heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
 # footprint of what its planner or composer starts at; and on top, the z3 room
-# its composer is charged at its start (3072 MB: its z3s are children its
+# its composer is placed with (one pair's 2048 MB: its z3s are children its
 # peak does not count).
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
@@ -6886,10 +6940,10 @@ while IFS='|' read -r need_peaks need_file need_room; do
 ${need_file}|${need_room}"
 done <<'EOF'
 |-|9088
-700:0|700|4096
-2949:0 1200:3|2949|6784
-9000:0|9000|14336
-20000:0 300:0|20000|16206
+700:0|700|3072
+2949:0 1200:3|2949|5760
+9000:0|9000|13312
+20000:0 300:0|20000|15182
 EOF
 campaign_root=""
 # HEAD-NEED-LANES: a round's planner and a head step fold their peaks at once
@@ -7033,8 +7087,8 @@ EOF
 # admits it for the room it reserves on its host, what its planner or
 # composer starts at with the JVM's own memory beside its heap
 # (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
-# heap's footprint, and the z3 room its composer is charged (3072 MB on a
-# 30000 MB host):
+# heap's footprint, and the z3 room its composer is placed with (one pair's
+# 2048 MB on a 30000 MB host):
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
 # configuration, its weight and its head's room.
@@ -7048,7 +7102,7 @@ and reserves $(case_head_reserve_mb "${heads_config}")"
   done <<'EOF'
 engine_memory_mb=16384|16384|9088
 engine_memory_mb=|8192|9088
-engine_memory_mb=4096|4096|7808
+engine_memory_mb=4096|4096|6784
 EOF
 )
 
@@ -7079,8 +7133,8 @@ EOF
 )
 
 # SWEEP-1: sweep.sh launches every case with its head's room as its need (an
-# engine heap of 1 MB: its JVM footprint, 385 MB, and its composer's z3 room,
-# 3072 MB on any lift),
+# engine heap of 1 MB: its JVM footprint, 385 MB, and the z3 room its
+# composer is placed with, 2048 MB on any lift),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -7103,7 +7157,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=3457 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=2433 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

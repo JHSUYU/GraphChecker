@@ -58,7 +58,7 @@ public class Z3IncrementalTest {
         // take it from them between questions, their z3s started afresh.
         Z3 one = new Z3(z3(), 30000L, 4096);
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write(SHARED))) {
+                output -> output.write(SHARED), 1)) {
             for (Object[] row : rows) {
                 String scope = (String) row[0];
                 List<String> symbols = ((String) row[1]).isEmpty()
@@ -111,7 +111,7 @@ public class Z3IncrementalTest {
         };
         Z3 solver = new Z3(fake(), 3000L, 4096);
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write("(declare-const x Int)\n"))) {
+                output -> output.write("(declare-const x Int)\n"), 1)) {
             for (Object[] row : rows) {
                 String scope = (String) row[0];
                 List<String> symbols = ((String) row[1]).isEmpty()
@@ -143,7 +143,7 @@ public class Z3IncrementalTest {
         Z3 solver = new Z3(fake(log), 30000L, 4096);
         long started = System.nanoTime();
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write("(declare-const x Int)\n"))) {
+                output -> output.write("(declare-const x Int)\n"), 1)) {
             assertEquals("unsat", scopes.ask(output -> output.write(
                     "; slow\n"), null, false, 0L).status());
             assertEquals("sat", scopes.ask(output -> output.write(
@@ -179,7 +179,7 @@ public class Z3IncrementalTest {
         String[][] rows = {{"; deaf", "unsat"}, {"; only6", "sat"},
                 {"; deafdie", "unsat"}, {"; only6", "sat"}};
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write("(declare-const x Int)\n"))) {
+                output -> output.write("(declare-const x Int)\n"), 1)) {
             for (String[] row : rows) {
                 assertEquals(Arrays.toString(row), row[1], scopes.ask(
                         output -> output.write(row[0] + "\n"), null, false,
@@ -194,26 +194,21 @@ public class Z3IncrementalTest {
     /**
      * TWO DECIDED ANSWERS THAT DIFFER ARE AN ERROR, NEVER A VERDICT: engine
      * 6 says unsat at once and engine 2, within its grace, sat with its
-     * model; and a question unsat untracked is sat asked for its core.
-     * Each is undecided and named among the solver's errors, which refuse
-     * a claim over it by name.
+     * model.  The question is undecided and named among the solver's
+     * errors, which refuse a claim over it by name.
      */
     @Test
     public void twoAnswersThatDifferAreAnErrorNeverAVerdict()
             throws IOException {
         Z3 solver = new Z3(fake(), 30000L, 4096);
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write("(declare-const x Int)\n"))) {
+                output -> output.write("(declare-const x Int)\n"), 1)) {
             Z3.Answer engines = scopes.ask(output -> output.write(
                     "; split\n"), Collections.singletonList("x"), false, 0L);
             assertTrue(engines.toString(), !engines.decided()
                     && engines.status().startsWith(Z3.DISAGREE));
-            Z3.Answer core = scopes.ask(output -> output.write(
-                    "; splitcore\n"), null, true, 0L);
-            assertTrue(core.toString(), !core.decided()
-                    && core.status().startsWith(Z3.DISAGREE));
         }
-        assertEquals(solver.errors().toString(), 2, solver.errors().size());
+        assertEquals(solver.errors().toString(), 1, solver.errors().size());
     }
 
     /**
@@ -228,11 +223,84 @@ public class Z3IncrementalTest {
         Path log = folder.newFile("slowread.log").toPath();
         Z3 solver = new Z3(fake(log), 30000L, 4096);
         try (Z3Incremental scopes = new Z3Incremental(solver,
-                output -> output.write("(declare-const x Int)\n; slowread\n"))) {
+                output -> output.write("(declare-const x Int)\n; slowread\n"), 1)) {
             assertEquals("sat", scopes.ask(output -> output.write(
                     "; sat\n"), null, false, 1000L).status());
         }
         assertEquals("one z3 per engine", 2, Files.readAllLines(log).size());
+    }
+
+    /**
+     * THE PLAIN PAIRS ARE AS MANY AS THE ROOM HOLDS beside the tracking one,
+     * at 1024 MB a z3 -- at most as many as its asker puts questions at
+     * once -- and a room that holds no two pairs runs one.  {room,
+     * questions at once, plain pairs}.  Three of them ask three questions
+     * of a second each at once.
+     */
+    @Test
+    public void thePlainPairsAreAsManyAsTheRoomHolds() throws IOException {
+        int[][] rows = {{2048, 8, 1}, {3072, 8, 1}, {4096, 8, 1},
+                {6144, 8, 2}, {8192, 3, 3}, {18432, 8, 8}, {30000, 8, 8}};
+        for (int[] row : rows) {
+            try (Z3Incremental scopes = new Z3Incremental(new Z3(z3(),
+                    3000L, row[0]), output -> output.write(""), row[1])) {
+                assertEquals(Arrays.toString(row), row[2],
+                        scopes.plainPairs());
+            }
+        }
+        Path log = folder.newFile("pairs.log").toPath();
+        Z3 solver = new Z3(fake(log), 30000L, 8192);
+        java.util.concurrent.ExecutorService askers =
+                java.util.concurrent.Executors.newFixedThreadPool(3);
+        long started = System.nanoTime();
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"), 3)) {
+            List<java.util.concurrent.Future<Z3.Answer>> asked =
+                    new java.util.ArrayList<java.util.concurrent.Future<
+                            Z3.Answer>>();
+            for (int at = 0; at < 3; at++) {
+                asked.add(askers.submit(() -> scopes.ask(output ->
+                        output.write("; nap\n"), null, false, 0L)));
+            }
+            for (java.util.concurrent.Future<Z3.Answer> each : asked) {
+                assertEquals("unsat", each.get().status());
+            }
+        } catch (InterruptedException | java.util.concurrent
+                .ExecutionException failed) {
+            throw new AssertionError(failed);
+        } finally {
+            askers.shutdownNow();
+        }
+        long seconds = (System.nanoTime() - started) / 1_000_000_000L;
+        assertTrue("three naps took " + seconds + " s", seconds < 3L);
+        assertEquals("three pairs, two z3s each", 6,
+                Files.readAllLines(log).size());
+    }
+
+    /**
+     * A QUESTION THAT WANTS A CORE IS ASKED WHOLE, TRACKING: its verdict,
+     * model and core of one check of the tracking pair, no plain pair asked
+     * first -- the room never moves between them for it.
+     */
+    @Test
+    public void aQuestionThatWantsACoreIsAskedWholeTracking()
+            throws IOException {
+        Path log = folder.newFile("whole.log").toPath();
+        Z3 solver = new Z3(fake(log), 30000L, 4096);
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"), 1)) {
+            Z3.Answer unsat = scopes.ask(output -> output.write("; unsat\n"),
+                    null, true, 0L);
+            assertTrue(unsat.toString(), unsat.unsat() && unsat.coreKnown()
+                    && unsat.core().equals(Collections.singletonList("c")));
+            Z3.Answer sat = scopes.ask(output -> output.write("; sat\n"),
+                    Collections.singletonList("x"), true, 0L);
+            assertEquals("sat {x=1}", sat.status() + " " + sat.values());
+        }
+        List<String> checks = Files.readAllLines(
+                log.resolveSibling(log.getFileName() + ".checks"));
+        assertTrue(checks.toString(), !checks.isEmpty()
+                && !checks.contains("plain"));
     }
 
     private Path fake() throws IOException {
@@ -254,9 +322,10 @@ public class Z3IncrementalTest {
      * unsat (0.5 s under 2), and the signal lands later: on the next check,
      * cancelling it, or (deafdie) on the next scope, ending z3;
      * {@code split} is unsat under 6 at once, sat under 2 after 0.2 s;
-     * {@code splitcore} unsat untracked, sat tracking; else {@code sat}
-     * ({@code ((x 1))}) or unsat (core {@code (c)}), engine 6 searching
-     * 0.3 s first.  Each start logged.
+     * {@code nap} unsat after a second; else {@code sat} ({@code ((x 1))})
+     * or unsat (core {@code (c)}), engine 6 searching 0.3 s first.  Each
+     * start logged, and each check, tracking or plain, beside it
+     * ({@code .checks}).
      */
     private Path fake(Path log) throws IOException {
         Path script = folder.newFile("z3-scoped.py").toPath();
@@ -304,6 +373,9 @@ public class Z3IncrementalTest {
                 "        if '; oom' in scope: oom()",
                 "        if '; agedoom' in scope and answered > 0: oom()",
                 "        answered += 1",
+                "        with open('" + log + ".checks', 'a') as checks:",
+                "            checks.write(('tracking' if tracking else 'plain')"
+                        + " + '\\n')",
                 "        if stray == 'cancel':",
                 "            stray = None; verdict = 'unknown'",
                 "            reason = 'interrupted from keyboard'",
@@ -321,8 +393,8 @@ public class Z3IncrementalTest {
                 "            verdict = 'sat' if search(0.3) else 'unknown'",
                 "        elif '; only6' in scope:",
                 "            verdict = 'sat' if engine == '6' else 'unknown'",
-                "        elif '; splitcore' in scope:",
-                "            verdict = 'sat' if tracking else 'unsat'",
+                "        elif '; nap' in scope:",
+                "            time.sleep(1); verdict = 'unsat'",
                 "        elif '; split' in scope:",
                 "            if engine == '2': time.sleep(0.2)",
                 "            verdict = 'sat' if engine == '2' else 'unsat'",

@@ -104,8 +104,9 @@ final class Disjunction implements AutoCloseable {
 
     /**
      * How many path questions are put to the scoped z3s at once
-     * ({@link Z3Incremental}), which ask them in order, one at a time: the
-     * ones after a sat path are stopped before they are asked.
+     * ({@link Z3Incremental}), which ask them in order, as many at a time as
+     * the composer's z3 room holds pairs of z3s: the ones after a sat path
+     * are stopped before they are asked.
      */
     static final int PATH_ASKS = 8;
 
@@ -143,7 +144,7 @@ final class Disjunction implements AutoCloseable {
 
     Disjunction(Composer.Composition composition, Z3 solver) {
         this(composition, solver, new Z3Incremental(solver,
-                        composition.sharedQuery()),
+                        composition.sharedQuery(), PATH_ASKS),
                 Executors.newFixedThreadPool(PATH_ASKS),
                 new ConcurrentHashMap<String, List<Refutation>>(),
                 new ConcurrentHashMap<String, List<Set<String>>>(),

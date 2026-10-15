@@ -73,13 +73,22 @@ import java.util.concurrent.TimeUnit;
  * question undecided: a scope that leaked is never a verdict.</p>
  *
  * <p>A core needs z3 to track named assertions from its start, which slows
- * every question ({@link Z3#CORE_TRACKING}): as {@link Z3#ask} asks its
- * core in a run of its own, an unsat that wants one is asked again of a
- * second pair, started tracking.  A pair holds the solver's whole room
- * while it lives, half each engine -- a question's z3 as {@link Z3#ask}'s
- * alone -- and gives it back to whoever waits for it once it has no
- * question, or between questions once it held it {@link #YIELD_AFTER_MS}:
- * the two pairs and the solver's one-shot asks take turns.</p>
+ * every question ({@link Z3#CORE_TRACKING}): a question that wants one is
+ * asked whole of a pair started tracking -- its verdict, model and core of
+ * one check -- the rest of pairs that track nothing.  The questions of each
+ * kind wait in their lane, each pair of it asking the next.  The plain lane
+ * has as many pairs as the solver's room holds beside the tracking one at
+ * {@link #PAIR_SLOT_MB} a z3 -- at most as many as its asker puts questions
+ * at once -- each pair two slots of the room; a room that holds no two
+ * pairs runs one at a time, each holding the whole room, half each engine
+ * (a question's z3 as {@link Z3#ask}'s alone).  A pair holds its slots
+ * while it lives, and gives them back to whoever waits for room once it has
+ * no question, or between questions once it held them
+ * {@link #YIELD_AFTER_MS}: the pairs and the solver's one-shot asks take
+ * turns where the room holds no more (SGF6-bugs-snapshot-no-active 0001 in
+ * 2269 MB: the recorded valuation's core questions moved the room between
+ * the plain pair and the tracking one 14 times, each move a fresh z3
+ * reading 65 MB).</p>
  */
 public final class Z3Incremental implements AutoCloseable {
 
@@ -108,6 +117,13 @@ public final class Z3Incremental implements AutoCloseable {
      */
     static final long CANCEL_GRACE_MILLIS = 50L;
 
+    /**
+     * The slot a scoped z3 of a room that holds two pairs or more is given,
+     * in MB: what one reading a large shared part takes, its questions
+     * asked (snapshot 0001: 65 MB read, 420-560 MB held, 843 MB at peak).
+     */
+    static final int PAIR_SLOT_MB = 1024;
+
     /** How often a driver looks at a question's asker and at its room. */
     private static final long POLL_MILLIS = 200L;
 
@@ -115,8 +131,10 @@ public final class Z3Incremental implements AutoCloseable {
 
     private final Z3 solver;
     private final ArtifactIO.Body shared;
-    private final Pair plain;
-    private final Pair tracked;
+    /** The slot each scoped z3 holds, in MB. */
+    private final int slotMb;
+    private final Lane plain;
+    private final Lane tracked;
     /** {@link System#nanoTime} past which no question of this view starts
      *  and every one running ends ({@link #until}); 0: the solver's. */
     private final long deadlineNanos;
@@ -124,22 +142,37 @@ public final class Z3Incremental implements AutoCloseable {
     /**
      * Scopes over {@code shared}, asked of {@code solver}'s z3 in its room,
      * under its deadline ({@code Z3#until}), counted and their errors
-     * noted as its runs' are.
+     * noted as its runs' are; at most {@code questionsAtOnce} plain pairs,
+     * as many questions as its asker puts at once.
      */
-    public Z3Incremental(Z3 solver, ArtifactIO.Body shared) {
+    public Z3Incremental(Z3 solver, ArtifactIO.Body shared,
+                         int questionsAtOnce) {
         this.solver = solver;
         this.shared = shared;
-        this.plain = new Pair(false);
-        this.tracked = new Pair(true);
+        int room = solver.room().mb;
+        int fit = room / (Z3.ARITHMETIC.length * PAIR_SLOT_MB);
+        int plainPairs = fit >= 2
+                ? Math.max(1, Math.min(questionsAtOnce, fit - 1)) : 1;
+        this.slotMb = fit >= 2
+                ? room / (Z3.ARITHMETIC.length * (plainPairs + 1))
+                : room / Z3.ARITHMETIC.length;
+        this.plain = new Lane(false, plainPairs);
+        this.tracked = new Lane(true, 1);
         this.deadlineNanos = 0L;
     }
 
     private Z3Incremental(Z3Incremental scopes, long deadlineNanos) {
         this.solver = scopes.solver;
         this.shared = scopes.shared;
+        this.slotMb = scopes.slotMb;
         this.plain = scopes.plain;
         this.tracked = scopes.tracked;
         this.deadlineNanos = deadlineNanos;
+    }
+
+    /** How many plain pairs ask at once. */
+    int plainPairs() {
+        return plain.pairs.size();
     }
 
     /**
@@ -156,31 +189,18 @@ public final class Z3Incremental implements AutoCloseable {
     /**
      * One question, {@code scope} over the shared part, as {@link Z3#ask}
      * asks one: the values of {@code modelSymbols} on sat, a core on unsat
-     * where {@code wantCore} (asked again tracking, under the solver's
-     * budget), the verdict within {@code budgetMillis} ({@code <= 0}: the
-     * solver's).
+     * where {@code wantCore} -- asked whole tracking, verdict, model and
+     * core of one check: a core that did not come with its unsat leaves it
+     * unsat, its core unknown -- the verdict within {@code budgetMillis}
+     * ({@code <= 0}: the solver's).
      */
     public Z3.Answer ask(ArtifactIO.Body scope, List<String> modelSymbols,
                          boolean wantCore, long budgetMillis) {
         List<String> symbols = modelSymbols == null
                 ? Collections.<String>emptyList() : modelSymbols;
-        Z3.Answer verdict = plain.ask(scope, symbols, budgetMillis > 0L
-                ? budgetMillis : solver.timeoutMillis(), deadlineNanos);
-        if (!wantCore || !verdict.unsat()) return verdict;
-        // A core asked that did not say unsat and name it leaves the verdict
-        // unsat, its core unknown (Z3#ask).
-        Z3.Answer core = tracked.ask(scope, Collections.<String>emptyList(),
-                solver.timeoutMillis(), deadlineNanos);
-        if (core.sat()) {
-            // The same question sat tracking: a contradiction, refused by
-            // name, never a refutation reused.
-            return disagree("unsat untracked, sat tracking");
-        }
-        if (core.status().startsWith(Z3.DISAGREE)) return core;
-        boolean known = core.unsat() && core.coreKnown();
-        return new Z3.Answer("unsat", Collections.<String, String>emptyMap(),
-                known ? core.core() : Collections.<String>emptyList(), known,
-                "");
+        return (wantCore ? tracked : plain).ask(scope, symbols,
+                budgetMillis > 0L ? budgetMillis : solver.timeoutMillis(),
+                deadlineNanos);
     }
 
     /** Every z3 ended, every question still open undecided. */
@@ -188,11 +208,6 @@ public final class Z3Incremental implements AutoCloseable {
     public void close() {
         plain.close();
         tracked.close();
-    }
-
-    /** The slot each scoped z3 holds: half the room. */
-    private int slotMb() {
-        return solver.room().mb / Z3.ARITHMETIC.length;
     }
 
     /**
@@ -214,7 +229,7 @@ public final class Z3Incremental implements AutoCloseable {
 
     private Z3.Answer memOut() {
         return bare(Z3.MEMOUT, "out of memory at its cap of "
-                + (slotMb() - Z3.MISSED_MB) + " MB (memory_max_size), scoped");
+                + (slotMb - Z3.MISSED_MB) + " MB (memory_max_size), scoped");
     }
 
     private static boolean memOut(List<String> lines) {
@@ -376,34 +391,23 @@ public final class Z3Incremental implements AutoCloseable {
     }
 
     /**
-     * One z3 per engine over the shared part, tracking named assertions or
-     * not, and the questions put to them, asked in order by one driver
-     * thread, the only one that touches the z3s' state.
+     * The questions of one kind -- tracking named assertions or not -- in
+     * the order they were put, and the pairs that ask them, each taking the
+     * next open one.
      */
-    private final class Pair {
+    private final class Lane {
         final boolean tracking;
-        private final Engine[] engines;
-        private final BlockingQueue<Line> printed =
-                new LinkedBlockingQueue<Line>();
+        final List<Pair> pairs = new ArrayList<Pair>();
         private final Deque<Question> waiting = new ArrayDeque<Question>();
-        private Thread driver;
+        private boolean started;
+        private int driving;
         private volatile boolean closed;
-        /** The driver's own: whether it holds the room, and since when;
-         *  the engine whose answer the last race took (0: none). */
-        private boolean holding;
-        private long heldSinceNanos;
-        private int answeredBy;
 
-        Pair(boolean tracking) {
+        Lane(boolean tracking, int pairs) {
             this.tracking = tracking;
-            this.engines = new Engine[Z3.ARITHMETIC.length];
-            for (int at = 0; at < engines.length; at++) {
-                engines[at] = new Engine(this, Z3.ARITHMETIC[at]);
+            for (int at = 0; at < pairs; at++) {
+                this.pairs.add(new Pair(this));
             }
-        }
-
-        private int need() {
-            return Z3.ARITHMETIC.length * slotMb();
         }
 
         Z3.Answer ask(ArtifactIO.Body scope, List<String> symbols,
@@ -417,22 +421,98 @@ public final class Z3Incremental implements AutoCloseable {
             synchronized (this) {
                 if (closed) return bare(Z3.TIMEOUT, "");
                 waiting.addLast(question);
-                if (driver == null) {
-                    driver = new Thread(this::drive, "graphchecker-z3-scopes"
-                            + (tracking ? "-tracked" : ""));
-                    driver.setDaemon(true);
-                    driver.start();
+                if (!started) {
+                    started = true;
+                    driving = pairs.size();
+                    for (Pair pair : pairs) pair.start();
                 }
                 notifyAll();
             }
             return question.await();
         }
 
+        /** The next open question for {@code pair}; {@link #YIELD} while
+         *  none waits and another waits for the room the pair holds; null
+         *  once closed. */
+        synchronized Question next(Pair pair) throws InterruptedException {
+            while (!closed) {
+                Question head = waiting.pollFirst();
+                if (head != null) {
+                    if (head.open()) return head;
+                    continue;
+                }
+                if (pair.holding && solver.room().contended()) return YIELD;
+                wait(POLL_MILLIS);
+            }
+            return null;
+        }
+
+        /** A pair's driver stopped: the questions waiting are undecided
+         *  where none drives any more, or the lane is closed. */
+        List<Question> stopped() {
+            List<Question> left = new ArrayList<Question>();
+            synchronized (this) {
+                if (--driving > 0 && !closed) return left;
+                closed = true;
+                left.addAll(waiting);
+                waiting.clear();
+            }
+            return left;
+        }
+
+        void close() {
+            synchronized (this) {
+                closed = true;
+                notifyAll();
+            }
+            for (Pair pair : pairs) pair.close();
+        }
+    }
+
+    /**
+     * One z3 per engine over the shared part, of one lane, asking its
+     * questions one at a time by one driver thread, the only one that
+     * touches the z3s' state.
+     */
+    private final class Pair {
+        final Lane lane;
+        final boolean tracking;
+        private final Engine[] engines;
+        private final BlockingQueue<Line> printed =
+                new LinkedBlockingQueue<Line>();
+        private Thread driver;
+        /** The driver's own: whether it holds its slots, and since when;
+         *  the engine whose answer the last race took (0: none). */
+        private boolean holding;
+        private long heldSinceNanos;
+        private int answeredBy;
+
+        Pair(Lane lane) {
+            this.lane = lane;
+            this.tracking = lane.tracking;
+            this.engines = new Engine[Z3.ARITHMETIC.length];
+            for (int at = 0; at < engines.length; at++) {
+                engines[at] = new Engine(this, Z3.ARITHMETIC[at]);
+            }
+        }
+
+        private int need() {
+            return Z3.ARITHMETIC.length * slotMb;
+        }
+
+        /** Its driver, started once by its lane. */
+        void start() {
+            driver = new Thread(this::drive, "graphchecker-z3-scopes"
+                    + (tracking ? "-tracked" : ""));
+            driver.setDaemon(true);
+            driver.start();
+        }
+
         private void drive() {
             Question question = null;
             try {
                 while (true) {
-                    question = next();
+                    question = lane.next(this);
                     if (question == null) return;
                     if (question == YIELD) {
                         release();
@@ -458,30 +538,10 @@ public final class Z3Incremental implements AutoCloseable {
                 failed.printStackTrace();
             } finally {
                 release();
-                List<Question> left = new ArrayList<Question>();
-                synchronized (this) {
-                    closed = true;
-                    left.addAll(waiting);
-                    waiting.clear();
-                }
+                List<Question> left = lane.stopped();
                 if (question != null && question != YIELD) left.add(question);
                 for (Question each : left) each.answer(bare(Z3.TIMEOUT, ""));
             }
-        }
-
-        /** The next open question; {@link #YIELD} while it has none and
-         *  another waits for the room it holds; null once closed. */
-        private synchronized Question next() throws InterruptedException {
-            while (!closed) {
-                Question head = waiting.pollFirst();
-                if (head != null) {
-                    if (head.open()) return head;
-                    continue;
-                }
-                if (holding && solver.room().contended()) return YIELD;
-                wait(POLL_MILLIS);
-            }
-            return null;
         }
 
         /** One question asked: counted and logged as a run is. */
@@ -542,7 +602,7 @@ public final class Z3Incremental implements AutoCloseable {
                         winner = turns[0];
                         break;
                     }
-                    if (question.abandoned() || closed
+                    if (question.abandoned() || lane.closed
                             || solver.pastDeadline()
                             || question.left(1L) <= 0L) {
                         break;
@@ -611,12 +671,7 @@ public final class Z3Incremental implements AutoCloseable {
         }
 
         void close() {
-            Thread running;
-            synchronized (this) {
-                closed = true;
-                notifyAll();
-                running = driver;
-            }
+            Thread running = driver;
             if (running == null) return;
             running.interrupt();
             try {
@@ -704,7 +759,7 @@ public final class Z3Incremental implements AutoCloseable {
             Process started;
             try {
                 ProcessBuilder builder = new ProcessBuilder(Z3.command(
-                        solver.executable(), slotMb(), life));
+                        solver.executable(), slotMb, life));
                 builder.redirectErrorStream(true);
                 started = builder.start();
             } catch (IOException notLaunched) {
@@ -878,7 +933,7 @@ public final class Z3Incremental implements AutoCloseable {
                 interruptOutstanding = false;
             }
             if ("sat".equals(status)) {
-                if (pair.tracking || of.question.symbols.isEmpty()) {
+                if (of.question.symbols.isEmpty()) {
                     of.end(bare("sat", ""), true);
                 } else {
                     request(of, Z3.getValue(of.question.symbols));

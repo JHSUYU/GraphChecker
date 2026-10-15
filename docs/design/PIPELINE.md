@@ -1154,9 +1154,9 @@ slots fit in what R has free, in the order the runs asked (`Room#take`; a run al
 A z3 at its cap answers nothing: a run whose output holds the cap's line is `memout` unless its
 verdict AND the payload its command asked for (a model's values, a core) were printed before it
 (`Z3#decided`), so a core cut by the cap is unknown, never empty, and a model cut by it loses the race
-to the other engine's. An ask at its cap in a slot shared with other asks -- its verdict run, or its
-model or core run after a verdict that fit -- is asked once more whole and alone, in half of R an engine
-(`Z3#ask`: a verdict with no model selects no path); at that cap too it is `memout` (`Answer#memOut`): undecided by name,
+to the other engine's. A model or core run at its cap in a slot shared with other asks, after a verdict
+that fit, is that run once more alone, in half of R an engine (`Z3#payload`: a verdict with no model
+selects no path); a verdict at its slot's cap is `memout` there (`Answer#memOut`): undecided by name,
 as a timeout is, never sat or unsat and no error of the query (an error voids a composition's claim),
 its reason the cap it hit. A solver's R is a question's (`campaign_question_mb`, 1152 MB: its two
 engines 512 MB each), in the hard lane `campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at
@@ -2593,23 +2593,33 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    Two decided answers to one question that differ -- its engines' in one run or race, or its verdict's
    and its model's or core's -- are an error (`Z3#DISAGREE`, the claim refused by name) and the
    question undecided. A sat whose model its cap cut is undecided, an unsat whose core it cut stands
-   with its core unknown. A core is asked again of a second pair started tracking (`Z3#CORE_TRACKING`
-   slows every question). The paths' questions are put 8 at a time (`PATH_ASKS`) and asked in order,
-   one at a time; a pair holds the composer's whole z3 room while it lives, half each engine (a 2269
-   MB room: two z3s capped at 1070 MB; snapshot 0001's held 420-560 MB, 843 MB at peak), and gives it
-   back to whoever waits for it once it has no question, or between questions after 30 s of it
-   (`YIELD_AFTER_MS`), so the two pairs and the one-shot asks take turns. The valuations, asked up
+   with its core unknown. A question that wants a core is asked whole of a pair started tracking --
+   its verdict, model and core of one check (`Z3#CORE_TRACKING` slows every question, so the rest go
+   to pairs that track nothing); asked untracked and then again tracked, the recorded valuation's core
+   questions moved a 2269 MB room between the two pairs 14 times on snapshot 0001, each move a fresh z3
+   reading 65 MB. The paths' questions are put 8 at a time (`PATH_ASKS`), each kind in its lane, and
+   asked by as many plain pairs as the composer's z3 room holds beside the tracking one at 1024 MB a
+   z3 (`Z3Incremental#PAIR_SLOT_MB`: snapshot 0001's held 420-560 MB, 843 MB at peak), at most 8; a
+   room that holds no two pairs runs one at a time, each holding the whole room, half each engine. A
+   pair holds its slots while it lives and gives them back to whoever waits for room once it has no
+   question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
+   take turns where the room holds no more. The valuations, asked up
    to four at a time (`PARALLEL_ASKS`, at most as many as there are), ask their whole disjunctions in
    slots of the room shared that many ways (`Disjunction#asking`, `Z3#shared`), and a lone one-shot
    ask -- the formula's -- in half of it each engine; a model or core run at a shared slot's cap is
    that run once more alone, never the verdict again (`Z3#payload`): a core cut there too leaves the
    verdict unsat, its core unknown.
-   A composer's room is 3072 MB (its charge at the 4 GB start heap 7.8 GB, at 8 GB once it outgrew 4 GB
-   12.2 GB; a 6144 MB room beside an 8 GB start, 15.2 GB that every head held too, kept five bug checks
-   of round SGF4 waiting 30 min and more for a host), less where its footprint,
-   the room and a 2048 MB margin would not fit
-   under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
-   `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer
+   A composer's room is what its host admits beside it when its step runs: it is placed with one
+   pair's 2048 MB (`campaign_z3_room_mb`; less where its footprint and that would not fit under the
+   host's ceiling, at least 256 MB, said when it is; charged with it, `campaign_jvm_charge_mb`; the
+   head's held room counts it, `campaign_head_need_mb`), and on the host its step lands on it is given
+   whatever that host's ledger admits beside it then, under the 70 % ceiling, up to 18432 MB, eight
+   plain pairs and the tracking one (`campaign_z3_room_grant`, `campaign_head_charged --room`: charged
+   with the step, released with it, told as `--z3-room-mb`; offline A/B alike, `tools/regress/
+   offline-ab.sh`). A fixed 3072 MB held one pair on any host however much of a lift stood idle; a
+   6144 MB room in every charge, 15.2 GB that every head held too, kept five bug checks of round SGF4
+   waiting 30 min and more for a host, which a room taken only where the step lands never asks. The
+   paths answer
    in their order: the first sat path's answer (the asks
    after it stopped, a check still running cancelled), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
