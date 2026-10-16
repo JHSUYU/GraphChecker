@@ -170,8 +170,11 @@ and an unrelated undecidable conjunct no longer makes the flip unknown.
 **3. Memory, the one limit.** No lift past 70 % (the ledger). Two charge rules keep the ledger close to real use:
 - an engine JVM at heap H is charged its footprint H + H/16 + 384 MB (`campaign_jvm_footprint_mb`): charged at H, a
   served planner that filled its heap was ended for 183 MB on a full host and its campaign failed (07, 21);
-- a stream replay is charged the 90th percentile of the returned replays' peaks (rounded up to 128 MB, no margin;
-  owner 2026-10-15: real use near 80 % of the charge) once eight returned (`campaign_replay_typical`), its heap still the largest peak times 1.5: charged at the largest, ledgers held 21-22 GB
+- a stream replay is charged the 90th percentile of the returned replays' lives' mean resident memory (rounded up
+  to 128 MB) once eight returned (`campaign_replay_typical`), and a host admits one only with room for four ends
+  of their peaks' 90th percentile less that charge (2026-10-16: replays peak in their last read, publishing; at
+  the peaks' 90th percentile a lift's ledger held 19840 MB over 4831 MB of real use), its heap still the largest
+  peak times 1.5: charged at the largest, ledgers held 21-22 GB
   over 8-11 GB of real use and no host admitted a start (21: peaks p50 918, p90 1242, max 2234 MB, each charged 3456).
   After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
 - Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.

@@ -1992,11 +1992,15 @@ done <<'EOF'
 - 238|512 512|1
 EOF
 # MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
-# the stream is charged their 90th percentile (rounded up to 128 MB, at least
-# 512, at most the need), its heap still the need; before that,
-# the need.  Per row: the seed's peak, the later peaks, the need and the
-# stream's replay charge after them.
-while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
+# the stream is charged the 90th percentile of their lives' mean resident
+# memory (rounded up to 128 MB, at least 512, at most the need; a replay that
+# stated no mean counts its peak), its heap still the need, and a host keeps
+# room for four ends of their peaks' 90th percentile less that charge;
+# before that, the need and no room.  Per row: the seed's peak, the later
+# replays' peak[/mean], the need, the stream's replay charge after them and
+# an end's growth.
+while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge \
+    typical_spike; do
   rm -rf -- "${measured_dir}"
   mkdir -p "${measured_dir}"
   typical_got=$(
@@ -2007,20 +2011,25 @@ while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
     for typical_peak in ${typical_seed} ${typical_peaks}; do
       typical_n=$((typical_n + 1))
       mkdir -p "${measured_dir}/${typical_n}"
-      echo "${typical_peak}" >"${measured_dir}/${typical_n}/workload_rss_mb"
+      echo "${typical_peak%/*}" \
+        >"${measured_dir}/${typical_n}/workload_rss_mb"
+      [[ "${typical_peak}" != */* ]] || echo "${typical_peak#*/}" \
+        >"${measured_dir}/${typical_n}/workload_rss_mean_mb"
       campaign_replay_measured "${measured_dir}/${typical_n}" >/dev/null 2>&1
     done
-    printf '%s|%s' "$(campaign_replay_need_mb)" \
-      "$(campaign_stream_charge_mb REPLAY)"
+    printf '%s|%s|%s' "$(campaign_replay_need_mb)" \
+      "$(campaign_stream_charge_mb REPLAY)" "${campaign_replay_spike_mb}"
   )
-  [[ "${typical_got}" == "${typical_need}|${typical_charge}" ]] \
+  [[ "${typical_got}" == \
+      "${typical_need}|${typical_charge}|${typical_spike}" ]] \
     || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
-${typical_got}, not ${typical_need}|${typical_charge}"
+${typical_got}, not ${typical_need}|${typical_charge}|${typical_spike}"
 done <<'EOF'
-2234|918 900 950 1000 880 1242 920 910|3456|1280
-3454|1583 1600 1500|5248|5248
-2234|300 310 320 330 340 350 360 370|3456|512
-1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072
+2234|918 900 950 1000 880 1242 920 910|3456|1280|0
+3454|1583 1600 1500|5248|5248|0
+2234|300 310 320 330 340 350 360 370|3456|512|0
+1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
+2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
@@ -6553,6 +6562,20 @@ ${campaign_host_wait_reason}"
 [[ "$(campaign_host_room lift14)" -eq 4221 ]] \
   || fail "the room is not what the charges leave: \
 $(campaign_host_room lift14)"
+# A start that leaves room beside it (a replay's ends) fits only with that
+# room free, and is charged its need alone.
+run_capturing_status campaign_host_try_start lift14 2000 3000
+[[ "${status}" -eq 1 && "${campaign_host_wait_reason}" \
+    == *"2000 MB and 3000 MB room beside it"* ]] \
+  || fail "a start of 2000 MB leaving 3000 MB was admitted beside 18000 MB \
+under a 22221 MB ceiling, or not said so: ${campaign_host_wait_reason}"
+campaign_host_try_start lift14 2000 2000 \
+  || fail "a start of 2000 MB leaving 2000 MB was refused: \
+${campaign_host_wait_reason}"
+[[ "$(campaign_host_room lift14)" -eq 2221 ]] \
+  || fail "the room left beside a start was charged: \
+$(campaign_host_room lift14)"
+campaign_host_release lift14 "${campaign_host_charge_id}"
 # The real use alone refuses too: no charge, 21744 MB in use.
 for memory_charge in "${memory_charges[@]}"; do
   campaign_host_release lift14 "${memory_charge}"

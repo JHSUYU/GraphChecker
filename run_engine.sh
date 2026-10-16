@@ -2917,7 +2917,19 @@ campaign_replay_min_need_mb=512
 # re-run's, a CONFIRM's) as they returned, and what a replay of the stream
 # is charged at its start once enough of them did (campaign_replay_typical).
 campaign_replay_peaks=()
+campaign_replay_means=()
 campaign_replay_typical_mb=0
+# What a replay grows by past its charge at its end, in MB (the typical
+# replay's peak less its charge, campaign_replay_typical), and how many such
+# ends a host keeps uncharged room for beside the replays it admits
+# (campaign_stream_try_host): of replays charged their life's mean, a few
+# end at once on a full host, each growing by its end's excess, and a
+# growth the host cannot take ends that replay (campaign_watch_workload).
+# lift07, SGF7B-adhoc-10 round 0: 19 replays watched whole lived 226-753 s,
+# 15-53 % of it within 80 % of their peak, which each reached in its last
+# read; at 23 replays to a host about four end within any minute.
+campaign_replay_spike_mb=0
+campaign_replay_spikes=4
 # How many replays after the seed's must have returned before the stream
 # charges the typical replay instead of the largest.
 campaign_replay_typical_after=8
@@ -2956,10 +2968,12 @@ campaign_need_of_peak_mb() {
 # into the measured need (campaign_replay_need_mb), said when the need moves.
 # A worker whose replay never ran states none and adds nothing.
 campaign_replay_measured() {
-  local peak first=$(( campaign_replay_peak_mb == 0 )) before
+  local peak mean first=$(( campaign_replay_peak_mb == 0 )) before
   read -r peak 2>/dev/null <"$1/workload_rss_mb" || return 0
   [[ "${peak}" =~ ^[0-9]+$ ]] || return 0
-  (( first )) || campaign_replay_typical "${peak}"
+  read -r mean 2>/dev/null <"$1/workload_rss_mean_mb" || mean=${peak}
+  [[ "${mean}" =~ ^[0-9]+$ ]] || mean=${peak}
+  (( first )) || campaign_replay_typical "${peak}" "${mean}"
   (( peak > campaign_replay_peak_mb )) || return 0
   before=$(campaign_replay_need_mb)
   campaign_replay_peak_mb=${peak}
@@ -2969,39 +2983,51 @@ on needs $(campaign_replay_need_mb) MB and is charged \
 $(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
 }
 
-# campaign_replay_typical <peak_mb>: one more replay after the seed's
-# returned at <peak_mb>.  Once campaign_replay_typical_after of them have,
-# the stream charges a replay at their 90th percentile, rounded up to 128 MB,
-# at least campaign_replay_min_need_mb and at most the need
-# (campaign_stream_charge_mb), while its heap stays sized by the need: one
-# replay that outgrows its charge grows it while its host has real room
-# (campaign_watch_workload).  Charged at the largest peak times 1.5, the
-# lifts' ledgers held 21-22 GB over 8-11 GB of real use and no host admitted
-# one more start (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB,
-# each replay charged 3456 MB; solr-adhoc-40 LD1: p50 1583, max 3454 MB, the
-# seed's); at the 90th percentile times 1.25 a full host's real use was
-# about 60 % of its charges (lift06: 20 GB charged, 12.8 GB in use).  At the
-# 90th percentile itself no host filled with replays of the measured peaks
-# passes its ceiling (SGF7STOPPED-adhoc-39: p90 2108 MB, charged 2176 MB, ten
-# to a lift where eight were; PV7-adhoc-39, SGF7-adhoc-09: none either, of
-# 20000 drawn fills each); at the median the 39s' did (62 % of fills).
+# campaign_replay_typical <peak_mb> <mean_mb>: one more replay after the
+# seed's returned at <peak_mb>, its resident memory <mean_mb> over its life.
+# Once campaign_replay_typical_after of them have, the stream charges a
+# replay at the 90th percentile of their means, rounded up to 128 MB, at
+# least campaign_replay_min_need_mb and at most the need
+# (campaign_stream_charge_mb), while its heap stays sized by the need; what
+# it grows past that, at its end, is charged as it grows while its host has
+# real room (campaign_watch_workload), and each admission keeps room for
+# campaign_replay_spikes such ends uncharged (campaign_replay_spike_mb: the
+# 90th percentile of their peaks less the charge).  A replay peaks at its
+# end, publishing its session: lift07, SGF7B-adhoc-10 round 0, 19 replays
+# watched whole peaked in their last read at 680-1557 MB, their life's
+# median 413-834 MB; charged their peaks' 90th percentile (1478 MB) from
+# start to end, a lift's ledger held 19840 MB over 4831 MB of real use and
+# admitted no more (solr-adhoc-40 SGF7).  Charged the largest peak times
+# 1.5, the ledgers held 21-22 GB over 8-11 GB of real use (solr-adhoc-21
+# RX4: peaks p50 918, p90 1242, max 2234 MB, each replay charged 3456 MB).
 # Said when it moves.
 campaign_replay_typical() {
-  local p90 typical
+  local p90 p90_peak typical
   campaign_replay_peaks+=("$1")
+  campaign_replay_means+=("${2:-$1}")
   (( ${#campaign_replay_peaks[@]} >= campaign_replay_typical_after )) \
     || return 0
-  p90=$(printf '%s\n' "${campaign_replay_peaks[@]}" | LC_ALL=C sort -n \
-    | awk '{ peak[NR] = $1 } END { i = int(NR * 0.9); if (i < NR) i++;
-             print peak[i] }')
+  p90=$(campaign_percentile_90 "${campaign_replay_means[@]}")
+  p90_peak=$(campaign_percentile_90 "${campaign_replay_peaks[@]}")
   typical=$(( (p90 + 127) / 128 * 128 ))
   (( typical >= campaign_replay_min_need_mb )) \
     || typical=${campaign_replay_min_need_mb}
+  campaign_replay_spike_mb=$(( p90_peak > typical ? p90_peak - typical : 0 ))
   (( typical != campaign_replay_typical_mb )) || return 0
   campaign_replay_typical_mb=${typical}
-  campaign_log "the replays after the seed's peaked at ${p90} MB or less \
-in 9 of 10 (${#campaign_replay_peaks[@]} returned): a replay of the stream is \
-charged that peak, $(campaign_stream_charge_mb REPLAY) MB, at its start"
+  campaign_log "the replays after the seed's held ${p90} MB or less over \
+their lives in 9 of 10, and peaked at their ends at ${p90_peak} MB or less \
+(${#campaign_replay_peaks[@]} returned): a replay of the stream is charged \
+$(campaign_stream_charge_mb REPLAY) MB at its start, its end's growth as it \
+grows, and a host admits one only with room for \
+${campaign_replay_spikes} ends of ${campaign_replay_spike_mb} MB beside it"
+}
+
+# The 90th percentile of the numbers given.
+campaign_percentile_90() {
+  printf '%s\n' "$@" | LC_ALL=C sort -n \
+    | awk '{ v[NR] = $1 } END { i = int(NR * 0.9); if (i < NR) i++;
+             print v[i] + 0 }'
 }
 
 # campaign_replay_charge_mb <need>: what a replay of that need is charged at
@@ -4222,8 +4248,10 @@ campaign_host_lock() {
   return 3
 }
 
-# campaign_host_try_start <host> <need_mb>: one try.  0 when the start may
-# go now and is charged to the host, held by this shell (campaign_host_hold)
+# campaign_host_try_start <host> <need_mb> [spare_mb]: one try.  0 when the
+# start may go now -- its need and <spare_mb> more fit, uncharged room the
+# start leaves beside it -- and its need is charged to the host, held by this
+# shell (campaign_host_hold)
 # and named in campaign_host_charge_id; 1 when it does not fit yet (why, in
 # campaign_host_wait_reason); 2 when the host's memory cannot be read; 3 when
 # another start holds the ledger's lock for the instant it takes to charge
@@ -4232,8 +4260,8 @@ campaign_host_lock() {
 campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
-  local host=$1 need=$2 key dir now available total limit charged used
-  local held=0
+  local host=$1 need=$2 spare=${3:-0} key dir now available total limit
+  local charged used held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -4247,12 +4275,14 @@ campaign_host_try_start() {
     || held=$(campaign_host_head_room "${dir}" "${now}")
   campaign_host_lock "${dir}" "${now}" || return 3
   charged=$(campaign_host_charged "${dir}" "${now}")
-  if (( charged + held + need > limit || used + held + need > limit )); then
+  if (( charged + held + need + spare > limit \
+      || used + held + need + spare > limit )); then
     rmdir "${dir}/lock"
     campaign_host_wait_reason="${key} has ${charged} MB charged to what it \
-runs, ${used} MB in use and ${held} MB held for a head; one needs ${need} MB \
-and at most ${limit} MB (${campaign_host_max_used_pct}% of ${total} MB) may \
-be charged or in use"
+runs, ${used} MB in use and ${held} MB held for a head; one needs ${need} MB\
+$( (( spare == 0 )) || echo " and ${spare} MB room beside it") and at most \
+${limit} MB (${campaign_host_max_used_pct}% of ${total} MB) may be charged or \
+in use"
     return 1
   fi
   campaign_host_charge_row "${dir}" "${need}"
@@ -4539,8 +4569,9 @@ campaign_workload_output_bytes() {
 }
 
 # campaign_watch_workload <pid> <charged_mb> [dir] [max_trace_mb]: one
-# workload JVM watched until it ends (experiments/lib/execute.sh).  Its peak
-# resident memory, in MB, goes to <dir>/workload_rss_mb: a recording's trace
+# workload JVM watched until it ends (experiments/lib/execute.sh).  Its mean
+# resident memory over its life goes to <dir>/workload_rss_mean_mb at its end,
+# its peak, in MB, to <dir>/workload_rss_mb: a recording's trace
 # directory, what a native run of it is charged (REPRODUCE); a replay's
 # worker directory, the campaign's measured replay need
 # (campaign_replay_measured).  For a JVM its host was charged <charged_mb>
@@ -4569,6 +4600,7 @@ campaign_workload_output_bytes() {
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
+  local sum=0 reads=0
   local output="" wrote="" since=${SECONDS}
   local -a grants=()
   [[ -z "${traced}" ]] || rm -f -- "${dir}/${campaign_recording_end_marker}"
@@ -4600,6 +4632,10 @@ ever times out; its threads are dumped on its output; ended"
       fi
     fi
     mb=$(campaign_process_rss_mb "${pid}") || mb=""
+    if [[ -n "${mb}" ]]; then
+      sum=$(( sum + mb ))
+      reads=$(( reads + 1 ))
+    fi
     if (( ${mb:-0} > peak )); then
       peak=${mb}
       [[ -z "${dir}" ]] \
@@ -4622,6 +4658,10 @@ ever times out; its threads are dumped on its output; ended"
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
+  # Its resident memory over its life, the reads' mean: a replay peaks at
+  # its end (campaign_replay_typical).
+  [[ -z "${dir}" ]] || (( reads == 0 )) \
+    || printf '%s\n' "$(( sum / reads ))" >"${dir}/workload_rss_mean_mb"
   if [[ -n "${ended}" ]]; then
     printf '%s\n' "${ended}" >"${dir}/${campaign_recording_end_marker}"
     echo "causynth: ${ended}" >&2
@@ -6668,7 +6708,13 @@ campaign_stream_try_host() {
   campaign_stream_has_cores "${host}" "${kind}" || return 1
   ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
     || return 1
-  campaign_host_try_charge "${host}" "${mb}"
+  # A replay leaves room for the ends its charge does not cover
+  # (campaign_replay_typical); a solve's charge is its whole.
+  case "${kind}" in
+    OBLIGATION|HARD) campaign_host_try_charge "${host}" "${mb}" ;;
+    *) campaign_host_try_charge "${host}" "${mb}" \
+         "$(( campaign_replay_spikes * campaign_replay_spike_mb ))" ;;
+  esac
   case "${status}" in
     0)
       stream_admitted_host=${host}
