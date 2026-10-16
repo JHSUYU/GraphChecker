@@ -526,13 +526,15 @@ campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
 # Every engine JVM ends at its first out-of-heap error, and one that only
 # collects is out of heap too: past 70 % of its time in the collector while
-# freeing under 5 % of its heap, its overhead limit throws (the JVM's own
+# freeing under 20 % of its heap, its overhead limit throws (the JVM's own
 # 98 %/2 % let SGF7-18413's final composer collect at -Xmx4096m for 47 min --
 # 4587 full collections, 2725 s of 2870 s -- never exiting to be run again at
 # 8192 MB: the compact expression tables' weakly held nodes give a little
-# back every cycle).
+# back every cycle; at 5 % SGF7-adhoc-10's served planner collected at
+# -Xmx8192m for 17+ min, its old generation full, 275 full collections, one
+# round unplanned, each collection freeing a little over 5 %).
 campaign_engine_oom=(-XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70
-  -XX:GCHeapFreeLimit=5)
+  -XX:GCHeapFreeLimit=20)
 # Every engine JVM (a head's, the served planner, a solver) runs at this
 # thread stack: lowering a term recurses once per subterm, and a recorded
 # term ~750 binary operations deep overflowed the JVM's default stack in an
