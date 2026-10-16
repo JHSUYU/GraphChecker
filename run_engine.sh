@@ -5716,23 +5716,27 @@ campaign_stream_step_done() {
   fi
 }
 
-# The witness chain an attempt left open (<dir>/chain): its producers not
-# grown yet become the chain the rounds grow (campaign_stream_chain_round),
-# the queued obligations are cancelled, and its witnesses wait to be
-# attempted again once the GROW swaps in (campaign_stream_chain_reattempt).
-# A chain whose every producer was grown already cannot close: the
-# exploration goes on as before, and the claim it reaches names it
-# (WITNESS_CHAIN_OPEN).
+# The witness chain an attempt left open (<dir>/chain, the producers it
+# names that were not grown when its step began): those still not grown
+# become the chain the rounds grow (campaign_stream_chain_round), the queued
+# obligations are cancelled, and its witnesses wait to be attempted again
+# once the GROW swaps in (campaign_stream_chain_reattempt).  One grown since
+# the step began leaves nothing to grow: its witnesses still in the corpus
+# are attempted again at once, and that attempt goes to CONFIRM
+# (campaign_stream_open_chain).
 campaign_stream_open() {
-  local dir=$1 producer
+  local dir=$1 producer witness
   local -a fresh=()
   while read -r producer; do
     [[ -n "${stream_chain_grown[${producer}]+x}" ]] || fresh+=("${producer}")
   done <"${dir}/chain"
   stream_chain=()
   if (( ${#fresh[@]} == 0 )); then
+    while read -r witness; do
+      [[ ! -d "${sessions}/${witness}" ]] || stream_witnesses+=("${witness}")
+    done <"${dir}/chain-witnesses"
     campaign_log "the witness's chain is open, and every producer it names \
-was grown already: it cannot close"
+was grown already: its witnesses are attempted again, and CONFIRM decides"
     return 0
   fi
   for producer in "${fresh[@]}"; do
@@ -6001,30 +6005,40 @@ that verdict lands" 0 false
 
 # A witness attempt whose COMPOSE names an open chain (ComposeMain
 # #campaignClaim: openChain, cone.py's open links of the claimed path) is
-# not confirmed -- a claim never stands on a value no attested producer
-# made: its row says so, and the producers its arrivals name, with its
-# witnesses, go to the head (<step>/chain, <step>/chain-witnesses), which
-# grows them and attempts the witnesses again (campaign_stream_open).  False
-# where the chain is closed.
+# not confirmed while its arrivals name a producer EXPLORE has not grown:
+# its row says so, and those producers, with its witnesses, go to the head
+# (<step>/chain, <step>/chain-witnesses), which grows them and attempts the
+# witnesses again (campaign_stream_open).  With none left to grow -- the
+# open values name no producer, or every one they name was grown -- CONFIRM
+# decides (best effort, owner 2026-10-15): false, as where the chain is
+# closed.  Parked instead, the witness was never attempted again, and the
+# exploration ran to its fixed point or budget (SGF7-18413 on sgf16:
+# isExpired's CLOCK_SKEW witness, open on a tlogReplicas leaf whose
+# producer's session had not landed when the attempt composed).
 campaign_stream_open_chain() {
   local step=$1 dir=$2 manifest=$2/candidate_composition_manifest.json open
+  local producer
+  local -a fresh=()
   shift 2
   open=$(jq '.solver.campaignClaim.openChain // [] | length' \
     "${manifest}" 2>/dev/null) || open=0
   (( open > 0 )) || return 1
-  jq -r '.solver.campaignClaim.openChain[].producer | select(. != "")' \
-    "${manifest}" | LC_ALL=C sort -u >"${step}/chain"
-  printf '%s\n' "$@" >"${step}/chain-witnesses"
-  if [[ -s "${step}/chain" ]]; then
-    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
-${open} value(s) its path's fatal condition rests on no attested producer \
-made (openChain); EXPLORE grows the $(grep -c '' "${step}/chain") \
-producer(s) they name and attempts its witnesses again" 0 false
-  else
-    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
-${open} value(s) its path's fatal condition rests on no attested producer \
-made (openChain), and none names a producer EXPLORE could grow" 0 false
+  while read -r producer; do
+    [[ -n "${stream_chain_grown[${producer}]+x}" ]] || fresh+=("${producer}")
+  done < <(jq -r '.solver.campaignClaim.openChain[].producer
+    | select(. != "")' "${manifest}" | LC_ALL=C sort -u)
+  if (( ${#fresh[@]} == 0 )); then
+    campaign_log "witness $*: its causal chain is open over ${open} \
+value(s) no attested producer made, and none names a producer EXPLORE could \
+still grow: CONFIRM decides"
+    return 1
   fi
+  printf '%s\n' "${fresh[@]}" >"${step}/chain"
+  printf '%s\n' "$@" >"${step}/chain-witnesses"
+  campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
+${open} value(s) its path's fatal condition rests on no attested producer \
+made (openChain); EXPLORE grows the ${#fresh[@]} producer(s) they name and \
+attempts its witnesses again" 0 false
 }
 
 # The verdicts on the confirmation replays that returned (<step>/confirms:

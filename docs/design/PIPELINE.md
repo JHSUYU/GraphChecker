@@ -1840,13 +1840,17 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the claimed
   path's fatal condition rests on that no attested producer made -- the set
   `experiments/accept/cone.py` reads off the formula, `compose.Cone` -- the claim RUN_DEFECT) is
-  not confirmed (`campaign_stream_open_chain`); the head cancels the queued obligations and grows the
-  producers those values' arrivals name (`campaign_stream_open`): each later round grows only its
-  exposures of them, each producer once, and queues none of its obligations
-  (`campaign_stream_chain_round`); once the GROW swaps in, the attempt's witnesses still in the
-  corpus are attempted again, a re-run landing as a witness of its own
-  (`campaign_stream_chain_reattempt`). A chain whose every producer was grown already cannot close,
-  and a fixed point ends a chain no exposure reaches: the final claim names each open value
+  not confirmed while those values' arrivals name a producer not grown yet
+  (`campaign_stream_open_chain`); the head cancels the queued obligations and grows those producers
+  (`campaign_stream_open`): each later round grows only its exposures of them, each producer once,
+  and queues none of its obligations (`campaign_stream_chain_round`); once the GROW swaps in, the
+  attempt's witnesses still in the corpus are attempted again, a re-run landing as a witness of its
+  own (`campaign_stream_chain_reattempt`). With nothing left to grow -- the open values name no
+  producer, or every one they name was grown -- CONFIRM decides the claim (best effort, owner
+  2026-10-15): parked instead, the witness was never attempted again and the exploration ran to its
+  fixed point or budget (SGF7-18413 on sgf16: isExpired's CLOCK_SKEW witness, open on a
+  `tlogReplicas` leaf whose producer's session had not landed when the attempt composed). A fixed
+  point ends a chain no exposure reaches; the final claim names each open value
   (`WITNESS_CHAIN_OPEN`, EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
   nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once

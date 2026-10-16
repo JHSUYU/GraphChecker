@@ -4512,20 +4512,38 @@ EOF
 
 # STREAM-CHAIN: a witness attempt whose COMPOSE names an open chain (its
 # path's fatal condition resting on a value no attested producer made) is not
-# confirmed; the head grows the producers its arrivals name -- each once,
-# from the rounds' exposures of them only, every other obligation cancelled
-# -- and attempts the witnesses again once the GROW swaps in.
+# confirmed while its arrivals name a producer not grown yet; the head grows
+# those producers -- each once, from the rounds' exposures of them only, every
+# other obligation cancelled -- and attempts the witnesses again once the GROW
+# swaps in.  With none left to grow (no producer named, or every one grown),
+# CONFIRM decides: the attempt reads closed (SGF7-18413 on sgf16, parked for
+# good on a producerless leaf).
 chain_dir="${test_tmp}/chain"
 mkdir -p "${chain_dir}/step" "${chain_dir}/attempt" "${chain_dir}/sessions/W1" \
   "${chain_dir}/round"
 chain_said=$(
   attempts="${chain_dir}/attempts.jsonl"
   campaign_log() { printf '%s\n' "$*" >>"${chain_dir}/log"; }
+  declare -A stream_chain_grown=()
   jq -n -c '{witnesses: ["W1", "W2"]}' >"${chain_dir}/attempt/attempt.json"
   manifest="${chain_dir}/attempt/candidate_composition_manifest.json"
   jq -n -c '{solver: {campaignClaim: {openChain: []}}}' >"${manifest}"
   ! campaign_stream_open_chain "${chain_dir}/step" "${chain_dir}/attempt" \
     W1 W2 || echo "a closed chain opened"
+  jq -n -c '{solver: {campaignClaim: {openChain: [
+      {symbol: "M_J_field_HOFF.b", producer: ""}]}}}' >"${manifest}"
+  ! campaign_stream_open_chain "${chain_dir}/step" "${chain_dir}/attempt" \
+    W1 W2 || echo "a chain naming no producer was parked"
+  stream_chain_grown=([nn0/region/R.P1]=1)
+  jq -n -c '{solver: {campaignClaim: {openChain: [
+      {symbol: "M_J_field_HOFF.a", producer: "nn0/region/R.P1"}]}}}' \
+    >"${manifest}"
+  ! campaign_stream_open_chain "${chain_dir}/step" "${chain_dir}/attempt" \
+    W1 W2 || echo "a chain of grown producers was parked"
+  stream_chain_grown=()
+  [[ ! -e "${chain_dir}/step/chain" ]] || echo "nothing to grow wrote a chain"
+  printf 'confirm-decides=%s\n' "$(grep -c 'CONFIRM decides' \
+    "${chain_dir}/log")"
   jq -n -c '{solver: {campaignClaim: {openChain: [
       {symbol: "M_J_field_HOFF.a", producer: "nn0/region/R.P1"},
       {symbol: "M_J_field_HOFF.b", producer: ""},
@@ -4560,22 +4578,25 @@ chain_said=$(
   campaign_stream_chain_round "${chain_dir}/round" O5 O6
   printf 'cancelled=%s grown=%s\n' "${stream_cancelled[*]}" \
     "${!stream_chain_grown[*]}"
-  # The same chain again: its producer was grown, so it cannot close.
-  campaign_stream_open "${chain_dir}/step"
-  printf 'reopened=%s\n' "${#stream_chain[@]}"
-  # After the swap: the witnesses still in the corpus are attempted again.
+  # The same chain again, its producer grown since the step began: nothing
+  # to grow, so its witnesses still in the corpus are attempted again now.
   sessions="${chain_dir}/sessions"
+  stream_witnesses=()
+  campaign_stream_open "${chain_dir}/step"
+  printf 'reopened=%s now=%s\n' "${#stream_chain[@]}" "${stream_witnesses[*]}"
+  # After the swap: the witnesses still in the corpus are attempted again.
   stream_chain=([nn0/region/R.P1]=1)
   stream_chain_witnesses=(W1 W2)
   stream_witnesses=()
   campaign_stream_chain_reattempt
   printf 'again=%s open=%s\n' "${stream_witnesses[*]}" "${#stream_chain[@]}"
 )
-[[ "${chain_said}" == "chain=nn0/region/R.P1 witnesses=W1,W2 row=null,false,true
+[[ "${chain_said}" == "confirm-decides=2
+chain=nn0/region/R.P1 witnesses=W1,W2 row=null,false,true
 producers=nn0/region/R.P1 queue=REPLAY cancelled=O1
 grew nn0/region/R.P1
 cancelled=O5 O6 grown=nn0/region/R.P1
-reopened=0
+reopened=0 now=W1
 again=W1 open=0" ]] || fail "the open witness chain was handled as: \
 ${chain_said}"
 
