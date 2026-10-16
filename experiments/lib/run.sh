@@ -26,6 +26,10 @@ export CAUSYNTH_SYSTEM_DOORS=
 # (system.sh client_fault_transports; explore.ClientFaults): empty, every door.
 CAUSYNTH_CLIENT_FAULT_TRANSPORTS=$(IFS=,; echo "${client_fault_transports[*]-}")
 export CAUSYNTH_CLIENT_FAULT_TRANSPORTS
+# The region roots whose occurrences always run for their doors alone
+# (system.sh doors_only_roots; plan.DoorsOnlyRoots): empty, none.
+CAUSYNTH_DOORS_ONLY_ROOTS=$(IFS='|'; echo "${doors_only_roots[*]-}")
+export CAUSYNTH_DOORS_ONLY_ROOTS
 # The system's view classes (system.sh system_scope), as class names: woven in
 # every case for the store's decodes, they add no tracked cell (SEED,
 # causynth.RootDemand).

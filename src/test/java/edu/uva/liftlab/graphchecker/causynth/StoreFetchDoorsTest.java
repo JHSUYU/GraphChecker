@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.DoorsOnlyRoots;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Test;
@@ -142,7 +143,9 @@ public class StoreFetchDoorsTest {
     /** A planned occurrence whose final basis is a door's -- a control
      *  producer's or a store fetch's -- is doors-only; one a value rule
      *  moved (a store item's sender, a wire's producer), or a target, is
-     *  not. */
+     *  not -- unless its region root is one the system declares heavy
+     *  (plan.DoorsOnlyRoots), a target's aside: then it is doors-only and
+     *  declared so. */
     @Test
     public void aDoorOccurrenceIsPlannedDoorsOnly() {
         Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
@@ -151,21 +154,37 @@ public class StoreFetchDoorsTest {
                 {"writer", "SHARED_LOCATION_DEMAND_V1"},
                 {"item", "STORE_ITEM_PRODUCER_V1"},
                 {"wire", "WIRE_PRODUCER_V1"},
-                {"root", "ROOT_RELEVANT_V1"}, {"target", ""}};
+                {"root", "ROOT_RELEVANT_V1"}, {"target", ""},
+                {"heavy", "SHARED_LOCATION_DEMAND_V1"},
+                {"heavyTarget", ""}};
         for (String[] row : rows) {
             Map<String, Object> activation = new LinkedHashMap<>();
             if (!row[1].isEmpty()) {
                 activation.put(RuntimeSelectedRegionFinalizer.ADMISSION_BASIS,
                         row[1]);
             }
+            activation.put("regionId", row[0].startsWith("heavy")
+                    ? "REGION.heavy" : "REGION." + row[0]);
+            if (row[0].equals("heavyTarget")) {
+                activation.put(
+                        RuntimeSelectedRegionFinalizer.FAILURE_TARGET_OCCURRENCE,
+                        true);
+            }
             instances.put(row[0], activation);
         }
-        assertEquals(2, RuntimeSelectedRegionFinalizer.stateDoorsOnly(
-                instances, instances.keySet()));
+        assertEquals(3, RuntimeSelectedRegionFinalizer.stateDoorsOnly(
+                instances, instances.keySet(),
+                region -> region.equals("REGION.heavy") ? "<a.Core: void create()>"
+                        : "<a.Other: void run()>",
+                DoorsOnlyRoots.of("<a.Core: void create()>|<b.X: void y()>")));
         for (String[] row : rows) {
+            boolean heavy = row[0].equals("heavy");
             assertEquals(row[0], row[1].equals("CONTROL_PRODUCER_V1")
-                    || row[1].equals("STORE_FETCH_V1"), instances.get(row[0])
-                    .containsKey(RuntimeSelectedRegionFinalizer.DOORS_ONLY));
+                    || row[1].equals("STORE_FETCH_V1") || heavy,
+                    instances.get(row[0]).containsKey(
+                            RuntimeSelectedRegionFinalizer.DOORS_ONLY));
+            assertEquals(row[0], heavy, instances.get(row[0]).containsKey(
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY_DECLARED));
         }
     }
 

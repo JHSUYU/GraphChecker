@@ -151,6 +151,10 @@ workflow_config_keys=(
   # the system's catalog there is the client calling a dependency past the
   # system, no flip site.  Empty: every door.
   "causynth_client_fault_transports CAUSYNTH_CLIENT_FAULT_TRANSPORTS krp -"
+  # The region roots whose occurrences always run for their doors alone,
+  # '|'-separated methods (plan.DoorsOnlyRoots): heavy roots, a system's
+  # declaration.  Empty: none.
+  "causynth_doors_only_roots CAUSYNTH_DOORS_ONLY_ROOTS krp -"
   # The system's view classes (system_scope), comma-separated class names:
   # a reference field only they write is no tracked cell (causynth.RootDemand).
   "causynth_system_view CAUSYNTH_SYSTEM_VIEW krp -"
@@ -881,6 +885,7 @@ run_java_main() {
   run_in_directory "${graphchecker_work_dir}" engine_java \
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
     "-Dcausynth.system.doors=${causynth_system_doors}" \
+    "-Dcausynth.doors.only.roots=${causynth_doors_only_roots}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
@@ -1030,6 +1035,7 @@ do_analyze() {
   fi
   system_properties+=("-Dcausynth.system.doors=${causynth_system_doors}")
   system_properties+=("-Dcausynth.system.view=${causynth_system_view}")
+  system_properties+=("-Dcausynth.doors.only.roots=${causynth_doors_only_roots}")
   system_properties+=("-Dcausynth.io.doors=$(campaign_io_doors)")
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
@@ -7259,7 +7265,8 @@ can be grown into"
   unpaused=$(jq 'length' "${generation}/unpaused.json")
   jq -c --slurpfile unpaused "${generation}/unpaused.json" \
     '($unpaused[0] | map({(.): true}) | add // {}) as $held
-     | if .doorsOnly == true and $held[.occurrenceId] then del(.doorsOnly)
+     | if .doorsOnly == true and .doorsOnlyDeclared != true
+          and $held[.occurrenceId] then del(.doorsOnly)
        else . end' \
     "${stream_plan}" >"${generation}/unpaused_plan.jsonl"
   if [[ -n "$(campaign_exposures "${growth}")" ]] \

@@ -284,14 +284,18 @@ public final class ExploreMain {
         Map<OccurrenceAddress, ClosurePlanner.Concrete> concrete =
                 new LinkedHashMap<OccurrenceAddress,
                         ClosurePlanner.Concrete>();
-        Set<String> doorsOnly = doorsOnlyOccurrences(iteration);
+        Set<String> doorsOnly = doorsOnlyOccurrences(iteration,
+                RuntimeSelectedRegionFinalizer.DOORS_ONLY);
+        Set<String> heldDoorsOnly = doorsOnlyOccurrences(iteration,
+                RuntimeSelectedRegionFinalizer.DOORS_ONLY_DECLARED);
         Map<OccurrenceAddress, String> unpaused =
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> runWhole =
                 new LinkedHashSet<OccurrenceAddress>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
-                    maxTasks, scope, branches, doorsOnly, faults);
+                    maxTasks, scope, branches, doorsOnly, heldDoorsOnly,
+                    faults);
             gaps.addAll(plan.gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
@@ -1080,18 +1084,19 @@ public final class ExploreMain {
         return planned;
     }
 
-    /** The occurrences the current plan runs for their doors alone
-     *  ({@code RuntimeSelectedRegionFinalizer#DOORS_ONLY} on their task row;
-     *  GROW drops it from one a value demand reaches). */
-    private static Set<String> doorsOnlyOccurrences(Path iteration)
+    /** The occurrences the current plan marks {@code mark} on their task
+     *  row: {@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}, run for their
+     *  doors alone (GROW drops it from one a value demand reaches), or
+     *  {@code #DOORS_ONLY_DECLARED}, so for good. */
+    private static Set<String> doorsOnlyOccurrences(Path iteration,
+                                                    String mark)
             throws IOException {
         Set<String> doorsOnly = new LinkedHashSet<String>();
         Path plan = iteration.resolve("execution_task_plan.jsonl");
         if (!Files.exists(plan)) return doorsOnly;
         for (JsonObject row : RowCodec.readJsonl(plan)) {
-            if (row.has(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
-                    && row.get(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
-                    .getAsBoolean() && row.has("occurrenceId")) {
+            if (row.has(mark) && row.get(mark).getAsBoolean()
+                    && row.has("occurrenceId")) {
                 doorsOnly.add(row.get("occurrenceId").getAsString());
             }
         }

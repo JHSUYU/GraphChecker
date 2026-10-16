@@ -35,6 +35,8 @@
 #   client_fault_transports
 #                       the transports whose doors fail in the workload
 #                       client's own root contexts (explore.ClientFaults)
+#   doors_only_roots    region roots whose occurrences always run for their
+#                       doors alone (plan.DoorsOnlyRoots)
 # and defines, after the case is read,
 #   system_paths        sets module, report, test_classes, lineage_roots
 #   system_root <name>  a compiled class root the scope names

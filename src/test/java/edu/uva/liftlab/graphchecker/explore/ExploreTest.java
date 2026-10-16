@@ -3571,7 +3571,7 @@ public class ExploreTest {
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
                 Collections.singleton(WRITER.render()),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
         assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
         assertEquals("no focused replay ran it: the fixed point names it",
                 Collections.singleton(WRITER), doors.runWhole);
@@ -3757,7 +3757,7 @@ public class ExploreTest {
                             Collections.singletonList(target),
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
             List<String> kept = focused(cut);
             List<String> expected = new ArrayList<String>(Arrays.asList(
                     target.render(), writer.render(), producer.render()));
@@ -6586,7 +6586,7 @@ public class ExploreTest {
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
     }
 
     /**
@@ -6659,7 +6659,7 @@ public class ExploreTest {
                             Collections.singletonList(TARGET),
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
             Set<String> planned = new LinkedHashSet<String>();
             for (Task task : plan.tasks) planned.add(task.focused().render());
             Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
@@ -6683,7 +6683,7 @@ public class ExploreTest {
                 map, Branches.of(corpus, Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
             Collections.<String>emptySet(),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
         Set<String> kept = new LinkedHashSet<String>();
         for (Task task : capped.tasks) kept.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -6765,7 +6765,7 @@ public class ExploreTest {
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
                     Collections.<String>emptySet(),
-                ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE);
         Set<String> planned = new LinkedHashSet<String>();
         for (Task task : plan.tasks) planned.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),

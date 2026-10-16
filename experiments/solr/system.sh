@@ -42,6 +42,16 @@ system_scope=(
 # those replays ran the declared occurrence; every fault root of the five
 # Solr fault bugs is a server's ZooKeeper write or a client request.
 client_fault_transports=(SOLR_HTTP SOLR_HTTP2)
+# The region roots whose occurrences always run for their doors alone
+# (plan.DoorsOnlyRoots, owner 2026-10-16): a core's creation builds the whole
+# SolrCore -- its config, schema and index -- and SGF8-adhoc-14's seed planned
+# seven whole for the inFlightCreations set they add to and remove from:
+# 109,222 writes, 89 % of a 499 MB session, the seed replay 36 min against
+# 9.5.  Its ZooKeeper and HTTP doors still stand; what it writes is the
+# recording's.
+doors_only_roots=(
+  '<org.apache.solr.core.CoreContainer: org.apache.solr.core.SolrCore create(java.lang.String,java.nio.file.Path,java.util.Map,boolean)>'
+)
 # The tree's own sources, as "<root>:<tree-relative source dir>": where
 # tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(

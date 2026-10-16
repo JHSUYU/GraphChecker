@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
+import edu.uva.liftlab.graphchecker.plan.DoorsOnlyRoots;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
@@ -97,6 +98,13 @@ public final class RuntimeSelectedRegionFinalizer {
      * runtime.ConcolicRegionRuntime}; {@link #stateDoorsOnly}).
      */
     public static final String DOORS_ONLY = "doorsOnly";
+    /**
+     * A {@link #DOORS_ONLY} occurrence whose region root the system names
+     * ({@code plan.DoorsOnlyRoots}): it runs for its doors in every plan, a
+     * value demand on it held at the recording, never unpaused by GROW
+     * ({@code explore.ClosurePlanner}).
+     */
+    public static final String DOORS_ONLY_DECLARED = "doorsOnlyDeclared";
     /**
      * {@code admissionBasis} of an activation carried because it exported a
      * value the walk demanded on the other side of a message: the recording
@@ -1086,7 +1094,11 @@ public final class RuntimeSelectedRegionFinalizer {
         LOG.info("PLAN doors-only: {} of the {} planned occurrence(s)"
                 + " (control producers and store fetches) run paused but for"
                 + " their doors",
-                stateDoorsOnly(instances, walk.reached), walk.reached.size());
+                stateDoorsOnly(instances, walk.reached, regionId -> {
+                    StaticProgram.RegionRow skeleton =
+                            program.skeletons.get(regionId);
+                    return skeleton == null ? "" : skeleton.rootMethod;
+                }, DoorsOnlyRoots.current()), walk.reached.size());
         return walk.reached;
     }
 
@@ -1097,14 +1109,22 @@ public final class RuntimeSelectedRegionFinalizer {
      * fetch on the target's data flow, it contributes no value -- a value
      * rule reaching it moves its basis ({@code DemandWalk#reach}, {@code
      * #admitValue}) -- and its own guards to the send or the read are no
-     * question of the target's.  How many.
+     * question of the target's -- and each one, a target's aside, whose
+     * region root the system names ({@code declared}, {@link
+     * #DOORS_ONLY_DECLARED}), whatever its basis.  How many.
      */
     static int stateDoorsOnly(Map<String, Map<String, Object>> instances,
-                              Collection<String> planned) {
+                              Collection<String> planned,
+                              Function<String, String> rootOf,
+                              DoorsOnlyRoots declared) {
         int doorsOnly = 0;
         for (String occurrence : planned) {
             Map<String, Object> activation = instances.get(occurrence);
-            if (doorBasis(text(activation.get(ADMISSION_BASIS)))) {
+            boolean heavy = !activation.containsKey(FAILURE_TARGET_OCCURRENCE)
+                    && declared.holds(rootOf.apply(
+                            text(activation.get("regionId"))));
+            if (heavy) activation.put(DOORS_ONLY_DECLARED, true);
+            if (heavy || doorBasis(text(activation.get(ADMISSION_BASIS)))) {
                 activation.put(DOORS_ONLY, true);
                 doorsOnly++;
             }

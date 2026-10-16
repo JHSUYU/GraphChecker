@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -257,6 +258,7 @@ public final class ExposedRegionPlanMain {
         LoopBoundPolicy loopBound = ConcolicScheduler.declaredLoopBounds(
                 LoopBoundPolicy.declaredDefault(), regionPlans);
         List<JsonObject> rows = new ArrayList<>();
+        DoorsOnlyRoots heavy = DoorsOnlyRoots.current();
         for (int index = 0; index < exposed.size(); index++) {
             RegionInstancePlan plan = exposed.get(index);
             RegionInstancePlan.Goal goal = plan.goal();
@@ -272,6 +274,17 @@ public final class ExposedRegionPlanMain {
             task.addProperty(ConcolicScheduler.REPLAY_GROUP_ID, replayGroupId);
             task.addProperty(RuntimeSelectedRegionFinalizer.ADMISSION_BASIS,
                     EXPOSED_BY + exposedBy.get(index));
+            // A region the system declares heavy runs for its doors alone
+            // here as in the seed's plan (DoorsOnlyRoots).
+            if (task.has("rootSelector") && heavy.holds(
+                    JsonFields.optionalString(task.getAsJsonObject(
+                            "rootSelector"), "method"))) {
+                task.addProperty(RuntimeSelectedRegionFinalizer.DOORS_ONLY,
+                        true);
+                task.addProperty(
+                        RuntimeSelectedRegionFinalizer.DOORS_ONLY_DECLARED,
+                        true);
+            }
             rows.add(task);
         }
         return rows;

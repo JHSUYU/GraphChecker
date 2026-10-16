@@ -191,20 +191,22 @@ public final class ClosurePlanner {
 
     /** The closure of one anchor; {@code branches} says which sessions may
      *  expose a region for growth, {@code doorsOnly} which occurrences the
-     *  current plan runs for their doors alone (rendered addresses),
-     *  {@code faults} where a fault door fails. */
+     *  current plan runs for their doors alone (rendered addresses), {@code
+     *  heldDoorsOnly} which of them the system declares so for good ({@code
+     *  plan.DoorsOnlyRoots}), {@code faults} where a fault door fails. */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches, Set<String> doorsOnly,
-                            ClientFaults faults) {
+                            Set<String> heldDoorsOnly, ClientFaults faults) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly, faults);
+                branches, doorsOnly, heldDoorsOnly, faults);
     }
 
     /** {@link #plan} under another closure ceiling (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
-                     Set<String> doorsOnly, ClientFaults faults) {
+                     Set<String> doorsOnly, Set<String> heldDoorsOnly,
+                     ClientFaults faults) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -320,8 +322,20 @@ public final class ClosurePlanner {
             // (SessionManifest#doorsOnly), it is no value's capture: GROW
             // drops the mark (doorsOnly: the current plan's) and re-runs the
             // focused replay that ran it, else none is -- the seed is not
-            // re-run -- and the fixed point names it (ExploreMain).
-            if (demand.value && !ranWhole(corpus, demand.occurrence)) {
+            // re-run -- and the fixed point names it (ExploreMain).  One
+            // the system declares heavy (plan.DoorsOnlyRoots) stays so: the
+            // values it writes are the recording's, named.
+            if (demand.value
+                    && heldDoorsOnly.contains(demand.occurrence.render())) {
+                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        demand.occurrence.render(), "demanded as a value ("
+                                + demand.why + "), it runs for its doors"
+                                + " alone by the system's declaration"
+                                + " (causynth.doors.only.roots): the values it"
+                                + " writes are the recording's"));
+            } else if (demand.value
+                    && !ranWhole(corpus, demand.occurrence)) {
                 String rerun = exposing(corpus, branches, demand.occurrence,
                         exposed.values())[0];
                 if (!rerun.isEmpty()

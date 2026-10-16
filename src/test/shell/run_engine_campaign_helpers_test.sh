@@ -1146,7 +1146,9 @@ done
 # 57: `causynth_system_view`, the system's view classes (plan.SystemView).
 # 58: `causynth_client_fault_transports`, the transports whose doors fail in
 # the workload client's own root contexts (explore.ClientFaults).
-[[ "$(print_normalized_config | wc -l)" -eq 58 ]] \
+# 59: `causynth_doors_only_roots`, the region roots whose occurrences always
+# run for their doors alone (plan.DoorsOnlyRoots).
+[[ "$(print_normalized_config | wc -l)" -eq 59 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
