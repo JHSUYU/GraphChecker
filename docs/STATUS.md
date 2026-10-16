@@ -670,7 +670,16 @@ Scale and robustness:
     strings: index keys, lowered and canonical texts), where solr-int ran out of 21 GB in the closure
     walk. Each round also writes the slot table's changes whole (`slots.jsonl`: 2.9 GB in that round
     6), which every later planner folds. Past `engine_memory_mb` the exploration ends
-    (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE.
+    (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE. What a planner holds after a round,
+    by the field that first reaches each object, rows first (offline EXPLORE.N, SGF7 corpora, 2026-10-16):
+    solr-adhoc-10's 23 sessions (1192 MB) 1209 MB -- `Independence`'s leaf sets
+    (`Corpus.Derived#leaves`, a location leaf a string of its own per set) 239 MB, the rows 130 MB, the
+    lowerings' memo keys holding the expression nodes the tables hold weakly 44 MB, the corpus
+    indexes' composed keys about 100 MB; solr-adhoc-40's 12 sessions (1289 MB) 1582 MB, its leaf sets
+    478 MB; solr-adhoc-09's round 8 corpus (1474 MB) 1361 MB, spread wide (slot table 162 MB, leaf sets
+    143 MB, memo keys 97 MB, shared bodies' texts 101 MB). A lowering frame holds the side conditions it
+    committed by reference (`gc/compose/SmtLowering.Conditions`): copied, they were 451 MB of
+    solr-adhoc-10's 1626 MB.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
     at or after the activation's entry event, from any thread; each page goes to the publication
     thread as it is read, once fewer than four pages' text wait there undecoded

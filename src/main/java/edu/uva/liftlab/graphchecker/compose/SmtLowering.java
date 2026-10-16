@@ -1074,7 +1074,7 @@ public final class SmtLowering {
         statedBases = previous.statedBases;
         arm = previous.arm;
         top().gaps(closed);
-        return new ArrayList<String>(closed.conditions);
+        return closed.conditions.list();
     }
 
     /** One enclosing conjunction, kept while a nested one is open. */
@@ -1111,7 +1111,7 @@ public final class SmtLowering {
      */
     private final class Raised {
         private final Set<String> refusals = new LinkedHashSet<String>();
-        private final Set<String> conditions = new LinkedHashSet<String>();
+        private final Conditions conditions = new Conditions();
         /** The texts of joins a mint or a pin stood in for ({@link
          *  Lowered#reach}). */
         private final Set<String> dropped = new LinkedHashSet<String>();
@@ -1191,8 +1191,14 @@ public final class SmtLowering {
         /** Everything another frame raised, as this frame's own. */
         private void all(Raised other) {
             for (String subject : other.refusals) refusal(subject);
-            if (this != root) dropped.addAll(other.dropped);
-            for (String predicate : other.conditions) condition(predicate);
+            if (this != root) {
+                dropped.addAll(other.dropped);
+                conditions.add(other.conditions);
+            } else {
+                for (String predicate : other.conditions.list()) {
+                    assertPlain(predicate);
+                }
+            }
             gaps(other);
         }
 
@@ -1208,6 +1214,71 @@ public final class SmtLowering {
                     viewLowered(symbol.getKey(), choice);
                 }
             }
+        }
+    }
+
+    /**
+     * THE SIDE CONDITIONS ONE FRAME RAISED ({@link Raised}), in the order
+     * raised, each once: its own predicates and the frames committed into
+     * it, each held by reference.  A memoized node is committed on every
+     * hit, and a frame that copied what it committed held its whole
+     * sub-DAG's conditions once more for every node above it (solr-adhoc-10
+     * SGF7, 23 of its sessions planned offline: 9.4 M set entries over
+     * 123 K distinct predicates, 451 MB of the planner's 1626 MB live set;
+     * 33 MB by reference).
+     * A frame committed is never raised into again, so a reference reads
+     * what a copy taken then held; {@link #list} reads them out, each at its
+     * first occurrence, the copies' order (a frame reached again holds
+     * nothing not read already).
+     */
+    static final class Conditions {
+        /** Each a predicate or a committed frame's {@link Conditions};
+         *  null while it holds none. */
+        private List<Object> parts;
+
+        void add(String predicate) {
+            part(predicate);
+        }
+
+        /** A committed frame's, as they stand: it is raised into no more. */
+        void add(Conditions committed) {
+            if (committed.parts != null) part(committed);
+        }
+
+        private void part(Object part) {
+            if (parts == null) parts = new ArrayList<Object>(2);
+            parts.add(part);
+        }
+
+        void clear() {
+            parts = null;
+        }
+
+        /** The predicates, each once, in the order first raised. */
+        List<String> list() {
+            Set<String> read = new LinkedHashSet<String>();
+            Set<Conditions> walked = Collections.newSetFromMap(
+                    new IdentityHashMap<Conditions, Boolean>());
+            Deque<Iterator<Object>> open = new ArrayDeque<Iterator<Object>>();
+            walked.add(this);
+            if (parts != null) open.push(parts.iterator());
+            while (!open.isEmpty()) {
+                Iterator<Object> at = open.peek();
+                if (!at.hasNext()) {
+                    open.pop();
+                    continue;
+                }
+                Object part = at.next();
+                if (part instanceof String) {
+                    read.add((String) part);
+                    continue;
+                }
+                Conditions inner = (Conditions) part;
+                if (walked.add(inner) && inner.parts != null) {
+                    open.push(inner.parts.iterator());
+                }
+            }
+            return new ArrayList<String>(read);
         }
     }
 
@@ -2339,7 +2410,7 @@ public final class SmtLowering {
         Attempt<Boolean> held = attempting(binding);
         List<String> own = new ArrayList<String>();
         if (held.raised != null && Boolean.TRUE.equals(held.value)) {
-            own.addAll(held.raised.conditions);
+            own.addAll(held.raised.conditions.list());
             held.raised.conditions.clear();
         }
         commit(held);
@@ -3445,7 +3516,7 @@ public final class SmtLowering {
     private Term conditioned(Attempt<ContainerSmtCodec.Term> asked) {
         List<String> required = new ArrayList<String>();
         if (asked.raised != null) {
-            required.addAll(asked.raised.conditions);
+            required.addAll(asked.raised.conditions.list());
             top().gaps(asked.raised);
         }
         return lowered(asked.value()).withPrecondition(and(required));

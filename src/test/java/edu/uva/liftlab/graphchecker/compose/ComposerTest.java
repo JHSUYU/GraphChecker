@@ -5401,6 +5401,51 @@ public class ComposerTest {
     }
 
     /**
+     * A frame's side conditions held by reference read as the copies a
+     * frame took at each commit held them (SmtLowering.Conditions): each
+     * predicate once, at its first occurrence, whatever the sharing.  Each
+     * row is frames built in order, an op a predicate ("p:a"), a commit of
+     * an earlier frame ("c:0") or a clear ("x", ownConditions'); every
+     * frame is checked against the copying model.
+     */
+    @Test
+    public void sideConditionsHeldByReferenceReadAsCopies() {
+        String[][][] rows = {
+            {{"p:a", "p:b", "p:a"}},
+            {{"p:a"}, {"p:b", "c:0"}, {"c:1", "p:a", "c:0", "p:c"}},
+            {{"p:x"}, {"c:0", "p:y"}, {"p:z", "c:0"}, {"c:2", "c:1", "c:2"}},
+            {{}, {"c:0", "p:q"}, {"c:0", "c:1", "c:1"}},
+            {{"p:a"}, {"c:0", "x", "p:b"}, {"p:c", "c:1", "c:0"}},
+        };
+        for (String[][] row : rows) {
+            List<SmtLowering.Conditions> held =
+                    new ArrayList<SmtLowering.Conditions>();
+            List<Set<String>> copied = new ArrayList<Set<String>>();
+            for (String[] ops : row) {
+                SmtLowering.Conditions frame = new SmtLowering.Conditions();
+                Set<String> copy = new LinkedHashSet<String>();
+                for (String op : ops) {
+                    if (op.equals("x")) {
+                        frame.clear();
+                        copy.clear();
+                    } else if (op.startsWith("p:")) {
+                        frame.add(op.substring(2));
+                        copy.add(op.substring(2));
+                    } else {
+                        int at = Integer.parseInt(op.substring(2));
+                        frame.add(held.get(at));
+                        copy.addAll(copied.get(at));
+                    }
+                }
+                held.add(frame);
+                copied.add(copy);
+                assertEquals(Arrays.deepToString(row),
+                        new ArrayList<String>(copy), frame.list());
+            }
+        }
+    }
+
+    /**
      * A VIEW'S CASES ARE LOWERED ONCE ({@code SmtLowering#throughView}): each
      * case of a view is a leaf read through a view of its own, here twenty
      * levels deep and two cases a level, so lowered anew at every use it
