@@ -49,14 +49,17 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.AbstractSet;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -360,9 +363,13 @@ public final class Corpus implements Arms.Rows {
                 new ConcurrentHashMap<String, Set<String>>();
         /** {@link #leaves}: the variables one term or read rests on; a
          *  flip's dependence asks every earlier condition of its path
-         *  again. */
+         *  again.  Each a {@link HeldLeaves} over {@link #leafNames}. */
         final Map<String, Set<String>> leaves =
                 new ConcurrentHashMap<String, Set<String>>();
+        /** Every name a leaf set of this session holds, once: a location
+         *  leaf is spelled anew for each term and read that reaches it. */
+        final Map<String, String> leafNames =
+                new ConcurrentHashMap<String, String>();
         /** term -> {@link #readLocations}, {@link #readEvents}; expression
          *  ref -> {@link #expressionStateReads}. */
         final Map<String, Set<String>> readLocations =
@@ -2448,17 +2455,51 @@ public final class Corpus implements Arms.Rows {
         return session == null ? null : session.expressions();
     }
 
-    /** What {@code key} rests on in one session, computed once. */
+    /** What {@code key} rests on in one session, computed once and held
+     *  as {@link HeldLeaves}. */
     public Set<String> leaves(String sessionId, String key,
                               Supplier<Set<String>> compute) {
         Derived of = bySession.get(sessionId);
         if (of == null) return compute.get();
         Set<String> found = of.leaves.get(key);
         if (found == null) {
-            found = compute.get();
+            found = new HeldLeaves(compute.get(), of.leafNames);
             of.leaves.put(key, found);
         }
         return found;
+    }
+
+    /**
+     * ONE LEAF SET AS A SESSION KEEPS IT ({@link #leaves}): its names in
+     * the order computed, each the session's one instance of it, read-only.
+     * Held as the walk's LinkedHashSet, with a location leaf spelled anew
+     * in each, the leaf sets were the largest thing a planner held after a
+     * round (SGF7, offline: 478 of solr-adhoc-40's 1582 MB over 12 of its
+     * sessions, 200 K sets of 28 names on average; 239 of solr-adhoc-10's
+     * 1209 MB); held so, 48 and 27 MB.  Their readers only iterate them
+     * ({@code Independence}).
+     */
+    static final class HeldLeaves extends AbstractSet<String> {
+        private final String[] names;
+
+        HeldLeaves(Set<String> computed, Map<String, String> held) {
+            names = new String[computed.size()];
+            int at = 0;
+            for (String name : computed) {
+                String one = held.putIfAbsent(name, name);
+                names[at++] = one == null ? name : one;
+            }
+        }
+
+        @Override
+        public Iterator<String> iterator() {
+            return Arrays.asList(names).iterator();
+        }
+
+        @Override
+        public int size() {
+            return names.length;
+        }
     }
 
     /** One shared-state read a published expression states, and the version the

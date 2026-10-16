@@ -191,6 +191,31 @@ public class ExploreTest {
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
 
+    /** A leaf set as a session keeps it (Corpus.HeldLeaves): the names in
+     *  the order computed, each name one instance across the session's
+     *  sets, read-only. */
+    @Test
+    public void aHeldLeafSetKeepsItsOrderAndOneInstancePerName() {
+        Map<String, String> held = new LinkedHashMap<String, String>();
+        Set<String> first = new Corpus.HeldLeaves(new LinkedHashSet<String>(
+                Arrays.asList(new String("loc:MAP/o#s"), "M_A", "b")), held);
+        Set<String> second = new Corpus.HeldLeaves(new LinkedHashSet<String>(
+                Arrays.asList("b", new String("loc:MAP/o#s"))), held);
+        assertEquals(Arrays.asList("loc:MAP/o#s", "M_A", "b"),
+                new ArrayList<String>(first));
+        assertEquals(Arrays.asList("b", "loc:MAP/o#s"),
+                new ArrayList<String>(second));
+        assertTrue(first.iterator().next() == second.toArray()[1]);
+        java.util.Iterator<String> names = first.iterator();
+        names.next();
+        try {
+            names.remove();
+            throw new AssertionError("a held leaf set changed");
+        } catch (UnsupportedOperationException kept) {
+            assertEquals(3, first.size());
+        }
+    }
+
     // ---- (0) the forced replay: the whole way to the throw first -------
 
     /**
