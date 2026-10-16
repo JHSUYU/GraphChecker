@@ -5029,9 +5029,11 @@ campaign_obligation_unanswered() {
 #               still owes work: it is not dispatched, the queue is
 #               cancelled, and what runs lands.
 #   CAMPAIGN_BUDGET_REACHED  between two head steps, the campaign's budget
-#               has no room for the stages after it (campaign_claim_room):
-#               as at a witness, the queue is cancelled, what runs reaped
-#               and a round still planning dropped.
+#               has no room for the stages after it (campaign_claim_room),
+#               the exploration going on or draining what ran after
+#               another stop (named in its detail): as at a witness, the
+#               queue is cancelled, what runs reaped and a round still
+#               planning dropped.
 #   PLANNER_HEAP_EXCEEDED  a round's planner outgrew the head's heap.
 #
 # Each end is stated in exploration.json with the work it left owed, and a
@@ -5094,14 +5096,20 @@ campaign_explore() {
         && -n "${stream_round_returned}" ]]; then
       campaign_stream_round_take
     fi
-    # Between two head steps, whatever a round plans meanwhile.
-    if [[ -z "${stream_stop}" && -z "${stream_step_pid}" ]] \
+    # Between two head steps, whatever a round plans meanwhile, and whatever
+    # an earlier stop still lets land: past the budget that drain ends too,
+    # its stop named in the budget's.  SGF7-adhoc-40's planner ran out of
+    # heap 5473 s into its 7200 s case; replays and hard-lane asks drained
+    # unbudgeted until the case timeout killed the campaign before COMPOSE.
+    if [[ "${stream_stop}" != WITNESSED && -z "${stream_step_pid}" ]] \
         && ! campaign_claim_room; then
-      stream_stop=CAMPAIGN_BUDGET_REACHED
-      stream_stop_detail="$(( SECONDS - campaign_started_s ))s of the \
+      stream_stop_detail="${stream_stop:+the exploration stopped \
+${stream_stop} (${stream_stop_detail}) and drained what ran; }\
+$(( SECONDS - campaign_started_s ))s of the \
 campaign's ${campaign_budget_s}s budget (campaign_budget_s) are spent, and \
 the stages after the exploration are owed $(campaign_reserve)s of it \
 (campaign_reserve)"
+      stream_stop=CAMPAIGN_BUDGET_REACHED
       # A round owed and not planned: answers landed since the last one,
       # or GROW's re-runs or swaps still owed.
       (( stream_dirty == 0 && stream_hold == 0 )) || stream_round_due=true

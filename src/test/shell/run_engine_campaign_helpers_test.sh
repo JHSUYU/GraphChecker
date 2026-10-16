@@ -3649,6 +3649,36 @@ jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .rounds == 1
   || fail "STREAM-3d: the budget did not drop the round still planning: \
 $(cat "${stream_dir}/exploration.json"; ls "${stream_dir}")"
 
+# STREAM-3e: THE BUDGET ENDS A DRAIN.  A stop other than a witness lets
+# what runs land; past the campaign's budget that drain ends as the budget's
+# own stop does -- what runs reaped -- and the stop is the budget's, naming
+# the one before it (SGF7-adhoc-40: a planner out of heap, then replays and
+# hard-lane asks drained until the case timeout killed the campaign).
+stream_fixture stream-3e
+(
+  stream_stubs
+  campaign_budget_s=10
+  campaign_reserve_s=1
+  reproduce_min_s=1
+  campaign_started_s=${SECONDS}
+  stream_planner_dies() { [[ "$1" != 1 ]] || echo 3; }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A SLOW; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      SLOW) sleep 60 & printf '%s\n' "$!" >"${worker}/sleep.pid"; wait ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a drained loop did not finish: $(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .reaped == ["SLOW"]
+  and (.detail | test("stopped PLANNER_HEAP_EXCEEDED"))' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "the budget did not end the drain after a planner out of heap: \
+$(cat "${stream_dir}/exploration.json")"
+
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory leaves the
 # iteration with its logs (explore-reaped/planning-NNNN, roundDropped), what

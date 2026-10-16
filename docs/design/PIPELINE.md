@@ -1863,7 +1863,9 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.
-- **CAMPAIGN_BUDGET_REACHED.** Between two head steps, whatever a round plans, the campaign's budget (`campaign_budget_s` from
+- **CAMPAIGN_BUDGET_REACHED.** Between two head steps, whatever a round plans or an earlier stop still lets land (that stop
+  named in its detail: SGF7-adhoc-40's planner ran out of heap, and its replays and hard-lane asks drained until the case
+  timeout killed the campaign before COMPOSE), the campaign's budget (`campaign_budget_s` from
   the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
   less left than the stages after the exploration are owed (`campaign_claim_room`): its reserve,
   `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured
