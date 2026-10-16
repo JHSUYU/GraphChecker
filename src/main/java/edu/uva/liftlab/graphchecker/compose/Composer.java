@@ -1562,6 +1562,21 @@ public final class Composer {
         this.arms = new Arms(corpus);
         this.composedFamilies = new ComposedFamilies(this, corpus, arms,
                 lowering, families, unattestedRoots, replacing, gaps);
+        reached("indexed");
+    }
+
+    /** When this composition began, {@link System#nanoTime}. */
+    private final long began = System.nanoTime();
+
+    /**
+     * Says how long the composition took to reach {@code phase}: past its
+     * corpus read and its path loop, SGF7-adhoc-10's final composer spent
+     * 1040 of its 1201 s where its log said nothing.
+     */
+    private void reached(String phase) {
+        System.err.println("compose: " + phase + " at "
+                + TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - began)
+                + " s");
     }
 
     /** This epoch's skeleton, for the relocated family bodies. */
@@ -1678,6 +1693,7 @@ public final class Composer {
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();
         List<PathEntry> entries = new ArrayList<PathEntry>();
         List<Corpus.RecordedPath> admitted = restsOn.admitted(gaps);
+        reached(admitted.size() + " path(s) admitted");
         int ordinal = 0;
         int done = 0;
         long started = System.nanoTime();
@@ -1737,6 +1753,7 @@ public final class Composer {
         clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
         refutations(disjuncts, clockCells, clockReadings, clockBefore);
+        reached("clocks, domains and refutations asserted");
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
         // two identities) are named; a query z3 refuses over them leaves
@@ -1818,13 +1835,15 @@ public final class Composer {
 
         // Valuations before the body: the body declares what pins reach.
         List<Valuation> valuations = valuations();
+        reached(valuations.size() + " valuation(s) chosen");
         List<String> pins = new ArrayList<String>();
         for (Valuation valuation : valuations) {
             pins.addAll(valuation.assertions());
         }
-        return new Composition(this, lowering.body(pins), disjuncts, entries,
-                valuations, clockCells, clockReadings, clockNanos,
-                clockBefore);
+        String body = lowering.body(pins);
+        reached("body lowered");
+        return new Composition(this, body, disjuncts, entries, valuations,
+                clockCells, clockReadings, clockNanos, clockBefore);
     }
 
     // ------------------------------------------------------------------
