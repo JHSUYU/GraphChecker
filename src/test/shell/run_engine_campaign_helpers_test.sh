@@ -6856,7 +6856,7 @@ cat >"${engine_test}/java" <<'EOF'
 #!/usr/bin/env bash
 oom=n
 # Out of heap at its first error, and at a collector that only collects.
-[[ " $* " == *" -XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=40 -XX:GCHeapFreeLimit=20 "* ]] && oom=y
+[[ " $* " == *" -XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70 -XX:GCHeapFreeLimit=20 "* ]] && oom=y
 for arg; do [[ "${arg}" != -Xss* ]] || echo "${arg}" >>"${ENGINE_TEST_LOG}.stack"; done
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} oom=${oom}" >>"${ENGINE_TEST_LOG}"
 if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 5000 ]]; then
