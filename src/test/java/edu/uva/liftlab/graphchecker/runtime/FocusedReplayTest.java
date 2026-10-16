@@ -189,7 +189,7 @@ public class FocusedReplayTest {
         hand(flip(1, ",'obligationId':'OB1'"), flip(2, ",'obligationId':"
                 + "'OB2'"));
         decide(FOCUS, SITE, true);
-        assertTrue(FocusedReplay.noProgress("nothing new for 600 s",
+        assertTrue(FocusedReplay.noProgress("nothing new for 300 s",
                 "1 thread(s) held for a turn"));
         Map<String, ObligationResult> byId = new HashMap<>();
         FocusedReplay.results("s").forEach(r -> byId.put(r.obligationId(), r));
@@ -198,7 +198,7 @@ public class FocusedReplayTest {
         assertEquals(Verdict.NOT_ADMITTED, open.verdict());
         assertEquals("s", open.sessionId());
         assertTrue(open.detail(), open.detail().startsWith(
-                FocusedReplay.REPLAY_NO_PROGRESS + ": nothing new for 600"
+                FocusedReplay.REPLAY_NO_PROGRESS + ": nothing new for 300"
                         + " s; a schedule hold was live: 1 thread(s) held for"
                         + " a turn; the replay ended there, after another"
                         + " flip it was asked was taken"));
@@ -311,7 +311,7 @@ public class FocusedReplayTest {
     @Test
     public void aTeardownThatStandsEndsTheRunAsTheWorkloadsEnd()
             throws Exception {
-        String still = "nothing new for 600 s";
+        String still = "nothing new for 300 s";
         for (boolean over : new boolean[] {false, true}) {
             hand(flip(1, ",'openArm':true"));
             RecordingWindow.open();

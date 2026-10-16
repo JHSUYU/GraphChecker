@@ -393,7 +393,7 @@ A focused replay ends early, once, for one of seven reasons (`ConcolicResultPubl
   13 % CPU). A native reproduction and an obligation replay never end so.
 - `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
   (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
-- `AT_NO_PROGRESS`: nothing new for 600 s in a replay asked a flip, before any flip it carries
+- `AT_NO_PROGRESS`: nothing new for 300 s in a replay asked a flip, before any flip it carries
   was taken, which decided every obligation (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
@@ -1401,7 +1401,7 @@ doing again what it did moves none of them:
   collectors half a look's span, the schedule's measure (`ScheduleLog#lookLocked`) asked of the
   question's own occurrences only.
 
-Once nothing has moved for 600 s (`#NO_NEW_EVENT_MILLIS`) the replay ends (`#stall`). Inside its
+Once nothing has moved for 300 s (`#NO_NEW_EVENT_MILLIS`; 600 s until 2026-10-16, when a stalled replay was each round's tail) the replay ends (`#stall`). Inside its
 window every question still open is
 `NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
 `REPLAY_NO_PROGRESS: nothing new for N s (...); no schedule hold was live` or `; a schedule hold

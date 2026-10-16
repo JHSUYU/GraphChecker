@@ -251,17 +251,22 @@ final class ConcolicResultPublisher {
 
     /**
      * How long a focused replay asked a flip may make nothing new before it
-     * is decided there, by name ({@link #watchProgress}): 600 s with no event
+     * is decided there, by name ({@link #watchProgress}): 300 s with no event
      * this run had not made before ({@code ScheduleLog#newKeys}).  Of 1,077
      * Solr replays that ended by themselves or at their witness (PV7-38,
      * PV7-39, nine SGF6 cases), the longest span with no new kind of log
-     * line was 230 s (p99 162 s, p50 16 s); every replay PV7-38 lost to
-     * {@code replay_timeout_s} made nothing new for more than 2,100 s
-     * before it: PULL replicas polling a leader left down, or a teardown
-     * waiting on an Overseer response that never came.  Each replay states
-     * its own longest span at exit ({@code ScheduleLog#progress}).
+     * line was 230 s (p99 162 s, p50 16 s); of 1,856 replays of the final
+     * round's 18413, snapshot and adhoc-09 (2026-10-16), 176 s (p99 122 s,
+     * p90 52 s).  Every replay PV7-38 lost to {@code replay_timeout_s} made
+     * nothing new for more than 2,100 s before it: PULL replicas polling a
+     * leader left down, or a teardown waiting on an Overseer response that
+     * never came.  At 600 s each stalled replay sat out ten minutes and was
+     * the tail its round waited for (SGF7-adhoc-09: 12 of 142 replays ended
+     * STALLED_AFTER_FLIP, 13-16 min each against a 2.4 min median).  Each
+     * replay states its own longest span at exit
+     * ({@code ScheduleLog#progress}).
      */
-    static final long NO_NEW_EVENT_MILLIS = 600_000L;
+    static final long NO_NEW_EVENT_MILLIS = 300_000L;
     /** How often the watch looks. */
     private static final long LOOK_MILLIS = 10_000L;
     /** The most frames of one thread the watch's dump shows. */
