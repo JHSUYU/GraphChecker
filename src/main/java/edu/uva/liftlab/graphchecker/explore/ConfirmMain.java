@@ -450,9 +450,8 @@ public final class ConfirmMain {
          * The edges the model chose over {@code planted}: WIRE per consumer
          * of each selected message arm, STATE and ORDER over the join
          * closure at the locations the fatal rests on, the rows that hold
-         * the pairings the world plants ({@link #holding}), a VIEW_HOLD per
-         * view read of the session on the cone at the version it observed
-         * ({@link #observedViewHolds}), MARKER per planted marker, ANCHOR.
+         * the pairings the world plants ({@link #holding}), MARKER per
+         * planted marker, ANCHOR.
          */
         List<JsonObject> edges(Path iteration, World planted)
                 throws IOException {
@@ -491,7 +490,6 @@ public final class ConfirmMain {
             cone.addAll(pairings.cone);
             history.addAll(state.history());
             history.removeAll(pairings.orders);
-            edges.addAll(observedViewHolds(session, cone, edges));
             heldOnce(edges);
             edges.addAll(markerEdges(manifest, planted.assignments));
             JsonObject anchorRow = new JsonObject();
@@ -1665,66 +1663,6 @@ public final class ConfirmMain {
     }
 
     /**
-     * The VIEW_HOLD that holds {@code read} of {@code view} to version
-     * {@code above}: the node's publications of the view past it are
-     * deferred, but the reader's work's own, until that work's region exits
-     * (Confirmation#publishing), at most VIEW_HOLD_MAX.
-     */
-    private static JsonObject viewHold(ReadRow read, LocationId view,
-                                       long above) {
-        JsonObject hold = new JsonObject();
-        hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
-        hold.addProperty("view", Confirmation.viewKey(view));
-        hold.addProperty("above", above);
-        OccurrenceAddress readBy = read.endpoint().occurrence();
-        hold.addProperty("readerContext", Confirmation.contextKey(readBy));
-        hold.addProperty("reader", Confirmation.id(read.endpoint()));
-        // A read in role work no hook closes: its hold ends at the first
-        // region its work closes after the read, in the run.
-        hold.addProperty("until", readBy.role() ? ""
-                : Confirmation.activation(readBy, ExecutionIndex.empty()));
-        return hold;
-    }
-
-    /**
-     * A VIEW_HOLD per view read of {@code session} on {@code cone} that no
-     * row of {@code edges} holds yet, at the version the read observed: the
-     * order the witness read its views in is the claim's as much as the
-     * values it read, and past its cut no replay holds it (SGF7OLD
-     * solr-bugs-snapshot-no-active: CreateSnapshotCmd read node0's
-     * state.json at version 7 while node0's decode of version 8, where the
-     * second replica is active, raced it -- native 6/10; a replay of the
-     * same obligation that decoded 8 first, WF2, lost the fatal).  A view no
-     * publication hook publishes is never held, and a placeholder read is
-     * checked by its writer, not its version.
-     */
-    static List<JsonObject> observedViewHolds(SessionReader session,
-                                              Set<OccurrenceAddress> cone,
-                                              List<JsonObject> edges) {
-        Set<String> held = new LinkedHashSet<String>();
-        for (JsonObject edge : edges) {
-            if (RecordingPlant.VIEW_HOLD.equals(optionalString(edge,
-                    "kind"))) {
-                held.add(optionalString(edge, "reader"));
-            }
-        }
-        List<JsonObject> holds = new ArrayList<JsonObject>();
-        for (ReadRow read : session.reads()) {
-            if (read.location().kind() != LocationKind.VIEW
-                    || read.mintVersion() != ReadRow.UNKNOWN_VERSION
-                    || read.observedVersion() == ReadRow.UNKNOWN_VERSION
-                    || !cone.contains(read.endpoint().occurrence())
-                    || !Confirmation.hookPublishes(read.location())
-                    || !held.add(Confirmation.id(read.endpoint()))) {
-                continue;
-            }
-            holds.add(viewHold(read, read.location(),
-                    read.observedVersion()));
-        }
-        return holds;
-    }
-
-    /**
      * STATE and ORDER edges for {@code reads}: CONFIRM's over the join
      * closure at the locations the fatal rests on, an obligation's over the
      * reads its world pairs ({@link #holding}).  Each read is held to the
@@ -1833,8 +1771,21 @@ public final class ConfirmMain {
                             + " PUBLISHED_VIEW of it), so no hold can defer"
                             + " it");
                 }
-                holding.edges.add(viewHold(read, held.location(),
-                        held.version()));
+                JsonObject hold = new JsonObject();
+                hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
+                hold.addProperty("view",
+                        Confirmation.viewKey(held.location()));
+                hold.addProperty("above", held.version());
+                OccurrenceAddress readBy = read.endpoint().occurrence();
+                hold.addProperty("readerContext",
+                        Confirmation.contextKey(readBy));
+                hold.addProperty("reader", Confirmation.id(read.endpoint()));
+                // A read in role work no hook closes: its hold ends at the
+                // first region its work closes after the read, in the run.
+                hold.addProperty("until", readBy.role() ? ""
+                        : Confirmation.activation(readBy,
+                        ExecutionIndex.empty()));
+                holding.edges.add(hold);
                 // The node's decodes past the paired version: the hold acts
                 // on them, so their work is the claim's cone.  Those that
                 // came before the read: the schedule cut stops before the

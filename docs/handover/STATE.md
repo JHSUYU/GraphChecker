@@ -29,7 +29,7 @@ evidence, next steps). The lead's session log is the memory file `lead-session-2
 - **To run:** 18413, snapshot-no-active and adhoc-09 (reruns on the new code), then adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39.
 - **Code:**
   - `system/solr` = 4866f58a0, also on GitHub.
-  - `solr-int` = 4866f58a0 + viewhold + doorskeys + this doc. Each piece passed its own gate; the merged tree is NOT gated yet.
+  - `solr-int` = 4866f58a0 + doorskeys + this doc + viewtag + openchain + confirmfirst, viewhold reverted (2026-10-16: its observed-version view holds refuted 18413's real witness when one gave way at VIEW_HOLD_MAX).
   - Tree `gc/solr-zktrace` 8fde6b812c via `GC_TREES=/bigtemp/vnr3ne/wt/sg3i-trees`; the fork must get it.
   - VM `vm-force8`.
 - **Today's design changes:**
@@ -44,7 +44,7 @@ evidence, next steps). The lead's session log is the memory file `lead-session-2
   - Details: PIPELINE §6-§8, SYMBOL-SCOPE §6.4, PARALLEL, PERFORMANCE, and the agents' sections.
 - **Blocking bugs:**
   - (a) 18413's witness-attempt COMPOSE gets z3 "incomplete (theory array)" inside the fatal condition's own cone: the view map's container axioms from the system-wide ZkStateReader weave.
-  - (b) snapshot's deliberate pairing witness: its open chain is fixed by doorskeys and its order by viewhold; neither is live-verified.
+  - (b) snapshot's deliberate pairing witness: its open chain is fixed by doorskeys; not live-verified (viewhold, which held its observed view order, is reverted).
 
 ## 0. The end state: two branches (owner 2026-10-06)
 

@@ -39,7 +39,6 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
-import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -463,61 +462,6 @@ public class ConfirmMainTest {
                         + Confirmation.id(viewed) + " "
                         + Confirmation.viewWriter(1L) + "@1"), held);
             }
-        } finally {
-            System.clearProperty(edu.uva.liftlab.graphchecker.causynth
-                    .LibraryCatalog.SYSTEM_DOORS);
-        }
-    }
-
-    /**
-     * The witness's view reads on the claim's cone are held at the version
-     * each observed, even where the fatal rests on no such view: a node's
-     * decode of a later version waits until the reading work ends (SGF7OLD
-     * snapshot-no-active: CreateSnapshotCmd read node0's state.json at 7
-     * while the decode of 8 raced it, native 6/10).  A read off the cone, or
-     * of a view no publication hook publishes, is held to nothing.
-     */
-    @Test
-    public void theWitnessViewReadsOnTheConeAreHeldAtTheirObservedVersion()
-            throws Exception {
-        LocationId state = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json");
-        LocationId meta = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@hdfs/dn0#epoch0", "/snapshots/s/s-M");
-        Endpoint onCone = endpoint(ANCHOR, "a.Handler#h()#21:READ#VIEW");
-        Endpoint unpublished = endpoint(ANCHOR, "a.Handler#h()#22:READ#VIEW");
-        Endpoint offCone = endpoint("hdfs/dn1#epoch0/region/REGION.9/ctx:"
-                + "Root:TICK#1/idx:<a.Other: void run()>@0",
-                "a.Other#run()#3:READ#VIEW");
-        System.setProperty(edu.uva.liftlab.graphchecker.causynth
-                .LibraryCatalog.SYSTEM_DOORS, java.nio.file.Paths.get("src",
-                "test", "resources", "published-views.jsonl")
-                .toAbsolutePath().toString());
-        try {
-            Path iteration = iteration();
-            RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
-                    Arrays.asList(
-                            ReadRow.of("sel", 30L, onCone, state, 7L,
-                                    "V_state", "J", "7"),
-                            ReadRow.of("sel", 31L, unpublished, meta, 1L,
-                                    "V_meta", "J", "1"),
-                            ReadRow.of("sel", 32L, offCone, state, 8L,
-                                    "V_state2", "J", "8")),
-                    RowCodec::writeRead);
-            Path out = folder.newFolder().toPath();
-            ConfirmMain.write(iteration, claim("FAULT:IPC", "true"),
-                    manifest(), out);
-            List<String> holds = new ArrayList<String>();
-            for (JsonObject edge : edges(out)) {
-                if (RecordingPlant.VIEW_HOLD.equals(
-                        edge.get("kind").getAsString())) {
-                    holds.add(edge.get("reader").getAsString() + " "
-                            + edge.get("view").getAsString() + " above "
-                            + edge.get("above").getAsString());
-                }
-            }
-            assertEquals(Collections.singletonList(Confirmation.id(onCone)
-                    + " " + Confirmation.viewKey(state) + " above 7"), holds);
         } finally {
             System.clearProperty(edu.uva.liftlab.graphchecker.causynth
                     .LibraryCatalog.SYSTEM_DOORS);

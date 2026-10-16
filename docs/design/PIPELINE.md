@@ -2959,12 +2959,8 @@ with it is a `RUN_DEFECT`.
   for a node's VIEW one `VIEW_HOLD {view, above, readerContext, reader, until}` row instead of
   `ORDER` rows (§7.5: the node's later publications of the view are deferred until the reader's work
   is done, never the reader's own, at most VIEW_HOLD_MAX; a VIEW row's read is checked exactly, no
-  `readerAnyTurn`; and every view read of the selected session on the claim's cone that no such row
-  holds gets one at the version it observed, `ConfirmMain#observedViewHolds`, a published view only:
-  the order the witness read its views in is the claim's as much as the values -- past its cut no
-  replay holds it, SGF7OLD snapshot-no-active's CreateSnapshotCmd read node0's state.json at 7
-  while the decode of 8 raced it, native 6/10, and a replay of the same obligation that decoded 8
-  first lost the fatal), else
+  `readerAnyTurn`; a view read the model did not pair is not held: held at its observed version, a
+  hold that gave way at VIEW_HOLD_MAX refuted SGF7-18413's real witness, 2026-10-16), else
   `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
