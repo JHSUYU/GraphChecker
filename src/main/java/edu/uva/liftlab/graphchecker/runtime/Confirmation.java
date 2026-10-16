@@ -27,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
@@ -154,6 +155,10 @@ public final class Confirmation {
     private static final List<String> UNREALIZED = new ArrayList<String>();
     /** Why this CONFIRM run's edges could not be read, or "". */
     private static String unread = "";
+    /** Whether a mismatch ends this run at once ({@link #mismatched}): a
+     *  CONFIRM run, never a native reproduction or an obligation replay. */
+    private static volatile boolean failFast;
+    private static final AtomicBoolean ENDED_AT_MISMATCH = new AtomicBoolean();
     /** 0 not read yet, 1 no order, 2 an order is held; read per frame. */
     private static volatile int ordering;
 
@@ -467,6 +472,7 @@ public final class Confirmation {
                                 + " did not exit within " + timeout + " ms,"
                                 + " so this program cannot realize the"
                                 + " model's order");
+                        mismatched();
                         Set<String> held = new LinkedHashSet<String>(before);
                         held.removeAll(missing);
                         planted(RecordingPlant.APPLIED, activation, held);
@@ -993,6 +999,7 @@ public final class Confirmation {
                     + " before read " + hold.reader + ": the system's own"
                     + " refresh, which no hold defers, so this program"
                     + " cannot realize the pairing");
+            mismatched();
             RowRuntime.gap(GapKind.PAIRING_OVERRIDDEN, GapClass.DIAGNOSTIC,
                     key + " past version " + hold.above, "read " + hold.reader
                             + " is paired to version " + hold.above + ", and "
@@ -1270,6 +1277,26 @@ public final class Confirmation {
         }
     }
 
+    /**
+     * The first edge the model chose that this run did not take decides a
+     * CONFIRM run -- refuted, whatever the rest of it does
+     * ({@code explore.ConfirmMain#decide}) -- so the run ends there, its
+     * session standing with the mismatch
+     * ({@code ConcolicResultPublisher#concludeAtMismatch}).  Run on, each ORDER
+     * the model chose that never came stood its full timeout:
+     * SGF7-bugs-snapshot-no-active's confirmation, refuted on a WIRE pairing,
+     * ran 23 min at 13 % CPU.  A native reproduction counts its runs to the
+     * end, and an obligation replay's untaken pairings un-admit it at its
+     * close.  On a thread of its own: callers hold {@link #LOCK}.
+     */
+    static void mismatched() {
+        if (!failFast || !ENDED_AT_MISMATCH.compareAndSet(false, true)) {
+            return;
+        }
+        new Thread(ConcolicResultPublisher::concludeAtMismatch,
+                "causynth-mismatch-end").start();
+    }
+
     /** An apply that has run past VIEW_HOLD_MAX is named once: its node's
      *  later publications wait behind it.  Guarded by {@link #LOCK}. */
     private static void blockedApplies() {
@@ -1285,6 +1312,7 @@ public final class Confirmation {
                     + " deferred publication's apply on " + applying.getKey()
                     + " ran past VIEW_HOLD_MAX, so the node's later"
                     + " publications waited behind it");
+            mismatched();
         }
     }
 
@@ -1303,6 +1331,7 @@ public final class Confirmation {
                 + viewHoldMaxNanos() / 1_000_000L + " ms here) for "
                 + hold.waitsFor() + ", which did not end, so this program"
                 + " cannot realize the pairing");
+        mismatched();
         planted(RecordingPlant.UNHELD, hold.label(),
                 Collections.singleton(hold.waitsFor()));
         RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
@@ -1605,6 +1634,8 @@ public final class Confirmation {
             Path file = RecordingPlant.planting()
                     ? Paths.get(RecordingPlant.file())
                     : FocusedReplay.workerFile(FILE);
+            failFast = !RecordingPlant.planting()
+                    && FocusedReplay.confirming();
             if (file == null) {
                 // A CONFIRM run is handed edges, and so is a replay whose
                 // world plants pairings; one that finds none beside its focus

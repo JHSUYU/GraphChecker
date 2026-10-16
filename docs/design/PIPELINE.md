@@ -378,13 +378,19 @@ second thread ending the same run (an early end meeting the workload's own) wait
 halt, so no end halts another's close half-done. Cluster threads outlive the test, and a region they
 start while the end settles and closes the rows would be an occurrence no row states.
 
-A focused replay ends early, once, for one of five reasons (`ConcolicResultPublisher#conclude`):
+A focused replay ends early, once, for one of seven reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
   held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
 - `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
   `FocusedReplay#refusedAt`, §7.6), a FORCE run's divergence among them (§7.10).
+- `AT_MISMATCH`: a CONFIRM run took an edge its model did not choose -- a WIRE paired with another
+  producer, an ORDER past its timeout, a VIEW_HOLD given way or overridden (`#concludeAtMismatch`,
+  `Confirmation#mismatched`) -- which refutes the claim whatever follows; its session stands with the
+  mismatch, which CONFIRM decides by. Run on, each ORDER the model chose that never came stood its
+  full timeout (SGF7-bugs-snapshot-no-active: a confirmation refuted on a WIRE pairing ran 23 min at
+  13 % CPU). A native reproduction and an obligation replay never end so.
 - `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
   (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
 - `AT_NO_PROGRESS`: nothing new for 600 s in a replay asked a flip, before any flip it carries

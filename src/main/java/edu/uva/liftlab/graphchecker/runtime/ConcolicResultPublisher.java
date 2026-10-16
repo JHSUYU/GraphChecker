@@ -477,6 +477,11 @@ final class ConcolicResultPublisher {
         /** A refusal decided every obligation the replay carries
          *  ({@code FocusedReplay#refusedAt}). */
         AT_REFUSAL("a refusal decided every obligation this replay carries"),
+        /** A CONFIRM run took an edge its model did not choose
+         *  ({@code Confirmation#mismatched}), which refutes the claim; its
+         *  session stands with the mismatch. */
+        AT_MISMATCH("an edge the model chose was not taken, which refutes"
+                + " the claim this run confirms"),
         /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} ({@link
          *  #watchProgress}), which decided every obligation it carries. */
         AT_NO_PROGRESS("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
@@ -534,6 +539,16 @@ final class ConcolicResultPublisher {
      */
     static void concludeAtRefusal() {
         conclude(Conclusion.AT_REFUSAL);
+    }
+
+    /**
+     * Ends a CONFIRM run at the first edge its model chose that it did not
+     * take ({@code Confirmation#mismatched}): the claim is refuted whatever
+     * the run does next, and its session, the mismatch in it, is what CONFIRM
+     * decides by.
+     */
+    static void concludeAtMismatch() {
+        conclude(Conclusion.AT_MISMATCH);
     }
 
     /**

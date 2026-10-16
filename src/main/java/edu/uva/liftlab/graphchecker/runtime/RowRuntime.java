@@ -393,6 +393,7 @@ public final class RowRuntime {
         if (!compared.mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, consumer.id(),
                     compared.mismatch);
+            Confirmation.mismatched();
         }
         if (!compared.substitution.isEmpty()) {
             gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, consumer.id(),
