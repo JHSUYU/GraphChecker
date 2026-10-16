@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr final round stopped for handover (2026-10-15)
+# State: HDFS finished; Solr final round SGF8 running (2026-10-16)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,39 +11,48 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the final round SGF7 on the final code (2026-10-16) -- read this first if you take over Solr
+## S. Solr: the final round SGF8 after the owner's optimization batch (2026-10-16) -- read this first if you take over Solr
 
-The round runs: a driver on lift06 runs the cases one at a time, each ALONE on the cluster
-(`analysis/solr-2026-10-14/final-seq2.sh`, log `gc-out/solr/SGF7-seq.log`), 14400 s each. The lead's session log is the
-memory file `lead-session-2026-10-15b-solr`; the 2026-10-15 handover (`analysis/solr-2026-10-15/HANDOVER-2026-10-15.md`,
-`HANDOVER-agents.md`) has the design before tonight.
+The round runs: a driver on lift06 runs the ten remaining study checks one at a time, each ALONE on the cluster
+(`analysis/solr-2026-10-16/final-seq5.sh`, log `gc-out/solr/SGF8-seq.log`), 7200 s each (owner: study budget 4 h ->
+2 h), on snapshot `~/gc-run/sgf28` = 64178b266 and the tree set `GC_TREES=/bigtemp/vnr3ne/wt/sg3j-trees`, in the order
+21 19 14 13 10 40 39 05 07 31. The lead's session log is the memory file `lead-session-2026-10-15b-solr`; the
+2026-10-15 handover (`analysis/solr-2026-10-15/HANDOVER-2026-10-15.md`, `HANDOVER-agents.md`) has the design before.
 
-- **Goal (owner):** finish the final round SGF7 and report each case's time (seeding, exploration, compose+solver) and the
-  final closure's region count (`analysis/solr-2026-10-14/final-stats.py SGF7`). Bug checks: SAT + CONFIRM + native.
-  Study checks: a solver SAT or UNSAT, or a named bound. Relaxed standard: a roughly-right `.smt`, best effort.
-  Performance problems that can clearly be improved are stopped and fixed first (owner 2026-10-15).
-- **Results** (`gc-out/solr/accept-SGF7-<case>`, readings in `analysis/solr-2026-10-14/final-readings.md`):
-  - kept from 2026-10-14/15: 18406, migrate, restore, lock-leak, tra, reindex (SAT, native 10/10), adhoc-38 (SAT, VM-confirmed);
-  - on the final code: 18413 2019 s (SAT CLOCK_SKEW, confirmed, native 10/10; old code 4051 s), snapshot-no-active
-    878 s (SAT MARKER_FLIPPED, confirmed, native 10/10, bug #16's chain; old 8568 s), adhoc-09 6887 s (UNSAT_CLOSED).
-  - running then to run: adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39.
-- **Code:** `solr-int` = `system/solr` (local; GitHub `origin/system/solr` is 4866f58a0, a push needs the owner). Each
-  change below gated (mvn + the shell test) and merged by fast-forward; snapshots `~/gc-run/sgf16`..`sgf22`.
-  - viewtag 19416e817: a map's free iteration order (`assoc_view_key`) keyed by its state's term and size, never its value
-    (z3 "incomplete (theory array)" on a removal's lambda: 18413's witness attempt).
-  - openchain 63abbf77d + confirmfirst 2f49cea32: a witness whose open chain names producers is confirmed first, its chain
-    grown meanwhile; nothing to grow, CONFIRM decides (it was parked for good, or held ~30 min).
-  - viewhold reverted 974e33ad0: CONFIRM held every observed view read; one that gave way refuted 18413's real witness.
-  - report.py 33e2de444: an open chain under a confirmed SAT is named (WITNESS_CHAIN_OPEN), not failed.
-  - confirmfast bad02c271: a CONFIRM run ends at its first mismatch (AT_MISMATCH): a refuted confirmation ran 23 min idle.
-  - stall300 2c645fb47: a replay with nothing new for 300 s (not 600) ends; the stalled ones were each round's tail.
-  - publishkey 825afab33: a view republished at its next version is no new event (a leader-election loop ran 40 min).
-- **Tree:** `gc/solr-zktrace` 8fde6b812c via `GC_TREES=/bigtemp/vnr3ne/wt/sg3i-trees`; pushed to the fork
-  `JHSUYU/solr` `graphchecker/solr-checks` and checked from a fresh clone (17/17 natives, 20/20 valid). VM `vm-force8`.
-- **Open** (TODO "Solr" §3): the Overseer-queue seed drift (adhoc-10's seed replay: 320 stalls, 611 s), snapshot's
-  state.json delivery race (a WIRE producer CONFIRM does not hold), the second static pass over demanded doors (~95 s a
-  case), the composer's start heap (an OOM retry on a large corpus), 18413's hand WIRE_FLOW rows (still needed: the chain
-  keys no field of `/overseer/queue`).
+- **Goal (owner):** each case's time (seeding, exploration, compose+solver) and the final closure's region count
+  (`analysis/solr-2026-10-14/final-stats.py SGF7` and `SGF8`). Bug checks: SAT + CONFIRM + native. Study checks: a
+  solver SAT or UNSAT, or a named bound. Relaxed standard: a roughly-right `.smt`, best effort. A clearly improvable
+  performance problem is fixed first, for the next cases; a running case is stopped only when stuck.
+- **Results, SGF7** (`gc-out/solr/accept-SGF7-<case>`, readings in `analysis/solr-2026-10-14/final-readings.md`): the
+  eight bug checks -- 18406 828 s, 18413 2019 s, migrate 699, restore 610, lock-leak 875, tra 943, reindex 1113,
+  snapshot-no-active 878 (SAT, confirmed, native 10/10 each) -- and adhoc-38 1222 s (SAT), adhoc-09 6887 s
+  (UNSAT_CLOSED). adhoc-10 10228 s (UNSAT_CLOSED, PLANNER_HEAP_EXCEEDED) and its rerun on the pooled compose
+  (`accept-SGF7B-adhoc-10`, 6086 s: seeding 1384, exploration 3146, compose+solver 1312) are evidence; SGF8 runs it
+  again with the whole batch. adhoc-40's SGF7 run was killed at its budget with no claim (the drain defect below).
+- **The optimization batch (owner 2026-10-16: "use all the servers"; each gated, merged by fast-forward):**
+  - the final COMPOSE's z3 pairs on every other pool host over ssh (`ComposeMain --z3-hosts`,
+    `campaign_z3_hosts_grant`), the path asks following the pairs; the composer's heap its corpus's (`do_compose`).
+    SGF7B-adhoc-10: decide 1800 s (budget, questions left) -> 250 s, 544 z3 runs; no 4 -> 8 -> 16 GB restarts (818 s);
+  - the budget ends the drain after any stop but a witness (`CAMPAIGN_BUDGET_REACHED` naming that stop): adhoc-40's
+    planner ran out of heap at 5473 s and its replays drained to the case timeout;
+  - a stream replay charged its life's mean resident memory, each admission keeping room for four end peaks
+    (`campaign_replay_typical`, `workload_rss_mean_mb`): replays peak in their last read, publishing;
+  - in the workload client's own root contexts only the system's request transports fail (`explore.ClientFaults`,
+    Solr `client_fault_transports`): the test's own ZooKeeper calls, 276 flips of 10/39/40's round 0, none reaching the
+    anchor;
+  - a timed-wait loop's events take their turn family's slots and its reads none (`ScheduleLog#turnFamily`); with the
+    tree below, adhoc-10's seed replay 107 -> 22-33 stalls, its window 574 -> 407-489 s;
+  - a root's compared literals indexed once over the corpus (`Corpus#deciding`): adhoc-10's composition 891 -> 52 s in
+    its roots' domains, adhoc-09's candidate byte-identical;
+  - the planner's heap: a lowering frame holds its committed side conditions by reference, a session's leaf sets as
+    arrays over shared names: live set -30..38 % (adhoc-10/-40 subsets), EXPLORE.N byte-identical on five corpora.
+- **Code:** `solr-int` = `system/solr` = 64178b266 (local; GitHub `origin/system/solr` is 4866f58a0, a push needs the
+  owner).
+- **Tree:** `gc/solr-zktrace2` 12d23091d1 via `sg3j-trees` (17/17 natives pass); pushed to the fork `JHSUYU/solr`
+  `graphchecker/solr-checks`. The SGF7 results ran on `gc/solr-zktrace` 8fde6b812c (`sg3i-trees`).
+- **Open** (TODO "Solr" §3): CONFIRM's and the native plant's ORDER rows still carry a timed-wait turn's number (§3bb);
+  31's test-client polls stall 16 s each (§3cc); snapshot's state.json delivery race (§3y); the static pass's second
+  run over demanded doors (~95 s a case); 18413's hand WIRE_FLOW rows (§3aa).
 
 ## 0. The end state: two branches (owner 2026-10-06)
 

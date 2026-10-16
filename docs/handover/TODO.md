@@ -149,7 +149,7 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - `offline-ab.sh` `ab_stage_seed_static` tests `-s GROWN` on the gate host right after another host wrote it; over NFS
   it can miss the file (one spurious SEED.static difference on 2026-10-08): wait for it, or read it on the writer.
 
-## Solr (final round SGF7 on the final code, 2026-10-16; `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`)
+## Solr (final round SGF8 after the optimization batch, 2026-10-16; `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`)
 
 **Read first:**
 1. STATE.md §S.
@@ -161,7 +161,7 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 The lead's session logs are the memory files `lead-session-2026-10-13-solr` and `lead-session-2026-10-15b-solr`
 (2026-10-15 night: the blockers fixed, the round on the final code).
 
-**Goal** (owner, restated 2026-10-15): finish the remaining cases of the final round SGF7 and report each case's time breakdown. The tool is `analysis/solr-2026-10-14/final-stats.py SGF7`; each case runs alone on the cluster.
+**Goal** (owner, restated 2026-10-15): finish the remaining cases of the final round (SGF8 since 2026-10-16) and report each case's time breakdown. The tool is `analysis/solr-2026-10-14/final-stats.py SGF7` and `SGF8`; each case runs alone on the cluster.
 - **Bug checks:** SAT + CONFIRM + native ≥1/10 with the bug's own chain.
 - **Study checks:** a solver SAT or UNSAT, or a named bound.
 - **Standard, relaxed** (owner 2026-10-15):
@@ -321,18 +321,11 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   `/bigtemp/vnr3ne/analysis/solr-2026-10-12/readings/lock-leak-SG3I.md`; pre-reading `.../solr-2026-10-11/readings/lock-leak.md`.
 - **b. 18413:** both SG3G/SG3H refutations fixed (§0, Z2); CONFIRM watch: a seed arm with a Lost-context consumer and arms
   whose sites carry queue sequence names (qn-...) can shift identity between runs.
-- **c. Seed drift of 31 and 05:** give-ups at the Overseer's `peekElements` WAKE turns (k counts every wake, a timing
-  count). SC's experiment (2026-10-13, int11): `gc/solr-sc3` f10c988eed = `gc/solr-final5` + the batching wait 0 in an
-  automatic cluster (`Overseer$ClusterStateUpdater#run`'s `peekElements(1000, 100, ...)` after a message; final4/final5
-  already carry the idle wait that never times out, which alone moved nothing: 05 158 -> 163, 31 18 -> 23 give-ups by the
-  same slots). With both, 05's recorded wake turns 51 -> 39 and its seed ended at 47 give-ups (SC12-05), against 158-163
-  by the same slot (~2,200 of ~4,800; SC8-05, SC10-05). 31 is not helped: recorded wake turns 52 -> 15, yet 19 give-ups by
-  slot 327 as before (signal wakes, still counted by k), then 64 by slot 527 on its test client's polling reads (`READ
-  /clusterstate.json#100, #101 ... @ client0`, 16 s each; SC12-31). In the final tree since `gc/solr-final6` (lead
-  2026-10-13, 2fc60518c6 from `gc/solr-sc3` f10c988eed), on which SGF2 runs; SGF ran on final5 without it, where 05 had
-  already closed with more give-ups (SF3 UNSAT_CLOSED in 3991 s). If SGF2's 31 still drifts: the frontier-side rule, not
-  approved. Evidence `/bigtemp/vnr3ne/gc-out/solr-sc`
-  (accept-SC8-05, SC10-05, SC12-05, SC7-31, SC10-31, SC12-31).
+- **c. Seed drift of 31 and 05: DONE 2026-10-16 (with §3x).** The Overseer's `peekElements` WAKE turns: a
+  timed-wait loop's events take their turn family's slots and its reads none (`ScheduleLog#turnFamily`, 19ae623a7),
+  and the tree `gc/solr-zktrace2` 12d23091d1 takes the two timing choices out (the test client's live nodes in node
+  order; an unbatched Overseer's queue removal in its message's own turn). 31's client polls remain (§3cc). Evidence of
+  the old experiments `/bigtemp/vnr3ne/gc-out/solr-sc`; of the fix `gc-out/turnfamily-ab`, `gc-out/tfj-ab`.
 - **d. New-bug candidates:** 38 (SAT confirmed, native 0/10 named: native order beyond the fatal cone); the lost watch
   (§2); 19's stale cluster-property view at core creation if SGF confirms it. Each: realism, JIRA, STATUS,
   docs/checks/new-bugs.txt.
@@ -432,49 +425,64 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   `AliasesManager#publishIfNewer` sets `aliases` -- a new tree (final10), its natives and validation; only if a seed
   shows the window.
 
-- **x. The Overseer-queue seed drift (2026-10-16):** adhoc-10's seed replay window stood 611 s of a 52 s recording: 320
-  stalls gave up 1391 of 6385 slots, nearly all at the Overseer's `ZkDistributedQueue.peekElements` WAKE reads and writes
-  of `/overseer/queue` and `/overseer/collection-queue-work` (§3c's class). A one-time cost per case; the fix is a
-  frontier-side schedule rule (not approved before).
+- **x. The Overseer-queue seed drift: DONE 2026-10-16** (owner-approved rule, §3c): adhoc-10's seed replay 107 -> 22-33
+  stalls, window 574 -> 407-489 s, recorded occurrences reproduced 727 -> 860-912 of ~1120; a focused replay 446 ->
+  350 s.
 - **y. Snapshot's state.json delivery race (2026-10-16):** a SAT claim's WIRE edge from an Overseer state update to a
   reader of state.json content (message_arm over replica states) is checked, never held: SGF7SLOW19's CONFIRM refuted
   "WIRE 3f14387463b5d2bc: the model chose producer cda154d1fdd4aa38, the run paired 0908f39c6399d2e2" and WF5 the
   reverse. SGF7 on sgf20 passed by a witness that confirmed itself (realizedBy). A hold for a store read's delivery
   (as a VIEW_HOLD for a view) would make such claims confirmable.
 - **z. Smaller costs measured 2026-10-16:** the static pass runs again over the demanded doors it chose (~95 s a case,
-  a door shifts its method's unit indices); the composer starts at 4 GB and retries at 8 on a large corpus (~2.5 min);
-  COMPOSE lowering ~200 s for 200 sessions; round planning ~1-2 min a round late in a case (09: 12m42s over 13).
+  a door shifts its method's unit indices), open. Done: the composer's start heap (its corpus's) and its roots'
+  domains (an index over the corpus: adhoc-10 891 -> 52 s).
 - **aa. 18413's hand WIRE_FLOW rows** (`experiments/solr/solr-18413/communication-mappings.jsonl`): still needed -- the
   ZooKeeper chain keys state.json's `routingRules|a!|expireAt` but no field of `/overseer/queue`, so the expiry would
   cross the queue as a constant without them.
 
-### 4. The final round SGF7 and the fork (2026-10-14/15, finished on the final code 2026-10-16)
+- **bb. A timed-wait turn's number in CONFIRM and the native plant (2026-10-16, not done):** CONFIRM holds an activation
+  by its occurrence id, which digests the turn number, and a native plant's ORDER rows keep `#k` in their
+  `StableEventNames` contexts: an expected edge inside a timed-wait turn can wait out its timeout and refute a true
+  witness, and natively that row never holds. The replay's rule (§3c) is the model.
+- **cc. 31's test-client polls (2026-10-16, not done):** `READ /clusterstate.json#n @ client0`, n the event's k in its
+  key (117 recorded, 118 replayed), 16 s a stall (CEILING x grace while a write waits behind them). A rule: a write
+  waiting only behind READ slots stands a grace without that deferral.
+- **dd. The planner's heap after 64178b266:** spread over rows and expression tables, the per-session joins' keys, the
+  shared-body texts, memo keys holding expression nodes the tables meant to hold weakly, the slot table (162 MB on
+  adhoc-09) and the index keys (6-10 %). Sharding the corpus over hosts was parked by the owner (too large a change).
+- **ee. The replay end peak:** a replay's heap use jumps 350 -> 890 MB in its last read (its session's publication);
+  the admission now leaves room for four such ends (§0 of STATE §S). Making the publication itself smaller is open.
 
-0. **Kept results** (`gc-out/solr/accept-SGF7-<case>`; readings in `analysis/solr-2026-10-14/final-readings.md`):
+### 4. The final rounds SGF7 and SGF8 and the fork (2026-10-14/16)
+
+0. **SGF7 results** (`gc-out/solr/accept-SGF7-<case>`; readings in `analysis/solr-2026-10-14/final-readings.md`):
 
    | case | wall (s) | result |
    | --- | ---: | --- |
    | 18406 | 828 | SAT, native 10/10 |
+   | 18413 | 2019 | SAT, confirmed, native 10/10 |
    | migrate | 699 | SAT, native 10/10 |
    | restore | 610 | SAT, native 10/10 |
    | lock-leak | 875 | SAT, native 10/10 |
    | tra | 943 | SAT, native 10/10 |
    | reindex | 1113 | SAT, native 10/10 |
+   | snapshot-no-active | 878 | SAT, confirmed, native 10/10 |
    | adhoc-38 | 1222 | SAT, VM-confirmed, native 0/10 |
+   | adhoc-09 | 6887 | UNSAT_CLOSED |
 
-1. **On the final code (2026-10-16):** 18413 2019 s (SAT, confirmed, native 10/10), snapshot-no-active 878 s (SAT,
-   confirmed, native 10/10), adhoc-09 6887 s (UNSAT_CLOSED); then adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39. Old
-   evidence `accept-SGF7OLD-*`; stopped runs of the night are evidence, not results (`accept-SGF7OPEN16-18413`,
-   `SGF7SLOW17-18413`, `SGF7HOLD18-18413`, `SGF7SLOW19-bugs-snapshot-no-active`; STATE §S says what each showed).
-2. **Blocking, fixed 2026-10-16:** (a) 18413's witness-attempt COMPOSE (viewtag), and (b) snapshot's witness (confirmed;
-   see §3y for the race that remains).
-3. **Resume:**
+   Evidence, not results: adhoc-10 SGF7 (10228 s) and SGF7B (6086 s, the pooled compose), adhoc-40 SGF7 (killed at its
+   budget, no claim), the stopped runs `accept-SGF7OPEN16-18413`, `SGF7SLOW17-18413`, `SGF7HOLD18-18413`,
+   `SGF7SLOW19-bugs-snapshot-no-active`, `SGF7GC22/23-adhoc-10`.
+1. **SGF8** (running): 21 19 14 13 10 40 39 05 07 31 on `~/gc-run/sgf28` = 64178b266 and `sg3j-trees`, 7200 s each.
+2. **Resume:**
    - gate solr-int, then ff system/solr from inside `wt/gc-solr`;
    - build a snapshot with `tools/lib/worktree-add.sh ~/gc-run/sgfNN <sha> --detach` and `onlift` mvn;
-   - run the driver detached on lift06: `analysis/solr-2026-10-14/final-seq2.sh <snap> SGF7 lift06 <case:14400> ...` (GC_TREES=sg3i-trees);
-   - per case: `timeline.py`, a light `smt-legend.py` reading, a row in `final-readings.md`, `final-stats.py SGF7`.
-4. **The fork: DONE 2026-10-16.** `graphchecker/solr-checks` fast-forwarded 0ce3deafed -> `gc/solr-zktrace` 8fde6b812c
-   and checked from a fresh clone (`analysis/solr-2026-10-16/fork-check4.sh`: 17/17 natives PASSED, 20/20 VALID).
+   - run the driver detached on lift06: `analysis/solr-2026-10-16/final-seq5.sh <snap> <trees> lift06 <case:7200> ...`
+     (it skips a case whose SGF8 run has a verdict);
+   - per case: `timeline.py`, a light `smt-legend.py` reading, a row in `final-readings.md`, `final-stats.py SGF8`.
+3. **The fork:** `graphchecker/solr-checks` = `gc/solr-zktrace2` 12d23091d1 (pushed 2026-10-16; 17/17 natives on sg3j).
+   The fresh-clone check of 8fde6b812c passed (`analysis/solr-2026-10-16/fork-check4.sh`: 17/17, 20/20 VALID); one of
+   12d23091d1 is owed once the round ends (it needs the pool).
 
 ### 5. Where things live
 
