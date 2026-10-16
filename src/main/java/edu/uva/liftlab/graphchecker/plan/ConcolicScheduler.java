@@ -190,10 +190,14 @@ public final class ConcolicScheduler {
         // (EXPLORE re-plans one a value demand reaches by dropping the
         // mark, GROW); the replay runs only its door markers' inputs
         // (runtime.ConcolicTaskPlan.RuntimeTask#doorsOnly).
-        if (optionalBool(plan.json(), RuntimeSelectedRegionFinalizer.DOORS_ONLY,
-                false)) {
-            task.json().addProperty(RuntimeSelectedRegionFinalizer.DOORS_ONLY,
-                    true);
+        // One the system declares so (plan.DoorsOnlyRoots) keeps it for
+        // good: EXPLORE never drops that mark.
+        for (String mark : new String[] {
+                RuntimeSelectedRegionFinalizer.DOORS_ONLY,
+                RuntimeSelectedRegionFinalizer.DOORS_ONLY_DECLARED}) {
+            if (optionalBool(plan.json(), mark, false)) {
+                task.json().addProperty(mark, true);
+            }
         }
         // The ZooKeeper causal chain's fields it carries: a leaf it parses
         // or serializes outside them crosses as a constant

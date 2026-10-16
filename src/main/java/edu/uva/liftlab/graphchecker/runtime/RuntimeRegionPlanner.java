@@ -1462,6 +1462,7 @@ public final class RuntimeRegionPlanner {
                     RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
                     RuntimeSelectedRegionFinalizer.STORE_FETCHES,
                     RuntimeSelectedRegionFinalizer.DOORS_ONLY,
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY_DECLARED,
                     ZkChain.CONTENT_KEYS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
