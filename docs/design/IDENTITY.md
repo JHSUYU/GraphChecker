@@ -646,7 +646,10 @@ role: passed through to its item's doors, never planned, its own decisions not f
   or a collection's state finds is then the recording's (solr-adhoc-39, MB23s: the commit's node
   followed the client's view of the alias, which a store read before or after the alias's write
   decided). A read takes a slot only at a location a write of the order wrote (reads of every other
-  path take none and count as no step), and a `READ` slot holds no frontier: it is never blocking,
+  path take none and count as no step), and never in a timed-wait loop's turn (§8): such a loop's reads
+  are its polls, whose count is the loop's timing, and the writes it follows order what it finds
+  (`ScheduleLog#heldReads`; SGF7-adhoc-10's seed: the Overseer read `/overseer/queue` 117 times to the
+  recording's 91, held at the n-th recorded read's place, 95 let-gos). A `READ` slot holds no frontier: it is never blocking,
   so a read that never comes holds nothing back.
 
 ### 7.3 Typed faults

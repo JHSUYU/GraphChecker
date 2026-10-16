@@ -1568,7 +1568,7 @@ public class ScheduleLogTest {
      * nothing; a recorded turn's occurrence closing settles none of them,
      * since its id digests the turn number (SGF7-adhoc-10's seed: 348 turns
      * to the recording's 82).  The rows keep the replay's own turn and k.
-     * Columns: recorded turns, replayed turns ({@code |} between turns),
+     * The loop's reads, its polls, take no slot.  Columns: recorded turns, replayed turns ({@code |} between turns),
      * the replay's p rows as turn:k, whether the recording's first turn's
      * occurrence closes first, the events that ran free.
      */
@@ -1613,6 +1613,28 @@ public class ScheduleLogTest {
             }
             assertEquals(why, row[2], String.join(" ", stated));
         }
+        // The loop's reads are its polls: they take no slot, so polling
+        // three times where the recording polled twice waits for nothing,
+        // and the write between them waits for no poll.
+        noRequest();
+        turnOrRequest(true, () -> turn("R"));
+        request("a", () -> turn("W"));
+        turnOrRequest(true, () -> turn("R"));
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
+        noRequest();
+        timeout(4000L);
+        enforce(order);
+        progress("of an order of 1 slot(s)");
+        long before = System.nanoTime();
+        started(() -> {
+            for (int poll = 0; poll < 3; poll++) {
+                turnOrRequest(true, () -> turn("R"));
+            }
+            request("a", () -> turn("W"));
+        }).join(20000L);
+        assertTrue("no hold: " + since(before),
+                since(before) < ScheduleLog.LET_GO_GRACE_MS);
+        progress("1 taken, 0 given up");
     }
 
     /** The turns of one timed-wait loop on the node, {@code |} between

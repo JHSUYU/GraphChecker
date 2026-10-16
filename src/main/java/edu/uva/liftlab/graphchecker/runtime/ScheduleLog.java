@@ -2773,7 +2773,15 @@ public final class ScheduleLog {
     /**
      * Holds the run to {@code events}, cut, then {@code after}, which a run
      * cut at its witness ends at.  A READ takes a slot only at a location a
-     * WRITE of the order wrote.  Where {@code readsHeld} is false -- a run
+     * WRITE of the order wrote, and never in a timed-wait loop's turn: such
+     * a loop's reads are its polls (a queue's listing, a leader check), and
+     * how many it makes, so which recorded read the replay's n-th is, is
+     * the loop's timing; the writes it follows order what it finds, as the
+     * loop reads an item only once it saw it listed.  Held at the n-th
+     * recorded read's place, a loop polling more often than recorded waited
+     * for writes that wait on it (SGF7-adhoc-10's seed: the Overseer read
+     * /overseer/queue 117 times to the recording's 91 and the leader 339
+     * to 65, 95 let-gos).  Where {@code readsHeld} is false -- a run
      * the model orders: a world's planted pairings, CONFIRM, a native
      * reproduction's plant -- the reads past the cut take none: there the
      * model's order puts each read (its pairings' ORDER rows), and a flipped
@@ -2864,14 +2872,15 @@ public final class ScheduleLog {
     }
 
     /** {@code events} with no READ but those {@code readsHeld} keeps at a
-     *  location {@code written}. */
+     *  location {@code written}, outside a timed-wait loop's turn. */
     private static List<ScheduleEvent> heldReads(List<ScheduleEvent> events,
                                                  Set<String> written,
                                                  boolean readsHeld) {
         List<ScheduleEvent> kept = new ArrayList<ScheduleEvent>(events.size());
         for (ScheduleEvent event : events) {
             if (event.kind() != ScheduleEvent.Kind.READ
-                    || readsHeld && written.contains(event.site())) {
+                    || readsHeld && written.contains(event.site())
+                    && !timedWaitTurn(event.context())) {
                 kept.add(event);
             }
         }
