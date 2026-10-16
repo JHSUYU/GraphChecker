@@ -2450,13 +2450,18 @@ another key may rebin or resize its table. Past such a put, or over a base stati
 recording before it), the same facts are stated through `assoc_view_key` and
 `assoc_view_position` (`ContainerSmtCodec.ViewOrder.FREE`): the positions are a bijection with the
 keys in no order, so a view read as a set keeps every key and no position is tied to a key the run
-may not have had there; each such map is named DIAGNOSTIC
+may not have had there. A free order is a function of the state's TERM -- an Int of its text's digest
+(`ContainerSmtCodec#tag`) and its size, which names the state for a flip query's cone -- never of the
+state's value: a removal's renumbering is a lambda over arrays, and z3 builds no model of an
+uninterpreted function applied to a value holding one (SOLR-18413's witness attempt: valuation 0's own
+run over ZkStateReader's map of collections, iterated after puts and a removal, "incomplete (theory
+array)" for 600 s; sat in 1 s by the term). Two terms of one state may take two orders, more freedom
+than the run had, which CONFIRM filters. Each such map is named DIAGNOSTIC
 `ASSOC_VIEW_UNORDERED:<why>:<map symbol (class), or the location its state was read from>@<session>`
 (`SmtLowering#diagnostics`). A view walks the state each step of its chain stands for (`Host#chain`: a
 read's joined version), so a map's `values()` a region iterates through a read of it is bounded by
-that version's keys. A query reads a map's order only through `assoc_key_at`, `assoc_position_of`,
-`assoc_view_key` or `assoc_view_position` (`ContainerStateModel.ORDER_READERS`); one that reaches
-none gets maps whose puts and removals keep no order (`ContainerStateModel#unordered`, chosen by
+that version's keys. A query reads a map's order only through `assoc_key_at` or `assoc_position_of`
+(`ContainerStateModel.ORDER_READERS`; a free view reads none); one that reaches none gets maps whose puts and removals keep no order (`ContainerStateModel#unordered`, chosen by
 `SmtNames#reachedPreamble`), the same question with no lambda: a removal's renumbering is a lambda
 over arrays, and z3 answered such queries "incomplete (theory array)" or not at all (hdfs-11741 L1:
 valuation 0 undecided on two fatal-observing paths, each sat in seconds without it). Every

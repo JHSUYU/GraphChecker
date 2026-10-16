@@ -1625,9 +1625,10 @@ target row carries). A reference field whose every writer is a method of the sys
 (`system_scope`) is no tracked cell: no READ_SITE (`StaticScopeMap#keepTrackedReads` through
 `plan.SystemView`, filled from `-Dcausynth.system.view`) and no demand (SEED, `causynth.RootDemand`):
 which object the view holds is its own bookkeeping, and weaving those classes adds no versioned read.
-Open (2026-10-15): the VM still versions the view's map bookkeeping inside planned decodes, and those
-container terms can sit in a fatal condition's own cone (18413's witness-attempt COMPOSE: z3
-"incomplete (theory array)"; handover `analysis/solr-2026-10-15/HANDOVER-2026-10-15.md` §4a).
+The VM still versions the view's map bookkeeping inside planned decodes, and those container terms
+sit in a fatal condition's own cone (18413's witness-attempt COMPOSE): their iteration order is a free
+view keyed by the state's term, never its value (PIPELINE "A view's positions"), which z3 decides
+where a removal built the map (it answered "incomplete (theory array)" before).
 PLAN keys the chain by leaf identity over the recording; once the seed is imported, ZKKEYS rekeys it
 with the leaves the seed's own formula names (`compose.ZkKeysMain`: the composition to the anchor,
 and the decisions of every occurrence the anchor's values came from, over handoffs to producers and

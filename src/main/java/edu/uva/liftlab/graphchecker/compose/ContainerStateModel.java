@@ -141,12 +141,13 @@ public final class ContainerStateModel {
     /**
      * What reads a map's iteration order.  A query that reaches none of
      * these never asks it, and no operation of its maps keeps the order
-     * ({@link #unordered}).
+     * ({@link #unordered}).  A view in no order ({@code assoc_view_key},
+     * {@code assoc_view_position}) reads none: it is keyed by its state's
+     * term and size, not by the state.
      */
     public static final Set<String> ORDER_READERS =
             Collections.unmodifiableSet(new LinkedHashSet<String>(
-                    Arrays.asList("assoc_key_at", "assoc_position_of",
-                            "assoc_view_key", "assoc_view_position")));
+                    Arrays.asList("assoc_key_at", "assoc_position_of")));
 
     /**
      * One preamble line as a query that reads no map's order
@@ -216,9 +217,12 @@ public final class ContainerStateModel {
                 // A view's positions where the chain's order is not the
                 // one the map's class iterates in: whatever bijection with
                 // its keys the view facts state, and no order
-                // (ContainerSmtCodec.ViewOrder.FREE).
-                "(declare-fun assoc_view_key (AssocState Int) Value)",
-                "(declare-fun assoc_view_position (AssocState Value) Int)",
+                // (ContainerSmtCodec.ViewOrder.FREE), over the state's
+                // term as an Int (ContainerSmtCodec#tag) and its size: an
+                // uninterpreted function of a state a removal built holds a
+                // lambda, and z3 answers that "incomplete (theory array)".
+                "(declare-fun assoc_view_key (Int Int Int) Value)",
+                "(declare-fun assoc_view_position (Int Int Value) Int)",
                 // Every array-valued choice is pushed inside a store: an
                 // array-valued ite with a symbolic condition and a lambda
                 // branch is outside what z3 decides (hdfs-11741 v79).

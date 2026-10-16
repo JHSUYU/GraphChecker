@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.contract.Digests;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
@@ -635,8 +636,8 @@ public final class ContainerSmtCodec {
             if (order == null) return null;
             requireAssociativeMember(receiver, index, order, call.host);
             return new Term("(let ((s " + receiver.text
-                    + ")) (assoc_remove s (" + order.keyAt + " s "
-                    + index.text + ")))", Sort.ASSOCIATIVE);
+                    + ")) (assoc_remove s " + order.keyAt(receiver, "s",
+                    index.text) + "))", Sort.ASSOCIATIVE);
         }));
         rule("ASSOCIATIVE", "REMOVE", 1, onState((call, receiver) -> {
             Term key = call.host.box(call.argument(0));
@@ -1054,8 +1055,7 @@ public final class ContainerSmtCodec {
                 entry.stateExpression, state, host, views);
         if (order == null) return null;
         requireAssociativeMember(state, index, order, host);
-        String key = "(" + order.keyAt + " " + state.text + " "
-                + index.text + ")";
+        String key = order.keyAt(state, state.text, index.text);
         return new Term("KEY_VIEW".equals(viewKind) ? key
                 : "(assoc_read " + state.text + " " + key + ")",
                 Sort.VALUE);
@@ -1130,7 +1130,7 @@ public final class ContainerSmtCodec {
             Term state, Term index, ViewOrder order, Host host) {
         host.require("(let ((s " + state.text + ") (i " + index.text
                 + ")) (and (<= 0 i) (< i (assoc_size s))"
-                + " (assoc_has s (" + order.keyAt + " s i))))");
+                + " (assoc_has s " + order.keyAt(state, "s", "i") + ")))");
     }
 
     /** Refusal subject for a view whose map size nothing bounds. */
@@ -1146,12 +1146,24 @@ public final class ContainerSmtCodec {
      * {@code ContainerStateModel}), where it is not: the formula then names
      * no order the run did not have, and a consumer that reads the view as
      * a set (hdfs-11741's exported block keys) keeps every key.
+     *
+     * <p>A FREE order is a function of the state's TERM ({@link #tag}) and
+     * size, not of its value: a removal's renumbering is a lambda over
+     * arrays ({@code ContainerStateModel}), and z3 builds no model of an
+     * uninterpreted function applied to a value holding one -- "incomplete
+     * (theory array)" (SOLR-18413's witness attempt: valuation 0's own run,
+     * ZkStateReader's map of collections iterated after puts and a
+     * removal, undecided in 600 s; sat in 1 s keyed by the term).  The size
+     * names the state, so a flip query's cone that keeps a view keeps its
+     * state's facts.  Two terms of one state may take two orders: more
+     * freedom than the run had, which CONFIRM filters; every order the
+     * state's value admits is still admitted.</p>
      */
     enum ViewOrder {
         STATED("assoc_key_at", "assoc_position_of"),
         FREE("assoc_view_key", "assoc_view_position");
 
-        final String keyAt;
+        private final String keyAt;
         private final String positionOf;
 
         ViewOrder(String keyAt, String positionOf) {
@@ -1159,11 +1171,31 @@ public final class ContainerSmtCodec {
             this.positionOf = positionOf;
         }
 
+        /** The key this order holds at {@code index} of {@code state},
+         *  the state written {@code as} where the chain's order reads it
+         *  (its text, or the name a {@code let} binds it to). */
+        String keyAt(Term state, String as, String index) {
+            return "(" + keyAt + " " + argument(state, as) + " " + index
+                    + ")";
+        }
+
         /** The position this order holds one key at. */
         Term position(Term state, Term key, Host host) {
-            return shared(new Term("(" + positionOf + " " + state.text + " "
-                    + key.text + ")", Sort.INT), host);
+            return shared(new Term("(" + positionOf + " "
+                    + argument(state, state.text) + " " + key.text + ")",
+                    Sort.INT), host);
         }
+
+        private String argument(Term state, String as) {
+            return this == FREE
+                    ? tag(state) + " (assoc_size " + as + ")" : as;
+        }
+    }
+
+    /** A state's term as an Int: one per text (60 bits of its digest). */
+    static String tag(Term state) {
+        return Long.toString(Long.parseLong(
+                Digests.digest(state.text, 15), 16));
     }
 
     /**
@@ -1216,8 +1248,8 @@ public final class ContainerSmtCodec {
         }
         Term size = associativeSize(state, host);
         for (int position = 0; position < put.size(); position++) {
-            Term key = shared(new Term("(" + order.keyAt + " " + state.text
-                    + " " + position + ")", Sort.VALUE), host);
+            Term key = shared(new Term(order.keyAt(state, state.text,
+                    String.valueOf(position)), Sort.VALUE), host);
             host.require("(=> (< " + position + " " + size.text
                     + ") (and " + associativeHas(state, key, host).text
                     + " (= " + order.position(state, key, host).text + " "
@@ -1229,9 +1261,8 @@ public final class ContainerSmtCodec {
             Term where = order.position(state, key, host);
             host.require("(=> " + associativeHas(state, key, host).text
                     + " (and (<= 0 " + where.text + ") (< " + where.text
-                    + " " + size.text + ") (= (" + order.keyAt + " "
-                    + state.text + " " + where.text + ") " + key.text
-                    + ")))");
+                    + " " + size.text + ") (= " + order.keyAt(state,
+                    state.text, where.text) + " " + key.text + ")))");
         }
         views.put(stateIr, order);
         return order;

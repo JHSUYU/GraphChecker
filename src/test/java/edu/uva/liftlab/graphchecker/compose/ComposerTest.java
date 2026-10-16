@@ -9758,9 +9758,11 @@ public class ComposerTest {
      * paths (the balancer's removeExpiredKeys over a clock, then puts) were
      * undecided until the guard went inside the lambdas.  And a query that
      * reads no map's order gets maps that keep none, with no lambda at all
-     * (hdfs-11741 L1: two fatal-observing paths still undecided).  {what the
-     * state shows, the guard side that contradicts it, whether it reads the
-     * order}.
+     * (hdfs-11741 L1: two fatal-observing paths still undecided); a view in
+     * no order reads none, keyed by its state's term and size (SOLR-18413's
+     * witness attempt: an uninterpreted function of a removal's state was
+     * "incomplete (theory array)").  {what the state shows, the guard side
+     * that contradicts it, whether it reads the order}.
      */
     @Test
     public void aGuardedRemovalIsDecided() {
@@ -9781,6 +9783,9 @@ public class ComposerTest {
             {"(= (assoc_position_of grown (VInt 3)) 1)", "(>= x 5)", "true"},
             {"(= (assoc_size grown) 3)", "(< x 5)", "false"},
             {"(not (assoc_has grown (VInt 1)))", "(>= x 5)", "false"},
+            {"(and (= (assoc_view_key 7 (assoc_size grown) 0) (VInt 1))"
+                    + " (assoc_has grown (assoc_view_key 7 (assoc_size grown)"
+                    + " 0)))", "(< x 5)", "false"},
         };
         for (String[] shown : cases) {
             String asked = states + "(assert " + shown[0] + ")";
