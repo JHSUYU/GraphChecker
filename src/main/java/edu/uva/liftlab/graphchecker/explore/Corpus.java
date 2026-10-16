@@ -2938,10 +2938,54 @@ public final class Corpus implements Arms.Rows {
             new HashMap<String, Set<java.math.BigInteger>>();
 
     /**
+     * Root symbol -> the recorded predicate decisions whose terms reach it,
+     * each (session, decision): every decision's symbols found once, at the
+     * first ask ({@link #comparedLiterals}).  Asked of every decision once
+     * per root, the composition of SGF7B-adhoc-10's 462 sessions spent 870
+     * of its 1032 s in its roots' domains, each root's ask walking every
+     * decision's term again.
+     */
+    private Map<String, List<Map.Entry<String, DecisionRow>>> deciding;
+
+    private List<Map.Entry<String, DecisionRow>> deciding(String symbol) {
+        if (deciding == null) {
+            Set<String> wanted = new HashSet<String>();
+            for (Map<String, RootMintRow> mints : rootsById.values()) {
+                for (RootMintRow mint : mints.values()) {
+                    wanted.add(mint.symbol());
+                }
+            }
+            deciding = new HashMap<String,
+                    List<Map.Entry<String, DecisionRow>>>();
+            for (Map.Entry<String, List<DecisionRow>> path
+                    : decisions.entrySet()) {
+                String sessionId = path.getKey().substring(0,
+                        path.getKey().indexOf('|'));
+                for (DecisionRow decision : path.getValue()) {
+                    if (!Arms.predicate(decision.term())) continue;
+                    for (String reached
+                            : termSymbols(sessionId, decision.term())) {
+                        if (!wanted.contains(reached)) continue;
+                        deciding.computeIfAbsent(reached, k -> new ArrayList<
+                                Map.Entry<String, DecisionRow>>()).add(
+                                new java.util.AbstractMap.SimpleImmutableEntry<
+                                        String, DecisionRow>(sessionId,
+                                        decision));
+                    }
+                }
+            }
+        }
+        List<Map.Entry<String, DecisionRow>> reaching = deciding.get(symbol);
+        return reaching == null
+                ? Collections.<Map.Entry<String, DecisionRow>>emptyList()
+                : reaching;
+    }
+
+    /**
      * Every integral literal a recorded decision of this corpus compares
-     * {@code symbol} with directly ({@code (op c symbol)} or {@code (op
-     * symbol c)}, {@code op} an order or an equality), its term lowered by
-     * the one lowering; once per symbol.
+     * {@code symbol}, a root's, with directly ({@code (op c symbol)} or
+     * {@code (op symbol c)}, {@code op} an order or an equality), its term
+     * lowered by the one lowering; once per symbol.
      */
     Set<java.math.BigInteger> comparedLiterals(String symbol) {
         Set<java.math.BigInteger> known = compared.get(symbol);
@@ -2953,24 +2997,15 @@ public final class Corpus implements Arms.Rows {
         java.util.regex.Pattern atom = java.util.regex.Pattern.compile(
                 "\\((?:<=|>=|<|>|=)\\s+(?:" + literal + "\\s+\\|?" + name
                         + "\\|?|\\|?" + name + "\\|?\\s+" + literal + ")\\)");
-        for (Map.Entry<String, List<DecisionRow>> path
-                : decisions.entrySet()) {
-            String sessionId = path.getKey().substring(0,
-                    path.getKey().indexOf('|'));
-            for (DecisionRow decision : path.getValue()) {
-                if (!Arms.predicate(decision.term()) || !termSymbols(
-                        sessionId, decision.term()).contains(symbol)) {
-                    continue;
-                }
-                java.util.regex.Matcher found = atom.matcher(
-                        FlipQuery.statedTerm(this, sessionId,
-                                decision.term()));
-                while (found.find()) {
-                    String spelled = found.group(1) != null
-                            ? found.group(1) : found.group(2);
-                    literals.add(new java.math.BigInteger(spelled
-                            .replaceAll("[()\\s]", "")));
-                }
+        for (Map.Entry<String, DecisionRow> decided : deciding(symbol)) {
+            java.util.regex.Matcher found = atom.matcher(
+                    FlipQuery.statedTerm(this, decided.getKey(),
+                            decided.getValue().term()));
+            while (found.find()) {
+                String spelled = found.group(1) != null
+                        ? found.group(1) : found.group(2);
+                literals.add(new java.math.BigInteger(spelled
+                        .replaceAll("[()\\s]", "")));
             }
         }
         compared.put(symbol, literals);
