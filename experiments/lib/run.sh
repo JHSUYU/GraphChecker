@@ -22,6 +22,10 @@ export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
 export CAUSYNTH_SYSTEM_DOORS=
 [[ ! -f "${system_dir}/doors.jsonl" ]] \
   || CAUSYNTH_SYSTEM_DOORS=${system_dir}/doors.jsonl
+# The transports whose doors fail in the workload client's own root contexts
+# (system.sh client_fault_transports; explore.ClientFaults): empty, every door.
+CAUSYNTH_CLIENT_FAULT_TRANSPORTS=$(IFS=,; echo "${client_fault_transports[*]-}")
+export CAUSYNTH_CLIENT_FAULT_TRANSPORTS
 # The system's view classes (system.sh system_scope), as class names: woven in
 # every case for the store's decodes, they add no tracked cell (SEED,
 # causynth.RootDemand).

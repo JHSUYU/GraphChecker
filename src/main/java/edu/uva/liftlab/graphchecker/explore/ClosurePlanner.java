@@ -191,18 +191,20 @@ public final class ClosurePlanner {
 
     /** The closure of one anchor; {@code branches} says which sessions may
      *  expose a region for growth, {@code doorsOnly} which occurrences the
-     *  current plan runs for their doors alone (rendered addresses). */
+     *  current plan runs for their doors alone (rendered addresses),
+     *  {@code faults} where a fault door fails. */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
-                            Branches branches, Set<String> doorsOnly) {
+                            Branches branches, Set<String> doorsOnly,
+                            ClientFaults faults) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly);
+                branches, doorsOnly, faults);
     }
 
     /** {@link #plan} under another closure ceiling (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
-                     Set<String> doorsOnly) {
+                     Set<String> doorsOnly, ClientFaults faults) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -306,6 +308,7 @@ public final class ClosurePlanner {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> runWhole =
                 new LinkedHashSet<OccurrenceAddress>();
+        int unfailed = 0;
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
@@ -342,10 +345,23 @@ public final class ClosurePlanner {
                     stateConnected(corpus, demand.occurrence), seed));
             why.put(taskId, demand.why);
             // Flip sites: the demanded guards plus every FAULT decision
-            // (PIPELINE §7.2).
+            // (PIPELINE §7.2) where it fails (ClientFaults).
             Set<String> sites = new LinkedHashSet<String>(demand.flipSites);
-            sites.addAll(corpus.faultSites(demand.occurrence));
+            for (String site : corpus.faultSites(demand.occurrence)) {
+                if (faults.fails(demand.occurrence, site)) {
+                    sites.add(site);
+                } else if (!sites.contains(site)) {
+                    unfailed++;
+                }
+            }
             flips.put(taskId, sites);
+        }
+        if (unfailed > 0) {
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    "CLIENT_FAULTS_UNFLIPPED", unfailed + " fault door(s)"
+                            + " of the closure are no flip sites: "
+                            + faults.why()));
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
                 exposed, waiting, truncated, ceilingCut, unpaused, runWhole,

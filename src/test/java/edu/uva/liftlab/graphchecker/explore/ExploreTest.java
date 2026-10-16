@@ -1247,7 +1247,8 @@ public class ExploreTest {
         Path fresh = tree.newFolder("served-fresh").toPath();
         ExploreMain served = new ExploreMain(iteration, TARGET_SELECTOR, null,
                 iteration.resolve(StaticScopeMap.FILE), "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS);
+                ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS,
+                ClientFaults.NONE);
         // round -> what lands before it: a world's session, its leaving,
         // another world's; and one that lands after the round's corpus was
         // frozen, while it plans.
@@ -3544,7 +3545,8 @@ public class ExploreTest {
                 Branches.of(Corpus.read(iteration, null),
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
-                Collections.singleton(WRITER.render()));
+                Collections.singleton(WRITER.render()),
+                ClientFaults.NONE);
         assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
         assertEquals("no focused replay ran it: the fixed point names it",
                 Collections.singleton(WRITER), doors.runWhole);
@@ -3729,7 +3731,8 @@ public class ExploreTest {
                     target, bound, spreadMap, Branches.of(spreadCorpus,
                             Collections.singletonList(target),
                             new ArrayList<GapRow>()),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                ClientFaults.NONE);
             List<String> kept = focused(cut);
             List<String> expected = new ArrayList<String>(Arrays.asList(
                     target.render(), writer.render(), producer.render()));
@@ -6557,7 +6560,8 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                ClientFaults.NONE);
     }
 
     /**
@@ -6629,7 +6633,8 @@ public class ExploreTest {
                     (Integer) row[0], map, Branches.of(corpus,
                             Collections.singletonList(TARGET),
                             new ArrayList<GapRow>()),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(),
+                ClientFaults.NONE);
             Set<String> planned = new LinkedHashSet<String>();
             for (Task task : plan.tasks) planned.add(task.focused().render());
             Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
@@ -6652,7 +6657,8 @@ public class ExploreTest {
         ClosurePlanner.Plan capped = ClosurePlanner.plan(corpus, TARGET, 2, 2,
                 map, Branches.of(corpus, Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
-            Collections.<String>emptySet());
+            Collections.<String>emptySet(),
+                ClientFaults.NONE);
         Set<String> kept = new LinkedHashSet<String>();
         for (Task task : capped.tasks) kept.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -6733,7 +6739,8 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS, 2, map, Branches.of(corpus,
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
-                    Collections.<String>emptySet());
+                    Collections.<String>emptySet(),
+                ClientFaults.NONE);
         Set<String> planned = new LinkedHashSet<String>();
         for (Task task : plan.tasks) planned.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),

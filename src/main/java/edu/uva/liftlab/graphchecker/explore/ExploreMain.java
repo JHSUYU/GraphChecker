@@ -60,6 +60,10 @@ import java.util.TreeSet;
  *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
  *                              (SYMBOL-SCOPE §3)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
+ *   --system-doors &lt;file&gt;      the system's door catalog (doors.jsonl)
+ *   --client-fault-transports &lt;t,...&gt;  the transports whose doors fail in
+ *                              the workload client's root contexts
+ *                              ({@link ClientFaults}); default: every door
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
  *   --max-world-depth
@@ -107,6 +111,8 @@ public final class ExploreMain {
     private final String topologyEpoch;
     private final int maxTasks;
     private final ObligationFactory.Bounds bounds;
+    /** Where a fault door fails. */
+    private final ClientFaults faults;
     /** What the last round read, kept for the next. */
     private Corpus corpus;
     private StaticScopeMap scope;
@@ -128,7 +134,7 @@ public final class ExploreMain {
      */
     ExploreMain(Path iteration, String declaredAnchor, Path rootDomains,
                 Path scopeMap, String topologyEpoch, int maxTasks,
-                ObligationFactory.Bounds bounds) {
+                ObligationFactory.Bounds bounds, ClientFaults faults) {
         this.iteration = iteration;
         this.declaredAnchor = declaredAnchor;
         this.rootDomains = rootDomains;
@@ -136,6 +142,7 @@ public final class ExploreMain {
         this.topologyEpoch = topologyEpoch;
         this.maxTasks = maxTasks;
         this.bounds = bounds;
+        this.faults = faults;
     }
 
     public static void main(String[] argv) throws Exception {
@@ -175,7 +182,10 @@ public final class ExploreMain {
                         (int) options.number("max-flips-per-path",
                                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
                         (int) options.number("max-world-depth",
-                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
+                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)),
+                ClientFaults.read(options.path("system-doors"),
+                        transports(options.value("client-fault-transports",
+                                ""))));
         Path serve = options.path("serve");
         if (serve != null) {
             Service.serve(serve, 0L, (question, out) -> {
@@ -220,8 +230,17 @@ public final class ExploreMain {
                                   ObligationFactory.Bounds bounds)
             throws IOException {
         return new ExploreMain(iteration, declaredAnchor, rootDomains,
-                scopeMap, topologyEpoch, maxTasks, bounds)
+                scopeMap, topologyEpoch, maxTasks, bounds, ClientFaults.NONE)
                 .round(round, inFlight, results, null, out);
+    }
+
+    /** {@code --client-fault-transports}: comma-separated names. */
+    private static List<String> transports(String value) {
+        List<String> names = new ArrayList<String>();
+        for (String name : value.split(",")) {
+            if (!name.trim().isEmpty()) names.add(name.trim());
+        }
+        return names;
     }
 
     /**
@@ -272,7 +291,7 @@ public final class ExploreMain {
                 new LinkedHashSet<OccurrenceAddress>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
-                    maxTasks, scope, branches, doorsOnly);
+                    maxTasks, scope, branches, doorsOnly, faults);
             gaps.addAll(plan.gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {

@@ -35,6 +35,13 @@ system_scope=(
   solrj=:org/apache/solr/common/cloud/Aliases
   solrj=:org/apache/solr/common/cloud/ZkNodeProps
 )
+# The transports whose doors fail in the workload client's own root contexts
+# (explore.ClientFaults, owner 2026-10-16): its requests to the cluster.  The
+# test's own ZooKeeper calls (a configset upload, makePath) bypass Solr: SGF7
+# round 0 of solr-adhoc-10/-39/-40 flipped 276 of their doors and none of
+# those replays ran the declared occurrence; every fault root of the five
+# Solr fault bugs is a server's ZooKeeper write or a client request.
+client_fault_transports=(SOLR_HTTP SOLR_HTTP2)
 # The tree's own sources, as "<root>:<tree-relative source dir>": where
 # tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(

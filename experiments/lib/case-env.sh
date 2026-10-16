@@ -32,6 +32,9 @@
 # system.sh may set
 #   system_scope        scope entries every case of the system adds to its
 #                       own, in the same spelling (a system-wide weave)
+#   client_fault_transports
+#                       the transports whose doors fail in the workload
+#                       client's own root contexts (explore.ClientFaults)
 # and defines, after the case is read,
 #   system_paths        sets module, report, test_classes, lineage_roots
 #   system_root <name>  a compiled class root the scope names

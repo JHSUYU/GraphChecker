@@ -146,6 +146,11 @@ workflow_config_keys=(
   # The system's own DOOR rows, which replace the engine catalog's of their
   # transport and direction (causynth.LibraryCatalog, SYMBOL-SCOPE §4.2).
   "causynth_system_doors CAUSYNTH_SYSTEM_DOORS krp -"
+  # The transports whose doors fail in the workload client's root contexts,
+  # comma-separated (explore.ClientFaults): a door of another transport of
+  # the system's catalog there is the client calling a dependency past the
+  # system, no flip site.  Empty: every door.
+  "causynth_client_fault_transports CAUSYNTH_CLIENT_FAULT_TRANSPORTS krp -"
   # The system's view classes (system_scope), comma-separated class names:
   # a reference field only they write is no tracked cell (causynth.RootDemand).
   "causynth_system_view CAUSYNTH_SYSTEM_VIEW krp -"
@@ -5180,6 +5185,9 @@ campaign_stream_round_args() {
     --topology-epoch "${iteration_id}")
   [[ -z "${declared}" ]] \
     || stream_round_args+=(--target-occurrence "${declared}")
+  [[ -z "${causynth_client_fault_transports}" ]] || stream_round_args+=(
+    --system-doors "${causynth_system_doors}"
+    --client-fault-transports "${causynth_client_fault_transports}")
   [[ -z "${region_path_max_paths_per_region}" ]] || stream_round_args+=(
     --max-paths-per-region "${region_path_max_paths_per_region}")
   [[ -z "${region_path_max_flips_per_path}" ]] || stream_round_args+=(
