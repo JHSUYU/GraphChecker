@@ -674,6 +674,47 @@ campaign_z3_room_grant() {
   campaign_z3_room_grant_id=${campaign_host_charge_id}
 }
 
+# THE FINAL COMPOSE'S z3s RUN ON EVERY HOST.  The final COMPOSE has the pool
+# to itself -- the exploration has ended, and a final round's case runs
+# alone -- so its composer's scoped z3s run on each other host of the pool
+# too (smt/Z3Incremental over ssh, ComposeMain --z3-hosts): each host is
+# charged what its ledger admits now (campaign_host_room), in whole pairs of
+# scoped z3s (two at 1024 MB, smt/Z3Incremental#PAIR_SLOT_MB), at most
+# campaign_compose_z3_host_most_mb, held while the composer runs and
+# released after.  Beside its 16 GB composer on one host, SGF7-adhoc-10's
+# final decide ran one pair: 315 z3 runs in 1800 s, its budget spent with
+# questions unasked, twelve idle lifts beside it.  A witness attempt's
+# composer, which runs beside the exploration's replays, takes none.
+campaign_compose_z3_pair_mb=2048
+campaign_compose_z3_host_most_mb=16384
+# campaign_z3_hosts_grant <host>: the rooms of every pool host but <host>,
+# charged and held by this shell: campaign_z3_hosts, `<host>=<mb>` words
+# joined by commas (empty: none), and campaign_z3_hosts_grants, `<host>
+# <charge id>` per room.
+campaign_z3_hosts=""
+campaign_z3_hosts_grants=()
+campaign_z3_hosts_grant() {
+  local placed=$1 host name more status=0
+  campaign_z3_hosts=""
+  campaign_z3_hosts_grants=()
+  while IFS= read -r host; do
+    [[ "$(campaign_host_key "${host}")" != \
+        "$(campaign_host_key "${placed}")" ]] || continue
+    more=$(campaign_host_room "${host}") || continue
+    (( more <= campaign_compose_z3_host_most_mb )) \
+      || more=${campaign_compose_z3_host_most_mb}
+    more=$(( more / campaign_compose_z3_pair_mb * campaign_compose_z3_pair_mb ))
+    (( more > 0 )) || continue
+    campaign_host_try_charge "${host}" "${more}"
+    (( status == 0 )) || continue
+    # The composer reaches it over ssh, from whichever host it runs on.
+    name=${host}
+    ! campaign_host_is_local "${host}" || name=$(hostname -s)
+    campaign_z3_hosts+="${campaign_z3_hosts:+,}${name}=${more}"
+    campaign_z3_hosts_grants+=("${host} ${campaign_host_charge_id}")
+  done < <(campaign_worker_host_list)
+}
+
 # What a JVM of <main> at <heap_mb> is charged and held at, in MB: its
 # footprint (campaign_jvm_footprint_mb) and its z3 room (campaign_z3_room_mb).
 campaign_jvm_charge_mb() {
@@ -770,12 +811,11 @@ campaign_engine_start_mb() {
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
 # growth step is the door step's main: measured as that.  Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
 # of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
-# The composer alone starts below its largest: at 4 GB, charged ~7.8 GB with
-# its z3 room, most composers fit, and one that runs out is run again at
-# 8 GB, where its case's later composers start (engine_java).  Started at
-# 8 GB with a 6 GB room, its 15232 MB charge, which every head reserved too
-# (campaign_head_need_mb), kept five bug checks of round SGF4 waiting 30 min
-# and more for a host.
+# A composer starts at its corpus's heap (do_compose), at least this; the
+# head reserves this for it before any engine JVM's peak is measured
+# (campaign_head_need_mb).  Started at 8 GB with a 6 GB room, its 15232 MB
+# charge, which every head reserved too, kept five bug checks of round SGF4
+# waiting 30 min and more for a host.
 campaign_engine_need_mb() {
   case "$1" in
     *.GraphCheckerMain|*.ComposeMain) echo 4096 ;;
@@ -1187,10 +1227,17 @@ do_schedule() {
     "${args[@]}"
 }
 
+# A COMPOSER'S HEAP IS ITS CORPUS'S, as a solver's (campaign_solver_heap_mb):
+# it reads every session of it.  Started at a fixed 4096 MB and doubled at
+# each out-of-heap exit, SGF7-adhoc-10's final composer (10969 MB of sessions)
+# ran out at 4096 and at 8192 MB, each run digesting the inputs and reading
+# the corpus again -- 818 s before the run at 16384 MB that composed it -- and
+# SGF7SLOW17-18413's (3.2 GB of sessions) ran out at 4096 MB.
 do_compose() {
   ensure_output_directory "$(dirname "${composed_smt}")"
   local -a selection=()
-  local declared
+  local declared engine_need_mb
+  engine_need_mb=$(campaign_solver_heap_mb "${compose_sessions_dir}")
   declared=$(campaign_declared_target_occurrence)
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
@@ -4590,7 +4637,9 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
 # when it returns.  One placed --room with a z3 room among its need is given
 # what its host admits beside it then (campaign_z3_room_grant), charged and
 # released with it, and told the room it holds (--z3-room-mb, after its
-# arguments); outside a head it is told the room it was placed with.  Every such step reads and writes only the run's shared
+# arguments), and the final COMPOSE's composer the rooms of the pool's other
+# hosts too (campaign_z3_hosts_grant, --z3-hosts); outside a head it is told
+# the room it was placed with.  Every such step reads and writes only the run's shared
 # directories (the case's scope copy among them, experiments/lib/case-env.sh)
 # and takes the rest of what it reads of the head as its arguments, so it
 # runs alike on whichever host it was placed on: here, or through the remote
@@ -4600,7 +4649,7 @@ its host was charged ${charged} MB for it$( (( held == charged )) \
 # command, so errexit means inside it what it meant before: a failure that
 # ends the shell leaves the charge to lapse with its lease.
 campaign_head_charged() {
-  local need id status busy="" host room="" grant=""
+  local need id status busy="" host room="" grant="" remote
   if [[ "$1" == --room ]]; then
     room=$2
     shift 2
@@ -4623,10 +4672,18 @@ campaign_head_charged() {
     busy="${campaign_head_reservation}.busy.${BASHPID}"
     : >"${busy}"
   fi
+  campaign_z3_hosts_grants=()
   if [[ -n "${room}" ]]; then
     campaign_z3_room_grant "${host}" "${room}"
     grant=${campaign_z3_room_grant_id}
     set -- "$@" --z3-room-mb "${campaign_z3_room_granted_mb}"
+    if [[ "${campaign_compose_final:-}" == 1 ]]; then
+      campaign_z3_hosts_grant "${host}"
+      [[ -z "${campaign_z3_hosts}" ]] \
+        || set -- "$@" --z3-hosts "${campaign_z3_hosts}"
+      echo "[campaign] the final composer's z3s run on \
+${#campaign_z3_hosts_grants[@]} more host(s): ${campaign_z3_hosts:-none}" >&2
+    fi
   fi
   if campaign_host_is_local "${host}"; then
     "$@"
@@ -4638,6 +4695,9 @@ campaign_head_charged() {
   [[ -z "${busy}" ]] || rm -f -- "${busy}"
   campaign_head_heartbeat
   [[ -z "${grant}" ]] || campaign_host_release "${host}" "${grant}"
+  for remote in "${campaign_z3_hosts_grants[@]}"; do
+    campaign_host_release ${remote}
+  done
   campaign_host_release "${host}" "${id}"
   return "${status}"
 }
@@ -7796,6 +7856,8 @@ campaign_compose() {
   local iteration_dir=$1
   local started ended millis status=0
   local compose_reuse_dir=${campaign_witness_attempt}
+  # Its z3s run on every host of the pool (campaign_z3_hosts_grant).
+  local campaign_compose_final=1
   # One claim at a time: one CONFIRM did not confirm has moved to
   # final/refuted/ (campaign_next_claim) before the next is composed.
   [[ ! -e "${campaign_final}/candidate.smt2" ]] || die \

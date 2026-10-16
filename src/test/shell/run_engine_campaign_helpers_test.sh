@@ -2419,6 +2419,31 @@ done <<'EOF_HEAP'
 1024|0||1024|2624|0
 16384|0|4096 2048|8192|5888|10922
 EOF_HEAP
+
+# COMPOSE-HEAP: a composer starts at its corpus's heap, as a solver's
+# (do_compose: campaign_solver_heap_mb of the sessions it reads).  Per row:
+# the corpus's MB, the heap its composer starts at.
+while read -r ch_corpus ch_heap; do
+  rm -rf -- "${solver_heap_dir}"
+  mkdir -p "${solver_heap_dir}/sessions"
+  printf '%s %s\n' "$(date +%s)" "${ch_corpus}" \
+    >"${solver_heap_dir}/corpus_mb"
+  ch_said=$(
+    engine_memory_mb=16384
+    compose_sessions_dir="${solver_heap_dir}/sessions"
+    composed_smt="${solver_heap_dir}/final/candidate.smt2"
+    campaign_declared_target_occurrence() { :; }
+    run_java_main() { printf '%s' "${engine_need_mb}"; }
+    do_compose
+  )
+  [[ "${ch_said}" == "${ch_heap}" ]] \
+    || fail "a composer of ${ch_corpus} MB of sessions started at \
+${ch_said} MB, not ${ch_heap}"
+done <<'EOF_HEAP'
+0 4096
+3200 4800
+10969 16384
+EOF_HEAP
 # The corpus's size is read again once its statement is past
 # campaign_corpus_mb_fresh_s, from the session files.
 mkdir -p "${solver_heap_dir}/sessions/s1"
@@ -6840,6 +6865,53 @@ done <<'EOF'
 100000 18432 2
 45000 17048 2
 33000 5048 2
+EOF
+
+# Z3-HOSTS: the final COMPOSE's composer (campaign_compose_final) is given z3
+# rooms on every other host of the pool (--z3-hosts after its room): what
+# each host's ledger admits now under its 70% ceiling, in whole 2048 MB
+# pairs, at most 16384 MB a host, charged while it runs and released after;
+# a host with no pair's room is left out, and a composer outside the final
+# COMPOSE is given none.  Per row: whether the step is the final COMPOSE's,
+# the --z3-hosts it is told (- for none), the charges standing while it runs.
+z3_hosts_dir="${memory_dir}/z3-hosts"
+while read -r z3_final z3_hosts z3_charges; do
+  rm -rf -- "${z3_hosts_dir}"
+  mkdir -p "${z3_hosts_dir}"
+  (
+    campaign_host_gate_root="${z3_hosts_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_worker_hosts="gate-head peer1 peer2 peer3"
+    campaign_host_total_mb() { echo 100000; }
+    campaign_host_available_mb() {
+      case "$1" in
+        peer2) echo 37000 ;;
+        peer3) echo 31000 ;;
+        *) echo 100000 ;;
+      esac
+    }
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=0
+    campaign_head_charging=1
+    [[ "${z3_final}" == 0 ]] || campaign_compose_final=1
+    z3_probe() {
+      local hosts=-
+      [[ "${*: -2:1}" != --z3-hosts ]] || hosts=${*: -1}
+      printf '%s %s' "${hosts}" "$(live_charges "${campaign_host_gate_root}" \
+        | wc -l)"
+    }
+    z3_said=$(campaign_head_charged --room 2048 3000 z3_probe argument \
+      2>/dev/null)
+    [[ "${z3_said}" == "${z3_hosts} ${z3_charges}" ]] \
+      || fail "a composer (final ${z3_final}) was told, charged: \
+${z3_said}, not ${z3_hosts} ${z3_charges}"
+    [[ -z "$(live_charges "${campaign_host_gate_root}")" ]] \
+      || fail "a composer's z3 rooms outlived it"
+  ) || exit 1
+done <<'EOF'
+1 peer1=16384,peer2=6144 4
+0 - 2
 EOF
 
 # ENGINE-HEAP: an engine JVM starts at what its main measurably needs, charged
