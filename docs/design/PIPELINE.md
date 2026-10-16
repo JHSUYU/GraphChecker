@@ -2692,10 +2692,18 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    its verdict, model and core of one check (`Z3#CORE_TRACKING` slows every question, so the rest go
    to pairs that track nothing); asked untracked and then again tracked, the recorded valuation's core
    questions moved a 2269 MB room between the two pairs 14 times on snapshot 0001, each move a fresh z3
-   reading 65 MB. The paths' questions are put 8 at a time (`PATH_ASKS`), each kind in its lane, and
-   asked by as many plain pairs as the composer's z3 room holds beside the tracking one at 1024 MB a
-   z3 (`Z3Incremental#PAIR_SLOT_MB`: snapshot 0001's held 420-560 MB, 843 MB at peak), at most 8; a
-   room that holds no two pairs runs one at a time, each holding the whole room, half each engine. A
+   reading 65 MB. The paths' questions are put as many at a time as the rooms place plain pairs, at
+   least 8 (`Disjunction#LEAST_PATH_ASKS`), each kind in its lane, and asked by as many plain pairs as
+   the composer's z3 room holds beside the tracking one at 1024 MB a z3 (`Z3Incremental#PAIR_SLOT_MB`:
+   snapshot 0001's held 420-560 MB, 843 MB at peak); a room that holds no two pairs runs one at a
+   time, each holding the whole room, half each engine. The final COMPOSE has the pool to itself, so
+   its plain pairs run on every other pool host too (`ComposeMain --z3-hosts`, `run_engine.sh`
+   `campaign_z3_hosts_grant`: each host charged whole 2048 MB pairs of what its ledger admits, at most
+   16 GB, while the composer runs): a remote z3 is started over ssh, prints its pid first, reads the
+   shared part from one file written beside the query (the lifts' links are 1 Gb/s), and is signalled
+   and ended over ssh; one that has not read the shared part within 120 s gives its questions back
+   to the other pairs (SGF7-adhoc-10: one pair beside its 16 GB composer ran 315 z3 runs in the
+   30 min decide budget and left questions undecided). A
    pair holds its slots while it lives and gives them back to whoever waits for room once it has no
    question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
    take turns where the room holds no more. The valuations, asked up
