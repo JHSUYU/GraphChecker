@@ -152,10 +152,11 @@ recommendation.
   on the claimed selector's fatal cone (other selectors' unbound handoffs are computed and reported as
   `unboundOffWitness`, never hidden); an UNSAT on every admitted path, and COMPOSE refuses to close while any path's
   cone holds an unattested handoff. Not a per-case or per-variable exemption.
-- **A witness ends exploration only when its own chain is closed** (lead, 2026-10-06): when the first witness's fatal
-  cone names a HELD/unbound handoff, EXPLORE grows only that chain's producers, re-composes, then claims; a chain that
-  growing cannot close is named (`WITNESS_CHAIN_OPEN` in EMIT's `defects[]`), and best effort (owner 2026-10-15)
-  the verdict stands, CONFIRM deciding a SAT.
+- **A witness with an open chain is confirmed first, its chain grown meanwhile** (lead 2026-10-06 grew it first; owner
+  2026-10-15, best effort and performance first): when the first witness's fatal cone names a HELD/unbound handoff,
+  CONFIRM decides the SAT at once while EXPLORE grows only that chain's producers; a confirmed witness ends the
+  exploration, a refuted one is attempted again over the grown corpus; an open chain is named (`WITNESS_CHAIN_OPEN` in
+  EMIT's `defects[]`).
 - **COMPOSE is best effort** (owner 2026-10-15): a defective session, path or part is left out and named
   (DIAGNOSTIC), the rest composed; only a total absence (no seed, no path) or SEED_OBSERVED_FATAL blocks.
   Exploration refusals stay (they shrink the work); a GROW re-run that did not finish is dropped, never re-run.

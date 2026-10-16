@@ -1836,22 +1836,24 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
-  A witness ends the exploration only once its OWN chain is closed (owner 2026-10-06): an attempt
-  whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the claimed
-  path's fatal condition rests on that no attested producer made -- the set
-  `experiments/accept/cone.py` reads off the formula, `compose.Cone` -- the claim RUN_DEFECT) is
-  not confirmed while those values' arrivals name a producer not grown yet
-  (`campaign_stream_open_chain`); the head cancels the queued obligations and grows those producers
+  A witness whose OWN chain is open is confirmed first and its chain grown meanwhile (owner
+  2026-10-06 grew it first; 2026-10-15, best effort and performance first: CONFIRM decides): an
+  attempt whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the
+  claimed path's fatal condition rests on that no attested producer made -- the set
+  `experiments/accept/cone.py` reads off the formula, `compose.Cone`) goes to CONFIRM at once, and
+  the producers those values' arrivals name that were not grown yet go to the head
+  (`campaign_stream_open_chain`), which cancels the queued obligations and grows them
   (`campaign_stream_open`): each later round grows only its exposures of them, each producer once,
-  and queues none of its obligations (`campaign_stream_chain_round`); once the GROW swaps in, the
-  attempt's witnesses still in the corpus are attempted again, a re-run landing as a witness of its
-  own (`campaign_stream_chain_reattempt`). With nothing left to grow -- the open values name no
-  producer, or every one they name was grown -- CONFIRM decides the claim (best effort, owner
-  2026-10-15): parked instead, the witness was never attempted again and the exploration ran to its
-  fixed point or budget (SGF7-18413 on sgf16: isExpired's CLOCK_SKEW witness, open on a
-  `tlogReplicas` leaf whose producer's session had not landed when the attempt composed). A fixed
-  point ends a chain no exposure reaches; the final claim names each open value
-  (`WITNESS_CHAIN_OPEN`, EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
+  and queues none of its obligations (`campaign_stream_chain_round`); the GROW's swap is held while
+  the confirmation is owed, so a confirmed witness ends the exploration with the GROW dropped, and a
+  refuted claim (excluded, the false-positive rule) has its witnesses still in the corpus attempted
+  again once the GROW swaps in, a re-run landing as a witness of its own
+  (`campaign_stream_chain_reattempt`). Growing first held SGF7-18413's real witness (isExpired's
+  CLOCK_SKEW, open on node1's view of state.json leaves the Overseer's state-update ticks #30/#31
+  wrote unplanned in its world) behind a GROW, its re-runs and a second COMPOSE over a corpus twice
+  the size, ~30 min, and parked with nothing to grow it was never attempted again. A fixed point
+  ends a chain no exposure reaches; the final claim names each open value (`WITNESS_CHAIN_OPEN`,
+  EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
   nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.

@@ -5716,14 +5716,15 @@ campaign_stream_step_done() {
   fi
 }
 
-# The witness chain an attempt left open (<dir>/chain, the producers it
-# names that were not grown when its step began): those still not grown
-# become the chain the rounds grow (campaign_stream_chain_round), the queued
-# obligations are cancelled, and its witnesses wait to be attempted again
-# once the GROW swaps in (campaign_stream_chain_reattempt).  One grown since
-# the step began leaves nothing to grow: its witnesses still in the corpus
-# are attempted again at once, and that attempt goes to CONFIRM
-# (campaign_stream_open_chain).
+# The witness chain an attempt left open while CONFIRM decides it (<dir>/chain,
+# the producers it names that were not grown when its step began): those
+# still not grown become the chain the rounds grow
+# (campaign_stream_chain_round), the queued obligations are cancelled, and
+# its witnesses wait to be attempted again once the GROW swaps in -- held
+# while the confirmation is owed (campaign_stream_chain_reattempt).  One grown
+# since the step began leaves nothing to grow: its witnesses still in the
+# corpus are attempted again at once (a model under confirmation is not
+# confirmed twice: they wait for its verdict, <step>/deferred).
 campaign_stream_open() {
   local dir=$1 producer witness
   local -a fresh=()
@@ -5972,10 +5973,8 @@ campaign_stream_attempt() {
     >"${dir}/attempt.json"
   campaign_log "witness $*: COMPOSE over the corpus as it stands \
 (exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity}"
-  if [[ "${status}" -eq 0 && "${polarity}" == true ]] \
-      && campaign_stream_open_chain "${step}" "${dir}" "$@"; then
-    return 0
-  fi
+  [[ "${status}" -ne 0 || "${polarity}" != true ]] \
+    || campaign_stream_open_chain "${step}" "${dir}" "$@"
   if [[ "${claim}" != SAT_CANDIDATE || "${polarity}" != true ]]; then
     campaign_stream_attempt_row "${dir}" null "" 0 false
   elif ! campaign_claim_room; then
@@ -6004,17 +6003,18 @@ that verdict lands" 0 false
 }
 
 # A witness attempt whose COMPOSE names an open chain (ComposeMain
-# #campaignClaim: openChain, cone.py's open links of the claimed path) is
-# not confirmed while its arrivals name a producer EXPLORE has not grown:
-# its row says so, and those producers, with its witnesses, go to the head
-# (<step>/chain, <step>/chain-witnesses), which grows them and attempts the
-# witnesses again (campaign_stream_open).  With none left to grow -- the
-# open values name no producer, or every one they name was grown -- CONFIRM
-# decides (best effort, owner 2026-10-15): false, as where the chain is
-# closed.  Parked instead, the witness was never attempted again, and the
-# exploration ran to its fixed point or budget (SGF7-18413 on sgf16:
-# isExpired's CLOCK_SKEW witness, open on a tlogReplicas leaf whose
-# producer's session had not landed when the attempt composed).
+# #campaignClaim: openChain, cone.py's open links of the claimed path) goes
+# to CONFIRM at once, which decides it (best effort, owner 2026-10-15), and
+# the producers its arrivals name that EXPLORE has not grown go to the head
+# with its witnesses meanwhile (<step>/chain, <step>/chain-witnesses): the
+# head grows them (campaign_stream_open), its swap held while the
+# confirmation is owed, so a refuted claim is attempted again over the grown
+# corpus and a confirmed one ends the exploration with the GROW dropped.
+# Growing first held a real witness behind the GROW, its re-runs and a
+# second COMPOSE over a corpus twice the size, ~30 min (SGF7-18413 on sgf17:
+# isExpired's CLOCK_SKEW witness, open on node1's view of state.json leaves
+# the Overseer's state-update ticks #30/#31 wrote unplanned in its world);
+# parked with nothing to grow, it was never attempted again (sgf16).
 campaign_stream_open_chain() {
   local step=$1 dir=$2 manifest=$2/candidate_composition_manifest.json open
   local producer
@@ -6022,23 +6022,23 @@ campaign_stream_open_chain() {
   shift 2
   open=$(jq '.solver.campaignClaim.openChain // [] | length' \
     "${manifest}" 2>/dev/null) || open=0
-  (( open > 0 )) || return 1
+  (( open > 0 )) || return 0
   while read -r producer; do
     [[ -n "${stream_chain_grown[${producer}]+x}" ]] || fresh+=("${producer}")
   done < <(jq -r '.solver.campaignClaim.openChain[].producer
     | select(. != "")' "${manifest}" | LC_ALL=C sort -u)
   if (( ${#fresh[@]} == 0 )); then
     campaign_log "witness $*: its causal chain is open over ${open} \
-value(s) no attested producer made, and none names a producer EXPLORE could \
+value(s) no attested producer made, none naming a producer EXPLORE could \
 still grow: CONFIRM decides"
-    return 1
+    return 0
   fi
   printf '%s\n' "${fresh[@]}" >"${step}/chain"
   printf '%s\n' "$@" >"${step}/chain-witnesses"
-  campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
-${open} value(s) its path's fatal condition rests on no attested producer \
-made (openChain); EXPLORE grows the ${#fresh[@]} producer(s) they name and \
-attempts its witnesses again" 0 false
+  campaign_log "witness $*: its causal chain is open over ${open} value(s) \
+no attested producer made: CONFIRM decides, and EXPLORE grows the \
+${#fresh[@]} producer(s) they name meanwhile, for an attempt again should \
+CONFIRM refute it"
 }
 
 # The verdicts on the confirmation replays that returned (<step>/confirms:
