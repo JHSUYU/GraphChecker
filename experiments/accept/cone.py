@@ -15,7 +15,9 @@ cone is that closure.  This is the paper's causality, in the formula: values
 cross a thread or process boundary as the producer's expression, and the
 composer merges the producers one arm each.
 
-Two facts are published for report.py, which gates on both:
+Two facts are published for report.py, which gates on both (the second only
+for a claim CONFIRM did not confirm: a confirmed SAT names it,
+WITNESS_CHAIN_OPEN):
 
   moved      -- every root the witness moved, and whether it is in the cone of
                 the path the claim selected.  A mechanism whose root the fatal

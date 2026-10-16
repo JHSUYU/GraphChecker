@@ -11,7 +11,8 @@ rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it, the formula carries the
 causality the witness names (cone.py: every moved root in the causal cone of
-the selected path, no unbound boundary variable), AND the mechanism it
+the selected path; no unbound boundary variable, unless CONFIRM confirmed the
+SAT, which then names them, WITNESS_CHAIN_OPEN), AND the mechanism it
 concluded is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
 the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
@@ -426,7 +427,11 @@ else:
     if outside:
         reasons.append("moved root(s) outside the witness path's causal"
                        " cone: %s" % ", ".join(outside))
-    if cone.get("unbound"):
+    # An open chain under a SAT CONFIRM confirmed is named, not failed: the
+    # witness was confirmed first and its chain grown meanwhile (owner
+    # 2026-10-15, best effort; RULES), and the replay that reached the fatal
+    # with the model planted is the finding.
+    if cone.get("unbound") and not confirmed:
         reasons.append("%d boundary variable(s) in a fatal condition that no"
                        " family binds" % len(cone["unbound"]))
 
@@ -443,6 +448,9 @@ if moved_roots:
         "%s=%s" % (root, moved_roots[root]) for root in sorted(moved_roots))
 else:
     note += " with no root moved off its recorded value"
+if cone and cone.get("unbound") and confirmed:
+    note += " (WITNESS_CHAIN_OPEN: %d boundary variable(s) no family binds)" \
+        % len(cone["unbound"])
 note += (" | the recorded valuation refutes the recording"
          if polarity_decides
          else " | the recorded valuation does not refute the recording")
