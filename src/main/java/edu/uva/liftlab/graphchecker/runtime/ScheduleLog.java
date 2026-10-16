@@ -52,7 +52,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * <p>ONE ORDER, ONE RULE.  A replay gets the discovering run's order as one
  * list of SLOTS: prefix to the cut ({@link #PREFIX_ENV}), rest after
  * ({@link #SUFFIX_FILE}).  An event takes the earliest open or given-up slot
- * of its key {@code (kind, c, site)}; with none it runs free.  A slot before
+ * of its key {@code (kind, c, site)}; with none it runs free.  In a
+ * timed-wait loop's turn ({@code Root:WAKE/<wait>#k}, whose k counts the
+ * loop's wakes, a timing fact) c is the turn's family, its number left out
+ * ({@link #turnFamily}): the loop's events take the recorded turns' slots
+ * in order, whatever turn the replay's loop is at.  A slot before
  * the cut, or a WAKE slot anywhere, is HELD until every earlier slot is
  * settled; other slots past the cut are taken at once.  An INTERRUPT slot
  * holds nothing and is in no later event's way: it is taken if it comes.
@@ -60,9 +64,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * cut when the recording never made it, and past its recorded count -- a
  * loop polling longer than recorded -- once per move of the order, unless
  * its loop reads a CLOCK root ({@link #waitsAtLocked}).  An event of a
- * timed-wait loop's turn ({@code Root:WAKE/<wait>#k}, whose k counts the
- * loop's wakes) held at its slot is held so too: it bounds no give-up, and
- * let go it takes that slot.  A WRITE never
+ * timed-wait loop's turn held at its slot is held so too: it bounds no
+ * give-up, and let go it takes that slot.  A WRITE never
  * passes an earlier held write to its location: one the order lacks, or
  * one whose slot holds nothing (past the cut), waits for it until it is
  * taken or given up.  An order cut at its
@@ -179,13 +182,21 @@ public final class ScheduleLog {
      */
     private static int line;
     private static byte[] state = new byte[0];
-    /** Per key, the slots not taken and not dead, in order. */
+    /** Per slot key ({@link #turnFamily}), the slots not taken and not
+     *  dead, in order. */
     private static final Map<String, ArrayDeque<Integer>> SLOTS =
             new HashMap<String, ArrayDeque<Integer>>();
-    /** Per recorded occurrence, the slots its events were. */
+    /** Each slot's key and context as {@link #turnFamily} matches them. */
+    private static String[] slotKeys = new String[0];
+    private static String[] slotContexts = new String[0];
+    /**
+     * Per recorded occurrence, the slots its events were; none of a
+     * timed-wait loop's turn, whose occurrence ids digest its turn number
+     * ({@link #turnFamily}).
+     */
     private static final Map<String, List<Integer>> BY_OCCURRENCE =
             new HashMap<String, List<Integer>>();
-    /** Per event context, the slots its events were. */
+    /** Per slot context ({@link #turnFamily}), the slots its events were. */
     private static final Map<String, List<Integer>> BY_CONTEXT =
             new HashMap<String, List<Integer>>();
     /**
@@ -228,8 +239,8 @@ public final class ScheduleLog {
     /** How many times a slot was settled: the order's moves. */
     private static long moves;
     /**
-     * Per WAKE key, {@link #moves} before its last WAKE was written: a poll
-     * past its recorded count goes again only once the order moved since.
+     * Per WAKE slot key, {@link #moves} before its last WAKE was written: a
+     * poll past its recorded count goes again only once the order moved since.
      * The slot a loop's last recorded WAKE took is itself a move, so the
      * first poll past the count goes at once.
      */
@@ -1025,7 +1036,14 @@ public final class ScheduleLog {
         private final String site;
         private final String occurrence;
         private final String endpoint;
+        /** The key its row's k counts by ({@link #appendLocked}). */
         private final String key;
+        /** The context, key and occurrence its slot is matched by ({@link
+         *  #turnFamily}): in a timed-wait loop's turn, the turn's family and
+         *  no occurrence, since the occurrence id digests the turn number. */
+        private final String slotContext;
+        private final String slotKey;
+        private final String slotOccurrence;
         /** Whether this wait's loop reads a CLOCK root; asked once, under
          *  the lock, only of a poll past its recorded count. */
         private Boolean clockLoop;
@@ -1042,6 +1060,11 @@ public final class ScheduleLog {
             this.occurrence = occurrence;
             this.endpoint = endpoint;
             this.key = ScheduleEvent.key(kind, context, site);
+            boolean turn = timedWaitTurn(context);
+            this.slotContext = turn ? turnFamily(context) : context;
+            this.slotKey = turn ? ScheduleEvent.key(kind, slotContext, site)
+                    : key;
+            this.slotOccurrence = turn ? "" : occurrence;
         }
 
         private String render() {
@@ -1630,19 +1653,19 @@ public final class ScheduleLog {
         }
         appendLocked(event);
         if (event.kind == ScheduleEvent.Kind.WAKE) {
-            POLLED.put(event.key, before);
+            POLLED.put(event.slotKey, before);
         }
         Thread self = Thread.currentThread();
         Made made = MADE.get(self);
-        if (made == null || !made.context.equals(event.context)) {
-            made = new Made(event.context);
+        if (made == null || !made.context.equals(event.slotContext)) {
+            made = new Made(event.slotContext);
             MADE.put(self, made);
         }
         made.sites.add(event.kind + " " + event.site);
     }
 
-    /** What a thread made in the context of its last admitted event, since
-     *  it entered it: the sites a waiter no occurrence names passes
+    /** What a thread made in the slot context of its last admitted event,
+     *  since it entered it: the sites a waiter no occurrence names passes
      *  ({@link #passedLocked}). */
     private static final class Made {
         private final String context;
@@ -1666,7 +1689,12 @@ public final class ScheduleLog {
      * or the watchdog let it go, which waits on others' work; never
      * elsewhere.  Run free or into a slot past the frontier anywhere else,
      * its thread runs on {@link #ELSEWHERE}, unless the watchdog released it
-     * since the frontier moved.
+     * since the frontier moved.  A timed-wait loop's turn is its exact turn
+     * here, not its family ({@link #turnFamily}): the loop's other turns,
+     * taking their family's later slots, are not at work toward this one
+     * (SGF7-adhoc-10's seed, judged by the family: the Overseer's polls held
+     * each give-up of a queue write its replay made in another context 7 to
+     * 8 s, not the grace, 39 stalls 288 s).
      */
     private static void seenLocked(Pending event, int slot) {
         if (firstBlocking >= order.size()) return;
@@ -1684,21 +1712,31 @@ public final class ScheduleLog {
     }
 
     /**
-     * The slot an event takes: the earliest of its key made by its OWN
+     * The slot an event takes: the earliest of its slot key made by its OWN
      * occurrence, else the earliest; -1 when none.  Two concurrent RPCs under
-     * one context share a key, and must not swap slots (and anchors).
+     * one context share a key, and must not swap slots (and anchors).  An
+     * event of a timed-wait loop's turn names no occurrence here ({@link
+     * #turnFamily}): it takes its family's earliest.
      */
     private static int slotOf(Pending event) {
-        ArrayDeque<Integer> slots = SLOTS.get(event.key);
+        ArrayDeque<Integer> slots = SLOTS.get(event.slotKey);
         if (slots == null || slots.isEmpty()) return -1;
-        if (!event.occurrence.isEmpty()) {
+        if (!event.slotOccurrence.isEmpty()) {
             for (int slot : slots) {
-                if (event.occurrence.equals(order.get(slot).occurrence())) {
+                if (event.slotOccurrence.equals(
+                        order.get(slot).occurrence())) {
                     return slot;
                 }
             }
         }
         return slots.peekFirst();
+    }
+
+    /** A slot's occurrence as {@link #slotOf} matches it: none in a
+     *  timed-wait loop's turn ({@link #turnFamily}). */
+    private static String slotOccurrenceOf(int slot) {
+        ScheduleEvent event = order.get(slot);
+        return timedWaitTurn(event.context()) ? "" : event.occurrence();
     }
 
     /**
@@ -1722,8 +1760,9 @@ public final class ScheduleLog {
      * </ul>
      *
      * An event of a timed-wait loop's turn ({@link #timedWaitTurn}) whose
-     * slot is not due is held at it the same way: its k is a count of
-     * wakes, so the slot may be another turn's; let go, it takes it.
+     * slot is not due is held at it the same way: it takes its family's
+     * slots in order, and a loop that makes more of them than recorded
+     * finds a later turn's; let go, it takes it.
      *
      * A WRITE never passes an earlier held write to its location: a slot
      * that holds is due only past it, and one that holds nothing (past the
@@ -1761,13 +1800,14 @@ public final class ScheduleLog {
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)
                 && !(turn && LET_GO.contains(self))) {
             if (!turn) return slot;
-            // A timed-wait loop's turn: its k counts the loop's wakes, which
-            // the replay's timing moves, so its slot may be another turn's.
-            // Held like a poll past its count: it bounds no give-up, and let
-            // go it takes the slot its key found -- a WRITE still behind an
-            // earlier held write to its location, below (solr-adhoc-39
-            // MB29s: a queue write in replayed turn #88 waited at recorded
-            // #88's slot and bounded a give-up of 4251 slots).
+            // A timed-wait loop's turn takes its family's slots in order
+            // (turnFamily), and a loop that makes more of its events than
+            // recorded finds a later turn's.  Held like a poll past its
+            // count: it bounds no give-up, and let go it takes the slot its
+            // key found -- a WRITE still behind an earlier held write to its
+            // location, below (solr-adhoc-39 MB29s: a queue write in replayed
+            // turn #88 waited at recorded #88's slot and bounded a give-up of
+            // 4251 slots).
             HELD.put(self, event);
             return slot;
         }
@@ -1790,8 +1830,8 @@ public final class ScheduleLog {
         if (event.kind != ScheduleEvent.Kind.WAKE || !lineStandsLocked()) {
             return GO;
         }
-        int next = SLOTS.containsKey(event.key)
-                ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
+        int next = SLOTS.containsKey(event.slotKey)
+                ? nextOpenLocked(BY_CONTEXT.get(event.slotContext)) : -1;
         if (next >= 0) {
             if (!dueLocked(next)) return next;
             // The frontier its own context's: the loop owes it, and holding
@@ -1807,10 +1847,10 @@ public final class ScheduleLog {
         return next >= 0 ? next : AT_THE_LINE;
     }
 
-    /** Whether {@code event}'s own context holds an open slot that blocks
-     *  before {@code slot}: only its thread makes it. */
+    /** Whether {@code event}'s own slot context holds an open slot that
+     *  blocks before {@code slot}: only its thread makes it. */
     private static boolean owesBeforeLocked(Pending event, int slot) {
-        List<Integer> own = BY_CONTEXT.get(event.context);
+        List<Integer> own = BY_CONTEXT.get(event.slotContext);
         if (own == null) return false;
         for (int at : own) {
             if (at >= slot) return false;
@@ -1821,9 +1861,10 @@ public final class ScheduleLog {
         return false;
     }
 
-    /** Whether the order moved since the last WAKE of {@code event}'s key. */
+    /** Whether the order moved since the last WAKE of {@code event}'s slot
+     *  key. */
     private static boolean movedSincePollLocked(Pending event) {
-        Long polled = POLLED.get(event.key);
+        Long polled = POLLED.get(event.slotKey);
         return polled == null || moves > polled;
     }
 
@@ -1951,7 +1992,7 @@ public final class ScheduleLog {
         if (state[slot] == OPEN && heldKind(slot)) openHeld--;
         state[slot] = next;
         if (next == GIVEN_UP) return;
-        String key = order.get(slot).key();
+        String key = slotKeys[slot];
         ArrayDeque<Integer> keyed = SLOTS.get(key);
         if (keyed != null) keyed.remove(Integer.valueOf(slot));
         if (next == DEAD) DEAD_BY_KEY.merge(key, 1, Integer::sum);
@@ -1992,6 +2033,34 @@ public final class ScheduleLog {
      */
     static boolean timedWaitTurn(String context) {
         return context.startsWith(TIMED_WAIT_TURN, context.indexOf('|') + 1);
+    }
+
+    /**
+     * The context a slot is matched by: a timed-wait loop's turn in its
+     * family's form, the turn number alone left out ({@code
+     * Root:WAKE/<wait>#*}; node and start frames kept, unlike {@link
+     * #familyOf}); any other context itself.  The number counts the node's
+     * wakes of that loop -- a signal or a timeout, one count for every
+     * thread waiting there -- a timing fact, never an identity (owner
+     * 2026-10-11: semantic counts only), so a replay's loop takes the
+     * recorded turns' slots in order, whatever turn it is at.  Its events
+     * name no occurrence here: an occurrence id digests the turn number, so
+     * a replay's occurrence of that id is another wake than the recording's
+     * -- its close settles none of the family's slots, and its waiter
+     * passes them as a waiter no occurrence names does ({@link
+     * #passedLocked}).  SGF7-adhoc-10's seed: the Overseer's peekElements
+     * loops woke 348 times to the recording's 82, and 113 of its 172
+     * SCHEDULE_DIVERGED rows stood on such a turn -- reads at recorded turn
+     * numbers that never came, slots killed by another wake's close.
+     */
+    static String turnFamily(String context) {
+        if (!timedWaitTurn(context)) return context;
+        int node = context.indexOf('|');
+        int frames = context.indexOf('|', node + 1);
+        int end = frames < 0 ? context.length() : frames;
+        int number = context.lastIndexOf('#', end - 1);
+        return number <= node ? context
+                : context.substring(0, number) + "#*" + context.substring(end);
     }
 
     private static final java.util.regex.Pattern TURN_OR_ANCHOR =
@@ -2038,15 +2107,15 @@ public final class ScheduleLog {
         return numbered.appendTail(family).toString();
     }
 
-    /** Whether {@code event}'s key has a dead slot left: then it takes it
-     *  (the event runs free). */
+    /** Whether {@code event}'s slot key has a dead slot left: then it takes
+     *  it (the event runs free). */
     private static boolean deadLocked(Pending event) {
-        Integer dead = DEAD_BY_KEY.get(event.key);
+        Integer dead = DEAD_BY_KEY.get(event.slotKey);
         if (dead == null) return false;
         if (dead == 1) {
-            DEAD_BY_KEY.remove(event.key);
+            DEAD_BY_KEY.remove(event.slotKey);
         } else {
-            DEAD_BY_KEY.put(event.key, dead - 1);
+            DEAD_BY_KEY.put(event.slotKey, dead - 1);
         }
         return true;
     }
@@ -2084,24 +2153,25 @@ public final class ScheduleLog {
      * reader-chunk.flush: a NameNode handler whose block report enqueued
      * nothing held addBlock past the client's 60 s).  Given up, WAKEs aside.
      *
-     * <p>A waiter no occurrence names passes the earlier slots of its own
-     * exact context, no occurrence naming them either, at any site it made
-     * since it last entered that context ({@link Made}: every kind and site
-     * of its events there, not only a loop's) -- so the rest of a loop it
-     * left is passed (a test polling with a wall-clock sleep made fewer RPCs
-     * than the recording did: hdfs-adhoc-44, TestFileTruncate's
+     * <p>A waiter no occurrence names -- a timed-wait loop's turn names
+     * none ({@link #turnFamily}) -- passes the earlier slots of its own slot
+     * context, no occurrence naming them either, at any site it made since
+     * it last entered that context ({@link Made}: every kind and site of its
+     * events there, not only a loop's) -- so the rest of a loop it left is
+     * passed (a test polling with a wall-clock sleep made fewer RPCs than
+     * the recording did: hdfs-adhoc-44, TestFileTruncate's
      * checkBlockRecovery, 171 recorded, 8 replayed).  Threads an unwoven
      * starter started share their creator's context, so such a give-up is
      * named, counted per context; given up, not dead, a slot is still taken
      * if its event comes, and that late take is named too.</p>
      */
     private static boolean passedLocked(Pending event, int at) {
-        boolean byContext = event.occurrence.isEmpty();
-        List<Integer> own = byContext ? BY_CONTEXT.get(event.context)
-                : BY_OCCURRENCE.get(event.occurrence);
+        boolean byContext = event.slotOccurrence.isEmpty();
+        List<Integer> own = byContext ? BY_CONTEXT.get(event.slotContext)
+                : BY_OCCURRENCE.get(event.slotOccurrence);
         Made made = byContext ? MADE.get(Thread.currentThread()) : null;
         if (own == null || byContext && (made == null
-                || !made.context.equals(event.context))) {
+                || !made.context.equals(event.slotContext))) {
             return false;
         }
         int count = 0;
@@ -2111,8 +2181,8 @@ public final class ScheduleLog {
             ScheduleEvent passedOver = order.get(slot);
             if (state[slot] != OPEN
                     || passedOver.kind() == ScheduleEvent.Kind.WAKE
-                    || !event.context.equals(passedOver.context())
-                    || byContext && (!passedOver.occurrence().isEmpty()
+                    || !event.slotContext.equals(slotContexts[slot])
+                    || byContext && (!slotOccurrenceOf(slot).isEmpty()
                     || !made.sites.contains(passedOver.kind() + " "
                             + passedOver.site()))) {
                 continue;
@@ -2125,7 +2195,7 @@ public final class ScheduleLog {
         if (count == 0) return false;
         passed += count;
         if (byContext) {
-            int times = PASSED_BY_CONTEXT.merge(event.context, 1,
+            int times = PASSED_BY_CONTEXT.merge(event.slotContext, 1,
                     Integer::sum);
             stateLocked("schedule-passed#" + first, count + " slot(s) of"
                     + " the order from " + first + " on (the first "
@@ -2219,7 +2289,8 @@ public final class ScheduleLog {
         }
     }
 
-    /** An occurrence closed: its untaken slots are dead. */
+    /** An occurrence closed: its untaken slots are dead (none of a
+     *  timed-wait loop's turn, {@link #BY_OCCURRENCE}). */
     static void closed(String occurrenceId) {
         if (!holds || occurrenceId == null) return;
         mute();
@@ -2472,7 +2543,7 @@ public final class ScheduleLog {
                 && timedWaitTurn(held.context)) {
             return held.render() + " in a timed wait's turn, at slot " + at;
         }
-        return SLOTS.containsKey(held.key)
+        return SLOTS.containsKey(held.slotKey)
                 ? held.render() + " past its recorded count"
                 : "the unrecorded " + held.render();
     }
@@ -2729,6 +2800,8 @@ public final class ScheduleLog {
         cut = events.size();
         line = atWitness ? all.size() : cut;
         state = new byte[all.size()];
+        slotKeys = new String[all.size()];
+        slotContexts = new String[all.size()];
         SLOTS.clear();
         BY_OCCURRENCE.clear();
         BY_CONTEXT.clear();
@@ -2751,13 +2824,18 @@ public final class ScheduleLog {
         openHeld = 0;
         for (int index = 0; index < all.size(); index++) {
             ScheduleEvent event = all.get(index);
-            ArrayDeque<Integer> slots = SLOTS.get(event.key());
+            boolean turn = timedWaitTurn(event.context());
+            slotContexts[index] = turn ? turnFamily(event.context())
+                    : event.context();
+            slotKeys[index] = turn ? ScheduleEvent.key(event.kind(),
+                    slotContexts[index], event.site()) : event.key();
+            ArrayDeque<Integer> slots = SLOTS.get(slotKeys[index]);
             if (slots == null) {
                 slots = new ArrayDeque<Integer>();
-                SLOTS.put(event.key(), slots);
+                SLOTS.put(slotKeys[index], slots);
             }
             slots.addLast(index);
-            if (!event.occurrence().isEmpty()) {
+            if (!slotOccurrenceOf(index).isEmpty()) {
                 List<Integer> held = BY_OCCURRENCE.get(event.occurrence());
                 if (held == null) {
                     held = new ArrayList<Integer>();
@@ -2765,10 +2843,10 @@ public final class ScheduleLog {
                 }
                 held.add(index);
             }
-            List<Integer> own = BY_CONTEXT.get(event.context());
+            List<Integer> own = BY_CONTEXT.get(slotContexts[index]);
             if (own == null) {
                 own = new ArrayList<Integer>();
-                BY_CONTEXT.put(event.context(), own);
+                BY_CONTEXT.put(slotContexts[index], own);
             }
             own.add(index);
             if (event.kind() == ScheduleEvent.Kind.WRITE
@@ -2951,6 +3029,8 @@ public final class ScheduleLog {
             cut = 0;
             line = 0;
             state = new byte[0];
+            slotKeys = new String[0];
+            slotContexts = new String[0];
             SLOTS.clear();
             BY_OCCURRENCE.clear();
             BY_CONTEXT.clear();

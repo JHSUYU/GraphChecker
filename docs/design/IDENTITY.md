@@ -734,7 +734,15 @@ order:
   then its rest (`schedule_suffix.jsonl`), cut by `explore/SchedulePrefix` at the task's target;
 - an event takes the earliest open or given-up slot of its key that its own occurrence made, else
   the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
-  and must not swap slots); with none it runs free. A slot
+  and must not swap slots); with none it runs free. In a timed-wait loop's turn (`Root:WAKE/<wait>#k`)
+  the key's context is the turn's family, its number left out (`Root:WAKE/<wait>#*`, node and start
+  frames kept, `ScheduleLog#turnFamily`), and the event names no occurrence: k counts the node's wakes
+  of that loop, a timing fact (the owner's identity rule, semantic counts only), and an occurrence id
+  digests it, so the replay's loop takes the recorded turns' slots in order whatever turn it is at,
+  a recorded turn's occurrence closing settles none of them, and a waiter there passes them by its
+  family as a waiter no occurrence names does (SGF7-adhoc-10's seed: the Overseer's peekElements loops
+  woke 348 times to the recording's 82, and 113 of its 172 `SCHEDULE_DIVERGED` rows stood on such a
+  turn). The rows keep the run's own contexts and k. A slot
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled. An
   `INTERRUPT` slot holds nothing and is in no later event's way, as an open `WAKE` is not
   (`ScheduleLog#heldKind`, `#blocking`): whether an interrupt is observed, and in which context, is
@@ -783,9 +791,9 @@ order:
   `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
   seconds mid-run and timed out an IPC caller's hand-off to its sender). An event of a timed-wait loop's turn
   (`Root:WAKE/<wait>#k`, `ScheduleLog#timedWaitTurn`) whose slot is not yet due waits at it as such a poll does, held:
-  its k counts the loop's wakes, a timing fact, so the replay's k-th turn is another turn than the recording's and its
-  slot may be another turn's; let go, it takes that slot, a `WRITE` still behind an earlier held write to its
-  location (solr-adhoc-39 MB29s: the recording made 106 turns of the
+  it takes its family's slots in order, and a loop that makes more of its events than recorded finds a later turn's;
+  let go, it takes that slot, a `WRITE` still behind an earlier held write to its
+  location (solr-adhoc-39 MB29s, before the family key: the recording made 106 turns of the
   Overseer's `ZkDistributedQueue.peekElements` loop, the replay 512, and a queue write in replayed turn #88 waited at
   recorded #88's slot and, as the earliest waiter, bounded a give-up of 4251 slots). The watchdog lets held waits go
   when the order stalls; a released timed wait still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
@@ -808,7 +816,7 @@ order:
   order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
-- settling: a closed occurrence's untaken slots are dead, and an event of a key whose slot died runs free: the
+- settling: a closed occurrence's untaken slots are dead (a timed-wait turn's slots name no occurrence), and an event of a key whose slot died runs free: the
   order no longer holds its place, so it is neither a write the recording never made there nor a poll past its
   count (an occurrence's id can name other work in the replay: solr-adhoc-19 MB8s, the Overseer's state.json
   write, its slot dead with the region its turns shared in the recording, waited behind its own write 110 slots on); a turn's `END` gives up what the turn did

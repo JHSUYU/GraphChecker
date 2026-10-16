@@ -1559,6 +1559,72 @@ public class ScheduleLogTest {
         progress("1 taken, 1 given up");
     }
 
+    /**
+     * A TIMED-WAIT LOOP TAKES ITS FAMILY'S SLOTS whatever turn it is at
+     * ({@code Root:WAKE/<wait>#k}: k counts wakes, a timing fact): a replay
+     * whose loop woke more often than recorded (a turn that did something
+     * else first) or less (one turn making what two recorded turns made)
+     * takes the recorded turns' slots in order, and x after them waits for
+     * nothing; a recorded turn's occurrence closing settles none of them,
+     * since its id digests the turn number (SGF7-adhoc-10's seed: 348 turns
+     * to the recording's 82).  The rows keep the replay's own turn and k.
+     * Columns: recorded turns, replayed turns ({@code |} between turns),
+     * the replay's p rows as turn:k, whether the recording's first turn's
+     * occurrence closes first, the events that ran free.
+     */
+    @Test(timeout = 60000L)
+    public void aTimedWaitLoopTakesItsFamilysSlotsWhateverTurnItIsAt()
+            throws Exception {
+        Object[][] rows = {
+            {"p|p", "extra|p|p", "#2:0 #3:0", false, 1},
+            {"p|p", "p p", "#1:0 #1:1", false, 0},
+            {"p|p", "p|p", "#1:0 #2:0", true, 0},
+        };
+        for (Object[] row : rows) {
+            noRequest();
+            loop((String) row[0]);
+            request("a", () -> send("x"));
+            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
+            ScheduleEvent first = order.get(0);
+            order.set(0, ScheduleEvent.of(0L, SEND, first.context(), "p", 0,
+                    "o1"));
+            noRequest();
+            timeout(4000L);
+            enforce(order);
+            if ((Boolean) row[3]) ScheduleLog.closed("o1");
+            long before = System.nanoTime();
+            started(() -> {
+                loop((String) row[1]);
+                request("a", () -> send("x"));
+            }).join(20000L);
+            long took = since(before);
+            String why = Arrays.toString(row) + ": ";
+            assertTrue(why + "no hold, no stall: " + took,
+                    took < ScheduleLog.LET_GO_GRACE_MS);
+            progress(why, "3 taken, 0 given up in 0 stall(s), 0 settled by"
+                    + " their occurrence's close");
+            progress(why, row[4] + " event(s) ran free, 0 of them let go");
+            List<String> stated = new ArrayList<String>();
+            for (ScheduleEvent event : events()) {
+                if (!event.site().equals("p")) continue;
+                String context = event.context();
+                stated.add(context.substring(context.lastIndexOf('#')) + ":"
+                        + event.k());
+            }
+            assertEquals(why, row[2], String.join(" ", stated));
+        }
+    }
+
+    /** The turns of one timed-wait loop on the node, {@code |} between
+     *  turns, each sending its space-separated sites. */
+    private void loop(String turns) {
+        for (String turn : turns.split("\\|")) {
+            turnOrRequest(true, () -> {
+                for (String site : turn.split(" ")) send(site);
+            });
+        }
+    }
+
     /** {@code inside} run in a timed-wait loop's turn on the node, else in a
      *  request of the node. */
     private void turnOrRequest(boolean turn, Runnable inside) {

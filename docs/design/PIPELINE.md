@@ -289,7 +289,9 @@ slot is due and returns no sooner than its own deadline, since a `WAKE` is a tim
 ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A store's reads and writes take their turns at
 their location (`READ`, `WRITE`, IDENTITY.md §7.2), so what a store read finds is the recording's
 in the seed and in any replay's prefix. An event of a timed-wait loop's turn (`Root:WAKE/<wait>#k`: k
-counts the loop's wakes, which the replay's timing moves) waits at a slot not yet due held, as a poll past its
+counts the loop's wakes, which the replay's timing moves) takes its slot by the turn's family, the number left out
+and no occurrence named (`ScheduleLog#turnFamily`), so the replay's loop takes the recorded turns' slots in order
+whatever turn it is at; one at a slot not yet due waits held, as a poll past its
 recorded count does, so it never bounds a give-up of the slots before it; let go, it takes that slot, a `WRITE` still
 behind an earlier held write to its location (IDENTITY.md §8).
 Where the model re-pairs a store read with another version
