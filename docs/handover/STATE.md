@@ -11,40 +11,39 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the final round SGF7, stopped for handover (2026-10-15 evening) -- read this first if you take over Solr
+## S. Solr: the final round SGF7 on the final code (2026-10-16) -- read this first if you take over Solr
 
-Everything is stopped: no run, no driver, no agent. The handover is
-`/bigtemp/vnr3ne/analysis/solr-2026-10-15/HANDOVER-2026-10-15.md` (lead: goal, rulings, results, code state,
-open bugs, resume commands) plus `HANDOVER-agents.md` beside it (one section per agent: design, branches,
-evidence, next steps). The lead's session log is the memory file `lead-session-2026-10-13-solr`.
+The round runs: a driver on lift06 runs the cases one at a time, each ALONE on the cluster
+(`analysis/solr-2026-10-14/final-seq2.sh`, log `gc-out/solr/SGF7-seq.log`), 14400 s each. The lead's session log is the
+memory file `lead-session-2026-10-15b-solr`; the 2026-10-15 handover (`analysis/solr-2026-10-15/HANDOVER-2026-10-15.md`,
+`HANDOVER-agents.md`) has the design before tonight.
 
-- **Goal (owner):** finish the remaining cases of the final round SGF7 and report each case's time breakdown
-  (`analysis/solr-2026-10-14/final-stats.py SGF7`).
-  - One case at a time, ALONE on the cluster.
-  - Bug checks: SAT + CONFIRM + native.
-  - Study checks: a solver SAT or UNSAT, or a named bound.
-  - The standard is relaxed: a roughly-right `.smt`, best-effort merge of path conditions, prefer refusing early to more work.
-- **Kept results** (never rerun): 18406, migrate, restore, lock-leak, tra, reindex (all SAT, native 10/10), and
-  adhoc-38 (SAT, VM-confirmed, native 0/10).
-- **To run:** 18413, snapshot-no-active and adhoc-09 (reruns on the new code), then adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39.
-- **Code:**
-  - `system/solr` = 4866f58a0, also on GitHub.
-  - `solr-int` = 4866f58a0 + doorskeys + this doc + viewtag + openchain + confirmfirst, viewhold reverted (2026-10-16: its observed-version view holds refuted 18413's real witness when one gave way at VIEW_HOLD_MAX).
-  - Tree `gc/solr-zktrace` 8fde6b812c via `GC_TREES=/bigtemp/vnr3ne/wt/sg3i-trees`; the fork must get it.
-  - VM `vm-force8`.
-- **Today's design changes:**
-  - **ZooKeeper causal trace:** only the anchor's chain (znode, field) are symbolic: ZkChain, ZKKEYS, SystemView, ZK_EDGE growth, writers and views up to the read version.
-  - **Solver lanes:** the hard lane is z3 alone, warm solver first, replay charge at p90.
-  - **Flip-query independence cone.**
-  - **Best-effort COMPOSE.**
-  - **Final COMPOSE reuse.**
-  - **GROW:** no solve hold during re-runs.
-  - **Replay speed:** plan slimming, idle stalls, publication split, memos.
-  - **CONFIRM view holds.**
-  - Details: PIPELINE §6-§8, SYMBOL-SCOPE §6.4, PARALLEL, PERFORMANCE, and the agents' sections.
-- **Blocking bugs:**
-  - (a) 18413's witness-attempt COMPOSE gets z3 "incomplete (theory array)" inside the fatal condition's own cone: the view map's container axioms from the system-wide ZkStateReader weave.
-  - (b) snapshot's deliberate pairing witness: its open chain is fixed by doorskeys; not live-verified (viewhold, which held its observed view order, is reverted).
+- **Goal (owner):** finish the final round SGF7 and report each case's time (seeding, exploration, compose+solver) and the
+  final closure's region count (`analysis/solr-2026-10-14/final-stats.py SGF7`). Bug checks: SAT + CONFIRM + native.
+  Study checks: a solver SAT or UNSAT, or a named bound. Relaxed standard: a roughly-right `.smt`, best effort.
+  Performance problems that can clearly be improved are stopped and fixed first (owner 2026-10-15).
+- **Results** (`gc-out/solr/accept-SGF7-<case>`, readings in `analysis/solr-2026-10-14/final-readings.md`):
+  - kept from 2026-10-14/15: 18406, migrate, restore, lock-leak, tra, reindex (SAT, native 10/10), adhoc-38 (SAT, VM-confirmed);
+  - on the final code: 18413 2019 s (SAT CLOCK_SKEW, confirmed, native 10/10; old code 4051 s), snapshot-no-active
+    878 s (SAT MARKER_FLIPPED, confirmed, native 10/10, bug #16's chain; old 8568 s), adhoc-09 6887 s (UNSAT_CLOSED).
+  - running then to run: adhoc-10, 40, 05, 07, 13, 14, 19, 21, 31, 39.
+- **Code:** `solr-int` = `system/solr` (local; GitHub `origin/system/solr` is 4866f58a0, a push needs the owner). Each
+  change below gated (mvn + the shell test) and merged by fast-forward; snapshots `~/gc-run/sgf16`..`sgf22`.
+  - viewtag 19416e817: a map's free iteration order (`assoc_view_key`) keyed by its state's term and size, never its value
+    (z3 "incomplete (theory array)" on a removal's lambda: 18413's witness attempt).
+  - openchain 63abbf77d + confirmfirst 2f49cea32: a witness whose open chain names producers is confirmed first, its chain
+    grown meanwhile; nothing to grow, CONFIRM decides (it was parked for good, or held ~30 min).
+  - viewhold reverted 974e33ad0: CONFIRM held every observed view read; one that gave way refuted 18413's real witness.
+  - report.py 33e2de444: an open chain under a confirmed SAT is named (WITNESS_CHAIN_OPEN), not failed.
+  - confirmfast bad02c271: a CONFIRM run ends at its first mismatch (AT_MISMATCH): a refuted confirmation ran 23 min idle.
+  - stall300 2c645fb47: a replay with nothing new for 300 s (not 600) ends; the stalled ones were each round's tail.
+  - publishkey 825afab33: a view republished at its next version is no new event (a leader-election loop ran 40 min).
+- **Tree:** `gc/solr-zktrace` 8fde6b812c via `GC_TREES=/bigtemp/vnr3ne/wt/sg3i-trees`; pushed to the fork
+  `JHSUYU/solr` `graphchecker/solr-checks` and checked from a fresh clone (17/17 natives, 20/20 valid). VM `vm-force8`.
+- **Open** (TODO "Solr" §3): the Overseer-queue seed drift (adhoc-10's seed replay: 320 stalls, 611 s), snapshot's
+  state.json delivery race (a WIRE producer CONFIRM does not hold), the second static pass over demanded doors (~95 s a
+  case), the composer's start heap (an OOM retry on a large corpus), 18413's hand WIRE_FLOW rows (still needed: the chain
+  keys no field of `/overseer/queue`).
 
 ## 0. The end state: two branches (owner 2026-10-06)
 
