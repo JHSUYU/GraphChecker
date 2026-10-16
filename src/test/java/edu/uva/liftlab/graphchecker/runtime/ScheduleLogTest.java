@@ -1402,7 +1402,9 @@ public class ScheduleLogTest {
      * of a poll loop, each its own root occurrence, doing again what the
      * first did -- its wake, its send, its write to the queue's next
      * sequential znode, a site spelled by a fresh port, session id or
-     * object -- make nothing new; other code, another location or another
+     * object, a view published again at its next version (SGF7-adhoc-09: a
+     * leader election failing once a minute) -- make nothing new; other
+     * code, another location or another
      * node does, and so does the window's close.  Counted as steps, every
      * turn moved (PV7-38: PULL replicas polling a leader left down kept
      * replays alive until replay_timeout_s).
@@ -1425,14 +1427,16 @@ public class ScheduleLogTest {
                         "ZK:/sessions/" + (72150482482561029L + n));
                 ScheduleLog.observe(START,
                         "<S: void s()>#u1 Searcher@1a2b3c" + n);
+                ScheduleLog.observe(PUBLISH,
+                        "SOLR_ZK:/collections/c/state.json@" + (7 + n));
             });
             if (made < 0) {
                 made = ScheduleLog.newKeys();
                 watched = ConcolicResultPublisher.watched(0L);
             }
         }
-        assertEquals("six distinct events", 6, made);
-        assertEquals(events().toString(), 18, events().size());
+        assertEquals("seven distinct events", 7, made);
+        assertEquals(events().toString(), 21, events().size());
         assertEquals("turns two and three: nothing new", made,
                 ScheduleLog.newKeys());
         assertTrue(Arrays.equals(watched,

@@ -2598,17 +2598,28 @@ public final class ScheduleLog {
      * engine built and never stripped (a node named like a number would
      * fold two nodes).  A poll, a retry or a watch made again makes no new
      * key; other code, another store location, another request handler or
-     * another node does.  A view's PUBLISH names the version it put in
-     * force, so a loop publishing new versions still makes new keys: the
-     * safe direction, a cut missed, never a run cut.
+     * another node does.  A view's PUBLISH counts by its view, not the
+     * version it put in force: publishing the view again is a watch made
+     * again (SGF7-adhoc-09, obligation 6c465ad6a3bd267a: a leader election
+     * failing once a minute, each turn a new version of state.json, ran
+     * past the stall rule to replay_timeout_s, the last answer its fixed
+     * point waited for).
      */
     private static String madeKey(Pending pending) {
         ContextShape.Stance stance =
                 ContextShape.Stance.ofSend(pending.context);
-        return pending.kind.name() + " " + RunSpellings.strip(pending.site)
-                + " | " + (stance == null ? pending.context
+        String site = RunSpellings.strip(pending.site);
+        if (pending.kind == ScheduleEvent.Kind.PUBLISH) {
+            site = PUBLISHED_VERSION.matcher(site).replaceFirst("");
+        }
+        return pending.kind.name() + " " + site + " | " + (stance == null
+                ? pending.context
                 : stance.node() + "|" + shape(stance.context()));
     }
+
+    /** The version a PUBLISH site names last ({@code <view>@<version>}). */
+    private static final java.util.regex.Pattern PUBLISHED_VERSION =
+            java.util.regex.Pattern.compile("@\\d+$");
 
     /**
      * The schedule's holds at this moment, for a stall's verdict ({@code
