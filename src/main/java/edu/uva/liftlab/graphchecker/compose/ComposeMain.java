@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
@@ -69,6 +70,7 @@ public final class ComposeMain {
     }
 
     public static void main(String[] argv) throws IOException {
+        HeapWatch.start();
         System.out.println(run(Arguments.parse(argv)));
     }
 

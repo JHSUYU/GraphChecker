@@ -530,7 +530,11 @@ campaign_jvm_out_of_heap_status=3
 # 98 %/2 % let SGF7-18413's final composer collect at -Xmx4096m for 47 min --
 # 4587 full collections, 2725 s of 2870 s -- never exiting to be run again at
 # 8192 MB: the compact expression tables' weakly held nodes give a little
-# back every cycle).
+# back every cycle).  The limit also asks eden to stay full after a full
+# collection, which empties it, so a heap whose old generation is full of
+# live data collects on under it: the planner, the composer and the solver
+# watch themselves (contract.HeapWatch: half a minute's window in the
+# collector, the old generation 90 % full after its sweep, exit 3).
 campaign_engine_oom=(-XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70
   -XX:GCHeapFreeLimit=5)
 # Every engine JVM (a head's, the served planner, a solver) runs at this

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -76,6 +77,7 @@ public final class ObligationSolverMain {
     }
 
     public static void main(String[] argv) throws Exception {
+        HeapWatch.start();
         LongOptions options = LongOptions.parse(argv);
         Path z3 = Paths.get(options.value("z3", "z3"));
         long timeoutMillis = options.number("solver-timeout-ms",

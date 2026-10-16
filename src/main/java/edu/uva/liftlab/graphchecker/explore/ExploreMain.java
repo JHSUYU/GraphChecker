@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
@@ -138,6 +139,7 @@ public final class ExploreMain {
     }
 
     public static void main(String[] argv) throws Exception {
+        HeapWatch.start();
         LongOptions options = LongOptions.parse(argv);
         // The iteration is the parent of --sessions.
         Path sessions = options.path("sessions");
