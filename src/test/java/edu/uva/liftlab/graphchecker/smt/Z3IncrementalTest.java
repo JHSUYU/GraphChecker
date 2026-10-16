@@ -231,20 +231,40 @@ public class Z3IncrementalTest {
     }
 
     /**
-     * THE PLAIN PAIRS ARE AS MANY AS THE ROOM HOLDS beside the tracking one,
-     * at 1024 MB a z3 -- at most as many as its asker puts questions at
-     * once -- and a room that holds no two pairs runs one.  {room,
-     * questions at once, plain pairs}.  Three of them ask three questions
-     * of a second each at once.
+     * THE PLAIN PAIRS ARE AS MANY AS THE ROOMS HOLD: on each other host one
+     * a 2048 MB, placed first, then here as many as the room holds beside
+     * the tracking one, at 1024 MB a z3 -- at most as many in all as its
+     * asker puts questions at once -- a room here that holds no two pairs
+     * running one.  {room here, rooms on other hosts, questions at once,
+     * the pairs each room holds}.  Three of them ask three questions of a
+     * second each at once.
      */
     @Test
-    public void thePlainPairsAreAsManyAsTheRoomHolds() throws IOException {
-        int[][] rows = {{2048, 8, 1}, {3072, 8, 1}, {4096, 8, 1},
-                {6144, 8, 2}, {8192, 3, 3}, {18432, 8, 8}, {30000, 8, 8}};
-        for (int[] row : rows) {
-            try (Z3Incremental scopes = new Z3Incremental(new Z3(z3(),
-                    3000L, row[0]), output -> output.write(""), row[1])) {
-                assertEquals(Arrays.toString(row), row[2],
+    public void thePlainPairsAreAsManyAsTheRoomsHold() throws IOException {
+        Object[][] rows = {{2048, "", 8, "1 here"}, {3072, "", 8, "1 here"},
+                {4096, "", 8, "1 here"}, {6144, "", 8, "2 here"},
+                {8192, "", 3, "3 here"}, {18432, "", 8, "8 here"},
+                {30000, "", 8, "8 here"},
+                {16384, "a=8192 b=4096", 64, "4 on a, 2 on b, 7 here"},
+                {16384, "a=8192 b=4096", 5, "4 on a, 1 on b"},
+                {2048, "a=3072 b=1024", 64, "1 on a, 1 here"}};
+        for (Object[] row : rows) {
+            List<Z3.Room> hosts = new java.util.ArrayList<Z3.Room>();
+            for (String room : ((String) row[1]).isEmpty() ? new String[0]
+                    : ((String) row[1]).split(" ")) {
+                String[] parts = room.split("=");
+                hosts.add(new Z3.Room(parts[0], Integer.parseInt(parts[1]),
+                        Z3.ssh(parts[0])));
+            }
+            Z3 solver = new Z3(z3(), 3000L, (Integer) row[0], hosts,
+                    folder.getRoot().toPath());
+            try (Z3Incremental scopes = new Z3Incremental(solver,
+                    output -> output.write(""), (Integer) row[2])) {
+                List<Z3.Room> placed = Z3Incremental.placed(solver,
+                        (Integer) row[2]);
+                assertEquals(Arrays.toString(row), row[3],
+                        Z3Incremental.where(placed));
+                assertEquals(Arrays.toString(row), placed.size(),
                         scopes.plainPairs());
             }
         }
@@ -303,6 +323,80 @@ public class Z3IncrementalTest {
                 && !checks.contains("plain"));
     }
 
+    /**
+     * A PAIR ON ANOTHER HOST ASKS AS ONE HERE, over ssh (a stand-in that
+     * runs the command here): its z3s read their head and the shared part
+     * from the file written for them, so each knows its engine; the check
+     * engine 6 lost is cancelled by a SIGINT sent to the pid its shell
+     * printed, its z3 kept, and the next question, which engine 6 alone
+     * decides, it decides at once.  Closed, its z3s are gone and so are
+     * their files.  A host that refuses ssh ({@code gone}) asks no more,
+     * and what its pair took the pair on the other host answers.
+     */
+    @Test
+    public void aPairOnAnotherHostAsksAsOneHere() throws Exception {
+        Path log = folder.newFile("remote.log").toPath();
+        Path visible = folder.newFolder("visible").toPath();
+        Path ssh = ScopedFixture.ssh(folder.getRoot().toPath());
+        Path fake = fake(log);
+        Z3 solver = new Z3(fake, 30000L, 4096, Arrays.asList(
+                new Z3.Room("far", 2048, Arrays.asList(ssh.toString(),
+                        "far"))), visible);
+        long started = System.nanoTime();
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"), 1)) {
+            assertEquals("1 on far", Z3Incremental.where(
+                    Z3Incremental.placed(solver, 1)));
+            assertEquals("unsat", scopes.ask(output -> output.write(
+                    "; slow\n"), null, false, 0L).status());
+            assertEquals("sat", scopes.ask(output -> output.write(
+                    "; only6\n"), null, false, 0L).status());
+            assertEquals("sat {x=1}", scopes.ask(output -> output.write(
+                    "; sat\n"), Collections.singletonList("x"), false, 0L)
+                    .toString());
+            assertEquals(2, visible.toFile().list().length);
+        }
+        long seconds = (System.nanoTime() - started) / 1_000_000_000L;
+        assertTrue("took " + seconds + " s", seconds < 10L);
+        assertEquals("one z3 per engine, never started again",
+                Arrays.asList("start", "start"), Files.readAllLines(log));
+        assertEquals(0, visible.toFile().list().length);
+        for (String pid : Files.readAllLines(log.resolveSibling(
+                log.getFileName() + ".pids"))) {
+            // Killed, it may wait a moment to be reaped.
+            long until = System.nanoTime() + 3_000_000_000L;
+            while (Files.exists(Paths.get("/proc", pid))
+                    && System.nanoTime() - until < 0L) {
+                Thread.sleep(50L);
+            }
+            assertTrue("z3 " + pid + " outlived its close",
+                    !Files.exists(Paths.get("/proc", pid)));
+        }
+
+        Z3 halfGone = new Z3(fake, 30000L, 2048, Arrays.asList(
+                new Z3.Room("gone", 2048, Arrays.asList(ssh.toString(),
+                        "gone")),
+                new Z3.Room("far", 2048, Arrays.asList(ssh.toString(),
+                        "far"))), visible);
+        java.util.concurrent.ExecutorService askers =
+                java.util.concurrent.Executors.newFixedThreadPool(4);
+        try (Z3Incremental scopes = new Z3Incremental(halfGone,
+                output -> output.write("(declare-const x Int)\n"), 2)) {
+            List<java.util.concurrent.Future<Z3.Answer>> asked =
+                    new java.util.ArrayList<java.util.concurrent.Future<
+                            Z3.Answer>>();
+            for (int at = 0; at < 4; at++) {
+                asked.add(askers.submit(() -> scopes.ask(output ->
+                        output.write("; sat\n"), null, false, 0L)));
+            }
+            for (java.util.concurrent.Future<Z3.Answer> each : asked) {
+                assertEquals("sat", each.get().status());
+            }
+        } finally {
+            askers.shutdownNow();
+        }
+    }
+
     private Path fake() throws IOException {
         return fake(folder.newFile("unused.log").toPath());
     }
@@ -310,7 +404,8 @@ public class Z3IncrementalTest {
     /**
      * A z3 answering scopes as their {@code ; <word>} comments say, and a
      * SIGINT as z3 4.14.1 does: inside a check it ends the check, unknown,
-     * "interrupted from keyboard"; anywhere else it ends z3.  A shared
+     * "interrupted from keyboard"; anywhere else it ends z3.  It searches
+     * running, as z3 does, so a SIGINT is sent to it there.  A shared
      * part saying {@code slowread} takes 12 s to read.  {@code oom} runs out of
      * memory on the check, {@code agedoom} on a z3 that answered a check
      * before, {@code modelcut} on its model, {@code corecut} on its core;
@@ -325,7 +420,7 @@ public class Z3IncrementalTest {
      * {@code nap} unsat after a second; else {@code sat} ({@code ((x 1))})
      * or unsat (core {@code (c)}), engine 6 searching 0.3 s first.  Each
      * start logged, and each check, tracking or plain, beside it
-     * ({@code .checks}).
+     * ({@code .checks}), and its pid ({@code .pids}).
      */
     private Path fake(Path log) throws IOException {
         Path script = folder.newFile("z3-scoped.py").toPath();
@@ -341,17 +436,22 @@ public class Z3IncrementalTest {
                 "signal.signal(signal.SIGINT, cancel)",
                 "with open('" + log + "', 'a') as starts: starts.write("
                         + "'start\\n')",
+                "with open('" + log + ".pids', 'a') as pids: pids.write("
+                        + "str(os.getpid()) + '\\n')",
                 "engine = '2'; tracking = False; answered = 0",
                 "text = ''; scope = ''; verdict = ''; reason = ''",
                 "def say(line):",
                 "    sys.stdout.write(line + '\\n'); sys.stdout.flush()",
                 "def oom():",
                 "    say('(error \"out of memory\")'); sys.exit(101)",
+                "def busy(seconds):",
+                "    end = time.time() + seconds",
+                "    while time.time() < end: pass",
                 "def search(seconds):",
                 "    global solving, reason",
                 "    solving = True",
                 "    try:",
-                "        time.sleep(seconds); return True",
+                "        busy(seconds); return True",
                 "    except Cancelled:",
                 "        reason = 'interrupted from keyboard'; return False",
                 "    finally: solving = False",
@@ -384,7 +484,7 @@ public class Z3IncrementalTest {
                 "            verdict = 'sat' if search(60) else 'unknown'",
                 "        elif '; deaf' in scope and engine == '6':",
                 "            deaf = 'die' if '; deafdie' in scope else 'cancel'",
-                "            time.sleep(1.5); deaf = None; verdict = 'unsat'",
+                "            busy(1.5); deaf = None; verdict = 'unsat'",
                 "        elif '; deaf' in scope:",
                 "            time.sleep(0.5); verdict = 'unsat'",
                 "        elif '; slow' in scope:",

@@ -8,11 +8,17 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -77,18 +83,27 @@ import java.util.concurrent.TimeUnit;
  * asked whole of a pair started tracking -- its verdict, model and core of
  * one check -- the rest of pairs that track nothing.  The questions of each
  * kind wait in their lane, each pair of it asking the next.  The plain lane
- * has as many pairs as the solver's room holds beside the tracking one at
- * {@link #PAIR_SLOT_MB} a z3 -- at most as many as its asker puts questions
- * at once -- each pair two slots of the room; a room that holds no two
- * pairs runs one at a time, each holding the whole room, half each engine
- * (a question's z3 as {@link Z3#ask}'s alone).  A pair holds its slots
- * while it lives, and gives them back to whoever waits for room once it has
- * no question, or between questions once it held them
- * {@link #YIELD_AFTER_MS}: the pairs and the solver's one-shot asks take
- * turns where the room holds no more (SGF6-bugs-snapshot-no-active 0001 in
- * 2269 MB: the recorded valuation's core questions moved the room between
- * the plain pair and the tracking one 14 times, each move a fresh z3
- * reading 65 MB).</p>
+ * has a pair for every {@link #PAIR_SLOT_MB} a z3 its solver's rooms on
+ * other hosts hold ({@code Z3#hosts}), and as many as its own room holds
+ * beside the tracking one -- at most as many in all as its asker puts
+ * questions at once, the other hosts' placed first ({@link #placed}) --
+ * each pair two slots of its room; a room here that holds no two pairs
+ * runs one at a time, each holding the whole room, half each engine (a
+ * question's z3 as {@link Z3#ask}'s alone).  A pair holds its slots while
+ * it lives, and gives them back to whoever waits for room once it has no
+ * question, or between questions once it held them {@link #YIELD_AFTER_MS}:
+ * the pairs and the solver's one-shot asks take turns where the room holds
+ * no more (SGF6-bugs-snapshot-no-active 0001 in 2269 MB: the recorded
+ * valuation's core questions moved the room between the plain pair and the
+ * tracking one 14 times, each move a fresh z3 reading 65 MB).</p>
+ *
+ * <p>A pair on another host runs its z3s over ssh ({@link #remote}): each
+ * prints its pid first, which every SIGINT and its end are sent to on that
+ * host, and reads the shared part from a file every host sees ({@link
+ * SharedFiles}) before its input.  A pair there whose z3 has not read the
+ * shared part -- ended first (ssh refused, the host gone) or not within
+ * {@link #REMOTE_READ_MS} -- asks no more, and a question it left
+ * undecided is the other pairs'.</p>
  */
 public final class Z3Incremental implements AutoCloseable {
 
@@ -124,6 +139,17 @@ public final class Z3Incremental implements AutoCloseable {
      */
     static final int PAIR_SLOT_MB = 1024;
 
+    /**
+     * How long a z3 on another host may take to read the shared part, ssh
+     * and all, before its pair asks no more there: a hung host or a stalled
+     * file read holds no question to the decide's end (lift11: a 91 MB
+     * composed query, SGF7-adhoc-10's, read in 7 s).
+     */
+    static final long REMOTE_READ_MS = 120_000L;
+
+    /** What a remote z3's shell prints before its pid, first. */
+    static final String PID = "@@graphchecker-pid ";
+
     /** How often a driver looks at a question's asker and at its room. */
     private static final long POLL_MILLIS = 200L;
 
@@ -131,34 +157,39 @@ public final class Z3Incremental implements AutoCloseable {
 
     private final Z3 solver;
     private final ArtifactIO.Body shared;
-    /** The slot each scoped z3 holds, in MB. */
+    /** The slot each scoped z3 of its solver's own room holds, in MB. */
     private final int slotMb;
     private final Lane plain;
     private final Lane tracked;
+    private final SharedFiles files;
     /** {@link System#nanoTime} past which no question of this view starts
      *  and every one running ends ({@link #until}); 0: the solver's. */
     private final long deadlineNanos;
 
     /**
-     * Scopes over {@code shared}, asked of {@code solver}'s z3 in its room,
+     * Scopes over {@code shared}, asked of {@code solver}'s z3 in its rooms,
      * under its deadline ({@code Z3#until}), counted and their errors
      * noted as its runs' are; at most {@code questionsAtOnce} plain pairs,
-     * as many questions as its asker puts at once.
+     * as many questions as its asker puts at once ({@link #placed}).
      */
     public Z3Incremental(Z3 solver, ArtifactIO.Body shared,
                          int questionsAtOnce) {
         this.solver = solver;
         this.shared = shared;
+        List<Z3.Room> placed = placed(solver, questionsAtOnce);
+        int here = Collections.frequency(placed, solver.room());
         int room = solver.room().mb;
-        int fit = room / (Z3.ARITHMETIC.length * PAIR_SLOT_MB);
-        int plainPairs = fit >= 2
-                ? Math.max(1, Math.min(questionsAtOnce, fit - 1)) : 1;
-        this.slotMb = fit >= 2
-                ? room / (Z3.ARITHMETIC.length * (plainPairs + 1))
+        this.slotMb = fit(room) >= 2
+                ? room / (Z3.ARITHMETIC.length * (here + 1))
                 : room / Z3.ARITHMETIC.length;
-        this.plain = new Lane(false, plainPairs);
-        this.tracked = new Lane(true, 1);
+        this.plain = new Lane(false, placed);
+        this.tracked = new Lane(true,
+                Collections.singletonList(solver.room()));
+        this.files = new SharedFiles(solver.visible(), shared);
         this.deadlineNanos = 0L;
+        System.err.println("z3 scoped: " + placed.size()
+                + " plain pair(s): " + where(placed) + "; the tracking one"
+                + " here");
     }
 
     private Z3Incremental(Z3Incremental scopes, long deadlineNanos) {
@@ -167,7 +198,55 @@ public final class Z3Incremental implements AutoCloseable {
         this.slotMb = scopes.slotMb;
         this.plain = scopes.plain;
         this.tracked = scopes.tracked;
+        this.files = scopes.files;
         this.deadlineNanos = deadlineNanos;
+    }
+
+    /** How many pairs of {@link #PAIR_SLOT_MB} a z3 a room holds. */
+    private static int fit(int roomMb) {
+        return roomMb / (Z3.ARITHMETIC.length * PAIR_SLOT_MB);
+    }
+
+    /**
+     * The room of each plain pair, at most {@code questionsAtOnce} of them:
+     * on each other host as many as its room holds, {@link #PAIR_SLOT_MB}
+     * a z3, placed first, so this host's room -- shared with the tracking
+     * pair and the one-shot asks -- is not what the questions wait on;
+     * then here as many as its room holds beside the tracking pair, or one
+     * where it holds no two pairs.
+     */
+    static List<Z3.Room> placed(Z3 solver, int questionsAtOnce) {
+        int most = Math.max(1, questionsAtOnce);
+        List<Z3.Room> placed = new ArrayList<Z3.Room>();
+        for (Z3.Room host : solver.hosts()) {
+            for (int at = fit(host.mb); at > 0 && placed.size() < most;
+                 at--) {
+                placed.add(host);
+            }
+        }
+        int fit = fit(solver.room().mb);
+        for (int at = fit >= 2 ? fit - 1 : 1; at > 0 && placed.size() < most;
+             at--) {
+            placed.add(solver.room());
+        }
+        return placed;
+    }
+
+    /** How many plain pairs {@code solver}'s rooms place, as many
+     *  questions put at once as they hold ({@link #placed}). */
+    public static int placeable(Z3 solver) {
+        return placed(solver, Integer.MAX_VALUE).size();
+    }
+
+    /** "k here, m on host, ...": how many pairs each room holds. */
+    static String where(List<Z3.Room> placed) {
+        StringBuilder said = new StringBuilder();
+        for (Z3.Room room : new LinkedHashSet<Z3.Room>(placed)) {
+            said.append(said.length() == 0 ? "" : ", ")
+                    .append(Collections.frequency(placed, room))
+                    .append(room.host == null ? " here" : " on " + room.host);
+        }
+        return said.toString();
     }
 
     /** How many plain pairs ask at once. */
@@ -203,11 +282,115 @@ public final class Z3Incremental implements AutoCloseable {
                 deadlineNanos);
     }
 
-    /** Every z3 ended, every question still open undecided. */
+    /** Every z3 ended, every question still open undecided, and what the
+     *  remote z3s read first deleted. */
     @Override
     public void close() {
         plain.close();
         tracked.close();
+        files.delete();
+    }
+
+    /**
+     * What a plain or tracking z3 of {@code arithmetic} reads before the
+     * shared part: its options.
+     */
+    private static String head(boolean tracking, int arithmetic) {
+        return (tracking ? Z3.CORE_TRACKING : "")
+                + "(set-option :combined_solver.solver2_timeout "
+                + SOLVER2_TIMEOUT_MS + ")\n"
+                + Z3.arithmeticOption(arithmetic) + "\n";
+    }
+
+    /**
+     * The command that runs {@code z3} -- {@code Z3#command}'s words -- on
+     * {@code room}'s host: its shell prints its pid after {@link #PID},
+     * first, and execs z3, so the pid is z3's own; z3 reads {@code file},
+     * then its input -- none where the file was not read: z3 ends at once,
+     * never asked a scope over a shared part it lacks -- and says its
+     * errors on its output, as a z3 here does (its memout is on stderr).
+     * Its {@code setpriv --pdeathsig} ends it when that host's sshd goes,
+     * the connection closed (lift11: a stand-in ended with its ssh); its
+     * {@code -T} and memory cap bound it where the connection is lost
+     * unseen.
+     */
+    static List<String> remote(Z3.Room room, List<String> z3, Path file) {
+        StringBuilder line = new StringBuilder("echo " + PID + "$$; exec");
+        for (String word : z3) line.append(' ').append(quoted(word));
+        line.append(" < <(cat ").append(quoted(file.toString()))
+                .append(" && cat -) 2>&1");
+        // Its bash reads no rc file: ssh's variables would have it read
+        // ~/.bashrc again (tools/onlift.sh; 0.1 s a start, lift11).
+        List<String> command = new ArrayList<String>(room.reach);
+        command.add("exec env -u BASH_ENV -u SSH_CLIENT -u SSH2_CLIENT"
+                + " bash -c " + quoted(line.toString()));
+        return command;
+    }
+
+    /** One word for a POSIX shell, whatever it holds. */
+    private static String quoted(String word) {
+        return "'" + word.replace("'", "'\\''") + "'";
+    }
+
+    /**
+     * What a remote z3 reads first, by engine: a plain pair's head and the
+     * shared part as that engine reads it ({@code Z3.EngineWriter}), written
+     * once in a directory every host sees ({@code Z3#visible}) and deleted
+     * when the scopes close (or the JVM ends).  Read from a file, never
+     * piped through ssh: the lifts' links are 1 Gb/s, so SGF7-adhoc-10's 87
+     * MB shared part piped to each of 48 remote z3s would cross the
+     * composer's link ~4 GB, about 40 s serialized (87 MB: 0.6-0.8 s
+     * through ssh, 0.82 s read from NFS uncached, lift11), where a host
+     * reads the file from NFS for all its z3s.
+     */
+    private static final class SharedFiles {
+        private final Path directory;
+        private final ArtifactIO.Body shared;
+        private final Map<Integer, Path> written =
+                new HashMap<Integer, Path>();
+
+        SharedFiles(Path directory, ArtifactIO.Body shared) {
+            this.directory = directory;
+            this.shared = shared;
+        }
+
+        /** The file of {@code arithmetic}, written by its first asker. */
+        synchronized Path of(int arithmetic) throws IOException {
+            Path file = written.get(arithmetic);
+            if (file != null) return file;
+            file = Files.createTempFile(directory,
+                    "z3-shared-" + arithmetic + "-", ".smt2");
+            file.toFile().deleteOnExit();
+            try (BufferedWriter output = Files.newBufferedWriter(file,
+                    StandardCharsets.UTF_8)) {
+                output.write(head(false, arithmetic));
+                Z3.EngineWriter engine = new Z3.EngineWriter(output,
+                        arithmetic);
+                BufferedWriter rewriting = new BufferedWriter(engine,
+                        1 << 16);
+                shared.writeTo(rewriting);
+                rewriting.flush();
+                engine.finish();
+                output.write("\n");
+            } catch (IOException | RuntimeException failed) {
+                Files.deleteIfExists(file);
+                throw failed;
+            }
+            written.put(arithmetic, file);
+            return file;
+        }
+
+        synchronized void delete() {
+            for (Path file : written.values()) {
+                try {
+                    Files.deleteIfExists(file);
+                } catch (IOException kept) {
+                    System.err.println("z3 scoped: " + file
+                            + " not deleted: " + kept);
+                }
+            }
+            written.clear();
+        }
     }
 
     /**
@@ -227,7 +410,7 @@ public final class Z3Incremental implements AutoCloseable {
                 Collections.<String>emptyList(), false, reason);
     }
 
-    private Z3.Answer memOut() {
+    private static Z3.Answer memOut(int slotMb) {
         return bare(Z3.MEMOUT, "out of memory at its cap of "
                 + (slotMb - Z3.MISSED_MB) + " MB (memory_max_size), scoped");
     }
@@ -260,6 +443,16 @@ public final class Z3Incremental implements AutoCloseable {
             field.setAccessible(true);
             return field.getInt(process);
         } catch (ReflectiveOperationException | RuntimeException none) {
+            return -1L;
+        }
+    }
+
+    /** The pid a remote z3's shell printed; -1 where it is none (a cancel
+     *  then ends that z3 by its silence). */
+    private static long pidOf(String printed) {
+        try {
+            return Long.parseLong(printed.trim());
+        } catch (NumberFormatException none) {
             return -1L;
         }
     }
@@ -403,11 +596,10 @@ public final class Z3Incremental implements AutoCloseable {
         private int driving;
         private volatile boolean closed;
 
-        Lane(boolean tracking, int pairs) {
+        /** A pair in each of {@code rooms}. */
+        Lane(boolean tracking, List<Z3.Room> rooms) {
             this.tracking = tracking;
-            for (int at = 0; at < pairs; at++) {
-                this.pairs.add(new Pair(this));
-            }
+            for (Z3.Room room : rooms) this.pairs.add(new Pair(this, room));
         }
 
         Z3.Answer ask(ArtifactIO.Body scope, List<String> symbols,
@@ -441,10 +633,17 @@ public final class Z3Incremental implements AutoCloseable {
                     if (head.open()) return head;
                     continue;
                 }
-                if (pair.holding && solver.room().contended()) return YIELD;
+                if (pair.holding && pair.room.contended()) return YIELD;
                 wait(POLL_MILLIS);
             }
             return null;
+        }
+
+        /** A question a pair that asks no more left undecided, the next
+         *  for the others. */
+        synchronized void putBack(Question question) {
+            waiting.addFirst(question);
+            notifyAll();
         }
 
         /** A pair's driver stopped: the questions waiting are undecided
@@ -460,12 +659,15 @@ public final class Z3Incremental implements AutoCloseable {
             return left;
         }
 
+        /** Every driver told to stop at once, then waited for: a remote
+         *  pair's end waits on ssh. */
         void close() {
             synchronized (this) {
                 closed = true;
                 notifyAll();
             }
-            for (Pair pair : pairs) pair.close();
+            for (Pair pair : pairs) pair.stopDriving();
+            for (Pair pair : pairs) pair.awaitDriver();
         }
     }
 
@@ -477,19 +679,29 @@ public final class Z3Incremental implements AutoCloseable {
     private final class Pair {
         final Lane lane;
         final boolean tracking;
+        /** The room it holds its slots in: its z3s' host. */
+        final Z3.Room room;
+        /** The slot each of its z3s holds, in MB. */
+        final int slotMb;
         private final Engine[] engines;
         private final BlockingQueue<Line> printed =
                 new LinkedBlockingQueue<Line>();
         private Thread driver;
         /** The driver's own: whether it holds its slots, and since when;
-         *  the engine whose answer the last race took (0: none). */
+         *  the engine whose answer the last race took (0: none); whether a
+         *  z3 of it on another host never read the shared part, so it asks
+         *  no more. */
         private boolean holding;
         private long heldSinceNanos;
         private int answeredBy;
+        private boolean lost;
 
-        Pair(Lane lane) {
+        Pair(Lane lane, Z3.Room room) {
             this.lane = lane;
             this.tracking = lane.tracking;
+            this.room = room;
+            this.slotMb = room.host == null ? Z3Incremental.this.slotMb
+                    : PAIR_SLOT_MB;
             this.engines = new Engine[Z3.ARITHMETIC.length];
             for (int at = 0; at < engines.length; at++) {
                 engines[at] = new Engine(this, Z3.ARITHMETIC[at]);
@@ -518,17 +730,28 @@ public final class Z3Incremental implements AutoCloseable {
                         release();
                         continue;
                     }
-                    if (holding && solver.room().contended()
+                    if (holding && room.contended()
                             && System.nanoTime() - heldSinceNanos
                             >= TimeUnit.MILLISECONDS.toNanos(YIELD_AFTER_MS)) {
                         release();
                     }
                     if (!holding) {
-                        if (!solver.room().take(need())) return;
+                        if (!room.take(need())) return;
                         holding = true;
                         heldSinceNanos = System.nanoTime();
                     }
-                    question.answer(asked(question));
+                    Z3.Answer answer = asked(question);
+                    // Its host gave it no z3: it asks no more, and what it
+                    // left undecided the other pairs ask.
+                    if (lost && !answer.decided()) {
+                        lane.putBack(question);
+                    } else {
+                        question.answer(answer);
+                    }
+                    if (lost) {
+                        question = null;
+                        return;
+                    }
                 }
             } catch (InterruptedException closing) {
                 // Closed: below.
@@ -665,15 +888,19 @@ public final class Z3Incremental implements AutoCloseable {
             for (Engine engine : engines) engine.stop();
             printed.clear();
             if (holding) {
-                solver.room().give(need());
+                room.give(need());
                 holding = false;
             }
         }
 
-        void close() {
+        void stopDriving() {
+            Thread running = driver;
+            if (running != null) running.interrupt();
+        }
+
+        void awaitDriver() {
             Thread running = driver;
             if (running == null) return;
-            running.interrupt();
             try {
                 running.join(TimeUnit.SECONDS.toMillis(
                         2 * Z3.ORPHAN_MARGIN_SECONDS));
@@ -687,8 +914,14 @@ public final class Z3Incremental implements AutoCloseable {
     private final class Engine {
         private final Pair pair;
         private final int arithmetic;
+        /** Whether its z3 runs on another host. */
+        private final boolean remote;
         private Process process;
+        /** Its z3's pid on its host: a remote one's once printed. */
         private long pid = -1L;
+        /** {@link System#nanoTime} by which a remote z3 has read the shared
+         *  part or its pair asks no more ({@link #REMOTE_READ_MS}). */
+        private long readBy;
         /** Which of this engine's z3s runs: an earlier one's lines are
          *  dropped. */
         private int generation;
@@ -726,6 +959,7 @@ public final class Z3Incremental implements AutoCloseable {
         Engine(Pair pair, int arithmetic) {
             this.pair = pair;
             this.arithmetic = arithmetic;
+            this.remote = pair.room.host != null;
         }
 
         /** {@code question} put to its z3, one started first. */
@@ -752,26 +986,36 @@ public final class Z3Incremental implements AutoCloseable {
                     + "(check-sat)\n" + echo(verdict));
         }
 
-        /** Its z3, started on the shared part. */
+        /** Its z3, started on the shared part: here, or on its host
+         *  reading it from its file ({@link Z3Incremental#remote}). */
         private boolean start() {
             long life = solver.budgetLeft(UNBOUNDED_LIFE_MS);
             if (life <= 0L) return false;
+            List<String> command = Z3.command(solver.executable(),
+                    pair.slotMb, life);
             Process started;
             try {
-                ProcessBuilder builder = new ProcessBuilder(Z3.command(
-                        solver.executable(), slotMb, life));
+                if (remote) {
+                    command = remote(pair.room, command,
+                            files.of(arithmetic));
+                }
+                ProcessBuilder builder = new ProcessBuilder(command);
                 builder.redirectErrorStream(true);
                 started = builder.start();
             } catch (IOException notLaunched) {
+                if (remote) lose(notLaunched.toString());
                 return false;
             }
             Z3.track(started);
             process = started;
-            pid = pid(started);
+            pid = remote ? -1L : pid(started);
+            readBy = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
+                    REMOTE_READ_MS);
             int born = ++generation;
             System.err.println("z3 scoped: engine " + arithmetic
                     + (pair.tracking ? " tracking" : "") + " started ("
-                    + born + "), reading the shared part");
+                    + born + ")" + (remote ? " on " + pair.room.host : "")
+                    + ", reading the shared part");
             expected.clear();
             collected.clear();
             answered = 0;
@@ -806,11 +1050,13 @@ public final class Z3Incremental implements AutoCloseable {
                     started.getOutputStream(), StandardCharsets.UTF_8),
                     1 << 16);
             Mark ready = mark(Role.STARTUP, null);
-            send((pair.tracking ? Z3.CORE_TRACKING : "")
-                            + "(set-option :combined_solver.solver2_timeout "
-                            + SOLVER2_TIMEOUT_MS + ")\n"
-                            + Z3.arithmeticOption(arithmetic) + "\n", shared,
-                    "\n" + echo(ready));
+            // A remote z3 reads its head and the shared part from its file.
+            if (remote) {
+                send("", null, echo(ready));
+            } else {
+                send(head(pair.tracking, arithmetic), shared,
+                        "\n" + echo(ready));
+            }
             return true;
         }
 
@@ -864,6 +1110,11 @@ public final class Z3Incremental implements AutoCloseable {
                 return;
             }
             String text = line.text.trim();
+            if (remote && pid <= 0L && text.startsWith(PID.trim())) {
+                // Its shell's first line, before anything z3 prints.
+                pid = pidOf(text.substring(PID.trim().length()));
+                return;
+            }
             Mark head = expected.peekFirst();
             if (head != null && text.equals(head.text)) {
                 expected.pollFirst();
@@ -1023,7 +1274,8 @@ public final class Z3Incremental implements AutoCloseable {
          * unless it is asked once more of a fresh z3: where its z3 ended
          * before reaching it, where a signal meant for an earlier check was
          * outstanding, or where its z3 ran out of memory after answering
-         * others (one that ended reading the shared part would end again).
+         * others (one that ended reading the shared part would end again;
+         * on another host its pair asks no more there, {@link #lose}).
          */
         private void ended() {
             Turn of = turn;
@@ -1032,7 +1284,10 @@ public final class Z3Incremental implements AutoCloseable {
             Mark head = expected.peekFirst();
             boolean stray = interruptOutstanding;
             boolean aged = answered > 0;
+            boolean unread = head != null && head.role == Role.STARTUP;
+            String said = String.join(" | ", collected);
             stop();
+            if (remote && unread) lose("ended first, saying: " + said);
             if (of == null || of.done() || of.cancelled) return;
             boolean before = head != null && head.turn != of
                     && head.role != Role.STARTUP;
@@ -1045,19 +1300,38 @@ public final class Z3Incremental implements AutoCloseable {
                         Collections.<String, String>emptyMap(),
                         Collections.<String>emptyList(), false, ""), false);
             } else {
-                of.end(memOut ? memOut() : bare("", "its scoped z3 ended"),
-                        false);
+                of.end(memOut ? memOut(pair.slotMb)
+                        : bare("", "its scoped z3 ended"), false);
             }
+        }
+
+        /**
+         * Its pair on another host asks no more: its z3 did not read the
+         * shared part ({@code why}).  Said once.
+         */
+        private void lose(String why) {
+            if (pair.lost) return;
+            pair.lost = true;
+            System.err.println("z3 scoped: engine " + arithmetic + " on "
+                    + pair.room.host + " did not read the shared part ("
+                    + why + "): its pair asks no more");
         }
 
         /**
          * Its z3 ended where it is silent too long: a cancelled check no
          * verdict of which came within {@link #SILENCE_MARGIN_MS} -- the
          * open turn behind it asked once more of a fresh z3 -- or its own
-         * turn past its budget and margin, a timeout.
+         * turn past its budget and margin, a timeout; or a z3 on another
+         * host that has not read the shared part by {@link #readBy}, its
+         * pair then asking no more there.
          */
         void silent(long now) {
             Turn of = turn;
+            if (process != null && remote && now - readBy >= 0L
+                    && reading()) {
+                lose("not within " + REMOTE_READ_MS + " ms");
+                stop();
+            }
             if (process == null) {
                 // No z3 left to answer it (once asked again already).
                 if (of != null && !of.done()) {
@@ -1107,28 +1381,60 @@ public final class Z3Incremental implements AutoCloseable {
          * a later question's answer, its end -- is still to be read.  A z3
          * gone already ends by its own output; one no signal reached (no
          * process id) runs the check out to its {@code :timeout}, or is
-         * stopped silent ({@link #silent}).  The signal is outstanding
-         * until the check answers ({@link #interruptOutstanding}).
+         * stopped silent ({@link #silent}).
+         *
+         * <p>Sent only to a z3 that runs -- in its check, not waiting for
+         * input -- so a check that ended while the signal was on its way
+         * leaves its z3 reading on, its verdict still to come, where the
+         * signal would end it: the kill takes 0.3-0.4 s over ssh (lift11)
+         * where it took milliseconds here.  A signal sent is outstanding
+         * until the check answers ({@link #interruptOutstanding}), and has
+         * landed before anything more is sent to its z3: {@link #signal}
+         * waits for it, so a later check that decides tells it landed
+         * before.</p>
          */
         private void interrupt(Turn of) {
             if (pid <= 0L || process == null || !process.isAlive()) return;
-            interruptOutstanding = true;
-            signalled = of;
             cancelling = of;
+            if (signal("grep -qs '^State:.R' /proc/" + pid + "/status"
+                    + " && kill -INT " + pid)) {
+                interruptOutstanding = true;
+                signalled = of;
+            }
             cancelDeadline = System.nanoTime() + TimeUnit.MILLISECONDS
                     .toNanos(SILENCE_MARGIN_MS);
+        }
+
+        /**
+         * A shell line run on its z3's host ({@code Z3.Room#reach}), here in
+         * a shell of its own, and waited for -- at most {@link
+         * Z3#ORPHAN_MARGIN_SECONDS} -- even by a driver told to close, which
+         * is told again after: whether it may have done its work, false
+         * where it said it did not.  Not sent, a SIGINT's check runs out to
+         * its {@code :timeout}, a KILL's z3 ends with its ssh.
+         */
+        private boolean signal(String line) {
+            List<String> command = new ArrayList<String>(pair.room.reach);
+            if (command.isEmpty()) command.addAll(Arrays.asList("sh", "-c"));
+            command.add(line);
+            boolean closing = Thread.interrupted();
             try {
-                Process kill = new ProcessBuilder("kill", "-INT",
-                        Long.toString(pid)).redirectErrorStream(true).start();
+                Process kill = new ProcessBuilder(command)
+                        .redirectErrorStream(true).start();
                 kill.getOutputStream().close();
                 if (!kill.waitFor(Z3.ORPHAN_MARGIN_SECONDS,
                         TimeUnit.SECONDS)) {
                     kill.destroyForcibly();
+                    return true;
                 }
+                return kill.exitValue() == 0;
             } catch (IOException notSent) {
-                // Run out to its :timeout.
-            } catch (InterruptedException closing) {
-                Thread.currentThread().interrupt();
+                return false;
+            } catch (InterruptedException interrupted) {
+                closing = true;
+                return true;
+            } finally {
+                if (closing) Thread.currentThread().interrupt();
             }
         }
 
@@ -1136,11 +1442,17 @@ public final class Z3Incremental implements AutoCloseable {
         void stop() {
             Process ending = process;
             if (ending == null) return;
+            long ended = pid;
             process = null;
             pid = -1L;
             generation++;
             expected.clear();
             collected.clear();
+            // On another host, z3 first: its ssh's end reaches it only once
+            // that host's sshd sees the connection closed.
+            if (remote && ended > 0L && ending.isAlive()) {
+                signal("kill -KILL " + ended);
+            }
             // Its streams close with it: a write blocked on it fails.
             ending.destroyForcibly();
             writer.shutdownNow();

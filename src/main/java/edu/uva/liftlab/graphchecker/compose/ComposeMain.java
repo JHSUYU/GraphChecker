@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,6 +53,12 @@ import java.util.Set;
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  *   --z3-room-mb &lt;n&gt;     what the JVM's charge holds for its z3
  *                          processes ({@code smt.Z3}); required
+ *   --z3-hosts &lt;host&gt;=&lt;mb&gt;[,&lt;host&gt;=&lt;mb&gt;...]
+ *                          z3 rooms on other hosts the campaign charged on
+ *                          their ledgers for this JVM's life: the plain
+ *                          pairs of scoped z3s run there too, over ssh
+ *                          ({@code smt.Z3Incremental}), what they read first
+ *                          written beside {@code --output}; default none
  *   --reuse &lt;dir&gt;        an earlier composition, its files named as this
  *                          one's: taken where it read the same inputs
  *                          ({@link CompositionInputs})
@@ -107,8 +114,7 @@ public final class ComposeMain {
                 / (1024 * 1024) + " MB body and " + composition.valuations()
                 .size() + " valuation(s), in " + seconds(lowered - started)
                 + " s; deciding");
-        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis,
-                arguments.z3RoomMb);
+        Z3 solver = solver(arguments);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
         // BEST EFFORT: the paths whose own question z3 answered with an
@@ -121,8 +127,7 @@ public final class ComposeMain {
                     + " path(s)' own question; composing without them");
             composition = Composer.compose(corpus, anchor,
                     arguments.maxValuations, scope, refused);
-            solver = new Z3(arguments.z3, arguments.timeoutMillis,
-                    arguments.z3RoomMb);
+            solver = solver(arguments);
             decision = ClaimPolicy.decide(composition, solver);
         }
         long decided = System.nanoTime();
@@ -158,6 +163,14 @@ public final class ComposeMain {
 
     /** The claim beside the manifest. */
     static final String CLAIM = "claim.json";
+
+    /** The solver of one decide: its rooms here and on other hosts, what
+     *  remote z3s read first written beside the query. */
+    private static Z3 solver(Arguments arguments) {
+        return new Z3(arguments.z3, arguments.timeoutMillis,
+                arguments.z3RoomMb, arguments.z3Hosts,
+                arguments.output.toAbsolutePath().getParent());
+    }
 
     /**
      * The composition {@code --reuse} names, made of these inputs: its
@@ -663,6 +676,8 @@ public final class ComposeMain {
         final long timeoutMillis;
         /** What the JVM's charge holds for its z3 processes. */
         final int z3RoomMb;
+        /** Rooms on other hosts, host -&gt; MB, in the order named. */
+        final Map<String, Integer> z3Hosts;
         /** An earlier composition this one may be; null: none. */
         final Path reuse;
 
@@ -681,7 +696,26 @@ public final class ComposeMain {
             timeoutMillis = integer(options.value("solver-timeout-ms", null),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
             z3RoomMb = integer(options.value("z3-room-mb", null), 0);
+            z3Hosts = hosts(options.value("z3-hosts", ""));
             reuse = options.path("reuse");
+        }
+
+        /** {@code host=mb,...}; a room not so spelled is refused. */
+        static Map<String, Integer> hosts(String value) {
+            Map<String, Integer> hosts = new LinkedHashMap<String, Integer>();
+            for (String room : value.trim().isEmpty() ? new String[0]
+                    : value.trim().split(",")) {
+                int at = room.indexOf('=');
+                String host = at < 0 ? "" : room.substring(0, at).trim();
+                int mb = at < 0 ? 0 : integer(room.substring(at + 1), 0);
+                if (host.isEmpty() || mb <= 0 || hosts.containsKey(host)) {
+                    throw new IllegalArgumentException("--z3-hosts names \""
+                            + room + "\": each room is host=mb, a host"
+                            + " once");
+                }
+                hosts.put(host, mb);
+            }
+            return hosts;
         }
 
         static Arguments parse(String[] argv) {

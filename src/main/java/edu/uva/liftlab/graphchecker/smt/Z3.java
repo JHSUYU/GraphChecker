@@ -58,6 +58,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * never a refutation and no error of the query (SGF3-adhoc-13: one z3 of a
  * composer charged its JVM only grew to 10.9 GB in 20 minutes, swap full,
  * its host unreachable for a minute).</p>
+ *
+ * <p>A solver may also hold rooms on OTHER HOSTS ({@code --z3-hosts}),
+ * charged on their hosts' ledgers for its JVM's life: only the plain pairs
+ * of scoped z3s run there, over ssh ({@link Z3Incremental}); every other z3
+ * runs here.  solr-adhoc-10 SGF7: a composer of a 16 GB heap had room for
+ * one pair here, and its decide ran out its 30 minutes with 315 z3 runs,
+ * questions unasked, while twelve hosts of 30 GB sat idle.</p>
  */
 public final class Z3 {
 
@@ -240,21 +247,34 @@ public final class Z3 {
      * (so a run alone, in half the room an engine, is not passed by smaller
      * ones forever), waiting while they do not fit in what is free,
      * and gives them back when its z3s are gone; a run alone always fits,
-     * its slots being at most half the room each.
+     * its slots being at most half the room each.  A room on another host
+     * ({@link #host}) holds the scoped z3s placed there, each for its life.
      */
     static final class Room {
         final int mb;
+        /** The host its z3s run on; null: this JVM's. */
+        final String host;
+        /** The command that runs a command line on {@link #host}, the line
+         *  its last argument ({@link #ssh}); empty here. */
+        final List<String> reach;
         private int held;
         private long issued;
         private long serving;
         private final Set<Long> abandoned = new java.util.HashSet<Long>();
 
         Room(int mb) {
+            this(null, mb, Collections.<String>emptyList());
+        }
+
+        Room(String host, int mb, List<String> reach) {
             if (mb < 2 * LEAST_SLOT_MB) {
                 throw new IllegalArgumentException("a z3 room of " + mb
                         + " MB holds no run: at least " + 2 * LEAST_SLOT_MB);
             }
             this.mb = mb;
+            this.host = host;
+            this.reach = Collections.unmodifiableList(
+                    new ArrayList<String>(reach));
         }
 
         /** Takes {@code need} MB once every run that asked before took
@@ -306,6 +326,11 @@ public final class Z3 {
     private final AtomicInteger runs;
     private final Set<String> errors;
     private final Room room;
+    /** Its rooms on other hosts, in the order they were named. */
+    private final List<Room> hosts;
+    /** A directory every host sees, where what a remote z3 reads first is
+     *  written ({@code Z3Incremental}); null where there are no hosts. */
+    private final Path visible;
     /** The slot each z3 of this solver's runs holds, in MB. */
     private final int slotMb;
     /** {@link System#nanoTime} past which no run starts and every run's
@@ -318,21 +343,63 @@ public final class Z3 {
      * engines take half of it each.
      */
     public Z3(Path executable, long timeoutMillis, int roomMb) {
+        this(executable, timeoutMillis, roomMb,
+                Collections.<Room>emptyList(), null);
+    }
+
+    /**
+     * The same with rooms on other hosts, host -&gt; MB, reached by
+     * {@link #ssh} ({@code --z3-hosts}), what their remote z3s read first
+     * written in {@code visible}, a directory every host sees.
+     */
+    public Z3(Path executable, long timeoutMillis, int roomMb,
+              Map<String, Integer> hosts, Path visible) {
+        this(executable, timeoutMillis, roomMb, rooms(hosts), visible);
+    }
+
+    Z3(Path executable, long timeoutMillis, int roomMb, List<Room> hosts,
+       Path visible) {
         this(executable == null ? Paths.get("z3") : executable,
                 timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
                 new AtomicInteger(), new TreeSet<String>(), new Room(roomMb),
-                roomMb / 2, 0L);
+                Collections.unmodifiableList(new ArrayList<Room>(hosts)),
+                visible, roomMb / 2, 0L);
+        if (!hosts.isEmpty() && visible == null) {
+            throw new IllegalArgumentException("z3 rooms on " + hosts.size()
+                    + " other host(s) and no directory they all see");
+        }
     }
 
     private Z3(Path z3, long timeoutMillis, AtomicInteger runs,
-               Set<String> errors, Room room, int slotMb, long deadlineNanos) {
+               Set<String> errors, Room room, List<Room> hosts, Path visible,
+               int slotMb, long deadlineNanos) {
         this.z3 = z3;
         this.timeoutMillis = timeoutMillis;
         this.runs = runs;
         this.errors = errors;
         this.room = room;
+        this.hosts = hosts;
+        this.visible = visible;
         this.slotMb = slotMb;
         this.deadlineNanos = deadlineNanos;
+    }
+
+    /**
+     * How a command line runs on {@code host}: ssh, never asking for a
+     * password, giving up on a host that does not answer.
+     */
+    static List<String> ssh(String host) {
+        return Arrays.asList("ssh", "-o", "BatchMode=yes", "-o",
+                "ConnectTimeout=20", host);
+    }
+
+    private static List<Room> rooms(Map<String, Integer> hosts) {
+        List<Room> rooms = new ArrayList<Room>();
+        for (Map.Entry<String, Integer> host : hosts.entrySet()) {
+            rooms.add(new Room(host.getKey(), host.getValue(),
+                    ssh(host.getKey())));
+        }
+        return rooms;
     }
 
     /**
@@ -343,8 +410,8 @@ public final class Z3 {
      * decide budget, {@code ClaimPolicy#DECIDE_BUDGET_MS}).
      */
     public Z3 until(long deadlineNanos) {
-        return new Z3(z3, timeoutMillis, runs, errors, room, slotMb,
-                deadlineNanos);
+        return new Z3(z3, timeoutMillis, runs, errors, room, hosts, visible,
+                slotMb, deadlineNanos);
     }
 
     /** Whether this solver's deadline ({@link #until}) has passed. */
@@ -359,7 +426,7 @@ public final class Z3 {
      * in the room, the rest waiting for one to end.
      */
     public Z3 slotted(int slotMb) {
-        return new Z3(z3, timeoutMillis, runs, errors, room,
+        return new Z3(z3, timeoutMillis, runs, errors, room, hosts, visible,
                 Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)),
                 deadlineNanos);
     }
@@ -384,6 +451,16 @@ public final class Z3 {
     /** The room this solver's z3s hold their slots in. */
     Room room() {
         return room;
+    }
+
+    /** Its rooms on other hosts ({@code --z3-hosts}). */
+    List<Room> hosts() {
+        return hosts;
+    }
+
+    /** Where what a remote z3 reads first is written: every host sees it. */
+    Path visible() {
+        return visible;
     }
 
     Path executable() {

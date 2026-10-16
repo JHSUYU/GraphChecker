@@ -974,6 +974,28 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * THE z3 ROOMS ON OTHER HOSTS ARE NAMED host=mb ({@code --z3-hosts}),
+     * in their order; a room spelled otherwise, of no MB, or a host named
+     * twice is refused, never dropped.  {value, rooms or null: refused}.
+     */
+    @Test
+    public void theZ3RoomsOnOtherHostsAreNamedHostEqualsMb() {
+        String[][] rows = {{"", "{}"},
+                {"lift03=8192,lift02=2048", "{lift03=8192, lift02=2048}"},
+                {"lift02", null}, {"lift02=x", null}, {"lift02=0", null},
+                {"=2048", null}, {"lift02=2048,lift02=2048", null}};
+        for (String[] row : rows) {
+            String said;
+            try {
+                said = ComposeMain.Arguments.hosts(row[0]).toString();
+            } catch (IllegalArgumentException refused) {
+                said = null;
+            }
+            assertEquals(Arrays.toString(row), row[1], said);
+        }
+    }
+
     /** ComposeMain's arguments as the campaign passes them, its files in
      *  {@code out} and the static scope map beside the iteration. */
     private static ComposeMain.Arguments composeArguments(

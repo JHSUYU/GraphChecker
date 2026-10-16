@@ -35,15 +35,17 @@ import java.util.function.Function;
  *   <li><b>Path by path, in parallel.</b>  The body asserts exactly one path
  *       selector, so the disjunction is sat iff some path is and unsat iff
  *       every one is (its core the union of theirs).  The paths are asked
- *       {@link #PATH_ASKS} at a time, in their order, and the answer is the
- *       one the paths give in order: the first sat path's (every path
- *       before it refuted or undecided, the asks after it stopped), else
- *       undecided if any path was, else unsat.  Whole, z3 can spend any
- *       budget searching every path's conjunction at once where a case
- *       split settles each path in a second (hdfs-11741 r3).  A path is
- *       one scope ({@code Composition#scopeQuery}) of a long-lived z3 that
- *       read what every path shares once ({@code Composition#sharedQuery},
- *       {@link Z3Incremental}): SGF6-bugs-snapshot-no-active 0001's paths
+ *       as many at a time as the solver's rooms place plain pairs of scoped
+ *       z3s, at least {@link #LEAST_PATH_ASKS}, in their order, and the
+ *       answer is the one the paths give in order: the first sat path's
+ *       (every path before it refuted or undecided, the asks after it
+ *       stopped), else undecided if any path was, else unsat.  Whole, z3
+ *       can spend any budget searching every path's conjunction at once
+ *       where a case split settles each path in a second (hdfs-11741 r3).
+ *       A path is one scope ({@code Composition#scopeQuery}) of a
+ *       long-lived z3 that read what every path shares once ({@code
+ *       Composition#sharedQuery}, {@link Z3Incremental}):
+ *       SGF6-bugs-snapshot-no-active 0001's paths
  *       share 65 of their 69 MB, read again by every path's own z3 before
  *       (4 of a path's 5.5-8 s).</li>
  *   <li><b>A refuted path stays refuted.</b>  Assertions only add
@@ -103,12 +105,14 @@ final class Disjunction implements AutoCloseable {
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
     /**
-     * How many path questions are put to the scoped z3s at once
-     * ({@link Z3Incremental}), which ask them in order, as many at a time as
-     * the composer's z3 room holds pairs of z3s: the ones after a sat path
-     * are stopped before they are asked.
+     * How many path questions are put to the scoped z3s at once, at least
+     * ({@link Z3Incremental}): as many as the solver's rooms place plain
+     * pairs, here and on other hosts ({@code Z3Incremental#placeable}),
+     * which ask them in order; the ones after a sat path are stopped before
+     * they are asked.  solr-adhoc-10 SGF7: eight at a time held a decide
+     * that had z3 rooms for one pair to its 30 minutes.
      */
-    static final int PATH_ASKS = 8;
+    static final int LEAST_PATH_ASKS = 8;
 
     /** One path found unsat under these assertions. */
     private static final class Refutation {
@@ -143,9 +147,16 @@ final class Disjunction implements AutoCloseable {
     private final AtomicBoolean pathByPath;
 
     Disjunction(Composer.Composition composition, Z3 solver) {
+        this(composition, solver, Math.max(LEAST_PATH_ASKS,
+                Z3Incremental.placeable(solver)));
+    }
+
+    /** {@code pathAsks} path questions at once, as many scoped pairs. */
+    private Disjunction(Composer.Composition composition, Z3 solver,
+                        int pathAsks) {
         this(composition, solver, new Z3Incremental(solver,
-                        composition.sharedQuery(), PATH_ASKS),
-                Executors.newFixedThreadPool(PATH_ASKS),
+                        composition.sharedQuery(), pathAsks),
+                Executors.newFixedThreadPool(pathAsks),
                 new ConcurrentHashMap<String, List<Refutation>>(),
                 new ConcurrentHashMap<String, List<Set<String>>>(),
                 new ConcurrentHashMap<String, Z3.Answer>(),
@@ -238,9 +249,9 @@ final class Disjunction implements AutoCloseable {
         return alone(composition::scopeWithoutFatalArm, false, scopes);
     }
 
-    /** One question per path, asked {@link #PATH_ASKS} at a time of
-     *  {@code by} with no assertion, a core where {@code wantCore}, read
-     *  back in the disjuncts' order. */
+    /** One question per path, asked as many at a time as the scoped z3s
+     *  place pairs, of {@code by} with no assertion, a core where
+     *  {@code wantCore}, read back in the disjuncts' order. */
     private List<Z3.Answer> alone(
             Function<String, ArtifactIO.Body> question, boolean wantCore,
             Z3Incremental by) {
