@@ -499,6 +499,9 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 
 ## HBase (`system/hbase` = main today)
 
+**Read first:** [OPTIMIZATIONS.md](OPTIMIZATIONS.md): the owner moves GraphChecker to HBase next, with a thorough
+refactor that carries every optimization done on Solr and completes the ones not done (its §5, §6).
+
 **0.** Before any HBase run on the new body: `hbase-unified` `CausynthRpc.java:61-62` drops `, call.param` (the payload
 door is gone with WIRE-CODEC); rebuild hbase-client.
 
