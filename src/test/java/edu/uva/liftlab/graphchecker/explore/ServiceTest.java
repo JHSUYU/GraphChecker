@@ -30,11 +30,16 @@ public class ServiceTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    @Test
+    @Test(timeout = 60000L)
     public void answersEachLiveQuestionOnceOldestFirstThenEnds()
             throws Exception {
         Path dir = folder.newFolder("solver").toPath();
         Files.createDirectories(dir.resolve(Service.REQUESTS));
+        // Taken by a service that died mid-answer (its run stopped): never
+        // this one's to wait for, so it still ends idle.
+        Files.write(dir.resolve(Service.REQUESTS)
+                .resolve("0.dead" + Service.TAKEN),
+                "{}".getBytes(StandardCharsets.UTF_8));
         Files.write(dir.resolve(Service.SERVER),
                 "4242\n".getBytes(StandardCharsets.UTF_8));
         String live = ManagementFactory.getRuntimeMXBean().getName()
@@ -79,10 +84,12 @@ public class ServiceTest {
                 .resolve("obligation_result.jsonl")), StandardCharsets.UTF_8));
         assertFalse(Files.exists(dir.resolve(Service.ANSWERS)
                 .resolve("2.gone" + Service.ASKED)));
-        assertTrue("nothing waits or is taken once it ended",
-                Service.waiting(dir, Service.ASKED).isEmpty()
-                        && Service.waiting(dir, Service.TAKEN)
-                        .isEmpty());
+        assertTrue("nothing waits once it ended",
+                Service.waiting(dir, Service.ASKED).isEmpty());
+        assertEquals("what it took it answered; the dead service's is its "
+                        + "asker's", java.util.Arrays.asList(
+                        "0.dead" + Service.TAKEN),
+                names(Service.waiting(dir, Service.TAKEN)));
         assertFalse("an ended service names none",
                 Files.exists(dir.resolve(Service.SERVER)));
         assertFalse(Files.exists(dir.resolve(Service.LOCK)));

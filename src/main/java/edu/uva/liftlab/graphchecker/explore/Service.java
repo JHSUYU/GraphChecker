@@ -175,18 +175,21 @@ final class Service {
     }
 
     /**
-     * Ends the service when no question waits or is being answered, under
-     * the lock, so no asker puts one in between unseen: the directory then
-     * names no service, and the next question's asker starts one.  It is
-     * the only service of the directory -- an asker starts another only
-     * when the one named there has ended.
+     * Ends the service when no question waits, under the lock, so no asker
+     * puts one in between unseen: the directory then names no service, and
+     * the next question's asker starts one.  It is the only service of the
+     * directory -- an asker starts another only when the one named there has
+     * ended -- and it answers one question at a time, so a question taken
+     * here when it is idle was taken by a service that died: its asker's to
+     * fail, never this one's to wait for (a run stopped mid-answer left one,
+     * and the next run of that corpus path kept its solver 2 h past its end,
+     * holding its charge).
      */
     static boolean retire(Path dir) throws IOException,
             InterruptedException {
         lock(dir);
         try {
-            if (!waiting(dir, ASKED).isEmpty()
-                    || !waiting(dir, TAKEN).isEmpty()) {
+            if (!waiting(dir, ASKED).isEmpty()) {
                 return false;
             }
             Files.deleteIfExists(dir.resolve(SERVER));

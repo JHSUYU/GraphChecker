@@ -999,7 +999,10 @@ into its worker directory. A read past what its heap holds (`campaign_solver_ret
 `--retire-past-mb`; none at the engine heap) is not made: the solver gives the question back untaken and
 ends (`Service.Outgrown`, `Service#retireOutgrown`, naming itself in `retired`), and the question's asker
 starts the next one, sized anew. It ends once none has
-come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside the corpus. A
+come for `campaign_solver_idle_s` (300) and none waits; a question still `.taken` then was taken by a
+solver that died (it answers one at a time), its asker's to fail, and never keeps it (`Service#retire`: a
+run stopped mid-answer left one, and the next run of that corpus path kept its solver and charge 2 h past
+its end). Its log is `solver-<host>.log` beside the corpus. A
 question still waiting when its solver ended starts the next one. A question that waits for its
 solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A cold
 host's question is charged a solver's start (§7.7), and the solver it starts takes that charge over
