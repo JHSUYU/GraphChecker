@@ -4320,10 +4320,17 @@ campaign_host_charged() {
 # holds, and gives the lock back: the charge, named in
 # campaign_host_charge_id, is held by this shell (campaign_host_hold).
 campaign_host_charge_row() {
-  local dir=$1 need=$2
-  campaign_host_charge_id="${need}.$(hostname -s).${BASHPID}.$(date +%s).\
-${RANDOM}"
+  local dir=$1 need=$2 id
   mkdir -p "${dir}/charges"
+  # A name no charge holds: two a shell takes in one second shared one at an
+  # equal RANDOM, the second truncating the first, and the host held one
+  # charge too few (HOST-PAR: 25 replay starts of 896 MB where 24 fit).
+  # Under the lock nobody else names one.
+  while :; do
+    id="${need}.$(hostname -s).${BASHPID}.$(date +%s).${RANDOM}"
+    [[ -e "${dir}/charges/${id}" ]] || break
+  done
+  campaign_host_charge_id=${id}
   : >"${dir}/charges/${campaign_host_charge_id}"
   rmdir "${dir}/lock"
   campaign_host_hold "${dir}/charges/${campaign_host_charge_id}"

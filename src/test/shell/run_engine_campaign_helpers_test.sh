@@ -7454,6 +7454,23 @@ candidate ${ab_dir}/candidate/c/SEED.static/out;" ]] \
   || fail "AB_FRESH_SLICE=1 does not give each side its own slice: \
 $(ab_reads 1)"
 
+# Two charges one shell takes in one second at an equal RANDOM are two
+# charges, never one file truncated twice (campaign_host_charge_row).
+charge_dir="${test_tmp}/charge-names"
+(
+  hostname() { echo gate-head; }
+  date() { echo 1792200000; }
+  campaign_host_renew_s=1
+  for _ in 1 2; do
+    mkdir -p "${charge_dir}/lock"
+    RANDOM=7
+    campaign_host_charge_row "${charge_dir}" 896
+  done
+  [[ "$(find "${charge_dir}/charges" -type f | wc -l)" -eq 2 ]] \
+    || fail "two charges in one second at one RANDOM are one: \
+$(ls "${charge_dir}/charges")"
+) || exit 1
+
 # COMPOSE's heap bound is named once, BLOCKING, for the campaign: a
 # composition that left paths out past it misses their arms
 # (campaign_compose_bounded); one that left none out names nothing.
