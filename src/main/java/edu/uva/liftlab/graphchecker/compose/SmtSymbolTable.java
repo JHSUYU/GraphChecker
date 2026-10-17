@@ -29,6 +29,12 @@ public final class SmtSymbolTable {
         return name;
     }
 
+    /** Forgets one name the query no longer holds: minted again, it is
+     *  checked against the identity it is minted for then. */
+    public void forget(String name) {
+        minted.remove(name);
+    }
+
     /** The truncated names that would stand for two identities. */
     public Map<String, String> collisions() {
         return java.util.Collections.unmodifiableMap(collisions);

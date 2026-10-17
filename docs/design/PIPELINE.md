@@ -2220,9 +2220,15 @@ THE COMPOSER'S HEAP BOUNDS ITS PATHS (`Composer#HEAP_SHARE`, 0.8): once its old 
 share after a sweep (`HeapWatch#oldGenerationSwept`), the admitted paths not yet composed are left out, each
 named `COMPOSE_HEAP_BOUND` (DIAGNOSTIC, in `refusedPaths`, so a witness among the composed ones still goes to
 CONFIRM), the first path always composed; the campaign names the bound once, BLOCKING (`campaign_compose_bounded`,
-stage COMPOSE), so EMIT labels the run RUN_DEFECT beside the formula's claim, as a truncated closure. A composer
-holds every path's lowering until its last (SGF8-adhoc-14's 353 paths: out of heap at 20 GB before its 25th);
-its progress line every minute says how full the old generation is.
+stage COMPOSE), so EMIT labels the run RUN_DEFECT beside the formula's claim, as a truncated closure. Between
+paths the composer drops every subterm its lowering minted that no statement reaches, and its mint
+(`SmtLowering#path`): a join no conjunction asks about, an arm left out, a refused path; one a later box reads
+back through a cell is kept. A subterm is named by its prefix and its identity's digest, so lowered again it has
+the name it had, and the body is byte for byte the one a composer dropping nothing writes. What a path still
+leaves is its statements, the declarations of the names its lowering touched (`declared` decides domains, pins
+and refutations) and its manifest rows (SGF8OOM-adhoc-14 at 20 GB: about 110 MB a path over an 8.5 GB corpus,
+against 400 MB before, so 27 of its 353 paths composed before the bound, against 6); its progress line every
+minute says how full the old generation is.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the

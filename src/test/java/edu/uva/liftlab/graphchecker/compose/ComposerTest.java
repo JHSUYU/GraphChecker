@@ -5711,6 +5711,80 @@ public class ComposerTest {
     }
 
     /**
+     * WHAT NO STATEMENT REACHES IS DROPPED BETWEEN PATHS (SmtLowering#path):
+     * a container subterm a path lowered and stated stays; one it lowered
+     * and stated nothing over is gone at the next path, and lowered again
+     * it is the same name -- the body is the one a lowering that dropped
+     * nothing writes (SGF8OOM-adhoc-14: kept, they held the composer's
+     * heap, 1 GB after 20 paths against a 57 MB body).
+     */
+    @Test
+    public void aSubtermNoStatementReachesIsDroppedAtTheNextPath() {
+        String[] bodies = new String[2];
+        for (int dropping = 0; dropping < 2; dropping++) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("k", VmTermLowering.Sort.STRING);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.path();
+            String stated = lookup(lowering, "stated");
+            String unstated = lookup(lowering, "unstated");
+            lowering.assertNamed("path_fatal__0", stated);
+            Set<String> kept = subterms(lowering, stated);
+            Set<String> left = subterms(lowering, unstated);
+            left.removeAll(kept);
+            assertFalse(unstated, left.isEmpty());
+            if (dropping == 1) {
+                lowering.path();
+                for (String name : kept) {
+                    assertTrue(name + " is stated", lowering.defined(name));
+                }
+                for (String name : left) {
+                    assertFalse(name + " is reached by nothing stated",
+                            lowering.defined(name));
+                }
+            }
+            assertEquals("lowered again, the same names", unstated,
+                    lookup(lowering, "unstated"));
+            for (String name : left) assertTrue(lowering.defined(name));
+            lowering.assertNamed("path_fatal__1", unstated);
+            assertTrue(lowering.nameCollisions().toString(),
+                    lowering.nameCollisions().isEmpty());
+            bodies[dropping] = lowering.body(Collections.<String>emptyList());
+        }
+        assertEquals(bodies[0], bodies[1]);
+    }
+
+    /** Whether a map holding one entry keyed {@code key} contains the
+     *  key {@code k}, lowered in a conjunction of its own. */
+    private static String lookup(SmtLowering lowering, String key) {
+        JsonObject map = relation("ASSOCIATIVE", "PUT", "L",
+                relation("ASSOCIATIVE", "CLEAR", "java/util/HashMap", null),
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_" + key,
+                        "java/lang/String"),
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_" + key + "_value",
+                        "java/lang/String"));
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        String text = lowering.dispatch(relation("ASSOCIATIVE", "CONTAINS",
+                "Z", map, symbol("k", "java/lang/String")),
+                VmTermLowering.Sort.BOOL, "test").text;
+        assertTrue(text + ": " + lowering.openRefusals(),
+                lowering.openRefusals().isEmpty());
+        lowering.end();
+        return text;
+    }
+
+    /** The subterms a text reaches through the lowering's definitions. */
+    private static Set<String> subterms(SmtLowering lowering, String text) {
+        Set<String> names = new LinkedHashSet<String>();
+        for (SmtLowering.Declaration declaration
+                : lowering.reachedBy(Collections.singletonList(text))) {
+            if (!declaration.body.isEmpty()) names.add(declaration.name);
+        }
+        return names;
+    }
+
+    /**
      * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4): a
      * guard over the leaf h5 the view's decode of version 5 minted is,
      * where a read of the view stands that a family may re-pair, the leaf of
