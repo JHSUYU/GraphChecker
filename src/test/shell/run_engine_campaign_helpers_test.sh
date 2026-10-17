@@ -2035,12 +2035,11 @@ done <<'EOF'
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
 2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
-# PLANNER-CORPUS: the planner's heap follows its corpus
-# (campaign_stream_plan): a corpus past 90 % of the engine heap is
-# PLANNER_HEAP_EXCEEDED before any planner is asked, named as predicted; a
-# living planner whose corpus passed 80 % of its smaller heap starts again
-# at the engine heap; one under that answers as it is.  Per row: the corpus,
-# whether a planner lives (and its heap), the status, what was done.
+# PLANNER-CORPUS: the planner runs at the engine heap (campaign_stream_plan):
+# one is started there when none lives, a living one is asked as it is, and a
+# corpus past 90 % of the engine heap is PLANNER_HEAP_EXCEEDED before any
+# planner is asked, named as predicted.  Per row: the corpus, whether a
+# planner lives (and its heap), the status, what was done.
 plan_dir="${test_tmp}/planner-corpus"
 while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
   rm -rf -- "${plan_dir}"
@@ -2058,8 +2057,6 @@ while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
     fi
     campaign_corpus_mb() { printf '%s\n' "${plan_corpus}"; }
     campaign_planner_alive() { (( plan_alive )); }
-    campaign_planner_stop() { plan_alive=0; echo stop >>"${plan_dir}/done"; }
-    campaign_planner_ended() { return 0; }
     campaign_planner_start() { plan_alive=1; echo "start $1" >>"${plan_dir}/done"; }
     campaign_planner_round() { echo ask >>"${plan_dir}/done"; return 0; }
     status=0
@@ -2076,10 +2073,10 @@ gave ${plan_got}, not ${plan_status}|${plan_done}"
       || fail "a predicted PLANNER_HEAP_EXCEEDED is not named so"
   fi
 done <<'EOF'
-15000|8192|3|
-7000|8192|0|stop start 16384 ask
-3000|8192|0|ask
-3000|-|0|start 8192 ask
+15000|16384|3|
+15000|-|3|
+7000|16384|0|ask
+3000|-|0|start 16384 ask
 14000|-|0|start 16384 ask
 EOF
 
@@ -3001,10 +2998,9 @@ stream_fixture() {
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
   engine_memory_mb=1
-  # A 1 MB engine heap holds no corpus: the planner's corpus bounds
-  # (campaign_stream_plan, PLANNER-CORPUS) are not this fixture's question.
+  # A 1 MB engine heap holds no corpus: the planner's corpus bound
+  # (campaign_stream_plan, PLANNER-CORPUS) is not this fixture's question.
   campaign_planner_hold_pct=1000000000
-  campaign_planner_grow_pct=1000000000
   causynth_static_scope_map=""
   causynth_root_domains=""
   declared_target_occurrence=""
@@ -3823,18 +3819,15 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
 $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
 
 # STREAM-SERVE: ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1, §7.9).  It is
-# started once, at what the planner starts at, every round asked of it, and
-# it is ended with the exploration, its charge given back.  One that runs out
-# of a heap below the engine heap is started again at twice it and the round
-# asked again; any other end fails EXPLORE with its deepest throwable, never
-# a silent start of another.
+# started once, at the engine heap, every round asked of it, and it is ended
+# with the exploration, its charge given back; any other end than out of
+# heap fails EXPLORE with its deepest throwable, never a silent start of
+# another.
 stream_fixture stream-serve
 (
   stream_stubs
   engine_memory_mb=16384
-  stream_planner_dies() {
-    [[ "$1" != 1 || "$2" != 8192 ]] || echo 3
-  }
+  stream_planner_dies() { :; }
   stream_round_plan() {
     case "$1" in
       0) stream_propose "$2" A ;;
@@ -3851,13 +3844,11 @@ stream_fixture stream-serve
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "STREAM-SERVE: the served exploration failed: \
 $(cat "${stream_dir}/explore.log")"
-[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "8192 16384" ]] \
-  && grep -q 'ExploreMain ran out of its 8192 MB heap; run again at 16384 MB' \
-    "${stream_dir}/obligations-0001/stderr.log" \
+[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "16384" ]] \
   && jq -e '.stop == "FIXED_POINT" and .rounds == 3' \
     "${stream_dir}/exploration.json" >/dev/null \
-  || fail "STREAM-SERVE: one planner did not serve the rounds, again at twice \
-its heap once out of it: $(cat "${stream_dir}/planner-heaps.txt" \
+  || fail "STREAM-SERVE: one planner at the engine heap did not serve the \
+rounds: $(cat "${stream_dir}/planner-heaps.txt" \
 "${stream_dir}/exploration.json")"
 [[ ! -e "${stream_dir}/planner/pid" \
    && -z "$(ls "${campaign_host_gate_root}"/*/charges 2>/dev/null)" ]] \

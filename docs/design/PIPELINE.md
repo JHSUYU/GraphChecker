@@ -1800,11 +1800,15 @@ the round of it on its host (`campaign_planner_ask`, through the remote worker s
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
-PLANNER_HEAP_EXCEEDED (below). ITS HEAP FOLLOWS ITS CORPUS (`campaign_stream_plan`): a planner holds about its
-session files (SGF8 10, 40, 14 ran out of 16384-18432 MB over 16058-21867 MB), so one whose corpus passed
-`campaign_planner_grow_pct` (80) of a smaller heap starts at, or again at, the engine heap before it collects to
-its end there (~17 min of an idle pool each), and a corpus past `campaign_planner_hold_pct` (90) of the engine
-heap is PLANNER_HEAP_EXCEEDED before any planner is asked (`heap-predicted`, named so); any other end fails EXPLORE with its deepest throwable -- never a
+PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): a planner holds about its
+session files (SGF8 10, 40, 14 ran out of 16384-18432 MB over 16058-21867 MB), and one started lower outgrew its
+heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
+collecting to its end (~17 min each); a corpus past `campaign_planner_hold_pct` (90) of the engine heap is
+PLANNER_HEAP_EXCEEDED before any planner is asked (`heap-predicted`, named so). A planner or a composer is a HEAD
+STEP, one JVM alone on its host: placed, grown and given its z3 room under the head steps' ceiling
+(`campaign_head_max_used_pct`, 88 %; the replays' and solvers' stays `CAUSYNTH_HOST_MAX_USED_PCT`, 70 %), so the
+Solr study checks' engine heap is 24576 MB, a solver's at most 16384 (`campaign_solver_max_heap_mb`); every engine
+JVM runs at `-XX:NewRatio=4`, its old generation four fifths of its heap (its live set is its corpus); any other end fails EXPLORE with its deepest throwable -- never a
 silent start of another. The exploration's end stops it (`campaign_planner_stop`), and so does the
 head's EXIT trap. A head step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step

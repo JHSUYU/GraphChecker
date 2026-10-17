@@ -545,7 +545,14 @@ campaign_jvm_out_of_heap_status=3
 # watch themselves (contract.HeapWatch: half a minute's window in the
 # collector, the old generation 90 % full after its sweep, exit 3).
 campaign_engine_oom=(-XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70
-  -XX:GCHeapFreeLimit=5)
+  -XX:GCHeapFreeLimit=5
+  # The old generation four fifths of the heap, not two thirds: an engine
+  # JVM's live set is its corpus, held to its end, and the young generation
+  # only its churn (SGF8-adhoc-05's planner at -Xmx16384m: its old generation
+  # 96 % full at 10.4 GB over an 11.6 GB corpus).  A/B on SGF8-adhoc-13's
+  # round 10 at 8192 MB: every output byte-identical, 161 s vs 162 s, peak
+  # 4.4 GB vs 5.5 GB (analysis/solr-2026-10-17/newratio).
+  -XX:NewRatio=4)
 # Every engine JVM (a head's, the served planner, a solver) runs at this
 # thread stack: lowering a term recurses once per subterm, and a recorded
 # term ~750 binary operations deep overflowed the JVM's default stack in an
@@ -640,6 +647,8 @@ campaign_z3_room_mb() {
       printf '0\n'
       return 0 ;;
   esac
+  # The composer is a head step: its room is under the head steps' ceiling.
+  local campaign_host_max_used_pct=${campaign_head_max_used_pct}
   limit=$(campaign_host_limit_mb "$(campaign_host_total_mb localhost \
     | tail -n 1)")
   room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") ))
@@ -807,9 +816,6 @@ campaign_engine_start_mb() {
 #                                             (offline-ab SEED.static, 8 GB cap)
 #   the woven-class verifier                  0.17-0.19 GB, three HDFS and two
 #   (VerifyWovenClasses)                      Solr trees of round e1, 8 GB cap
-#   planner (ExploreMain)                     0.2-3 GB, but hdfs-17960 5.9-7.8
-#                                             GB and hdfs-11741 past 4 GB: at
-#                                             4 GB 17960 collected for 30 min
 #   composer (ComposeMain)                    1.4-4.3 GB; hdfs-11741 9.1 GB at
 #                                             8 GB, and m1-11741 ran out of 8;
 #                                             Solr 18406 2.9 GB, 18413 3.5,
@@ -820,7 +826,9 @@ campaign_engine_start_mb() {
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
 # growth step is the door step's main: measured as that.  Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
 # of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
-# A composer starts at its corpus's heap (do_compose), at least this; the
+# The served planner has no need: it starts at the engine heap
+# (campaign_stream_plan).  A composer starts at its corpus's heap
+# (do_compose), at least this; the
 # head reserves this for it before any engine JVM's peak is measured
 # (campaign_head_need_mb).  Started at 8 GB with a 6 GB room, its 15232 MB
 # charge, which every head reserved too, kept five bug checks of round SGF4
@@ -831,7 +839,6 @@ campaign_engine_need_mb() {
     *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
       |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain) \
       echo 2048 ;;
-    *.ExploreMain) echo 8192 ;;
   esac
 }
 
@@ -3470,23 +3477,37 @@ campaign_solver_now_mb() {
 # A solver's heap, in MB, for the corpus <sessions> (the host's solver and a
 # question's own JVM alike): room for the corpus to grow to twice what it
 # needs now (campaign_solver_now_mb) -- so one that ran out of a heap starts
-# at twice it at least -- up to the case's engine heap (engine_memory_mb).
+# at twice it at least -- up to the most a solver is given
+# (campaign_solver_most_heap_mb).
 # A host's solver gives its corpus up once it passes what this heap holds
 # (campaign_solver_retire_mb).
 campaign_solver_heap_mb() {
-  local engine=${engine_memory_mb:-8192} heap
+  local most heap
+  most=$(campaign_solver_most_heap_mb)
   heap=$(( 2 * $(campaign_solver_now_mb "${1:-}") ))
-  (( heap <= engine )) || heap=${engine}
+  (( heap <= most )) || heap=${most}
   printf '%s\n' "${heap}"
+}
+
+# The most heap a solver is given, in MB: the engine heap, at most
+# campaign_solver_max_heap_mb -- a host's solver is a start of the stream,
+# placed under the replays' ceiling beside them (CAUSYNTH_HOST_MAX_USED_PCT),
+# not a head step: at the head steps' engine heap no lift beside its in-use
+# would admit it, and its questions would wait for it forever.
+campaign_solver_max_heap_mb=16384
+campaign_solver_most_heap_mb() {
+  local engine=${engine_memory_mb:-8192}
+  printf '%s\n' "$(( engine < campaign_solver_max_heap_mb ? engine \
+    : campaign_solver_max_heap_mb ))"
 }
 
 # campaign_solver_retire_mb <heap_mb>: the corpus, in MB of session files,
 # whose live set a solver at <heap_mb> holds at the collector's room: past
 # it, a host's solver gives its corpus up (ObligationSolverMain
-# --retire-past-mb) and the next is sized anew; 0 at the engine heap, past
-# which no solver is given more.
+# --retire-past-mb) and the next is sized anew; 0 at the most heap a solver
+# is given (campaign_solver_most_heap_mb), past which none is given more.
 campaign_solver_retire_mb() {
-  (( $1 < ${engine_memory_mb:-8192} )) || { printf '0\n'; return 0; }
+  (( $1 < $(campaign_solver_most_heap_mb) )) || { printf '0\n'; return 0; }
   printf '%s\n' "$(( $1 * 10000 / (campaign_solver_live_pct \
     * campaign_solver_gc_pct) ))"
 }
@@ -4164,6 +4185,13 @@ campaign_head_charging=0
 # percent: what stays free is the page cache the JVMs read their jars and
 # corpora through, the owner's own sessions, and what no charge covers.
 campaign_host_max_used_pct=${CAUSYNTH_HOST_MAX_USED_PCT}
+# A HEAD STEP'S CEILING: a planner or a composer is one JVM, and a host that
+# holds one runs no replay beside it (its charge leaves none the replays'
+# ceiling); it may grow to this share of its host's memory (owner 2026-10-17:
+# "单机上也没啥别的workload，jvm预算直接开大给够"), with the system's own use
+# (1.0-1.6 GB a lift) and its JVM's footprint (campaign_jvm_footprint_mb)
+# beside it: the engine heap a lift of 31583 MB gives a head step is 24576 MB.
+campaign_head_max_used_pct=88
 [[ "${campaign_host_max_used_pct}" =~ ^[0-9]+$ ]] \
   && (( campaign_host_max_used_pct > 0 && campaign_host_max_used_pct <= 100 )) \
   || die "CAUSYNTH_HOST_MAX_USED_PCT must be a percentage in 1..100: \
@@ -4852,6 +4880,9 @@ campaign_placed_host=""
 campaign_head_place() {
   local need=$1 host room best best_room said=false status=0
   local since=${SECONDS}
+  # A head step is placed under the head steps' ceiling: one JVM, alone on
+  # its host while it holds it (campaign_head_max_used_pct).
+  local campaign_host_max_used_pct=${campaign_head_max_used_pct}
   while true; do
     campaign_host_head_start=1 campaign_host_try_charge localhost "${need}"
     if (( status == 0 )); then
@@ -5603,10 +5634,10 @@ campaign_stream_outgrown() {
 #   host, charge, heap, id   where it runs, its charge, its heap, which start
 #   busy     the head's room it takes, when it runs on the head's host
 #   status   its exit, once it ended
-# Its log is ${iteration_dir}/planner.log.  It runs out of heap (exit 3):
-# started again at twice its heap up to engine_memory_mb, the round asked
-# again; at the engine heap the round is PLANNER_HEAP_EXCEEDED, as a planner
-# JVM's was.  Its heap follows its corpus besides (campaign_stream_plan).  Any other end fails EXPLORE with its deepest throwable.  The
+# Its log is ${iteration_dir}/planner.log.  It runs at the engine heap
+# (campaign_stream_plan); out of it (exit 3) the round is
+# PLANNER_HEAP_EXCEEDED, as a planner JVM's was, and so is a round whose
+# corpus is past what a planner holds.  Any other end fails EXPLORE with its deepest throwable.  The
 # exploration's end stops it (campaign_planner_stop), and so does the head's
 # EXIT trap: its JVM by the pid it stated, on its host, and the shell that
 # holds it.  stop-run.sh finds it as it finds the run's other processes, by
@@ -5620,36 +5651,32 @@ campaign_planner_dir() {
     "$(id -un)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)" "$2"
 }
 
-# The planner's corpus bounds (campaign_stream_plan), in % of a heap: past
-# the hold share of the engine heap no planner is asked; past the grow share
-# of a smaller heap a living one starts again at the engine heap.
+# The planner's corpus bound (campaign_stream_plan), in % of the engine
+# heap: past it no planner is asked.
 campaign_planner_hold_pct=90
-campaign_planner_grow_pct=80
 
 # How long a question waits for a planner just started to name itself, in
 # seconds: its JVM names itself before it reads anything.
 campaign_planner_start_wait_s=300
 
 # The round <round_dir> (planning-NNNN, its frozen inputs in it), planned
-# by the exploration's planner: started first when none lives -- at
-# twice its heap when the one before ran out of heap (campaign_planner_ended)
-# -- and asked again when it ended without answering.  Its status: 0
+# by the exploration's planner: started first when none lives, at the
+# engine heap, and asked again when it ended without answering.  Its status: 0
 # planned; 3 the planner ran out of the engine heap; anything else failed,
 # the deepest throwable said on stderr.
 campaign_stream_plan() {
   local round_dir=$1 state="${iteration_dir}/planner" status since
-  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain corpus heap
-  local engine=${engine_memory_mb:-8192}
+  local corpus engine=${engine_memory_mb:-8192}
   mkdir -p "${state}"
   while true; do
-    # THE PLANNER'S HEAP FOLLOWS ITS CORPUS.  It holds about its session
-    # files (SGF8: 10, 40 and 14 ran out of 16384-18432 MB over 16058-21867
-    # MB, 0.88-1.33 of the heap): a corpus past campaign_planner_hold_pct of
-    # the engine heap is more than any planner of this case holds, and the
-    # round is PLANNER_HEAP_EXCEEDED now, never after a JVM that collected
-    # to its end (~17 min of an idle pool each, 2-3 a case); a living one
-    # whose corpus passed campaign_planner_grow_pct of a smaller heap starts
-    # again at the engine heap now, before it collects to its end there.
+    # THE PLANNER RUNS AT THE ENGINE HEAP, and is never asked past it.  It
+    # holds about its session files (SGF8: 10, 40 and 14 ran out of
+    # 16384-18432 MB over 16058-21867 MB, 0.88-1.33 of the heap); started
+    # lower, it outgrew its heap mid-exploration and read the whole corpus
+    # again at the next (SGF8-adhoc-05: 11.6 GB, ~10 min of an idle pool),
+    # after collecting to its end (~17 min each, 2-3 a case).  A corpus past
+    # campaign_planner_hold_pct of the engine heap is more than any planner of
+    # this case holds: the round is PLANNER_HEAP_EXCEEDED now.
     corpus=$(campaign_corpus_mb "${sessions}")
     if (( corpus * 100 > engine * campaign_planner_hold_pct )); then
       printf '%s\n' "the corpus of ${corpus} MB is past \
@@ -5658,23 +5685,11 @@ ${campaign_planner_hold_pct} % of the most heap a head JVM is given \
 session files): the round is not asked" >"${round_dir}/heap-predicted"
       return "${campaign_jvm_out_of_heap_status}"
     fi
-    heap=$(cat "${state}/heap" 2>/dev/null) || heap=""
-    if campaign_planner_alive && [[ -n "${heap}" ]] && (( heap < engine \
-        && corpus * 100 > heap * campaign_planner_grow_pct )); then
-      printf '[campaign] %s at %s MB holds less than its corpus of %s MB: \
-started again at %s MB\n' "${main##*.}" "${heap}" "${corpus}" "${engine}" >&2
-      campaign_planner_stop
-      rm -f -- "${state}/id"
-      campaign_engine_outgrown="$(sed "s| ${main}=[0-9]*||" \
-        <<<"${campaign_engine_outgrown}") ${main}=${engine}"
-    fi
     if ! campaign_planner_alive; then
       if [[ -s "${state}/id" ]]; then
         campaign_planner_ended "${round_dir}" || return
       fi
-      heap=$(campaign_engine_start_mb "${main}")
-      (( corpus * 100 <= heap * campaign_planner_grow_pct )) || heap=${engine}
-      campaign_planner_start "${heap}"
+      campaign_planner_start "${engine}"
     fi
     status=0
     campaign_planner_round "${round_dir}" || status=$?
@@ -5695,25 +5710,12 @@ end (its log: %s)\n' "$(cat "${state}/host")" "$(basename "${round_dir}")" \
   done
 }
 
-# The exploration's planner ended: 0 when it ran out of a heap below the
-# engine heap (the next starts at twice it, campaign_engine_outgrown), else
-# its end said on stderr -- 3 when it ran out of the engine heap, 1 for any
-# other end -- with the deepest throwable of its log.
+# The exploration's planner ended (it runs at the engine heap,
+# campaign_stream_plan): its end said on stderr -- 3 when it ran out of that
+# heap, 1 for any other end -- with the deepest throwable of its log.
 campaign_planner_ended() {
-  local round_dir=$1 state="${iteration_dir}/planner" status heap next
-  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain
-  local engine=${engine_memory_mb:-8192}
+  local round_dir=$1 state="${iteration_dir}/planner" status
   status=$(cat "${state}/status" 2>/dev/null) || status=""
-  heap=$(cat "${state}/heap")
-  if [[ "${status}" == "${campaign_jvm_out_of_heap_status}" ]] \
-      && (( heap < engine )); then
-    next=$(( 2 * heap < engine ? 2 * heap : engine ))
-    campaign_engine_outgrown="$(sed "s| ${main}=[0-9]*||" \
-      <<<"${campaign_engine_outgrown}") ${main}=${next}"
-    printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
-      "${main##*.}" "${heap}" "${next}" >&2
-    return 0
-  fi
   printf 'the planner service on %s ended with exit %s before %s (its log: \
 %s)\n' "$(cat "${state}/host")" "${status:-unknown}" \
     "$(basename "${round_dir}")" "${iteration_dir}/planner.log" >&2
@@ -5811,7 +5813,10 @@ campaign_planner_serve() {
   mv -f -- "${dir}/server.part" "${dir}/server"
   printf '%s\n' "${jvm}" >"${jvm_file}"
   watched=$(mktemp -d) || return
-  campaign_watch_workload "${jvm}" "$(campaign_jvm_footprint_mb "${heap}")" \
+  # A head step: what it grows past its footprint is asked under the head
+  # steps' ceiling (campaign_head_max_used_pct).
+  campaign_host_max_used_pct=${campaign_head_max_used_pct} \
+    campaign_watch_workload "${jvm}" "$(campaign_jvm_footprint_mb "${heap}")" \
     "${watched}" 2>>"${log}"
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
