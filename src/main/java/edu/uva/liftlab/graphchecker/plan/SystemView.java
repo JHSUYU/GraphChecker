@@ -26,8 +26,14 @@ public final class SystemView {
 
     /** The view {@value #PROPERTY} names; none where it is unset. */
     public static SystemView current() {
+        return of(System.getProperty(PROPERTY, ""));
+    }
+
+    /** The view a {@value #PROPERTY} value names: comma-separated class
+     *  names (EXPLORE's {@code --system-view}). */
+    public static SystemView of(String names) {
         Set<String> classes = new LinkedHashSet<String>();
-        for (String name : System.getProperty(PROPERTY, "").split(",")) {
+        for (String name : names.split(",")) {
             if (!name.trim().isEmpty()) classes.add(name.trim());
         }
         return new SystemView(Collections.unmodifiableSet(classes));

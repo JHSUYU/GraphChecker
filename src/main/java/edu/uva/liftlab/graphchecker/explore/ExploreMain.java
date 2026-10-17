@@ -23,6 +23,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
@@ -64,6 +65,8 @@ import java.util.TreeSet;
  *   --client-fault-transports &lt;t,...&gt;  the transports whose doors fail in
  *                              the workload client's root contexts
  *                              ({@link ClientFaults}); default: every door
+ *   --system-view &lt;c,...&gt;      the system's view classes, whose guards are
+ *                              no flip sites ({@code plan.SystemView})
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
  *   --max-world-depth
@@ -113,6 +116,8 @@ public final class ExploreMain {
     private final ObligationFactory.Bounds bounds;
     /** Where a fault door fails. */
     private final ClientFaults faults;
+    /** The system's view classes, whose guards are no flip sites. */
+    private final SystemView view;
     /** What the last round read, kept for the next. */
     private Corpus corpus;
     private StaticScopeMap scope;
@@ -134,7 +139,8 @@ public final class ExploreMain {
      */
     ExploreMain(Path iteration, String declaredAnchor, Path rootDomains,
                 Path scopeMap, String topologyEpoch, int maxTasks,
-                ObligationFactory.Bounds bounds, ClientFaults faults) {
+                ObligationFactory.Bounds bounds, ClientFaults faults,
+                SystemView view) {
         this.iteration = iteration;
         this.declaredAnchor = declaredAnchor;
         this.rootDomains = rootDomains;
@@ -143,6 +149,7 @@ public final class ExploreMain {
         this.maxTasks = maxTasks;
         this.bounds = bounds;
         this.faults = faults;
+        this.view = view;
     }
 
     public static void main(String[] argv) throws Exception {
@@ -185,7 +192,8 @@ public final class ExploreMain {
                                 ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)),
                 ClientFaults.read(options.path("system-doors"),
                         transports(options.value("client-fault-transports",
-                                ""))));
+                                ""))),
+                SystemView.of(options.value("system-view", "")));
         Path serve = options.path("serve");
         if (serve != null) {
             Service.serve(serve, 0L, (question, out) -> {
@@ -230,7 +238,8 @@ public final class ExploreMain {
                                   ObligationFactory.Bounds bounds)
             throws IOException {
         return new ExploreMain(iteration, declaredAnchor, rootDomains,
-                scopeMap, topologyEpoch, maxTasks, bounds, ClientFaults.NONE)
+                scopeMap, topologyEpoch, maxTasks, bounds, ClientFaults.NONE,
+                SystemView.of(""))
                 .round(round, inFlight, results, null, out);
     }
 
@@ -295,7 +304,7 @@ public final class ExploreMain {
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches, doorsOnly, heldDoorsOnly,
-                    faults);
+                    faults, view);
             gaps.addAll(plan.gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {

@@ -29,6 +29,7 @@ import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -193,20 +194,23 @@ public final class ClosurePlanner {
      *  expose a region for growth, {@code doorsOnly} which occurrences the
      *  current plan runs for their doors alone (rendered addresses), {@code
      *  heldDoorsOnly} which of them the system declares so for good ({@code
-     *  plan.DoorsOnlyRoots}), {@code faults} where a fault door fails. */
+     *  plan.DoorsOnlyRoots}), {@code faults} where a fault door fails,
+     *  {@code view} the system's view classes, whose guards are no flip
+     *  sites. */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches, Set<String> doorsOnly,
-                            Set<String> heldDoorsOnly, ClientFaults faults) {
+                            Set<String> heldDoorsOnly, ClientFaults faults,
+                            SystemView view) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly, heldDoorsOnly, faults);
+                branches, doorsOnly, heldDoorsOnly, faults, view);
     }
 
     /** {@link #plan} under another closure ceiling (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
-                     ClientFaults faults) {
+                     ClientFaults faults, SystemView view) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -311,6 +315,7 @@ public final class ClosurePlanner {
         Set<OccurrenceAddress> runWhole =
                 new LinkedHashSet<OccurrenceAddress>();
         int unfailed = 0;
+        int viewed = 0;
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
@@ -359,8 +364,20 @@ public final class ClosurePlanner {
                     stateConnected(corpus, demand.occurrence), seed));
             why.put(taskId, demand.why);
             // Flip sites: the demanded guards plus every FAULT decision
-            // (PIPELINE §7.2) where it fails (ClientFaults).
-            Set<String> sites = new LinkedHashSet<String>(demand.flipSites);
+            // (PIPELINE §7.2) where it fails (ClientFaults); never a guard
+            // of the system's view classes (plan.SystemView): a node's
+            // decode of a store version follows the version, and what else
+            // it could read is its writer's to state -- no read alone sees
+            // another value (SGF8 round 0 of 14, 39, 40: 615 such flips, 446
+            // unsat, 123 replays not admitted, none admitted).
+            Set<String> sites = new LinkedHashSet<String>();
+            for (String site : demand.flipSites) {
+                if (view.holds(methodOf(site))) {
+                    viewed++;
+                } else {
+                    sites.add(site);
+                }
+            }
             for (String site : corpus.faultSites(demand.occurrence)) {
                 if (faults.fails(demand.occurrence, site)) {
                     sites.add(site);
@@ -369,6 +386,15 @@ public final class ClosurePlanner {
                 }
             }
             flips.put(taskId, sites);
+        }
+        if (viewed > 0) {
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    "VIEW_GUARDS_UNFLIPPED", viewed + " demanded guard(s) of"
+                            + " the system's view classes are no flip sites:"
+                            + " a node's decode of a store version follows"
+                            + " the version, whose writer states what else"
+                            + " it could hold"));
         }
         if (unfailed > 0) {
             walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
@@ -380,6 +406,12 @@ public final class ClosurePlanner {
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
                 exposed, waiting, truncated, ceilingCut, unpaused, runWhole,
                 concrete);
+    }
+
+    /** The method a site ({@code <method>#u<n>}) is in. */
+    static String methodOf(String site) {
+        int unit = site.lastIndexOf("#u");
+        return unit < 0 ? site : site.substring(0, unit);
     }
 
     /** Plans one demand. */

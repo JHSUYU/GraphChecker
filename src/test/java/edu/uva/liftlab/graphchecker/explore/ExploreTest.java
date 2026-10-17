@@ -50,6 +50,7 @@ import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.plan.SystemView;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import org.junit.After;
@@ -1273,7 +1274,7 @@ public class ExploreTest {
         ExploreMain served = new ExploreMain(iteration, TARGET_SELECTOR, null,
                 iteration.resolve(StaticScopeMap.FILE), "epoch0",
                 ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS,
-                ClientFaults.NONE);
+                ClientFaults.NONE, SystemView.of(""));
         // round -> what lands before it: a world's session, its leaving,
         // another world's; and one that lands after the round's corpus was
         // frozen, while it plans.
@@ -3571,7 +3572,8 @@ public class ExploreTest {
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
                 Collections.singleton(WRITER.render()),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
         assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
         assertEquals("no focused replay ran it: the fixed point names it",
                 Collections.singleton(WRITER), doors.runWhole);
@@ -3757,7 +3759,8 @@ public class ExploreTest {
                             Collections.singletonList(target),
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
             List<String> kept = focused(cut);
             List<String> expected = new ArrayList<String>(Arrays.asList(
                     target.render(), writer.render(), producer.render()));
@@ -6586,7 +6589,8 @@ public class ExploreTest {
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
     }
 
     /**
@@ -6659,7 +6663,8 @@ public class ExploreTest {
                             Collections.singletonList(TARGET),
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
             Set<String> planned = new LinkedHashSet<String>();
             for (Task task : plan.tasks) planned.add(task.focused().render());
             Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
@@ -6683,7 +6688,8 @@ public class ExploreTest {
                 map, Branches.of(corpus, Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
             Collections.<String>emptySet(),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
         Set<String> kept = new LinkedHashSet<String>();
         for (Task task : capped.tasks) kept.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -6765,7 +6771,8 @@ public class ExploreTest {
                         Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
                     Collections.<String>emptySet(),
-                Collections.<String>emptySet(), ClientFaults.NONE);
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""));
         Set<String> planned = new LinkedHashSet<String>();
         for (Task task : plan.tasks) planned.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),

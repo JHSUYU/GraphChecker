@@ -5234,6 +5234,8 @@ campaign_stream_round_args() {
   [[ -z "${causynth_client_fault_transports}" ]] || stream_round_args+=(
     --system-doors "${causynth_system_doors}"
     --client-fault-transports "${causynth_client_fault_transports}")
+  [[ -z "${causynth_system_view}" ]] \
+    || stream_round_args+=(--system-view "${causynth_system_view}")
   [[ -z "${region_path_max_paths_per_region}" ]] || stream_round_args+=(
     --max-paths-per-region "${region_path_max_paths_per_region}")
   [[ -z "${region_path_max_flips_per_path}" ]] || stream_round_args+=(
