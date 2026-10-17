@@ -875,10 +875,18 @@ public final class ClosurePlanner {
         /** Whether {@link #contributed} and {@link #cutoffs} are still a
          *  {@link Contribution}'s, copied before this demand changes them. */
         private boolean shared;
+        /*
+         * Its identity sets start at the smallest table, not the default 64
+         * slots: a demand is made for every write a demanded read could
+         * observe and folded at once into the one it repeats (Demand.<init>
+         * and the garbage it leaves were 2 % of SGF8PLAN-adhoc-05 round 2's
+         * walk, its two default identity tables 0.7 KB of it).
+         */
         /** The contributions every value of which this demand holds. */
         private final Set<Contribution> holds =
                 Collections.newSetFromMap(
-                        new java.util.IdentityHashMap<Contribution, Boolean>());
+                        new java.util.IdentityHashMap<Contribution, Boolean>(
+                                1));
         /** The contribution this demand's values are exactly, or null. */
         private Contribution exactly;
         private final Set<String> flipSites = new LinkedHashSet<String>();
@@ -910,13 +918,19 @@ public final class ClosurePlanner {
         private final Set<String> paired = new HashSet<String>();
         /** The demanded reads whose writers it expanded. */
         private final Set<ReadRow> expandedReads = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<ReadRow, Boolean>());
+                new java.util.IdentityHashMap<ReadRow, Boolean>(1));
         /** How many of its contributed values' stated reads it expanded, in
          *  {@link #contributed}'s order (which only appends). */
         private int expandedContributed;
         /** What its values name, as its last walk closed it ({@link
          *  #demanded}); null before its first walk. */
         private Named named;
+        /** The write a writer's demand was made of ({@link #writer}), or
+         *  null: all it holds, and all it ever will, it holds of it. */
+        private WriteRow madeOf;
+        /** The writes whose writer's demand it absorbed ({@link #absorb});
+         *  null until one. */
+        private Set<WriteRow> absorbed;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
@@ -960,6 +974,25 @@ public final class ClosurePlanner {
          * @return whether this demand grew
          */
         private boolean absorb(Demand other) {
+            // A writer's demand it absorbed already -- the same write
+            // offered again by another read that could observe it, or by
+            // another demand's group -- changes nothing: its values, guards
+            // and reason were folded then and only grow (SGF8PLAN-adhoc-05
+            // round 2: absorb was 15 % of the walk, mostly writers' demands
+            // folded again).
+            WriteRow write = other.madeOf;
+            if (write != null) {
+                if (write == madeOf || absorbed != null
+                        && absorbed.contains(write)) {
+                    return false;
+                }
+                if (absorbed == null) {
+                    absorbed = Collections.newSetFromMap(
+                            new java.util.IdentityHashMap<WriteRow, Boolean>(
+                                    1));
+                }
+                absorbed.add(write);
+            }
             boolean grew = false;
             // Values it holds already add nothing: one producer's every
             // delivery, paired again by each session's attach of it (Z3D
@@ -1104,8 +1137,12 @@ public final class ClosurePlanner {
          *  #demanded}). */
         private final RestsOn restsOn;
         private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
-        /** what|endpoint id of each delivery said unread. */
-        private final Set<String> unread = new LinkedHashSet<String>();
+        /** what -> the endpoint ids of the deliveries said unread: asked of
+         *  every undemanded row a whole walk meets, no key is built for it
+         *  (SGF8PLAN-adhoc-05 round 2: the concatenated what|id was 6 % of
+         *  the walk). */
+        private final Map<String, Set<String>> unread =
+                new HashMap<String, Set<String>>();
         /** (site, node) -> the activated occurrences that hold the site. */
         private final Map<List<Object>, List<OccurrenceAddress>> holders =
                 new HashMap<List<Object>, List<OccurrenceAddress>>();
@@ -1818,7 +1855,10 @@ public final class ClosurePlanner {
      */
     private static void unread(Walk walk, String sessionId,
                                Endpoint endpoint, String what) {
-        if (!walk.unread.add(what + "|" + endpoint.id())) return;
+        if (!walk.unread.computeIfAbsent(what,
+                unused -> new HashSet<String>()).add(endpoint.id())) {
+            return;
+        }
         walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, endpoint.toString(),
                 "no demanded value of this occurrence rests on this " + what
@@ -2068,6 +2108,7 @@ public final class ClosurePlanner {
                 write.seq());
         paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
         paired.storeWriter = write.location().kind() == LocationKind.STORE;
+        paired.madeOf = write;
         return paired;
     }
 
