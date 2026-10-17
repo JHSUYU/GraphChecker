@@ -2255,7 +2255,10 @@ the name it had, and the body is byte for byte the one a composer dropping nothi
 leaves is its statements, the declarations of the names its lowering touched (`declared` decides domains, pins
 and refutations) and its manifest rows (SGF8OOM-adhoc-14 at 20 GB: about 110 MB a path over an 8.5 GB corpus,
 against 400 MB before, so 27 of its 353 paths composed before the bound, against 6); its progress line every
-minute says how full the old generation is.
+minute says how full the old generation is. A composition whose paths all fit the bound can still run out of the engine heap
+building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then composes again with half the
+paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
+until one composition ends or one path is all it had.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the
