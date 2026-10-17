@@ -94,31 +94,40 @@ remain, each named where it applies:
 
 ## Solr checks: each case's `.smt`, read by hand (lead, 2026-10-08 on; branch, round, verdict, reading)
 
-The 20 cases of the Solr group (TODO "Solr"). A row is final once its `.smt` was read against Solr 8.11.4 (CHECKING §2)
-on the final code. The final round SGF3 (2026-10-13, TODO Solr §4) runs on the merged code (snapshots `~/gc-run/sgf3`
-5fae3fedb for the first six bug checks, `~/gc-run/sgf3b` 294f10623 for the rest), tree gc/solr-final9 0ce3deafed,
-`vm-force8`; a row marked "read" is final. Readings with the chain against the tree:
-`/bigtemp/vnr3ne/analysis/solr-2026-10-12/readings/<case>-SGF3.md` (earlier rounds: `<case>-SGF2.md`, `reindex-SGF2R.md`,
-`lock-leak-SG3I.md`). Rounds: the lead's `/bigtemp/vnr3ne/gc-out/solr` (SGF3-*, gates L3Z-*/L3C-*; earlier SGF-*, SGF2-*,
-SGF2R-*), agents' `gc-out/solr-zt` (EX: EXZ1-*), `gc-out/solr-zk2` (Z2: Z3*), `gc-out/solr-sc` (SC: NC*), `gc-out/solr-sg3` (ST).
+The 20 cases of the Solr group (TODO "Solr"): the eight bug checks must be SAT, confirmed, native; the twelve study
+checks end SAT, UNSAT or at a named bound (owner: a roughly-right `.smt`, best effort). The final rounds ran each case
+ALONE on the 13 pool lifts (lift11 the control host): SGF7 (2026-10-14/16, `system/solr` eeda09fc6..bad02c271, tree
+gc/solr-zktrace 8fde6b812c) and SGF8 (2026-10-16/17, after the owner's optimization batch; tree gc/solr-zktrace2
+12d23091d1 = the fork's `graphchecker/solr-checks`, sets `sg3i-trees`/`sg3j-trees`, VM `vm-force8`). Times and the
+final closure's regions: `analysis/solr-2026-10-14/final-stats.py SGF7|SGF8`; light `.smt` readings:
+`analysis/solr-2026-10-14/final-readings.md` (legends `analysis/solr-2026-10-16/legend-<n>.txt`); rounds under
+`/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`, the driver's log `SGF8-seq.log`. The fork's fresh-clone check
+(2026-10-17, `analysis/solr-2026-10-16/fork-check5.sh`): 17/17 natives, 20/20 cases valid.
 
 Latest evidence per case (the detailed rows below are each case's history):
 
-| case | latest | verdict | open |
+| case | latest | verdict | time (s) |
 | --- | --- | --- | --- |
-| solr-18406 | SGF3 (sgf3 5fae3fedb, final9, vm-force8); L3Z/L3C gates | SAT CLOCK_SKEW, confirmed, native 10/10, 1330 s | read (below) |
-| solr-18413 | SGF2 | SAT CLOCK_SKEW, confirmed, native 10/10 (round-verify's 300 s z3 on the exported file timed out; COMPOSE decided path by path) | SGF3; Z3S-18413 on solr-zk5 stopped by the owner's stop |
-| solr-bugs-migrate-buffer-leak | SGF3 | SAT MARKER_FLIPPED (ConnectionLoss past the retries at the first MIGRATE's ADDROUTINGRULE offer, after its buffer step), confirmed, native 10/10, 1603 s | read (below) |
-| solr-bugs-restore-construction | SGF3; L3C gate (solr-confirm-spell) | SAT MARKER_FLIPPED (SessionExpired at the state updater's setData, Overseer failover), confirmed, native 9/10, 1780 s | read (below) |
-| solr-bugs-tra-start-overwrite | SGF3 | SAT STATE_PAIRING_FLIPPED (node1's aliases view at v1), confirmed, native 10/10, 1702 s | read (below) |
-| solr-bugs-overseer-lock-leak | SGF3 | SAT MARKER_FLIPPED by #50's chain (ConnectionLoss past the retries at markTaskAsRunning's create, session alive), confirmed, native 10/10, 2489 s, BOUNDED view_hold_max off the witness | read (below) |
-| solr-bugs-reindex-cleanup | SGF2R; NC1 (solr-native-claim 67233f0cb) | SAT MARKER_FLIPPED by #04's chain (the client's DELETEALIAS fails, the abort's cleanup is refused), confirmed; native 0 runs in SGF2R (ORDER_UNHELD on claimed Overseer work), 10/10 on NC1 | merge solr-native-claim + solr-confirm-spell (a false CONFIRM refusal on node address spellings), SGF3 |
-| solr-bugs-snapshot-no-active | SGF5 (sgf5 60de0b60f) | MISSING at the budget (14400 s): attempt 0000's SAT MARKER_FLIPPED claim (session 99c45ea4, the state updater's create took false) was refused by CONFIRM, PAIRING_UNHELD on the Overseer's read of node0's snapshot-metadata view, a read no model or world paired: its own fetch's decode at the version it observed (Z3Q's refusal was the same, an unchosen join, not a COMPOSE pairing); excluded, and attempt 0001 composed the whole corpus (220 sessions, 112 paths), out of its 4 GB heap, rerun at 8 GB and cut at the budget. Fixed by `solr-heldview` (CONFIRM compares such a read at its observed version, holds nothing); offline, attempt 0000's claim now writes its confirmation (740 edges) | `solr-heldview` live gate, rerun |
-| solr-adhoc-38 | SC5, SGF2; EXZ1 (final9) | SAT confirmed twice, native 0/10 (the PULL replicas' getLeader hang), new-bugs #14; EXZ1: UNSAT_CLOSED over 24 flips that timed out twice (REPLAY_BOUNDED defect, EX) | merge solr-replaybound, SGF3 |
-| solr-adhoc-21 | SGF2 | RUN_DEFECT at budget (14218 s): BLOCKING UNSTATED_VALUE, PATH_SELF_CONTRADICTORY, ADMISSION_GAP; UNBOUND 8 (before the leaf-sort fix) | SGF3 |
-| solr-adhoc-13 | SGF2 | MISSING: the budget ran out in COMPOSE (14400 s) | SGF3 (plancost merged) |
-| solr-adhoc-05, 07, 09, 10, 14, 19, 40 | SGF2 | stopped by the lead to free the pool for the gates (no verdict) | SGF3 |
-| solr-adhoc-31, 39 | SP6-39 (int10) | 39: all paths refused on a String overload (fixed, solr-str2); then the seed path's self-check timed out (z3) | SGF3 |
+| solr-18406 | SGF7 | PASS: SAT CLOCK_SKEW, confirmed, native 10/10, control 0/10 | 828 |
+| solr-18413 | SGF7 (sgf19 974e33ad0) | PASS: SAT CLOCK_SKEW, confirmed, native 10/10 fatal, control 0/10 | 2019 |
+| solr-bugs-migrate-buffer-leak | SGF7 | PASS: SAT MARKER_FLIPPED, confirmed, native 10/10 | 699 |
+| solr-bugs-restore-construction | SGF7 | PASS: SAT MARKER_FLIPPED, confirmed, native 10/10 | 610 |
+| solr-bugs-overseer-lock-leak | SGF7 | PASS: SAT MARKER_FLIPPED, confirmed, native 10/10 | 875 |
+| solr-bugs-tra-start-overwrite | SGF7 | PASS: SAT STATE_PAIRING_FLIPPED, confirmed, native 10/10 | 943 |
+| solr-bugs-reindex-cleanup | SGF7 | PASS: SAT MARKER_FLIPPED, confirmed, native 10/10 | 1113 |
+| solr-bugs-snapshot-no-active | SGF7 (sgf20 bad02c271) | SAT MARKER_FLIPPED, confirmed, native 10/10, control 0/10 | 878 |
+| solr-adhoc-38 | SGF7 (sgf10) | SAT MARKER_FLIPPED, confirmed in the VM, native 0/10 (the PULL replicas' getLeader hang) | 1222 |
+| solr-adhoc-09 | SGF7 (sgf20) | UNSAT_CLOSED (fixed point; plain re-check unsat) | 6887 |
+| solr-adhoc-21 | SGF8 (sgf28 64178b266) | UNSAT_CLOSED (fixed point; 10 of 20 paths composed, 10 refused on map reads, now havoc) | 2363 |
+| solr-adhoc-19 | SGF8 (sgf28) | formula UNSAT at CAMPAIGN_BUDGET_REACHED (5 of 23 paths; 17 on unplaced clock cells) | 6752 |
+| solr-adhoc-13 | SGF8 (sgf32 e60df391d) | formula UNSAT at FIXED_POINT, closure truncated (126/126 paths) | 3128 |
+| solr-adhoc-10 | SGF8 (sgf32) | formula UNSAT at PLANNER_HEAP_EXCEEDED, closure truncated (382/382 paths) | 7660 |
+| solr-adhoc-40 | SGF8 (sgf38 d86da5a04), last | queued (SGF8Z3ROOM: no claim, its composer fitted no lift at heap 18432) | |
+| solr-adhoc-39 | SGF8 (sgf36 2aa686ec9) | formula UNSAT at FIXED_POINT (57/57 paths; 3 planned occurrences no session ran, named) | 2581 |
+| solr-adhoc-05 | SGF8 (sgf38 d86da5a04) | queued | |
+| solr-adhoc-07 | SGF8 (sgf38 d86da5a04) | queued | |
+| solr-adhoc-31 | SGF8 (sgf38 d86da5a04) | queued | |
+| solr-adhoc-14 | SGF8 (sgf38 d86da5a04) | queued (SGF8OOM: every path refused, composer out of heap; fixed by havoc + the heap bound) | |
 
 | case | branch, round | verdict | reading |
 | --- | --- | --- | --- |
