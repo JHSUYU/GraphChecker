@@ -2936,8 +2936,18 @@ campaign_replay_typical_mb=0
 # read; at 23 replays to a host about four end within any minute.
 campaign_replay_spike_mb=0
 campaign_replay_spikes=4
+# The cores one replay keeps busy (campaign_stream_kind_cores): what the seed
+# replay kept busy alone, then at least the 90th percentile of the replays
+# after it once enough returned (campaign_replay_cores_measured), whole cores.
+# Counted one, solr-adhoc-05's replays kept 2.2-3.7 cores busy each, and 8 of
+# 13 hosts ran at 96-100 % CPU with 13-18 of them; in solr-adhoc-10 a replay
+# beside 20-29 others on its host ran 40 % longer than one beside 0-9
+# (parallel audit 2026-10-17).
+campaign_replay_cores=1
+campaign_replay_seed_cores=1
+campaign_replay_cores_x100=()
 # How many replays after the seed's must have returned before the stream
-# charges the typical replay instead of the largest.
+# charges the typical one of them instead of the seed's life.
 campaign_replay_typical_after=8
 
 # The memory, in MB, one replay of this campaign needs once one was measured
@@ -2980,13 +2990,66 @@ campaign_replay_measured() {
   read -r mean 2>/dev/null <"$1/workload_rss_mean_mb" || mean=${peak}
   [[ "${mean}" =~ ^[0-9]+$ ]] || mean=${peak}
   (( first )) || campaign_replay_typical "${peak}" "${mean}"
+  campaign_replay_cores_measured "$1" "${first}"
   (( peak > campaign_replay_peak_mb )) || return 0
   before=$(campaign_replay_need_mb)
   campaign_replay_peak_mb=${peak}
+  # Until the stream's own replays are measured (campaign_replay_typical),
+  # a replay of the stream is charged a quarter more than the seed replay
+  # held over its life (solr-adhoc-05's replays held 1040 MB in 9 of 10, its
+  # seed 867), and a host keeps room for ends that reach the largest peak so
+  # far: charged 1.5 times the seed's peak (2432 MB, SGF8POOL-adhoc-05), a
+  # round 0 of 600 obligations filled every host at seven replays of 200-300
+  # MB each, 12-38 % of its memory in use, and held them so for the round.
+  if (( ${#campaign_replay_peaks[@]} < campaign_replay_typical_after )); then
+    (( ! first )) || campaign_replay_typical_mb=$(campaign_replay_life_mb \
+      "$(( mean * 5 / 4 ))")
+    campaign_replay_spike_mb=$(( peak > campaign_replay_typical_mb \
+      ? peak - campaign_replay_typical_mb : 0 ))
+  fi
   (( first )) || [[ "$(campaign_replay_need_mb)" != "${before}" ]] || return 0
   campaign_log "a replay peaked at ${peak} MB (${1}): every replay from now \
-on needs $(campaign_replay_need_mb) MB and is charged \
-$(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
+on needs $(campaign_replay_need_mb) MB (its heap's basis); a replay of the \
+stream is charged $(campaign_stream_charge_mb REPLAY) MB at its start, with \
+room for ${campaign_replay_spikes} ends of ${campaign_replay_spike_mb} MB \
+beside it"
+}
+
+# campaign_replay_cores_measured <worker_dir> <first>: the cores the replay
+# of <worker_dir> kept busy over its life (workload_cores_x100,
+# campaign_watch_workload), taken into campaign_replay_cores, said when they
+# move: the first measured (the seed's, alone on its host) sets the least.
+campaign_replay_cores_measured() {
+  local x100 cores
+  read -r x100 2>/dev/null <"$1/workload_cores_x100" || return 0
+  [[ "${x100}" =~ ^[0-9]+$ ]] || return 0
+  if (( $2 )); then
+    campaign_replay_seed_cores=$(( (x100 + 99) / 100 ))
+    (( campaign_replay_seed_cores >= 1 )) || campaign_replay_seed_cores=1
+    cores=${campaign_replay_seed_cores}
+  else
+    campaign_replay_cores_x100+=("${x100}")
+    (( ${#campaign_replay_cores_x100[@]} >= campaign_replay_typical_after )) \
+      || return 0
+    cores=$(( ($(campaign_percentile_90 "${campaign_replay_cores_x100[@]}") \
+      + 99) / 100 ))
+    (( cores >= campaign_replay_seed_cores )) \
+      || cores=${campaign_replay_seed_cores}
+  fi
+  (( cores != campaign_replay_cores )) || return 0
+  campaign_replay_cores=${cores}
+  campaign_log "a replay keeps ${cores} core(s) busy (the seed's alone: \
+${campaign_replay_seed_cores}; ${#campaign_replay_cores_x100[@]} after it \
+returned): a host takes as many replays as its cores hold at that"
+}
+
+# A replay's charge for a life's mean resident memory of <mean_mb>: rounded
+# up to 128 MB, at least campaign_replay_min_need_mb.
+campaign_replay_life_mb() {
+  local life=$(( ($1 + 127) / 128 * 128 ))
+  (( life >= campaign_replay_min_need_mb )) \
+    || life=${campaign_replay_min_need_mb}
+  printf '%s\n' "${life}"
 }
 
 # campaign_replay_typical <peak_mb> <mean_mb>: one more replay after the
@@ -3015,11 +3078,10 @@ campaign_replay_typical() {
     || return 0
   p90=$(campaign_percentile_90 "${campaign_replay_means[@]}")
   p90_peak=$(campaign_percentile_90 "${campaign_replay_peaks[@]}")
-  typical=$(( (p90 + 127) / 128 * 128 ))
-  (( typical >= campaign_replay_min_need_mb )) \
-    || typical=${campaign_replay_min_need_mb}
+  typical=$(campaign_replay_life_mb "${p90}")
   campaign_replay_spike_mb=$(( p90_peak > typical ? p90_peak - typical : 0 ))
-  (( typical != campaign_replay_typical_mb )) || return 0
+  (( ${#campaign_replay_peaks[@]} > campaign_replay_typical_after \
+     && typical == campaign_replay_typical_mb )) && return 0
   campaign_replay_typical_mb=${typical}
   campaign_log "the replays after the seed's held ${p90} MB or less over \
 their lives in 9 of 10, and peaked at their ends at ${p90_peak} MB or less \
@@ -4610,12 +4672,15 @@ campaign_workload_output_bytes() {
 # <dir> or its output for campaign_unbounded_stall_s (RECORDING_STALLED,
 # campaign_workload_output_bytes), its threads first dumped on its own
 # output (SIGQUIT).
+# The kernel's clock ticks a second, the unit of /proc/<pid>/stat's CPU
+# times (campaign_watch_workload).
+campaign_clock_ticks=$(getconf CLK_TCK 2>/dev/null) || campaign_clock_ticks=100
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
-  local sum=0 reads=0
+  local sum=0 reads=0 ticks=0 started=${EPOCHREALTIME/./} lasted=0
   local output="" wrote="" since=${SECONDS}
-  local -a grants=()
+  local -a grants=() stat=()
   [[ -z "${traced}" ]] || rm -f -- "${dir}/${campaign_recording_end_marker}"
   while kill -0 "${pid}" 2>/dev/null; do
     if (( max_mb > 0 )); then
@@ -4649,6 +4714,11 @@ ever times out; its threads are dumped on its output; ended"
       sum=$(( sum + mb ))
       reads=$(( reads + 1 ))
     fi
+    # Its CPU time so far, all its threads' (utime + stime, in clock ticks).
+    if read -r -a stat 2>/dev/null <"/proc/${pid}/stat"; then
+      ticks=$(( stat[13] + stat[14] ))
+      lasted=$(( ${EPOCHREALTIME/./} - started ))
+    fi
     if (( ${mb:-0} > peak )); then
       peak=${mb}
       [[ -z "${dir}" ]] \
@@ -4675,6 +4745,11 @@ ever times out; its threads are dumped on its output; ended"
   # its end (campaign_replay_typical).
   [[ -z "${dir}" ]] || (( reads == 0 )) \
     || printf '%s\n' "$(( sum / reads ))" >"${dir}/workload_rss_mean_mb"
+  # And the cores it kept busy over its life, in hundredths: its CPU time
+  # over its wall time (campaign_replay_cores).
+  [[ -z "${dir}" ]] || (( lasted < 1000000 )) \
+    || printf '%s\n' "$(( ticks * 100000000 / campaign_clock_ticks \
+      / lasted ))" >"${dir}/workload_cores_x100"
   if [[ -n "${ended}" ]]; then
     printf '%s\n' "${ended}" >"${dir}/${campaign_recording_end_marker}"
     echo "causynth: ${ended}" >&2
@@ -5126,6 +5201,7 @@ campaign_explore() {
   local stream_admitted_pass="" stream_seated_ms=0 stream_seated_n=0
   local stream_read_mb_s=0
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
+  local -A stream_job_cores=()
   local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
   local -a stream_hard=()
@@ -5421,7 +5497,11 @@ campaign_stream_round() {
   name="obligations-${1##*-}"
   campaign_stream_plan "${dir}" >"${dir}/stdout.log" 2>"${dir}/stderr.log" \
     || status=$?
-  if (( status == campaign_jvm_out_of_heap_status )); then
+  if (( status == campaign_jvm_out_of_heap_status )) \
+      && [[ -s "${dir}/heap-predicted" ]]; then
+    printf '%s\n' "the planner of ${name}: $(cat "${dir}/heap-predicted")" \
+      >"${dir}/heap-exceeded"
+  elif (( status == campaign_jvm_out_of_heap_status )); then
     printf '%s\n' "the planner of ${name} ran out of the most heap a head \
 JVM is given (engine_memory_mb=${engine_memory_mb:-8192}) over a corpus of \
 $(du -s -m -- "${sessions}" | cut -f1) MB ($(campaign_thrown \
@@ -5526,7 +5606,7 @@ campaign_stream_outgrown() {
 # Its log is ${iteration_dir}/planner.log.  It runs out of heap (exit 3):
 # started again at twice its heap up to engine_memory_mb, the round asked
 # again; at the engine heap the round is PLANNER_HEAP_EXCEEDED, as a planner
-# JVM's was.  Any other end fails EXPLORE with its deepest throwable.  The
+# JVM's was.  Its heap follows its corpus besides (campaign_stream_plan).  Any other end fails EXPLORE with its deepest throwable.  The
 # exploration's end stops it (campaign_planner_stop), and so does the head's
 # EXIT trap: its JVM by the pid it stated, on its host, and the shell that
 # holds it.  stop-run.sh finds it as it finds the run's other processes, by
@@ -5540,6 +5620,12 @@ campaign_planner_dir() {
     "$(id -un)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)" "$2"
 }
 
+# The planner's corpus bounds (campaign_stream_plan), in % of a heap: past
+# the hold share of the engine heap no planner is asked; past the grow share
+# of a smaller heap a living one starts again at the engine heap.
+campaign_planner_hold_pct=90
+campaign_planner_grow_pct=80
+
 # How long a question waits for a planner just started to name itself, in
 # seconds: its JVM names itself before it reads anything.
 campaign_planner_start_wait_s=300
@@ -5552,14 +5638,43 @@ campaign_planner_start_wait_s=300
 # the deepest throwable said on stderr.
 campaign_stream_plan() {
   local round_dir=$1 state="${iteration_dir}/planner" status since
-  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain
+  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain corpus heap
+  local engine=${engine_memory_mb:-8192}
   mkdir -p "${state}"
   while true; do
+    # THE PLANNER'S HEAP FOLLOWS ITS CORPUS.  It holds about its session
+    # files (SGF8: 10, 40 and 14 ran out of 16384-18432 MB over 16058-21867
+    # MB, 0.88-1.33 of the heap): a corpus past campaign_planner_hold_pct of
+    # the engine heap is more than any planner of this case holds, and the
+    # round is PLANNER_HEAP_EXCEEDED now, never after a JVM that collected
+    # to its end (~17 min of an idle pool each, 2-3 a case); a living one
+    # whose corpus passed campaign_planner_grow_pct of a smaller heap starts
+    # again at the engine heap now, before it collects to its end there.
+    corpus=$(campaign_corpus_mb "${sessions}")
+    if (( corpus * 100 > engine * campaign_planner_hold_pct )); then
+      printf '%s\n' "the corpus of ${corpus} MB is past \
+${campaign_planner_hold_pct} % of the most heap a head JVM is given \
+(engine_memory_mb=${engine}), more than a planner holds (one holds about its \
+session files): the round is not asked" >"${round_dir}/heap-predicted"
+      return "${campaign_jvm_out_of_heap_status}"
+    fi
+    heap=$(cat "${state}/heap" 2>/dev/null) || heap=""
+    if campaign_planner_alive && [[ -n "${heap}" ]] && (( heap < engine \
+        && corpus * 100 > heap * campaign_planner_grow_pct )); then
+      printf '[campaign] %s at %s MB holds less than its corpus of %s MB: \
+started again at %s MB\n' "${main##*.}" "${heap}" "${corpus}" "${engine}" >&2
+      campaign_planner_stop
+      rm -f -- "${state}/id"
+      campaign_engine_outgrown="$(sed "s| ${main}=[0-9]*||" \
+        <<<"${campaign_engine_outgrown}") ${main}=${engine}"
+    fi
     if ! campaign_planner_alive; then
       if [[ -s "${state}/id" ]]; then
         campaign_planner_ended "${round_dir}" || return
       fi
-      campaign_planner_start "$(campaign_engine_start_mb "${main}")"
+      heap=$(campaign_engine_start_mb "${main}")
+      (( corpus * 100 <= heap * campaign_planner_grow_pct )) || heap=${engine}
+      campaign_planner_start "${heap}"
     fi
     status=0
     campaign_planner_round "${round_dir}" || status=$?
@@ -6766,11 +6881,12 @@ campaign_stream_has_cores() {
 # The cores one start of <kind> keeps busy on its host: a solve -- a
 # question its host's solver answers, or a HARD's corpus-free JVM
 # -- its z3 race, two z3 processes, one per arithmetic engine (smt/Z3); a
-# replay (a REPLAY, a RERUN, a CONFIRM) one.
+# replay (a REPLAY, a RERUN, a CONFIRM) what replays measurably keep busy
+# (campaign_replay_cores).
 campaign_stream_kind_cores() {
   case "${1:-}" in
     OBLIGATION|HARD) printf '2\n' ;;
-    *) printf '1\n' ;;
+    *) printf '%s\n' "${campaign_replay_cores}" ;;
   esac
 }
 
@@ -6879,7 +6995,10 @@ campaign_stream_start() {
     || stream_job_since[$!]="$(date +%s%3N) ${stream_admitted_pass:-}"
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
-  campaign_stream_host_count "${host}" "${kind}" 1
+  # The cores it was admitted at go back at its end, whatever the measure
+  # says by then.
+  stream_job_cores[$!]=$(campaign_stream_kind_cores "${kind}")
+  campaign_stream_host_count "${host}" "${kind}" 1 "${stream_job_cores[$!]}"
 }
 
 # campaign_stream_host_count <host> <kind> <delta>: one start of <kind> on
@@ -6888,9 +7007,10 @@ campaign_stream_start() {
 # campaign_stream_kind_cores) and, a seated question, its seat
 # (stream_host_solves, campaign_stream_seated).
 campaign_stream_host_count() {
-  local host=$1 kind=$2 delta=$3
+  local host=$1 kind=$2 delta=$3 cores=${4:-}
+  [[ -n "${cores}" ]] || cores=$(campaign_stream_kind_cores "${kind}")
   stream_host_busy[${host}]=$(( ${stream_host_busy[${host}]:-0} \
-    + delta * $(campaign_stream_kind_cores "${kind}") ))
+    + delta * cores ))
   ! campaign_stream_seated "${kind}" \
     || stream_host_solves[${host}]=$(( ${stream_host_solves[${host}]:-0} \
       + delta ))
@@ -6970,7 +7090,8 @@ campaign_stream_ended() {
     worker=${stream_job_worker[${pid}]}
     campaign_stream_release "${pid}"
     campaign_replay_measured "${worker}"
-    campaign_stream_host_count "${host}" "${kind}" -1
+    campaign_stream_host_count "${host}" "${kind}" -1 \
+      "${stream_job_cores[${pid}]:-}"
     answer=""
     again=""
     if [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
@@ -7013,7 +7134,7 @@ campaign_stream_ended() {
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' \
-      'stream_job_tree[$pid]' 'stream_job_since[$pid]'
+      'stream_job_tree[$pid]' 'stream_job_since[$pid]' 'stream_job_cores[$pid]'
   fi
 }
 

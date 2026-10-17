@@ -1998,9 +1998,10 @@ EOF
 # memory (rounded up to 128 MB, at least 512, at most the need; a replay that
 # stated no mean counts its peak), its heap still the need, and a host keeps
 # room for four ends of their peaks' 90th percentile less that charge;
-# before that, the need and no room.  Per row: the seed's peak, the later
-# replays' peak[/mean], the need, the stream's replay charge after them and
-# an end's growth.
+# before that, a quarter more than the seed's life mean (at most the need),
+# and room for ends that reach the largest peak so far.  Per row: the seed's
+# peak[/mean], the later replays' peak[/mean], the need, the stream's replay
+# charge after them and an end's growth.
 while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge \
     typical_spike; do
   rm -rf -- "${measured_dir}"
@@ -2028,11 +2029,93 @@ while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge \
 ${typical_got}, not ${typical_need}|${typical_charge}|${typical_spike}"
 done <<'EOF'
 2234|918 900 950 1000 880 1242 920 910|3456|1280|0
-3454|1583 1600 1500|5248|5248|0
+3454|1583 1600 1500|5248|4352|0
+1600/867|1991/1040 2088/1000|3200|1152|936
 2234|300 310 320 330 340 350 360 370|3456|512|0
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
 2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
+# PLANNER-CORPUS: the planner's heap follows its corpus
+# (campaign_stream_plan): a corpus past 90 % of the engine heap is
+# PLANNER_HEAP_EXCEEDED before any planner is asked, named as predicted; a
+# living planner whose corpus passed 80 % of its smaller heap starts again
+# at the engine heap; one under that answers as it is.  Per row: the corpus,
+# whether a planner lives (and its heap), the status, what was done.
+plan_dir="${test_tmp}/planner-corpus"
+while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
+  rm -rf -- "${plan_dir}"
+  mkdir -p "${plan_dir}/planning-0003" "${plan_dir}/planner"
+  plan_got=$(
+    iteration_dir=${plan_dir}
+    engine_memory_mb=16384
+    sessions=${plan_dir}/sessions
+    campaign_engine_outgrown=""
+    plan_alive=0
+    if [[ "${plan_heap}" != - ]]; then
+      plan_alive=1
+      echo "${plan_heap}" >"${plan_dir}/planner/heap"
+      echo 1 >"${plan_dir}/planner/id"
+    fi
+    campaign_corpus_mb() { printf '%s\n' "${plan_corpus}"; }
+    campaign_planner_alive() { (( plan_alive )); }
+    campaign_planner_stop() { plan_alive=0; echo stop >>"${plan_dir}/done"; }
+    campaign_planner_ended() { return 0; }
+    campaign_planner_start() { plan_alive=1; echo "start $1" >>"${plan_dir}/done"; }
+    campaign_planner_round() { echo ask >>"${plan_dir}/done"; return 0; }
+    status=0
+    campaign_stream_plan "${plan_dir}/planning-0003" 2>/dev/null || status=$?
+    printf '%s|%s' "${status}" "$(paste -sd ' ' "${plan_dir}/done" \
+      2>/dev/null)"
+  )
+  [[ "${plan_got}" == "${plan_status}|${plan_done}" ]] \
+    || fail "a corpus of ${plan_corpus} MB beside a planner of ${plan_heap} \
+gave ${plan_got}, not ${plan_status}|${plan_done}"
+  if (( plan_status == campaign_jvm_out_of_heap_status )); then
+    grep -q "more than a planner holds" \
+      "${plan_dir}/planning-0003/heap-predicted" \
+      || fail "a predicted PLANNER_HEAP_EXCEEDED is not named so"
+  fi
+done <<'EOF'
+15000|8192|3|
+7000|8192|0|stop start 16384 ask
+3000|8192|0|ask
+3000|-|0|start 8192 ask
+14000|-|0|start 16384 ask
+EOF
+
+# MEASURED-CORES: a replay is counted the cores the seed replay kept busy
+# alone (workload_cores_x100, rounded up), then at least the 90th percentile
+# of the replays after it once eight returned; a solve stays two.  Per row:
+# the seed's hundredths, the later replays', the cores counted after them.
+while IFS='|' read -r cores_seed cores_later cores_want; do
+  rm -rf -- "${measured_dir}"
+  mkdir -p "${measured_dir}"
+  cores_got=$(
+    campaign_replay_peak_mb=0
+    campaign_replay_peaks=()
+    campaign_replay_cores=1
+    campaign_replay_cores_x100=()
+    cores_n=0
+    for cores_x100 in ${cores_seed} ${cores_later}; do
+      cores_n=$((cores_n + 1))
+      mkdir -p "${measured_dir}/${cores_n}"
+      echo 900 >"${measured_dir}/${cores_n}/workload_rss_mb"
+      echo "${cores_x100}" >"${measured_dir}/${cores_n}/workload_cores_x100"
+      campaign_replay_measured "${measured_dir}/${cores_n}" >/dev/null 2>&1
+    done
+    printf '%s|%s' "$(campaign_stream_kind_cores REPLAY)" \
+      "$(campaign_stream_kind_cores OBLIGATION)"
+  )
+  [[ "${cores_got}" == "${cores_want}|2" ]] \
+    || fail "seed ${cores_seed} and replays ${cores_later} counted \
+${cores_got} cores (replay|solve), not ${cores_want}|2"
+done <<'EOF'
+180||2
+180|220 240 260 280 300 320 340|2
+180|220 240 260 280 300 320 340 370|4
+350|90 95 100 105 110 115 120 125|4
+EOF
+
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
 printf '{"taskId":"TASK.1"}\n' >"${need_dir}/plan.jsonl"
@@ -2918,6 +3001,10 @@ stream_fixture() {
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
   engine_memory_mb=1
+  # A 1 MB engine heap holds no corpus: the planner's corpus bounds
+  # (campaign_stream_plan, PLANNER-CORPUS) are not this fixture's question.
+  campaign_planner_hold_pct=1000000000
+  campaign_planner_grow_pct=1000000000
   causynth_static_scope_map=""
   causynth_root_domains=""
   declared_target_occurrence=""
@@ -4121,9 +4208,11 @@ split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
 [[ "$(cat "${split_round0}/A/replay-args")" \
     == "$(campaign_stream_charge_mb REPLAY) ${split_plan}" \
    && "$(cat "${split_round0}/C/replay-args")" \
-    == "$(campaign_replay_peak_mb=3000 campaign_stream_charge_mb REPLAY) \
+    == "$(campaign_replay_peak_mb=3000 campaign_replay_typical_mb=$(\
+campaign_replay_life_mb 3750) campaign_stream_charge_mb REPLAY) \
 ${split_plan}" && ! -e "${split_round0}/B/replay-args" ]] \
-  || fail "the REPLAYs were not charged the measured need on their solve's \
+  || fail "the REPLAYs were not charged, on their solve's tree, a quarter \
+more than the first measured replay held (A: 3000 MB, no mean stated) \
 tree: A $(cat "${split_round0}/A/replay-args"), C $(cat \
     "${split_round0}/C/replay-args")"
 [[ "$(cat "${stream_dir}/obligations-0001/in-flight.txt")" == "A C" \

@@ -1494,7 +1494,11 @@ round-robin warmed one on all 13 lifts for questions answered in about a second)
 shared home). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
-its z3 race's two engines, a REPLAY, a re-run or a confirmation one; a host running
+its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,
+`campaign_replay_cores`: the seed replay's alone, then at least the 90th percentile of the replays after it
+once eight returned, from the watcher's `workload_cores_x100`, its CPU time over its wall time -- solr-adhoc-05's
+replays kept 2.2-3.7 cores busy each, and counted one they held 8 of 13 hosts at 96-100 % CPU; each start gives
+back the cores it was admitted at, `stream_job_cores`; a host running
 none takes one whatever its count; `campaign_stream_host_count` counts each start in and out), a
 question the host's resident solver answers (`campaign_stream_seated`: a solve) only on a free seat
 of that solver (`campaign_stream_has_seat`, §7.5: a warm host's seats, a cold host's one), and its
@@ -1534,8 +1538,11 @@ or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`camp
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
 CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
 times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
-(`campaign_replay_charge_mb`). The need sizes a replay's heap; once eight replays after the seed's
-returned, a replay of the stream is CHARGED the 90th percentile of their lives' mean resident memory
+(`campaign_replay_charge_mb`). The need sizes a replay's heap; until eight replays after the seed's
+returned, a replay of the stream is CHARGED a quarter more than the seed replay's life's mean, with room for
+four ends that reach the largest peak so far (charged 1.5 times the seed's peak, SGF8POOL-adhoc-05's round 0 of 600
+obligations held every host at seven replays of 200-300 MB, 12-38 % of its memory in use, for the round); once
+eight returned, the 90th percentile of their lives' mean resident memory
 (at most the need, `campaign_replay_typical`, the watcher's `workload_rss_mean_mb`), its end's growth as
 it grows, and a host admits one only with room for four ends of their peaks' 90th percentile less that
 charge (`campaign_replay_spike_mb`): a replay peaks in its last read, publishing its session (lift07,
@@ -1793,7 +1800,11 @@ the round of it on its host (`campaign_planner_ask`, through the remote worker s
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
-PLANNER_HEAP_EXCEEDED (below); any other end fails EXPLORE with its deepest throwable -- never a
+PLANNER_HEAP_EXCEEDED (below). ITS HEAP FOLLOWS ITS CORPUS (`campaign_stream_plan`): a planner holds about its
+session files (SGF8 10, 40, 14 ran out of 16384-18432 MB over 16058-21867 MB), so one whose corpus passed
+`campaign_planner_grow_pct` (80) of a smaller heap starts at, or again at, the engine heap before it collects to
+its end there (~17 min of an idle pool each), and a corpus past `campaign_planner_hold_pct` (90) of the engine
+heap is PLANNER_HEAP_EXCEEDED before any planner is asked (`heap-predicted`, named so); any other end fails EXPLORE with its deepest throwable -- never a
 silent start of another. The exploration's end stops it (`campaign_planner_stop`), and so does the
 head's EXIT trap. A head step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step
@@ -1899,8 +1910,8 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
   what runs lands, and the stop is a
-  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error -- rounds
-  were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error, or that the
+  corpus was past what a planner holds, unasked -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
