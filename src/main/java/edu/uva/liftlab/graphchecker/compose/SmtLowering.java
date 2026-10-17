@@ -422,14 +422,10 @@ public final class SmtLowering {
             new LinkedHashMap<String, Map<Long, String>>();
     private final Map<String, String> opaqueIdentities =
             new LinkedHashMap<String, String>();
+    /** Each subterm lowered once ({@link #shared}), by its name; what no
+     *  statement reaches goes between paths ({@link #unstatedDropped}). */
     private final Map<String, SharedTerm> sharedTerms =
-            new LinkedHashMap<String, SharedTerm>();
-    /**
-     * The same subterms by the name they were minted under;
-     * {@link #sharedTerms} is keyed by definition digest for dedupe.
-     */
-    private final Map<String, SharedTerm> sharedByName =
-            new LinkedHashMap<String, SharedTerm>();
+            new HashMap<String, SharedTerm>();
     private final Map<String, String> unsupportedDetail =
             new LinkedHashMap<String, String>();
     /**
@@ -2673,7 +2669,9 @@ public final class SmtLowering {
      * and no nested selector is minted yet.  A read another path made
      * movable is its own session's; lowered in this path (a message arm in
      * the sender's session) it is the run's pairing, since a query through
-     * it would mint selectors no arm of this path binds.
+     * it would mint selectors no arm of this path binds.  What the paths
+     * before it lowered and no statement reaches is dropped ({@link
+     * #unstatedDropped}).
      */
     public void path() {
         movable.clear();
@@ -2682,6 +2680,54 @@ public final class SmtLowering {
         viewGuards.clear();
         viewDirect.clear();
         viewGuardNames.clear();
+        unstatedDropped();
+    }
+
+    /**
+     * WHAT NO STATEMENT REACHES IS DROPPED BETWEEN PATHS.  The body declares
+     * only what its statements reach ({@link #body}), and most subterms a
+     * path lowers are reached by none: a join no conjunction asks about
+     * ({@code Composer#statedJoins}), an arm left out, a refused path.  Kept
+     * to the composition's end they held the composer's heap
+     * (SGF8OOM-adhoc-14's 26-session subset: 842 k subterms and their mints
+     * after 20 paths, 1 GB, against a 57 MB body; its whole corpus, past
+     * 400 MB a path).  So between paths a subterm is kept once a statement,
+     * or a cell a later box reads back ({@link #cellOf}), reaches it -- for
+     * good, since nothing stated after its path is taken back -- and every
+     * other is dropped with its mint ({@link SmtSymbolTable#forget}): no
+     * memo or cache of an ended path holds its name ({@link #forget}),
+     * and lowered again it is minted under the same name, so the body is
+     * the one it was.
+     */
+    private void unstatedDropped() {
+        Deque<SharedTerm> reaching = new ArrayDeque<SharedTerm>();
+        for (Stated held : assertions) {
+            if (held.reached) continue;
+            held.reached = true;
+            kept(SmtNames.names(held.formula), reaching);
+        }
+        for (String cell : cellOf.values()) {
+            kept(SmtNames.names(cell), reaching);
+        }
+        while (!reaching.isEmpty()) kept(reaching.pop().names(), reaching);
+        for (Iterator<SharedTerm> each = sharedTerms.values().iterator();
+             each.hasNext();) {
+            SharedTerm term = each.next();
+            if (term.kept) continue;
+            each.remove();
+            symbols.forget(term.name);
+        }
+    }
+
+    /** Keeps the subterms these names are, to walk what their bodies name. */
+    private void kept(Iterable<String> names, Deque<SharedTerm> reaching) {
+        for (String name : names) {
+            SharedTerm term = sharedTerms.get(name);
+            if (term != null && !term.kept) {
+                term.kept = true;
+                reaching.push(term);
+            }
+        }
     }
 
     /**
@@ -3829,6 +3875,8 @@ public final class SmtLowering {
         /** What the body names, read once: every reach of a query walks it
          *  again. */
         private volatile SmtNames.Named names;
+        /** A statement reaches it ({@link #unstatedDropped}). */
+        private boolean kept;
 
         private SharedTerm(String name, Sort sort, String body) {
             this.name = name;
@@ -3869,19 +3917,17 @@ public final class SmtLowering {
      * define-fun every use references, emitted with what it names by
      * {@link #reachedBy}).  Digests the SCOPED text: recorded symbols are
      * per session, so two sessions share a name only for the same closed
-     * term.
+     * term.  One subterm per name, the prefix and the identity's digest:
+     * dropped ({@link #unstatedDropped}) and lowered again, a subterm is
+     * minted under the name it had.
      */
     private String shared(String prefix, Sort sort, String text) {
-        String identity = sort.name() + SEPARATOR + scoped(text);
-        String digest = ArtifactIO.digest(identity, 0);
-        SharedTerm held = sharedTerms.get(digest);
-        if (held == null) {
-            held = new SharedTerm(symbols.mint(prefix, identity, 24), sort,
-                    text);
-            sharedTerms.put(digest, held);
-            sharedByName.put(held.name, held);
+        String name = symbols.mint(prefix,
+                sort.name() + SEPARATOR + scoped(text), 24);
+        if (!sharedTerms.containsKey(name)) {
+            sharedTerms.put(name, new SharedTerm(name, sort, text));
         }
-        return held.name;
+        return name;
     }
 
     // ------------------------------------------------------------------
@@ -4080,7 +4126,7 @@ public final class SmtLowering {
     /** The body of one container subterm this lowering named ({@code
      *  container_dag__...}), or null for any other name. */
     public String sharedBody(String name) {
-        SharedTerm held = sharedByName.get(name);
+        SharedTerm held = sharedTerms.get(name);
         return held == null ? null : held.body;
     }
 
@@ -4089,7 +4135,7 @@ public final class SmtLowering {
      * {@code declare-const} or a container subterm's {@code define-fun}.
      */
     public boolean defined(String name) {
-        return declared(name) || sharedByName.containsKey(name);
+        return declared(name) || sharedTerms.containsKey(name);
     }
 
     /** The sort this query declares one name at, or null when it does not
@@ -4190,6 +4236,8 @@ public final class SmtLowering {
         /** {@link SmtNames#names} of the formula, read once ({@link
          *  #facts}). */
         private volatile List<String> names;
+        /** What it names is kept ({@link #unstatedDropped}). */
+        private boolean reached;
 
         private Stated(String formula, String label) {
             this.formula = formula;
@@ -4477,7 +4525,7 @@ public final class SmtLowering {
             }
             String token = names.get(top).next();
             if (!done.add(token)) continue;
-            SharedTerm shared = sharedByName.get(token);
+            SharedTerm shared = sharedTerms.get(token);
             if (shared != null) {
                 // Its own dependencies first: a define-fun may name another.
                 names.add(shared.names().iterator());
@@ -4501,16 +4549,16 @@ public final class SmtLowering {
      */
     private List<String> held(SmtNames.Named texts) {
         List<String> held = new ArrayList<String>();
-        if (sharedByName.size() + declarations.size() >= texts.size()) {
+        if (sharedTerms.size() + declarations.size() >= texts.size()) {
             for (String name : texts) {
-                if (sharedByName.containsKey(name)
+                if (sharedTerms.containsKey(name)
                         || declarations.containsKey(name)) {
                     held.add(name);
                 }
             }
             return held;
         }
-        Set<String> own = new HashSet<String>(sharedByName.keySet());
+        Set<String> own = new HashSet<String>(sharedTerms.keySet());
         own.addAll(declarations.keySet());
         for (String name : own) {
             if (texts.position(name) >= 0) held.add(name);
@@ -4549,7 +4597,7 @@ public final class SmtLowering {
             }
             String name = names.peek().next();
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
-            SharedTerm shared = sharedByName.get(name);
+            SharedTerm shared = sharedTerms.get(name);
             if (shared != null) {
                 names.push(shared.names().iterator());
                 continue;
