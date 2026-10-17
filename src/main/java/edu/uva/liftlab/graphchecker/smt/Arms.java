@@ -306,6 +306,14 @@ public final class Arms {
     /** {@link #rootGuards}, per session. */
     private final Map<String, List<RootGuard>> rootGuards =
             new ConcurrentHashMap<String, List<RootGuard>>();
+    /** write -> {@link #constructs}, by identity (a row's equality hashes
+     *  every part of it): {@link #eligible} asks it of every write between
+     *  two versions, for every version and reader a location is asked at,
+     *  and its frame scan was half the closure walk's first minutes
+     *  (SGF8PLAN-adhoc-05 round 2, cold {@code Corpus#eligibleWrites}). */
+    private final Map<WriteRow, Boolean> constructed =
+            Collections.synchronizedMap(
+                    new java.util.IdentityHashMap<WriteRow, Boolean>());
 
     public Arms(Rows rows) {
         this.rows = rows;
@@ -658,7 +666,16 @@ public final class Arms {
      * (hdfs-bugs-slowdisk-zero: the disk-outlier detector, which
      * {@code DataNodeDiskMetrics.<init>} starts).
      */
-    private static boolean constructs(WriteRow write) {
+    private boolean constructs(WriteRow write) {
+        Boolean held = constructed.get(write);
+        if (held == null) {
+            held = Boolean.valueOf(constructedAt(write));
+            constructed.put(write, held);
+        }
+        return held.booleanValue();
+    }
+
+    private static boolean constructedAt(WriteRow write) {
         if (constructing(write.endpoint().site())) return true;
         List<Frame> frames = write.endpoint().siteIndex().frames();
         for (int at = frames.size() - 1; at >= 0; at--) {
