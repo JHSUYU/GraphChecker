@@ -914,6 +914,9 @@ public final class ClosurePlanner {
         /** How many of its contributed values' stated reads it expanded, in
          *  {@link #contributed}'s order (which only appends). */
         private int expandedContributed;
+        /** What its values name, as its last walk closed it ({@link
+         *  #demanded}); null before its first walk. */
+        private Named named;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
@@ -1025,6 +1028,54 @@ public final class ClosurePlanner {
         }
     }
 
+    /**
+     * WHAT ONE DEMAND'S VALUES NAME ({@link #demanded}), kept from walk to
+     * walk.  The fixed point over the group's reads adds, for each symbol,
+     * what that symbol alone brings (the reference reads its container rests
+     * on, the symbols of the writes its reads could observe), so the closure
+     * of more seeds is the closure of the old ones joined with the new
+     * ones': a walk closes only the seeds no walk named before, and the
+     * rows it then expands are only those naming a symbol it added ({@link
+     * #successors}).  The seeds grow with the demand -- its flip sites'
+     * decisions, its contributed values -- except what COMPOSE keeps of its
+     * deliveries, asked again per walk ({@link RestsOn#ofDelivery}): where
+     * that no longer holds all it held, the demand is named anew, whole, as
+     * every walk was before (SGF8PLAN-adhoc-05 round 2: the fixed point
+     * redone whole per walk was a third of the 30-40 min walk, the scan of
+     * every row of the group another tenth).
+     */
+    private static final class Named {
+        /** The symbols. */
+        final Set<String> symbols = new HashSet<String>();
+        /** Those this walk added, in the order added. */
+        List<String> fresh = new ArrayList<String>();
+        /** Whether this walk named them all: the demand's first walk, or
+         *  one whose kept symbols shrank. */
+        boolean whole = true;
+        /** The decisions at its flip sites whose symbols it holds. */
+        final Set<DecisionRow> decisions = Collections.newSetFromMap(
+                new java.util.IdentityHashMap<DecisionRow, Boolean>());
+        /** How many of the demand's contributed values' symbols it holds,
+         *  in {@link Demand#contributed}'s order (which only appends). */
+        int contributed;
+        /** What COMPOSE kept of the demand's paths and deliveries. */
+        Set<String> kept = Collections.<String>emptySet();
+
+        /** Named again: what this walk adds is fresh. */
+        void again() {
+            fresh = new ArrayList<String>();
+            whole = false;
+        }
+
+        void add(String symbol) {
+            if (symbols.add(symbol)) fresh.add(symbol);
+        }
+
+        void addAll(Collection<String> named) {
+            for (String symbol : named) add(symbol);
+        }
+    }
+
     /** What every delivery of one producer endpoint contributes, in every
      *  session ({@link #producers}): built once per walk, shared by each
      *  demand paired with it until that demand changes its values. */
@@ -1093,6 +1144,17 @@ public final class ClosurePlanner {
          *  group it is a member of reads them there ({@link GroupReads}). */
         private final Map<String, MemberReads> memberReads =
                 new HashMap<String, MemberReads>();
+        /** symbol, session|location key, session|object -> the members
+         *  whose rows hold it ({@link MemberReads#at}, {@link
+         *  MemberReads#symbolsAt}, {@link MemberReads#returning}), in the
+         *  order indexed: a group asks only them, not each of its members
+         *  ({@link GroupReads}). */
+        private final Map<String, List<MemberReads>> naming =
+                new HashMap<String, List<MemberReads>>();
+        private final Map<String, List<MemberReads>> locating =
+                new HashMap<String, List<MemberReads>>();
+        private final Map<String, List<MemberReads>> returning =
+                new HashMap<String, List<MemberReads>>();
         /** producer endpoint id -> {@link #contribution}. */
         private final Map<String, Contribution> contributions =
                 new HashMap<String, Contribution>();
@@ -1145,10 +1207,25 @@ public final class ClosurePlanner {
                 List<MemberReads> members = new ArrayList<MemberReads>();
                 for (OccurrenceAddress member : group(occurrence)) {
                     members.add(memberReads.computeIfAbsent(member.id(),
-                            key -> new MemberReads(corpus, member)));
+                            key -> indexed(new MemberReads(corpus, member))));
                 }
-                return new GroupReads(members);
+                return new GroupReads(members, naming, locating, returning);
             });
+        }
+
+        private MemberReads indexed(MemberReads member) {
+            index(naming, member.at.keySet(), member);
+            index(locating, member.symbolsAt.keySet(), member);
+            index(returning, member.returning.keySet(), member);
+            return member;
+        }
+
+        private static void index(Map<String, List<MemberReads>> into,
+                                  Set<String> keys, MemberReads member) {
+            for (String key : keys) {
+                into.computeIfAbsent(key, unused -> new ArrayList<MemberReads>(
+                        1)).add(member);
+            }
         }
 
         /** A writer's flip sites: guards of every static write site in the
@@ -1237,30 +1314,58 @@ public final class ClosurePlanner {
      */
     private static List<Demand> successors(Walk walk, Demand demand) {
         Corpus corpus = walk.corpus;
-        List<OccurrenceAddress> group = walk.group(demand.occurrence);
+        GroupReads group = walk.reads(demand.occurrence);
         Map<String, Set<String>> kept = new LinkedHashMap<String,
                 Set<String>>();
-        Set<String> demanded = demanded(walk, demand, kept);
+        Named named = demanded(walk, demand, kept);
+        Set<String> demanded = named.symbols;
         List<Demand> next = new ArrayList<Demand>();
         Set<String> paired = demand.paired;
-        for (OccurrenceAddress member : group) {
-            for (AttachRow attach : corpus.attachesOn(member)) {
-                if (!demanded.contains(attach.symbol())) {
-                    unread(walk, attach.sessionId(), attach.endpoint(),
-                            "handoff");
-                    continue;
+        // Named whole, every row of the group is asked; named again, only
+        // the rows naming a symbol this walk added, in the same order: every
+        // other demanded row was expanded by the walk that named its symbol,
+        // and every undemanded one was said unread by the last whole walk.
+        if (named.whole) {
+            for (MemberReads member : group.members) {
+                for (AttachRow attach : member.attaches) {
+                    if (!demanded.contains(attach.symbol())) {
+                        unread(walk, attach.sessionId(), attach.endpoint(),
+                                "handoff");
+                        continue;
+                    }
+                    if (paired.add(attach.sessionId() + "|"
+                            + attach.symbol())) {
+                        producers(walk, attach, next);
+                    }
                 }
-                if (paired.add(attach.sessionId() + "|" + attach.symbol())) {
-                    producers(walk, attach, next);
+                for (ReadRow row : member.rows) {
+                    if (!demanded.contains(row.symbol())) {
+                        unread(walk, row.sessionId(), row.endpoint(),
+                                "state read");
+                        continue;
+                    }
+                    if (demand.expandedReads.add(row)) {
+                        writers(walk, row, next);
+                    }
                 }
             }
-            for (ReadRow row : corpus.readsOn(member)) {
-                if (!demanded.contains(row.symbol())) {
-                    unread(walk, row.sessionId(), row.endpoint(),
-                            "state read");
-                    continue;
+        } else {
+            for (long at : group.placesOf(named.fresh)) {
+                MemberReads member = group.members.get((int) (at >>> 32));
+                int item = (int) at;
+                if (item < member.attaches.size()) {
+                    AttachRow attach = member.attaches.get(item);
+                    if (paired.add(attach.sessionId() + "|"
+                            + attach.symbol())) {
+                        producers(walk, attach, next);
+                    }
+                } else {
+                    ReadRow row = member.rows.get(item
+                            - member.attaches.size());
+                    if (demand.expandedReads.add(row)) {
+                        writers(walk, row, next);
+                    }
                 }
-                if (demand.expandedReads.add(row)) writers(walk, row, next);
             }
         }
         // A handoff what COMPOSE keeps names, whoever received it: the
@@ -1424,36 +1529,12 @@ public final class ClosurePlanner {
      *  point over its group's reads and the writes they could observe. A
      *  factor member deciding the same site decides it on its own objects,
      *  and demands nothing here. Terms are EXPR references, asked of their
-     *  expressions' DAG ({@link Corpus#termSymbols}), never rendered. */
-    private static Set<String> demanded(Walk walk, Demand demand,
-                                        Map<String, Set<String>> kept) {
+     *  expressions' DAG ({@link Corpus#termSymbols}), never rendered.
+     *  Each walk adds only what its demand grew by ({@link Named}). */
+    private static Named demanded(Walk walk, Demand demand,
+                                  Map<String, Set<String>> kept) {
         Corpus corpus = walk.corpus;
-        Set<String> named = new LinkedHashSet<String>();
         GroupReads reads = walk.reads(demand.occurrence);
-        for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
-            for (DecisionRow decision : path.decisions) {
-                if (!FlipQuery.asks(demand.flipSites, decision)) continue;
-                named.addAll(corpus.termSymbols(path.sessionId,
-                        decision.term()));
-                reads.under(corpus, path.sessionId, decision.term(), named);
-            }
-        }
-        if (demand.anchor) {
-            for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
-                named.addAll(corpus.termSymbols(target.sessionId(),
-                        target.phiTerm()));
-                reads.under(corpus, target.sessionId(), target.phiTerm(),
-                        named);
-            }
-            named.addAll(demand.predicate);
-        }
-        for (String contributed : demand.contributed) {
-            int split = contributed.indexOf('|');
-            if (split < 0) continue;
-            named.addAll(corpus.expressionSymbols(
-                    contributed.substring(0, split),
-                    contributed.substring(split + 1)));
-        }
         if (demand.anchor) {
             // COMPOSE's disjuncts, by its one admission rule.
             for (Corpus.RecordedPath path : walk.restsOn.admitted(
@@ -1470,23 +1551,58 @@ public final class ClosurePlanner {
                     cutoff.getKey(), demand.occurrence, cutoff.getValue(),
                     demand.delivered(cutoff.getKey())));
         }
-        for (Set<String> symbols : kept.values()) named.addAll(symbols);
-        Set<String> settled = new LinkedHashSet<String>();
-        boolean grew = true;
-        while (grew) {
-            grew = false;
-            for (String symbol : new ArrayList<String>(named)) {
-                if (!settled.add(symbol)) continue;
-                for (ReadRow row : reads.of(symbol)) {
-                    grew |= reads.holding(row, named);
-                    for (WriteRow write : corpus.eligibleWrites(
-                            row.sessionId(),
-                            SmtLowering.locationKey(row.location()),
-                            row.observedVersion(),
-                            row.endpoint().occurrence())) {
-                        grew |= named.addAll(corpus.expressionSymbols(
-                                write.sessionId(), write.expressionRef()));
-                    }
+        Set<String> keeps = new HashSet<String>();
+        for (Set<String> symbols : kept.values()) keeps.addAll(symbols);
+        Named named = demand.named;
+        if (named == null || !keeps.containsAll(named.kept)) {
+            named = new Named();
+            demand.named = named;
+        } else {
+            named.again();
+        }
+        named.kept = keeps;
+        for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
+            for (DecisionRow decision : path.decisions) {
+                if (!FlipQuery.asks(demand.flipSites, decision)
+                        || !named.decisions.add(decision)) {
+                    continue;
+                }
+                named.addAll(corpus.termSymbols(path.sessionId,
+                        decision.term()));
+                reads.under(corpus, path.sessionId, decision.term(), named);
+            }
+        }
+        if (demand.anchor && named.whole) {
+            for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
+                named.addAll(corpus.termSymbols(target.sessionId(),
+                        target.phiTerm()));
+                reads.under(corpus, target.sessionId(), target.phiTerm(),
+                        named);
+            }
+            named.addAll(demand.predicate);
+        }
+        int index = 0;
+        int done = named.contributed;
+        named.contributed = demand.contributed.size();
+        for (String contributed : demand.contributed) {
+            if (index++ < done) continue;
+            int split = contributed.indexOf('|');
+            if (split < 0) continue;
+            named.addAll(corpus.expressionSymbols(
+                    contributed.substring(0, split),
+                    contributed.substring(split + 1)));
+        }
+        named.addAll(keeps);
+        // The fixed point, over the symbols this walk added: those an
+        // earlier walk added brought theirs then.
+        for (int next = 0; next < named.fresh.size(); next++) {
+            for (ReadRow row : reads.of(named.fresh.get(next))) {
+                reads.holding(row, named);
+                for (WriteRow write : corpus.eligibleWrites(row.sessionId(),
+                        SmtLowering.locationKey(row.location()),
+                        row.observedVersion(), row.endpoint().occurrence())) {
+                    named.addAll(corpus.expressionSymbols(write.sessionId(),
+                            write.expressionRef()));
                 }
             }
         }
@@ -1496,11 +1612,18 @@ public final class ClosurePlanner {
     /**
      * One occurrence's read rows, every session's, indexed once per walk
      * ({@link Walk#memberReads}): by symbol, by session and location, and
-     * by the object a reference read returned.
+     * by the object a reference read returned; and its attaches and reads in
+     * the order a walk asks them, each at its place ({@link #at}).
      */
     static final class MemberReads {
+        /** Its attaches, then its reads, in recorded order. */
+        private final List<AttachRow> attaches;
+        private final List<ReadRow> rows;
         private final Map<String, List<ReadRow>> bySymbol =
                 new HashMap<String, List<ReadRow>>();
+        /** symbol -> the places, ascending, of the attaches and reads that
+         *  name it: an attach's index, or a read's past every attach. */
+        private final Map<String, int[]> at = new HashMap<String, int[]>();
         /** session|location key -> the symbols its reads stated. */
         private final Map<String, Set<String>> symbolsAt =
                 new HashMap<String, Set<String>>();
@@ -1510,7 +1633,19 @@ public final class ClosurePlanner {
                 new HashMap<String, Set<String>>();
 
         private MemberReads(Corpus corpus, OccurrenceAddress member) {
-            for (ReadRow row : corpus.readsOn(member)) {
+            attaches = corpus.attachesOn(member);
+            rows = corpus.readsOn(member);
+            Map<String, List<Integer>> places =
+                    new HashMap<String, List<Integer>>();
+            for (int index = 0; index < attaches.size(); index++) {
+                places.computeIfAbsent(attaches.get(index).symbol(),
+                        symbol -> new ArrayList<Integer>()).add(index);
+            }
+            for (int index = 0; index < rows.size(); index++) {
+                ReadRow row = rows.get(index);
+                places.computeIfAbsent(row.symbol(),
+                        symbol -> new ArrayList<Integer>())
+                        .add(attaches.size() + index);
                 bySymbol.computeIfAbsent(row.symbol(),
                         symbol -> new ArrayList<ReadRow>()).add(row);
                 if (row.symbol().isEmpty()) continue;
@@ -1527,6 +1662,13 @@ public final class ClosurePlanner {
                             .add(row.symbol());
                 }
             }
+            for (Map.Entry<String, List<Integer>> each : places.entrySet()) {
+                int[] held = new int[each.getValue().size()];
+                for (int index = 0; index < held.length; index++) {
+                    held[index] = each.getValue().get(index);
+                }
+                at.put(each.getKey(), held);
+            }
         }
     }
 
@@ -1539,18 +1681,51 @@ public final class ClosurePlanner {
      * them per decision was two thirds of the wave planner's time), and the
      * groups of a closure overlap: indexed per group, every member's reads
      * were held once per group it is in (solr-adhoc-39 PV7 round 6: past
-     * 14 GB in the closure walk alone).
+     * 14 GB in the closure walk alone).  A question is asked of the members
+     * the walk's index names for it ({@link Walk#naming}), not of each
+     * member: a factor of hundreds asked for every symbol was a tenth of
+     * SGF8PLAN-adhoc-05 round 2's walk.
      */
     static final class GroupReads {
         final List<MemberReads> members;
+        /** member -> its place in {@link #members}. */
+        private final Map<MemberReads, Integer> place =
+                new java.util.IdentityHashMap<MemberReads, Integer>();
+        private final Map<String, List<MemberReads>> naming;
+        private final Map<String, List<MemberReads>> locating;
+        private final Map<String, List<MemberReads>> returning;
 
-        private GroupReads(List<MemberReads> members) {
+        private GroupReads(List<MemberReads> members,
+                           Map<String, List<MemberReads>> naming,
+                           Map<String, List<MemberReads>> locating,
+                           Map<String, List<MemberReads>> returning) {
             this.members = members;
+            for (int index = 0; index < members.size(); index++) {
+                place.put(members.get(index), index);
+            }
+            this.naming = naming;
+            this.locating = locating;
+            this.returning = returning;
+        }
+
+        /** Those of {@code indexed} in this group, in group order. */
+        private List<MemberReads> in(List<MemberReads> indexed) {
+            if (indexed == null) return Collections.<MemberReads>emptyList();
+            List<MemberReads> held = new ArrayList<MemberReads>(
+                    indexed.size());
+            for (MemberReads member : indexed) {
+                if (place.containsKey(member)) held.add(member);
+            }
+            if (held.size() > 1) {
+                held.sort((one, other) -> Integer.compare(place.get(one),
+                        place.get(other)));
+            }
+            return held;
         }
 
         /**
          * The symbols of the reference reads a container's state read rests
-         * on, into {@code named}; whether it grew.  Those of its session
+         * on, into {@code named}.  Those of its session
          * that returned the container, the read the VM states as a
          * relation's owner when the reference rides the query's receiver
          * slot (VM.md, the owner of a relation).  Through a capture the
@@ -1560,22 +1735,19 @@ public final class ClosurePlanner {
          * it), and the store of another list would then be no writer of
          * the state the anchor read.
          */
-        private boolean holding(ReadRow row, Set<String> named) {
-            if (row.location().kind() != LocationKind.MAP) return false;
+        private void holding(ReadRow row, Named named) {
+            if (row.location().kind() != LocationKind.MAP) return;
             String key = row.sessionId() + "|" + row.location().owner();
-            boolean grew = false;
-            for (MemberReads member : members) {
-                Set<String> found = member.returning.get(key);
-                if (found != null) grew |= named.addAll(found);
+            for (MemberReads member : in(returning.get(key))) {
+                named.addAll(member.returning.get(key));
             }
-            return grew;
         }
 
         /** The rows that stated one symbol, in recorded order. */
         List<ReadRow> of(String symbol) {
             List<ReadRow> rows = Collections.<ReadRow>emptyList();
             boolean own = false;
-            for (MemberReads member : members) {
+            for (MemberReads member : in(naming.get(symbol))) {
                 List<ReadRow> stated = member.bySymbol.get(symbol);
                 if (stated == null) continue;
                 if (rows.isEmpty()) {
@@ -1591,6 +1763,35 @@ public final class ClosurePlanner {
             return rows;
         }
 
+        /** The places of the attaches and reads naming one of these
+         *  symbols, in the order a walk asks them: a member's place in the
+         *  group (high), the row's in the member ({@link MemberReads#at},
+         *  low). */
+        long[] placesOf(Collection<String> symbols) {
+            List<long[]> found = new ArrayList<long[]>();
+            int count = 0;
+            for (String symbol : symbols) {
+                for (MemberReads member : in(naming.get(symbol))) {
+                    int[] places = member.at.get(symbol);
+                    long high = (long) place.get(member) << 32;
+                    long[] held = new long[places.length];
+                    for (int index = 0; index < places.length; index++) {
+                        held[index] = high | places[index];
+                    }
+                    found.add(held);
+                    count += held.length;
+                }
+            }
+            long[] all = new long[count];
+            int next = 0;
+            for (long[] held : found) {
+                System.arraycopy(held, 0, all, next, held.length);
+                next += held.length;
+            }
+            Arrays.sort(all);
+            return all;
+        }
+
         /**
          * The read rows a term's expressions read by structure, into {@code
          * named}: a scalar read the lowering joined to its version's value
@@ -1599,12 +1800,11 @@ public final class ClosurePlanner {
          * which the join made the constant false).
          */
         private void under(Corpus corpus, String sessionId, String term,
-                           Set<String> named) {
+                           Named named) {
             for (String location : corpus.readLocations(sessionId, term)) {
                 String key = sessionId + "|" + location;
-                for (MemberReads member : members) {
-                    Set<String> symbols = member.symbolsAt.get(key);
-                    if (symbols != null) named.addAll(symbols);
+                for (MemberReads member : in(locating.get(key))) {
+                    named.addAll(member.symbolsAt.get(key));
                 }
             }
         }
