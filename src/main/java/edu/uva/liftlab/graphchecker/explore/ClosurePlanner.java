@@ -895,6 +895,25 @@ public final class ClosurePlanner {
          *  #wrote}): the senders of what it applied produce that value. */
         private boolean storeWriter;
         private boolean dirty;
+        /*
+         * WHAT ITS WALKS EXPANDED ALREADY ({@link #successors}).  A demand is
+         * walked again each time it grows, and what it demands only grows,
+         * so each walk expands only what no walk before it did: a demanded
+         * read's writers, a paired handoff's producers, a contributed
+         * value's stated reads -- the same successors again would be absorbed
+         * growing nothing.  Walked whole every time, a hub every session
+         * contributes to repeated all of it per session (SGF8PLAN-adhoc-05,
+         * round 2: 40 min in this walk, single-threaded, hashing the keys of
+         * the static candidates it offered again).
+         */
+        /** session|symbol of each handoff whose producers it expanded. */
+        private final Set<String> paired = new HashSet<String>();
+        /** The demanded reads whose writers it expanded. */
+        private final Set<ReadRow> expandedReads = Collections.newSetFromMap(
+                new java.util.IdentityHashMap<ReadRow, Boolean>());
+        /** How many of its contributed values' stated reads it expanded, in
+         *  {@link #contributed}'s order (which only appends). */
+        private int expandedContributed;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
@@ -1223,7 +1242,7 @@ public final class ClosurePlanner {
                 Set<String>>();
         Set<String> demanded = demanded(walk, demand, kept);
         List<Demand> next = new ArrayList<Demand>();
-        Set<String> paired = new LinkedHashSet<String>();
+        Set<String> paired = demand.paired;
         for (OccurrenceAddress member : group) {
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
@@ -1241,7 +1260,7 @@ public final class ClosurePlanner {
                             "state read");
                     continue;
                 }
-                writers(walk, row, next);
+                if (demand.expandedReads.add(row)) writers(walk, row, next);
             }
         }
         // A handoff what COMPOSE keeps names, whoever received it: the
@@ -1373,7 +1392,11 @@ public final class ClosurePlanner {
     private static void statedReads(Walk walk, Demand demand,
                                     List<Demand> into) {
         if (demand.anchor) return;
+        int index = 0;
+        int done = demand.expandedContributed;
+        demand.expandedContributed = demand.contributed.size();
         for (String contributed : demand.contributed) {
+            if (index++ < done) continue;
             int split = contributed.indexOf('|');
             if (split < 0) continue;
             String sessionId = contributed.substring(0, split);
