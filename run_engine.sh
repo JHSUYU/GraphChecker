@@ -823,6 +823,8 @@ campaign_engine_start_mb() {
 #                                             adhoc-09 8.7
 #   GROW's exposed-region planner          0.13 GB, 0.4 s (V5-11741 round 5,
 #   (ExposedRegionPlanMain)                its two rows: static inputs only)
+#   a plan's weave key (WeaveKey)          0.34 GB, 0.8 s (SGF8-adhoc-19's
+#                                          last generation, 497 rows)
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
 # growth step is the door step's main: measured as that.  Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
 # of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
@@ -837,7 +839,8 @@ campaign_engine_need_mb() {
   case "$1" in
     *.GraphCheckerMain|*.ComposeMain) echo 4096 ;;
     *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
-      |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain) \
+      |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain \
+      |*.WeaveKey) \
       echo 2048 ;;
   esac
 }
@@ -2613,18 +2616,44 @@ campaign_task_ids() {
   jq -r -s 'map(.taskId) | join(",")' "$1"
 }
 
+# What a weave of <plan> weaves, as a digest (causynth.WeaveKey,
+# ConcolicInstrumentationSelections#weaveKeyFromEnvironment): every task's
+# instrumentation values, in plan order, a repeated one once -- the weave
+# unions them, and reads nothing else of a plan.  Its other inputs (the
+# case's classes, skeletons, scope map, doors) are SEED's, fixed for the
+# iteration, so two plans of one key weave one tree.  The plan is handed as
+# do_analyze hands it, and parsed as the weave parses it: a plan the weave
+# refuses fails here.
+campaign_weave_key() {
+  local plan=$1 key status=0
+  key=$(run_in_directory "${graphchecker_work_dir}" engine_java \
+    "-Dcausynth.concolic.task.plan=${plan}" \
+    "-Dcausynth.concolic.task.id=$(campaign_task_ids "${plan}")" \
+    "-Dcausynth.concolic.campaign.max.tasks=${schedule_max_jobs}" \
+    -cp "${graphchecker_jar}" edu.uva.liftlab.graphchecker.causynth.WeaveKey) \
+    || status=$?
+  [[ "${status}" -eq 0 && "${key}" =~ ^[0-9a-f]{64}$ ]] \
+    || campaign_fail INSTRUMENT WeaveKey "${plan}" \
+      "the plan's weave key could not be read (exit ${status}): ${key}"
+  printf '%s\n' "${key}"
+}
+
 # One union instrumentation pass over the whole iteration plan, into a class
 # tree: the iteration's own (INSTRUMENT), or a GROW generation's, which no
 # replay reads before this returns -- a replay started earlier keeps the
-# tree it started on (campaign_stream_grow).
+# tree it started on (campaign_stream_grow).  The plan's weave key is the
+# tree's, beside it (weave_key): <key> where the caller holds it (GROW
+# weaves by it), else read here.
 campaign_instrument() {
   local iteration_dir=$1
   local classes=${2:-${iteration_dir}/instrumented-classes}
+  local key=${3:-}
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local ids
   ids=$(campaign_task_ids "${plan}")
   [[ -n "${ids}" ]] || campaign_fail INSTRUMENT CAMPAIGN "${plan}" \
     "the campaign plan published no task id"
+  [[ -n "${key}" ]] || key=$(campaign_weave_key "${plan}") || exit 1
   rm -rf -- "${classes}"
   # This weave's output; the recording weave stays analysis_classes_dir
   # (REPRODUCE runs it again).
@@ -2637,6 +2666,7 @@ campaign_instrument() {
     || campaign_fail INSTRUMENT CAMPAIGN "${classes}" \
       "union instrumentation wrote no class file"
   campaign_verify_woven_classes "${classes}"
+  printf '%s\n' "${key}" >"$(dirname "${classes}")/weave_key"
 }
 
 # The JVM verifier is the authority on whether woven bytecode is executable,
@@ -7368,10 +7398,11 @@ campaign_unpauses() {
 # before it with each ZK_EDGE row's path and occurrence appended
 # (contract.ZkChain#grown; a seed's edge, which no replay re-runs, as well);
 # the iteration's plan, its chain and the seed plan are its links from now
-# on, and INSTRUMENT weaves it into the generation's own tree where it has
-# new task rows.  A start takes the generation current
-# when it starts (campaign_stream_start), so whatever already runs keeps the
-# plan and the classes it started on.  Each exposing obligation's replay is
+# on, and INSTRUMENT weaves it into the generation's own tree where its
+# weave key is not that of the tree it stands on.  A start takes the
+# generation current when it starts (campaign_stream_start), so whatever
+# already runs keeps the plan and the classes it started on.  Each exposing
+# obligation's replay is
 # queued first, to re-run -- on whichever host of the pool admits it, as an
 # obligation does -- in a directory of its own beside its worker; until
 # every re-run has returned and swapped its session in
@@ -7382,7 +7413,7 @@ campaign_unpauses() {
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
   local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
-  local worker file unpaused tasks
+  local worker file unpaused key held
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
@@ -7427,12 +7458,16 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
   fi
   require_nonempty "the grown generation's plan" \
     "${generation}/execution_task_plan.jsonl"
-  # Only new task rows are new weaving: a grown input stands at the hook its
-  # marker's planned input has (the weave hooks a local definition by
-  # method, unit and local, never by invocation), and dropping a doors-only
-  # mark weaves nothing.
-  tasks=$(( $(grep -c '' "${generation}/execution_task_plan.jsonl") \
-    - $(grep -c '' "${stream_plan}") ))
+  # A generation is woven where its weave key is not its tree's
+  # (campaign_weave_key): more planned occurrences of regions whose hooks the
+  # tree holds, a grown input at a hook it holds (the weave hooks a local
+  # definition by method, unit and local, never by invocation) and a dropped
+  # doors-only mark weave the tree it has (SGF8-adhoc-19: 8 of 11
+  # generations, each 62 s of the head's).
+  key=$(campaign_weave_key "${generation}/execution_task_plan.jsonl") \
+    || exit 1
+  held="$(dirname "${stream_classes}")/weave_key"
+  require_nonempty "the weave key of the tree GROW stands on" "${held}"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${round_dir}/grown_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
@@ -7442,21 +7477,22 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
   [[ ! -f "${generation}/zk_chain.jsonl" ]] \
     || ln -f "${generation}/zk_chain.jsonl" "${iteration_dir}/zk_chain.jsonl"
   stream_plan="${generation}/execution_task_plan.jsonl"
-  if (( tasks > 0 )); then
+  if [[ "${key}" != "$(cat -- "${held}")" ]]; then
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
 exposure(s)), ${unpaused} doors-only occurrence(s) run \
 whole; weaving generation g${stream_generation}"
     campaign_instrument "${iteration_dir}" \
-      "${generation}/instrumented-classes"
+      "${generation}/instrumented-classes" "${key}"
     stream_classes="${generation}/instrumented-classes"
   else
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
 exposure(s)), ${unpaused} doors-only occurrence(s) run \
-whole; generation g${stream_generation} weaves nothing new"
+whole; generation g${stream_generation} weaves the tree it stands on \
+(weave key ${key:0:12})"
   fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
@@ -7633,18 +7669,20 @@ campaign_record_rerun() {
 verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 }
 
-# Once nothing runs: the last generation's tree is the iteration's
-# (CONFIRM and REPRODUCE replay on instrumented-classes), and the trees of
-# the generations before it, which nothing reads any more, are gone.
+# Once nothing runs: the last generation's tree is the iteration's, with its
+# weave key (CONFIRM and REPRODUCE replay on instrumented-classes), and the
+# trees of the generations before it, which nothing reads any more, are gone.
 campaign_stream_promote_generation() {
   local generation
   (( stream_generation > 0 )) || return 0
-  # No generation wove a tree of its own (grown inputs only, doors-only
-  # marks dropped): its tree is still the iteration's.
+  # No generation wove a tree of its own (each one's weave key the
+  # iteration's tree's): its tree is still the iteration's.
   [[ "${stream_classes}" != "${iteration_dir}/instrumented-classes" ]] \
     || return 0
   rm -rf -- "${iteration_dir}/instrumented-classes"
   mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
+  mv -f -- "$(dirname "${stream_classes}")/weave_key" \
+    "${iteration_dir}/weave_key"
   for generation in "${iteration_dir}"/generations/g*; do
     rm -rf -- "${generation}/instrumented-classes"
   done

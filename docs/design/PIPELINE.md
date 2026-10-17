@@ -255,7 +255,13 @@ tree must hold a class file, and `causynth.VerifyWovenClasses` must verify every
 the replay's class path, or the stage fails naming the class; a woven class that fails as the class the
 class path holds fails unwoven (the same throwable and message, or both a `NoClassDefFoundError` for types
 no entry holds: Jetty, for ZooKeeper's admin server under a recipe's workload) is listed `UNLINKED` and does
-not fail it, since the workload cannot link it either way. GROW re-runs this stage's function.
+not fail it, since the workload cannot link it either way. Beside the tree the stage states its
+plan's WEAVE KEY (`weave_key`, `causynth.WeaveKey`, `ConcolicInstrumentationSelections#weaveKeyFromEnvironment`):
+a digest of every task's instrumentation values (`InstrumentationPlan`, each field by name), in plan
+order, a value a later task repeats counted once -- what the weave reads of a plan, parsed as the weave
+parses it, and nothing per occurrence; every reader of those values unions them (sets, maps whose first
+entry wins, `LoopBoundPolicy#union`), and the weave's other inputs are SEED's, so two plans of one key
+weave one tree. GROW re-runs this stage's function where a generation's key is not its tree's (§7.8).
 The union weave opens ONE region entry per root hook group (`plan.ExecutionTask#rootHookGroup`: the
 region and its root method, and a loop-body root's loop) and one enclosing entry per loop root
 (`#loopRootHookGroup`), however many planned occurrences share it; a replay's entry offers each
@@ -1595,7 +1601,7 @@ while it runs at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass and the composer 4 GB, the planner 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
-`ExposedRegionPlanMain` (0.13 GB measured) 2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
+`ExposedRegionPlanMain` (0.13 GB measured) and weave key `WeaveKey` (0.34 GB) 2 GB; the import gate its own, §6), or `engine_memory_mb` (else 8192) for a main with none; a JVM
 that runs out of its heap (exit 3 under
 `-XX:+ExitOnOutOfMemoryError`) runs again at twice it, up to `engine_memory_mb`, charged so, saying
 so each time, and later starts of that main begin at the larger heap (`campaign_engine_outgrown`;
@@ -1667,7 +1673,11 @@ plan, the one before it plus one task row per exposed address (admission basis `
 static inputs only, the plan's `replayGroupId`) and each grown invocation (below), as a new file
 kept beside the round (`grown_plan.jsonl`) -- the iteration's plan and the seed plan are its hard
 links from then on, and the generation before keeps its own inode for whatever runs on it -- and
-INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
+INSTRUMENT weaves it into the generation's own tree where its weave key (§4) is not the key of the tree
+it stands on; more planned occurrences of regions whose hooks that tree holds, a grown input at a hook
+it holds and a dropped doors-only mark weave that tree again, so the generation keeps it
+(SGF8-adhoc-19: 8 of its 11 generations were woven byte-identical to the tree before them, 62 s each
+of the head's; the key is 0.8 s). Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
 ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session
@@ -1701,7 +1711,7 @@ session. The withdrawn session's slots go with it (§7.1 step 4): under the grow
 the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
 run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
-`instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
+`instrumented-classes`, with its weave key (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
 
 A replay may also run past the plan's ZooKeeper chain (`zk_chain.jsonl`, SYMBOL-SCOPE §6.4), which is
@@ -1722,8 +1732,8 @@ before it with each edge's occurrence and its keys appended (`contract.ZkChain#g
 never shrinks, a seed's edge as well; the edge's
 occurrence loses its doors-only mark (`campaign_unpauses`), or, where no task holds it and its region
 is a candidate skeleton, is planned `EXPOSED_BY` (work under no candidate region runs as recorded, its
-path on the chain), each such row stating the keys (`contentKeys`); a generation that adds task rows
-is woven. Its exposing replay is re-run as an exposure's is.
+path on the chain), each such row stating the keys (`contentKeys`); a generation whose weave key
+changes is woven. Its exposing replay is re-run as an exposure's is.
 
 A flipped world may also call a planned fault marker of a demanded door more often in its
 occurrence than the recording did (solr-adhoc-09: the first `waitForState` timed out, so the
@@ -1815,8 +1825,9 @@ attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew
 or a round (§7.7) is the head's from then on (`outgrown`, joined per main at the larger heap: the
 two lanes run at once, so neither one's replaces the other's). The corpus and the ledger change only
 between two head steps, so a head step reads them as a landed whole; the busier the head, the more
-returns one step takes in. GROW still runs in the head's hands as a round is taken (its planner and
-weave: 8 min of Z3S's take of round 2, with no start dispatched meanwhile); moving it into a lane is
+returns one step takes in. GROW still runs in the head's hands as a round is taken (its planner, the
+weave key and, where the key changed, the weave: 8 min of Z3S's take of round 2, with no start
+dispatched meanwhile); moving it into a lane is
 open (PERFORMANCE §5). The exploration has five ends, each stated in
 `exploration.json` (stop, rounds, steps (head steps), generations, answers, attempts, every
 obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):

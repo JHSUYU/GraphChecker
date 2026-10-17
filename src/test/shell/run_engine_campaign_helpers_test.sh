@@ -1723,6 +1723,67 @@ grep -q 'stage=INSTRUMENT' "${verify_dir}/weave-error.log" \
   || fail "a weave's failure does not name its stage, log and refusal: \
 $(cat "${verify_dir}/weave-error.log")"
 
+# WEAVE-KEY: a plan's weave key (campaign_weave_key) is causynth.WeaveKey on
+# the built jar, handed the plan as the weave is: one key for a plan and the
+# plan with another occurrence of its region planned, a different one for a
+# new branch method, and a plan the weave refuses (a task twice) fails
+# INSTRUMENT by name.  INSTRUMENT states its tree's key beside it, the one
+# its caller hands it where GROW decided by it.
+weave_dir="${test_tmp}/weave-key"
+mkdir -p "${weave_dir}"
+weave_row() {
+  jq -n -c --arg task "$1" --arg at "$2" --arg branch "$3" '
+    {sourceKey: "nn0", occurrenceId: ("nn0/region/R/" + $at),
+     relationKey: "nn0/relation/R", regionId: "R", taskId: $task,
+     goalId: ("GOAL." + $task), rootSelector: {method: "<a.Q: void run()>"},
+     targetMethod: "<a.Q: void run()>", branchMethods: [$branch],
+     inputActions: [], admission: {state: "EXECUTABLE"},
+     loopBound: {schemaVersion: 1, defaultBackedgeTraversals: 8}}'
+}
+weave_row T.1 'R#62' '<a.Q: boolean ready()>' >"${weave_dir}/one.jsonl"
+{ cat "${weave_dir}/one.jsonl"
+  weave_row T.2 'R#67' '<a.Q: boolean ready()>'
+} >"${weave_dir}/more.jsonl"
+{ cat "${weave_dir}/one.jsonl"
+  weave_row T.2 'R#67' '<a.Q: boolean empty()>'
+} >"${weave_dir}/branch.jsonl"
+{ cat "${weave_dir}/one.jsonl"; cat "${weave_dir}/one.jsonl"; } \
+  >"${weave_dir}/twice.jsonl"
+(
+  java_bin=${test_java}
+  graphchecker_jar=${default_graphchecker_jar}
+  graphchecker_work_dir=${weave_dir}
+  schedule_max_jobs=8
+  one=$(campaign_weave_key "${weave_dir}/one.jsonl")
+  [[ "${one}" =~ ^[0-9a-f]{64}$ \
+      && "$(campaign_weave_key "${weave_dir}/more.jsonl")" == "${one}" \
+      && "$(campaign_weave_key "${weave_dir}/branch.jsonl")" != "${one}" ]] \
+    || fail "the weave key does not key what the weave reads: ${one}"
+  ( campaign_weave_key "${weave_dir}/twice.jsonl" >/dev/null ) \
+    2>"${weave_dir}/twice.log" \
+    && fail "a plan the weave refuses has a weave key"
+  grep -q 'stage=INSTRUMENT' "${weave_dir}/twice.log" \
+    && grep -q 'component=WeaveKey' "${weave_dir}/twice.log" \
+    || fail "a refused plan's key does not fail INSTRUMENT by name: \
+$(cat "${weave_dir}/twice.log")"
+  mkdir -p "${weave_dir}/iteration/generations/g1"
+  cp "${weave_dir}/one.jsonl" \
+    "${weave_dir}/iteration/execution_task_plan.jsonl"
+  do_analyze() { mkdir -p "${analysis_classes_dir}/a"; : >"${analysis_classes_dir}/a/Q.class"; }
+  campaign_verify_woven_classes() { :; }
+  campaign_instrument "${weave_dir}/iteration" >/dev/null
+  [[ "$(cat "${weave_dir}/iteration/weave_key")" == "${one}" ]] \
+    || fail "INSTRUMENT did not state its tree's weave key beside it"
+  campaign_weave_key() { fail "a weave keyed a plan its caller keyed"; }
+  campaign_instrument "${weave_dir}/iteration" \
+    "${weave_dir}/iteration/generations/g1/instrumented-classes" K.held \
+    >/dev/null
+  [[ "$(cat "${weave_dir}/iteration/generations/g1/weave_key")" \
+      == K.held ]] \
+    || fail "a generation's tree does not carry the key GROW wove it by"
+) || fail "WEAVE-KEY failed"
+reset_config
+
 # COUNT: a count the campaign decides on is a decision, and an unreadable
 # count is a refusal.  `[[ "${n}" -eq 0 ]]` reads an empty string as zero, so
 # the IMPORT gate passed whenever its summary could not be read at all --
@@ -2987,12 +3048,21 @@ rm -f -- "${checkout_repo}/locked.txt"
 # then says what each round proposes (stream_round_plan <round> <out>: rows
 # into <out>/obligations.jsonl, and stream_wave) and what each obligation does
 # (campaign_obligation_worker).  The declared occurrence is {"node": "anchor"}.
+# The weave key a fixture's plan stands for where a test stubs
+# campaign_weave_key (WEAVE-KEY runs the JVM, over task rows whole): its
+# task ids, the one weave input these fixtures' growths change.
+test_weave_key() {
+  jq -r '.taskId' "$1" | LC_ALL=C sort -u | sha256sum | cut -c1-64
+}
 stream_fixture() {
   stream_dir="${test_tmp}/$1/iteration-0000"
   mkdir -p "${stream_dir}/sessions" "${stream_dir}/seed-replay"
   printf '{"taskId":"TASK.seed"}\n' >"${stream_dir}/execution_task_plan.jsonl"
   ln -f "${stream_dir}/execution_task_plan.jsonl" \
     "${stream_dir}/seed-replay/execution_task_plan.jsonl"
+  # What INSTRUMENT left beside the iteration's tree.
+  test_weave_key "${stream_dir}/execution_task_plan.jsonl" \
+    >"${stream_dir}/weave_key"
   reset_config
   campaign_root="${test_tmp}/$1"
   campaign_host_gate_root="${test_tmp}/$1/hosts"
@@ -3158,6 +3228,7 @@ stream_answer() {
 stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
+  campaign_weave_key() { test_weave_key "$1"; }
   campaign_planner_serve() { stream_planner_serve "$@"; }
   # Where CONFIRM stands.  Its task planned: a verdict now where
   # stream_realize names the attempt (its selected session is the run),
@@ -5590,8 +5661,11 @@ growth rows and the next generation's plan: $*"
       || fail "the weave was given $*"
     grep -q TASK.grown "${stream_dir}/execution_task_plan.jsonl" \
       || fail "the weave ran before the grown rows reached the iteration plan"
+    [[ "$3" == "$(test_weave_key "${stream_dir}/execution_task_plan.jsonl")" ]] \
+      || fail "the weave was not handed the grown plan's weave key: $3"
     mkdir -p "$2"
     : >"$2/woven"
+    printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
   }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -5688,8 +5762,11 @@ awk -v q="$(cat "${stream_dir}/obligations-0000/Q2/started-at")" \
   || fail "a newly planned obligation started before the one queued \
 through the growth"
 [[ -f "${stream_dir}/instrumented-classes/woven" \
-    && ! -e "${stream_dir}/generations/g1/instrumented-classes" ]] \
-  || fail "the last generation's tree is not the iteration's once nothing runs"
+    && ! -e "${stream_dir}/generations/g1/instrumented-classes" \
+    && "$(cat "${stream_dir}/weave_key")" \
+      == "$(test_weave_key "${stream_dir}/generations/g1/execution_task_plan.jsonl")" ]] \
+  || fail "the last generation's tree, and its weave key, are not the \
+iteration's once nothing runs"
 grep -q 'grown by REGION.grown,TASK.seed SYM.marker#2 (2 exposure(s))' \
     "${stream_dir}/explore.log" \
   && grep -q 'OB.x: re-run under the grown tree, verdict=NOT_ADMITTED' \
@@ -5711,34 +5788,52 @@ printf '%s\n' \
   && fail "an exposure with no obligation was grown into"
 grep -q 'names no obligation' "${stream_dir}/refuse.log" \
   || fail "the refusal does not say why: $(cat "${stream_dir}/refuse.log")"
-# A growth of grown inputs only weaves nothing new: the generation's plan,
-# the tree it stood on.
+# GROW-KEY: a growth whose weave key is its tree's weaves nothing -- the
+# generation's plan, the tree it stood on -- and re-runs the exposing replay
+# all the same: grown inputs only (the same task rows), or task rows more
+# whose key is the tree's (more occurrences of a region the tree hooks,
+# SGF8-adhoc-19 g5-g11; the key stubbed as the tree's).
 printf '%s\n' \
   '{"kind":"UNPLANNED_INPUT","taskId":"TASK.seed","symbol":"SYM.marker","k":3,"sessionId":"SESSION.regrown","obligationId":"OB.x"}' \
   >"${stream_dir}/obligations-0002/growth.jsonl"
-(
-  iteration_dir=${stream_dir}
-  stream_generation=1
-  stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
-  stream_classes="${stream_dir}/instrumented-classes"
-  stream_queue=()
-  declare -A stream_queued_at=()
-  stream_hold=0
-  run_java_main() {
-    local args=" $* " output
-    output=${args##* --output }
-    output=${output%% *}
-    cp "${stream_plan}" "${output}"
-  }
-  campaign_instrument() { fail "grown inputs only were woven again: $*"; }
-  campaign_stream_grow "${stream_dir}/obligations-0002"
-  [[ "${stream_classes}" == "${stream_dir}/instrumented-classes" \
-      && "${stream_plan}" == "${stream_dir}/generations/g2/execution_task_plan.jsonl" \
-      && -s "${stream_plan}" ]] \
-    || fail "grown inputs only did not keep the tree under the new plan: \
-${stream_classes} ${stream_plan}"
-) >"${stream_dir}/inputs-only.log" 2>&1 \
-  || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
+for grow_rows in same more; do
+  rm -rf -- "${stream_dir}/generations/g2" \
+    "${stream_dir}/obligations-0000/OB.x/grow-obligations-0002"
+  (
+    iteration_dir=${stream_dir}
+    stream_generation=1
+    stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
+    stream_classes="${stream_dir}/instrumented-classes"
+    stream_queue=()
+    declare -A stream_queued_at=()
+    stream_hold=0
+    run_java_main() {
+      local args=" $* " output
+      output=${args##* --output }
+      output=${output%% *}
+      cp "${stream_plan}" "${output}"
+      [[ "${grow_rows}" == same ]] \
+        || printf '{"taskId":"TASK.grown2","regionId":"REGION.grown"}\n' \
+          >>"${output}"
+    }
+    if [[ "${grow_rows}" == same ]]; then
+      campaign_weave_key() { test_weave_key "$1"; }
+    else
+      campaign_weave_key() { cat "${stream_dir}/weave_key"; }
+    fi
+    campaign_instrument() { fail "a plan of its tree's key was woven: $*"; }
+    campaign_stream_grow "${stream_dir}/obligations-0002"
+    [[ "${stream_classes}" == "${stream_dir}/instrumented-classes" \
+        && "${stream_plan}" == "${stream_dir}/generations/g2/execution_task_plan.jsonl" \
+        && -s "${stream_plan}" \
+        && "${stream_queue[*]}" == "RERUN obligations-0002 OB.x SESSION.regrown" \
+        && "${stream_hold}" == 1 ]] \
+      || fail "a growth of its tree's key did not keep the tree under the \
+new plan and re-run its replay: ${stream_classes} ${stream_plan} \
+${stream_queue[*]}"
+  ) >"${stream_dir}/key-${grow_rows}.log" 2>&1 \
+    || fail "GROW-KEY ${grow_rows}: $(cat "${stream_dir}/key-${grow_rows}.log")"
+done
 reset_config
 
 # GROW-2: a doors-only occurrence a value demand reached that no focused
@@ -5752,6 +5847,7 @@ mkdir -p "${grow2}/obligations-0003" "${grow2}/instrumented-classes" \
 printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
   '{"occurrenceId":"X#1","taskId":"T.X","doorsOnly":true}' \
   >"${grow2}/execution_task_plan.jsonl"
+test_weave_key "${grow2}/execution_task_plan.jsonl" >"${grow2}/weave_key"
 printf '%s\n' \
   '{"kind":"DOORS_ONLY_UNPAUSED","regionId":"R","node":"nn0","occurrence":"W#1","sessionId":"","obligationId":""}' \
   >"${grow2}/obligations-0003/growth.jsonl"
@@ -5765,6 +5861,7 @@ printf '%s\n' \
   stream_queue=()
   declare -A stream_queued_at=()
   run_java_main() { fail "the exposed-region planner ran with no exposure"; }
+  campaign_weave_key() { test_weave_key "$1"; }
   campaign_instrument() { fail "a generation that only dropped a mark wove"; }
   campaign_stream_grow "${grow2}/obligations-0003" >/dev/null
   jq -e -s 'length == 2 and (.[0].doorsOnly == null)
@@ -5791,6 +5888,7 @@ mkdir -p "${growzk}/obligations-0003" "${growzk}/instrumented-classes" \
   "${growzk}/seed-replay"
 printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
   >"${growzk}/execution_task_plan.jsonl"
+test_weave_key "${growzk}/execution_task_plan.jsonl" >"${growzk}/weave_key"
 printf '%s\n' '{"schemaVersion":1,"kind":"ZK_CHAIN_OCCURRENCE","occurrenceId":"A#1"}' \
   >"${growzk}/zk_chain.jsonl"
 printf '%s\n' \
@@ -5826,6 +5924,7 @@ done >>"${growzk}/obligations-0003/growth.jsonl"
       printf '{"schemaVersion":1,"kind":"ZK_CHAIN_OCCURRENCE","occurrenceId":"Z#1"}\n'
     } >"${growzk}/generations/g1/zk_chain.jsonl"
   }
+  campaign_weave_key() { test_weave_key "$1"; }
   campaign_instrument() { : >"${growzk}/wove"; }
   campaign_stream_grow "${growzk}/obligations-0003" >/dev/null
   jq -e -s 'length == 2 and .[0].doorsOnly == null and .[1].taskId == "T.Z"' \
@@ -5901,6 +6000,7 @@ EOF
     campaign_instrument() {
       mkdir -p "$2"
       : >"$2/woven"
+      printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
     }
     campaign_obligation_worker() {
       local worker=$4
@@ -6081,6 +6181,9 @@ not marked dropped"
     >"${drop_iteration}/obligations-0003/growth.jsonl"
   printf '{"occurrenceId":"W#1","taskId":"T"}\n' \
     >"${drop_iteration}/execution_task_plan.jsonl"
+  test_weave_key "${drop_iteration}/execution_task_plan.jsonl" \
+    >"${drop_iteration}/weave_key"
+  campaign_weave_key() { test_weave_key "$1"; }
   stream_plan="${drop_iteration}/execution_task_plan.jsonl"
   stream_classes="${drop_iteration}/instrumented-classes"
   stream_generation=0
