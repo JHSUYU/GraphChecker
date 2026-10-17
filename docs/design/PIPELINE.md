@@ -2165,8 +2165,8 @@ forced world's and asserting them in another world could make a real witness UNS
   read's own symbol, which the writer choice binds beside the run's arm holding it to what it read,
   as a read whose writer is known (`SmtLowering#bind`; hdfs-adhoc-39 OA4's `BlockInfo.uc` read of
   the completion); else PIN to the value the row states (a version no write row states: HELD, named
-  "producer unstated"), else REFUSE
-  (`UNSTATED_VALUE`); a write of a frame whose producer moves is FREE before any join; dropped, the
+  "producer unstated"), else FREE all the same, named (`UNSTATED_VALUE`, DIAGNOSTIC: havoc, owner
+  2026-10-15; SGF8-adhoc-21 had dropped 10 paths on map reads whose write did not lower); a write of a frame whose producer moves is FREE before any join; dropped, the
   join raises nothing (no refusal, side condition or gap); what a read
   row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
@@ -2192,8 +2192,12 @@ forced world's and asserting them in another world could make a real witness UNS
   states of another session and this one minted no attach for refuses the path by name
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
 
-Any refusal drops the path and is filed with its own class (an open lowering refusal is a
-DIAGNOSTIC `UNSTATED_VALUE`); a dropped path is never silent: the claim names every admitted path
+A value the lowering has no semantics for (`SmtLowering#refuse`: a model it lacks, e.g.
+`Long.parseLong(s, 16)`, `MODEL_SEMANTICS_MISSING:...:RADIX_NOT_10`) does not drop the path: the value is a
+fresh constant, free, and the path stands on it over-approximated, named by a DIAGNOSTIC `UNSTATED_VALUE`
+(havoc, owner 2026-10-15; CONFIRM filters a false witness: every path of SGF8-adhoc-14 rested on one such
+parse of a shard's hash range, and the composition kept none). Any other refusal drops the path and is filed
+with its own class; a dropped path is never silent: the claim names every admitted path
 COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
 and an UNSAT says nothing about them.
 

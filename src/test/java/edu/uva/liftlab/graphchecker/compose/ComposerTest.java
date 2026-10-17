@@ -9468,11 +9468,18 @@ public class ComposerTest {
             session.write();
 
             Composer.Composition composition = compose(iteration, 4);
-            assertEquals(shared ? "a condition phi or a family rests on "
-                            + "still refuses: " + shares
-                            : "a condition phi does not rest on is left out: "
+            // A value the lowering has no semantics for is free, never a
+            // refusal (owner 2026-10-15, havoc): the path stands either way,
+            // and where phi or a family rests on it the free value is named.
+            assertEquals((shared ? "a condition phi or a family rests on "
+                            + "stands on its free value: "
+                            : "a condition phi does not rest on is left out: ")
                             + shares,
-                    shared ? 0 : 1, composition.disjuncts().size());
+                    1, composition.disjuncts().size());
+            assertEquals("the free value is named where it is stood on: "
+                            + shares, shared,
+                    says(composition.gaps(), GapKind.UNSTATED_VALUE,
+                            "the value is free, over-approximated"));
         }
     }
 
@@ -9486,8 +9493,8 @@ public class ComposerTest {
      *   <li>pin: the write refuses over nothing that moves, and the row
      *       states its value: the pin binds the read, and what the dropped
      *       join raised (its recorded reading, its cut) went with it;</li>
-     *   <li>unstated: the same with no value stated: the path is refused,
-     *       the join's refusal beside the read's;</li>
+     *   <li>unstated: the same with no value stated: the read is free
+     *       (havoc), the join's refusal named beside the read's;</li>
      *   <li>H1: the write is a call no lowering models over R, a declared
      *       root (the review's {@code parseInt(valueOf(R))} is R now,
      *       {@link #aMethodReturnIsItsCall}): the read is free, named with
@@ -9647,12 +9654,16 @@ public class ComposerTest {
                                     .contains(NO_ROW));
                     break;
                 case "unstated":
-                    assertEquals(name + ": nothing binds the read", 0,
+                    // Nothing binds the read: it is free, the path standing
+                    // on it (havoc, owner 2026-10-15).
+                    assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
-                    assertTrue(name + ": the write's refusal is the path's, "
+                    assertTrue(name + ": the write's refusal is named, "
                                     + "beside the read's own",
                             says(gaps, GapKind.UNSTATED_VALUE,
                                     "did not lower")
+                                    && says(gaps, GapKind.UNSTATED_VALUE,
+                                    "the read is free, over-approximated")
                                     && named(gaps, "PROPAGATION_CUT:"
                                     + "UndeclaredFreeSymbol:" + NO_ROW));
                     break;
@@ -9735,7 +9746,8 @@ public class ComposerTest {
      *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
      *   <li>moving: the same over R is a free value, named with R: a pin
      *       would carry a moved R through the call as a constant;</li>
-     *   <li>no-call: a node stating no call (a VM before f14) refuses.</li>
+     *   <li>no-call: a node stating no call (a VM before f14) is a free
+     *       value, named (havoc, owner 2026-10-15).</li>
      * </ul>
      */
     @Test
@@ -9776,8 +9788,9 @@ public class ComposerTest {
             Composer.Composition composition = compose(iteration, 4);
             List<GapRow> gaps = composition.gaps();
             String body = composition.body();
-            boolean composed = !"no-call".equals(name);
-            assertEquals(name + ": composed", composed ? 1 : 0,
+            // A return no call states is free, the path standing on it
+            // (owner 2026-10-15, havoc), named.
+            assertEquals(name + ": composed", 1,
                     composition.disjuncts().size());
             if ("parse".equals(name) || integer) {
                 assertEquals(name + ": the call is its relation, and a parse "
@@ -9811,9 +9824,11 @@ public class ComposerTest {
                                 SERIAL)), concrete(composition));
             }
             if ("no-call".equals(name)) {
-                assertTrue(name + ": refused by name",
+                assertTrue(name + ": free, by name: " + gaps,
                         named(gaps, "MethodReturnCallUnstated:"
-                                + RETURNED));
+                                + RETURNED)
+                                && says(gaps, GapKind.UNSTATED_VALUE,
+                                "the value is free, over-approximated"));
             }
         }
     }

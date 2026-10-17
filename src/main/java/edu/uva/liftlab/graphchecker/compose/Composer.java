@@ -2075,8 +2075,12 @@ public final class Composer {
             interactionIds.add(attach.interaction().id());
         }
 
-        // Read BEFORE end() forgets them: any refusal drops the whole path
-        // (it would otherwise rest on a free constant).
+        // Read BEFORE end() forgets them: a value the lowering has no
+        // semantics for is free (SmtLowering#refuse), and the path stands on
+        // it, over-approximated and named -- havoc, never a refusal (owner
+        // 2026-10-15: best effort; CONFIRM filters a false witness).  Every
+        // path of SGF8-adhoc-14 rested on one Long.parseLong(s, 16) of a
+        // shard's hash range, and the composition kept none.
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         terms.addAll(lowering.end());
@@ -2091,10 +2095,10 @@ public final class Composer {
             unplacedClocks(session, named, refusals);
         }
         for (String refusal : refused) {
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+            gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, refusal,
-                    "this path rests on a value the recording does not "
-                            + "state, so it is not in the disjunction"));
+                    "this path rests on a value the lowering has no semantics"
+                            + " for: the value is free, over-approximated"));
         }
         if (!refusals.isEmpty()) {
             refused(path, refusals);
@@ -3426,10 +3430,10 @@ public final class Composer {
      * Read := THE ONE BINDING RULE ({@link SmtLowering#bind}, the guarded
      * read's too, so the two cannot disagree): JOIN, the expression of the
      * write version it observed, if it lowers with no refusal; else its
-     * MINT; else PIN; else REFUSE.  A join that refused gives way to the
-     * mint, else to a FREE read where what it rests on can move, else to
-     * the pin ({@link SmtLowering#unbound}).  No "latest write", no choice
-     * between writers.
+     * MINT; else PIN; else FREE, named (havoc).  A join that refused
+     * gives way to the mint, else to a FREE read where what it rests on can
+     * move, else to the pin ({@link SmtLowering#unbound}).  No "latest
+     * write", no choice between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,
@@ -3524,10 +3528,17 @@ public final class Composer {
                 @Override
                 public Boolean refused(Term value, String subject,
                                        String detail) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    // No write of its version lowered and its row states no
+                    // value: the read is free, the path standing on it
+                    // over-approximated and named -- havoc, never a refusal
+                    // (owner 2026-10-15; SGF8-adhoc-21 dropped 10 paths on
+                    // map reads whose write did not lower).
+                    lowering.declareStated(read.symbol(),
+                            JavaSmtSorts.sortOfJava(read.javaType()));
+                    gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.DIAGNOSTIC, key + "@" + version,
-                            detail));
-                    return false;
+                            detail + ": the read is free, over-approximated"));
+                    return true;
                 }
             };
             // What binding the read required rides with the join that binds
