@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
@@ -21,13 +22,18 @@ import soot.SootFieldRef;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -70,6 +76,125 @@ public final class ConcolicInstrumentationSelections {
                     "Could not load concolic instrumentation plan from "
                             + plan, exception);
         }
+    }
+
+    /**
+     * WHAT THE WEAVE OF THIS JVM'S PLAN WEAVES, as a digest: every value of
+     * each task's {@link InstrumentationPlan}, in plan order, a value a later
+     * task repeats counted once.  The plan reaches the weave only as that
+     * list (CausynthPipeline#instrumentConcolicCampaign), whose every reader
+     * unions it -- sets, maps whose first entry wins, LoopBoundPolicy#union
+     * -- so a repeated value weaves nothing more, and two plans of one key
+     * weave one tree over the same classes.  The parse is the weave's own,
+     * so a plan the weave refuses is refused here.  GROW weaves a
+     * generation only where its key is not its tree's (campaign_stream_grow):
+     * SGF8-adhoc-19's GROW wove 8 of its 11 generations byte-identical to
+     * the tree before them, a growing count of planned occurrences of
+     * regions whose hooks were woven, 62 s each in the head's hands.
+     */
+    static String weaveKeyFromEnvironment() {
+        MessageDigest digest = sha256();
+        Set<String> seen = new LinkedHashSet<>();
+        for (InstrumentationPlan plan
+                : instrumentationCampaignFromEnvironment()) {
+            StringBuilder value = new StringBuilder();
+            canonical(plan, value);
+            byte[] encoded = value.append('\n').toString()
+                    .getBytes(StandardCharsets.UTF_8);
+            if (seen.add(hex(sha256().digest(encoded)))) {
+                digest.update(encoded);
+            }
+        }
+        return hex(digest.digest());
+    }
+
+    /**
+     * A value of a plan by every instance field its class and superclasses
+     * declare, by name: text, numbers, booleans and enums as they read, JSON
+     * as written, collections and maps in the order the weave iterates them.
+     * A field added to a plan's value is in the key with no line here; a
+     * value of a class outside the engine is refused, as no field of it is
+     * vouched for.
+     */
+    static void canonical(Object value, StringBuilder out) {
+        if (value == null) {
+            out.append("null");
+        } else if (value instanceof CharSequence) {
+            out.append(new JsonPrimitive(value.toString()));
+        } else if (value instanceof Number || value instanceof Boolean
+                || value instanceof Character) {
+            out.append(value.getClass().getName()).append(':').append(value);
+        } else if (value instanceof Enum) {
+            out.append(((Enum<?>) value).getDeclaringClass().getName())
+                    .append(':').append(((Enum<?>) value).name());
+        } else if (value instanceof JsonElement) {
+            out.append(value);
+        } else if (value instanceof Map) {
+            out.append('{');
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                canonical(entry.getKey(), out);
+                out.append(':');
+                canonical(entry.getValue(), out);
+                out.append(',');
+            }
+            out.append('}');
+        } else if (value instanceof Collection) {
+            out.append('[');
+            for (Object element : (Collection<?>) value) {
+                canonical(element, out);
+                out.append(',');
+            }
+            out.append(']');
+        } else {
+            Class<?> type = value.getClass();
+            if (!type.getName().startsWith("edu.uva.liftlab.graphchecker.")) {
+                throw new IllegalStateException("WEAVE_KEY_UNVOUCHED: a "
+                        + "plan value of " + type.getName()
+                        + " is no engine value the key can read");
+            }
+            List<Field> fields = new ArrayList<>();
+            for (Class<?> owner = type; owner != Object.class;
+                 owner = owner.getSuperclass()) {
+                for (Field field : owner.getDeclaredFields()) {
+                    if (!Modifier.isStatic(field.getModifiers())
+                            && !field.isSynthetic()) {
+                        fields.add(field);
+                    }
+                }
+            }
+            fields.sort(Comparator.comparing((Field field) ->
+                    field.getDeclaringClass().getName() + "#"
+                            + field.getName()));
+            out.append(type.getName()).append('{');
+            for (Field field : fields) {
+                field.setAccessible(true);
+                out.append(field.getName()).append('=');
+                try {
+                    canonical(field.get(value), out);
+                } catch (IllegalAccessException unreadable) {
+                    throw new IllegalStateException(unreadable);
+                }
+                out.append(';');
+            }
+            out.append('}');
+        }
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException missing) {
+            throw new IllegalStateException(missing);
+        }
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder text = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            text.append(Character.forDigit((b >> 4) & 0xf, 16))
+                    .append(Character.forDigit(b & 0xf, 16));
+        }
+        return text.toString();
     }
 
     /** One immutable view of the scheduler-selected execution task. */
