@@ -16,11 +16,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -115,53 +112,61 @@ public final class Independence {
         for (String term : seedTerms) {
             kept.hold(termLeaves(corpus, session, term), named);
         }
-        Map<DecisionRow, Set<String>> byCondition = conditionLeaves(corpus,
-                session, conditions);
-        Map<ReadRow, Set<String>> byRead = new LinkedHashMap<ReadRow,
-                Set<String>>();
-        Map<ReadRow, List<DecisionRow>> guards =
-                new LinkedHashMap<ReadRow, List<DecisionRow>>();
+        // Each item at its index, not in a map keyed by the row: a row's
+        // equality hashes every part of it, on each put and get (a third of
+        // this fixed point's time in SGF8PLAN-adhoc-05 round 2's closure
+        // walk); a row met twice holds what it held the first time.
+        List<Set<String>> byCondition = conditionLeaves(corpus, session,
+                conditions);
+        List<Set<String>> byRead = new ArrayList<Set<String>>(
+                readRows.size());
+        List<List<DecisionRow>> guards = new ArrayList<List<DecisionRow>>(
+                readRows.size());
         for (ReadRow read : readRows) {
-            Set<String> value = new LinkedHashSet<String>(
-                    readLeaves(corpus, session, read));
-            guards.put(read, built.apply(read));
-            for (DecisionRow decision : guards.get(read)) {
+            Set<String> leaves = readLeaves(corpus, session, read);
+            List<DecisionRow> shaped = built.apply(read);
+            // Read only: a read no construction guard shaped is its leaves.
+            Set<String> value = shaped.isEmpty() ? leaves
+                    : new LinkedHashSet<String>(leaves);
+            for (DecisionRow decision : shaped) {
                 value.addAll(termLeaves(corpus, session,
                         Arms.conjunct(decision)));
             }
-            byRead.put(read, value);
+            guards.add(shaped);
+            byRead.add(value);
         }
+        boolean[] keptCondition = new boolean[conditions.size()];
+        boolean[] keptRead = new boolean[readRows.size()];
         for (boolean grew = true; grew; ) {
             grew = false;
-            for (Iterator<Map.Entry<DecisionRow, Set<String>>> pending =
-                         byCondition.entrySet().iterator();
-                 pending.hasNext(); ) {
-                Map.Entry<DecisionRow, Set<String>> condition = pending.next();
-                if (!shares(condition.getValue(), moving)) continue;
-                kept.decisions.add(condition.getKey().seq());
-                kept.hold(condition.getValue(), named);
-                pending.remove();
+            for (int at = 0; at < keptCondition.length; at++) {
+                if (keptCondition[at] || !shares(byCondition.get(at), moving)) {
+                    continue;
+                }
+                kept.decisions.add(conditions.get(at).seq());
+                kept.hold(byCondition.get(at), named);
+                keptCondition[at] = true;
                 grew = true;
             }
-            for (Iterator<Map.Entry<ReadRow, Set<String>>> pending =
-                         byRead.entrySet().iterator(); pending.hasNext(); ) {
-                Map.Entry<ReadRow, Set<String>> read = pending.next();
-                String symbol = read.getKey().symbol();
-                boolean moves = shares(read.getValue(), moving);
+            for (int at = 0; at < keptRead.length; at++) {
+                if (keptRead[at]) continue;
+                ReadRow read = readRows.get(at);
+                String symbol = read.symbol();
+                boolean moves = shares(byRead.get(at), moving);
                 if (!moves && (symbol == null || !named.contains(symbol))) {
                     continue;
                 }
                 if (moves && symbol != null && !symbol.isEmpty()) {
                     bound.add(symbol);
                 }
-                kept.reads.add(read.getKey().seq());
-                kept.hold(read.getValue(), named);
+                kept.reads.add(read.seq());
+                kept.hold(byRead.get(at), named);
                 // Its referent's shape is theirs: they are conjoined in the
                 // polarity they took, moving or not.
-                for (DecisionRow decision : guards.get(read.getKey())) {
+                for (DecisionRow decision : guards.get(at)) {
                     kept.decisions.add(decision.seq());
                 }
-                pending.remove();
+                keptRead[at] = true;
                 grew = true;
             }
         }
@@ -192,32 +197,34 @@ public final class Independence {
         Independence kept = new Independence();
         Set<String> variables = new LinkedHashSet<String>(
                 termLeaves(corpus, session, guard));
-        Map<DecisionRow, Set<String>> byCondition = conditionLeaves(corpus,
-                session, conditions);
-        Map<ReadRow, Set<String>> byRead =
-                new LinkedHashMap<ReadRow, Set<String>>();
+        List<Set<String>> byCondition = conditionLeaves(corpus, session,
+                conditions);
+        List<Set<String>> byRead = new ArrayList<Set<String>>(
+                readRows.size());
         for (ReadRow read : readRows) {
-            byRead.put(read, readLeaves(corpus, session, read));
+            byRead.add(readLeaves(corpus, session, read));
         }
+        boolean[] keptCondition = new boolean[conditions.size()];
+        boolean[] keptRead = new boolean[readRows.size()];
         for (boolean grew = true; grew; ) {
             grew = false;
-            for (Iterator<Map.Entry<DecisionRow, Set<String>>> pending =
-                         byCondition.entrySet().iterator();
-                 pending.hasNext(); ) {
-                Map.Entry<DecisionRow, Set<String>> condition = pending.next();
-                if (!shares(condition.getValue(), variables)) continue;
-                kept.decisions.add(condition.getKey().seq());
-                variables.addAll(condition.getValue());
-                pending.remove();
+            for (int at = 0; at < keptCondition.length; at++) {
+                if (keptCondition[at]
+                        || !shares(byCondition.get(at), variables)) {
+                    continue;
+                }
+                kept.decisions.add(conditions.get(at).seq());
+                variables.addAll(byCondition.get(at));
+                keptCondition[at] = true;
                 grew = true;
             }
-            for (Iterator<Map.Entry<ReadRow, Set<String>>> pending =
-                         byRead.entrySet().iterator(); pending.hasNext(); ) {
-                Map.Entry<ReadRow, Set<String>> read = pending.next();
-                if (!shares(read.getValue(), variables)) continue;
-                kept.reads.add(read.getKey().seq());
-                variables.addAll(read.getValue());
-                pending.remove();
+            for (int at = 0; at < keptRead.length; at++) {
+                if (keptRead[at] || !shares(byRead.get(at), variables)) {
+                    continue;
+                }
+                kept.reads.add(readRows.get(at).seq());
+                variables.addAll(byRead.get(at));
+                keptRead[at] = true;
                 grew = true;
             }
         }
@@ -225,12 +232,14 @@ public final class Independence {
         return kept;
     }
 
-    private static Map<DecisionRow, Set<String>> conditionLeaves(
-            Corpus corpus, String session, List<DecisionRow> conditions) {
-        Map<DecisionRow, Set<String>> byCondition =
-                new LinkedHashMap<DecisionRow, Set<String>>();
+    /** Each condition's variables, at its index. */
+    private static List<Set<String>> conditionLeaves(Corpus corpus,
+                                                     String session,
+                                                     List<DecisionRow> conditions) {
+        List<Set<String>> byCondition = new ArrayList<Set<String>>(
+                conditions.size());
         for (DecisionRow condition : conditions) {
-            byCondition.put(condition, termLeaves(corpus, session,
+            byCondition.add(termLeaves(corpus, session,
                     Arms.conjunct(condition)));
         }
         return byCondition;
