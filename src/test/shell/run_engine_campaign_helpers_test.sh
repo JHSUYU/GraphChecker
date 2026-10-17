@@ -4320,6 +4320,7 @@ while IFS='|' read -r split_verdict split_status split_host split_first \
     stream_classes=g0/classes
     stream_plan=g0/plan.jsonl
     stream_admitted_mb=$(campaign_solver_need_mb)
+    stream_admitted_cores=2
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
       stream_job_tree=() stream_host_busy=() stream_solver_seen=() \
       stream_host_solves=()
@@ -4346,6 +4347,7 @@ while IFS='|' read -r split_verdict split_status split_host split_first \
     campaign_stream_ended "${split_pid}" "${split_rc}"
     if [[ "${stream_queue[-1]}" == REPLAY\ * ]]; then
       stream_admitted_mb=2048
+      stream_admitted_cores=1
       campaign_stream_start "${stream_queue[-1]}" lift13
       wait "$!" || true
     fi
@@ -4562,6 +4564,58 @@ done <<'EOF'
 0|0|0|||obligations-0001|on
 EOF
 
+# STREAM-PLAN-DUE: a round is owed once an answer came since the last one
+# and a session landed, or nothing is left to wait for but confirmations and
+# the hard lane's asks running: z3 alone at the full budget, up to 30 min
+# (SGF8-adhoc-40 round 6: the 13 lifts idle 12 min behind two asks), their
+# obligations in flight; never while GROW owes re-runs or swaps.  Per row:
+# answers since the last round, GROW's hold, sessions landed, the kinds
+# running, queued and returned unlanded (- none), and whether it is owed.
+while IFS='|' read -r pd_dirty pd_hold pd_landed pd_jobs pd_queue \
+    pd_pending pd_want; do
+  pd_said=$(
+    declare -A stream_jobs=()
+    stream_queue=()
+    stream_pending=()
+    stream_dirty=${pd_dirty}
+    stream_hold=${pd_hold}
+    stream_landed=${pd_landed}
+    pd_at=100
+    for pd_kind in ${pd_jobs//,/ }; do
+      [[ "${pd_kind}" == - ]] && continue
+      stream_jobs[${pd_at}]="${pd_kind} obligations-0001 A${pd_at} lift12 "
+      pd_at=$((pd_at + 1))
+    done
+    for pd_kind in ${pd_queue//,/ }; do
+      [[ "${pd_kind}" == - ]] || stream_queue+=("${pd_kind} obligations-0001 B")
+    done
+    for pd_kind in ${pd_pending//,/ }; do
+      [[ "${pd_kind}" == - ]] \
+        || stream_pending+=("${pd_kind} obligations-0001 C lift12 0")
+    done
+    if campaign_stream_plan_due; then echo due; else echo wait; fi
+  )
+  [[ "${pd_said}" == "${pd_want}" ]] \
+    || fail "STREAM-PLAN-DUE: answered ${pd_dirty}, hold ${pd_hold}, landed \
+${pd_landed}, running ${pd_jobs}, queued ${pd_queue}, unlanded \
+${pd_pending}: ${pd_said}, not ${pd_want}"
+done <<'EOF'
+0|0|0|-|-|-|wait
+1|0|0|-|-|-|due
+1|0|1|OBLIGATION,REPLAY|OBLIGATION|-|due
+1|0|0|REPLAY|-|-|wait
+1|0|0|OBLIGATION|-|-|wait
+1|0|0|CONFIRM|-|-|due
+1|0|0|HARD|-|-|due
+1|0|0|HARD,HARD,CONFIRM|-|-|due
+1|0|0|HARD,REPLAY|-|-|wait
+1|0|0|HARD|OBLIGATION|-|wait
+1|0|0|HARD|-|HARD|wait
+1|0|0|-|CONFIRM|CONFIRM|due
+1|1|0|HARD|-|-|wait
+1|1|1|-|-|-|wait
+EOF
+
 # STREAM-END-AGAIN: an end (a witness, the budget) takes the solves in flight
 # with it -- a HARD running, a HARD and an obligation asked again queued --
 # each ended, out of the iteration for explore-reaped/ with its worker, and
@@ -4660,7 +4714,8 @@ EOF
 while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
     sd_due; do
   sd_said=$(
-    declare -A stream_solver_seen=() stream_host_solves=() stream_job_since=()
+    declare -A stream_solver_seen=() stream_host_solves=() stream_job_since=() \
+      stream_pass_memo=()
     stream_hosts=(lift02 lift03 lift04 lift05)
     stream_queue=("REPLAY r X g0/c g0/p")
     for ((sd_at = 0; sd_at < sd_warm; sd_at++)); do
@@ -5179,7 +5234,7 @@ while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
     stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=()
-    declare -A stream_host_solves=()
+    declare -A stream_host_solves=() stream_pass_memo=()
     for admit_host in ${admit_solves//,/ }; do
       [[ "${admit_host}" == - ]] \
         || stream_host_solves[${admit_host%%:*}]=${admit_host#*:}
@@ -5190,7 +5245,7 @@ while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
     done
     campaign_solver_seats() { printf '2\n'; }
     campaign_stream_has_cores() { return 0; }
-    campaign_host_try_charge() { status=0; campaign_host_charge_id=x; }
+    campaign_stream_try_charge() { status=0; campaign_host_charge_id=x; }
     # One more solver due (STREAM-SOLVER-DUE says when).
     campaign_stream_solver_due() { return 0; }
     chosen=()
@@ -5245,7 +5300,8 @@ while IFS='|' read -r par_kind par_mb par_cores par_warm par_most; do
     stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=() \
-      stream_host_solves=() stream_host_busy=() stream_host_cores=()
+      stream_host_solves=() stream_host_busy=() stream_host_cores=() \
+      stream_host_ledger=() stream_host_view=() stream_pass_memo=()
     [[ "${par_warm}" != warm ]] || stream_solver_seen[lift12]=$(date +%s)
     par_count=0
     while (( par_count < 64 )) \
@@ -5302,7 +5358,8 @@ while IFS='|' read -r mix_head mix_want; do
     stream_waiting=""
     declare -A stream_solver_seen=([lift12]=$(date +%s)) \
       stream_host_unread=() stream_host_solves=() stream_host_busy=() \
-      stream_host_cores=()
+      stream_host_cores=() stream_host_ledger=() stream_host_view=() \
+      stream_pass_memo=()
     mix_admitted=()
     mix_more=1
     while (( mix_more )); do
@@ -5327,6 +5384,156 @@ admitted ${mix_took}, not ${mix_want}"
 done <<'EOF'
 4544|HARD REPLAY OBLIGATION CONFIRM HARD REPLAY OBLIGATION CONFIRM REPLAY
 0|HARD REPLAY OBLIGATION CONFIRM HARD REPLAY OBLIGATION CONFIRM HARD
+EOF
+
+# STREAM-VIEW: the pool admits by its view of a host's ledger
+# (campaign_stream_view, campaign_stream_try_charge) and decides under the
+# host's lock over the charges as they stand: starts of 4000 MB on a host
+# whose ceiling is 22109 MB (70 % of 31583), the view read once (a poll of
+# 600 s).  Another campaign's charge after the view was read is found under
+# the lock, never admitted past; a start this head's view refuses takes no
+# lock (a host locked by another waits nothing out); a charge this head
+# releases is room at once.  Per row: the MB another campaign charges after
+# the first start, whether a lock is held by another before the last try,
+# whether this head releases a start then, and the starts admitted.
+view_dir="${test_tmp}/stream-view"
+while IFS='|' read -r view_other view_locked view_release view_want; do
+  rm -rf -- "${view_dir}"
+  view_took=$(
+    campaign_host_gate_root="${view_dir}"
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=600
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    mkdir -p "${view_dir}/lift12/charges"
+    echo 31583 >"${view_dir}/lift12/total"
+    campaign_host_available_mb() { echo 31583; }
+    sleep() { fail "STREAM-VIEW: a start the view refuses waited for the \
+lock"; }
+    declare -A stream_host_ledger=() stream_host_view=() stream_jobs=() \
+      stream_job_charge=()
+    view_count=0
+    while (( view_count < 8 )); do
+      campaign_stream_try_charge lift12 4000
+      (( status == 0 )) || break
+      stream_jobs[${view_count}]="REPLAY r OB.${view_count} lift12 "
+      stream_job_charge[${view_count}]=${campaign_host_charge_id}
+      view_count=$((view_count + 1))
+      (( view_count > 1 || view_other == 0 )) \
+        || : >"${view_dir}/lift12/charges/${view_other}.other.1.1.1"
+    done
+    [[ "${campaign_host_wait_reason}" == "lift12 has "*" MB charged"* ]] \
+      || fail "STREAM-VIEW: a refusal does not say what is charged: \
+${campaign_host_wait_reason}"
+    [[ "${view_locked}" == 0 ]] || mkdir "${view_dir}/lift12/lock"
+    [[ "${view_release}" == 0 ]] || campaign_stream_release 0
+    campaign_stream_try_charge lift12 4000
+    (( status != 0 )) || view_count=$((view_count + 1))
+    printf '%s\n' "${view_count}"
+  )
+  [[ "${view_took}" == "${view_want}" ]] \
+    || fail "STREAM-VIEW: ${view_other} MB charged by another, locked \
+${view_locked}, released ${view_release}: ${view_took} starts, not \
+${view_want}"
+done <<'EOF'
+0|0|0|5
+12000|0|0|2
+0|1|0|5
+0|0|1|6
+12000|0|1|3
+EOF
+
+# START-RATE: a burst of starts goes as fast as the hosts admit it, at
+# least five a second: the hosts' readings are kept fresh beside the loop
+# (campaign_stream_read_hosts), so no start waits for one -- a reading that
+# takes a second, as an ssh under a round's burst of them does, as one that
+# takes none (the head started about one job a second, each reading its
+# host's memory over ssh, ~350 ms, once its reading was older than the
+# poll: parallel audit 2026-10-17).  Each host ends charged its share of the
+# starts, round-robin.  Per row: the hosts, the starts queued (REPLAYs of
+# 512 MB, room for all), a reading's seconds, the poll, and the least rate.
+while IFS='|' read -r rate_hosts rate_starts rate_read_s rate_poll \
+    rate_least; do
+  # A directory of its own: the readers end within a poll of the row.
+  rate_dir="${test_tmp}/start-rate-${rate_read_s}"
+  rate_said=$(
+    iteration_dir="${rate_dir}/it"
+    campaign_root=${rate_dir}
+    campaign_host_gate_root="${rate_dir}/hosts"
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=${rate_poll}
+    campaign_replay_peak_mb=0
+    campaign_replay_typical_mb=0
+    campaign_replay_spike_mb=0
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_log() { :; }
+    campaign_host_available_mb() {
+      command sleep "${rate_read_s}"
+      echo 31583
+    }
+    stream_hosts=()
+    for ((rate_at = 0; rate_at < rate_hosts; rate_at++)); do
+      stream_hosts+=("lift$((20 + rate_at))")
+      mkdir -p "${campaign_host_gate_root}/lift$((20 + rate_at))"
+      echo 48 >"${campaign_host_gate_root}/lift$((20 + rate_at))/cores"
+      echo 31583 >"${campaign_host_gate_root}/lift$((20 + rate_at))/total"
+    done
+    stream_shared_pool=false
+    stream_classes=g0/classes
+    stream_plan=g0/plan.jsonl
+    stream_next_host=0
+    stream_waiting=""
+    stream_hold=0
+    stream_admitted_cores=""
+    stream_reading=""
+    stream_queue=()
+    stream_hard=()
+    stream_swaps=()
+    declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
+      stream_job_since=() stream_job_tree=() stream_job_cores=() \
+      stream_host_busy=() stream_host_cores=() stream_host_unread=() \
+      stream_host_solves=() stream_solver_seen=() stream_queued_at=() \
+      stream_host_ledger=() stream_host_view=() stream_pass_memo=()
+    for ((rate_at = 0; rate_at < rate_starts; rate_at++)); do
+      mkdir -p "${iteration_dir}/obligations-0000/OB.${rate_at}"
+      stream_queue+=("REPLAY obligations-0000 OB.${rate_at} c p")
+    done
+    campaign_stream_job() { exec sleep 60; }
+    campaign_stream_read_hosts
+    # Their first readings, as an exploration's first round finds them.
+    for host in "${stream_hosts[@]}"; do
+      until [[ -s "${campaign_host_gate_root}/${host}/available" ]]; do
+        command sleep 0.1
+      done
+    done
+    rate_began=${EPOCHREALTIME/./}
+    campaign_stream_dispatch
+    rate_took=$(( ${EPOCHREALTIME/./} - rate_began ))
+    campaign_stream_unread_hosts
+    for rate_pid in "${!stream_jobs[@]}"; do
+      kill "${rate_pid}" 2>/dev/null || true
+    done
+    printf '%s %s %s\n' "$(( rate_starts - ${#stream_queue[@]} ))" \
+      "$(( (rate_starts - ${#stream_queue[@]}) * 1000000 / rate_took ))" \
+      "$(live_charges "${campaign_host_gate_root}" | cut -d. -f1 \
+        | LC_ALL=C sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')"
+  )
+  read -r rate_got rate_per_s rate_charged <<<"${rate_said}"
+  [[ "${rate_got}" == "${rate_starts}" ]] && (( rate_per_s >= rate_least )) \
+    && [[ "${rate_charged}" == "512:${rate_starts}" ]] \
+    || fail "START-RATE: ${rate_hosts} hosts, readings of ${rate_read_s} s: \
+${rate_said} (started, a second, charged), not ${rate_starts} at \
+${rate_least} a second or more"
+  [[ "$(find "${rate_dir}/hosts" -path '*/charges/*' -type f -printf '%h\n' \
+      | LC_ALL=C sort | uniq -c | awk '{print $1}' | LC_ALL=C sort -u \
+      | paste -sd ' ' -)" == "$(( rate_starts / rate_hosts ))" ]] \
+    || fail "START-RATE: the starts were not spread round-robin: \
+$(find "${rate_dir}/hosts" -path '*/charges/*' -type f -printf '%h\n' \
+  | LC_ALL=C sort | uniq -c)"
+done <<'EOF'
+4|80|0|5|5
+4|80|1|1|5
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
