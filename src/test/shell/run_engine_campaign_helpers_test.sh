@@ -7125,7 +7125,9 @@ campaign_host_total_mb() { echo 100000; }
 campaign_host_max_used_pct=70
 # Head steps under the same 70 % here and in HEAD-PLACE: a step that waits
 # for room, the hold it places and where it goes are their question
-# (campaign_head_max_used_pct; HEAD-CEILING tests the head steps' own).
+# (campaign_head_max_used_pct; HEAD-CEILING tests the head steps' own),
+# given back after HEAD-PLACE.
+head_pct_was=${campaign_head_max_used_pct}
 campaign_head_max_used_pct=70
 campaign_host_poll_s=0
 engine_memory_mb=12000
@@ -7271,6 +7273,7 @@ done <<'EOF'
 31000 36000 35500 5000 lift14
 31000 34000 34000 2000 lift14
 EOF
+campaign_head_max_used_pct=${head_pct_was}
 
 # ROOM-GRANT: a head step placed with a z3 room (campaign_head_charged
 # --room, a composer) is given on its host what the ledger admits there
