@@ -50,6 +50,8 @@ import java.util.Set;
  *                          reference write's construction guard is
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
+ *   --max-paths &lt;n&gt;       compose at most n paths, the rest named
+ *                          COMPOSE_HEAP_BOUND (run_engine.sh do_compose)
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  *   --z3-room-mb &lt;n&gt;     what the JVM's charge holds for its z3
  *                          processes ({@code smt.Z3}); required
@@ -107,7 +109,8 @@ public final class ComposeMain {
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         StaticScopeMap scope = StaticScopeMap.read(arguments.scopeMap);
         Composer.Composition composition = Composer.compose(corpus, anchor,
-                arguments.maxValuations, scope);
+                arguments.maxValuations, scope,
+                Collections.<String>emptySet(), arguments.maxPaths);
         long lowered = System.nanoTime();
         System.err.println("compose: " + composition.disjuncts().size()
                 + " path(s) composed, a " + composition.body().length()
@@ -126,7 +129,8 @@ public final class ComposeMain {
             System.err.println("compose: z3 refused " + refused.size()
                     + " path(s)' own question; composing without them");
             composition = Composer.compose(corpus, anchor,
-                    arguments.maxValuations, scope, refused);
+                    arguments.maxValuations, scope, refused,
+                    arguments.maxPaths);
             solver = solver(arguments);
             decision = ClaimPolicy.decide(composition, solver);
         }
@@ -669,6 +673,8 @@ public final class ComposeMain {
         final Path rootDomains;
         final Path scopeMap;
         final int maxValuations;
+        /** The most paths composed, 0 for no cap (Composer#maxPaths). */
+        final int maxPaths;
         final Path output;
         final Path manifest;
         /** Null: {@link Z3}'s own default. */
@@ -690,6 +696,7 @@ public final class ComposeMain {
             scopeMap = options.path("static-scope-map");
             maxValuations = integer(options.value("max-valuations", null),
                     64);
+            maxPaths = integer(options.value("max-paths", null), 0);
             output = options.path("output");
             manifest = options.path("manifest");
             z3 = options.path("z3");

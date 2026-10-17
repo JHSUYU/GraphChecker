@@ -1256,8 +1256,8 @@ do_schedule() {
 # SGF7SLOW17-18413's (3.2 GB of sessions) ran out at 4096 MB.
 do_compose() {
   ensure_output_directory "$(dirname "${composed_smt}")"
-  local -a selection=()
-  local declared engine_need_mb
+  local -a selection=() cap=()
+  local declared engine_need_mb status said composed
   engine_need_mb=$(campaign_solver_heap_mb "${compose_sessions_dir}")
   declared=$(campaign_declared_target_occurrence)
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
@@ -1265,15 +1265,37 @@ do_compose() {
     || selection+=(--root-domains "${causynth_root_domains}")
   [[ -z "${compose_reuse_dir:-}" ]] \
     || selection+=(--reuse "${compose_reuse_dir}")
-  run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
-    --sessions "${compose_sessions_dir}" \
-    --static-scope-map "${causynth_static_scope_map}" \
-    --output "${composed_smt}" \
-    --manifest "${composition_manifest}" \
-    --solver-timeout-ms "${solver_timeout_ms}" \
-    --max-valuations "${compose_max_valuations}" \
-    --z3 "${z3_bin}" \
-    "${selection[@]}"
+  # A COMPOSITION OUT OF THE ENGINE HEAP after its paths -- building its
+  # body, which grows with the paths it composed -- is composed again with
+  # half the paths it had, the rest left out named (ComposeMain
+  # --max-paths, Composer#HEAP_BOUND, BLOCKING by campaign_compose_bounded):
+  # SGF8-adhoc-05 composed all its 332 paths at 21504 MB and ran out of heap
+  # building the body, and the case ended with no claim at all.
+  said=$(mktemp) || return
+  while true; do
+    status=0
+    run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
+      --sessions "${compose_sessions_dir}" \
+      --static-scope-map "${causynth_static_scope_map}" \
+      --output "${composed_smt}" \
+      --manifest "${composition_manifest}" \
+      --solver-timeout-ms "${solver_timeout_ms}" \
+      --max-valuations "${compose_max_valuations}" \
+      --z3 "${z3_bin}" \
+      "${cap[@]}" "${selection[@]}" 2> >(tee -- "${said}" >&2) \
+      || status=$?
+    wait "$!" 2>/dev/null || true
+    (( status == campaign_jvm_out_of_heap_status )) || break
+    composed=$(grep -oE '\([0-9]+ composed\)' "${said}" | tail -n 1 \
+      | tr -dc '0-9')
+    [[ -n "${composed}" ]] && (( composed > 1 )) || break
+    cap=(--max-paths "$(( composed / 2 ))")
+    printf '[campaign] ComposeMain ran out of the engine heap with %s path(s) \
+composed: composed again with at most %s\n' "${composed}" \
+      "$(( composed / 2 ))" >&2
+  done
+  rm -f -- "${said}"
+  return "${status}"
 }
 
 # run_configured_workload <trace-dir> [seconds] [plant] [charged_mb]

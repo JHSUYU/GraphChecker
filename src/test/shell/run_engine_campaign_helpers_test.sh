@@ -7927,4 +7927,55 @@ $(cat "${bound_dir}/campaign_gaps.jsonl")"
     || fail "a replay's start beside a head step passed the replays' 70 %"
 ) || exit 1
 
+# COMPOSE-RETRY: a composition out of the engine heap after its paths is
+# composed again with half the paths it composed (ComposeMain --max-paths),
+# until one ends or one path is all it had.  Per row: the composed counts
+# the composer says before each out-of-heap end (- for one that ends 0), the
+# --max-paths it was given each time, do_compose's status.
+retry_dir="${test_tmp}/compose-retry"
+while IFS='|' read -r retry_said retry_caps retry_status; do
+  rm -rf -- "${retry_dir}"
+  mkdir -p "${retry_dir}"
+  retry_got=$(
+    composed_smt="${retry_dir}/out/candidate.smt2"
+    composition_manifest="${retry_dir}/out/manifest.json"
+    compose_sessions_dir="${retry_dir}/sessions"
+    causynth_static_scope_map=""
+    causynth_root_domains=""
+    compose_reuse_dir=""
+    solver_timeout_ms=1000
+    compose_max_valuations=4
+    z3_bin=z3
+    campaign_solver_heap_mb() { echo 4096; }
+    campaign_declared_target_occurrence() { echo anchor; }
+    echo 0 >"${retry_dir}/n"
+    run_java_main() {
+      local n cap=- each
+      n=$(<"${retry_dir}/n")
+      echo $((n + 1)) >"${retry_dir}/n"
+      while (( $# > 0 )); do
+        [[ "$1" != --max-paths ]] || cap=$2
+        shift
+      done
+      echo "${cap}" >>"${retry_dir}/caps"
+      read -r -a each <<<"${retry_said}"
+      [[ "${each[n]:--}" != - ]] || return 0
+      echo "compose: path ${each[n]} of 99 (${each[n]} composed) in 1 s" >&2
+      return 3
+    }
+    status=0
+    do_compose 2>/dev/null || status=$?
+    printf '%s|%s' "$(paste -sd ' ' "${retry_dir}/caps")" "${status}"
+  )
+  [[ "${retry_got}" == "${retry_caps}|${retry_status}" ]] \
+    || fail "COMPOSE-RETRY: a composer saying ${retry_said} was run with \
+${retry_got}, not ${retry_caps}|${retry_status}"
+done <<'EOF'
+-|-|0
+10 -|- 5|0
+332 166 -|- 166 83|0
+1|-|3
+4 2 1|- 2 1|3
+EOF
+
 echo "run_engine campaign helper tests passed"

@@ -1565,15 +1565,22 @@ public final class Composer {
     static final String HEAP_BOUND = "COMPOSE_HEAP_BOUND";
     /** How full the old generation was after its last sweep. */
     private final DoubleSupplier heapFull;
+    /** The most paths it composes, 0 for no cap: a composition that ran out
+     *  of the engine heap after its paths (building its body) is composed
+     *  again with half the paths it had (run_engine.sh do_compose), the rest
+     *  left out named {@link #HEAP_BOUND} as the heap bound leaves them. */
+    private final int maxPaths;
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      int maxValuations, StaticScopeMap scope,
-                     Set<String> leftOutPaths, DoubleSupplier heapFull) {
+                     Set<String> leftOutPaths, DoubleSupplier heapFull,
+                     int maxPaths) {
         this.corpus = corpus;
         this.anchor = anchor;
         this.scope = scope;
         this.leftOutPaths = leftOutPaths;
         this.heapFull = heapFull;
+        this.maxPaths = maxPaths;
         this.restsOn = new RestsOn(corpus, scope, anchor);
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
@@ -1611,26 +1618,28 @@ public final class Composer {
                                       int maxValuations,
                                       StaticScopeMap scope) {
         return compose(corpus, anchor, maxValuations, scope,
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(), 0);
     }
 
-    /** The same, the paths {@code leftOutPaths} names left out, named. */
+    /** The same, the paths {@code leftOutPaths} names left out, named, and
+     *  at most {@code maxPaths} composed (0: no cap, {@link #maxPaths}). */
     public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
                                       int maxValuations,
                                       StaticScopeMap scope,
-                                      Set<String> leftOutPaths) {
+                                      Set<String> leftOutPaths,
+                                      int maxPaths) {
         return compose(corpus, anchor, maxValuations, scope, leftOutPaths,
-                HeapWatch::oldGenerationSwept);
+                HeapWatch::oldGenerationSwept, maxPaths);
     }
 
     /** The same, its heap bound reading {@code heapFull}. */
     static Composition compose(Corpus corpus, OccurrenceAddress anchor,
                                int maxValuations, StaticScopeMap scope,
                                Set<String> leftOutPaths,
-                               DoubleSupplier heapFull) {
+                               DoubleSupplier heapFull, int maxPaths) {
         return new Composer(corpus, anchor, maxValuations, scope,
-                leftOutPaths, heapFull).run();
+                leftOutPaths, heapFull, maxPaths).run();
     }
 
     /** Every how many admitted paths the composer says how far it is. */
@@ -1729,16 +1738,21 @@ public final class Composer {
         long said = started;
         for (Corpus.RecordedPath path : admitted) {
             boolean defective = leftOutSessions.contains(path.sessionId);
-            if (bounded > 0 || ordinal > 0
+            boolean capped = maxPaths > 0 && ordinal >= maxPaths;
+            if (bounded > 0 || capped || ordinal > 0
                     && heapFull.getAsDouble() >= HEAP_SHARE) {
                 bounded++;
                 refused(path, Collections.singletonList(GapRow.of(
                         path.sessionId, GapKind.ADMISSION_GAP,
                         GapClass.DIAGNOSTIC, HEAP_BOUND, "left out (best "
-                                + "effort): the composer's old generation "
-                                + "was past " + Math.round(HEAP_SHARE * 100)
-                                + " % after its last sweep with " + ordinal
-                                + " path(s) composed, so the claim says "
+                                + "effort): " + (capped ? "a composition of "
+                                + "more paths ran out of the engine heap "
+                                + "building its body, so at most " + maxPaths
+                                + " are composed" : "the composer's old "
+                                + "generation was past "
+                                + Math.round(HEAP_SHARE * 100) + " % after "
+                                + "its last sweep with " + ordinal
+                                + " path(s) composed") + ", and the claim says "
                                 + "nothing of " + path.pathId)));
             } else if (defective || leftOutPaths.contains(path.pathId)) {
                 refused(path, Collections.singletonList(GapRow.of(
