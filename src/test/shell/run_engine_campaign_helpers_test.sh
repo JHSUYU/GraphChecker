@@ -3826,7 +3826,7 @@ $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
 stream_fixture stream-serve
 (
   stream_stubs
-  engine_memory_mb=16384
+  engine_memory_mb=8192  # the planner runs at it, beside a solve, on the one host
   stream_planner_dies() { :; }
   stream_round_plan() {
     case "$1" in
@@ -3844,7 +3844,7 @@ stream_fixture stream-serve
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "STREAM-SERVE: the served exploration failed: \
 $(cat "${stream_dir}/explore.log")"
-[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "16384" ]] \
+[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "8192" ]] \
   && jq -e '.stop == "FIXED_POINT" and .rounds == 3' \
     "${stream_dir}/exploration.json" >/dev/null \
   || fail "STREAM-SERVE: one planner at the engine heap did not serve the \
@@ -3856,7 +3856,7 @@ rounds: $(cat "${stream_dir}/planner-heaps.txt" \
 stream_fixture stream-serve-dies
 (
   stream_stubs
-  engine_memory_mb=16384
+  engine_memory_mb=8192  # the planner runs at it, beside a solve, on the one host
   stream_planner_dies() { [[ "$1" != 1 ]] || echo 1; }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
   campaign_obligation_worker() { stream_answer "$4" A ADMITTED SESSION.A; }
@@ -3965,7 +3965,7 @@ iteration's ledger: $*"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
   }
-  engine_memory_mb=16384
+  engine_memory_mb=8192  # the planner runs at it, beside a solve, on the one host
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A LONG; }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -6801,7 +6801,7 @@ reset_config
 # MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
 # JVM against every other start -- what its planner or composer starts at
 # (campaign_head_need_mb: that JVM's footprint, the composer's with its z3
-# room), not the case's engine heap: an obligation counts
+# room; the planner starts at the engine heap): an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
 # stale frees it, and the head gives it up when it exits.  The hosts are
@@ -6813,13 +6813,17 @@ hostname() { echo gate-head; }
 campaign_host_available_mb() { echo 43000; }
 campaign_host_total_mb() { echo 100000; }
 campaign_host_max_used_pct=70
+# Head steps under the same 70 % here and in HEAD-PLACE: a step that waits
+# for room, the hold it places and where it goes are their question
+# (campaign_head_max_used_pct; HEAD-CEILING tests the head steps' own).
+campaign_head_max_used_pct=70
 campaign_host_poll_s=0
 engine_memory_mb=12000
 (
   campaign_head_charging=1
   campaign_head_reserve
   head_room=$(campaign_jvm_charge_mb \
-    edu.uva.liftlab.graphchecker.explore.ExploreMain 8192)
+    edu.uva.liftlab.graphchecker.explore.ExploreMain 12000)
   [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "${head_room}" ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
@@ -7110,8 +7114,9 @@ reset_config
 # the z3 room it is placed with (one pair's 2048 MB on a 30000 MB host), and
 # told the room (campaign_head_charged --room); one that runs out of heap
 # there runs again at 8192 MB, charged and told the same room, and its
-# case's later composers start at 8192, as does the room its head holds
-# (campaign_head_need_mb).
+# case's later composers start at 8192; the room its head holds
+# (campaign_head_need_mb) is the planner's, which starts at the engine heap
+# and outweighs any composer.
 cat >"${engine_test}/compose-java" <<'EOF_JAVA'
 #!/usr/bin/env bash
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} ${*: -2}" >>"${ENGINE_TEST_LOG}"
@@ -7132,7 +7137,9 @@ chmod +x "${engine_test}/compose-java"
     "$@" ${room:+--z3-room-mb "${room}"}
   }
   compose_main=edu.uva.liftlab.graphchecker.compose.ComposeMain
-  [[ "$(campaign_head_need_mb)" == 9088 ]] \
+  planner_room=$(campaign_jvm_charge_mb \
+    edu.uva.liftlab.graphchecker.explore.ExploreMain 16384)
+  [[ "$(campaign_head_need_mb)" == "${planner_room}" ]] \
     || fail "a head held $(campaign_head_need_mb) MB before its composer grew"
   engine_java -cp jar "${compose_main}" >/dev/null \
     2>"${engine_test}/compose-err" \
@@ -7149,7 +7156,7 @@ heap=8192 --z3-room-mb 2048 heap=8192 --z3-room-mb 2048 " \
      && "$(cat "${engine_test}/compose-charges")" == "6784 11136 11136 " ]] \
     || fail "composers ran at $(tr '\n' ' ' <"${ENGINE_TEST_LOG}")charged \
 $(cat "${engine_test}/compose-charges")"
-  [[ "$(campaign_head_need_mb)" == 11136 ]] \
+  [[ "$(campaign_head_need_mb)" == "${planner_room}" ]] \
     || fail "a head held $(campaign_head_need_mb) MB after its composer grew"
 ) || exit 1
 reset_config
@@ -7239,7 +7246,8 @@ idle host (${z3_status}): ${campaign_host_wait_reason}"
 # never lowering it; its status is the JVM's.  The head's held room is that
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
 # heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
-# footprint of what its planner or composer starts at; and on top, the z3 room
+# footprint of what its planner (at the engine heap) or composer starts at;
+# and on top, the z3 room
 # its composer is placed with (one pair's 2048 MB: its z3s are children its
 # peak does not count).
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
@@ -7270,7 +7278,7 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|9088
+|-|13134
 700:0|700|3072
 2949:0 1200:3|2949|5760
 9000:0|9000|13312
@@ -7431,7 +7439,7 @@ EOF
       || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
   done <<'EOF'
-engine_memory_mb=16384|16384|9088
+engine_memory_mb=16384|16384|17792
 engine_memory_mb=|8192|9088
 engine_memory_mb=4096|4096|6784
 EOF
@@ -7578,6 +7586,29 @@ $(cat "${bound_dir}/campaign_gaps.jsonl")"
   grep -q "COMPOSE left 1 admitted path(s) out .* over the 1 composed" \
     "${bound_dir}/campaign_gaps.jsonl" \
     || fail "the heap bound does not count what it left out"
+) || exit 1
+
+# HEAD-CEILING: a head step (one JVM alone on its host) is placed under the
+# head steps' ceiling, not the replays': on a 100000 MB host with 70000 MB
+# in use, a 9500 MB step exceeds 70 % and fits under 88 %; a replay's start
+# beside it still meets the 70 %.
+(
+  campaign_host_gate_root="${test_tmp}/head-ceiling"
+  campaign_local_host_names=" localhost gate-head "
+  campaign_worker_hosts=""
+  hostname() { echo gate-head; }
+  campaign_host_available_mb() { echo 30000; }
+  campaign_host_total_mb() { echo 100000; }
+  campaign_log() { :; }
+  campaign_host_max_used_pct=70
+  campaign_head_max_used_pct=88
+  campaign_head_hold=""
+  campaign_head_place 9500 >/dev/null 2>&1 \
+    && [[ "${campaign_placed_host}" == localhost ]] \
+    || fail "a head step was not placed under the head steps' ceiling"
+  run_capturing_status campaign_host_try_start localhost 1000
+  [[ "${status}" -eq 1 ]] \
+    || fail "a replay's start beside a head step passed the replays' 70 %"
 ) || exit 1
 
 echo "run_engine campaign helper tests passed"
