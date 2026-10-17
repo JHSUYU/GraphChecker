@@ -45,14 +45,21 @@ fi
 # replay its witness -- where that growth is measured or the case is of the
 # routed-alias family, and each expected mechanism is one flip there (09 a
 # TIMED_WAIT fault, 19 a pairing flip on a stale view, 40 a READ-door fault
-# asked at round 0); depth 1 where the case forces its arm (05, 14: the
-# forced world's arms) or one-flip worlds have not grown (31).  39 moved to
+# asked at round 0).  05, 14 and 31 ran at depth 1 until 2026-10-16 (05 and
+# 14 force their arm, and the forced world's arms are flipped only at depth
+# 1; now they are not).  39 moved to
 # depth 0 when its growth was measured (SGF3-adhoc-39, 2026-10-13: rounds 4-5
 # planned 2522 and 3145 obligations over one-flip worlds, 7.72 ids per arm,
 # the top arms asked in 59 worlds each; the 4 h budget ended it).  Named
 # BOUNDED (region_path_max_world_depth, campaign_bounds); what stays
 # unasked is every flip in a world of more flips than that.
+# Every study check at depth 0 (owner 2026-10-16): the eight bug checks'
+# witnesses each moved one root off the recording's path (a clock, a fault,
+# or none and a view's pairing), so one generation of flips reaches them, and
+# 14's depth-1 round 4 planned 12,438 obligations over 114 distinct flips
+# (site, decision, arm) asked again in each of ~430 one-flip worlds, at ~24
+# verdicts a minute (SGF8B2H-adhoc-14).
 case "$1" in
-  07|09|10|13|19|21|39|40) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
-  05|14|31) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
+  05|07|09|10|13|14|19|21|31|39|40)
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
 esac
