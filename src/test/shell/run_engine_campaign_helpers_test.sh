@@ -7493,7 +7493,8 @@ done
 # (SGF3-adhoc-13: a composer charged its footprint alone ran a z3 to 10.9
 # GB): a composer is placed with one pair's 2048 MB (given what its host
 # admits beside it once placed: ROOM-GRANT), less where its footprint and
-# that would not fit under the host's ceiling (70 % of 30000 MB here), the
+# that would not fit under the head steps' ceiling (88 % of 30000 MB here,
+# campaign_head_max_used_pct: a composer is a head step), the
 # least room (256 MB) where nothing is left; a solver a question's room; a
 # hard-lane ask the hard lane's 4096 MB beside its corpus-free JVM's 512 MB
 # heap (campaign_decide_need_mb); a main that starts no z3 none.  Per row:
@@ -7521,8 +7522,10 @@ ${z3_room}|${z3_charge}"
 compose.ComposeMain|4096|2048|6784
 compose.ComposeMain|8192|2048|11136
 compose.ComposeMain|16384|2048|19840
-compose.ComposeMain|18000|1491|21000
-compose.ComposeMain|20000|256|21890
+compose.ComposeMain|18000|2048|21557
+compose.ComposeMain|20000|2048|23682
+compose.ComposeMain|24000|516|26400
+compose.ComposeMain|25000|256|27202
 explore.ExploreMain|8192|0|9088
 explore.ObligationSolverMain|2048|1152|3712
 solver|2048|1152|3712
