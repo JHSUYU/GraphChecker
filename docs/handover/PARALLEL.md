@@ -159,7 +159,11 @@ environment). A case that needs another Solr tree: its `case.sh` `repo=` lines e
 A hard question no longer holds its host: every obligation is first asked at 60 s, and an undecided one waits in the
 hard lane for z3 alone at the full budget over the query its first ask built, in a JVM that reads no corpus (about
 5 GB charged, four to a free lift; PIPELINE §7.5; SP4-10: 12 z3 races of up to 30 min had held every solve slot of
-the case; SGF7-adhoc-39: a corpus JVM per hard ask, 18-21 GB, one per host).  No question is answered in a corpus
+the case; SGF7-adhoc-39: a corpus JVM per hard ask, 18-21 GB, one per host), nor the rounds: a round is planned while
+only hard-lane asks run, their obligations in flight, their verdicts landing in the next (SGF8-adhoc-40 round 6 idled
+the 13 lifts 12 min behind two; PIPELINE §7.9).  The head starts a round's burst at tens of starts a second, each
+host's memory read beside the loop rather than over ssh per start (PIPELINE §7.7; it started one a second, a round 0
+of 600 solves and ~500 replays ~18 min of starts).  No question is answered in a corpus
 JVM of its own: a cold host's question hands its charge to the solver it starts. A question starts a new corpus
 solver only when none serves or starts yet, or when the queued questions at this campaign's measured seat time
 outlast a solver's measured corpus read (`campaign_stream_solver_due`): a big corpus keeps one warm solver and

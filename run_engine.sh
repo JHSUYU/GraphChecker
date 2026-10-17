@@ -3448,7 +3448,7 @@ campaign_corpus_mb() {
   stated="$(dirname "${sessions}")/corpus_mb"
   { read -r at mb <"${stated}"; } 2>/dev/null || at=""
   if [[ -n "${at}" && -n "${mb}" ]] \
-      && (( $(date +%s) - at < campaign_corpus_mb_fresh_s )); then
+      && (( EPOCHSECONDS - at < campaign_corpus_mb_fresh_s )); then
     printf '%s\n' "${mb}"
     return 0
   fi
@@ -4357,7 +4357,7 @@ campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
   local host=$1 need=$2 spare=${3:-0} key dir now available total limit
-  local charged used held=0
+  local used held=0
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -4369,20 +4369,50 @@ campaign_host_try_start() {
   used=$(( total - available ))
   [[ "${campaign_host_head_start}" == 1 ]] \
     || held=$(campaign_host_head_room "${dir}" "${now}")
+  campaign_host_admit "${dir}" "${total}" "${limit}" "${used}" "${held}" \
+    "${need}" "${spare}"
+}
+
+# campaign_host_admit <dir> <total_mb> <limit_mb> <used_mb> <held_mb>
+# <need_mb> <spare_mb>: the ledger's decision on one start of <need_mb> to
+# the host directory <dir> (campaign_host_try_start's answers, 0, 1 or 3),
+# its MemTotal, ceiling, real use and the room a head holds there given:
+# under its lock, the live charges read (campaign_host_admitted_charged, for
+# the pool's view of the host, campaign_stream_try_charge) and the start
+# charged when it fits beside them (campaign_host_fits).
+campaign_host_admitted_charged=0
+campaign_host_admit() {
+  local dir=$1 total=$2 limit=$3 used=$4 held=$5 need=$6 spare=$7
+  local now=${EPOCHSECONDS}
   campaign_host_lock "${dir}" "${now}" || return 3
-  charged=$(campaign_host_charged "${dir}" "${now}")
-  if (( charged + held + need + spare > limit \
-      || used + held + need + spare > limit )); then
+  campaign_host_admitted_charged=$(campaign_host_charged "${dir}" "${now}")
+  if ! campaign_host_fits "${campaign_host_admitted_charged}" "${used}" \
+      "${held}" "${need}" "${spare}" "${limit}"; then
     rmdir "${dir}/lock"
-    campaign_host_wait_reason="${key} has ${charged} MB charged to what it \
-runs, ${used} MB in use and ${held} MB held for a head; one needs ${need} MB\
-$( (( spare == 0 )) || echo " and ${spare} MB room beside it") and at most \
-${limit} MB (${campaign_host_max_used_pct}% of ${total} MB) may be charged or \
-in use"
+    campaign_host_refused "${dir##*/}" "${campaign_host_admitted_charged}" \
+      "${used}" "${held}" "${need}" "${spare}" "${limit}" "${total}"
     return 1
   fi
   campaign_host_charge_row "${dir}" "${need}"
   return 0
+}
+
+# campaign_host_fits <charged_mb> <used_mb> <held_mb> <need_mb> <spare_mb>
+# <limit_mb>: THE RULE.  A start fits when the host's live charges and its
+# real use, each with the room a head holds there, the start's need and the
+# room it leaves beside it, stay within the ceiling.
+campaign_host_fits() {
+  (( $1 + $3 + $4 + $5 <= $6 && $2 + $3 + $4 + $5 <= $6 ))
+}
+
+# campaign_host_refused <key> <charged> <used> <held> <need> <spare> <limit>
+# <total>: why a start does not fit, in campaign_host_wait_reason.
+campaign_host_refused() {
+  local beside=""
+  (( $6 == 0 )) || beside=" and $6 MB room beside it"
+  campaign_host_wait_reason="$1 has $2 MB charged to what it runs, $3 MB \
+in use and $4 MB held for a head; one needs $5 MB${beside} and at most $7 MB \
+(${campaign_host_max_used_pct}% of $8 MB) may be charged or in use"
 }
 
 # The most of a host of <total_mb> its charges, or its real use, may reach:
@@ -4411,13 +4441,13 @@ campaign_host_charged() {
 # campaign_host_charge_id, is held by this shell (campaign_host_hold).
 campaign_host_charge_row() {
   local dir=$1 need=$2 id
-  mkdir -p "${dir}/charges"
+  [[ -d "${dir}/charges" ]] || mkdir -p "${dir}/charges"
   # A name no charge holds: two a shell takes in one second shared one at an
   # equal RANDOM, the second truncating the first, and the host held one
   # charge too few (HOST-PAR: 25 replay starts of 896 MB where 24 fit).
   # Under the lock nobody else names one.
   while :; do
-    id="${need}.$(hostname -s).${BASHPID}.$(date +%s).${RANDOM}"
+    id="${need}.$(hostname -s).${BASHPID}.${EPOCHSECONDS}.${RANDOM}"
     [[ -e "${dir}/charges/${id}" ]] || break
   done
   campaign_host_charge_id=${id}
@@ -5235,6 +5265,11 @@ campaign_explore() {
   local -A stream_job_cores=()
   local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
+  # The head's view of each host's ledger (campaign_stream_view), the
+  # sharing explorations counted (campaign_stream_has_slot), and the file the
+  # hosts' readers run by (campaign_stream_read_hosts).
+  local -A stream_host_ledger=() stream_host_view=()
+  local stream_admitted_cores="" stream_sharers="" stream_reading=""
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
@@ -5248,11 +5283,13 @@ campaign_explore() {
   mapfile -t stream_hosts < <(campaign_worker_host_list)
   campaign_stream_round_args
   campaign_stream_enroll
+  campaign_stream_read_hosts
   # A head that fails takes nothing it started with it: whatever still runs
-  # is ended first, here and on every peer; then its share and its room go,
-  # as they do when the head exits anywhere else (campaign_head_reserve).
+  # is ended first, here and on every peer; then its share, its readers and
+  # its room go, as they do when the head exits anywhere else
+  # (campaign_head_reserve).
   trap 'campaign_stream_reap; campaign_planner_stop; campaign_stream_unenroll
-    campaign_head_unreserve' EXIT
+    campaign_stream_unread_hosts; campaign_head_unreserve' EXIT
 
   while true; do
     # Between two head steps, in the head's hands: a round that returned is
@@ -5316,6 +5353,7 @@ ${stream_stop_detail}"
   fi
   campaign_planner_stop
   campaign_stream_unenroll
+  campaign_stream_unread_hosts
   trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
   campaign_stream_truncation
@@ -5371,14 +5409,21 @@ campaign_stream_round_args() {
 # started, and either a session landed (the corpus grew) or no question is
 # left to wait for -- none queued, running, or returned and not landed (the
 # last answers may close the frontier; a confirmation's verdict changes no
-# frontier).  Never while GROW's re-runs or swaps are owed: the corpus is
-# about to change under the round.
+# frontier) -- but the hard lane's asks running: z3 alone at the full
+# budget, up to 30 min, and the pool idled behind them (SGF8-adhoc-40 round
+# 6: the 13 lifts idle 03:44-03:56 behind two asks started at 03:25).  Their
+# obligations stay in flight (the round's in_flight.jsonl), and their
+# verdicts land in whichever round is open when they return, owing the next.
+# Never while GROW's re-runs or swaps are owed: the corpus is about to
+# change under the round.
 campaign_stream_plan_due() {
   local entry
   (( stream_dirty == 1 && stream_hold == 0 )) || return 1
   (( stream_landed > 0 )) && return 0
-  for entry in "${stream_jobs[@]}" "${stream_queue[@]}" \
-      "${stream_pending[@]}"; do
+  for entry in "${stream_jobs[@]}"; do
+    [[ "${entry}" == CONFIRM\ * || "${entry}" == HARD\ * ]] || return 1
+  done
+  for entry in "${stream_queue[@]}" "${stream_pending[@]}"; do
     [[ "${entry}" == CONFIRM\ * ]] || return 1
   done
 }
@@ -6535,10 +6580,18 @@ campaign_stream_reap() {
 # The charge the head took for job <pid> (campaign_stream_admit_host),
 # released: the job ended, or was ended.
 campaign_stream_release() {
-  local kind round id host
+  local kind round id host mb at charged held used
   [[ -n "${stream_job_charge[$1]:-}" ]] || return 0
   read -r kind round id host _ <<<"${stream_jobs[$1]}"
   campaign_host_release "${host}" "${stream_job_charge[$1]}"
+  # The head's view of the host gives it back (campaign_stream_view): the
+  # charge is named by its MB.
+  mb=${stream_job_charge[$1]%%.*}
+  if [[ "${mb}" =~ ^[0-9]+$ && -n "${stream_host_view[${host}]:-}" ]]; then
+    read -r at charged held used <<<"${stream_host_view[${host}]}"
+    charged=$(( charged > mb ? charged - mb : 0 ))
+    stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+  fi
   unset 'stream_job_charge[$1]'
 }
 
@@ -6567,37 +6620,72 @@ campaign_process_tree() {
 # starts (campaign_stream_solves; a replay and a confirmation read no
 # corpus).  The hard lane (campaign_solver_first_tier_ms) starts once the
 # queue is empty.
+#
+# A START TAKES MILLISECONDS, so a round's burst starts as fast as the hosts
+# admit it.  The head started about one job a second (parallel audit
+# 2026-10-17: p50 1.0 s between starts, a round 0 of 600 solves and ~500
+# replays ~18 min of serial starts on 13 lifts that hold ~200 at once): each
+# start read its host's MemAvailable over ssh (~350 ms) whenever the reading
+# was older than campaign_host_poll_s, its charges, head room, MemTotal and
+# its kind's charge through some thirty forks, and scanned the whole queue
+# for an entry past the wait bound (dispatch-rate, lift04, 13 lifts, the
+# ledger on NFS: 200 REPLAYs at 2.0 a second, a round 0's 13 solves and 500
+# replays behind 500 solves queued at 1.4).  Now the hosts' readings are
+# kept fresh beside the loop (campaign_stream_read_hosts), the admission
+# reads the head's view of each host (campaign_stream_try_charge), what a
+# pass reads once is read once (stream_pass_memo: each kind's charge and
+# cores, the solver's seats, the corpus, the solves queued), and the queue
+# is scanned for the wait bound only once its oldest entry is past it: 61
+# and 28 a second.
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry kind at first started now refused
+  local entry kind at first started now refused holds oldest="" kinds
+  # What the pass reads once (campaign_stream_memo).
+  local -A stream_pass_memo=()
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
     campaign_stream_collect_jobs
     campaign_stream_has_slot || return 0
+    holds=0
+    ! campaign_stream_swap_owed || holds=1
     # The hard lane once no other start waits (campaign_solver_first_tier_ms),
     # and as any solve not while GROW holds the solves: its asks in order,
     # each charged alike (campaign_decide_need_mb).
     if (( ${#stream_queue[@]} == 0 )); then
-      ! campaign_stream_swap_owed || return 0
+      (( holds == 0 )) || return 0
       campaign_stream_admit_host HARD || return 0
       entry=${stream_hard[0]}
       stream_hard=("${stream_hard[@]:1}")
       campaign_stream_start "${entry}" "${stream_admitted_host}"
       continue
     fi
-    now=$(date +%s)
+    now=${EPOCHSECONDS}
+    # When the oldest entry was queued, read once a pass: an entry leaves
+    # the queue or joins it newer, so while that is within the bound no
+    # entry is past it.
+    if [[ -z "${oldest}" ]]; then
+      oldest=${now}
+      for at in "${stream_queued_at[@]}"; do
+        (( at >= oldest )) || oldest=${at}
+      done
+    fi
     first=-1
-    for at in "${!stream_queue[@]}"; do
-      entry=${stream_queue[at]}
-      ! campaign_stream_solves "${entry%% *}" || ! campaign_stream_swap_owed \
-        || continue
-      if (( now - ${stream_queued_at[${entry}]:-${now}} \
-          >= campaign_stream_wait_bound_s )); then
-        first=${at}
-        break
-      fi
-    done
+    if (( now - oldest >= campaign_stream_wait_bound_s )); then
+      for at in "${!stream_queue[@]}"; do
+        entry=${stream_queue[at]}
+        (( holds == 0 )) || ! campaign_stream_solves "${entry%% *}" \
+          || continue
+        if (( now - ${stream_queued_at[${entry}]:-${now}} \
+            >= campaign_stream_wait_bound_s )); then
+          first=${at}
+          break
+        fi
+      done
+      # None is: the oldest has left, read it again.
+      (( first >= 0 )) || oldest=""
+    fi
     started=-1
     refused=" "
+    kinds=0
     for at in "${!stream_queue[@]}"; do
       entry=${stream_queue[at]}
       kind=${entry%% *}
@@ -6606,20 +6694,25 @@ campaign_stream_dispatch() {
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
-      ! campaign_stream_solves "${kind}" || ! campaign_stream_swap_owed \
-        || continue
+      (( holds == 0 )) || ! campaign_stream_solves "${kind}" || continue
       [[ "${refused}" != *" ${kind} "* ]] || continue
       if campaign_stream_admit_host "${kind}"; then
         started=${at}
         break
       fi
       refused+="${kind} "
+      # Every kind a queue holds refused: no entry behind starts either.
+      kinds=$((kinds + 1))
+      (( kinds < 4 )) || break
     done
     (( started >= 0 )) || return 0
     entry=${stream_queue[started]}
     stream_queue=("${stream_queue[@]:0:started}" \
       "${stream_queue[@]:started+1}")
     unset 'stream_queued_at[$entry]'
+    # A solve left the queue: the solves queued are counted again
+    # (campaign_stream_solver_due).
+    [[ "${entry}" != OBLIGATION\ * ]] || unset 'stream_pass_memo[solves]'
     campaign_stream_start "${entry}" "${stream_admitted_host}"
   done
 }
@@ -6628,18 +6721,27 @@ campaign_stream_dispatch() {
 # (stream_shared_pool): the slots its hosts hold at the replay charge it
 # measured (campaign_pool_slots, campaign_stream_charge_mb) over the sharing
 # explorations whose ledger entry is fresh (this one's among them,
-# campaign_stream_enroll), at least one, read again at every start -- so the
-# share follows the measured need, grows as others end and shrinks as others
-# begin, and what already runs past it runs out.  Always outside a shared
-# pool.  1 when it runs its share, said once for every share it waits at.
+# campaign_stream_enroll), at least one, counted again once older than
+# campaign_host_poll_s (stream_sharers) -- so the share follows the measured
+# need, grows as others end and shrinks as others begin, and what already
+# runs past it runs out.  Always outside a shared pool.  1 when it runs its
+# share, said once for every share it waits at.
 campaign_stream_has_slot() {
-  local fresh sharers share slots charge
+  local fresh sharers share slots charge at now=${EPOCHSECONDS}
   [[ "${stream_shared_pool}" == true ]] || return 0
-  fresh=$(( $(date +%s) - campaign_head_reservation_stale_s ))
-  sharers=$(find "${campaign_host_gate_root}/explorations" -maxdepth 1 \
-    -type f -newermt "@${fresh}" | grep -c '') || sharers=0
+  read -r at sharers <<<"${stream_sharers:-0 0}"
+  if (( now - at >= campaign_host_poll_s )); then
+    fresh=$(( now - campaign_head_reservation_stale_s ))
+    sharers=$(find "${campaign_host_gate_root}/explorations" -maxdepth 1 \
+      -type f -newermt "@${fresh}" | grep -c '') || sharers=0
+    stream_sharers="${now} ${sharers}"
+  fi
   (( sharers > 0 )) || sharers=1
-  charge=$(campaign_stream_charge_mb)
+  charge=${stream_pass_memo[slot]:-}
+  if [[ -z "${charge}" ]]; then
+    charge=$(campaign_stream_charge_mb)
+    stream_pass_memo[slot]=${charge}
+  fi
   # Its hosts' MemTotal and cores never move: their slots are read once per
   # charge.
   [[ -n "${stream_pool_slots[${charge}]:-}" ]] \
@@ -6687,18 +6789,24 @@ campaign_stream_unenroll() {
 # while this campaign's starts there keep busy the cores one more would
 # need, a solve while no seat of its solver is free, or while the ledger has
 # no room on it at the start's charge (campaign_stream_try_host,
-# campaign_host_try_start: no start leaves a host more than
+# campaign_stream_try_charge: no start leaves a host more than
 # CAUSYNTH_HOST_MAX_USED_PCT charged or full, and none takes a head's room).
-# 1 when no host has room now, said once per wait.
+# Its kind's charge and cores are read once a dispatch pass
+# (stream_pass_memo, campaign_stream_memo).  1 when no host has room now,
+# said once per wait.
 campaign_stream_admit_host() {
-  local kind=$1 host turn count pass is status=0 mb
+  local kind=$1 host turn count pass is status=0 mb cores
   count=${#stream_hosts[@]}
+  campaign_stream_memo "${kind} cores" campaign_stream_kind_cores "${kind}"
+  cores=${stream_pass_memo["${kind} cores"]}
   for pass in warm cold; do
     [[ "${pass}" == cold ]] || campaign_stream_seated "${kind}" || continue
     # A question starts a host's solver only when one more is due.
     [[ "${pass}" == warm ]] || ! campaign_stream_seated "${kind}" \
       || campaign_stream_solver_due || continue
-    mb=$(campaign_stream_charge_mb "${kind}" "${pass}")
+    campaign_stream_memo "${kind} ${pass}" campaign_stream_charge_mb \
+      "${kind}" "${pass}"
+    mb=${stream_pass_memo["${kind} ${pass}"]}
     for ((turn = 0; turn < count; turn++)); do
       host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
       # A seated question tries each host once, in the pass of its warmth.
@@ -6706,7 +6814,8 @@ campaign_stream_admit_host() {
       ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
         || is=warm
       [[ "${is}" == "${pass}" ]] || continue
-      if campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}"; then
+      if campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
+          "${cores}"; then
         stream_admitted_pass=${pass}
         return 0
       fi
@@ -6718,6 +6827,18 @@ campaign_stream_admit_host() {
     stream_waiting=1
   fi
   return 1
+}
+
+# campaign_stream_memo <key> <command...>: what <command> prints, read once
+# a dispatch pass into stream_pass_memo[<key>] (campaign_stream_dispatch's):
+# a kind's charge or cores, the solver's seats, the corpus's MB.  Every
+# return the pass collects empties it (campaign_stream_collect_jobs): it may
+# move what was measured.
+campaign_stream_memo() {
+  local key=$1
+  shift
+  [[ -z "${stream_pass_memo[${key}]:-}" ]] || return 0
+  stream_pass_memo[${key}]=$("$@")
 }
 
 # Whether one more host's solver of this campaign is due: none serves or
@@ -6744,11 +6865,17 @@ campaign_stream_solver_due() {
     solvers=$((solvers + 1))
   done
   (( solvers > 0 )) || return 0
-  for entry in "${stream_queue[@]}"; do
-    [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
-  done
-  (( queued * seat * rate > solvers * $(campaign_corpus_mb "${sessions:-}") \
-     * 1000 ))
+  # The solves queued and the corpus's MB, read once a dispatch pass
+  # (campaign_stream_memo; the solves again once one starts).
+  if [[ -z "${stream_pass_memo[solves]:-}" ]]; then
+    for entry in "${stream_queue[@]}"; do
+      [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
+    done
+    stream_pass_memo[solves]=${queued}
+  fi
+  campaign_stream_memo corpus campaign_corpus_mb "${sessions:-}"
+  (( stream_pass_memo[solves] * seat * rate > solvers \
+     * stream_pass_memo[corpus] * 1000 ))
 }
 
 # What a seat of a host's solver is held per question and what a solver
@@ -6774,7 +6901,7 @@ campaign_stream_seated_returned() {
   local since pass now seconds
   read -r since pass <<<"${stream_job_since[$1]:-}"
   [[ -n "${since}" ]] || return 0
-  now=$(date +%s%3N)
+  now=$(( ${EPOCHREALTIME/./} / 1000 ))
   if [[ "${pass}" == warm ]]; then
     stream_seated_ms=$(( ${stream_seated_ms:-0} + now - since ))
     stream_seated_n=$(( ${stream_seated_n:-0} + 1 ))
@@ -6793,7 +6920,7 @@ campaign_stream_seated_returned() {
 # host cold.
 campaign_stream_warm() {
   local seen=${stream_solver_seen[$1]:-}
-  [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
+  [[ -n "${seen}" ]] && (( EPOCHSECONDS - seen < campaign_solver_idle_s ))
 }
 
 # What one start of <kind> of the pool is charged now, on a host of <warmth>
@@ -6830,30 +6957,33 @@ campaign_stream_charge_mb() {
 }
 
 # One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen, charged <mb>, for a start of <kind>:
-# only while the cores this campaign's starts keep busy there leave the
-# start's own (campaign_stream_has_cores), a solve only on a seat of the
-# host's solver that answers it at once (campaign_stream_has_seat), and only
-# where the ledger admits its charge (campaign_host_try_charge) -- so each
-# kind runs on a host as many at once as its cores and the room at that
-# kind's measured charge hold, and no fixed count beside them: 0 with it
-# charged and chosen.
+# the host after the last one chosen, charged <mb>, for a start of <kind>
+# that keeps <cores> busy: only while the cores this campaign's starts keep
+# busy there leave the start's own (campaign_stream_has_cores), a solve only
+# on a seat of the host's solver that answers it at once
+# (campaign_stream_has_seat), and only where the ledger admits its charge
+# (campaign_stream_try_charge) -- so each kind runs on a host as many at
+# once as its cores and the room at that kind's measured charge hold, and no
+# fixed count beside them: 0 with it charged and chosen
+# (stream_admitted_host, stream_admitted_mb, stream_admitted_cores).
 campaign_stream_try_host() {
-  local host=$1 turn=$2 mb=$3 kind=${4:-} count=${#stream_hosts[@]} status=0
-  campaign_stream_has_cores "${host}" "${kind}" || return 1
+  local host=$1 turn=$2 mb=$3 kind=${4:-} cores=${5:-1}
+  local count=${#stream_hosts[@]} status=0
+  campaign_stream_has_cores "${host}" "${cores}" || return 1
   ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
     || return 1
   # A replay leaves room for the ends its charge does not cover
   # (campaign_replay_typical); a solve's charge is its whole.
   case "${kind}" in
-    OBLIGATION|HARD) campaign_host_try_charge "${host}" "${mb}" ;;
-    *) campaign_host_try_charge "${host}" "${mb}" \
+    OBLIGATION|HARD) campaign_stream_try_charge "${host}" "${mb}" ;;
+    *) campaign_stream_try_charge "${host}" "${mb}" \
          "$(( campaign_replay_spikes * campaign_replay_spike_mb ))" ;;
   esac
   case "${status}" in
     0)
       stream_admitted_host=${host}
       stream_admitted_mb=${mb}
+      stream_admitted_cores=${cores}
       unset 'stream_host_unread[$host]'
       stream_next_host=$(( (stream_next_host + turn + 1) % count ))
       stream_waiting=""
@@ -6864,13 +6994,13 @@ campaign_stream_try_host() {
   return 1
 }
 
-# Whether <host> has the cores one more start of <kind> keeps busy
+# Whether <host> has the <cores> one more start keeps busy
 # (campaign_stream_kind_cores) beside those this campaign's starts there keep
 # busy (stream_host_busy) -- a host running none of them takes one whatever
 # its count -- its core count read once.  An unreadable count is an
 # unreadable host.
 campaign_stream_has_cores() {
-  local host=$1 kind=${2:-} cores
+  local host=$1 need=${2:-1} cores
   if [[ -z "${stream_host_cores[${host}]+x}" ]]; then
     if ! cores=$(campaign_host_cores "${host}"); then
       campaign_stream_unreadable "${host}"
@@ -6879,8 +7009,8 @@ campaign_stream_has_cores() {
     stream_host_cores[${host}]=${cores}
   fi
   (( ${stream_host_busy[${host}]:-0} == 0 \
-     || ${stream_host_busy[${host}]:-0} + $(campaign_stream_kind_cores \
-       "${kind}") <= ${stream_host_cores[${host}]} ))
+     || ${stream_host_busy[${host}]:-0} + need \
+       <= ${stream_host_cores[${host}]} ))
 }
 
 # The cores one start of <kind> keeps busy on its host: a solve -- a
@@ -6921,10 +7051,115 @@ campaign_stream_seated() {
 campaign_stream_has_seat() {
   local host=$1 solves=${stream_host_solves[$1]:-0}
   if campaign_stream_warm "${host}"; then
-    (( solves < $(campaign_solver_seats "${sessions:-}") ))
+    campaign_stream_memo seats campaign_solver_seats "${sessions:-}"
+    (( solves < stream_pass_memo[seats] ))
   else
     (( solves == 0 ))
   fi
+}
+
+# campaign_stream_try_charge <host> <need_mb> [spare_mb]: one start of the
+# pool charged to <host> by the ledger's rule (campaign_host_fits,
+# campaign_host_admit), its answer in the caller's `status` as
+# campaign_host_try_charge's -- 0 charged (campaign_host_charge_id), 1 no room
+# (campaign_host_wait_reason), 2 the host unreadable -- read off the head's
+# VIEW of the host (campaign_stream_view): a start the view has no room for
+# takes no lock and reads nothing, and one it has room for is decided as
+# campaign_host_try_start decides it, the room heads hold there read as it
+# stands and, under the host's lock, its live charges as they stand (another
+# campaign's among them), which the view takes with the start's own charge.
+# A host full for a kind costs a pass nothing more than the arithmetic, and
+# a start one lock, one listing of the charges and its row: no start leaves
+# a host past CAUSYNTH_HOST_MAX_USED_PCT charged or in use, and none takes a
+# head's room.
+campaign_stream_try_charge() {
+  local host=$1 need=$2 spare=${3:-0} dir total limit at charged held used
+  status=0
+  if ! campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
+    status=2
+    return 0
+  fi
+  read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+  read -r at charged held used <<<"${stream_host_view[${host}]}"
+  if ! campaign_host_fits "${charged}" "${used}" "${held}" "${need}" \
+      "${spare}" "${limit}"; then
+    campaign_host_refused "${dir##*/}" "${charged}" "${used}" "${held}" \
+      "${need}" "${spare}" "${limit}" "${total}"
+    status=1
+    return 0
+  fi
+  held=$(campaign_host_head_room "${dir}" "${EPOCHSECONDS}")
+  campaign_host_unlocked campaign_host_admit "${dir}" "${total}" \
+    "${limit}" "${used}" "${held}" "${need}" "${spare}"
+  charged=${campaign_host_admitted_charged}
+  (( status != 0 )) || charged=$(( charged + need ))
+  stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+}
+
+# THE HEAD'S VIEW of <host>'s ledger at <now>, stream_host_view[<host>],
+# "<at> <charged_mb> <held_mb> <used_mb>": its live charges
+# (campaign_host_charged), the room heads hold there
+# (campaign_host_head_room) and its real use, its MemTotal less the ledger's
+# MemAvailable -- which the host's reader keeps fresh
+# (campaign_stream_read_hosts), read here only once older than
+# campaign_host_reading_keep_s -- each read again once the view is older than
+# campaign_host_poll_s, as old as a start's reading of its host ever was;
+# between, the charges as this head's own starts found them under the lock
+# (campaign_stream_try_charge) and less what it released
+# (campaign_stream_release).  Another campaign's charges since are found
+# under the lock, its releases at the next reading.  The host's directory,
+# MemTotal and ceiling never move: read once, stream_host_ledger[<host>].
+# 1 when the host's memory cannot be read.
+campaign_stream_view() {
+  local host=$1 now=$2 dir total limit at available
+  if [[ -z "${stream_host_ledger[${host}]:-}" ]]; then
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+    mkdir -p "${dir}"
+    total=$(campaign_host_memory_total "${host}" "${dir}") || return 1
+    stream_host_ledger[${host}]="${dir} ${total} \
+$(campaign_host_limit_mb "${total}")"
+  fi
+  read -r at _ <<<"${stream_host_view[${host}]:-0}"
+  (( now - at >= campaign_host_poll_s )) || return 0
+  read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+  available=$(campaign_host_poll_s=${campaign_host_reading_keep_s} \
+    campaign_host_memory_reading "${host}" "${dir}" "${now}") || return 1
+  stream_host_view[${host}]="${now} $(campaign_host_charged "${dir}" \
+"${now}") $(campaign_host_head_room "${dir}" "${now}") \
+$(( total - available ))"
+}
+
+# THE POOL'S READINGS.  A start is admitted by its host's MemAvailable as
+# the ledger states it (campaign_host_memory_reading), and a reading is an
+# ssh to the host, ~350 ms (lift04 to lift06): taken by the dispatch each
+# time a host's was older than campaign_host_poll_s, the readings were most
+# of the head's second a start.  So one reader per host of the pool, a
+# process of its own as a charge's holder is (campaign_host_hold), keeps the
+# host's reading fresh every campaign_host_poll_s by the ledger's own rule
+# (one shell per host refreshes it) while this head's shell lives and the
+# exploration holds <iteration>/reading (stream_reading, removed at its
+# end); the dispatch only reads it (campaign_stream_view).
+campaign_stream_read_hosts() {
+  local host dir owner=${BASHPID}
+  stream_reading="${iteration_dir}/reading"
+  : >"${stream_reading}"
+  for host in "${stream_hosts[@]}"; do
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+    mkdir -p "${dir}"
+    ( ( while kill -0 "${owner}" 2>/dev/null \
+          && [[ -e "${stream_reading}" ]]; do
+          campaign_host_memory_reading "${host}" "${dir}" "${EPOCHSECONDS}" \
+            || true
+          command sleep "$(( campaign_host_poll_s > 0 ? campaign_host_poll_s \
+            : 1 ))"
+        done ) </dev/null >/dev/null 2>&1 & )
+  done
+}
+
+# The readers' end: the exploration's (campaign_explore).
+campaign_stream_unread_hosts() {
+  [[ -z "${stream_reading}" ]] || rm -f -- "${stream_reading}"
+  stream_reading=""
 }
 
 # A host whose memory or cores could not be read: waited out within the ssh
@@ -6945,9 +7180,11 @@ could not be read for ${campaign_ssh_patience_s}s"
 # weaves a new one; this start keeps its own) -- an obligation's REPLAY on
 # the ones its solve started on, which its entry carries
 # (campaign_stream_ended) -- charged what campaign_stream_admit_host charged
-# (stream_admitted_mb), its own until it returns.  Where it started is
-# stated in its worker: host.txt, a REPLAY's replay-host.txt beside its
-# solve's.
+# (stream_admitted_mb), its own until it returns, and counted the cores its
+# admission counted (stream_admitted_cores).  Where it started is stated in
+# its worker, by the job as it starts: host.txt, a REPLAY's replay-host.txt
+# beside its solve's.  Nothing of it waits on the head: its remote start
+# (campaign_stream_job) runs in the background.
 campaign_stream_start() {
   local entry=$1 host=$2 kind round id session worker need
   local classes=${stream_classes} plan=${stream_plan} started=host.txt
@@ -6991,18 +7228,18 @@ campaign_stream_start() {
       work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
   esac
-  printf '%s\n' "${host}" >"${worker}/${started}"
-  campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
-    "${id}" "${worker}" "${work[@]}" &
+  { printf '%s\n' "${host}" >"${worker}/${started}"
+    campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
+      "${id}" "${worker}" "${work[@]}"; } &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
   stream_job_charge[$!]=${campaign_host_charge_id}
-  ! campaign_stream_seated "${kind}" \
-    || stream_job_since[$!]="$(date +%s%3N) ${stream_admitted_pass:-}"
+  ! campaign_stream_seated "${kind}" || stream_job_since[$!]="$(( \
+    ${EPOCHREALTIME/./} / 1000 )) ${stream_admitted_pass:-}"
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
   # The cores it was admitted at go back at its end, whatever the measure
   # says by then.
-  stream_job_cores[$!]=$(campaign_stream_kind_cores "${kind}")
+  stream_job_cores[$!]=${stream_admitted_cores}
   campaign_stream_host_count "${host}" "${kind}" 1 "${stream_job_cores[$!]}"
 }
 
@@ -7033,6 +7270,8 @@ campaign_stream_collect_jobs() {
     status=0
     wait "${pid}" || status=$?
     campaign_stream_ended "${pid}" "${status}"
+    # What it measured may move a charge (campaign_stream_memo).
+    stream_pass_memo=()
   done
 }
 

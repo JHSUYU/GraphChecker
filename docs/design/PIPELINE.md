@@ -1506,7 +1506,20 @@ memory ledger admits the start at its kind's charge (below) -- so each kind runs
 at once as its cores and its room at that kind's measured charge hold, with no fixed count beside
 them (two solves and one hard-lane ask per host kept PV7-adhoc-39 alone on the pool far below its
 room); none admitting, the head waits for a return, its step's end or the poll interval
-(`campaign_host_poll_s`). A start runs locally in
+(`campaign_host_poll_s`). A START TAKES MILLISECONDS: the pool admits by the head's VIEW of each host's
+ledger (`campaign_stream_view`, `campaign_stream_try_charge`) -- its live charges, the room heads hold there
+and its real use, read again once older than the poll interval, and between, the charges as the head's
+own starts found them under the host's lock and less what it released -- so a start the view has no room
+for takes no lock and reads nothing, and one it has room for is decided by the ledger's rule
+(`campaign_host_fits`, `campaign_host_admit`, as below) with the head room read as it stands and the live
+charges under the lock; each host's MemAvailable is kept fresh beside the loop by a reader of its own
+(`campaign_stream_read_hosts`, every poll interval, the ledger's one-refresher rule), so no start waits for
+an ssh; what a pass reads once -- each kind's charge and cores, the solver's seats -- it reads once
+(`campaign_stream_memo`, emptied as a return is collected); and the queue is scanned for an entry past the
+wait bound only once its oldest is (dispatch-rate, 2026-10-17, lift04, 13 lifts, the ledger on NFS:
+200 REPLAYs started at 2.0 a second and a round 0's 513 starts behind 500 queued solves at 1.4, each
+start reading its host over ssh, ~350 ms, once its reading was older than the poll, through some thirty
+forks; after, 61 and 28 a second, a start one lock, one listing of the charges, its row and its holder). A start runs locally in
 a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --run-obligation`
 with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
 (`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
@@ -1759,8 +1772,11 @@ life anyway). Between two head steps, in the head's hands, in this order:
    `obligations-NNNN/`, and the head takes its round (`campaign_stream_take_round`: the wave budget,
    GROW, and its proposals into the queue, where they start at once, behind GROW's re-runs);
 2. the round owed STARTS when none plans (`campaign_stream_round_start`) -- owed once a session has
-   landed, or once nothing is queued, running or returned unlanded and an answer came since the last
-   round started -- over inputs frozen now, written into `planning-NNNN/` beside its files:
+   landed, or once nothing is queued, running or returned unlanded but confirmations and the hard lane's
+   asks running (z3 alone at the full budget, up to 30 min: SGF8-adhoc-40 round 6 idled the 13 lifts
+   12 min behind two; their obligations stay in flight and their verdicts land in whichever round is open
+   when they return) and an answer came since the last round started (`campaign_stream_plan_due`) --
+   over inputs frozen now, written into `planning-NNNN/` beside its files:
    `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
    landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
    running (§7.3). It plans in the background, the campaign landing meanwhile, and no session or
