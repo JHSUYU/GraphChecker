@@ -7950,6 +7950,7 @@ $(campaign_thrown "${campaign_final}/compose.log")"
   campaign_await_visible "${composed_smt}" "${composition_manifest}"
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
+  campaign_compose_bounded "${iteration_dir}" "${composition_manifest}"
   printf '%s\t%s\n' "COMPOSE[anchor]" "${millis}" \
     >>"${campaign_stage_metrics}"
   campaign_log "composed $(jq -r '.anchor // ""' "${composition_manifest}") \
@@ -7957,6 +7958,30 @@ in ${millis}ms status=$(jq -r '.finalStatus // ""' "${composition_manifest}")"
 }
 
 
+
+# The composer's heap bound, named once: paths <manifest> left out past
+# it (compose.Composer#HEAP_BOUND, DIAGNOSTIC each, so a witness among the
+# composed ones still goes to CONFIRM) make a claim that misses their arms,
+# BLOCKING for the campaign, as a truncated closure is.
+campaign_compose_bounded() {
+  local iteration_dir=$1 manifest=$2 bounded composed
+  bounded=$(jq '[.solver.campaignClaim.refusedPaths[]?
+    | select(.reason | startswith("ADMISSION_GAP COMPOSE_HEAP_BOUND:"))]
+    | length' "${manifest}") || bounded=0
+  (( bounded > 0 )) || return 0
+  ! grep -q '"subject":"COMPOSE_HEAP_BOUND"' \
+    "${iteration_dir}/campaign_gaps.jsonl" 2>/dev/null || return 0
+  composed=$(jq '.paths | length' "${manifest}") || composed=0
+  jq -n -c --arg epoch "${iteration_id}" --arg detail "COMPOSE left \
+${bounded} admitted path(s) out past its heap bound (its old generation past \
+its share after a sweep, compose.Composer#HEAP_SHARE): the claim is over the \
+${composed} composed, so it misses their arms" \
+    '{schemaVersion: 1, sessionId: "", stage: "COMPOSE",
+      kind: "ADMISSION_GAP", cls: "BLOCKING", subject: "COMPOSE_HEAP_BOUND",
+      detail: $detail, topologyEpoch: $epoch}' \
+    >>"${iteration_dir}/campaign_gaps.jsonl"
+  campaign_log "compose: COMPOSE_HEAP_BOUND: ${bounded} path(s) left out"
+}
 
 # SOLVE: z3's verdict on the anchor's formula, as the composer recorded it.
 #

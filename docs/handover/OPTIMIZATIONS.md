@@ -89,6 +89,7 @@ store path, writers and decodes are taken only up to the version the read observ
 | 5.12 | Solr-specific open: snapshot's state.json delivery race (a WIRE producer CONFIRM checks but never holds); 18413's hand WIRE_FLOW rows (the chain keys no `/overseer/queue` field) | TODO "Solr" §3y, §3aa | small each |
 | 5.13 | Probe-first sibling deferral was measured and not adopted as pruning: a group's lost probe wrongly drops 5-15 % of reaching siblings even by call chain | Keep only as ordering under a budget, or not at all | -- |
 | 5.14 | Several cases at once in the pool (SGF5: 13.4 h of case time in a 4 h span) | The owner's call: final rounds ran each case alone | -- |
+| 5.15 | The composer holds every path's lowering until its last path: one SmtLowering for the composition, its shared subterms (`SharedTerm`, `container_dag__`/`view_leaf__`) never dropped. SGF8-adhoc-14: the corpus 8.5 GB live, then >400 MB a path (out of heap at 20 GB before path 25); its 26-session subset: 834k shared terms after 20 paths against a 57 MB body, ~80 MB a path, all of it freed once the loop ended. Holding each identity's digest instead of its text (`SmtSymbolTable`) measured no change (peak 4117 vs 4103 MB) | Find the holder with a heap dump; then compose path by path into the body (each path's text emitted, its unreached shared terms and frame state dropped), or share one lowering per session across paths; until then `Composer#HEAP_SHARE` bounds the paths, named | compose; medium-large |
 
 ## 6. For the HBase port
 

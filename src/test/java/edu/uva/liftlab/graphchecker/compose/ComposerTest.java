@@ -2810,6 +2810,52 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * THE COMPOSER'S HEAP BOUNDS ITS PATHS (Composer#HEAP_SHARE): past it,
+     * the paths not yet composed are left out, each named, the first path
+     * always composed; under it, every path is.
+     */
+    @Test
+    public void theHeapBoundLeavesTheRestOutNamedAfterTheFirstPath()
+            throws Exception {
+        Path iteration = folder.newFolder("heap-bound").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.activation(PRODUCER);
+            session.marker("false");
+            session.expression("EXPR.v1.id",
+                    integer("I", Long.parseLong(each[1])));
+            session.export(producer, "EXPR.v1.id", "I", 1L, each[1]);
+            session.attach(consumer, "vh", "I", each[1], producer);
+            session.target("true", false, true);
+            session.write();
+        }
+        for (double full : new double[]{0.0, 1.0}) {
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), ANCHOR, 4,
+                    StaticScopeMap.empty(), Collections.<String>emptySet(),
+                    () -> full);
+            boolean bound = full >= Composer.HEAP_SHARE;
+            assertEquals(full + ": composed", bound ? 1 : 2,
+                    composition.disjuncts().size());
+            assertEquals(full + ": left out, named: "
+                            + composition.refusedPaths(), bound ? 1 : 0,
+                    composition.refusedPaths().size());
+            if (bound) {
+                assertTrue(composition.refusedPaths().toString(),
+                        composition.refusedPaths().get(0).get("reason")
+                                .getAsString().startsWith("ADMISSION_GAP "
+                                + Composer.HEAP_BOUND + ":"));
+            }
+        }
+    }
+
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         // A String arrival is its text, whatever it begins with (Composer

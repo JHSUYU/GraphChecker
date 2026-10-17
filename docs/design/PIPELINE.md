@@ -2201,6 +2201,14 @@ with its own class; a dropped path is never silent: the claim names every admitt
 COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
 and an UNSAT says nothing about them.
 
+THE COMPOSER'S HEAP BOUNDS ITS PATHS (`Composer#HEAP_SHARE`, 0.8): once its old generation is past that
+share after a sweep (`HeapWatch#oldGenerationSwept`), the admitted paths not yet composed are left out, each
+named `COMPOSE_HEAP_BOUND` (DIAGNOSTIC, in `refusedPaths`, so a witness among the composed ones still goes to
+CONFIRM), the first path always composed; the campaign names the bound once, BLOCKING (`campaign_compose_bounded`,
+stage COMPOSE), so EMIT labels the run RUN_DEFECT beside the formula's claim, as a truncated closure. A composer
+holds every path's lowering until its last (SGF8-adhoc-14's 353 paths: out of heap at 20 GB before its 25th);
+its progress line every minute says how full the old generation is.
+
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message whose world's flip set contains or is

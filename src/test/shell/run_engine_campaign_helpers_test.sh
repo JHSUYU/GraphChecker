@@ -7454,4 +7454,33 @@ candidate ${ab_dir}/candidate/c/SEED.static/out;" ]] \
   || fail "AB_FRESH_SLICE=1 does not give each side its own slice: \
 $(ab_reads 1)"
 
+# COMPOSE's heap bound is named once, BLOCKING, for the campaign: a
+# composition that left paths out past it misses their arms
+# (campaign_compose_bounded); one that left none out names nothing.
+bound_dir="${test_tmp}/compose-bound"
+mkdir -p "${bound_dir}"
+jq -n '{paths: [{pathId: "p0"}], solver: {campaignClaim: {refusedPaths: [
+  {pathId: "p1", reason: "ADMISSION_GAP COMPOSE_HEAP_BOUND: left out"},
+  {pathId: "p2", reason: "ADMISSION_GAP p2: left out (best effort)"}]}}}' \
+  >"${bound_dir}/bounded.json"
+jq -n '{paths: [{pathId: "p0"}], solver: {campaignClaim: {refusedPaths: []}}}' \
+  >"${bound_dir}/whole.json"
+(
+  campaign_log() { :; }
+  iteration_id=iteration-0000
+  campaign_compose_bounded "${bound_dir}" "${bound_dir}/whole.json"
+  [[ ! -e "${bound_dir}/campaign_gaps.jsonl" ]] \
+    || fail "a composition with no path past the heap bound named one"
+  campaign_compose_bounded "${bound_dir}" "${bound_dir}/bounded.json"
+  campaign_compose_bounded "${bound_dir}" "${bound_dir}/bounded.json"
+  [[ "$(jq -s -r 'map("\(.stage) \(.cls) \(.subject)") | join(";")' \
+      "${bound_dir}/campaign_gaps.jsonl")" \
+      == "COMPOSE BLOCKING COMPOSE_HEAP_BOUND" ]] \
+    || fail "the heap bound is not named once, BLOCKING: \
+$(cat "${bound_dir}/campaign_gaps.jsonl")"
+  grep -q "COMPOSE left 1 admitted path(s) out .* over the 1 composed" \
+    "${bound_dir}/campaign_gaps.jsonl" \
+    || fail "the heap bound does not count what it left out"
+) || exit 1
+
 echo "run_engine campaign helper tests passed"

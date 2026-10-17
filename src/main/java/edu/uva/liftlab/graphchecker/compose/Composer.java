@@ -22,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -60,6 +61,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.function.DoubleSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -1548,13 +1550,30 @@ public final class Composer {
      *  query over them (ComposeMain#run). */
     private final Set<String> leftOutPaths;
 
+    /**
+     * THE COMPOSER'S HEAP BOUNDS ITS PATHS: once its old generation is past
+     * this share of its room after a sweep ({@link #heapFull}), the
+     * admitted paths not yet composed are left out, each named {@link
+     * #HEAP_BOUND}, and the claim is over the ones composed -- never a
+     * composer out of heap with none (SGF8-adhoc-14: 353 paths, its
+     * composer out of heap at 20 GB before its 25th).  The campaign names
+     * the bound BLOCKING (run_engine.sh {@code campaign_compose}); the first
+     * path is always composed.
+     */
+    static final double HEAP_SHARE = 0.8;
+    /** The subject a path the heap bound left out is named by. */
+    static final String HEAP_BOUND = "COMPOSE_HEAP_BOUND";
+    /** How full the old generation was after its last sweep. */
+    private final DoubleSupplier heapFull;
+
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      int maxValuations, StaticScopeMap scope,
-                     Set<String> leftOutPaths) {
+                     Set<String> leftOutPaths, DoubleSupplier heapFull) {
         this.corpus = corpus;
         this.anchor = anchor;
         this.scope = scope;
         this.leftOutPaths = leftOutPaths;
+        this.heapFull = heapFull;
         this.restsOn = new RestsOn(corpus, scope, anchor);
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
@@ -1601,8 +1620,17 @@ public final class Composer {
                                       int maxValuations,
                                       StaticScopeMap scope,
                                       Set<String> leftOutPaths) {
+        return compose(corpus, anchor, maxValuations, scope, leftOutPaths,
+                HeapWatch::oldGenerationSwept);
+    }
+
+    /** The same, its heap bound reading {@code heapFull}. */
+    static Composition compose(Corpus corpus, OccurrenceAddress anchor,
+                               int maxValuations, StaticScopeMap scope,
+                               Set<String> leftOutPaths,
+                               DoubleSupplier heapFull) {
         return new Composer(corpus, anchor, maxValuations, scope,
-                leftOutPaths).run();
+                leftOutPaths, heapFull).run();
     }
 
     /** Every how many admitted paths the composer says how far it is. */
@@ -1696,10 +1724,23 @@ public final class Composer {
         reached(admitted.size() + " path(s) admitted");
         int ordinal = 0;
         int done = 0;
+        int bounded = 0;
         long started = System.nanoTime();
+        long said = started;
         for (Corpus.RecordedPath path : admitted) {
             boolean defective = leftOutSessions.contains(path.sessionId);
-            if (defective || leftOutPaths.contains(path.pathId)) {
+            if (bounded > 0 || ordinal > 0
+                    && heapFull.getAsDouble() >= HEAP_SHARE) {
+                bounded++;
+                refused(path, Collections.singletonList(GapRow.of(
+                        path.sessionId, GapKind.ADMISSION_GAP,
+                        GapClass.DIAGNOSTIC, HEAP_BOUND, "left out (best "
+                                + "effort): the composer's old generation "
+                                + "was past " + Math.round(HEAP_SHARE * 100)
+                                + " % after its last sweep with " + ordinal
+                                + " path(s) composed, so the claim says "
+                                + "nothing of " + path.pathId)));
+            } else if (defective || leftOutPaths.contains(path.pathId)) {
                 refused(path, Collections.singletonList(GapRow.of(
                         path.sessionId, GapKind.ADMISSION_GAP,
                         GapClass.DIAGNOSTIC, path.pathId, "left out (best"
@@ -1707,7 +1748,7 @@ public final class Composer {
                                 + " defective" : "z3 refused a query over"
                                 + " it"))));
             }
-            Disjunct disjunct = defective
+            Disjunct disjunct = bounded > 0 || defective
                     || leftOutPaths.contains(path.pathId) ? null
                     : compose(path, ordinal);
             if (disjunct != null) {
@@ -1717,12 +1758,21 @@ public final class Composer {
                         disjunct.restsOn(), disjunct.cutoff()));
                 ordinal++;
             }
-            if (++done % PROGRESS_PATHS == 0 || done == admitted.size()) {
+            long now = System.nanoTime();
+            if (++done % PROGRESS_PATHS == 0 || done == admitted.size()
+                    || now - said >= TimeUnit.MINUTES.toNanos(1)) {
+                said = now;
                 System.err.println("compose: path " + done + " of "
                         + admitted.size() + " (" + ordinal + " composed) in "
-                        + TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()
-                        - started) + " s");
+                        + TimeUnit.NANOSECONDS.toSeconds(now - started)
+                        + " s, the old generation "
+                        + Math.round(heapFull.getAsDouble() * 100)
+                        + " % after its last sweep");
             }
+        }
+        if (bounded > 0) {
+            System.err.println("compose: " + bounded + " path(s) left out "
+                    + "past the heap bound (" + HEAP_BOUND + ")");
         }
         if (disjuncts.isEmpty()) {
             // Say which absence: no admitted path, or all were refused.

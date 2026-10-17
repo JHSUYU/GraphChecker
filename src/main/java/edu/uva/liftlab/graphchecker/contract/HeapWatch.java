@@ -85,6 +85,19 @@ public final class HeapWatch {
         }
     }
 
+    /**
+     * How full the old generation was after the collection that last swept
+     * it, 0 before any: the room a stage that ends early by a named bound
+     * reads ({@code compose.Composer#HEAP_SHARE}), the measure this watch
+     * reads too.
+     */
+    public static double oldGenerationSwept() {
+        MemoryPoolMXBean old = oldGeneration();
+        MemoryUsage swept = old == null ? null : old.getCollectionUsage();
+        return swept == null || swept.getMax() <= 0L ? 0.0
+                : (double) swept.getUsed() / swept.getMax();
+    }
+
     private static long collectedMillis() {
         long total = 0L;
         for (GarbageCollectorMXBean collector
