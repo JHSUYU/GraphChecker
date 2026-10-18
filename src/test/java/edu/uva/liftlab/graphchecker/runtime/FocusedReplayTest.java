@@ -301,41 +301,38 @@ public class FocusedReplayTest {
     }
 
     /**
-     * A TEST OVER ({@code ConcolicResultPublisher#stall}): a replay whose
-     * window closed and whose teardown then stood ends as at the workload's
-     * own end -- nothing decided, no stall rewriting a verdict, and a
-     * faithful world never entered still refuted, its (d) naming the stand;
-     * once.  Inside the window the same stand is the stall, which decides a
-     * replay no flip of which was taken.
+     * A WINDOW'S CLOSE ({@code JUnitMethodRunner#endAtWindowClose}) ends
+     * the run as at the workload's own end: no stall decides anything after
+     * it, and a faithful world never entered is still refuted.  Inside the window the same stand is the stall,
+     * which decides a replay no flip of which was taken.
      */
     @Test
-    public void aTeardownThatStandsEndsTheRunAsTheWorkloadsEnd()
-            throws Exception {
+    public void aWindowsCloseEndsTheRunAsTheWorkloadsEnd() throws Exception {
         String still = "nothing new for 300 s";
-        for (boolean over : new boolean[] {false, true}) {
+        for (boolean closed : new boolean[] {false, true}) {
             hand(flip(1, ",'openArm':true"));
             RecordingWindow.open();
             FocusedReplay.obligationIds();
             FocusedReplay.planted("r", true);
-            if (over) RecordingWindow.close();
-            assertEquals(over ? ConcolicResultPublisher.Conclusion.TEST_OVER
+            if (closed) {
+                RecordingWindow.close();
+                FocusedReplay.windowClosed();
+            }
+            assertEquals(closed ? null
                     : ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS,
                     ConcolicResultPublisher.stall(still));
             assertEquals("once", null, ConcolicResultPublisher.stall(still));
             ObligationResult result = only("s");
             assertEquals(Verdict.NOT_ADMITTED, result.verdict());
-            assertEquals(result.detail(), over,
+            assertEquals(result.detail(), closed,
                     result.detail().startsWith("WORLD_REFUTED: "));
-            if (!over) {
+            if (!closed) {
                 assertTrue(result.detail(), result.detail().startsWith(
                         FocusedReplay.REPLAY_NO_PROGRESS + ": " + still));
                 continue;
             }
             assertEquals("", FocusedReplay.refusedAt());
             assertFalse(FocusedReplay.stalledAfterFlip());
-            assertEquals("(d) the workload's test was over: its window"
-                    + " closed, and its teardown then made " + still,
-                    result.refutation().conditions().get(3));
         }
     }
 

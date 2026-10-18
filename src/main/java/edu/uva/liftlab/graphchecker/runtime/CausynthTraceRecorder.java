@@ -142,12 +142,16 @@ public final class CausynthTraceRecorder {
     /**
      * The workload's test is over: its teardown (a cluster shutting its
      * nodes down) is no part of what either run controls, and neither
-     * records nor holds it.
+     * records nor holds it.  A concolic replay ends here ({@code
+     * JUnitMethodRunner#endAtWindowClose}): this call does not return.
      */
     public static void stopRecording() {
         if (!RecordingWindow.opened()) return;
         RecordingWindow.close();
         ScheduleLog.windowClosed();
+        if (RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT) {
+            JUnitMethodRunner.endAtWindowClose();
+        }
     }
 
     /**

@@ -387,7 +387,31 @@ second thread ending the same run (an early end meeting the workload's own) wait
 halt, so no end halts another's close half-done. Cluster threads outlive the test, and a region they
 start while the end settles and closes the rows would be an occurrence no row states.
 
-A focused replay ends early, once, for one of seven reasons (`ConcolicResultPublisher#conclude`):
+A concolic replay -- the seed's, a focused, FORCE or CONFIRM one -- ENDS AT ITS WINDOW'S CLOSE
+(`CausynthTraceRecorder#stopRecording` -> `JUnitMethodRunner#endAtWindowClose`; Solr: `SolrCloudTestCase`'s
+`@After`, before the class's cluster shutdown): the test's thread closing its window goes no further, and the
+end runs on a thread of its own as at the workload's own end -- the activations still live settle on the
+settle's bound while the cluster stays up, every verdict as at the workload's end (`FocusedReplay#windowClosed`:
+a faithful world never entered is still `WORLD_REFUTED`, its (d) naming the close); the log says `the replay
+ends at its window's close`. The recording and a native reproduction run their teardown (natively, seconds;
+neither records after the close). Nothing after the close is needed: no occurrence is admitted outside the
+window (`ConcolicTaskPlan#select`, `#addressLoopRootInvocation`, `#selectNamed`), the recording states nothing
+after it (`CausynthTraceRecorder#tracing`), the order is settled there (`ScheduleLog#windowClosed`) and the
+window's duration measured there (`RecordingWindow#close`). What a teardown published were doors' rows of the
+cluster's shutdown -- store and view writes, content exports and their watchers' attaches of the nodes' `down`
+states (SGF8-adhoc-07: ~310 rows a session past the schedule's last event; 13: ~12) -- and the shutdown paths of
+activations live at the close. Their readers: PLAN/EXPLORE's closure walk took them as WIRE and STATE edges and
+slots (13 r10 offline over its sessions cut at the close: the same 1154 closure nodes, 79 WIRE edges of the
+shutdown's `state.json` writes gone, so the slots and the arm keys that named them), COMPOSE as more versions of
+a location to choose from, GROW as producers or door invocations no task planned, the gap ledger and EMIT as
+gaps the shutdown filed, the import gate and the ledger as more rows of a session. Each pairs a window read with
+a version made after the test ended, or names work no replay of the question runs (admission ends at the close,
+and the replay now stops there): none needs them. CONFIRM's and REPRODUCE's questions are the window's.
+A workload's second window would find its order already settled at the first close (every Solr recording opens
+one). Run, the teardown cost a replay minutes after its close (07 reproductions, close to statement: the SGF8 jar
+259-354 s, solr-int 142 s; ended at the close, 62 and 156 s, both the settle of a stall's end 3-4 s before it).
+
+A focused replay ends early, once, for one of six reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
@@ -407,8 +431,6 @@ A focused replay ends early, once, for one of seven reasons (`ConcolicResultPubl
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
   questions still open are `NOT_ADMITTED` (§7.6).
-- `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
-  workload's own end, nothing decided, every verdict settled as there (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log,
 every activation still live is stranded at once, before the settle waits for anything
@@ -1500,8 +1522,7 @@ doing again what it did moves none of them:
   hash). A poll, a retry or a watch made again makes no new key; other code, another store location,
   another request handler or another node does. A view's `PUBLISH` names the version it put in force,
   so a loop publishing new versions still makes new keys: the safe direction, a cut missed;
-- the window's opening and closing: a teardown, which records no event, has the whole bound from the
-  close;
+- the window's opening (at its close the replay ends, §5);
 - the question's own moves (`FocusedReplay#questionMoved`): focused occurrences entered (the
   obligations', the assigned roots' mints', the inherited flips'), flips taken, own and inherited,
   roots planted, the world's first act;
@@ -1523,16 +1544,13 @@ then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROG
 session, its question settled. After one was taken the flips taken keep their verdicts, never
 rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
 to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
-it. After its window closed the test was over, and its teardown answers nothing the question asked:
-the run ends as at the workload's own end (`TEST_OVER`, §5; `FocusedReplay#testOver`), nothing
-decided, every verdict settled as there -- a faithful world never entered is still `WORLD_REFUTED`,
-its condition (d) naming the stand. Either way its threads are dumped on the replay log. A workload
+it. Either way its threads are dumped on the replay log; at its window's close the replay ends (§5), so no
+stall comes after it. A workload
 that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
 replays that ended by themselves or at their witness (PV7-38, PV7-39, nine SGF6 cases), the longest
 span with no new kind of log line was 230 s (p99 162 s, p50 16 s); of their 567 teardowns 558 took
 under a minute and 9 took 600-620 s, each standing on an Overseer response until a ZooKeeper session
-expired (all ADMITTED: they now end at the bound as `TEST_OVER`, about 20 s sooner, verdicts and
-sessions the same); every replay PV7-38 lost to `replay_timeout_s` made
+expired (all ADMITTED; a replay now ends at its window's close, before its teardown); every replay PV7-38 lost to `replay_timeout_s` made
 nothing new for more than 2,100 s before it (PULL replicas polling a leader left down, inside the
 window; a failed test's teardown waiting on an Overseer response that never came), while the old
 measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each watched

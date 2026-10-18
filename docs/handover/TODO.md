@@ -224,8 +224,9 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   faster for 53 % more CPU. So: the VM sends each expression definition once per session (VM serializer
   exp/expression.cpp + the Java decoder, emission and table registration under one lock), skip the truncation scan when
   nothing is marked, decode records within a page in parallel.
-- Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
-  rows first.
+- Goal 4 (branch solr-replay-end, agent 4): DONE -- a concolic replay ends at its window's close
+  (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.32); evidence
+  `analysis/solr-2026-10-18/replay-end/` (postclose2.py, cutclose.py + plan13.sh, closehalt.py, runs/).
 - Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
   offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
   checkout with third_party/ and gcc-6 on lift15.

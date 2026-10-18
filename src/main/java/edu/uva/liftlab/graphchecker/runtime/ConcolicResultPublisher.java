@@ -335,19 +335,12 @@ final class ConcolicResultPublisher {
      * decided, its session withdrawn, when no flip it was asked was taken
      * yet ({@link Conclusion#AT_NO_PROGRESS}); its session standing as the
      * run made it, the flips taken keeping their verdicts, when one was
-     * ({@link Conclusion#STALLED_AFTER_FLIP}).  After its window closed its
-     * test was over: the teardown answers nothing the question asked, and
-     * the run ends as at the workload's own end, every verdict settled as
-     * there ({@link Conclusion#TEST_OVER}, {@code FocusedReplay#testOver});
-     * the close is a move, so a teardown has the whole bound (PV7-38: a
-     * failed test's teardown stood on an Overseer response until the kill;
-     * of 567 teardowns that ended, 558 took under a minute and 9 took
-     * 600-620 s, each freed only by a ZooKeeper session's expiry).  Its
-     * threads are dumped on the log either way.  From the window's opening
-     * on ({@link RecordingWindow#index}; before it the cluster starts).
-     * Never the seed's replay (it carries no obligation) nor a
-     * confirmation's (its verdict rules stand); a replay whose workload
-     * ended settles on the settle's bound.
+     * ({@link Conclusion#STALLED_AFTER_FLIP}).  Its threads are dumped on
+     * the log.  From the window's opening on ({@link RecordingWindow#index};
+     * before it the cluster starts) to its close, where the replay ends
+     * ({@code JUnitMethodRunner#endAtWindowClose}).  Never the seed's replay
+     * (it carries no obligation) nor a confirmation's (its verdict rules
+     * stand); a replay whose workload ended settles on the settle's bound.
      */
     static void watchProgress() {
         if (FocusedReplay.obligationIds().isEmpty()
@@ -401,18 +394,11 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * How a replay that stood still for {@code still} ends, or null when it
-     * ends otherwise already (its workload ended, a refusal decided it):
-     * after its window closed, as at the workload's own end ({@link
-     * Conclusion#TEST_OVER}); inside it, by the stall ({@code
-     * FocusedReplay#noProgress}).
+     * How a replay that stood still for {@code still} ends ({@code
+     * FocusedReplay#noProgress}), or null when it ends otherwise already:
+     * its workload ended or its window closed, or a refusal decided it.
      */
     static Conclusion stall(String still) {
-        if (RecordingWindow.index() > 0 && !RecordingWindow.opened()) {
-            return FocusedReplay.testOver("its window closed, and its"
-                    + " teardown then made " + still) ? Conclusion.TEST_OVER
-                    : null;
-        }
         if (!FocusedReplay.noProgress(still, ScheduleLog.holding())) {
             return null;
         }
@@ -423,7 +409,7 @@ final class ConcolicResultPublisher {
     /**
      * What the watch counts as progress, each bounded but the first: the
      * distinct events the run made ({@code ScheduleLog#newKeys}); its
-     * window's opening and closing; what its own question moved ({@code
+     * window's opening; what its own question moved ({@code
      * FocusedReplay#questionMoved}: focused occurrences entered, flips
      * taken, roots planted); the order's slots taken or given up ({@code
      * ScheduleLog#settledSlots}); a model's order holds begun and ended
@@ -433,13 +419,12 @@ final class ConcolicResultPublisher {
      */
     static long[] watched(long computed) {
         long[] question = FocusedReplay.questionMoved();
-        long[] watched = Arrays.copyOf(question, question.length + 6);
+        long[] watched = Arrays.copyOf(question, question.length + 5);
         watched[question.length] = ScheduleLog.newKeys();
         watched[question.length + 1] = RecordingWindow.index();
-        watched[question.length + 2] = RecordingWindow.opened() ? 1L : 0L;
-        watched[question.length + 3] = ScheduleLog.settledSlots();
-        watched[question.length + 4] = Confirmation.holdMoves();
-        watched[question.length + 5] = computed;
+        watched[question.length + 2] = ScheduleLog.settledSlots();
+        watched[question.length + 3] = Confirmation.holdMoves();
+        watched[question.length + 4] = computed;
         return watched;
     }
 
@@ -543,13 +528,6 @@ final class ConcolicResultPublisher {
          *  #watchProgress}), which decided every obligation it carries. */
         AT_NO_PROGRESS("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
                 + " s, which decided every obligation this replay carries"),
-        /** Nothing moved for {@link #NO_NEW_EVENT_MILLIS} after the
-         *  window closed ({@link #watchProgress}): the test was over, its
-         *  teardown stood, and the run ends as at the workload's own end,
-         *  every verdict settled as there ({@code FocusedReplay#testOver}). */
-        TEST_OVER("its test was over, and its teardown then moved nothing"
-                + " for " + NO_NEW_EVENT_MILLIS / 1000L + " s: every verdict"
-                + " stands as at the workload's end"),
         /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} after a flip the
          *  replay was asked was taken: the session stands as the run made
          *  it, the obligations still open NOT_ADMITTED. */
@@ -615,8 +593,7 @@ final class ConcolicResultPublisher {
      * strands every activation still live.
      *
      * <p>What still publishes differs.  At the witness, at a forced
-     * target, at a stall after a flip was taken, or once a test over stood
-     * in its teardown, every occurrence
+     * target, or at a stall after a flip was taken, every occurrence
      * completed before it (the witness's own among them): its session is a
      * corpus session, read whole up to there, and its schedule states the
      * run cut there.  At a refusal or a stall before any flip, no
