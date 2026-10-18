@@ -7,6 +7,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -31,11 +33,44 @@ public final class SessionReader {
     private final List<ReadRow> reads;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
-    private final List<GapRow> gaps;
+    /** The gaps a corpus reads ({@link #HELD_GAPS}), by kind. */
+    private final Map<GapKind, List<GapRow>> gaps;
     private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
     private final String incomplete;
+
+    /**
+     * THE GAPS A CORPUS READS of a session, each kind where its one reader
+     * stands: {@link GapKind#ADDRESS_UNSTABLE} ({@link #answered}), {@link
+     * GapKind#BOUND_INSUFFICIENT} ({@code compose.RestsOn#cutOf}), {@link
+     * GapKind#UNPLANNED_INPUT} ({@code explore.ClosurePlanner#unplanned}),
+     * {@link GapKind#UNSTATED_VALUE} ({@code compose.SmtLowering#frames}).
+     * A session's other gap rows are read and not held: what the run noted
+     * for EMIT, which reads the gap files themselves ({@code
+     * GapLedgerMain}) -- SGF8-adhoc-05 round 5's 342 sessions held 1.7 GB of
+     * their text (TASK_UNANSWERED's and UNATTRIBUTED_STORE's details), 29 %
+     * of the planner's heap after its corpus read.
+     */
+    private static final Set<GapKind> HELD_GAPS = Collections.unmodifiableSet(
+            EnumSet.of(GapKind.ADDRESS_UNSTABLE, GapKind.BOUND_INSUFFICIENT,
+                    GapKind.UNPLANNED_INPUT, GapKind.UNSTATED_VALUE));
+
+    /** The held gaps of a read ({@code null} for one not held), by kind,
+     *  each kind's in the file's order. */
+    private static Map<GapKind, List<GapRow>> held(List<GapRow> read) {
+        Map<GapKind, List<GapRow>> byKind =
+                new EnumMap<GapKind, List<GapRow>>(GapKind.class);
+        for (GapRow gap : read) {
+            if (gap == null) continue;
+            byKind.computeIfAbsent(gap.kind(),
+                    kind -> new ArrayList<GapRow>()).add(gap);
+        }
+        for (Map.Entry<GapKind, List<GapRow>> kind : byKind.entrySet()) {
+            kind.setValue(Collections.unmodifiableList(kind.getValue()));
+        }
+        return byKind;
+    }
 
     private SessionReader(SessionDir directory,
                           List<ActivationRow> activations,
@@ -58,7 +93,7 @@ public final class SessionReader {
         this.reads = Collections.unmodifiableList(reads);
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
-        this.gaps = Collections.unmodifiableList(gaps);
+        this.gaps = held(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
     }
@@ -99,7 +134,12 @@ public final class SessionReader {
                 json -> RowCodec.readRootMint(json, pool));
         List<TargetRow> targets = partial.rows(dir.targets(),
                 json -> RowCodec.readTarget(json, pool));
-        List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
+        // Every row read whole (one that will not read makes the session
+        // incomplete), only those a corpus reads held.
+        List<GapRow> gaps = partial.rows(dir.gaps(), json -> {
+            GapRow gap = RowCodec.readGap(json);
+            return HELD_GAPS.contains(gap.kind()) ? gap : null;
+        });
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
         ExpressionTable expressions = partial.read(dir.expressions(),
@@ -319,9 +359,15 @@ public final class SessionReader {
         return targets;
     }
 
-    /** What the run refused or noted, each on the subject it names. */
-    public List<GapRow> gaps() {
-        return gaps;
+    /** What the run refused or noted of one kind a corpus reads ({@link
+     *  #HELD_GAPS}), each on the subject it names, in the file's order. */
+    public List<GapRow> gaps(GapKind kind) {
+        if (!HELD_GAPS.contains(kind)) {
+            throw new IllegalArgumentException("a session's " + kind
+                    + " gaps are not held: only " + HELD_GAPS);
+        }
+        List<GapRow> rows = gaps.get(kind);
+        return rows == null ? Collections.<GapRow>emptyList() : rows;
     }
 
     /**
@@ -333,10 +379,8 @@ public final class SessionReader {
      */
     public Set<String> answered() {
         Set<String> occurrences = new LinkedHashSet<String>();
-        for (GapRow gap : gaps) {
-            if (gap.kind() == GapKind.ADDRESS_UNSTABLE) {
-                occurrences.add(gap.subject());
-            }
+        for (GapRow gap : gaps(GapKind.ADDRESS_UNSTABLE)) {
+            occurrences.add(gap.subject());
         }
         return occurrences;
     }
