@@ -545,9 +545,17 @@ read's endpoints, locations, occurrences, index frames and strings are held once
 (`LocationId#key`) and an expression node's interned (`SmtLowering#locationKey(JsonObject)`); a set made once
 and only read is a `contract.FrozenSet` (one array, its order kept: what a delivery rests on,
 `RestsOn#named`; an expression's symbols, read locations and events, `Corpus#expressionSymbols`,
-`#readLocations`, `#readEvents`; the join's read symbols), a set the walk only adds to and asks is a
-`contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is read of), and a
-handoff the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string.
+`#readLocations`, `#readEvents`; the join's read symbols; a member's reads by location and object,
+`ClosurePlanner.MemberReads`), indexed for `contains` only the first time it is asked, a set the walk only
+adds to and asks is a `contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is
+read of) or, of rows, a `contract.IdentitySet` (a demand's expanded reads, a walk's decisions), and a handoff
+the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string. A list an
+index holds for good is cut to its size (`contract.Held`); every location key in a JVM is one string
+(`LocationId#key`, interned), and so is every name a corpus derives from a session's schedule and leaf sets
+(`Corpus#NAMES`: its facts' ids, stances and renders, `HeldLeaves`); the slot table is keyed by its
+interactions' parts and world (`SlotTable.Key`), never their digested id spelled with the world; a round
+takes what its manifest states of the reconciliation at once (`ExploreMain#skeleton`), its gaps written; an
+expression table drops a node's reference once the collector let the node go (`ExpressionTable.Live`).
 Within a round, what a
 round asks again of the same corpus is answered once: an arm's dependence per task and decision
 (`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and

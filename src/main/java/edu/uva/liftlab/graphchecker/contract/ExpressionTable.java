@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.internal.LazilyParsedNumber;
 
+import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.AbstractSet;
 import java.util.ArrayDeque;
@@ -68,7 +69,22 @@ public final class ExpressionTable extends Value {
     /** Open addressing over {@link #refs}: a ref's index + 1, 0 none. */
     private final int[] slots;
     /** node index -> the object built for it, while anything holds it. */
-    private WeakReference<JsonObject>[] live;
+    private Live[] live;
+    /** The objects the collector let go of: their slots are emptied as
+     *  the next node is asked for (SGF8-adhoc-05 round 5's 342 tables held
+     *  5.2 M cleared references, 167 MB, beside 13 live objects). */
+    private final ReferenceQueue<JsonObject> released =
+            new ReferenceQueue<JsonObject>();
+
+    /** One built object, weakly, with its node's index. */
+    private static final class Live extends WeakReference<JsonObject> {
+        final int index;
+
+        Live(JsonObject made, int index, ReferenceQueue<JsonObject> queue) {
+            super(made, queue);
+            this.index = index;
+        }
+    }
 
     private ExpressionTable(String[] strings, byte[] code, int[] offsets,
                             String[] refs, int[] refNodes) {
@@ -174,6 +190,10 @@ public final class ExpressionTable extends Value {
      * twice at once.
      */
     private synchronized JsonObject node(int index) {
+        for (Live gone = (Live) released.poll(); gone != null;
+             gone = (Live) released.poll()) {
+            if (live[gone.index] == gone) live[gone.index] = null;
+        }
         JsonObject held = held(index);
         if (held != null) return held;
         Deque<Integer> pending = new ArrayDeque<Integer>();
@@ -196,16 +216,14 @@ public final class ExpressionTable extends Value {
     }
 
     private JsonObject held(int index) {
-        WeakReference<JsonObject> reference = live == null ? null
-                : live[index];
+        Live reference = live == null ? null : live[index];
         return reference == null ? null : reference.get();
     }
 
-    @SuppressWarnings("unchecked")
     private JsonObject register(int index) {
-        if (live == null) live = new WeakReference[offsets.length];
+        if (live == null) live = new Live[offsets.length];
         JsonObject made = new JsonObject();
-        live[index] = new WeakReference<JsonObject>(made);
+        live[index] = new Live(made, index, released);
         return made;
     }
 

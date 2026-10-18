@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
+
 /**
  * The storage a state edge joins on, spelled as the VM's location key
  * ({@code RowPublication.locationKey}, {@code KIND/rid#slot}).  A rid is a
@@ -18,6 +21,15 @@ public final class LocationId extends Value {
     /** {@link #key()}, spelled once: a corpus asks every row's location
      *  for it, and holds it in every index by location. */
     private String key;
+
+    /** The location keys a JVM holds, one string a key while any index
+     *  holds it: rows' locations and expressions' location nodes spell the
+     *  same keys (SGF8-adhoc-05 round 5's planner: 1.6 M key strings, 294
+     *  MB, for about half as many keys).  Loaded only where a key is asked
+     *  for, never by a replay's runtime. */
+    private static final class Keys {
+        static final Interner<String> HELD = Interners.newWeakInterner();
+    }
 
     private LocationId(LocationKind kind, String owner, String slot) {
         this.kind = kind;
@@ -47,7 +59,7 @@ public final class LocationId extends Value {
     public String key() {
         String spelled = key;
         if (spelled == null) {
-            spelled = kind + "/" + owner + "#" + slot;
+            spelled = Keys.HELD.intern(kind + "/" + owner + "#" + slot);
             key = spelled;
         }
         return spelled;
