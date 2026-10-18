@@ -5,7 +5,6 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
-import edu.uva.liftlab.graphchecker.contract.ByIdentity;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -311,13 +310,15 @@ public final class Arms {
     /** {@link #rootGuards}, per session. */
     private final Map<String, List<RootGuard>> rootGuards =
             new ConcurrentHashMap<String, List<RootGuard>>();
-    /** write -> {@link #constructs}, by identity (a row's equality hashes
-     *  every part of it): {@link #eligible} asks it of every write between
-     *  two versions, for every version and reader a location is asked at,
-     *  and its frame scan was half the closure walk's first minutes
-     *  (SGF8PLAN-adhoc-05 round 2, cold {@code Corpus#eligibleWrites}). */
-    private final Map<ByIdentity<WriteRow>, Boolean> constructed =
-            new ConcurrentHashMap<ByIdentity<WriteRow>, Boolean>();
+    /** write endpoint id -> {@link #constructs} (a row's equality hashes
+     *  every part of it; its id is digested once, and holds no row a
+     *  corpus's hold let go of, {@code contract.RowHold}): {@link #eligible}
+     *  asks it of every write between two versions, for every version and
+     *  reader a location is asked at, and its frame scan was half the
+     *  closure walk's first minutes (SGF8PLAN-adhoc-05 round 2, cold {@code
+     *  Corpus#eligibleWrites}). */
+    private final Map<String, Boolean> constructed =
+            new ConcurrentHashMap<String, Boolean>();
 
     public Arms(Rows rows) {
         this.rows = rows;
@@ -673,7 +674,7 @@ public final class Arms {
      * {@code DataNodeDiskMetrics.<init>} starts).
      */
     private boolean constructs(WriteRow write) {
-        return constructed.computeIfAbsent(new ByIdentity<WriteRow>(write),
+        return constructed.computeIfAbsent(write.endpoint().id(),
                 key -> constructedAt(write));
     }
 

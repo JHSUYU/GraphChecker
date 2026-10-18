@@ -31,7 +31,7 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
    heads per lift, the cases sharing the replay slots); several sweeps side by side (the named-bug baseline, the reruns
    of cut cases, newly added checks). Give a full sweep `CASE_TIMEOUT_SECONDS=10800` (hdfs-11741 `14400`): under 20
    heads the 90-min default cut six cases that closed at 3 h.
-3. **Across development:** up to 4 coding agents, each on its own branch, sparse worktree, frozen snapshot and
+3. **Across development:** up to 5 coding agents (owner 2026-10-18), each on its own branch, sparse worktree, frozen snapshot and
    `GC_OUT`, each running its offline gates and at most 2 live validation runs, beside the lead's rounds; review and
    diagnosis agents read only. A landed fix is validated at once on the cases it touches, never by waiting for a round.
 4. **Isolation over NFS is what makes this safe:** worktrees and snapshots without `third_party/`
@@ -64,18 +64,21 @@ checkouts) and runs the series. **Solr is in its last round** (SGF3, 2026-10-13)
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
 [AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md),
-[PARALLEL.md](docs/handover/PARALLEL.md) and [CHECKING.md](docs/handover/CHECKING.md) as its own long-term memory.
+[PARALLEL.md](docs/handover/PARALLEL.md), [CHECKING.md](docs/handover/CHECKING.md) and [LESSONS.md](docs/handover/LESSONS.md) as its own long-term memory.
 
 | # | document | what it holds |
 | --- | --- | --- |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the mission and completion condition, what to read in order, the five open workstreams, how to run the final round, the rules, where everything is |
 | 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: Solr at its handover (2026-10-13, §S: `system/solr`, the four branches to merge, the tree, each case's state); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
-| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
+| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
 | 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
 | 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
 | 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked: the HBase port's refactor list (owner 2026-10-16). |
+| 6c | [docs/handover/LESSONS.md](docs/handover/LESSONS.md) | The traps we fell into and how we work around them: shell, zombie processes, NFS, heaps, Java 8 concurrency; how to measure performance and how to debug and verify |
+| 6d | [docs/handover/REFACTOR-PLAN.md](docs/handover/REFACTOR-PLAN.md) | The owner-approved 2026-10-18 rewrite: rules, workstreams A-H with evidence and acceptance, the order; acceptance = all 20 Solr cases rerun |
 | 7 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |

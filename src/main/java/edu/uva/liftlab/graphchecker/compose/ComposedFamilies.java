@@ -21,7 +21,6 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
-import edu.uva.liftlab.graphchecker.explore.SlotTable;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -1472,9 +1471,7 @@ final class ComposedFamilies {
 
     /** Growth is not an event; the skeleton names what it has not opened. */
     private void slotOpened(String slotId, Interaction slot) {
-        SlotTable slots = composer.slots();
-        if (slots == null || !slots.stated()) return;
-        if (slots.opened(slot.consumer().id())) return;
+        if (!composer.unopened(slot.consumer().id())) return;
         if (!slotNamed.add(slotId)) return;
         composer.gap(GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC, slotId,
                 "this epoch's skeleton has opened no slot for this "

@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Equal values only, never a JSON node: the expression walks go by node
  * identity ({@code smt.ExpressionWalk}), so a node stays its line's own.</p>
  */
-final class RowPool {
+public final class RowPool {
     /** Concurrent: a corpus's sessions are read in parallel
      *  ({@code SessionReader#readAll}). */
     private final Map<Object, Object> held =

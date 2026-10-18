@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr final round SGF8 running (2026-10-16)
+# State: HDFS finished; Solr in the 2026-10-18 rewrite, stopped for handover
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,7 +11,35 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the final round SGF8 after the owner's optimization batch (2026-10-16) -- read this first if you take over Solr
+## S. Solr: the 2026-10-18 rewrite, stopped for handover -- read this first if you take over Solr
+
+The owner stopped the Solr final round (2026-10-18 09:16) to rewrite the engine's bottlenecks, then stopped all work
+for a handover (2026-10-18 ~15:45). Nothing runs on any lift. Read, in order: [REFACTOR-PLAN.md](REFACTOR-PLAN.md)
+(the approved plan: rules, workstreams A-H, order), [LESSONS.md](LESSONS.md) (traps: shell, zombies, NFS, heaps,
+concurrency; how to measure; how to debug), [TODO.md](TODO.md) "Solr: the rewrite" (each workstream's branch, head,
+what is left, the exact next step), then RULES, AGENTS, OPERATIONS, PARALLEL, CHECKING.
+
+**Acceptance (owner):** after the rewrite, rerun ALL 20 Solr cases (`experiments/solr/solr-cases.tsv`) each alone on
+lift02-10 + lift12-15, bug checks first; the 8 bug checks must stay SAT + CONFIRMED + native, the study checks' claims
+equal or more complete; debug what breaks; then readings, STATUS, STATE, TODO, OPTIMIZATIONS. Old code is deleted for
+good (no flags, no fallbacks). The world-depth parameter stays the owner's control of the branch count.
+
+**`system/solr` (= `solr-int`, worktrees `/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`)** holds, gated:
+the GROW pipeline; the superstep + window walk; the parallel round and Frontier; the live-set planner hold rule; gzip rows
+through one opener (old plain run dirs are unreadable by the new code: GzCopy them first); EMIT's gap ledger in Java;
+the holding composer (07: 309/309 paths, UNSAT_CLOSED, no blocker; it had composed 1 of 309); the compaction of the
+corpus and walk state (05 r5 planner live at the walk's end 12.7 -> 3.5 GB, RSS 20.8 -> 10.6 GB, round 549 -> 398 s);
+the plan and lesson docs. Head: see TODO "Solr: the rewrite" (the last integration merge and its gate are named there).
+
+**Results so far on the final code line:** 15 of the 20 Solr cases have results from SGF7/SGF8 (STATUS "Solr checks");
+SGF8-adhoc-07 ran on sgf41 (85944a0dd) to PLANNER_HEAP_EXCEEDED with 1 of 309 paths composed (evidence; it reruns);
+31 was stopped (SGF8STOP-adhoc-31). Under the owner's acceptance all 20 rerun after the rewrite.
+
+**Shelved, not merged:** session sharding of the planner (solr-parplan 3df494a3a + repo stashes stash@{0}/{1};
+solr-shard d3b663462): the compaction gave the memory headroom in one JVM.
+
+## S-old (2026-10-16, superseded by S above; kept until the rerun replaces its facts)
+
 
 The round runs: a driver on lift06 runs the ten remaining study checks one at a time, each ALONE on the cluster
 (`analysis/solr-2026-10-16/final-seq5.sh`, log `gc-out/solr/SGF8-seq.log`), 7200 s each (owner: study budget 4 h ->

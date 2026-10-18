@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.RowPool;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -135,11 +136,11 @@ public final class SlotTable {
         }
     }
 
-    /** interaction id | world -> the slot. */
-    private final Map<String, Slot> byInteraction =
-            new LinkedHashMap<String, Slot>();
+    /** (interaction, world) -> the slot. */
+    private final Map<Key, Slot> byInteraction =
+            new LinkedHashMap<Key, Slot>();
     /** The keys of {@link #byInteraction} an answered occurrence opened. */
-    private final Set<String> answeredSlots = new HashSet<String>();
+    private final Set<Key> answeredSlots = new HashSet<Key>();
     /** WIRE consumer endpoint id | world -> the slot a later pairing of it
      *  there replaces: never one an answered occurrence opened. */
     private final Map<String, Slot> slotOfConsumer =
@@ -184,14 +185,17 @@ public final class SlotTable {
             throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
+        // The rounds' slots spell the same endpoints again and again: each
+        // held once ({@link RowPool}).
+        RowPool pool = new RowPool();
         // Indexed by standing(), which knows the sessions they stand on.
         for (Path file : files(iteration, round)) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
             // Each line read into its slot and key on the core that parses
             // it (RowCodec#readEach), folded in the file's order.
-            RowCodec.readEach(file, row -> new ChangeRead(
-                    ExploreCodec.readSlot(row),
+            RowCodec.readEach(file, pool, row -> new ChangeRead(
+                    ExploreCodec.readSlot(row, pool),
                     JsonFields.optionalString(row, "kind")), change -> {
                 if (DROPPED.equals(change.kind)) {
                     table.byInteraction.remove(change.key);
@@ -207,7 +211,7 @@ public final class SlotTable {
      *  its key ({@link #key}) and whether it opened or dropped. */
     private static final class ChangeRead {
         final Slot slot;
-        final String key;
+        final Key key;
         final String kind;
 
         ChangeRead(Slot slot, String kind) {
@@ -251,15 +255,15 @@ public final class SlotTable {
         return stated;
     }
 
-    /** Whether this consumer endpoint has a WIRE slot in any world. */
-    public boolean opened(String consumerEndpointId) {
+    /** The consumer endpoints that have a WIRE slot in any world. */
+    public Set<String> wireConsumers() {
+        Set<String> consumers = new HashSet<String>();
         for (Slot slot : byInteraction.values()) {
-            if (slot.kind == InteractionKind.WIRE
-                    && slot.consumer.id().equals(consumerEndpointId)) {
-                return true;
+            if (slot.kind == InteractionKind.WIRE) {
+                consumers.add(slot.consumer.id());
             }
         }
-        return false;
+        return consumers;
     }
 
     /** Writes what this table changed as one round's rows into that
@@ -278,20 +282,57 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
-    /** A slot's key in {@link #byInteraction}: its interaction's id and
-     *  its world. */
-    private static String key(Slot slot) {
+    /** A slot's key in {@link #byInteraction}: its interaction and its
+     *  world. */
+    private static Key key(Slot slot) {
         return key(slot.kind, slot.producer, slot.consumer, slot.world);
     }
 
-    private static String key(InteractionKind kind, Endpoint producer,
-                              Endpoint consumer, String world) {
-        return Interaction.of(kind, producer, consumer).id() + "|" + world;
+    private static Key key(InteractionKind kind, Endpoint producer,
+                           Endpoint consumer, String world) {
+        return new Key(kind, producer.id(), consumer.id(), world);
+    }
+
+    /**
+     * ONE INTERACTION IN ONE WORLD, as its parts: its kind and its two
+     * endpoints' ids -- what its id digests ({@link Interaction#id}) --
+     * and the world's digest, never a key spelled of them (a late round's
+     * table held 1.5 M such strings, 160 MB, each digested again per ask).
+     */
+    private static final class Key {
+        private final InteractionKind kind;
+        private final String producer;
+        private final String consumer;
+        private final String world;
+
+        Key(InteractionKind kind, String producer, String consumer,
+            String world) {
+            this.kind = kind;
+            this.producer = producer;
+            this.consumer = consumer;
+            this.world = world;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof Key)) return false;
+            Key key = (Key) other;
+            return kind == key.kind && producer.equals(key.producer)
+                    && consumer.equals(key.consumer)
+                    && world.equals(key.world);
+        }
+
+        @Override
+        public int hashCode() {
+            return ((kind.hashCode() * 31 + producer.hashCode()) * 31
+                    + consumer.hashCode()) * 31 + world.hashCode();
+        }
     }
 
     /** Opens a slot, or replaces the one of its key: a change of the
      *  round ({@link #write}).  {@code answered}: as {@link #index}. */
-    private void open(String key, Slot slot, boolean answered) {
+    private void open(Key key, Slot slot, boolean answered) {
         byInteraction.put(key, slot);
         changes.add(new Change(slot, OPENED));
         index(key, slot, answered);
@@ -300,7 +341,7 @@ public final class SlotTable {
     /** {@code answered}: the slot's consumer stands in an occurrence its
      *  opening session answered by its question ({@link
      *  SessionReader#answered}); {@code key}, the slot's ({@link #key}). */
-    private void index(String key, Slot slot, boolean answered) {
+    private void index(Key key, Slot slot, boolean answered) {
         if (answered) {
             answeredSlots.add(key);
         } else {
@@ -332,9 +373,9 @@ public final class SlotTable {
         answeredSlots.clear();
         slotOfConsumer.clear();
         ownChainOf.clear();
-        for (Iterator<Map.Entry<String, Slot>> held = byInteraction
+        for (Iterator<Map.Entry<Key, Slot>> held = byInteraction
                 .entrySet().iterator(); held.hasNext(); ) {
-            Map.Entry<String, Slot> entry = held.next();
+            Map.Entry<Key, Slot> entry = held.next();
             Slot slot = entry.getValue();
             Set<String> answered = answeredIn.get(slot.openedBySession);
             if (answered == null) {
@@ -555,7 +596,7 @@ public final class SlotTable {
     /** The slot this pairing, of an occurrence its session did not answer
      *  by its question, contradicts: same-world WIRE consumer, other
      *  producer, other session; {@code key}, the pairing's ({@link #key}). */
-    private Slot replaced(String key, InteractionKind kind, Endpoint producer,
+    private Slot replaced(Key key, InteractionKind kind, Endpoint producer,
                           Endpoint consumer, String sessionId, String world) {
         if (kind != InteractionKind.WIRE) return null;
         if (holds(key, false)) return null;
@@ -568,7 +609,7 @@ public final class SlotTable {
 
     /** Whether a slot holds this pairing: one an answered occurrence opened
      *  holds an answered pairing only. */
-    private boolean holds(String key, boolean answered) {
+    private boolean holds(Key key, boolean answered) {
         return byInteraction.containsKey(key)
                 && (answered || !answeredSlots.contains(key));
     }
@@ -590,7 +631,7 @@ public final class SlotTable {
                          boolean authority, boolean answered, int round,
                          List<Slot> opened, List<GapRow> gaps) {
         Slot slot = new Slot(kind, producer, consumer, sessionId, round, world);
-        String key = key(slot);
+        Key key = key(slot);
         if (holds(key, answered)) return Outcome.FILLED;
         Slot contradicted = answered ? null
                 : replaced(key, kind, producer, consumer, sessionId, world);

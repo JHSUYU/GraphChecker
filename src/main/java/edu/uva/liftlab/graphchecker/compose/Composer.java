@@ -1513,9 +1513,12 @@ public final class Composer {
      *  (Composer#arrival, Composition#openChain). */
     private final Map<String, Endpoint> openArrivals =
             new LinkedHashMap<String, Endpoint>();
-    /** This epoch's skeleton: which interactions have a slot (PIPELINE
-     *  §7.1). */
-    private SlotTable slots;
+    /** The consumers this epoch's skeleton opened a WIRE slot for (PIPELINE
+     *  §7.1), the one thing composing asks of it past the sessions that
+     *  replace a slot ({@link #unopened}): the table itself is let go of
+     *  (SGF8-adhoc-07: 1.58 M slots, their endpoints and frames unshared,
+     *  GBs of the composer's heap); null where no table is stated. */
+    private Set<String> openedWires;
     /** Sessions whose pairing replaces a slot's: their arms are not ours. */
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
@@ -1605,9 +1608,11 @@ public final class Composer {
                 + " s");
     }
 
-    /** This epoch's skeleton, for the relocated family bodies. */
-    SlotTable slots() {
-        return slots;
+    /** Whether this epoch's skeleton is stated and opened no WIRE slot for
+     *  this consumer ({@code ComposedFamilies#slotOpened}). */
+    boolean unopened(String consumerEndpointId) {
+        return openedWires != null
+                && !openedWires.contains(consumerEndpointId);
     }
 
     /** Composes the declared occurrence; a missing one is a claim, not a
@@ -1704,6 +1709,7 @@ public final class Composer {
 
         // The skeleton first: a replacing session's rows must not reach a
         // family.
+        SlotTable slots;
         try {
             slots = SlotTable.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
@@ -1724,6 +1730,7 @@ public final class Composer {
                         replacement.consumerEndpointId,
                         replacement.detail()));
             }
+            if (slots.stated()) openedWires = slots.wireConsumers();
         }
 
         placeClocks();
@@ -4197,9 +4204,20 @@ public final class Composer {
                 readings.get(previous))) + "))";
     }
 
-    /** The corpus's domain of one root ({@link Corpus#domainOf}). */
+    /**
+     * The corpus's domain of one root ({@link Corpus#domainOf}): the
+     * literals recorded decisions compare it with are asked for only where
+     * they widen it ({@link RootDomain#widened}) -- each root's, a walk of
+     * every session's decisions that reach it, lowered with their reads and
+     * writes, which a held corpus reads again where it let them go ({@code
+     * Corpus#holding}); SGF8-adhoc-07's 367 fault markers were each asked --
+     * any other root's is its mint's.
+     */
     private RootDomain domainOf(RootMintRow row) {
-        return corpus.domainOf(row);
+        return RootDomain.widened(row,
+                corpus.declaredDomain(row.rootId()) != null)
+                ? corpus.domainOf(row)
+                : corpus.domainOf(row, row.recordedValue());
     }
 
     /**

@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.RowPool;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
@@ -225,12 +226,13 @@ public final class ExploreCodec {
         return json;
     }
 
-    public static SlotTable.Slot readSlot(JsonObject json) {
+    /** One slot, its endpoints' parts from {@code pool}. */
+    public static SlotTable.Slot readSlot(JsonObject json, RowPool pool) {
         return new SlotTable.Slot(
                 InteractionKind.valueOf(
                         optionalString(json, "interactionKind")),
-                RowCodec.readEndpoint(object(json, "producer")),
-                RowCodec.readEndpoint(object(json, "consumer")),
+                RowCodec.readEndpoint(object(json, "producer"), pool),
+                RowCodec.readEndpoint(object(json, "consumer"), pool),
                 optionalString(json, "openedBySession"),
                 optionalInteger(json, "openedAtRound", 0),
                 optionalString(json, "world"));

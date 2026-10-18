@@ -1,4 +1,4 @@
-# TODO: HDFS finished, Solr final round stopped for handover (2026-10-15)
+# TODO: HDFS finished; Solr rewrite stopped for handover (2026-10-18)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -111,13 +111,12 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   per member and the expression tables compact, 39's PV7 round 6 (208 sessions, 9.8 GB) plans in 806 s at 16 GB,
   peaking near 9.4 GB live; a lowering frame's side conditions are held by reference and `Independence`'s leaf sets as
   arrays (SGF7-adhoc-10's subset: 1626 -> 1008 MB after the round, adhoc-40's 1649 -> 1163). What is left grows with the
-  corpus and the rounds, spread wide (STATUS 37 has the measured shares): (1) strings -- the
-  corpus indexes' composed keys (`session|symbol`, `session|location|version`, a location key per row, an id per
-  `Endpoint` instance: rows read in one pool share no `Endpoint` or `LocationId`), the per-session joins'
-  (`SmtLowering#joinOf`), the lowered and shared bodies' texts the memos keep for the round, and the expression nodes the
-  memo's keys hold strongly; (2) the slot table, whose
-  rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5) and whose round 6 change file was
-  2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same
+  corpus and the rounds, spread wide (STATUS 37 has the measured shares): (1) strings -- the corpus indexes' composed
+  keys, the joins', the endpoints' and locations' (done 2026-10-18, OPTIMIZATIONS 1.26-1.30: 05 r5's planner 12.7 ->
+  3.5 GB at its walk's end); left: the lowered and shared bodies' texts the memos keep for the round, and the
+  expression nodes the memo's keys hold strongly; (2) the slot table, whose
+  rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5; its endpoints and frames held once
+  per read since 1.28) and whose round 6 change file was 2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same
   static candidates again; `Walk#holders` dominates its CPU: about half of round 6's 13 minutes).
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
@@ -137,7 +136,123 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - `offline-ab.sh` `ab_stage_seed_static` tests `-s GROWN` on the gate host right after another host wrote it; over NFS
   it can miss the file (one spurious SEED.static difference on 2026-10-08): wait for it, or read it on the writer.
 
-## Solr (final round SGF8 after the optimization batch, 2026-10-16; `system/solr`, worktree `/bigtemp/vnr3ne/wt/gc-solr`)
+## Solr: the rewrite (2026-10-18 handover) -- the current plan; the older Solr sections below are history
+
+Read STATE.md §S, [REFACTOR-PLAN.md](REFACTOR-PLAN.md) and [LESSONS.md](LESSONS.md) first. Evidence dirs are under
+`/bigtemp/vnr3ne/analysis/solr-2026-10-18/` (named per item). Merge every branch into `solr-int`
+(`/bigtemp/vnr3ne/wt/gc-solr-merge`), gate (mvn package with tests + `src/test/shell/run_engine_campaign_helpers_test.sh`,
+not on a loaded host; the shell suite has timing-sensitive cases), then fast-forward `system/solr`
+(`/bigtemp/vnr3ne/wt/gc-solr`). Push GraphChecker only with the owner's OK.
+
+**Merged (system/solr / solr-int):** A compaction (all 4 steps, b4518df43 via a28597a8f), B holding composer, the
+GROW pipeline, the superstep/window walk, the parallel round, the live-set hold rule, gzip rows, EMIT's ledger. The
+last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (mvn with tests + the shell test,
+`analysis/solr-2026-10-18/int-gate3/`); system/solr = solr-int holds it and these docs.
+
+**C scheduler -- branch solr-stream2, worktree /bigtemp/vnr3ne/wt/gc-stream2, head dd0a1ce64.**
+- Gated: 5acb7c73c (replays spread by most room per kind; a killed replay re-queued, never a verdict), 55dd258ab (the
+  head chain: land at collection, gate over new sessions, GROW plan/weave beside the loop), bbe5940fd + c360f9608
+  (multi-question solvers, start-another by the oldest queued wait), 489e7ec42 (z3 answers reused by query text in
+  `<iteration>/solved/`). 598 Java tests pass.
+- WIP dd0a1ce64 (compiles only): goal 4 (planner/solvers charged their measured need, the head host runs replays) and
+  goal 6 (a GROW re-run whose world is past max-world-depth no longer holds the fixed point; COMPOSE waits for its
+  paths' re-runs and havocs grown regions otherwise) -- no tests/docs yet.
+- Next: a clean full shell-suite run (from a /localtmp copy), fix goal 4, tests + docs for goal 6, then a canary of
+  solr-adhoc-13 alone. Goal 5's A/B timing (11.5 vs 62.6 s on a loaded lift11) needs a rerun on an idle host.
+- Traps: fixture manifests must state maxWorldDepth; STREAM-CAP is timing-sensitive; a fixture that never finds room
+  waits forever instead of failing.
+
+**D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore, head ee0edfcb1.**
+- 32140c8bb merges compaction step 3 (built, tests not run); merge b4518df43 (step 4) next.
+- WIP ee0edfcb1: the parked solr-armkey key (keys name only the roots the question reads) cherry-picked, plus
+  explore/KeyGate (+ KeyGateTest): re-keys every asked flip and fails on a key holding a satisfiable answer beside an
+  UNSAT one (unless the UNSAT world strictly extends it) or a first settling answer that is not ADMITTED while another
+  is. Passed on 18413 (424 ids -> 339 keys), 18406, the 6 solr-bugs, 13, 19, 21, 39, 05 r5; NOT yet on 07, 05 r2, 14
+  and Z3S-18413 (depth 3, 415 sessions: the meaningful one). Renumber the clock-reading defect the cherry-pick added
+  (clashes with STATUS 70).
+- Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
+  round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
+  6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains
+  widened by post-flip writes), so a key refinement alone does not remove them. Sound skip: arm B in world P+F when B
+  precedes F in the parent's order, its path equals the parent's through B, and the parent's answer was UNSAT or
+  NOT_FLIPPABLE (the child's query is stronger) or ADMITTED with F still owed in B's world. Design (D agent): the
+  world's parent and prefix length from the focus row's schedulePrefix (sessionId, events); record each session's
+  vmEvent per schedule event in Corpus.facts; the divergence point = the earliest of the parent's vmEvent at the last
+  enforced event, the parent's mint seq of any root/clock the child planted anew, the parent's seq of the child's own
+  flip; settle in ObligationFactory#offered before keying; ExploreMain#openArmState judges a skipped open-arm path by
+  its parent's path. WINDOW = an arm on another thread after the schedule cut (the first event of the flip's occurrence
+  or a factor member) but before the flip: check prefix equality per arm. Estimates (estimate.py): 14 depth 1/2/3:
+  ~137K/68K/34K obligations now -> ~26K/5.2K/1.0K; 39: ~11K/8.8K/6.9K -> ~5.7K/3.7K/2.4K.
+- World depth (owner 2026-10-18): unbounded in principle -- once the bound and the key are in and measured offline
+  on 14 and 39 (obligations falling with depth, near the estimates), make 'no cap' the default (delete the depth-0
+  lines in experiments/solr/solr-adhoc/case.sh; run_engine and the engine default mean unbounded); the parameter stays
+  the owner's manual cap. See START-HERE.md §4.
+- Traps: never lower another session's terms from a session's key thread (lowerings number refused constructs in ask
+  order); expression refs differ across sessions for 45 % of pre-cut decisions (compare structure, not refs); two
+  GzCopy runs into one destination collide.
+
+**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, head fc70638e2 (on b07793ee9), GATED
+(mvn with tests + the shell test); merge it into solr-int next.**
+- Done (goal 1): the stall-end run-on (07: 43 of 72 stall-ended replays ran on, 5 to the 2400 s timeout). Cause
+  confirmed by thread dumps of an old-jar reproduction (07's 70f7d6878c96ed36): the settle thread waited in
+  ConcolicResultPublisher#awaitSelectedResultPublications while an activation that closed after the end read out page
+  after page, each waiting for decode room; in-flight counted from finish() before the read-out; the live were stranded
+  only after the wait; the decoder's CPU reset the grace. Fix: strand the live at once, stop withheld read-outs and
+  their decoding, wait only for publications submitted by the end; GC counts as progress only while a publication or
+  decode computes. An AT_NO_PROGRESS replay halted 44 s after its end; a STALLED_AFTER_FLIP one 190 s (decoding its
+  session still needs: goal 3).
+- Goal 2 next: the replay need from the 90th percentile of measured peaks plus an out-of-heap guard
+  (-XX:+ExitOnOutOfMemoryError + HeapWatch in replays; a replay exiting 3 reruns once at twice its heap; later replays
+  start there); the replay VM's GC is Serial, so -Xmx caps the heap without growing RSS; update the MEASURED-NEED rows
+  of the shell test.
+- Goal 3: decoding (measured on pages captured from 07's 615997597e3c4202, `analysis/solr-2026-10-18/replay-e/`): the
+  Zero VM decodes 0.65 s per million chars (HotSpot ~95x faster); 82 % of page text is the expression table and 92 % of
+  its definitions are re-sent from earlier pages; profile: table reading 40 %, truncation scan 16.5 % (read-out pages
+  never hold a truncation marker), expansion 17 % (under a lock), parsing 17 %; whole-page parallel decode was 2.25x
+  faster for 53 % more CPU. So: the VM sends each expression definition once per session (VM serializer
+  exp/expression.cpp + the Java decoder, emission and table registration under one lock), skip the truncation scan when
+  nothing is marked, decode records within a page in parallel.
+- Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
+  rows first.
+- Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
+  offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
+  checkout with third_party/ and gcc-6 on lift15.
+
+**F serial fixed cost -- branch solr-serial (= a28597a8f, nothing committed).** Measured: 07 SEED 540 s, of which the
+static pass is only 91 s (seedAnalysis 32, skeletonPlanning 32); ~450 s of SEED is unattributed (likely the recording);
+INSTRUMENT 83 s; the seed replay 569 s (13: 435/145/325 s). Next: split SEED/INSTRUMENT/REPLAY by phase from
+solr-adhoc-07.log's timestamped lines, then cache/parallelize what depends only on the tree + static-pass code, and
+decide whether the seed replay can overlap INSTRUMENT/PLAN.
+
+**G NFS leftovers -- not started.** Worker schedule prefix/suffix (625 MB in 05 round 0) and flip query files
+(1.47 GB round 4) to gzip through ArtifactIO (grep every reader); `campaign_solver_read_seed_mb_s` 20 -> ~160.
+
+**How to resume: five coding agents in parallel (owner 2026-10-18), one per row, own branch and hosts.** Resume an
+agent's branch where it stands; tell each the other agents' files before it commits; the lead merges and gates.
+
+| agent | work | branch (from) | hosts | estimate at the measured pace |
+|---|---|---|---|---|
+| 1 scheduler | C goal 4 (measured charges, head host runs replays) + goal 6 tests/docs + a clean full shell-suite run, then the 13 canary | solr-stream2 (dd0a1ce64) | lift05-07, lift11 for gates | 2-3 h |
+| 2 exploration | D1: KeyGate on 07, 05 r2, 14, Z3S-18413, merge the armkey key; D2: the generational bound (design above) | solr-explore (ee0edfcb1) | lift08, lift14 | 3-5 h (critical path) |
+| 3 VM decode | E goal 3: each expression definition sent once per session (VM exp/expression.cpp + the Java decoder), skip the truncation scan, parallel record decode | solr-replay (fc70638e2) | lift15 (VM build: full checkout + gcc-6), lift13 | 3-5 h (critical path) |
+| 4 replay end | E goal 2 (replay need by the 90th percentile of peaks + out-of-heap rerun) and goal 4 (stop at the window close after checking every reader of the post-close rows) | solr-replay-end (from fc70638e2) | lift09, lift10, lift12 | 2-3 h |
+| 5 serial + NFS | F (split SEED's ~450 unattributed s, INSTRUMENT, the seed replay by phase; then cache/parallelize) and G (gzip worker schedule and flip query files; solver read seed 160) | solr-serial (a28597a8f) | lift02-04 | 2-4 h |
+
+Agents 3 and 4 both touch the replay runtime: agent 3 owns the VM serializer and the decoder, agent 4 the end/stop
+logic and run_engine's replay charges; merge 3 before 4. Merging solr-replay (fc70638e2) into solr-int conflicts
+only in docs/handover/OPTIMIZATIONS.md (row numbers): renumber its row after the last. Expected wall time for the
+construction: ~4-6 h (the measured pace of 2026-10-18: compaction 4 steps ~3 h, the holding composer ~4 h, the GROW
+pipeline ~3 h with its review fixes, EMIT ~1.7 h, the stall-end fix ~1.5 h), then ~1 h integration, then the rerun.
+
+**Then the acceptance:** a snapshot of the integrated system/solr, all 20 Solr cases each alone (bug checks first),
+debug, readings (`analysis/solr-2026-10-14/final-readings.md`), STATUS "Solr checks", STATE, TODO, OPTIMIZATIONS.
+
+**Cleanup owed:** worktrees gc-compact, gc-composebatch, gc-emitgaps, gc-growpipe, gc-parkeys, gc-nfs, gc-shard,
+gc-parplan, gc-claims, gc-shardstudy, gc-capcomp, gc-solr-small, gc-closure2, gc-dispatch, gc-grow, gc-compmem,
+gc-solr-pool, int-gate3 once merged; old snapshots ~/gc-run/sgf2*..sgf40, growpipe1, nfs2 once no run reads them
+(check pgrep on all lifts first); the analysis dirs keep their evidence. The shard branches stay unmerged (shelved).
+
+## Solr history: the final round SGF8 after the optimization batch (2026-10-16; superseded by "Solr: the rewrite" above)
 
 **Read first:**
 1. STATE.md §S.
