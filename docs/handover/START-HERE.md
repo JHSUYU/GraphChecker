@@ -8,14 +8,16 @@ the documents it names. Repo: `/u/vnr3ne/GraphChecker`; integration worktree `/b
 
 ## 1. Mission and completion condition
 
-Finish the Solr rewrite (five open workstreams), merge everything into `system/solr`, then rerun all 20 Solr cases
-(`experiments/solr/solr-cases.tsv`), each ALONE on lift02-10 + lift12-15, bug checks first, and debug what breaks.
+Finish the Solr rewrite (five open workstreams), merge everything into `system/solr`, then rerun the 12 study checks
+(solr-adhoc-* in `experiments/solr/solr-cases.tsv`), each ALONE on lift02-10 + lift12-15, and debug what breaks. The 8
+bug checks keep their SGF7 results (owner 2026-10-18 evening ("8个bug check不用跑了，我们就用已有的数据即可。剩下的study check重新跑一下")). Every
+change that affects speed is merged before the round starts (owner: "影响速度的都要搞好才能跑").
 
-Done when: the five workstream branches are merged into `system/solr` and gated; the 20 cases each have a result
+Done when: the five workstream branches are merged into `system/solr` and gated; the 12 study checks each have a result
 meeting the acceptance below; STATUS "Solr checks", STATE §S, TODO, OPTIMIZATIONS and LESSONS are updated.
 
-Acceptance: the 8 bug checks (solr-18406, solr-18413, the 6 solr-bugs-*) are SAT + CONFIRMED + native-reproduced;
-the 12 study checks (solr-adhoc-*) end SAT or UNSAT (or at a named bound) with claims equal to or more complete than the
+Acceptance: the 8 bug checks (solr-18406, solr-18413, the 6 solr-bugs-*) stand on their SAT + CONFIRMED + native SGF7
+results (an exploration change is checked on their recorded corpora offline); the 12 study checks (solr-adhoc-*) end SAT or UNSAT (or at a named bound) with claims equal to or more complete than the
 old ones (STATUS "Solr checks"); each case has its time breakdown (`/bigtemp/vnr3ne/analysis/solr-2026-10-14/final-stats.py`)
 and a light `.smt` reading (`/bigtemp/vnr3ne/analysis/solr-2026-10-14/final-readings.md`).
 
@@ -82,9 +84,10 @@ them tenfold, stop and report before the final round. Estimate for 14 unbounded:
 - Old code is deleted for good: one implementation per concept, no flags or fallbacks.
 - Read the existing mechanism (and system/hdfs, the VM) before building one; a small general workaround beats a huge
   engine change; every workaround is named in STATUS.
-- Measure first, prove the mechanism, then fix; byte-identical references where semantics do not change (planner 05
-  r5, 05 r2, 13 r10, 19 r10, 21 r13 in `analysis/solr-2026-10-17/nfs/`; composer 13, 39, 21, 10); dedup only what is
-  provably equivalent (completeness > precision); over-approximate in COMPOSE, confirm strictly.
+- Measure first, prove the mechanism, then fix. No byte-identity requirement any more (owner 2026-10-18 evening,
+  "由于我们改动很大。不再要求做语义一致逐字节比较。跑出.smt包含正确的因果链即可，小问题不用死磕"): a change is right when the cases' `.smt` hold the right causal chain and a SAT
+  replays (CONFIRM in the VM, REPRODUCE natively); small issues are not ground on. Dedup only what is provably
+  equivalent (completeness > precision); over-approximate in COMPOSE, confirm strictly.
 - Heaps sized with run_engine's own functions, never by hand; replays/solvers <= 70 % of a host, one head JVM <= 88 %.
 - Always `env -u BASH_ENV`; kill only by explicit pid; never `git add -A`; commit trailer
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; push GraphChecker only with the owner's OK (the fork

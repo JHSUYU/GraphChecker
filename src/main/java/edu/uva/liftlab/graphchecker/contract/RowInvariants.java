@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.smt.Arms;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -19,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
@@ -52,72 +54,187 @@ public final class RowInvariants {
     }
 
     /**
+     * What one session left the gate for the sessions gated after it: whether
+     * it states SEED (invariant 1), the roots it mints -- each id with the
+     * first symbol its rows mint it under, in row order -- and every symbol
+     * it names with one citation (invariant 11, {@link #named}).  A landed
+     * session never changes, so these are what the gate would read of it
+     * again; the gate keeps them, one per session, beside the epoch
+     * ({@code ImportGateMain}), and an epoch's gate reads them, never the
+     * sessions it gated before (SGF8-adhoc-07: a gate of one session read
+     * every admitted session's manifest and roots, 8-10 s, and all 300 of
+     * them whole when it brought a root, 332 s).
+     */
+    public interface Gated {
+        String sessionId();
+
+        boolean seed();
+
+        /** Root id to the first symbol the session mints it under. */
+        Map<String, String> roots();
+
+        /** Every symbol the session names, with one citation. */
+        Map<String, String> named() throws IOException;
+    }
+
+    /** A session the gate judged now: what it leaves for those after it. */
+    public static final class Judged implements Gated {
+        private final String sessionId;
+        private final boolean seed;
+        private final Map<String, String> roots;
+        private final Map<String, String> named;
+
+        public Judged(String sessionId, boolean seed, Map<String, String> roots,
+                      Map<String, String> named) {
+            this.sessionId = sessionId;
+            this.seed = seed;
+            this.roots = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, String>(roots));
+            this.named = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, String>(named));
+        }
+
+        @Override
+        public String sessionId() {
+            return sessionId;
+        }
+
+        @Override
+        public boolean seed() {
+            return seed;
+        }
+
+        @Override
+        public Map<String, String> roots() {
+            return roots;
+        }
+
+        @Override
+        public Map<String, String> named() {
+            return named;
+        }
+    }
+
+    /** One gate's violations, and what each session it judged leaves. */
+    public static final class Checked {
+        public final List<GapRow> gaps;
+        public final List<Judged> judged;
+
+        Checked(List<GapRow> gaps, List<Judged> judged) {
+            this.gaps = gaps;
+            this.judged = judged;
+        }
+    }
+
+    /** One member of the epoch: a session judged now, or one before. */
+    private static final class Member {
+        final String sessionId;
+        final boolean seed;
+        final Map<String, String> roots;
+        /** Judged now: its header; else null. */
+        final SessionReader header;
+        /** Judged before: what it left; else null. */
+        final Gated before;
+
+        private Member(String sessionId, boolean seed,
+                       Map<String, String> roots, SessionReader header,
+                       Gated before) {
+            this.sessionId = sessionId;
+            this.seed = seed;
+            this.roots = roots;
+            this.header = header;
+            this.before = before;
+        }
+
+        static Member of(SessionReader header) {
+            return new Member(header.sessionId(), header.seed(),
+                    firstRoots(header), header, null);
+        }
+
+        static Member of(Gated before) {
+            return new Member(before.sessionId(), before.seed(),
+                    before.roots(), null, before);
+        }
+    }
+
+    /**
      * The violations of the sessions {@code gated}, each judged once, as
      * members of one epoch with the sessions {@code admitted} (gated before,
-     * still in the epoch, never judged again).  Every rule but two is one
-     * session's; the two over the SET are judged over both: exactly one
-     * SEED (1), and the epoch's roots (11) -- a gated session against every
-     * root of the epoch, and an admitted one against each root (id, symbol)
-     * the gated sessions bring that the admitted ones did not mint, which is
-     * the one reason an admitted session is read again.  So gating an epoch
-     * a few sessions at a time files exactly the violations one gate over
-     * all of it would, each once.
+     * still in the epoch, never judged again: what each left the gate,
+     * {@link Gated}).  Every rule but two is one session's; the two over the
+     * SET are judged over both: exactly one SEED (1), and the epoch's roots
+     * (11) -- a gated session against every root of the epoch, and an
+     * admitted one against each root (id, symbol) the gated sessions bring
+     * that the admitted ones did not mint, by what it named and stated.  So
+     * gating an epoch a few sessions at a time files exactly the violations
+     * one gate over all of it would, each once, and a gate's cost is its own
+     * sessions' (and a small record of each one before).
      *
      * <p>One session held at a time: an iteration no longer fits one heap
      * (hdfs-11741 v74: 240 sessions with 3 MB expression tables ran the gate
      * out of 8 GB).  Who states SEED and which roots the epoch has come from
-     * every session's manifest and root rows first.  {@code focus} maps a
-     * gated session's id to the focus rows its replay ran: the first is the
-     * ask ({@code rootAssignments}, {@code clockDeltas}), each one a flip it
+     * every gated session's manifest and root rows first.  The epoch is in
+     * session id order whichever sessions it was gated in, so the first
+     * session to mint a root names its symbol.  {@code focus} maps a gated
+     * session's id to the focus rows its replay ran: the first is the ask
+     * ({@code rootAssignments}, {@code clockDeltas}), each one a flip it
      * owes.</p>
      */
-    public static List<GapRow> check(List<SessionDir> admitted,
-                                     List<SessionDir> gated,
-                                     Map<String, List<JsonObject>> focus)
+    public static Checked check(List<? extends Gated> admitted,
+                                List<SessionDir> gated,
+                                Map<String, List<JsonObject>> focus)
             throws IOException {
         List<GapRow> gaps = new ArrayList<GapRow>();
-        if (gated.isEmpty()) return gaps;
-        Set<SessionDir> fresh = new LinkedHashSet<SessionDir>(gated);
-        List<SessionDir> epoch = new ArrayList<SessionDir>(fresh);
-        for (SessionDir dir : admitted) {
-            if (!fresh.contains(dir)) epoch.add(dir);
-        }
-        // The epoch in one order whichever sessions it was gated in: the
-        // first session to mint a root names its symbol.
-        Collections.sort(epoch, (left, right) ->
-                left.dir().compareTo(right.dir()));
-        List<SessionReader> headers = new ArrayList<SessionReader>();
-        List<SessionReader> before = new ArrayList<SessionReader>();
-        Set<String> freshIds = new LinkedHashSet<String>();
-        for (SessionDir dir : epoch) {
-            SessionReader header = SessionReader.readHeader(dir);
-            headers.add(header);
-            if (fresh.contains(dir)) {
-                freshIds.add(dir.sessionId());
-            } else {
-                before.add(header);
+        List<Judged> judged = new ArrayList<Judged>();
+        if (gated.isEmpty()) return new Checked(gaps, judged);
+        Map<String, SessionDir> fresh = new LinkedHashMap<String, SessionDir>();
+        for (SessionDir dir : gated) fresh.put(dir.sessionId(), dir);
+        TreeMap<String, Member> epoch = new TreeMap<String, Member>();
+        for (Gated before : admitted) {
+            if (!fresh.containsKey(before.sessionId())) {
+                epoch.put(before.sessionId(), Member.of(before));
             }
         }
-        sessionSet(headers, freshIds, gaps);
-        Map<String, String> roots = epochRoots(headers);
+        for (SessionDir dir : gated) {
+            epoch.put(dir.sessionId(), Member.of(SessionReader.readHeader(dir)));
+        }
+        sessionSet(epoch.values(), gaps);
+        Map<String, String> roots = epochRoots(epoch.values(), false);
         Map<String, String> brought = new LinkedHashMap<String, String>(roots);
-        brought.entrySet().removeAll(epochRoots(before).entrySet());
-        for (SessionDir dir : epoch) {
-            if (!fresh.contains(dir)) {
+        brought.entrySet().removeAll(epochRoots(epoch.values(), true)
+                .entrySet());
+        for (Member member : epoch.values()) {
+            if (member.before != null) {
                 if (!brought.isEmpty()) {
-                    attributed(SessionReader.read(dir), brought, gaps);
+                    attributed(member.sessionId, member.roots.keySet(),
+                            member.before.named(), brought, gaps);
                 }
                 continue;
             }
-            SessionReader session = SessionReader.read(dir);
+            SessionReader session = SessionReader.read(
+                    fresh.get(member.sessionId));
             complete(session, gaps);
             List<JsonObject> rows = focus.getOrDefault(session.sessionId(),
                     Collections.<JsonObject>emptyList());
             check(session, rows.isEmpty() ? null : rows.get(0), gaps);
-            attributed(session, roots, gaps);
+            Map<String, String> named = named(session);
+            attributed(session.sessionId(), firstRoots(session).keySet(),
+                    named, roots, gaps);
             for (JsonObject row : rows) gaps.addAll(flipped(row, session));
+            judged.add(new Judged(session.sessionId(), session.seed(),
+                    firstRoots(session), named));
         }
-        return gaps;
+        return new Checked(gaps, judged);
+    }
+
+    /** One session's roots: each id with the first symbol its rows mint it
+     *  under, in row order. */
+    private static Map<String, String> firstRoots(SessionReader session) {
+        Map<String, String> roots = new LinkedHashMap<String, String>();
+        for (RootMintRow row : session.roots()) {
+            roots.putIfAbsent(row.rootId(), row.symbol());
+        }
+        return roots;
     }
 
     private static void check(SessionReader session, JsonObject ask,
@@ -145,18 +262,18 @@ public final class RowInvariants {
      * The count is the epoch's; what a session's own manifest states is
      * judged of the sessions being gated only.
      */
-    private static void sessionSet(List<SessionReader> sessions,
-                                   Set<String> gated,
+    private static void sessionSet(Collection<Member> epoch,
                                    List<GapRow> gaps) {
-        List<String> stated = SessionReader.seedSessionIds(sessions);
-        for (SessionReader session : sessions) {
-            SessionManifest manifest = session.manifest();
-            if (!gated.contains(session.sessionId()) || manifest == null
-                    || !manifest.seed()
+        List<String> stated = new ArrayList<String>();
+        for (Member member : epoch) {
+            if (member.seed) stated.add(member.sessionId);
+            SessionManifest manifest = member.header == null ? null
+                    : member.header.manifest();
+            if (manifest == null || !manifest.seed()
                     || manifest.obligationIds().isEmpty()) {
                 continue;
             }
-            gaps.add(GapRow.of(session.sessionId(), GapKind.ADMISSION_GAP,
+            gaps.add(GapRow.of(member.sessionId, GapKind.ADMISSION_GAP,
                     GapClass.BLOCKING, "epoch/sessions",
                     "invariant 1: this session states role SEED and names "
                             + "the obligations it ran "
@@ -166,11 +283,11 @@ public final class RowInvariants {
         }
         if (stated.size() == 1) return;
         gaps.add(GapRow.of(stated.isEmpty()
-                        ? sessions.get(0).sessionId() : stated.get(0),
+                        ? epoch.iterator().next().sessionId : stated.get(0),
                 GapKind.ADMISSION_GAP, GapClass.BLOCKING, "epoch/sessions",
                 "invariant 1 (CONTRACT-SPEC §2.6: every session states its "
                         + "role in manifest.json): " + stated.size() + " of "
-                        + sessions.size() + " sessions state role SEED "
+                        + epoch.size() + " sessions state role SEED "
                         + stated + "; exactly one must"));
     }
 
@@ -917,25 +1034,21 @@ public final class RowInvariants {
      * uses the same walk as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
      * {@code RootMint#mintUnattributed}.
      */
-    private static void attributed(SessionReader session,
+    private static void attributed(String sessionId, Set<String> stated,
+                                   Map<String, String> named,
                                    Map<String, String> roots,
                                    List<GapRow> gaps) {
         if (roots.isEmpty()) return;
-        Map<String, String> named = named(session);
-        Set<String> stated = new LinkedHashSet<String>();
-        for (RootMintRow row : session.roots()) {
-            stated.add(row.rootId());
-        }
         for (Map.Entry<String, String> root : roots.entrySet()) {
             if (stated.contains(root.getKey())) continue;
             String where = named.get(root.getValue());
             if (where == null) continue;
-            gaps.add(GapRow.of(session.sessionId(),
+            gaps.add(GapRow.of(sessionId,
                     GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING,
                     root.getKey(),
                     "invariant 11 (CONTRACT-SPEC §2.6: a root symbol "
                             + "without its RootMintRow): session "
-                            + session.sessionId() + " references symbol "
+                            + sessionId + " references symbol "
                             + root.getValue() + " at " + where
                             + " and states no RootMintRow for root "
                             + root.getKey() + ", so it carries a "
@@ -943,13 +1056,15 @@ public final class RowInvariants {
         }
     }
 
-    /** The epoch's roots, id to the symbol it was first minted under. */
-    private static Map<String, String> epochRoots(
-            List<SessionReader> headers) {
+    /** The epoch's roots, id to the symbol it was first minted under: of
+     *  every member, or of those {@code before} this gate alone. */
+    private static Map<String, String> epochRoots(Collection<Member> epoch,
+                                                  boolean before) {
         Map<String, String> roots = new LinkedHashMap<String, String>();
-        for (SessionReader session : headers) {
-            for (RootMintRow row : session.roots()) {
-                roots.putIfAbsent(row.rootId(), row.symbol());
+        for (Member member : epoch) {
+            if (before && member.before == null) continue;
+            for (Map.Entry<String, String> root : member.roots.entrySet()) {
+                roots.putIfAbsent(root.getKey(), root.getValue());
             }
         }
         return roots;

@@ -219,7 +219,7 @@ public final class ExploreMain {
                 SystemView.of(options.value("system-view", "")));
         Path serve = options.path("serve");
         if (serve != null) {
-            Service.serve(serve, 0L, (question, out) -> {
+            Service.serve(serve, 0L, 1, (question, out) -> {
                 String flying = JsonFields.optionalString(question,
                         "inFlight");
                 List<String> named = corpus(Paths.get(

@@ -2120,16 +2120,23 @@ campaign_dispatch_remote() {
 # The peer's evidence, visible HERE: <worker>'s result and the session it
 # names under <staged>, the directory the job staged its sessions to; or
 # its ask again of a host's solver (solve_again, campaign_obligation_again),
-# which names no session.
+# or a replay of the pool set aside for memory (replay_again,
+# campaign_replay_set_aside), which name no session and are asked again
+# (campaign_stream_ended).  A <kind> REPLAY's result is its replay's, never
+# the SAT_MODEL_READY its solve left in its worker: that row is no answer
+# of the replay (the replay set aside leaves it there).
 #
 # Bounded, never assumed: see campaign_remote_visibility_wait_s.  The
 # directory is re-listed on each turn because it is the directory's cached
 # listing, not the file's contents, that a fresh lookup has to get past.
 campaign_await_remote_result() {
-  local worker=$1 host=$2 obligation_id=$3 staged=$4
+  local worker=$1 host=$2 obligation_id=$3 staged=$4 kind=${5:-}
   local result="${worker}/obligation_result.jsonl"
   local waited=0 session_id=""
-  while [[ ! -s "${result}" && ! -s "${worker}/solve_again" ]]; do
+  until [[ -s "${worker}/solve_again" || -s "${worker}/replay_again" ]] \
+      || { [[ -s "${result}" ]] && { [[ "${kind}" != REPLAY ]] \
+        || [[ "$(jq -r '.verdict // ""' "${result}" 2>/dev/null)" \
+          != SAT_MODEL_READY ]]; }; }; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
       campaign_log "obligation ${obligation_id} on ${host}: its worker \
 returned successfully but ${result} is still not visible here after \
@@ -2144,7 +2151,8 @@ ${waited}s; the shared home did not deliver what the peer wrote"
   # states the ask first (campaign_obligation_again), so the listing is read
   # again, and an ask seen is what it wrote.
   ls "${worker}" >/dev/null 2>&1 || true
-  [[ ! -s "${worker}/solve_again" ]] || return 0
+  [[ ! -s "${worker}/solve_again" && ! -s "${worker}/replay_again" ]] \
+    || return 0
   session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
   # A verdict that names no session staged none.  The solver's own opened
   # none; a replay's opened one that the peer withdrew (killed on its bound,
@@ -2664,17 +2672,18 @@ campaign_weave_key() {
   printf '%s\n' "${key}"
 }
 
-# One union instrumentation pass over the whole iteration plan, into a class
-# tree: the iteration's own (INSTRUMENT), or a GROW generation's, which no
-# replay reads before this returns -- a replay started earlier keeps the
-# tree it started on (campaign_stream_grow).  The plan's weave key is the
-# tree's, beside it (weave_key): <key> where the caller holds it (GROW
-# weaves by it), else read here.
+# One union instrumentation pass over a whole plan -- the iteration's, or
+# <plan> -- into a class tree: the iteration's own (INSTRUMENT), or a GROW
+# generation's, from its own plan, which no replay reads before the
+# generation is taken -- a replay started earlier keeps the tree it started
+# on (campaign_stream_grow).  The plan's weave key is the tree's, beside it
+# (weave_key): <key> where the caller holds it (GROW weaves by it), else read
+# here.
 campaign_instrument() {
   local iteration_dir=$1
   local classes=${2:-${iteration_dir}/instrumented-classes}
   local key=${3:-}
-  local plan="${iteration_dir}/execution_task_plan.jsonl"
+  local plan=${4:-${iteration_dir}/execution_task_plan.jsonl}
   local ids
   ids=$(campaign_task_ids "${plan}")
   [[ -n "${ids}" ]] || campaign_fail INSTRUMENT CAMPAIGN "${plan}" \
@@ -2718,11 +2727,20 @@ campaign_verify_woven_classes() {
 }
 
 # Why the last bounded campaign_replay was killed, or empty: its wall-clock
-# bound, or a SIGKILL that came before the bound (the kernel's memory killer,
-# an operator) -- hdfs-17960 v65-v67 read a 30-second 16 GB death as "exceeded
-# replay_timeout_s=2400".  Read by the caller that set the bound; every other
-# caller leaves the bound empty and this empty.
+# bound, its watcher ending it for memory, or a SIGKILL that came before the
+# bound (the kernel's memory killer, an operator) -- hdfs-17960 v65-v67 read a
+# 30-second 16 GB death as "exceeded replay_timeout_s=2400".  Read by the
+# caller that set the bound; every other caller leaves the bound empty and
+# this empty.  campaign_replay_refused_mb is what the replay's resident memory
+# had reached when its watcher ended it because its host could not take its
+# growth (campaign_refused_file), else empty: that replay decided nothing,
+# and its caller asks it again at its full need (campaign_obligation_replay).
 campaign_replay_killed=""
+campaign_replay_refused_mb=""
+# The file a workload JVM's watcher writes beside its peak when it ended the
+# JVM because its host could not take its growth: the resident MB it had
+# reached (campaign_watch_workload).
+campaign_refused_file=workload_refused_mb
 
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
@@ -2745,6 +2763,7 @@ campaign_replay() {
   local region_results=${8:-required}
   local status=0 started=${SECONDS}
   campaign_replay_killed=""
+  campaign_replay_refused_mb=""
   # Where this replay writes its per-kind rows.  A focused replay is a
   # session: every row it publishes is keyed by it, and every later stage
   # reads the session rather than a folded result.
@@ -2791,7 +2810,14 @@ campaign_replay() {
     if [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
         || (( lived >= campaign_adapter_timeout_s )); then
       campaign_replay_killed="exceeded ${campaign_adapter_timeout_rule}"
+    elif read -r campaign_replay_refused_mb 2>/dev/null \
+        <"${worker}/${campaign_refused_file}" \
+        && [[ "${campaign_replay_refused_mb}" =~ ^[0-9]+$ ]]; then
+      campaign_replay_killed="was ended at ${campaign_replay_refused_mb} MB \
+after ${lived}s: its host could not take its growth (its watcher, \
+campaign_watch_workload)"
     else
+      campaign_replay_refused_mb=""
       campaign_replay_killed="was killed (exit ${status}) after ${lived}s, \
 inside its ${campaign_adapter_timeout_s}s bound: by its memory \
 reservation (the replay log says so), the kernel's memory killer or an \
@@ -3275,7 +3301,11 @@ campaign_import_session() {
   require_nonempty "replay session census" "${census}"
   campaign_log "sessions: ${count}, rows: $(jq -r -s '[.[].rows] | add // 0' \
     "${census}")"
-  campaign_import_gate "${iteration_dir}" "${iteration_id}"
+  # Every session the replay published (the seed's), gated where it stands.
+  find "${sessions%/}" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort \
+    >"${iteration_dir}/import_gate.list"
+  campaign_import_gate "${iteration_dir}" "${iteration_id}" \
+    "${iteration_dir}/import_gate.json" "${iteration_dir}/import_gate.list"
 }
 
 # ZKKEYS: the ZooKeeper chain's fields, read off the seed's own composition
@@ -3315,48 +3345,49 @@ campaign_zk_keys() {
 # here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
 # a DIAGNOSTIC one is recorded and the campaign goes on.
 #
-# campaign_import_gate <iteration_dir> <iteration_id> [summary] [session...]
-# gates the named session directories of ${iteration_dir}/sessions -- every
-# one not gated yet when none is named (IMPORT: the seed) -- and summarises
-# this gate's own sessions into ${summary} (${iteration_dir}/import_gate.json
-# by default).  Each session is judged ONCE: ${iteration_dir}/import_gated.txt
-# is the ledger of the sessions gated so far, and one it names is not judged
-# again.  The rules over the SET -- one seed (invariant 1), the epoch's roots
-# (11) -- are judged against the gated sessions still in the corpus, so
-# gating a wave, or one session at a time, files exactly what one gate over
-# the whole corpus would, each row once (contract.ImportGateMain).  One
+# campaign_import_gate <iteration_dir> <iteration_id> <summary> <list>
+# [<replaced>] gates
+# the sessions <list> names -- one per line, a session's directory wherever
+# it stands (the corpus at IMPORT; during EXPLORE the worker that replayed
+# it, before it lands: campaign_stream_collected) and, a tab after it, the
+# obligation worker whose answer names it, its focus rows -- and summarises
+# this gate's own sessions into <summary>.  Each session is judged ONCE:
+# ${iteration_dir}/import_gated/ is the ledger, one record per session gated
+# so far (whether it states SEED, the roots it mints, the symbols it names),
+# and one it holds is not judged again.  The rules over the SET -- one seed
+# (invariant 1), the epoch's roots (11) -- are judged against the sessions
+# the ledger holds that are still in the epoch (every one but those GROW's
+# swaps withdrew, withdrawn.txt, and those the sessions gated now replace,
+# [<replaced>]: a re-run's exposing session) by their records, never by reading them
+# again, so gating a session at a time files exactly what one gate over the
+# whole corpus would, each row once, and a gate's cost is its own sessions'
+# (contract.ImportGateMain): SGF8-adhoc-07's gates read every admitted
+# session's manifest and roots, 8-10 s for one session, and every one of
+# them whole when it brought a root (332 s for one, 463 s for 26).  One
 # caller at a time: the campaign's head.
 #
 # The gate holds one session at a time, so its measured need -- its heap and
-# its charge on the host it is placed on (engine_java) -- is what the corpus's
-# largest session takes (campaign_import_gate_heap_mb), not the case's
-# engine heap, which is sized for a JVM holding the whole corpus: charged
-# 16 GB, the gate of one 6 MB session waited 7 minutes for room on a busy
-# head, and a wave's gate 30 (accept-i1-solr-18406).
+# its charge on the host it is placed on (engine_java) -- is what its largest
+# session takes (campaign_import_gate_heap_mb), not the case's engine heap,
+# which is sized for a JVM holding the whole corpus: charged 16 GB, the gate
+# of one 6 MB session waited 7 minutes for room on a busy head, and a wave's
+# gate 30 (accept-i1-solr-18406).
 #
 # Append-only, into the campaign's own gap file: a gap row a later stage
 # overwrites was never evidence.
 campaign_import_gate() {
-  local iteration_dir=$1 iteration_id=$2
-  local summary=${3:-${iteration_dir}/import_gate.json}
+  local iteration_dir=$1 iteration_id=$2 summary=$3 list=$4 replaced=${5:-}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local blocking violations first session
-  local -a gate=()
-  shift $(( $# < 3 ? $# : 3 ))
-  for session in "$@"; do
-    [[ -d "${session}" \
-       && "$(dirname -- "${session}")" -ef "${iteration_dir}/sessions" ]] \
-      || campaign_fail IMPORT ImportGate "${session}" \
-        "not a session directory of ${iteration_dir}/sessions"
-    gate+=(--gate "$(basename -- "${session}")")
-  done
-  engine_need_mb=$(campaign_import_gate_heap_mb "${iteration_dir}/sessions") \
+  local blocking violations first
+  require_nonempty "the import gate's sessions" "${list}"
+  engine_need_mb=$(campaign_import_gate_heap_mb "${list}") \
     run_java_main \
     edu.uva.liftlab.graphchecker.contract.ImportGateMain \
-    --sessions "${iteration_dir}/sessions" "${gate[@]}" \
-    --gated "${iteration_dir}/import_gated.txt" \
+    --iteration "${iteration_dir}" --gate-list "${list}" \
+    --gated "${iteration_dir}/import_gated" \
     --out "${gaps}" \
-    --topology-epoch "${iteration_id}" >"${summary}"
+    --topology-epoch "${iteration_id}" \
+    ${replaced:+--replaced "${replaced}"} >"${summary}"
   require_nonempty "import gate summary" "${summary}"
   violations=$(jq -r '.violations' "${summary}")
   campaign_count IMPORT ImportGate "${summary}" \
@@ -3365,22 +3396,23 @@ campaign_import_gate() {
   campaign_count IMPORT ImportGate "${summary}" \
     "the import gate's blocking count" "${blocking}"
   first=$(jq -r '.firstBlockingSubject // ""' "${summary}")
-  campaign_log "import gate: ${violations} row invariant violation(s), \
-${blocking} blocking"
+  campaign_log "import gate: $(jq -r '.sessions' "${summary}") session(s), \
+${violations} row invariant violation(s), ${blocking} blocking"
   [[ "${blocking}" -eq 0 ]] || campaign_fail IMPORT ImportGate "${gaps}" \
     "${blocking} row invariants violated: ${first}"
 }
 
-# The import gate's heap, in MB, over the session directories under ${1}: it
-# holds one session at a time, read whole (the gate reads again a session it
-# gated before when a new one brings a root), so 512 MB plus four times the
-# largest session's text (campaign_session_bytes).  Measured: SOLR-18406's 41
-# MB focused session gates in 64 MB of heap and not in 48
-# (accept-i1-solr-18406), and hdfs-11741's 175 sessions of up to 21 MB in
-# 512.
+# The import gate's heap, in MB, over the sessions its <list> names: it holds
+# one at a time, read whole, and of the sessions gated before only their
+# records, so 512 MB plus four times the largest one's text
+# (campaign_rows_bytes).  Measured: SOLR-18406's 41 MB focused session gates
+# in 64 MB of heap and not in 48 (accept-i1-solr-18406), and hdfs-11741's 175
+# sessions of up to 21 MB in 512.
 campaign_import_gate_heap_mb() {
   local largest
-  largest=$(campaign_session_bytes "$1" \
+  local -a dirs=()
+  mapfile -t dirs < <(cut -f1 -- "$1")
+  largest=$(campaign_rows_bytes "${dirs[@]}" \
     | awk '$2 > n {n = $2} END {printf "%d\n", n / 1048576}')
   printf '%s\n' "$(( 512 + 4 * largest ))"
 }
@@ -3685,9 +3717,9 @@ campaign_solver_outgrown() {
 
 # What a host's solver of the corpus <sessions> is charged at its start with
 # its first question, in MB: the footprint (campaign_jvm_footprint_mb) of the
-# heap it needs now (campaign_solver_now_mb, at most its heap) and a
-# question's z3 room; what it grows past that is charged as it grows
-# (campaign_solver_jvm).  Charged its 8 GB
+# heap it needs now (campaign_solver_now_mb, at most its heap) and the z3
+# room its seats share (campaign_solver_z3_mb); what it grows past that is
+# charged as it grows (campaign_solver_jvm).  Charged its 8 GB
 # heap at its start, a solver waited minutes for room it did not use (e2:
 # "one needs 8192 MB and 9474 MB stay free"); charged 1 GB while its heap was
 # 16 GB, a host solver's growth filled the ledger and a question's own JVM
@@ -3699,33 +3731,44 @@ campaign_solver_need_mb() {
   heap=$(campaign_solver_heap_mb "${1:-}")
   (( now <= heap )) || now=${heap}
   printf '%s\n' "$(( $(campaign_jvm_footprint_mb "${now}") \
-    + campaign_question_mb ))"
+    + $(campaign_solver_z3_mb) ))"
 }
 
 # What a solver JVM holds for its z3 processes, in MB (smt/Z3's room,
-# --z3-room-mb; one question at a time, its two engines half each): a
-# question's (campaign_question_mb), charged per question, and in the hard
-# lane (<lane> HARD) campaign_hard_z3_room_mb, so a question undecided at a
-# 512 MB cap is asked again at 2 GB (campaign_obligation_decide).
+# --z3-room-mb): a host's solver the room its seats share
+# (campaign_solver_z3_mb), and in the hard lane (<lane> HARD)
+# campaign_hard_z3_room_mb, so a question undecided at a 512 MB cap is asked
+# again at 2 GB (campaign_obligation_decide).
 campaign_hard_z3_room_mb=4096
 campaign_solver_z3_room_mb() {
   if [[ "${1:-}" == HARD ]]; then
     printf '%s\n' "${campaign_hard_z3_room_mb}"
   else
-    printf '%s\n' "${campaign_question_mb}"
+    campaign_solver_z3_mb
   fi
 }
 
-# What a question its host's serving solver answers is charged, in MB: its z3
-# run, a child of that solver (the solver JVM's own charge is its JVM's) --
-# two engines, each capped at half of it less smt/Z3's MISSED_MB, 512 MB, so
-# no z3 outgrows what is charged (SGF3-adhoc-13: an uncapped z3 grew to 10.9
-# GB beside its JVM's charge); one at its cap is asked again in the hard
-# lane (campaign_hard_z3_room_mb).  Charged a solver's start, a sweep's
-# questions held 51 GB of the ten lifts' ledger over z3 runs of a median
-# 1 MB, p90 369 MB, at most 1.8 GB (118 z3 processes, HI1/HI2), and new
-# campaigns waited for room their lifts had.
+# One question's z3 room, in MB: its z3 race, two engines, each capped at
+# half of it less smt/Z3's MISSED_MB, 512 MB, so no z3 outgrows what is
+# charged (SGF3-adhoc-13: an uncapped z3 grew to 10.9 GB beside its JVM's
+# charge); one at its cap is asked again in the hard lane
+# (campaign_hard_z3_room_mb).  A host's solver answers several questions at
+# once (campaign_solver_seats) and holds campaign_solver_races such rooms
+# for them, charged with its JVM (campaign_solver_z3_mb): each question's
+# runs hold slots of half its own room, as alone, and take their turns at the
+# JVM's (smt.Z3.Rooms; a run's budget is counted from its start), so a
+# question it answers is charged nothing beside the solver (z3 runs a median
+# 1 MB, p90 369 MB, at most 1.8 GB: 118 z3 processes, HI1/HI2; charged a
+# room each, one per seat, eight seats a host would hold 9 GB of its ledger
+# for them).
 campaign_question_mb=1152
+campaign_solver_races=2
+
+# The z3 room a host's solver holds for the questions it answers at once, in
+# MB: campaign_solver_races questions' (campaign_question_mb).
+campaign_solver_z3_mb() {
+  printf '%s\n' "$(( campaign_solver_races * campaign_question_mb ))"
+}
 
 # THE SOLVE'S TWO LANES.  A question is first asked at campaign_solver_first_ms
 # (campaign_solver_first_tier_ms, never past solver_timeout_ms): a host's
@@ -3757,11 +3800,17 @@ campaign_solver_two_lanes() {
 }
 
 # How many questions the host's solver of the corpus <sessions> answers at
-# once, each at once (ObligationSolverMain --serve: one, in turn): the most
-# solves the pool admits on a host where it serves
-# (campaign_stream_has_seat).
+# once (ObligationSolverMain --serve --seats, explore.Service: each on a seat
+# of its own, beside the others while its old generation has room,
+# Service#BESIDE): the most solves the pool admits on a host where it serves
+# (campaign_stream_has_seat), each counted its cores there
+# (campaign_stream_kind_cores).  One at a time, a solver answered about one
+# question in 7 s (SGF8-adhoc-07: round 0's 400 solves, one question at a time
+# on each of 12 hosts' solvers, ~1060 obligation-minutes queued; late rounds
+# behind one solver, 409 more).
+campaign_solver_seats_most=8
 campaign_solver_seats() {
-  printf '1\n'
+  printf '%s\n' "${campaign_solver_seats_most}"
 }
 
 # The solver directory of the corpus ${1} (an iteration's sessions), on this
@@ -3771,10 +3820,26 @@ campaign_solver_dir() {
     "$(hostname -s)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
 }
 
+# campaign_solver_ended_for_memory <dir> <pid>: whether the host solver
+# <pid> of <dir> ended for memory -- out of heap below the most heap a solver
+# is given (exit 3: the next starts at twice it, campaign_solver_outgrown), or
+# ended by its watcher as its host could not take its growth (137) -- which
+# says nothing of any one question it held: a solver answers eight at once
+# (campaign_solver_seats), and one heavy question took its seat-mates with
+# it, each failed for good at its second such end (campaign_obligation_worker).
+campaign_solver_ended_for_memory() {
+  local status heap
+  read -r status heap 2>/dev/null <"$1/ended.$2" || return 1
+  (( status == 137 )) && return 0
+  (( status == campaign_jvm_out_of_heap_status )) \
+    && (( ${heap:-0} < $(campaign_solver_most_heap_mb) ))
+}
+
 # campaign_solve_obligation <obligation_id> <obligations> <sessions> <worker>
 # [<charge>]: the obligation's question, answered by its host's solver into
 # <worker>: 0 with the solver's files there, 1 with why it was not answered
-# on stderr, 3 when the host had no room to start its solver now (the
+# on stderr (4: its solver ended for memory, campaign_solver_ended_for_memory),
+# 3 when the host had no room to start its solver now (the
 # question then waits in the pool's queue, campaign_obligation_worker).  A
 # flip the hard lane found sat is asked with its model (decided:
 # <worker>/obligation_model.json, explore.HardAsk.Model).
@@ -3830,6 +3895,7 @@ campaign_solve_obligation() {
       printf 'answered %s; its log is %s: %s\n' "${obligation_id}" "${file}" \
         "$(grep -v -E '^[[:space:]]+at ' "${file}" 2>/dev/null \
           | tail -n 1)" >&2
+      campaign_solver_ended_for_memory "${dir}" "${pid}" && return 4
       return 1
     fi
     printf 'starting %s\n' "${BASHPID}" >"${dir}/server"
@@ -3905,8 +3971,9 @@ campaign_start_solver() {
   local dir=$1 sessions=$2 handed=${3:-} charge="" status=0 heap need
   local charges
   heap=$(campaign_solver_heap_mb "${sessions}")
-  # Its JVM's footprint: each question it answers is charged its z3 room.
-  need=$(( $(campaign_solver_need_mb "${sessions}") - campaign_question_mb ))
+  # Its JVM's footprint and the z3 room its seats share: the questions it
+  # answers are charged nothing beside it.
+  need=$(campaign_solver_need_mb "${sessions}")
   charges="${campaign_host_gate_root}/$(campaign_host_key localhost)/charges"
   if [[ -n "${handed}" ]] && (( ${handed%%.*} >= need )) \
       && mv -- "${charges}/${handed}" "${charges}/${handed}.solver" \
@@ -3925,14 +3992,18 @@ campaign_start_solver() {
     campaign_host_keep localhost "${charge}"
     status=0
     campaign_solver_jvm "${heap}" "${need}" "$(campaign_solver_first_ms)" \
-      "${campaign_question_mb}" \
+      "$(campaign_solver_z3_mb)" \
       --serve "${dir}" \
+      --seats "$(campaign_solver_seats "${sessions}")" \
+      --question-room-mb "${campaign_question_mb}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
       --retire-past-mb "$(campaign_solver_retire_mb "${heap}")" \
       </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || status=$?
     (( status != campaign_jvm_out_of_heap_status )) \
       || campaign_solver_outgrown "${sessions}" "${heap}"
+    # How it ended, for the questions it held (campaign_solve_obligation).
+    printf '%s %s\n' "${status}" "${heap}" >"${dir}/ended.${BASHPID}"
     campaign_host_release localhost "${charge}"
   } &
   printf '%s\n' "$!" >"${dir}/server.part"
@@ -4024,7 +4095,8 @@ a host's solver"
 # (campaign_solve_obligation), under <charge>, its start's charge, where that
 # is a solver's: a cold host's start (campaign_stream_charge_mb).  UNSAT,
 # NOT_ADMITTED and a reused ADMITTED are the obligation's answer, which the
-# head lands (campaign_stream_land); SAT_MODEL_READY leaves the model's focus
+# head lands as it collects it (campaign_stream_collected); SAT_MODEL_READY
+# leaves the model's focus
 # row in <worker>, and the head queues the obligation's REPLAY
 # (campaign_obligation_replay, a start of its own charged the replay's need,
 # campaign_stream_ended), so no solve holds a replay's charge.  A first ask
@@ -4036,10 +4108,15 @@ a host's solver"
 # again), uncharged, its host cold; one its host's solver took and ended on
 # (out of heap, died, or ended at what its host could hold) or failed is
 # asked again once, then fails the worker by name, its cause what its solver
-# said (campaign_obligation_unfinished), never a bare NOT_ADMITTED.
+# said (campaign_obligation_unfinished), never a bare NOT_ADMITTED -- but a
+# solver that ended for memory fails none of the questions it held
+# (campaign_solver_ended_for_memory): each is asked again, uncounted, at
+# most campaign_solver_memory_asks times (a question that ends every solver
+# it sits on still fails, by name).
+campaign_solver_memory_asks=4
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local charge=${6:-} outcome status=0 why log
+  local charge=${6:-} outcome status=0 why log memory_asks
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -4060,6 +4137,15 @@ campaign_obligation_worker() {
 start its solver now"
       return 0 ;;
     *)
+      memory_asks=$(grep -c '' "${worker}/asked_again_memory" 2>/dev/null) \
+        || memory_asks=0
+      if (( status == 4 && memory_asks < campaign_solver_memory_asks )); then
+        # Its solver ended for memory: no failure of this question.
+        echo >>"${worker}/asked_again_memory"
+        campaign_obligation_again "${worker}" "its host's solver ended for \
+memory before it answered"
+        return 0
+      fi
       why=$(campaign_failure_said "${log}")
       [[ ! -e "${worker}/asked_again" ]] || die "obligation \
 ${obligation_id}: its host's solver did not answer it, asked twice: \
@@ -4172,23 +4258,22 @@ campaign_obligation_replay() {
   # PV7-adhoc-38: 35 replays that had decided (32 ADMITTED) hung in a
   # cluster's shutdown hook after their statement, and were each recorded
   # REPLAY_BOUNDED at replay_timeout_s=2400 with their sessions withdrawn.
+  if [[ -n "${campaign_replay_refused_mb}" && ! -s "${statement}" ]]; then
+    # Ended for memory before it stated anything: it decided nothing, and it
+    # is no answer either -- its run goes aside and the head asks it again
+    # at its full need (campaign_stream_replay_again), its question still
+    # asked.
+    campaign_replay_set_aside "${obligation_id}" "${worker}" "${sessions}" \
+      "${charged}"
+    return 0
+  fi
   if [[ -n "${campaign_replay_killed}" && ! -s "${statement}" ]]; then
     # Killed before it stated anything, it decided nothing: its question
     # stays unsettled, and its answer says so
     # (ObligationResult#REPLAY_BOUNDED: no fact about its arm or its world;
     # a flip killed twice is held BOUNDED and named, campaign_bounds).
-    rm -f -- "${worker}/question.asked"
-    campaign_log "obligation ${obligation_id}: \
-replay ${campaign_replay_killed}"
-    campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
-      "${worker}/timed-out-sessions" "its manifest names this obligation \
-and its rows state no verdict, which no later stage may read as a corpus \
-session"
-    jq -n -c --arg id "${obligation_id}" \
-      --arg detail "REPLAY_BOUNDED: replay ${campaign_replay_killed}" \
-      '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
-        verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
-      | campaign_write_whole "${result_row}"
+    campaign_replay_bounded "${obligation_id}" "${worker}" "${sessions}" \
+      "replay ${campaign_replay_killed}"
     return 0
   fi
   [[ -z "${campaign_replay_killed}" ]] || campaign_log "obligation \
@@ -4226,6 +4311,58 @@ prefix of a run"
     || mv -f -- "${worker}/question.asked" "${worker}/question.txt"
 }
 
+
+# campaign_replay_bounded <obligation_id> <worker> <sessions> <why>: a replay
+# killed before it stated anything (at its wall-clock bound, or ended for
+# memory at the most a replay is charged, campaign_stream_replay_again)
+# decided nothing: its question stays unsettled, what it staged is withdrawn
+# under its worker, and its answer says so -- REPLAY_BOUNDED, no fact about
+# its arm or its world (ObligationResult#REPLAY_BOUNDED; a flip killed twice
+# is held BOUNDED and named, campaign_bounds).
+campaign_replay_bounded() {
+  local obligation_id=$1 worker=$2 sessions=$3 why=$4
+  rm -f -- "${worker}/question.asked"
+  campaign_log "obligation ${obligation_id}: ${why}"
+  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+    "${worker}/timed-out-sessions" "its manifest names this obligation \
+and its rows state no verdict, which no later stage may read as a corpus \
+session"
+  jq -n -c --arg id "${obligation_id}" --arg detail "REPLAY_BOUNDED: ${why}" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
+    | campaign_write_whole "${worker}/obligation_result.jsonl"
+}
+
+# campaign_replay_set_aside <obligation_id> <worker> <sessions> <charged_mb>:
+# a replay its watcher ended for memory before it stated anything
+# (campaign_replay_refused_mb): what its run wrote in its worker -- its log,
+# its results, its measures, what it staged -- moves to <worker>/ended-<n>/,
+# so the worker is as it was before the run, and <worker>/replay_again says
+# what the run reached, what it was charged and where it went, for the head
+# to ask it again at its full need (campaign_stream_replay_again).  Its
+# question stays asked: the run that answers it settles it.
+campaign_replay_ended_files=(replay.log concolic_region_results.jsonl
+  workload_rss_mb workload_rss_mean_mb workload_cores_x100
+  "${campaign_refused_file}")
+campaign_replay_set_aside() {
+  local obligation_id=$1 worker=$2 sessions=$3 charged=$4 aside file
+  local ended=0
+  for aside in "${worker}"/ended-*; do
+    [[ ! -d "${aside}" ]] || ended=$((ended + 1))
+  done
+  aside="${worker}/ended-$((ended + 1))"
+  mkdir -p -- "${aside}"
+  for file in "${campaign_replay_ended_files[@]}"; do
+    [[ ! -e "${worker}/${file}" ]] || mv -f -- "${worker}/${file}" "${aside}/"
+  done
+  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+    "${aside}/sessions" "its replay was ended for memory before it stated \
+anything, and it is asked again"
+  campaign_log "obligation ${obligation_id}: replay ${campaign_replay_killed}; \
+its run is set aside in ${aside}, and it is asked again at its full need"
+  printf '%s %s %s\n' "${campaign_replay_refused_mb}" "${charged}" "${aside}" \
+    | campaign_write_whole "${worker}/replay_again"
+}
 
 # ---------------------------------------------------------------------------
 # THE POOL'S HOSTS
@@ -4950,6 +5087,10 @@ ever times out; its threads are dumped on its output; ended"
         refused="the host cannot take the $(( peak - held )) MB more \
 (${campaign_host_wait_reason})"
         kill -KILL "${pid}" 2>/dev/null || true
+        # Ended for memory, at what it reached: its caller's to ask again
+        # at its full need (campaign_replay, campaign_stream_replay_again).
+        [[ -z "${dir}" ]] \
+          || printf '%s\n' "${peak}" >"${dir}/${campaign_refused_file}"
         break
       fi
       grants+=("${campaign_host_charge_id}")
@@ -5239,7 +5380,8 @@ campaign_stream_job() {
 ${status}; its logs, and ssh's own output, are in ${worker}"
     return "${status}"
   fi
-  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}"
+  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}" \
+    "${kind}"
 }
 
 # campaign_write_whole <file>: its standard input becomes <file> as a new
@@ -5308,24 +5450,27 @@ campaign_obligation_unanswered() {
 #
 # No wave barrier.  The head starts queued obligations wherever the memory
 # ledger admits one and collects each as it returns.  Its own JVM work runs
-# in the background in two lanes, so the pool goes on starting and
-# collecting while either waits for memory or runs.  HEAD STEPS, one at a
-# time (campaign_stream_step): the import gate over the sessions that landed
-# and the verdicts of the confirmation replays that returned, or a COMPOSE
-# attempt at the witnesses among them; an attempt's confirmation replay is a
-# job of the pool, never a step.  The corpus and the ledger change only
-# between two head steps, in the head's hands (campaign_stream_step_start):
-# a head step reads them as a landed whole, and whatever returns meanwhile
-# waits for the next one -- the busier the head, the more one step takes in.
-# ROUNDS, one at a time (campaign_stream_round): the exploration's planner
-# plans each over inputs frozen as it starts -- the sessions landed, every
-# one gated; the answers landed; what is queued or running; the workers' own
-# files are read as they stand -- so the head
-# lands, gates, attempts witnesses and decides confirmations while a round
-# plans (Z3S-18413: a witness landed behind a 57-minute round and was
-# attempted 69 minutes after its replay ended).  A round is taken between
-# two head steps (campaign_stream_round_take); until then no reader of the
-# rounds sees it (planning-NNNN/).
+# in the background in three lanes, so the pool goes on starting and
+# collecting while any waits for memory or runs.  HEAD STEPS, one at a time
+# (campaign_stream_step): the import gate over the sessions that returned,
+# where their workers staged them, and the verdicts of the confirmation
+# replays that returned, or a COMPOSE attempt at the witnesses among the
+# sessions landed; an attempt's confirmation replay is a job of the pool,
+# never a step.  An answer lands as it is collected
+# (campaign_stream_collected) -- one that names a session once the step
+# that gated it returns, the session landing with it -- so the corpus holds
+# only gated sessions; the corpus changes only between two head steps, in
+# the head's hands: a head step reads it as a landed whole.  ROUNDS, one at
+# a time (campaign_stream_round): the exploration's planner plans each over
+# inputs frozen as it starts -- the sessions landed, every one gated; the
+# answers landed; what is queued or running; the workers' own files are read
+# as they stand -- so the head lands, gates, attempts witnesses and decides
+# confirmations while a round plans (Z3S-18413: a witness landed behind a
+# 57-minute round and was attempted 69 minutes after its replay ended).  A
+# round is taken between two head steps (campaign_stream_round_take); until
+# then no reader of the rounds sees it (planning-NNNN/).  GROW, one at a time
+# (campaign_stream_grow): a round's generation is built beside the loop and
+# taken between two head steps; no round is taken while one builds.
 #
 # The loop's state is campaign_explore's locals, which the helpers below read
 # and write through bash's dynamic scope:
@@ -5339,8 +5484,12 @@ campaign_obligation_unanswered() {
 #                     attempt's confirmation replay, round "-", the
 #                     attempt's number its id)
 #   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
-#   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
-#                     returned since the last head step began, not landed yet
+#   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": a
+#                     confirmation replay that returned, for the next head
+#                     step to decide
+#   stream_gate_owed  "<entry>\t<staged session>\t<worker>": a return whose
+#                     session the next head step gates before it lands;
+#                     stream_gate_running those the running step gates
 #   stream_flying     obligation id -> its row, from its queueing until its
 #                     answer lands -- solving, its REPLAY queued or
 #                     replaying: a round's --in-flight
@@ -5350,7 +5499,7 @@ campaign_obligation_unanswered() {
 #                     (campaign_stream_seated, campaign_stream_has_seat)
 #   stream_step_pid   the head step running, or ""; stream_step_dir its
 #                     directory (steps/NNNN/: what it gates and decides, or
-#                     attempts); stream_gating 1 while it gates sessions
+#                     attempts)
 #   stream_round_pid  the round planning, or ""; stream_round_dir its
 #                     directory (planning-NNNN/: its frozen inputs, its files);
 #                     stream_round_returned a round that returned, not taken
@@ -5363,8 +5512,12 @@ campaign_obligation_unanswered() {
 #                     exposing ones once no reader of those runs
 #                     (campaign_stream_swap_due)
 #   stream_landed     sessions landed since the last round started
-#   stream_hold       GROW's re-runs owed: queued, running, or returned and
+#   stream_hold       GROW's work owed: a generation building or built and
+#                     not taken, re-runs queued, running, or returned and
 #                     not swapped in (no round or solve waits for them)
+#   stream_grow_pid   GROW's build running, or ""; stream_grow_round its
+#                     round's directory, stream_grow_growth its growth rows,
+#                     stream_grow_returned set once it built, not taken
 #   stream_reruns     "<obligation> <exposing session>" -> the directory its
 #                     owed re-run runs in; stream_growing a growth's subject
 #                     (an occurrence, a task's input #k) -> the re-run, owed
@@ -5411,14 +5564,21 @@ campaign_explore() {
   local stream_classes="${iteration_dir}/instrumented-classes"
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
-  local stream_generation=0 stream_next_host=0 stream_ticker=""
+  local stream_generation=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
   local stream_share_said="" stream_round_due=false
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
-  local stream_gating=0 stream_round_pid="" stream_round_dir=""
+  local stream_round_pid="" stream_round_dir=""
   local stream_round_returned="" stream_round_dropped=""
+  # Returns owed the import gate before they land (campaign_stream_collected):
+  # "<entry>\t<staged session>\t<worker>"; those the running step gates.
+  local -a stream_gate_owed=() stream_gate_running=()
+  # GROW's lane (campaign_stream_grow): its build, the round and growth it
+  # grows, and one returned, owed its take (campaign_stream_grow_take).
+  local stream_grow_pid="" stream_grow_round="" stream_grow_growth=""
+  local stream_grow_returned=""
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
@@ -5431,6 +5591,9 @@ campaign_explore() {
   local stream_read_mb_s=0
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_job_cores=()
+  # A queued entry's own charge: a replay ended for memory, asked again at
+  # its full need (campaign_stream_replay_again).
+  local -A stream_entry_need=()
   local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
   # The head's view of each host's ledger (campaign_stream_view), the
@@ -5466,9 +5629,19 @@ campaign_explore() {
     campaign_stream_unread_hosts; campaign_head_unreserve' EXIT
 
   while true; do
-    # Between two head steps, in the head's hands: a round that returned is
-    # taken (its proposals queued, GROW).
+    # Between two head steps, in the head's hands: a GROW that built its
+    # generation is taken (its plan and tree current, its re-runs queued),
+    # but at an end that drops it; then a round that returned is taken (its
+    # proposals queued, its GROW started) -- never while a GROW builds or
+    # waits to be taken: a round's growth is judged against what GROW's
+    # re-runs capture (campaign_stream_growth_new).
+    if [[ -z "${stream_step_pid}" && -n "${stream_grow_returned}" \
+        && "${stream_stop}" != WITNESSED \
+        && "${stream_stop}" != CAMPAIGN_BUDGET_REACHED ]]; then
+      campaign_stream_grow_take
+    fi
     if [[ -z "${stream_stop}" && -z "${stream_step_pid}" \
+        && -z "${stream_grow_pid}${stream_grow_returned}" \
         && -n "${stream_round_returned}" ]]; then
       campaign_stream_round_take
     fi
@@ -5495,9 +5668,9 @@ the stages after the exploration are owed $(campaign_reserve)s of it \
       campaign_stream_end
       break
     fi
-    # The round owed starts first, over the sessions landed so far, all of
-    # them gated: one that lands now waits for its gate, and for the round
-    # after it.  Again once the head step started, which may gate nothing.
+    # The round owed starts first, over the sessions landed so far, every
+    # one gated before it landed (campaign_stream_collected): one gated now
+    # lands for the round after it.  Again once the head step started.
     if [[ -z "${stream_step_pid}" ]]; then
       campaign_stream_round_start
       campaign_stream_step_start
@@ -5542,12 +5715,14 @@ $(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
 # (campaign_explore's end): no job runs, nothing waits in the queue or the
 # hard lane -- an ask there is in flight until answered, so no fixed point
 # is declared before it, nor a stop ends with it unasked -- no re-run waits
-# to swap in, and no head step, round, or round returned and not taken.
+# to swap in, no return waits for its gate, and no head step, round, round
+# returned and not taken, or GROW building or returned and not taken.
 campaign_stream_idle() {
   (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} \
-     + ${#stream_swaps[@]} == 0 )) \
+     + ${#stream_swaps[@]} + ${#stream_gate_owed[@]} == 0 )) \
     && [[ -z "${stream_step_pid}${stream_round_pid}" \
-          && -z "${stream_round_returned}" ]]
+          && -z "${stream_round_returned}" \
+          && -z "${stream_grow_pid}${stream_grow_returned}" ]]
 }
 
 # The planner's arguments that stay the same every round.
@@ -5582,9 +5757,10 @@ campaign_stream_round_args() {
 
 # Whether a round is owed now: something answered since the last one
 # started, and either a session landed (the corpus grew) or no question is
-# left to wait for -- none queued, running, or returned and not landed (the
-# last answers may close the frontier; a confirmation's verdict changes no
-# frontier) -- but the hard lane's asks running: z3 alone at the full
+# left to wait for -- none queued, running, or returned and not landed, its
+# gate owed or running (the last answers may close the frontier; a
+# confirmation's verdict changes no frontier) -- but the hard lane's asks
+# running: z3 alone at the full
 # budget, up to 30 min, and the pool idled behind them (SGF8-adhoc-40 round
 # 6: the 13 lifts idle 03:44-03:56 behind two asks started at 03:25).  Their
 # obligations stay in flight (the round's in_flight.jsonl), and their
@@ -5603,7 +5779,8 @@ campaign_stream_plan_due() {
   for entry in "${stream_jobs[@]}"; do
     [[ "${entry}" == CONFIRM\ * || "${entry}" == HARD\ * ]] || return 1
   done
-  for entry in "${stream_queue[@]}" "${stream_pending[@]}"; do
+  for entry in "${stream_queue[@]}" "${stream_pending[@]}" \
+      "${stream_gate_owed[@]}" "${stream_gate_running[@]}"; do
     [[ "${entry}" == CONFIRM\ * ]] || return 1
   done
 }
@@ -5627,21 +5804,23 @@ campaign_stream_confirm_owed() {
 # steps/NNNN/.  Witnesses gated and not yet attempted make it an ATTEMPT
 # (`witnesses`, all of them, and `confirming`, the models whose
 # confirmation is still owed) unless a confirmation is owed its verdict,
-# which goes first (campaign_stream_confirm_owed):
-# nothing lands while an attempt runs, so it composes the corpus as it
-# stood, and whatever returns meanwhile, a witness too, waits for the step
-# after it -- at most one attempt at a time, the witnesses that come during
-# one coalesced into the next.  Else what returned lands
-# (campaign_stream_land), GROW's returned re-runs swap in, each one due
-# (campaign_stream_swap), the staged sessions move into the corpus
-# (campaign_stream_move), and the step takes them in when there is work:
-# `gate`, the sessions that landed, the re-runs' among them as they swap
-# (stream_gating while it runs: no round starts over a session not gated);
-# `confirms`, the confirmation replays that returned, to decide.  A round
-# is no head step: it plans in its own lane (campaign_stream_round_start).
+# which goes first (campaign_stream_confirm_owed): nothing lands while an
+# attempt runs, so it composes the corpus as it stood, and whatever returns
+# meanwhile, a witness too, waits for the step after it -- at most one
+# attempt at a time, the witnesses that come during one coalesced into the
+# next.  Else GROW's returned re-runs swap in, each one due
+# (campaign_stream_swap), their sessions, gated before, landing with them
+# (campaign_stream_move), and the step takes in what returned since: `gate`,
+# the returns owed the import gate (stream_gate_owed: each one's session
+# where its worker staged it, and the worker; campaign_stream_collected),
+# which land as the step returns (campaign_stream_land_gated) -- so every
+# session of the corpus was gated before it landed, and a round never waits
+# for a gate; `confirms`, the confirmation replays that returned, to decide.
+# A round is no head step: it plans in its own lane
+# (campaign_stream_round_start).
 campaign_stream_step_start() {
-  local dir entry
-  local -a stream_staged=() gate=() confirms=()
+  local dir entry kind round id host status session
+  local -a stream_staged=() confirms=()
   if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]] \
       && ! campaign_stream_confirm_owed; then
     campaign_stream_step_dir
@@ -5651,14 +5830,28 @@ campaign_stream_step_start() {
     done >"${dir}/confirming"
     stream_witnesses=()
   else
-    (( ${#stream_pending[@]} == 0 )) || campaign_stream_land
     (( ${#stream_swaps[@]} == 0 )) || campaign_stream_swap
     (( ${#stream_staged[@]} == 0 )) || campaign_stream_move
-    (( ${#gate[@]} + ${#confirms[@]} > 0 )) || return 0
+    # What waits for a step is a confirmation's return alone: every other
+    # lands as it is collected, or once gated.
+    for entry in "${stream_pending[@]}"; do
+      read -r kind round id host status _ <<<"${entry}"
+      confirms+=("${id} ${status}")
+    done
+    stream_pending=()
+    (( ${#stream_gate_owed[@]} + ${#confirms[@]} > 0 )) || return 0
     campaign_stream_step_dir
-    if (( ${#gate[@]} > 0 )); then
-      printf '%s\n' "${gate[@]}" >"${dir}/gate"
-      stream_gating=1
+    if (( ${#stream_gate_owed[@]} > 0 )); then
+      for entry in "${stream_gate_owed[@]}"; do
+        printf '%s\n' "${entry#*$'\t'}"
+      done >"${dir}/gate"
+      # A re-run's session replaces its exposing one: never judged with it.
+      for entry in "${stream_gate_owed[@]}"; do
+        read -r kind round id host status session <<<"${entry%%$'\t'*}"
+        [[ "${kind}" != RERUN ]] || printf '%s\n' "${session}"
+      done >"${dir}/replaced"
+      stream_gate_running=("${stream_gate_owed[@]}")
+      stream_gate_owed=()
     fi
     (( ${#confirms[@]} == 0 )) \
       || printf '%s\n' "${confirms[@]}" >"${dir}/confirms"
@@ -5677,30 +5870,31 @@ campaign_stream_step_dir() {
 
 # One step of the head's JVM work, in the background: an attempt at the
 # witnesses <dir>/witnesses names; or the import gate over the sessions
-# <dir>/gate names (one call: the head's) and the verdicts on the
-# confirmation replays <dir>/confirms names (campaign_stream_decide).  An
+# <dir>/gate lists, each where its worker staged it (one call: the head's),
+# and the verdicts on the confirmation replays <dir>/confirms names
+# (campaign_stream_decide).  An
 # accepted witness (<dir>/witnessed) ends the exploration.  A BLOCKING row
 # fails the campaign at IMPORT here.  The head takes the rest once the step
 # returns (campaign_stream_step_done), the engine mains that outgrew their
 # need in it among them (<dir>/outgrown, engine_java).
 campaign_stream_step() {
   local dir=$1
-  local -a gate=() witnesses=()
+  local -a witnesses=()
   if [[ -s "${dir}/witnesses" ]]; then
     mapfile -t witnesses <"${dir}/witnesses"
     campaign_stream_attempt "${dir}" "${witnesses[@]}"
   else
-    [[ ! -s "${dir}/gate" ]] || mapfile -t gate <"${dir}/gate"
-    (( ${#gate[@]} == 0 )) || campaign_import_gate "${iteration_dir}" \
-      "${iteration_id}" "${dir}/import_gate.json" "${gate[@]/#/${sessions}/}"
+    [[ ! -s "${dir}/gate" ]] || campaign_import_gate "${iteration_dir}" \
+      "${iteration_id}" "${dir}/import_gate.json" "${dir}/gate" \
+      "${dir}/replaced"
     [[ ! -s "${dir}/confirms" ]] || campaign_stream_decide "${dir}"
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
 }
 
 # The round owed (campaign_stream_plan_due), started in its own lane when
-# the exploration has not stopped, no round plans or waits to be taken, and
-# no head step gates (every session landed is gated): planned in the
+# the exploration has not stopped and no round plans or waits to be taken
+# (every session landed was gated before it landed): planned in the
 # background (campaign_stream_round) into planning-NNNN/, over inputs frozen
 # now, beside its files -- corpus.txt, the sessions landed; answers.jsonl,
 # the answers landed (obligation_results.jsonl as it stands);
@@ -5720,7 +5914,6 @@ campaign_stream_round_start() {
   local dir row
   [[ -z "${stream_stop}" && -z "${stream_round_pid}" \
      && -z "${stream_round_returned}" ]] || return 0
-  (( stream_gating == 0 )) || return 0
   campaign_stream_plan_due || return 0
   dir=$(printf '%s/planning-%04d' "${iteration_dir}" "${stream_round}")
   [[ ! -e "${dir}" ]] || die "round directory already exists: ${dir}"
@@ -6158,7 +6351,8 @@ named && kill -KILL ${pid} 2>/dev/null; exit 0"
 
 # The head step returned: one that failed has said why on the campaign's
 # stderr and ends the head.  The heaps its JVMs outgrew are the head's
-# (campaign_stream_outgrown).  An attempt that owes a confirmation queues its
+# (campaign_stream_outgrown), and what it gated lands
+# (campaign_stream_land_gated).  An attempt that owes a confirmation queues its
 # replay first in the pool (CONFIRM, its model under confirmation);
 # witnesses whose model was under confirmation wait for a verdict
 # (stream_deferred), and go back to be attempted once one lands without
@@ -6167,9 +6361,9 @@ campaign_stream_step_done() {
   local status=$1 dir=${stream_step_dir} id
   stream_step_pid=""
   stream_step_dir=""
-  stream_gating=0
   (( status == 0 )) || exit "${status}"
   campaign_stream_outgrown "${dir}/outgrown"
+  (( ${#stream_gate_running[@]} == 0 )) || campaign_stream_land_gated
   if [[ -s "${dir}/confirm" ]]; then
     id=$(cat "${dir}/confirm")
     stream_confirming[${id}]=$(cat \
@@ -6676,15 +6870,16 @@ campaign_stream_drop() {
 # WITNESSED, or CAMPAIGN_BUDGET_REACHED: the queue cancelled, and everything
 # this campaign still runs ended -- its process trees here, its workers on
 # every peer -- and moved out of the iteration with what it staged, as is
-# what returned after the last step began, never landed, an obligation
-# solved whose REPLAY is still queued, and one asked again of a host's
+# what returned and never landed (owed its gate, or in the gate that ran),
+# an obligation solved whose REPLAY is still queued, and one asked again of a host's
 # solver or owed its hard-lane ask, still queued; a confirmation
 # queued, running or undecided is its attempt's row, reaped; a GROW re-run
 # queued, or returned and not swapped in, is dropped, its directory with
 # it (a witness's confirmation holds the swap of every session its attempt
-# composed, so they are all still in the corpus); a round still planning, or
-# returned and not taken, is dropped (campaign_stream_round_drop).  At a
-# witness
+# composed, so they are all still in the corpus), as is one owed its gate;
+# a round still planning, or returned and not taken, is dropped
+# (campaign_stream_round_drop), and so is a GROW building or built and not
+# taken, its exposures owed (roundDue).  At a witness
 # the sessions that landed after its attempt composed (not in its
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
 # COMPOSE reads next is exactly the one the accepted attempt read.
@@ -6699,6 +6894,17 @@ campaign_stream_end() {
     read -r kind round id host status session <<<"${entry}"
     dropped+=("${kind} ${round} ${id} ${session}")
   done
+  # Returned and owed their gate, or in the gate that ran: never landed.
+  for entry in "${stream_gate_owed[@]}" "${stream_gate_running[@]}"; do
+    read -r kind round id host status session <<<"${entry%%$'\t'*}"
+    if [[ "${kind}" == RERUN ]]; then
+      stream_swaps+=("${round} ${id} ${session} ${status}")
+    else
+      dropped+=("${kind} ${round} ${id} ${session}")
+    fi
+  done
+  stream_gate_owed=()
+  stream_gate_running=()
   campaign_stream_drop
   for entry in "${stream_hard[@]}"; do
     read -r kind round id _ <<<"${entry}"
@@ -6733,6 +6939,18 @@ campaign_stream_end() {
       "${campaign_root}/explore-reaped/${round}/${id}"
   done
   campaign_stream_reap
+  # A GROW building, or built and not taken, is dropped: its generation
+  # never current, its exposures owed (a round due).
+  if [[ -n "${stream_grow_round}" ]]; then
+    mkdir -p "${campaign_root}/explore-reaped"
+    mv -- "${iteration_dir}/generations/g${stream_generation}" \
+      "${campaign_root}/explore-reaped/g${stream_generation}"
+    stream_generation=$((stream_generation - 1))
+    stream_grow_round=""
+    stream_grow_growth=""
+    stream_grow_returned=""
+    stream_round_due=true
+  fi
   if [[ -n "${stream_round_dir}" ]]; then
     # Its planner first: it writes into the round's directory.
     campaign_planner_stop
@@ -6778,7 +6996,8 @@ ${stream_stop}" 0 false
 }
 
 # Everything this campaign still runs, ended: each job's process tree here,
-# the head step's, the round's and the ticker's (TERM, the kill grace, KILL),
+# the head step's, the round's, GROW's build's and the ticker's (TERM, the
+# kill grace, KILL),
 # its workers on every peer, and each waited for; the room an ended process
 # held while it waited to be placed (campaign_head_hold_room, named by its
 # pid) is the hosts' again.  The EXIT trap of a head that fails
@@ -6788,7 +7007,7 @@ campaign_stream_reap() {
   local -a tree=()
   local -A ended=()
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
-      ${stream_ticker}; do
+      ${stream_grow_pid} ${stream_ticker}; do
     mapfile -t -O "${#tree[@]}" tree < <(campaign_process_tree "${pid}")
   done
   (( ${#tree[@]} > 0 )) || return 0
@@ -6797,7 +7016,7 @@ campaign_stream_reap() {
   kill -KILL "${tree[@]}" 2>/dev/null || true
   campaign_reap_remote_workers
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
-      ${stream_ticker}; do
+      ${stream_grow_pid} ${stream_ticker}; do
     wait "${pid}" 2>/dev/null || true
   done
   for pid in "${!stream_jobs[@]}"; do
@@ -6813,13 +7032,14 @@ campaign_stream_reap() {
   done
   stream_step_pid=""
   stream_round_pid=""
+  stream_grow_pid=""
   stream_ticker=""
 }
 
 # The charge the head took for job <pid> (campaign_stream_admit_host),
 # released: the job ended, or was ended.
 campaign_stream_release() {
-  local kind round id host mb at charged held used
+  local kind round id host mb at charged held used recent
   [[ -n "${stream_job_charge[$1]:-}" ]] || return 0
   read -r kind round id host _ <<<"${stream_jobs[$1]}"
   campaign_host_release "${host}" "${stream_job_charge[$1]}"
@@ -6827,9 +7047,10 @@ campaign_stream_release() {
   # charge is named by its MB.
   mb=${stream_job_charge[$1]%%.*}
   if [[ "${mb}" =~ ^[0-9]+$ && -n "${stream_host_view[${host}]:-}" ]]; then
-    read -r at charged held used <<<"${stream_host_view[${host}]}"
+    read -r at charged held used recent <<<"${stream_host_view[${host}]}"
     charged=$(( charged > mb ? charged - mb : 0 ))
-    stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+    recent=$(( ${recent:-0} > mb ? recent - mb : 0 ))
+    stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent}"
   fi
   unset 'stream_job_charge[$1]'
 }
@@ -6878,7 +7099,7 @@ campaign_process_tree() {
 # and 28 a second.
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry kind at first started now refused oldest="" kinds
+  local entry kind at first started now refused oldest="" kinds need=""
   # What the pass reads once (campaign_stream_memo).
   local -A stream_pass_memo=()
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
@@ -6922,26 +7143,29 @@ campaign_stream_dispatch() {
     for at in "${!stream_queue[@]}"; do
       entry=${stream_queue[at]}
       kind=${entry%% *}
+      need=${stream_entry_need[${entry}]:-}
       # Behind an entry that goes first and alone waits everything but a
       # witness's confirmation and GROW's re-runs, which lead the queue:
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
-      [[ "${refused}" != *" ${kind} "* ]] || continue
-      if campaign_stream_admit_host "${kind}"; then
+      [[ "${refused}" != *" ${kind}${need:+:${need}} "* ]] || continue
+      if campaign_stream_admit_host "${kind}" "${need}"; then
         started=${at}
         break
       fi
-      refused+="${kind} "
-      # Every kind a queue holds refused: no entry behind starts either.
-      kinds=$((kinds + 1))
+      refused+="${kind}${need:+:${need}} "
+      # Every kind a queue holds refused at its kind's charge: no entry
+      # behind starts either (one asked again at its own, larger need says
+      # nothing of the rest of its kind).
+      [[ -n "${need}" ]] || kinds=$((kinds + 1))
       (( kinds < 4 )) || break
     done
     (( started >= 0 )) || return 0
     entry=${stream_queue[started]}
     stream_queue=("${stream_queue[@]:0:started}" \
       "${stream_queue[@]:started+1}")
-    unset 'stream_queued_at[$entry]'
+    unset 'stream_queued_at[$entry]' 'stream_entry_need[$entry]'
     # A solve left the queue: the solves queued are counted again
     # (campaign_stream_solver_due).
     [[ "${entry}" != OBLIGATION\ * ]] || unset 'stream_pass_memo[solves]'
@@ -7010,11 +7234,12 @@ campaign_stream_unenroll() {
 }
 
 # Picks the host for one start of <kind> (OBLIGATION, HARD, REPLAY, RERUN
-# or CONFIRM) and charges it there
-# (stream_admitted_host, stream_admitted_mb):
-# the pool from the host after the last one chosen, each start charged its
-# need for as long as it runs (campaign_stream_charge_mb); an OBLIGATION
-# goes first to a host where this
+# or CONFIRM) and charges it there (stream_admitted_host,
+# stream_admitted_mb): each start charged its need for as long as it runs
+# (campaign_stream_charge_mb), or <need_mb> where the entry states its own (a
+# replay ended for memory, asked again at its full need:
+# campaign_stream_replay_again), and offered first to THE HOST WITH THE MOST
+# ROOM (campaign_stream_by_room); an OBLIGATION first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one answered there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
@@ -7026,9 +7251,15 @@ campaign_stream_unenroll() {
 # Its kind's charge and cores are read once a dispatch pass
 # (stream_pass_memo, campaign_stream_memo).  1 when no host has room now,
 # said once per wait.
+#
+# By room, never round-robin: one cursor for every kind sat on the host
+# after the one warm solver each solve chose, so every replay's scan started
+# there (SGF8-adhoc-07 rounds 7-11: 17 of 19 replays on lift04, 16 at once,
+# 14.6 GB in use against 3-4 GB on the other lifts, 12 ended at its 70 %
+# guard; 33 replays ended so in the run, 240 replay-minutes).
 campaign_stream_admit_host() {
-  local kind=$1 host turn count pass is status=0 mb cores
-  count=${#stream_hosts[@]}
+  local kind=$1 need=${2:-} host pass mb cores
+  local -a order=()
   campaign_stream_memo "${kind} cores" campaign_stream_kind_cores "${kind}"
   cores=${stream_pass_memo["${kind} cores"]}
   for pass in warm cold; do
@@ -7036,18 +7267,17 @@ campaign_stream_admit_host() {
     # A question starts a host's solver only when one more is due.
     [[ "${pass}" == warm ]] || ! campaign_stream_seated "${kind}" \
       || campaign_stream_solver_due || continue
-    campaign_stream_memo "${kind} ${pass}" campaign_stream_charge_mb \
-      "${kind}" "${pass}"
-    mb=${stream_pass_memo["${kind} ${pass}"]}
-    for ((turn = 0; turn < count; turn++)); do
-      host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
-      # A seated question tries each host once, in the pass of its warmth.
-      is=cold
-      ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
-        || is=warm
-      [[ "${is}" == "${pass}" ]] || continue
-      if campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
-          "${cores}"; then
+    if [[ -n "${need}" ]]; then
+      mb=${need}
+    else
+      campaign_stream_memo "${kind} ${pass}" campaign_stream_charge_mb \
+        "${kind}" "${pass}"
+      mb=${stream_pass_memo["${kind} ${pass}"]}
+    fi
+    campaign_stream_by_room "${kind}" "${pass}"
+    for host in "${order[@]}"; do
+      if campaign_stream_try_host "${host}" "${mb}" "${kind}" "${cores}" \
+          "${need}"; then
         stream_admitted_pass=${pass}
         return 0
       fi
@@ -7059,6 +7289,52 @@ campaign_stream_admit_host() {
     stream_waiting=1
   fi
   return 1
+}
+
+# campaign_stream_by_room <kind> <pass>: the caller's `order`, the hosts of
+# the pool a start of <kind> tries in <pass> (a seated question tries each
+# host once, in the pass of its warmth; every other kind every host, cold),
+# the most room first: what its ledger, as the head's view holds it
+# (campaign_stream_view), leaves under the ceiling -- the ceiling less the
+# room heads hold there and the larger of its live charges and its real use,
+# the two the ledger's rule bounds (campaign_host_fits), the use counting what
+# this head started there since the host's reading, which the reading does
+# not hold yet (a burst on the host with the most room otherwise went to it
+# until its charges passed its use) -- the pool's order
+# breaking ties, so a burst of equal starts goes one to each host in turn and
+# each start after it to the host its charges left the most room.  A host
+# whose memory cannot be read goes last, where its admission names it
+# (campaign_stream_unreadable).
+campaign_stream_unread_room=-1073741824
+campaign_stream_by_room() {
+  local kind=$1 pass=$2 host at best is dir="" total="" limit=0 seen=""
+  local charged=0 held=0 used=0 recent=0
+  local -a hosts=() rooms=()
+  for host in "${stream_hosts[@]}"; do
+    is=cold
+    ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
+      || is=warm
+    [[ "${is}" == "${pass}" ]] || continue
+    hosts+=("${host}")
+    if campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
+      read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+      read -r seen charged held used recent <<<"${stream_host_view[${host}]}"
+      used=$(( used + ${recent:-0} ))
+      rooms+=("$(( limit - held - (charged > used ? charged : used) ))")
+    else
+      rooms+=("${campaign_stream_unread_room}")
+    fi
+  done
+  order=()
+  while (( ${#order[@]} < ${#hosts[@]} )); do
+    best=-1
+    for ((at = 0; at < ${#hosts[@]}; at++)); do
+      [[ -n "${rooms[at]}" ]] || continue
+      (( best >= 0 && rooms[at] <= rooms[best] )) || best=${at}
+    done
+    order+=("${hosts[best]}")
+    rooms[best]=""
+  done
 }
 
 # campaign_stream_memo <key> <command...>: what <command> prints, read once
@@ -7074,18 +7350,22 @@ campaign_stream_memo() {
 }
 
 # Whether one more host's solver of this campaign is due: none serves or
-# starts yet, or the questions queued for one would take the solvers that
-# serve or start (campaign_stream_warm, or a question of theirs in flight)
-# longer to answer, at the campaign's measured seat per question, than a new
-# solver takes to read the corpus (campaign_corpus_mb at the campaign's
-# measured read rate; both campaign_stream_seated_returned, seeded until
-# measured).
-# Else a question waits for a seat of a serving solver, and the other hosts
-# keep their room for replays: a solver of a big corpus is most of its host
-# (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
-# round-robin warmed one on all 13 lifts for questions answered in 1 s).
+# starts yet; or a new solver would answer sooner than those that serve or
+# start (campaign_stream_warm, or a question of theirs in flight) -- their
+# seats (campaign_solver_seats) would take longer to answer the questions
+# queued, at the campaign's measured seat per question, than a new one takes
+# to read the corpus (campaign_corpus_mb at the campaign's measured read
+# rate; both campaign_stream_seated_returned, seeded until measured), or the
+# oldest question queued has already waited longer than that read: a solver
+# restarting, or reading again, holds every question queued for it
+# (SGF8-adhoc-07 round 12: 19 solves waited ~1100 s behind a 575 s solver
+# restart and a 170 s corpus read, while the mean seat said one more was not
+# due).  Else a question waits for a seat of a serving solver, and the other
+# hosts keep their room for replays: a solver of a big corpus is most of its
+# host (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and
+# the round-robin warmed one on all 13 lifts for questions answered in 1 s).
 campaign_stream_solver_due() {
-  local host solvers=0 queued=0 entry
+  local host solvers=0 queued=0 oldest=${EPOCHSECONDS} entry at read_ms
   local seat=${campaign_solver_seat_seed_ms}
   local rate=${campaign_solver_read_seed_mb_s}
   (( ${stream_seated_n:-0} < campaign_solver_seat_least )) \
@@ -7097,17 +7377,24 @@ campaign_stream_solver_due() {
     solvers=$((solvers + 1))
   done
   (( solvers > 0 )) || return 0
-  # The solves queued and the corpus's MB, read once a dispatch pass
-  # (campaign_stream_memo; the solves again once one starts).
+  # The solves queued, the oldest one's queueing and the corpus's MB, read
+  # once a dispatch pass (campaign_stream_memo; the solves again once one
+  # starts).
   if [[ -z "${stream_pass_memo[solves]:-}" ]]; then
     for entry in "${stream_queue[@]}"; do
-      [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
+      [[ "${entry}" == OBLIGATION\ * ]] || continue
+      queued=$((queued + 1))
+      at=${stream_queued_at[${entry}]:-${EPOCHSECONDS}}
+      (( at >= oldest )) || oldest=${at}
     done
-    stream_pass_memo[solves]=${queued}
+    stream_pass_memo[solves]="${queued} ${oldest}"
   fi
+  read -r queued oldest <<<"${stream_pass_memo[solves]}"
   campaign_stream_memo corpus campaign_corpus_mb "${sessions:-}"
-  (( stream_pass_memo[solves] * seat * rate > solvers \
-     * stream_pass_memo[corpus] * 1000 ))
+  campaign_stream_memo seats campaign_solver_seats "${sessions:-}"
+  read_ms=$(( stream_pass_memo[corpus] * 1000 / rate ))
+  (( queued * seat > solvers * stream_pass_memo[seats] * read_ms \
+     || (EPOCHSECONDS - oldest) * 1000 > read_ms ))
 }
 
 # What a seat of a host's solver is held per question and what a solver
@@ -7157,9 +7444,9 @@ campaign_stream_warm() {
 
 # What one start of <kind> of the pool is charged now, on a host of <warmth>
 # (warm: this campaign's solver likely still serves there, campaign_stream_warm;
-# else cold): an OBLIGATION's solve on a warm host what its question's z3 run
-# holds (campaign_question_mb; the host's solver JVM is charged on its own),
-# on a cold one what a solver JVM starts at (campaign_solver_need_mb: the
+# else cold): an OBLIGATION's solve on a warm host nothing (its question's z3
+# runs in the room its host's solver holds for its seats, charged with that
+# JVM, campaign_solver_z3_mb), on a cold one what a solver JVM starts at (campaign_solver_need_mb: the
 # solver its question starts takes this charge over, campaign_start_solver);
 # a HARD what its corpus-free JVM and the hard lane's z3 room hold
 # (campaign_decide_need_mb); each grows as its JVM does
@@ -7174,7 +7461,7 @@ campaign_stream_warm() {
 campaign_stream_charge_mb() {
   local need
   if [[ "${1:-}" == OBLIGATION && "${2:-cold}" == warm ]]; then
-    printf '%s\n' "${campaign_question_mb}"
+    printf '0\n'
   elif [[ "${1:-}" == OBLIGATION ]]; then
     campaign_solver_need_mb "${sessions:-}"
   elif [[ "${1:-}" == HARD ]]; then
@@ -7188,28 +7475,30 @@ campaign_stream_charge_mb() {
   fi
 }
 
-# One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen, charged <mb>, for a start of <kind>
-# that keeps <cores> busy: only while the cores this campaign's starts keep
-# busy there leave the start's own (campaign_stream_has_cores), a solve only
-# on a seat of the host's solver that answers it at once
-# (campaign_stream_has_seat), and only where the ledger admits its charge
-# (campaign_stream_try_charge) -- so each kind runs on a host as many at
-# once as its cores and the room at that kind's measured charge hold, and no
-# fixed count beside them: 0 with it charged and chosen
-# (stream_admitted_host, stream_admitted_mb, stream_admitted_cores).
+# One host's admission for campaign_stream_admit_host, charged <mb>, for a
+# start of <kind> that keeps <cores> busy: only while the cores this
+# campaign's starts keep busy there leave the start's own
+# (campaign_stream_has_cores), a solve only on a seat of the host's solver
+# that answers it at once (campaign_stream_has_seat), and only where the
+# ledger admits its charge (campaign_stream_try_charge) -- so each kind runs
+# on a host as many at once as its cores and the room at that kind's
+# measured charge hold, and no fixed count beside them: 0 with it charged and
+# chosen (stream_admitted_host, stream_admitted_mb, stream_admitted_cores).
+# <own_need>, when the entry states its need (a replay asked again at its
+# full need), is charged whole: no room for an end beside it.
 campaign_stream_try_host() {
-  local host=$1 turn=$2 mb=$3 kind=${4:-} cores=${5:-1}
-  local count=${#stream_hosts[@]} status=0
+  local host=$1 mb=$2 kind=${3:-} cores=${4:-1} own=${5:-} status=0
+  local spare=$(( campaign_replay_spikes * campaign_replay_spike_mb ))
   campaign_stream_has_cores "${host}" "${cores}" || return 1
   ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
     || return 1
   # A replay leaves room for the ends its charge does not cover
-  # (campaign_replay_typical); a solve's charge is its whole.
+  # (campaign_replay_typical); a solve's charge is its whole, as is a
+  # replay's charged its full need.
+  [[ -z "${own}" ]] || spare=0
   case "${kind}" in
     OBLIGATION|HARD) campaign_stream_try_charge "${host}" "${mb}" ;;
-    *) campaign_stream_try_charge "${host}" "${mb}" \
-         "$(( campaign_replay_spikes * campaign_replay_spike_mb ))" ;;
+    *) campaign_stream_try_charge "${host}" "${mb}" "${spare}" ;;
   esac
   case "${status}" in
     0)
@@ -7217,7 +7506,6 @@ campaign_stream_try_host() {
       stream_admitted_mb=${mb}
       stream_admitted_cores=${cores}
       unset 'stream_host_unread[$host]'
-      stream_next_host=$(( (stream_next_host + turn + 1) % count ))
       stream_waiting=""
       return 0 ;;
     2) campaign_stream_unreadable "${host}" ;;
@@ -7306,13 +7594,14 @@ campaign_stream_has_seat() {
 # head's room.
 campaign_stream_try_charge() {
   local host=$1 need=$2 spare=${3:-0} dir total limit at charged held used
+  local recent=0
   status=0
   if ! campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
     status=2
     return 0
   fi
   read -r dir total limit <<<"${stream_host_ledger[${host}]}"
-  read -r at charged held used <<<"${stream_host_view[${host}]}"
+  read -r at charged held used recent <<<"${stream_host_view[${host}]}"
   if ! campaign_host_fits "${charged}" "${used}" "${held}" "${need}" \
       "${spare}" "${limit}"; then
     campaign_host_refused "${dir##*/}" "${charged}" "${used}" "${held}" \
@@ -7325,11 +7614,12 @@ campaign_stream_try_charge() {
     "${limit}" "${used}" "${held}" "${need}" "${spare}"
   charged=${campaign_host_admitted_charged}
   (( status != 0 )) || charged=$(( charged + need ))
-  stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+  (( status != 0 )) || recent=$(( ${recent:-0} + need ))
+  stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent:-0}"
 }
 
 # THE HEAD'S VIEW of <host>'s ledger at <now>, stream_host_view[<host>],
-# "<at> <charged_mb> <held_mb> <used_mb>": its live charges
+# "<at> <charged_mb> <held_mb> <used_mb> <recent_mb>": its live charges
 # (campaign_host_charged), the room heads hold there
 # (campaign_host_head_room) and its real use, its MemTotal less the ledger's
 # MemAvailable -- which the host's reader keeps fresh
@@ -7338,7 +7628,10 @@ campaign_stream_try_charge() {
 # campaign_host_poll_s, as old as a start's reading of its host ever was;
 # between, the charges as this head's own starts found them under the lock
 # (campaign_stream_try_charge) and less what it released
-# (campaign_stream_release).  Another campaign's charges since are found
+# (campaign_stream_release), and what this head charged there since the
+# reading, its starts' memory the reading does not hold yet, less what it
+# released (recent: the room order counts it with the real use,
+# campaign_stream_by_room).  Another campaign's charges since are found
 # under the lock, its releases at the next reading.  The host's directory,
 # MemTotal and ceiling never move: read once, stream_host_ledger[<host>].
 # 1 when the host's memory cannot be read.
@@ -7358,7 +7651,7 @@ $(campaign_host_limit_mb "${total}")"
     campaign_host_memory_reading "${host}" "${dir}" "${now}") || return 1
   stream_host_view[${host}]="${now} $(campaign_host_charged "${dir}" \
 "${now}") $(campaign_host_head_room "${dir}" "${now}") \
-$(( total - available ))"
+$(( total - available )) 0"
 }
 
 # THE POOL'S READINGS.  A start is admitted by its host's MemAvailable as
@@ -7508,7 +7801,8 @@ campaign_stream_collect_jobs() {
   done
 }
 
-# Waits for the next return -- a job's, the head step's or the round's --
+# Waits for the next return -- a job's, the head step's, the round's or
+# GROW's build's --
 # or for the poll interval at most (the queue may wait for room, and the
 # head's room stays fresh).  What already ended is taken without waiting: bash reaps a child
 # that ends while the head works, and `wait -n` then waits for the next.
@@ -7521,13 +7815,13 @@ campaign_stream_wait() {
     stream_ticker=$!
   fi
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
-      "${stream_ticker}"; do
+      ${stream_grow_pid} "${stream_ticker}"; do
     kill -0 "${pid}" 2>/dev/null || ended+=("${pid}")
   done
   if (( ${#ended[@]} == 0 )); then
     status=0
     wait -n -p finished "${!stream_jobs[@]}" ${stream_step_pid} \
-      ${stream_round_pid} "${stream_ticker}" || status=$?
+      ${stream_round_pid} ${stream_grow_pid} "${stream_ticker}" || status=$?
     [[ -z "${finished}" ]] || campaign_stream_ended "${finished}" "${status}"
   fi
   for pid in "${ended[@]}"; do
@@ -7539,7 +7833,8 @@ campaign_stream_wait() {
 
 # One child the head waited for, ended with <status>: the ticker; the head
 # step (campaign_stream_step_done); the round (campaign_stream_round_done);
-# or a job, whose host has its slot and its charge back
+# GROW's build (campaign_stream_grow_done); or a job, whose host has its
+# slot and its charge back
 # (campaign_stream_release) and whose replay's peak joins the measured need
 # (campaign_replay_measured).  An obligation its solver
 # answered SAT_MODEL_READY is owed its replay -- unless its path's session
@@ -7553,17 +7848,20 @@ campaign_stream_wait() {
 # landed).  A solve asked again (campaign_obligation_again) is queued again
 # as an OBLIGATION (campaign_stream_solve_again), and one a first budget left
 # undecided goes to the hard lane (campaign_stream_hard), both still in
-# flight.  Every
-# other return waits in stream_pending for the next head step to land it.
+# flight.  Every other return is collected (campaign_stream_collected): an
+# answer lands now, or once its session is gated; a confirmation waits in
+# stream_pending for the next head step to decide it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer again
-  local rests=""
+  local rests="" requeued=0
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
     campaign_stream_step_done "${status}"
   elif [[ "${pid}" == "${stream_round_pid}" ]]; then
     campaign_stream_round_done "${status}"
+  elif [[ "${pid}" == "${stream_grow_pid}" ]]; then
+    campaign_stream_grow_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     worker=${stream_job_worker[${pid}]}
@@ -7573,7 +7871,12 @@ campaign_stream_ended() {
       "${stream_job_cores[${pid}]:-}"
     answer=""
     again=""
-    if [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
+    if [[ "${status}" -eq 0 ]] && campaign_stream_replays "${kind}" \
+        && campaign_stream_replay_again "${kind}" "${round}" "${id}" \
+          "${session}" "${worker}" "${stream_job_tree[${pid}]}"; then
+      # Ended for memory and queued again at its full need: nothing lands.
+      requeued=1
+    elif [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
       again=$(jq -r '.why // ""' "${worker}/solve_again" 2>/dev/null) \
         || again=""
       [[ -n "${again}" ]] \
@@ -7588,7 +7891,9 @@ campaign_stream_ended() {
     elif campaign_stream_seated "${kind}" && [[ -n "${again}" ]]; then
       unset 'stream_solver_seen[$host]'
     fi
-    if [[ -n "${again}" ]]; then
+    if (( requeued )); then
+      :
+    elif [[ -n "${again}" ]]; then
       rm -f -- "${worker}/solve_again"
       campaign_stream_solve_again "${kind}" "${round}" "${id}" "${host}" \
         "${worker}" "${again}"
@@ -7621,7 +7926,8 @@ campaign_stream_ended() {
       campaign_stream_hard "${round}" "${id}" "${host}" "${worker}" \
         "undecided on ${host} (${answer#*|})"
     else
-      stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
+      campaign_stream_collected \
+        "${kind} ${round} ${id} ${host} ${status} ${session}"
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' \
       'stream_job_tree[$pid]' 'stream_job_since[$pid]' 'stream_job_cores[$pid]'
@@ -7636,7 +7942,7 @@ campaign_stream_ended() {
 # in flight.  Only a solver no host of the pool can ever hold -- its start's
 # charge (campaign_solver_need_mb) past every host's ceiling less the room a
 # head holds there (campaign_pool_can_hold) -- is an answer, the named bound:
-# NOT_ADMITTED, for the next step to land.  A pool short of room now is none:
+# NOT_ADMITTED, landed now.  A pool short of room now is none:
 # the question waits, never answered for that (SGF5: a solve that waited
 # 600 s inside its start for 3712 MB on an over-charged pool was answered
 # NOT_ADMITTED for good, 18413's witness among them); a solver that ended on
@@ -7649,11 +7955,85 @@ campaign_stream_solve_again() {
 can hold its solver of ${charge} MB (${why})"
     campaign_log "obligation ${id}: no host of the pool can hold its solver \
 of ${charge} MB; answered NOT_ADMITTED"
-    stream_pending+=("${kind} ${round} ${id} ${host} 0")
+    campaign_stream_land "${kind} ${round} ${id} ${host} 0"
     return 0
   fi
   campaign_log "obligation ${id}: ${why}; asked again of a host's solver"
   campaign_stream_enqueue "OBLIGATION ${round} ${id} again"
+}
+
+# Whether a start of <kind> is a replay of the pool: an obligation's REPLAY,
+# a GROW re-run, a witness's confirmation.
+campaign_stream_replays() {
+  [[ "${1:-}" == REPLAY || "${1:-}" == RERUN || "${1:-}" == CONFIRM ]]
+}
+
+# campaign_stream_replay_again <kind> <round> <id> <session> <worker>
+# <tree>: a replay of the pool its watcher ended for memory before it stated
+# anything (<worker>/replay_again, campaign_replay_set_aside: what its
+# resident memory reached, what it was charged, where its run went) decided
+# nothing, so no verdict of it lands and nothing of it reaches a planner: its
+# peak joins the measured need (campaign_replay_need_mb), and its entry --
+# the same REPLAY on the tree its solve started on, RERUN, or CONFIRM, still
+# in flight, owed or under confirmation as it was -- is QUEUED AGAIN AT ITS
+# FULL NEED (stream_entry_need: that need at most half a host's ceiling,
+# campaign_replay_charge_mb, charged whole with no end's room beside it,
+# campaign_stream_try_host), 0.  SGF8-adhoc-07: 33 replays ended so, 240
+# replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later
+# rounds.  A replay whose full need is no more than it reached -- one past
+# the most a replay is charged -- would end again as it did: it is answered
+# REPLAY_BOUNDED (campaign_replay_bounded) and lands as any return, 1.  1
+# too for a return that states no such end.  A REPLAY whose path's session a
+# swap withdrew meanwhile is dropped, as one queued then is
+# (campaign_stream_replay_drop), 0.
+campaign_stream_replay_again() {
+  local kind=$1 round=$2 id=$3 session=$4 worker=$5 tree=$6 refused=""
+  local charged="" aside="" file="" full entry
+  ls -- "${worker}" >/dev/null 2>&1 || true
+  [[ -s "${worker}/replay_again" ]] || return 1
+  read -r refused charged aside <"${worker}/replay_again"
+  rm -f -- "${worker}/replay_again"
+  [[ "${refused}" =~ ^[0-9]+$ ]] || refused=0
+  for file in "$(campaign_stream_logs "${kind}" "${worker}")"{stdout.log,\
+stderr.log,host.txt}; do
+    [[ ! -e "${file}" || ! -d "${aside}" ]] || mv -f -- "${file}" "${aside}/"
+  done
+  (( refused <= campaign_replay_peak_mb )) \
+    || campaign_replay_peak_mb=${refused}
+  full=$(campaign_replay_charge_mb "$(campaign_replay_need_mb)")
+  case "${kind}" in
+    REPLAY) entry="REPLAY ${round} ${id} ${tree}" ;;
+    RERUN) entry="RERUN ${round} ${id} ${session}" ;;
+    CONFIRM) entry="CONFIRM - ${id}" ;;
+  esac
+  if (( full > refused )); then
+    # A REPLAY rests on its path's session as its first queueing did
+    # (campaign_stream_ended): one a swap withdrew since is dropped.
+    if [[ "${kind}" == REPLAY ]]; then
+      file=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
+        2>/dev/null) || file=""
+      if [[ -n "${file}" && -n "${stream_withdrawn[${file}]:-}" ]]; then
+        campaign_stream_replay_drop "${entry}" "${file}"
+        return 0
+      fi
+      [[ -z "${file}" ]] || stream_rests[${id}]=${file}
+    fi
+    campaign_log "${kind} ${id}: its replay was ended at ${refused} MB, \
+charged ${charged} MB, as its host could not take its growth: queued again \
+at its full need, ${full} MB"
+    stream_entry_need[${entry}]=${full}
+    campaign_stream_enqueue "${entry}"
+    return 0
+  fi
+  if [[ "${kind}" == CONFIRM ]]; then
+    id=CONFIRM
+    file="$(dirname "${worker}")/sessions"
+  else
+    file="${worker}/sessions"
+  fi
+  campaign_replay_bounded "${id}" "${worker}" "${file}" "replay was ended at ${refused} MB as its host could not take its growth, \
+and its full need, ${full} MB, is the most a replay is charged"
+  return 1
 }
 
 # campaign_stream_hard <round> <id> <host> <worker> <why>: a first ask
@@ -7670,7 +8050,7 @@ campaign_stream_hard() {
 can hold its hard-lane ask of ${charge} MB (${why})"
     campaign_log "obligation ${id}: no host of the pool can hold its \
 hard-lane ask of ${charge} MB; answered NOT_ADMITTED"
-    stream_pending+=("HARD ${round} ${id} ${host} 0")
+    campaign_stream_land "HARD ${round} ${id} ${host} 0"
     return 0
   fi
   campaign_log "obligation ${id}: ${why}; its hard-lane ask of ${charge} MB \
@@ -7702,46 +8082,104 @@ campaign_stream_enqueue() {
   stream_queued_at[${entry}]=$(date +%s)
 }
 
-# What returned since the last head step began, landed: each obligation's
-# verdict into the ledger and the session it staged into stream_staged
-# (campaign_stream_move); each re-run's into stream_swaps, to swap in once no
-# reader of its exposing session runs (campaign_stream_swap); each
-# confirmation into `confirms`, for the step to decide.
+# campaign_stream_collected <entry>: one return of the pool
+# ("<kind> <round> <id> <host> <status> [<session>]"), taken in AS IT IS
+# COLLECTED, never at the next head step (SGF8-adhoc-07: an answer reached
+# the next round's planner a median 329 s after it returned, the head busy
+# 71 % in import gates and planning).  An obligation's answer -- a solve's,
+# a hard-lane ask's, a REPLAY's; a worker that did not finish answered first
+# by why (campaign_obligation_unfinished) -- that names no session lands now
+# (campaign_stream_land); one that names a session, staged in its worker, is
+# owed the import gate (stream_gate_owed) and lands, session and verdict
+# together, once the step that gates it returns (campaign_stream_land_gated):
+# so the corpus holds only sessions the gate has judged, an answer that names
+# a session stays in flight until its session is in the corpus, and no round
+# waits for a gate.  A GROW re-run that names a session is owed its gate the
+# same way and swaps in once gated (stream_swaps); one that names none, or
+# did not finish, goes to its swap now.  A confirmation's return waits for
+# the next head step to decide it (stream_pending).
+campaign_stream_collected() {
+  local entry=$1 kind round id host status session worker named=""
+  read -r kind round id host status session <<<"${entry}"
+  case "${kind}" in
+    CONFIRM)
+      stream_pending+=("${entry}")
+      return 0 ;;
+    RERUN)
+      worker=${stream_reruns["${id} ${session}"]}
+      (( status != 0 )) || named=$(jq -r '.sessionId // ""' \
+        "${worker}/obligation_result.jsonl" 2>/dev/null) || named=""
+      if [[ -z "${named}" ]]; then
+        stream_swaps+=("${round} ${id} ${session} ${status}")
+        return 0
+      fi ;;
+    *)
+      worker="${iteration_dir}/${round}/${id}"
+      [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
+        "${id}" "${worker}" "${status}" "${kind}"
+      named=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl" \
+        2>/dev/null) || named=""
+      if [[ -z "${named}" ]]; then
+        campaign_stream_land "${entry}"
+        return 0
+      fi ;;
+  esac
+  [[ -d "${worker}/sessions/${named}" ]] || campaign_fail EXPLORE CAMPAIGN \
+    "${worker}/sessions" "the verdict names session ${named}, which its \
+worker did not stage"
+  stream_gate_owed+=("${entry}"$'\t'"${worker}/sessions/${named}"$'\t'"${worker}")
+}
+
+# campaign_stream_land <entry>: one obligation's answer landed, its session
+# (if it names one) in the corpus already, gated (campaign_stream_land_gated):
+# out of flight, its verdict appended to the ledger (obligation_results.jsonl:
+# the head is its one writer, and a round's frozen copy, a swap's rewrite and
+# every landing are the head's), a hard-lane ask undecided at the full budget
+# named in solver_timeouts.jsonl, and the next round owed (stream_dirty).  No
+# head step reads the ledger, so an answer lands beside any step.
 campaign_stream_land() {
-  local entry kind round id host status session worker verdict
-  for entry in "${stream_pending[@]}"; do
+  local kind round id host status session worker verdict
+  read -r kind round id host status session <<<"$1"
+  unset 'stream_flying[$id]'
+  worker="${iteration_dir}/${round}/${id}"
+  verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl" \
+    2>/dev/null) || verdict="?"
+  campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
+  if [[ "${kind}" == HARD && "${verdict}" == NOT_ADMITTED ]] && jq -e \
+      '.detail // "" | startswith("SOLVER_TIMEOUT")
+         or startswith("SOLVER_MEMOUT")' \
+      "${worker}/obligation_result.jsonl" >/dev/null 2>&1; then
+    jq -c --arg host "${host}" '{obligationId, detail, host: $host}' \
+      "${worker}/obligation_result.jsonl" \
+      >>"${iteration_dir}/solver_timeouts.jsonl"
+  fi
+  cat -- "${worker}/obligation_result.jsonl" >>"${results}"
+  stream_dirty=1
+}
+
+# The returns the step that just returned gated (stream_gate_running), landed
+# in the head's hands, between two head steps: each obligation's session into
+# the corpus (campaign_stream_move, a witness among them noted) and then its
+# verdict (campaign_stream_land); each re-run to its swap, which lands its
+# session once no reader of the exposing one runs (campaign_stream_swap).
+campaign_stream_land_gated() {
+  local line entry staged worker kind round id host status session
+  local -a stream_staged=()
+  for line in "${stream_gate_running[@]}"; do
+    entry=${line%%$'\t'*}
+    staged=${line#*$'\t'}
+    worker=${staged#*$'\t'}
+    staged=${staged%%$'\t'*}
     read -r kind round id host status session <<<"${entry}"
     if [[ "${kind}" == RERUN ]]; then
       stream_swaps+=("${round} ${id} ${session} ${status}")
       continue
     fi
-    if [[ "${kind}" == CONFIRM ]]; then
-      confirms+=("${id} ${status}")
-      continue
-    fi
-    unset 'stream_flying[$id]'
-    worker="${iteration_dir}/${round}/${id}"
-    [[ "${status}" -eq 0 ]] || campaign_obligation_unfinished "${host}" \
-      "${id}" "${worker}" "${status}" "${kind}"
-    verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl" \
-      2>/dev/null) || verdict="?"
-    session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl" \
-      2>/dev/null) || session=""
-    campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
-    if [[ "${kind}" == HARD && "${verdict}" == NOT_ADMITTED ]] && jq -e \
-        '.detail // "" | startswith("SOLVER_TIMEOUT")
-           or startswith("SOLVER_MEMOUT")' \
-        "${worker}/obligation_result.jsonl" >/dev/null 2>&1; then
-      jq -c --arg host "${host}" '{obligationId, detail, host: $host}' \
-        "${worker}/obligation_result.jsonl" \
-        >>"${iteration_dir}/solver_timeouts.jsonl"
-    fi
-    [[ -z "${session}" ]] \
-      || stream_staged+=("${worker} ${worker}/sessions ${session}")
-    cat -- "${worker}/obligation_result.jsonl" >>"${results}"
-    stream_dirty=1
+    stream_staged=("${worker} $(dirname "${staged}") $(basename "${staged}")")
+    campaign_stream_move
+    campaign_stream_land "${entry}"
   done
-  stream_pending=()
+  stream_gate_running=()
 }
 
 # Whether the re-run that withdraws <session> from the corpus may swap in
@@ -7800,12 +8238,12 @@ campaign_stream_swap_due() {
     || ! grep -qxF -- "${session}" "${stream_round_dir}/corpus.txt"
 }
 
-# The sessions workers staged ("<worker> <staged dir> <session>"), into the
-# corpus, each for the next step to gate (gate), and the WITNESSES among
-# them for the attempt after it (stream_witnesses) while the exploration has
-# not stopped: the replay ADMITTED, and its target row at the declared
-# occurrence observed the fatal (ExploreMain#witnesses, the round's
-# anchorOccurrences).
+# The sessions workers staged ("<worker> <staged dir> <session>"), each
+# gated already (campaign_stream_collected), into the corpus, and the
+# WITNESSES among them for the attempt after it (stream_witnesses) while the
+# exploration has not stopped: the replay ADMITTED, and its target row at
+# the declared occurrence observed the fatal (ExploreMain#witnesses, the
+# round's anchorOccurrences).
 campaign_stream_move() {
   local entry worker staged session
   for entry in "${stream_staged[@]}"; do
@@ -7814,7 +8252,6 @@ campaign_stream_move() {
       "${staged}" "the verdict names session ${session}, which its worker \
 did not stage"
     mv -- "${staged}/${session}" "${sessions}/${session}"
-    gate+=("${session}")
     stream_landed=$((stream_landed + 1))
     [[ -z "${stream_stop}" \
        && "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
@@ -7872,34 +8309,41 @@ campaign_unpauses() {
 # sees the region's decisions and exports, flips the new root, or takes the
 # occurrence's values.
 #
-# One GROW is one GENERATION of the plan and the class tree:
-# ExposedRegionPlanMain writes the generation's whole plan -- the one before
+# One GROW is one GENERATION of the plan and the class tree, BUILT BESIDE
+# THE LOOP (campaign_stream_grow_build, GROW's lane: one at a time, its
+# generation the next of the one current when it started): its planner,
+# ExposedRegionPlanMain, writes the generation's whole plan -- the one before
 # it with the reached doors-only occurrences' marks dropped (a ZK_EDGE
 # occurrence's too), each grown invocation an input of its task's row, plus
 # the task rows the exposed regions and the ZK_EDGE occurrences no task
-# holds need (admissionBasis EXPOSED_BY) -- as a new file, kept beside the
-# round too (grown_plan.jsonl), and the generation's ZooKeeper chain, the one
-# before it with each ZK_EDGE row's path and occurrence appended
-# (contract.ZkChain#grown; a seed's edge, which no replay re-runs, as well);
-# the iteration's plan, its chain and the seed plan are its links from now
-# on, and INSTRUMENT weaves it into the generation's own tree where its
-# weave key is not that of the tree it stands on.  A start takes the
-# generation current when it starts (campaign_stream_start), so whatever
-# already runs keeps the plan and the classes it started on.  Each exposing
-# obligation's replay is
-# queued first, to re-run -- on whichever host of the pool admits it, as an
-# obligation does -- in a directory of its own beside its worker
-# (stream_reruns), each swapping its session in as it returns, once no
-# reader of the session it withdraws runs (campaign_stream_swap); rounds
-# and solves go on meanwhile, and what a re-run owed captures is in flight
-# for them (stream_growing, campaign_stream_growth_new).
+# holds need (admissionBasis EXPOSED_BY) -- as a new file, and the
+# generation's ZooKeeper chain, the one before it with each ZK_EDGE row's
+# path and occurrence appended (contract.ZkChain#grown; a seed's edge, which
+# no replay re-runs, as well); INSTRUMENT weaves it into the generation's own
+# tree where its weave key is not that of the tree it stands on.  The head
+# goes on starting, collecting, landing and planning meanwhile (SGF8-adhoc-07
+# minutes 2-11: a GROW in the head's hands, its planner and weave 386 s with
+# no start and no collection), and what starts meanwhile takes the
+# generation current then, as a start always did.  The built generation is
+# TAKEN in the head's hands, between two head steps
+# (campaign_stream_grow_take): it is current from then on -- the iteration's
+# plan, its chain and the seed plan its links (kept beside the round too,
+# grown_plan.jsonl), each replaced whole by one rename -- and each exposing
+# obligation's replay is queued first, to re-run on whichever host of the
+# pool admits it, in a directory of its own beside its worker
+# (stream_reruns), each swapping its session in as it returns, gated, once
+# no reader of the session it withdraws runs (campaign_stream_swap); what a
+# re-run owed captures is in flight for the rounds (stream_growing,
+# campaign_stream_growth_new), and no round is taken while a GROW builds or
+# waits to be taken, so each round's growth is judged against every re-run
+# queued before it.  A GROW building or built counts among GROW's owed work
+# (stream_hold): a budget's end finds a round due, and an open chain's
+# witnesses wait for it.
 # Best effort: an obligation whose re-run was dropped (grow-dropped) is
 # never re-run again.
 campaign_stream_grow() {
-  local round_dir=$1 status=0 generation obligation_id session rerun
-  local subject=""
-  local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
-  local worker file unpaused key held
+  local round_dir=$1 generation
+  local growth=${2:-${round_dir}/growth.jsonl}
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
@@ -7910,6 +8354,24 @@ can be grown into"
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"
   mkdir -p "${generation}"
+  campaign_stream_grow_build "${round_dir}" "${growth}" "${generation}" \
+    "${stream_plan}" "${stream_classes}" &
+  stream_grow_pid=$!
+  stream_grow_round=${round_dir}
+  stream_grow_growth=${growth}
+  stream_hold=$((stream_hold + 1))
+}
+
+# campaign_stream_grow_build <round> <growth> <generation> <plan> <classes>:
+# one GROW's generation built, in the background, from the plan and the tree
+# current when it started (campaign_stream_grow): its plan (and chain) into
+# <generation>/, and its tree there where its weave key is not the key of
+# the tree <classes> it stands on; the heaps its JVMs outgrew in
+# <generation>/outgrown.  It writes nothing any reader of the iteration
+# reads: the generation is current only once taken.
+campaign_stream_grow_build() {
+  local round_dir=$1 growth=$2 generation=$3 plan=$4 classes=$5 status=0
+  local unpaused key held
   # A doors-only occurrence a value demand reached runs whole from this
   # generation on: its task row loses the mark.
   campaign_unpauses "${growth}" | cut -f2 | jq -R . | jq -s -c . \
@@ -7920,7 +8382,7 @@ can be grown into"
      | if .doorsOnly == true and .doorsOnlyDeclared != true
           and $held[.occurrenceId] then del(.doorsOnly)
        else . end' \
-    "${stream_plan}" >"${generation}/unpaused_plan.jsonl"
+    "${plan}" >"${generation}/unpaused_plan.jsonl"
   if [[ -n "$(campaign_exposures "${growth}")" ]] \
       || jq -e -s 'any(.[]; .kind == "ZK_EDGE")' "${growth}" >/dev/null; then
     run_capturing_status run_java_main \
@@ -7952,34 +8414,70 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
   # generations, each 62 s of the head's).
   key=$(campaign_weave_key "${generation}/execution_task_plan.jsonl") \
     || exit 1
-  held="$(dirname "${stream_classes}")/weave_key"
+  held="$(dirname "${classes}")/weave_key"
   require_nonempty "the weave key of the tree GROW stands on" "${held}"
-  ln -f "${generation}/execution_task_plan.jsonl" \
-    "${round_dir}/grown_plan.jsonl"
-  ln -f "${generation}/execution_task_plan.jsonl" \
-    "${iteration_dir}/execution_task_plan.jsonl"
-  ln -f "${generation}/execution_task_plan.jsonl" \
-    "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  [[ ! -f "${generation}/zk_chain.jsonl" ]] \
-    || ln -f "${generation}/zk_chain.jsonl" "${iteration_dir}/zk_chain.jsonl"
-  stream_plan="${generation}/execution_task_plan.jsonl"
   if [[ "${key}" != "$(cat -- "${held}")" ]]; then
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
 exposure(s)), ${unpaused} doors-only occurrence(s) run \
-whole; weaving generation g${stream_generation}"
+whole; weaving generation $(basename "${generation}")"
     campaign_instrument "${iteration_dir}" \
-      "${generation}/instrumented-classes" "${key}"
-    stream_classes="${generation}/instrumented-classes"
+      "${generation}/instrumented-classes" "${key}" \
+      "${generation}/execution_task_plan.jsonl"
   else
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
 exposure(s)), ${unpaused} doors-only occurrence(s) run \
-whole; generation g${stream_generation} weaves the tree it stands on \
+whole; generation $(basename "${generation}") weaves the tree it stands on \
 (weave key ${key:0:12})"
   fi
+  printf '%s\n' "${campaign_engine_outgrown}" >"${generation}/outgrown"
+}
+
+# GROW's build returned (<status>): one that failed has said why on the
+# campaign's stderr and ends the head; else it waits to be taken between two
+# head steps (campaign_stream_grow_take).
+campaign_stream_grow_done() {
+  local status=$1
+  stream_grow_pid=""
+  (( status == 0 )) || exit "${status}"
+  stream_grow_returned=1
+}
+
+# campaign_link_whole <file> <name>: <name> made a link of <file> in one
+# rename, so no reader opens it absent or half replaced (a round plans, and
+# hosts' solvers read the plan, while GROW's generation is taken).
+campaign_link_whole() {
+  ln -f -- "$1" "$2.link.${BASHPID}"
+  mv -f -- "$2.link.${BASHPID}" "$2"
+}
+
+# The GROW that built its generation, taken in the head's hands, between two
+# head steps: the generation current from now on, every exposing
+# obligation's replay queued first to re-run, what each captures in flight
+# (stream_growing).
+campaign_stream_grow_take() {
+  local round_dir=${stream_grow_round} growth=${stream_grow_growth}
+  local generation="${iteration_dir}/generations/g${stream_generation}"
+  local obligation_id session rerun worker file subject="" rerun_count=0
+  stream_grow_returned=""
+  stream_grow_round=""
+  stream_grow_growth=""
+  stream_hold=$((stream_hold - 1))
+  campaign_stream_outgrown "${generation}/outgrown"
+  campaign_link_whole "${generation}/execution_task_plan.jsonl" \
+    "${round_dir}/grown_plan.jsonl"
+  campaign_link_whole "${generation}/execution_task_plan.jsonl" \
+    "${iteration_dir}/execution_task_plan.jsonl"
+  campaign_link_whole "${generation}/execution_task_plan.jsonl" \
+    "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  [[ ! -f "${generation}/zk_chain.jsonl" ]] || campaign_link_whole \
+    "${generation}/zk_chain.jsonl" "${iteration_dir}/zk_chain.jsonl"
+  stream_plan="${generation}/execution_task_plan.jsonl"
+  [[ ! -d "${generation}/instrumented-classes" ]] \
+    || stream_classes="${generation}/instrumented-classes"
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
       "${obligation_id}" "${session}") || exit 1
@@ -8017,6 +8515,10 @@ ${obligation_id} ${session}"
   # it (BLOCKING at the fixed point, ExploreMain) rather than the driver
   # ending on a plan that changed under it.
   (( rerun_count > 0 )) || stream_dirty=1
+  # An open chain whose GROW queued no re-run has swapped in whole: its
+  # witnesses are attempted again (campaign_stream_swap's rule).
+  (( ${#stream_chain[@]} == 0 || stream_hold > 0 )) \
+    || campaign_stream_chain_reattempt
 }
 
 # GROW's returned re-runs swapped in, each one no reader of its exposing
@@ -8032,8 +8534,9 @@ ${obligation_id} ${session}"
 # first, which every host's solver reads its corpus without
 # (ObligationSolverMain#standing) -- leaves the corpus for
 # <worker>/before-<round>/ with a copy of what its replay wrote, the
-# re-run's files become the worker's, its session is staged to land with
-# the others (campaign_stream_move: gated in the step this swap begins), and
+# re-run's files become the worker's, its session -- gated where the re-run
+# staged it before it was due (campaign_stream_collected) -- lands
+# (campaign_stream_move), and
 # its verdict replaces the exposing ask's row in the ledger (another ask's
 # row of the obligation stays).  A worker file is renamed over or removed,
 # never moved aside: a peer whose NFS client looked its name up lately
@@ -8160,6 +8663,12 @@ name obligation ${id}, so it was not withdrawn from the corpus"
 re-run swapped in with no answer"
       cat -- "${worker}/obligation_result.jsonl" >>"${results}.tmp"
       session=${answer_session[${worker}/obligation_result.jsonl]}
+      # No session reaches the corpus ungated (campaign_stream_collected
+      # gates a re-run's before its swap is due).
+      [[ -z "${session}" \
+         || -e "${iteration_dir}/import_gated/${session}.json" ]] \
+        || campaign_fail EXPLORE CAMPAIGN "${rerun}" "obligation ${id}: its \
+re-run's session ${session} would swap in ungated"
       [[ -z "${session}" ]] \
         || stream_staged+=("${worker} ${rerun}/sessions ${session}")
       campaign_log "obligation ${id}: re-run under the grown tree, \

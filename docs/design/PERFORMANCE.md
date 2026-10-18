@@ -203,11 +203,11 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    growth on a full host and its retry asked the largest host solver's 12.5 GB (OBLIGATION_UNFINISHED after 600 s).
    Now a corpus's solvers start at 2 GB and double on an out-of-heap exit, charged their footprint, and a retry is
    placed by its own JVM's need (PIPELINE §7.5; shell rows SOLVER-HEAP and the retry rows).
-9. **GROW in the head's hands** (TODO): a round that exposes regions is taken with GROW's planner and weave run
-   synchronously by the head (`campaign_stream_take_round` -> `campaign_stream_grow`), so no start is dispatched,
-   nothing lands and no witness is attempted until the weave returns (solr-18413 Z3S round 2: 8 min). Rounds and
-   witness attempts already run beside the head (PIPELINE §7.9); GROW would be a step of a lane too.
-10. **Known limits of the two lanes** (PIPELINE §7.9). Both may wait for memory at once: a round's planner and a
+9. **GROW's lane** (PIPELINE §7.8, §7.9): a generation is built beside the loop and taken between two head steps,
+   so no start, landing or witness waits for its planner and weave (solr-18413 Z3S round 2: 8 min; SGF8-adhoc-07
+   minutes 2-11: 386 s with no start and no collection); what is left is the next round's take, which waits for
+   the GROW, and the GROW's re-runs, which start only at its take.
+10. **Known limits of the lanes** (PIPELINE §7.9). Two may wait for memory at once: a round's planner and a
    witness's composer are each placed by its own charge, each holding its need on the roomiest host while it waits
    (two holds, maybe on one host), and the head's room covers one of them -- an attempt no longer waits behind a
    round, but it can still wait for room (Z3S's planner waited 1437 s for 17.8 GB). A round's directory is written by

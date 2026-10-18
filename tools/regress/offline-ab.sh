@@ -499,14 +499,36 @@ ab_corpus() {
     || ab_skip "$1" "the run published no session"
 }
 
+# The import gate's list of every session of <iteration>'s corpus, one per
+# line, each a tab after it the workers whose answers name it, in wave and
+# name order (ImportGateMain --gate-list).
+ab_gate_list() {
+  local iteration=$1 worker session
+  local -A by=()
+  for worker in "${iteration}"/obligations-*/*/; do
+    [[ -s "${worker}obligation_result.jsonl" ]] || continue
+    session=$(jq -r '.sessionId // ""' "${worker}obligation_result.jsonl" \
+      2>/dev/null | tail -n 1) || session=""
+    [[ -z "${session}" ]] || by[${session}]+=$'\t'${worker%/}
+  done
+  for session in "${iteration}"/sessions/*/; do
+    [[ -d "${session}" ]] || continue
+    session=${session%/}
+    printf '%s%s\n' "${session}" "${by[$(basename "${session}")]:-}"
+  done
+}
+
 ab_stage_import() {
   local dir code=0
   dir=$(ab_stage_dir IMPORT)
   ab_corpus "${dir}" || return
   ab_iteration "${dir}/iteration-0000" full
+  # Every session of the recorded final corpus, gated at once with no ledger,
+  # each beside the worker whose answer names it (its focus rows).
+  ab_gate_list "${dir}/iteration-0000" >"${dir}/gate.list"
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
     edu.uva.liftlab.graphchecker.contract.ImportGateMain \
-    --sessions "${dir}/iteration-0000/sessions" \
+    --iteration "${dir}/iteration-0000" --gate-list "${dir}/gate.list" \
     --out "${dir}/campaign_gaps.jsonl" --topology-epoch iteration-0000 \
     || code=$?
   cp "${dir}/stdout.log" "${dir}/import_gate.json"
