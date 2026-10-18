@@ -1787,7 +1787,7 @@ HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room 
 room is not held against it), else the pool's host with the most room under the ceiling
 (`campaign_host_room`), charged there while it runs and released when it returns; none having room,
 it waits, saying so once -- but A STEP NO HOST CAN EVER HOLD never waits: past the most a pool host holds
-with no charge standing (its ceiling less what it uses beside the ledger, `campaign_head_most_mb`), an
+with no charge standing (its ceiling less what it uses beside the ledger, at most the system's own 2048 MB, `campaign_head_most_mb`), an
 engine JVM whose heap is only a bound (no measured need) runs at the largest heap that fits it, and any
 other step fails at once, named (`engine_java`, `campaign_head_place`). A step on a peer runs through the remote worker script as
 `run_engine.sh --run-placed` (`campaign_run_placed`) in the head's working directory, with the

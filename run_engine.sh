@@ -4929,6 +4929,7 @@ campaign_host_room() {
     - $(campaign_host_head_room "${dir}" "${now}") ))"
 }
 
+campaign_host_system_mb=2048
 campaign_head_most_mb() {
   local host dir now total available limit charged used most=0 own
   local campaign_host_max_used_pct=${campaign_head_max_used_pct}
@@ -4943,6 +4944,7 @@ campaign_head_most_mb() {
     charged=$(campaign_host_charged "${dir}" "${now}")
     used=$(( total - available ))
     own=$(( used > charged ? used - charged : 0 ))
+    (( own <= campaign_host_system_mb )) || own=${campaign_host_system_mb}
     (( limit - own <= most )) || most=$(( limit - own ))
   done < <(if (( $# > 0 )); then printf '%s\n' "$@"; else
       { echo localhost; campaign_worker_host_list; } | awk '!seen[$0]++'; fi)
