@@ -8,8 +8,9 @@ number below is measured (analysis dirs under `/bigtemp/vnr3ne/analysis/solr-202
 
 1. One implementation per concept: what a rewrite replaces is deleted -- old paths, flags, unused helpers, tests of
    removed mechanisms (merge the rest table-driven).
-2. Where semantics do not change, outputs stay byte-identical on the references: planner 05 r5, 05 r2, 13 r10,
-   19 r10, 21 r13 (compressed copies in `analysis/solr-2026-10-17/nfs/`); composer 13, 39, 21, 10.
+2. No byte-identity requirement (owner 2026-10-18 evening: the changes are too large): the bar is a `.smt` holding
+   the right causal chain and, for a SAT, its replay (CONFIRM, REPRODUCE); small issues are not ground on. The old
+   references (`analysis/solr-2026-10-17/nfs/`, composer 13, 39, 21, 10) stay usable as a diagnostic, not a gate.
 3. Where semantics change (the exploration core), regression = the 8 bug checks stay SAT + CONFIRMED + native; the
    study checks' claims are equal or more complete.
 4. Measure first; a change lands with its before/after numbers.

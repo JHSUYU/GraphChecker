@@ -200,6 +200,10 @@ recommendation.
   优化看什么，debug我们的各种经验"): keep STATE/TODO/LESSONS current at every milestone; at a stop, agents checkpoint as
   gated commits + 'WIP (not gated)' commits on their branches.
 - **Stay on the liftlab servers** (2026-10-18: "算了算了还是用liftlab的server吧"), Solr only for now ("hbase的当前不用做").
+- **No byte-identity gate after the rewrite** (2026-10-18 evening: "由于我们改动很大。不再要求做语义一致逐字节比较。跑出.smt包含正确的因果链即可，小问题不用死磕"; "我说的validaiton是.smt给出sat后的重放"): a change is
+  accepted when each case's `.smt` holds the right causal chain and a SAT is replayed -- CONFIRM in the VM (strict) and
+  REPRODUCE natively; small issues are not ground on. This supersedes rule 5 of "Code health" below (its byte-identical gate)
+  for the Solr rewrite.
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
