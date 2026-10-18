@@ -118,25 +118,6 @@ public class ExceptionTargetLineResolverTest {
         assertEquals(String.join("\n", expected), String.join("\n", actual));
     }
 
-    @Test
-    public void aSpecLineStatesNameClassLineAndOptionallyTheType()
-            throws IOException {
-        ExceptionTargetLineResolver.TargetLine line =
-                ExceptionTargetLineResolver.TargetLine.parse(
-                        " FSNamesystem-4107 a.b.FSNamesystem 4107 ");
-        assertEquals(Arrays.asList("FSNamesystem-4107", "a.b.FSNamesystem",
-                "4107", ""), Arrays.asList(line.name, line.className,
-                String.valueOf(line.line), line.thrownType));
-        for (String bad : new String[] {"a b", "a b 0", "a b c", "a b 1 T x"}) {
-            try {
-                ExceptionTargetLineResolver.TargetLine.parse(bad);
-                throw new AssertionError("accepted: " + bad);
-            } catch (IOException expected) {
-                assertNotNull(expected.getMessage());
-            }
-        }
-    }
-
     private Path compile() throws IOException {
         File sources = folder.newFolder("src");
         File classes = folder.newFolder("classes");

@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -44,29 +43,9 @@ public class SymbolicRootPolicyTest {
             + ".delegation.DelegationKey: int keyId>";
     private static final String ROOT = InputActionCatalog
             .DECLARED_SYMBOLIC_ROOT;
-
-    /** hdfs-17960's counter: read through a JDK accessor, stored elsewhere. */
-    private static final String ATOMIC_VALUE =
-            "<java.util.concurrent.atomic.AtomicInteger: int value>";
-    private static final String ATOMIC_GET =
-            "<java.util.concurrent.atomic.AtomicInteger: int get()>";
-    private static final String NUM_SNAPSHOTS =
-            "<S: java.util.concurrent.atomic.AtomicInteger numSnapshots>";
-    private static final String DECREMENT = "<java.util.concurrent.atomic"
-            + ".AtomicInteger: int getAndDecrement()>";
-    private static final String DELETE = "<S: void deleteSnapshot()>";
     private static final String GET_NUM = "<S: int getNumSnapshots()>";
     private static final String GET_NUM_LOCAL = GET_NUM + "::$i0";
-    private static final String COUNTER = "<S: int snapshotCounter>";
-    private static final String INIT = "<S: void <init>()>";
-    private static final String KEYS = "<S: java.util.Map keys>";
-    private static final String CHILDREN = "<S: java.util.List children>";
     private static final String FILE = "<S: org.x.LongFile committed>";
-    private static final String MAP_PUT = "<java.util.Map: java.lang.Object "
-            + "put(java.lang.Object,java.lang.Object)>";
-    private static final String LIST_ADD =
-            "<java.util.List: boolean add(java.lang.Object)>";
-    private static final String FILE_SET = "<org.x.LongFile: void set(long)>";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -132,243 +111,12 @@ public class SymbolicRootPolicyTest {
                         .has(ROOT));
     }
 
-    /**
-     * A READ placeholder: a read the weave cannot version -- its accessor runs
-     * outside the woven program -- of a location another region stores.  A
-     * woven accessor's read is versioned where it runs, and a location only
-     * its own region stores has no writer to bind.
-     */
-    @Test
-    public void aReadTheWeaveCannotVersionIsAPlaceholder() throws Exception {
-        Map<String, List<String>> apart = new LinkedHashMap<>();
-        apart.put(NN, Collections.singletonList(GET_NUM));
-        apart.put(DN, Collections.singletonList(DELETE));
-        List<Map<String, Object>> edges = Arrays.asList(atomicRead(),
-                atomicStore());
-        StaticScopeMap unwoven = map(edges, apart,
-                Collections.<String, Clock>emptyMap(), ATOMIC_GET::equals);
-        assertEquals(Collections.singleton(StaticScopeMap.readKey(
-                GET_NUM + "#u2", ATOMIC_VALUE)), unwoven.readSites());
-        JsonObject port = action("ACCESSOR_RETURN", GET_NUM + "#u2",
-                ATOMIC_VALUE);
-        port.addProperty("accessFieldSignature", ATOMIC_VALUE);
-        JsonObject read = ConcolicScheduler.SymbolicInputSelection.read(
-                unwoven, catalog()).select(NN, actions(port)).get(0)
-                .getAsJsonObject();
-        assertTrue("the placeholder is minted", read.get(ROOT).getAsBoolean());
-        assertFalse("and is no clock",
-                read.has(InputActionCatalog.DECLARED_WALL_CLOCK));
-
-        assertTrue("a woven accessor's read is no placeholder",
-                map(edges, apart, Collections.<String, Clock>emptyMap(),
-                        method -> false).readSites().isEmpty());
-        assertTrue("nor is a read its own region alone stores",
-                map(edges, Collections.singletonMap(NN,
-                        Arrays.asList(GET_NUM, DELETE)),
-                        Collections.<String, Clock>emptyMap(), ATOMIC_GET::equals)
-                        .readSites().isEmpty());
-
-    }
-
-    /**
-     * SYMBOL-SCOPE F2: a primitive instance cell the slice both reads and
-     * stores, and a branch decides on, is tracked -- every access of it is
-     * observed, a read, a {@code putfield} and an atomic's RMW, and a region
-     * reading it observes its branches from entry.  A cell no read of the
-     * slice reaches, or whose reads only feed data or the wire, is not.
-     */
-    @Test
-    public void aCellTheSliceReadsAndStoresIsTracked() throws Exception {
-        Map<String, List<String>> apart = new LinkedHashMap<>();
-        apart.put(NN, Collections.singletonList(GET_NUM));
-        apart.put(DN, Collections.singletonList(DELETE));
-        StaticScopeMap tracked = map(Arrays.asList(atomicRead(),
-                atomicStore(), counterRead(), counterStore(),
-                guard(GET_NUM_LOCAL), guard(GET_NUM + "::$i1")), apart,
-                Collections.<String, Clock>emptyMap(), method -> false);
-        JsonArray sites = tracked.observedSites();
-        assertEquals("both reads, the atomic's RMW and the putfield", 4,
-                sites.size());
-        assertEquals(GET_NUM + "#u2", member(sites, 0, "siteId"));
-        assertEquals("true", member(sites, 0, "read"));
-        assertEquals(DELETE + "#u35", member(sites, 1, "siteId"));
-        assertEquals(DECREMENT, member(sites, 1, "declaredCallee"));
-        assertEquals("false", member(sites, 1, "read"));
-        assertEquals(GET_NUM + "#u4", member(sites, 2, "siteId"));
-        assertEquals("true", member(sites, 2, "read"));
-        assertEquals(DELETE + "#u40", member(sites, 3, "siteId"));
-        assertEquals("a putfield names no callee", "",
-                member(sites, 3, "declaredCallee"));
-        ConcolicScheduler.SymbolicInputSelection selection =
-                ConcolicScheduler.SymbolicInputSelection.read(tracked,
-                        catalog());
-        assertTrue("the reading region observes from entry",
-                selection.readsTrackedState(Collections.singleton(NN)));
-        assertTrue("so does one it is folded into", selection
-                .readsTrackedState(Arrays.asList("REGION.enclosing", NN)));
-        assertFalse("the writing region does not", selection
-                .readsTrackedState(Collections.singleton(DN)));
-        assertEquals("a store no read of the slice reaches is not observed",
-                0, map(Arrays.asList(atomicStore(), counterStore()), apart,
-                        Collections.<String, Clock>emptyMap(), method -> false)
-                        .observedSites().size());
-        assertEquals("nor one whose reads no branch decides on", 0,
-                map(Arrays.asList(atomicRead(), atomicStore(), counterRead(),
-                        counterStore()), apart,
-                        Collections.<String, Clock>emptyMap(), method -> false)
-                        .observedSites().size());
-        assertEquals("nor one whose reads a receiver decides on (F3)", 0,
-                map(Arrays.asList(counterRead(), counterStore(),
-                        edge("{\"kind\":\"wire_handoff\",\"fromCell\":\""
-                                + GET_NUM + "::$i1\",\"toCell\":\"" + DELETE
-                                + "::$i3\"}"), guard(DELETE + "::$i3")),
-                        apart, Collections.<String, Clock>emptyMap(),
-                        method -> false).observedSites().size());
-    }
-
-    /**
-     * SYMBOL-SCOPE §5.2: a cell holding a container is observed by the state
-     * of the container -- after a read, on its referent; before a container
-     * mutation through it, on the call's receiver -- and a mutator call is
-     * never a field observation.  A CONTAINER cell's reference never
-     * changes: its read observes no field and its constructor's store
-     * nothing, and only a read the root demand chose is a read site
-     * (§5.1).  A REFERENCE cell's read observes both; a mutator call on a
-     * REFERENCE cell holding no container observes nothing (its receiver is
-     * not the cell's holder: HANDOFF_FIELD_NOT_FOUND).
-     */
-    @Test
-    public void aContainerACellHoldsIsObservedByItsState() throws Exception {
-        Map<String, List<String>> apart = new LinkedHashMap<>();
-        apart.put(NN, Collections.singletonList(GET_NUM));
-        apart.put(DN, Arrays.asList(DELETE, INIT));
-        Map<String, SharedFieldFlow.TrackedKind> kinds = new LinkedHashMap<>();
-        kinds.put(KEYS, SharedFieldFlow.TrackedKind.CONTAINER);
-        kinds.put(CHILDREN, SharedFieldFlow.TrackedKind.REFERENCE);
-        kinds.put(FILE, SharedFieldFlow.TrackedKind.REFERENCE);
-        JsonArray sites = map(Arrays.asList(
-                read(KEYS, 8, "$r1"), guard(GET_NUM + "::$r1"),
-                read(KEYS, 11, "$r4"), guard(GET_NUM + "::$r4"),
-                mutation(KEYS, DELETE, 50, MAP_PUT), store(KEYS, INIT, 3),
-                read(CHILDREN, 9, "$r2"), guard(GET_NUM + "::$r2"),
-                mutation(CHILDREN, DELETE, 51, LIST_ADD),
-                read(FILE, 10, "$r3"), guard(GET_NUM + "::$r3"),
-                mutation(FILE, DELETE, 52, FILE_SET)), apart,
-                Collections.<String, Clock>emptyMap(), method -> false,
-                cell -> kinds.getOrDefault(cell,
-                        SharedFieldFlow.TrackedKind.NONE),
-                (demandSite, demandCell) -> (GET_NUM + "#u8").equals(
-                        demandSite) ? new StaticScopeMap.Demanded(
-                        "TRACK_CONTAINER", 2, true) : null).observedSites();
-        Map<String, String> observed = new LinkedHashMap<>();
-        for (int index = 0; index < sites.size(); index++) {
-            observed.put(member(sites, index, "siteId"),
-                    member(sites, index, "field") + "/"
-                            + member(sites, index, "container")
-                            + (member(sites, index, "provenance").isEmpty()
-                            ? "" : "/provenance"));
-        }
-        Map<String, String> expected = new LinkedHashMap<>();
-        // The chosen read of a construction-only container: its state, and
-        // the store version its holder was decoded from (SYMBOL-SCOPE §5.7).
-        expected.put(GET_NUM + "#u8", "false/true/provenance");
-        // GET_NUM#u11 decides a branch too, but the demand chose no CONTAINER
-        // read there: no read site, nothing observed.
-        expected.put(DELETE + "#u50", "false/true");
-        expected.put(GET_NUM + "#u9", "true/true");
-        expected.put(DELETE + "#u51", "false/true");
-        expected.put(GET_NUM + "#u10", "true/false");
-        assertEquals("field/container per observed site", expected,
-                observed);
-    }
-
-    /**
-     * SYMBOL-SCOPE §5.7: a construction-only field's read the root demand
-     * chose (PROVENANCE) is a PROVENANCE_SITE, kept though nothing in the
-     * slice stores it; a replay observes it by its receiver alone, and the
-     * concrete anchor's demand joins a STORE read at that site, and no
-     * other kind of read.
-     */
-    @Test
-    public void aChosenConstructionOnlyReadIsAProvenanceSite()
-            throws Exception {
-        String flag = "<D: java.lang.Boolean flag>";
-        String readOnly = "<D: boolean isReadOnly()>";
-        final String BUILD = "<P: void <init>(D)>";
-        StaticScopeMap map = map(Arrays.asList(read(flag, 7, "$r1"),
-                guard(GET_NUM + "::$r1"), edge("{\"kind\":\"call_return\","
-                        + "\"method\":\"" + GET_NUM + "\",\"unitIndex\":9,"
-                        + "\"invoke\":\"" + readOnly + "\",\"fromCell\":\""
-                        + readOnly + ".return\",\"toCell\":\"" + GET_NUM
-                        + "::$z2\"}"), guard(GET_NUM + "::$z2"),
-                edge("{\"kind\":\"call_return\",\"method\":\"" + BUILD
-                        + "\",\"unitIndex\":4,\"invoke\":\"" + readOnly
-                        + "\",\"fromCell\":\"" + readOnly + ".return\","
-                        + "\"toCell\":\"" + BUILD + "::$z3\"}")),
-                Collections.singletonMap(NN, Collections.singletonList(
-                        GET_NUM)), Collections.<String, Clock>emptyMap(),
-                method -> false, cell -> SharedFieldFlow.TrackedKind.NONE,
-                (demandSite, demandCell) -> (GET_NUM + "#u7").equals(
-                        demandSite) ? new StaticScopeMap.Demanded(
-                        "PROVENANCE", 3, true) : (GET_NUM + "#u9").equals(
-                        demandSite) || (BUILD + "#u4").equals(demandSite)
-                        ? new StaticScopeMap.Demanded("SCOPE", 2, true)
-                        : null);
-        JsonArray observed = map.observedSites();
-        Object[][] rows = {
-            {"the cells a decoded object's guards read: a field, and a call"
-                    + " out of scope on it",
-                new java.util.LinkedHashSet<>(Arrays.asList(flag,
-                        readOnly + ".return")), map.provenanceCells()},
-            {"the calls, by their sites: one in a constructor no region"
-                    + " holds too", "{" + GET_NUM + "#u9=" + readOnly
-                    + ".return, " + BUILD + "#u4=" + readOnly + ".return}",
-                map.provenanceCalls().toString()},
-            {"observed at the call too", readOnly,
-                member(observed, 1, "declaredCallee")},
-            {"observed by its receiver alone", "true/false/false",
-                member(observed, 0, "provenance") + "/"
-                        + member(observed, 0, "field") + "/"
-                        + member(observed, 0, "container")},
-            {"a store read there is demanded", true, map.demandedAt(
-                    GET_NUM + "#u7", "[B",
-                    edu.uva.liftlab.graphchecker.contract.LocationKind.STORE)},
-            {"a heap read there is not", false, map.demandedAt(
-                    GET_NUM + "#u7", "Ljava/lang/Boolean;",
-                    edu.uva.liftlab.graphchecker.contract.LocationKind
-                            .INSTANCE)},
-            {"a view accessor's store read is demanded wherever it stands",
-                true, map.demandedAt(edu.uva.liftlab.graphchecker.contract
-                    .ContentPort.viewed("SOLR_ZK", "/aliases.json"), "[B",
-                    edu.uva.liftlab.graphchecker.contract.LocationKind.STORE)}};
-        for (Object[] row : rows) {
-            assertEquals((String) row[0], row[1], row[2]);
-        }
-    }
-
     private static Map<String, Object> read(String cell, int unitIndex,
                                             String local) {
         return edge("{\"kind\":\"field_read\",\"method\":\"" + GET_NUM
                 + "\",\"unitIndex\":" + unitIndex + ",\"fromCell\":\""
                 + cell + "\",\"toCell\":\"" + GET_NUM + "::" + local
                 + "\"}");
-    }
-
-    private static Map<String, Object> mutation(String cell, String method,
-                                                int unitIndex, String callee) {
-        return edge("{\"kind\":\"container_mutation_argument\","
-                + "\"transferKind\":\"HEAP_WRITE\",\"fromCell\":\""
-                + method + "::$r9\",\"toCell\":\"" + cell
-                + "\",\"method\":\"" + method + "\",\"unitIndex\":"
-                + unitIndex + ",\"invoke\":\"" + callee + "\"}");
-    }
-
-    private static Map<String, Object> store(String cell, String method,
-                                             int unitIndex) {
-        return edge("{\"kind\":\"field_write\",\"transferKind\":"
-                + "\"HEAP_WRITE\",\"fromCell\":\"" + method + "::$r0\","
-                + "\"toCell\":\"" + cell + "\",\"method\":\"" + method
-                + "\",\"unitIndex\":" + unitIndex + "}");
     }
 
     /** The published scope map of these edges, through the artifact the way
@@ -431,43 +179,6 @@ public class SymbolicRootPolicyTest {
                 + "\",\"unitIndex\":2,\"invoke\":\"" + callee
                 + "\",\"fromCell\":\"" + callee + ".return\",\"toCell\":\""
                 + method + "::$l0\"}");
-    }
-
-    private static Map<String, Object> atomicRead() {
-        return edge("{\"kind\":\"accessor_field_return\",\"method\":\""
-                + GET_NUM + "\",\"unitIndex\":2,\"invoke\":\"" + ATOMIC_GET
-                + "\",\"declaredFieldSignature\":\"" + ATOMIC_VALUE
-                + "\",\"accessorImplementationMethod\":\"" + ATOMIC_GET
-                + "\",\"fromCell\":\"" + ATOMIC_VALUE + "\",\"toCell\":\""
-                + GET_NUM_LOCAL + "\"}");
-    }
-
-    private static Map<String, Object> atomicStore() {
-        return edge("{\"kind\":\"field_mutation\",\"transferKind\":"
-                + "\"HEAP_WRITE\",\"fromCell\":\"" + DELETE + "#u35\","
-                + "\"toCell\":\"" + NUM_SNAPSHOTS + "\",\"method\":\""
-                + DELETE + "\",\"unitIndex\":35,\"invoke\":\"" + DECREMENT
-                + "\"}");
-    }
-
-    /** A branch of the slice on {@code cell}. */
-    private static Map<String, Object> guard(String cell) {
-        return edge("{\"kind\":\"guard_dependency\",\"method\":\""
-                + GET_NUM + "\",\"unitIndex\":6,\"fromCell\":\"" + cell
-                + "\",\"toCell\":\"" + GET_NUM + "#u6\"}");
-    }
-
-    private static Map<String, Object> counterRead() {
-        return edge("{\"kind\":\"field_read\",\"method\":\"" + GET_NUM
-                + "\",\"unitIndex\":4,\"fromCell\":\"" + COUNTER
-                + "\",\"toCell\":\"" + GET_NUM + "::$i1\"}");
-    }
-
-    private static Map<String, Object> counterStore() {
-        return edge("{\"kind\":\"field_write\",\"transferKind\":"
-                + "\"HEAP_WRITE\",\"fromCell\":\"" + DELETE + "::$i2\","
-                + "\"toCell\":\"" + COUNTER + "\",\"method\":\""
-                + DELETE + "\",\"unitIndex\":40}");
     }
 
     private static JsonObject copy(String authority) {

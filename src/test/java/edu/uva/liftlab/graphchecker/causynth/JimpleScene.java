@@ -2,11 +2,9 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import soot.Body;
 import soot.G;
-import soot.Local;
 import soot.Scene;
 import soot.SootClass;
 import soot.SootMethod;
-import soot.Unit;
 import soot.jimple.parser.JimpleAST;
 import soot.options.Options;
 
@@ -26,8 +24,6 @@ import java.util.regex.Pattern;
 public final class JimpleScene {
     /** The root class, and the declared throws' exception. */
     public static final String OBJECT = "public class java.lang.Object { }";
-    public static final String FAILURE = "public class"
-            + " java.lang.IllegalStateException extends java.lang.Object { }";
 
     private static final Pattern NAME = Pattern.compile(
             "(?:class|interface)\\s+'?([\\w.$]+)'?");
@@ -79,21 +75,5 @@ public final class JimpleScene {
     /** The method of that signature. */
     public static SootMethod method(String signature) {
         return Scene.v().getMethod(signature);
-    }
-
-    /** The local of {@code body} named {@code name}. */
-    public static Local local(Body body, String name) {
-        for (Local local : body.getLocals()) {
-            if (local.getName().equals(name)) return local;
-        }
-        throw new IllegalArgumentException(name);
-    }
-
-    /** The unit of {@code signature}'s body that prints as {@code text}. */
-    public static Unit unit(String signature, String text) {
-        for (Unit unit : method(signature).getActiveBody().getUnits()) {
-            if (unit.toString().equals(text)) return unit;
-        }
-        throw new IllegalArgumentException(text + " in " + signature);
     }
 }

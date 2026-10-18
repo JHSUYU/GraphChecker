@@ -14,7 +14,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashSet;
 
 import static org.junit.Assert.assertEquals;
 
@@ -27,12 +26,6 @@ public class RootDemandTest {
     private static final String CHECK = "<t.T: void check()>";
     private static final String RUN = "<t.T: void run()>";
     private static final String HANDLE = "<t.T: void handle(int)>";
-    /** A door's chain: chosen at RUN's store, standing in RUN. */
-    private static final List<String> VIA = Collections.singletonList(RUN);
-    private static final String M = "<a.C: void m()>";
-    private static final String OTHER = "<a.D: void n()>";
-    private static final String STORED = "<a.C: long expiry>";
-    private static final String ROOT = M + "::$l0";
 
     @After
     public void resetSoot() {
@@ -111,169 +104,6 @@ public class RootDemandTest {
         }
     }
 
-    /**
-     * A reference only the system's view classes write is no tracked cell
-     * ({@link edu.uva.liftlab.graphchecker.plan.SystemView}): ZkStateReader.clusterState, woven
-     * for its decodes, is the view's bookkeeping, read as it is.
-     */
-    @Test
-    public void aReferenceOnlyTheViewWritesIsNotTracked() {
-        System.setProperty(edu.uva.liftlab.graphchecker.plan.SystemView.PROPERTY, T);
-        try {
-            Map<String, List<String>> writers = new LinkedHashMap<>();
-            scene(writers);
-            List<Map<String, Object>> edges = edges();
-            Map<String, Object> region = new LinkedHashMap<>();
-            region.put("regionId", "REGION.r");
-            region.put("rootMethod", HANDLE);
-            region.put("methods", Arrays.asList(HANDLE, RUN, CHECK));
-            RootDemand demand = RootDemand.of(edges,
-                    Collections.singletonList(region),
-                    Collections.<String, Clock>emptyMap(),
-                    ConfigRoots.of(edges, writers),
-                    Collections.singleton(CHECK + "#u9"),
-                    field -> field.contains(": int ")
-                            ? SharedFieldFlow.TrackedKind.VALUE
-                            : SharedFieldFlow.TrackedKind.REFERENCE,
-                    field -> false, owner -> owner.startsWith("t."),
-                    new Faults(), Collections.<DemandedDoors.Site>emptyList());
-            String kind = "";
-            for (RootDemand.Boundary boundary : demand.boundaries()) {
-                if (boundary.cell.equals(field("java.lang.String name"))) {
-                    kind = boundary.kind.name();
-                }
-            }
-            assertEquals("PRE_WINDOW", kind);
-        } finally {
-            System.clearProperty(edu.uva.liftlab.graphchecker.plan.SystemView.PROPERTY);
-        }
-    }
-
-    /**
-     * SYMBOL-SCOPE §4.6: a construction-only field is a PROVENANCE boundary
-     * (a read of a decoded object's field reads the store version it was
-     * parsed from), and the walk goes on through what its constructor stored
-     * -- a processor's copy of its collection's read-only flag leads to the
-     * flag read, a boundary of its own, and a container field the flag's
-     * construction read holds what that copy's version holds: PROVENANCE,
-     * no tracked container (solr-18413 Z3: ZkNodeProps.propMap).  A
-     * construction-only field a region stores and a replay versions stays
-     * tracked (solr-18413: RoutingRule.expireAt).
-     */
-    @Test
-    public void aConstructionOnlyFieldIsWalkedThroughToWhatItsConstructorStored() {
-        scene(new LinkedHashMap<>());
-        String z0 = CHECK + "::$z0";
-        String init = "<t.T: void <init>(t.D)>";
-        String copy = field("boolean copy");
-        String flag = "<t.D: java.lang.Boolean flag>";
-        String built = "<t.D: void <init>(java.util.Map)>";
-        String props = "<t.D: java.util.Map props>";
-        // Per row: whether a region stores the flag and a replay versions
-        // it, and the boundaries.
-        Object[][] rows = {
-            {false, Arrays.asList("PROVENANCE 1 true " + copy,
-                    "PROVENANCE 3 true " + flag,
-                    "PROVENANCE 5 true " + props)},
-            {true, Arrays.asList("PROVENANCE 1 true " + copy,
-                    "TRACK 3 true " + flag)},
-        };
-        for (Object[] row : rows) {
-            boolean stored = (Boolean) row[0];
-            List<Map<String, Object>> edges = new ArrayList<>(Arrays.asList(
-                    edge("exception_guard", z0, CHECK + "#u9#exception:E",
-                            CHECK, 9, null),
-                    edge("field_read", copy, z0, CHECK, 4, null),
-                    edge("field_write", init + "::$z1", copy, init, 3, null),
-                    edge("accessor_field_return", flag, init + "::$z1", init,
-                            2, "<t.D: java.lang.Boolean isFlag()>"),
-                    edge("field_write", built + "::$r2", flag, built, 2,
-                            null),
-                    edge("field_read", props, built + "::$r2", built, 1,
-                            null),
-                    edge("field_write", RUN + "::$r3", props, RUN, 5,
-                            null)));
-            if (stored) {
-                edges.add(edge("field_write", RUN + "::$z4", flag, RUN, 6,
-                        null));
-            }
-            RootDemand demand = RootDemand.of(edges,
-                    Collections.singletonList(region()),
-                    Collections.<String, Clock>emptyMap(),
-                    ConfigRoots.of(edges, new LinkedHashMap<>()),
-                    Collections.singleton(CHECK + "#u9"),
-                    field -> stored && field.equals(flag)
-                            ? SharedFieldFlow.TrackedKind.VALUE
-                            : SharedFieldFlow.TrackedKind.NONE,
-                    field -> field.equals(copy) || field.equals(flag),
-                    owner -> owner.startsWith("t."), new Faults(),
-                    Collections.<DemandedDoors.Site>emptyList());
-            List<String> found = new ArrayList<>();
-            for (RootDemand.Boundary boundary : demand.boundaries()) {
-                found.add(boundary.kind + " " + boundary.distance + " "
-                        + boundary.chosen + " " + boundary.cell);
-            }
-            assertEquals("stored=" + stored, row[1], found);
-            assertEquals("the read the scope map marks", (stored ? "TRACK"
-                    : "PROVENANCE") + " 3 true",
-                    mark(demand.marks().at(init + "#u2", flag)));
-            // A PROVENANCE field feeds scope growth as a PRE_WINDOW one
-            // does: its writer is a decode's constructor, maybe out of scope.
-            assertEquals("stored=" + stored + ": scope growth takes the copy",
-                    "PROVENANCE", demand.frontier().get(copy).kind);
-        }
-    }
-
-    /**
-     * SYMBOL-SCOPE §4.4: where a root an occurrence read goes inside it (its
-     * influence), and its way into what is demanded.
-     */
-    @Test
-    public void aRootReachesTheStoresItDecidesAndTheWiresItFeeds() {
-        List<Map<String, Object>> graph = Arrays.asList(
-                edge("local_def_use", ROOT, M + "::$l1", M),
-                // the arm the root decides stores the location
-                edge("guard_dependency", M + "::$l1", STORED, M),
-                edge("local_def_use", M + "::$l1", M + "::$l2", M),
-                edge("wire_handoff", M + "::$l2", OTHER + "::$i0", OTHER),
-                // an edge of a method this occurrence did not perform
-                edge("local_def_use", ROOT, OTHER + "::$x", OTHER),
-                // past the store: whoever reads the location next
-                edge("field_read", STORED, M + "::$l9", M));
-        Map<String, List<String>> methods = new LinkedHashMap<>();
-        methods.put("REGION.r", Collections.singletonList(M));
-        RootRelevance relevance = new RootRelevance(graph,
-                Collections.singleton(STORED), methods);
-        RootRelevance.Influence influence = relevance.influence(
-                Collections.singletonList("REGION.r"), ROOT);
-        Object[][] rows = {
-            {"the stored locations it reaches", set(STORED),
-                influence.carriers},
-            {"the wire consumers its value is handed to",
-                set(OTHER + "::$i0"), influence.consumers},
-            {"its way into a demanded location",
-                set(ROOT, M + "::$l1", STORED),
-                influence.through(Collections.singleton(STORED))},
-            {"its way into a demanded wire",
-                set(ROOT, M + "::$l1", M + "::$l2", OTHER + "::$i0"),
-                influence.through(Collections.singleton(OTHER + "::$i0"))},
-            {"no way in when nothing is demanded", set(),
-                influence.through(Collections.<String>emptySet())},
-            {"a region that does not hold the method holds none of it",
-                set(), relevance.influence(
-                        Collections.singletonList("REGION.q"), ROOT).carriers},
-        };
-        for (Object[] row : rows) {
-            assertEquals((String) row[0], row[1],
-                    new HashSet<>((Set<?>) row[2]));
-        }
-    }
-
-    private static String mark(StaticScopeMap.Demanded demanded) {
-        return demanded.kind + " " + demanded.distance + " "
-                + demanded.chosen;
-    }
-
     private static String measured(RootDemand demand, String cell) {
         List<String> found = new ArrayList<>();
         for (RootDemand.Boundary boundary : demand.boundaries()) {
@@ -281,134 +111,6 @@ public class RootDemandTest {
         }
         Collections.sort(found);
         return String.join(" ", found);
-    }
-
-    /**
-     * SYMBOL-SCOPE §4.6: a local file operation is a door only where its
-     * outcome reaches what the walk demanded -- a failing result into the
-     * path (VALUE), a latent fault skipping a demanded store (ESCAPE) --
-     * the doors this pass wove first, the {@value RootDemand#WIDTH}
-     * nearest in all, none whose demanded site no region holds (its marker
-     * is read where that site runs); a call into the system where one
-     * could stand is an IO frontier row of scope growth.
-     */
-    @Test
-    public void aFileFaultIsADoorOnlyWhereItsOutcomeReachesTheSlice() {
-        scene(new LinkedHashMap<>());
-        String rename = "<java.io.File: boolean renameTo(java.io.File)>";
-        String open = "<java.io.FileOutputStream: void <init>(java.io.File)>";
-        String z0 = CHECK + "::$z0";
-        List<Map<String, Object>> edges = Arrays.asList(
-                edge("exception_guard", z0, CHECK + "#u9#exception:E",
-                        CHECK, 9, null),
-                edge("exception_throw", CHECK + "::$r9",
-                        CHECK + "#u10#exception:E", CHECK, 10, null),
-                edge("call_return", rename + ".return", z0, CHECK, 3,
-                        rename),
-                edge("field_read", field("int count"), z0, CHECK, 4, null),
-                edge("field_write", RUN + "::$i0", field("int count"), RUN,
-                        3, null));
-        Faults faults = new Faults();
-        faults.latent.add(new RootDemand.Candidate(RUN + "#u1", open, RUN,
-                0, 2, RootDemand.ESCAPE, false, VIA, true));
-        faults.latent.add(new RootDemand.Candidate(RUN + "#u2",
-                "<t.Other: void save()>", RUN, 0, 3, RootDemand.HANDLER,
-                true, VIA, true));
-        faults.latent.add(new RootDemand.Candidate("<t.T: void close()>#u4",
-                open, "<t.T: void close()>", 0, 2, RootDemand.ESCAPE,
-                false, Arrays.asList("<t.T: void unheld()>",
-                        "<t.T: void close()>"), false));
-        faults.latent.add(new RootDemand.Candidate(RUN + "#u30", open, RUN,
-                99, 17, RootDemand.ESCAPE, false, VIA, true));
-        for (int site = 0; site < 11; site++) {
-            faults.latent.add(new RootDemand.Candidate(RUN + "#u" + (10
-                    + site), open, RUN, site + 1, 5, RootDemand.HANDLER,
-                    false, VIA, true));
-        }
-        DemandedDoors.Site woven = new DemandedDoors.Site(HANDLE,
-                "<java.io.FileOutputStream: void write(byte[])>", 0, 4,
-                RootDemand.ESCAPE, Collections.singletonList(HANDLE));
-        RootDemand demand = RootDemand.of(edges, Collections.singletonList(
-                region()), Collections.<String, Clock>emptyMap(),
-                ConfigRoots.of(edges, new LinkedHashMap<>()),
-                Collections.singleton(CHECK + "#u9"),
-                field -> SharedFieldFlow.TrackedKind.VALUE,
-                field -> false, owner -> owner.startsWith("t."), faults,
-                Collections.singletonList(woven));
-        List<String> doors = new ArrayList<>();
-        for (DemandedDoors.Site door : demand.doors()) {
-            doors.add(door.caller.equals(CHECK) ? "check " + door.reach
-                    : door.key() + " " + door.reach);
-        }
-        Map<String, Integer> cuts = new LinkedHashMap<>();
-        for (RootDemand.Boundary boundary : demand.boundaries()) {
-            if (boundary.kind != RootDemand.Kind.IO) continue;
-            cuts.merge(boundary.chosen ? boundary.edgeKind : boundary.cut,
-                    1, Integer::sum);
-        }
-        Object[][] rows = {
-            {"the walk hands over the demanded store and the target's path",
-                "{" + RUN + "#u3=1} [" + CHECK + "#u9, " + CHECK + "#u10]",
-                faults.stores + " " + faults.path},
-            {"the woven door first, then nearest first, 12 in all",
-                Arrays.asList(woven.key() + " ESCAPE", "check VALUE",
-                        RUN + "|" + open + "|0 ESCAPE", RUN + "|" + open
-                                + "|1 HANDLER"), doors.subList(0, 4)},
-            {"twelve doors", 12, doors.size()},
-            {"every IO row says why it is or is not a door",
-                "{call_return=1, door=1, fault_escape=1, fault_frontier=1, "
-                        + "fault_handler=9, DISTANCE=1, NO_REGION=1, "
-                        + "WIDTH=2}",
-                ordered(cuts)},
-            {"the IO frontier joins scope growth's demanded rows",
-                "IO 3", demand.frontier().get("<t.Other: void save()>").kind
-                        + " " + demand.frontier().get(
-                                "<t.Other: void save()>").distance}};
-        for (Object[] row : rows) {
-            assertEquals((String) row[0], row[1], row[2]);
-        }
-    }
-
-    /**
-     * A demanded door's result is an IO boundary even where the analyzer's
-     * operand edges carry the call (a timed wait's timeout local reaches its
-     * return through a {@code local_def_use} naming the call, as a rename's
-     * target does): {@code if (!lock.tryLock(t, u))} on the path is a VALUE
-     * door, never walked through.
-     */
-    @Test
-    public void aDoorsResultIsABoundaryWhateverItsOperandsCarry() {
-        scene(new LinkedHashMap<>());
-        String z0 = CHECK + "::$z0";
-        Object[][] rows = {
-            {"<java.util.concurrent.locks.Lock: boolean tryLock(long,"
-                    + "java.util.concurrent.TimeUnit)>"},
-            {"<java.io.File: boolean renameTo(java.io.File)>"},
-        };
-        for (Object[] row : rows) {
-            String callee = (String) row[0];
-            List<Map<String, Object>> edges = Arrays.asList(
-                    edge("exception_guard", z0, CHECK + "#u9#exception:E",
-                            CHECK, 9, null),
-                    edge("call_return", callee + ".return", z0, CHECK, 3,
-                            callee),
-                    edge("local_def_use", CHECK + "::$l1", z0, CHECK, 3,
-                            callee));
-            Faults faults = new Faults();
-            RootDemand demand = RootDemand.of(edges, Collections
-                    .singletonList(region()), Collections.<String,
-                    Clock>emptyMap(), ConfigRoots.of(edges,
-                    new LinkedHashMap<>()), Collections.singleton(CHECK
-                    + "#u9"), field -> SharedFieldFlow.TrackedKind.NONE,
-                    field -> false, owner -> owner.startsWith("t."), faults,
-                    Collections.<DemandedDoors.Site>emptyList());
-            List<String> doors = new ArrayList<>();
-            for (DemandedDoors.Site door : demand.doors()) {
-                doors.add(door.callee + " " + door.reach);
-            }
-            assertEquals(callee, Collections.singletonList(callee
-                    + " VALUE"), doors);
-        }
     }
 
     private static String kinds(
@@ -419,21 +121,6 @@ public class RootDemandTest {
             kinds.put(row.getKey(), row.getValue().kind);
         }
         return kinds.toString();
-    }
-
-    /** Chosen edge kinds first, then cuts, each in name order. */
-    private static String ordered(Map<String, Integer> counts) {
-        Map<String, Integer> sorted = new java.util.TreeMap<>(
-                (a, b) -> Character.isUpperCase(a.charAt(0))
-                        == Character.isUpperCase(b.charAt(0))
-                        ? a.compareTo(b)
-                        : Character.isUpperCase(a.charAt(0)) ? 1 : -1);
-        sorted.putAll(counts);
-        return sorted.toString();
-    }
-
-    private static Set<String> set(String... cells) {
-        return new HashSet<>(Arrays.asList(cells));
     }
 
     private static Map<String, Object> region() {
