@@ -5090,8 +5090,13 @@ EOF
   sessions="${iteration_dir}/sessions"
   campaign_root=${beside}
   stream_loop_state
+  stream_world_depth=0
   stream_anchors='[{"node":"anchor"}]'
   stream_round=3
+  stream_step_pid=""
+  stream_round_pid=""
+  stream_round_returned=""
+  stream_hard=()
   stream_reruns_dropped=()
   declare -A stream_jobs=()
   stream_stop=""
