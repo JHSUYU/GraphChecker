@@ -218,7 +218,7 @@ public final class ObligationSolverMain {
 
     /** The bytes of one session's files as read: its rows' decoded text
      *  ({@link ArtifactIO#decodedSize}), what a heap holds of them, as the
-     *  shell sizes a solver ({@code run_engine.sh campaign_rows_mb}). */
+     *  shell sizes a solver ({@code run_engine.sh campaign_rows_bytes}). */
     private static long bytes(Path session) throws IOException {
         long bytes = 0L;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(session)) {

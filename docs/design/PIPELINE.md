@@ -494,7 +494,7 @@ one again only for a root (id, symbol) a new session brings. So gating the corpu
 session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
 time (the head). The gate holds one session at a time, so its heap and its charge on the host it is
 placed on (§7.7) are 512 MB plus four times the largest session's text (`campaign_import_gate_heap_mb`,
-`campaign_rows_mb`: a session's rows as they decode, not their gzip), not
+`campaign_session_bytes`: a session's rows as they decode, not their gzip), not
 `engine_memory_mb`, which is sized for a JVM holding the whole corpus (SOLR-18406 i1: charged
 16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
 seconds).
@@ -997,8 +997,9 @@ holds the charge itself, `campaign_host_keep`, past the obligation that started 
 resident memory grows past that as it grows, by a running JVM's rule (`campaign_watch_workload`:
 refused only when the host's real use would pass the ceiling, and then the JVM is ended). Its heap,
 and that of a question's own JVM, is its corpus's (`campaign_solver_heap_mb`): the corpus's session files as
-they decode (`campaign_corpus_mb`: `campaign_rows_mb`, each gzip stream's trailer count, stated beside the
-corpus for 60 s; the solver's own retire check, `ObligationSolverMain#bytes`, counts the same) times `campaign_solver_live_pct`
+they decode (`campaign_corpus_mb`: `campaign_session_bytes`, each gzip stream's trailer count, kept per
+session beside the corpus -- a landed session never changes, so only a new one is read -- and stated for 60 s;
+the solver's own retire check, `ObligationSolverMain#bytes`, counts the same) times `campaign_solver_live_pct`
 (50 %: with the expression tables compact, the live set after a full collection was 35 % of them on
 solr-adhoc-39 PV7, 3493 MB over 9974 MB, 46 % on solr-18413, 32 % on snapshot-no-active; 65-84 % as gson
 trees) at `campaign_solver_gc_pct` (150 %) for the collector, at least 2 GB (`campaign_solver_now_mb`), and room for the corpus to double, up to the engine heap; it is charged the

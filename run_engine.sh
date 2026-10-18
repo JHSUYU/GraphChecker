@@ -3358,18 +3358,14 @@ ${blocking} blocking"
 # The import gate's heap, in MB, over the session directories under ${1}: it
 # holds one session at a time, read whole (the gate reads again a session it
 # gated before when a new one brings a root), so 512 MB plus four times the
-# largest session's text (campaign_rows_mb).  Measured: SOLR-18406's 41 MB
-# focused session gates in 64 MB of heap and not in 48
+# largest session's text (campaign_session_bytes).  Measured: SOLR-18406's 41
+# MB focused session gates in 64 MB of heap and not in 48
 # (accept-i1-solr-18406), and hdfs-11741's 175 sessions of up to 21 MB in
 # 512.
 campaign_import_gate_heap_mb() {
-  local sessions=$1 entry size largest=0
-  for entry in "${sessions}"/*/; do
-    # A session withdrawn while it is measured is not one the gate reads.
-    [[ -d "${entry}" ]] || continue
-    size=$(campaign_rows_mb "${entry}")
-    (( size <= largest )) || largest=${size}
-  done
+  local largest
+  largest=$(campaign_session_bytes "$1" \
+    | awk '$2 > n {n = $2} END {printf "%d\n", n / 1048576}')
   printf '%s\n' "$(( 512 + 4 * largest ))"
 }
 
@@ -3521,37 +3517,74 @@ campaign_rows() {
 # gzip -l reads its last four bytes, the flush's 00 00 ff ff, as this.
 campaign_rows_unfinished=4294901760
 
-# campaign_rows_mb <dir>: what the files under <dir> hold as their readers
-# take them (campaign_rows), in MB (smt.ArtifactIO#decodedSize): a plain
-# file its size, a gzip file of one stream -- a session's row file -- the
-# count its trailer states (gzip -l), and one its writer never finished, or
-# shorter than a whole empty stream (20 bytes: a row file with no rows is
-# empty, and gzip -l lists no file past one too short to hold a trailer),
-# what it decodes to.  A heap holds a session's text, not its gzip, so a JVM
-# that reads sessions is sized by this.
-campaign_rows_mb() {
-  local dir=$1 listed="" file
-  [[ -n "${dir}" && -d "${dir}" ]] || { printf '0\n'; return 0; }
-  listed=$(find "${dir}" -type f -name '*.gz' -size +19c -print0 2>/dev/null \
-    | xargs -0 -r gzip -lq -- 2>/dev/null) || true
+# campaign_rows_bytes <dir>...: "<dir name> <bytes>" for each directory of
+# files given -- a session's -- what its files hold as their readers take
+# them (campaign_rows), in bytes (smt.ArtifactIO#decodedSize): a plain file
+# its size, a gzip file of one stream -- a session's row file -- the count
+# its trailer states (gzip -l, one pass over every file given), and one its
+# writer never finished, or shorter than a whole empty stream (20 bytes: a
+# row file with no rows is empty, and gzip -l lists no file past one too
+# short to hold a trailer), what it decodes to.  A heap holds a session's
+# text, not its gzip, so a JVM that reads sessions is sized by this.
+campaign_rows_bytes() {
+  local listed="" file
+  (( $# > 0 )) || return 0
+  listed=$(find "$@" -maxdepth 1 -type f -name '*.gz' -size +19c -print0 \
+    2>/dev/null | xargs -0 -r gzip -lq -- 2>/dev/null) || true
   {
-    find "${dir}" -type f ! -name '*.gz' -printf '%s\n' 2>/dev/null
-    awk -v unfinished="${campaign_rows_unfinished}" \
-      '$2 != unfinished {print $2}' <<<"${listed}"
+    find "$@" -maxdepth 1 -type f ! -name '*.gz' -printf '%h %s\n' 2>/dev/null
     # gzip -l names each file without its .gz.
+    awk -v unfinished="${campaign_rows_unfinished}" '$2 != unfinished {
+      dir = $4; sub("/[^/]*$", "", dir); print dir, $2}' <<<"${listed}"
     while IFS= read -r file; do
       [[ -n "${file}" ]] || continue
-      campaign_rows "${file}" | wc -c
+      printf '%s %s\n' "${file%/*}" "$(campaign_rows "${file}" | wc -c)"
     done < <(awk -v unfinished="${campaign_rows_unfinished}" \
         '$2 == unfinished {print $4 ".gz"}' <<<"${listed}"
-      find "${dir}" -type f -name '*.gz' -size -20c 2>/dev/null)
-  } | awk '{bytes += $1} END {printf "%d\n", bytes / 1048576}'
+      find "$@" -maxdepth 1 -type f -name '*.gz' -size -20c 2>/dev/null)
+  } | awk '{n[$1] += $2} END {for (dir in n) {name = dir;
+      sub(".*/", "", name); printf "%s %d\n", name, n[dir]}}'
+}
+
+# campaign_session_bytes <sessions>: "<session> <bytes>" for each session
+# directory of the corpus <sessions> now, in name order, its text
+# (campaign_rows_bytes), kept beside the corpus (session_bytes): a landed
+# session never changes (it lands whole, in one rename, and a withdrawn one
+# leaves), so only those not sized before are read, in one pass -- gzip -l
+# opens every file it counts (SGF8-adhoc-05 round 5's 342 sessions: 27.6 s
+# over NFS in one pass, du 3.8 s; kept, 0.05 s).
+campaign_session_bytes() {
+  local sessions=$1 kept name size
+  local -A known=()
+  local -a now=() fresh=()
+  [[ -n "${sessions}" && -d "${sessions}" ]] || return 0
+  kept="$(dirname "${sessions}")/session_bytes"
+  if [[ -s "${kept}" ]]; then
+    while read -r name size; do
+      [[ -z "${name}" ]] || known[${name}]=${size}
+    done <"${kept}"
+  fi
+  mapfile -t now < <(find "${sessions}" -mindepth 1 -maxdepth 1 -type d \
+    -printf '%f\n' | LC_ALL=C sort)
+  for name in "${now[@]}"; do
+    [[ -n "${known[${name}]:-}" ]] || fresh+=("${sessions}/${name}")
+  done
+  if (( ${#fresh[@]} > 0 )); then
+    while read -r name size; do
+      [[ -z "${name}" ]] || known[${name}]=${size}
+    done < <(campaign_rows_bytes "${fresh[@]}")
+  fi
+  for name in "${now[@]}"; do
+    printf '%s %s\n' "${name}" "${known[${name}]:-0}"
+  done >"${kept}.${BASHPID}"
+  cat -- "${kept}.${BASHPID}"
+  mv -f -- "${kept}.${BASHPID}" "${kept}"
 }
 
 # campaign_corpus_mb <sessions>: the corpus's session files as read, in MB
-# (campaign_rows_mb: their text, ~1-2 s over NFS for 342 sessions), stated
-# beside the corpus with the time it was read and read again past
-# campaign_corpus_mb_fresh_s: the pool asks it at every admission.
+# (campaign_session_bytes: their text), stated beside the corpus with the
+# time it was read and read again past campaign_corpus_mb_fresh_s: the pool
+# asks it at every admission.
 campaign_corpus_mb_fresh_s=60
 campaign_corpus_mb() {
   local sessions=$1 stated at="" mb=""
@@ -3563,7 +3596,8 @@ campaign_corpus_mb() {
     printf '%s\n' "${mb}"
     return 0
   fi
-  mb=$(campaign_rows_mb "${sessions}")
+  mb=$(campaign_session_bytes "${sessions}" \
+    | awk '{n += $2} END {printf "%d\n", n / 1048576}')
   [[ "${mb}" =~ ^[0-9]+$ ]] || mb=0
   printf '%s %s\n' "$(date +%s)" "${mb}" >"${stated}.$$" \
     && mv -f -- "${stated}.$$" "${stated}"

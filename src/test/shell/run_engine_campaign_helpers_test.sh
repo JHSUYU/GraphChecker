@@ -2601,7 +2601,7 @@ done <<'EOF_HEAP'
 EOF_HEAP
 # The corpus's size is read again once its statement is past
 # campaign_corpus_mb_fresh_s, from the session files as read
-# (campaign_rows_mb): a plain file's size (3 MB), a finished gzip stream's
+# (campaign_session_bytes): a plain file's size (3 MB), a finished gzip stream's
 # text (2 MB, by its trailer), one its replay never finished (1 MB, ending
 # at a sync point, by what it decodes to), an empty one.
 mkdir -p "${solver_heap_dir}/sessions/s1"
