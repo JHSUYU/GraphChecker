@@ -1692,8 +1692,23 @@ queues its entry again unchanged (the REPLAY on the tree its solve started on, t
 in flight, owed or under confirmation as it was) at ITS FULL NEED, charged whole with no end's room
 beside it (`campaign_stream_replay_again`, the entry's `stream_entry_need`); only one whose full need,
 at most half a host's ceiling, is no more than it reached would end again, and is answered
-`REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`). SGF8-adhoc-07: 33 replays
-ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. A host is taken for a start of a
+`REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`); its full need is at least what
+its own peak needs (`campaign_need_of_peak_mb` of what it reached), the campaign's need being the 90th
+percentile's. SGF8-adhoc-07: 33 replays
+ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. A replay OUT
+OF HEAP ends with 3 before it states anything -- the JVM's own OutOfMemoryError
+(`-XX:+ExitOnOutOfMemoryError`, `experiments/lib/execute.sh`, a replay-context JVM only) or a heap that only
+collects (`contract.HeapWatch`, started by `JUnitMethodRunner#main`); caught by the workload (a Solr node
+catches Throwable) an OutOfMemoryError had let the replay run on without that thread's work. Its worker
+names the heap it ran at (`workload_out_of_heap_mb`, `campaign_replay`) and sets its run aside the same way,
+`replay_again` naming that heap; the head queues it again once at its kind's charge, and every replay from
+then on -- that one first -- starts at twice that heap (`campaign_replay_heap_raised`,
+`campaign_replay_heap_floor_mb`: the heap basis a start hands on is at least twice it,
+`campaign_replay_basis_mb`; the charge stays the measured need's, the replay VM's Serial collector growing
+its resident memory only as its live set does); out of heap twice it is `REPLAY_BOUNDED`. The seed replay
+and the final CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`); the seed
+out of heap twice fails REPLAY. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
+A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,
@@ -1773,8 +1788,8 @@ need of every start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003).
 start (`campaign_stream_admit_host`, `stream_admitted_mb`, handed to the job); the head holds it,
 the job releases it as soon as its work returned, before the head waits to see what a peer wrote,
 and the head again once it collected or reaped the job (`campaign_stream_release`). A replay JVM
-is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its whole need
-(`CAUSYNTH_HEAP_BASIS_MB`): its heap is half the need (4 GB at least), and
+is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its heap basis
+(`CAUSYNTH_HEAP_BASIS_MB`, `campaign_replay_basis_mb`): its heap is half of it (4 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
 resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
 granted unless the host's real use would pass `L` with it, and holds what it was granted, released

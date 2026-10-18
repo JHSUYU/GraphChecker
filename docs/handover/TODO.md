@@ -201,10 +201,10 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   their decoding, wait only for publications submitted by the end; GC counts as progress only while a publication or
   decode computes. An AT_NO_PROGRESS replay halted 44 s after its end; a STALLED_AFTER_FLIP one 190 s (decoding its
   session still needs: goal 3).
-- Goal 2 next: the replay need from the 90th percentile of measured peaks plus an out-of-heap guard
-  (-XX:+ExitOnOutOfMemoryError + HeapWatch in replays; a replay exiting 3 reruns once at twice its heap; later replays
-  start there); the replay VM's GC is Serial, so -Xmx caps the heap without growing RSS; update the MEASURED-NEED rows
-  of the shell test.
+- Goal 2 (branch solr-replay-end, agent 4): DONE -- the need from the 90th percentile of the stream's peaks
+  (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
+  `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
+  there; OPTIMIZATIONS 1.37, PIPELINE §7.7). Not yet seen live: no replay ran out of heap in the reproductions.
 - Goal 3: decoding (measured on pages captured from 07's 615997597e3c4202, `analysis/solr-2026-10-18/replay-e/`): the
   Zero VM decodes 0.65 s per million chars (HotSpot ~95x faster); 82 % of page text is the expression table and 92 % of
   its definitions are re-sent from earlier pages; profile: table reading 40 %, truncation scan 16.5 % (read-out pages

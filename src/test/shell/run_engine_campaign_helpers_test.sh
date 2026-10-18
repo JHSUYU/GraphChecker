@@ -2801,10 +2801,10 @@ bound_solved "${worker_dir}" OB.E
 ) >"${bound_dir}/ended.log" 2>&1 \
   || fail "the worker did not return when its replay was ended for memory: \
 $(cat "${bound_dir}/ended.log")"
-read -r ended_mb ended_charged ended_aside <"${worker_dir}/replay_again" \
-  || ended_mb=""
-[[ "${ended_mb} ${ended_charged} ${ended_aside}" \
-    == "2900 1024 ${worker_dir}/ended-1" \
+read -r ended_mb ended_charged ended_aside ended_heap \
+  <"${worker_dir}/replay_again" || ended_mb=""
+[[ "${ended_mb} ${ended_charged} ${ended_aside} ${ended_heap}" \
+    == "2900 1024 ${worker_dir}/ended-1 -" \
    && "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
     == SAT_MODEL_READY && -e "${worker_dir}/question.asked" \
    && -s "${worker_dir}/ended-1/replay.log" \
@@ -2832,6 +2832,28 @@ $(cat "${bound_dir}/ended2.log")"
 memory killer or an operator" ]] \
   || fail "a replay killed, not for memory, after a memory end was not \
 answered REPLAY_BOUNDED: $(cat "${worker_dir}/obligation_result.jsonl")"
+# A replay out of heap (exit 3: -XX:+ExitOnOutOfMemoryError or HeapWatch) is
+# set aside the same way, replay_again naming the heap it ran out of.
+worker_dir="${bound_dir}/heap"
+mkdir -p "${worker_dir}"
+concolic_replay_command='echo 900 >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/\
+workload_rss_mb"; exit 3'
+bound_solved "${worker_dir}" OB.H
+(
+  campaign_obligation_replay OB.H "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 9216
+) >"${bound_dir}/heap.log" 2>&1 \
+  || fail "the worker did not return when its replay ran out of heap: \
+$(cat "${bound_dir}/heap.log")"
+read -r ended_mb ended_charged ended_aside ended_heap \
+  <"${worker_dir}/replay_again" || ended_mb=""
+[[ "${ended_charged} ${ended_aside} ${ended_heap}" \
+    == "1024 ${worker_dir}/ended-1 4608" \
+   && "$(cat "${worker_dir}/ended-1/workload_out_of_heap_mb")" == 4608 \
+   && "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
+    == SAT_MODEL_READY ]] \
+  || fail "a replay out of heap was not set aside to be asked again: \
+$(cat "${worker_dir}/replay_again" 2>&1) $(cat "${bound_dir}/heap.log")"
 
 # REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
 # SessionPublisher writes manifest.json at the OPEN, so a replay killed at
@@ -5668,16 +5690,26 @@ EOF
 # peak, rounded up to 128 MB, at most half a host's ceiling, 8192 here),
 # charged whole (campaign_stream_try_host).  One whose full need is no more
 # than it reached would end again: answered REPLAY_BOUNDED, it lands as any
-# answer, as it is collected.  {kind, the MB it reached, queued at <MB> or
-# bounded}.
-while IFS='|' read -r rq_kind rq_mb rq_want; do
+# answer, as it is collected.  A replay out of heap (its runs out of heap so
+# far, the last one's heap) is queued again once, its own need unset, and
+# every replay from then on starts at twice that heap (the heap basis, twice
+# the heap); out of heap twice, REPLAY_BOUNDED.  {kind, the MB it reached,
+# the heap it ran out of (- for a memory end; n*heap: its n runs out of
+# heap), queued at <MB>, rerun at <basis> or bounded}.
+while IFS='|' read -r rq_kind rq_mb rq_heap rq_want; do
   rq_dir="${test_tmp}/kill-requeue"
   rm -rf -- "${rq_dir}"
   rq_worker="${rq_dir}/it/obligations-0000/A"
   [[ "${rq_kind}" != CONFIRM ]] || rq_worker="${rq_dir}/witness-confirm/0001/worker"
   mkdir -p "${rq_worker}/ended-1" "${rq_dir}/it/sessions"
-  printf '%s 1024 %s\n' "${rq_mb}" "${rq_worker}/ended-1" \
-    >"${rq_worker}/replay_again"
+  rq_runs=0
+  [[ "${rq_heap}" == - ]] || rq_runs=${rq_heap%%\**}
+  for (( rq_n = 1; rq_n <= rq_runs; rq_n++ )); do
+    mkdir -p "${rq_worker}/ended-${rq_n}"
+    echo "${rq_heap#*\*}" >"${rq_worker}/ended-${rq_n}/workload_out_of_heap_mb"
+  done
+  printf '%s 1024 %s %s\n' "${rq_mb}" "${rq_worker}/ended-$(( \
+    rq_runs > 1 ? rq_runs : 1 ))" "${rq_heap#*\*}" >"${rq_worker}/replay_again"
   rq_logs=$(campaign_stream_logs "${rq_kind}" "${rq_worker}")
   echo out >"${rq_logs}stdout.log"
   echo lift12 >"${rq_logs}host.txt"
@@ -5721,8 +5753,24 @@ ${rq_session}") stream_job_worker=([4242]=${rq_worker}) \
     printf 'landed %s\n' "$(jq -r -s 'map(.obligationId) | join(" ")' \
       "${results}" 2>/dev/null)"
     printf 'need %s\n' "$(campaign_replay_need_mb)"
+    printf 'basis %s\n' "$(campaign_replay_basis_mb)"
   )
   case "${rq_want}" in
+    rerun\ *)
+      rq_entry="REPLAY obligations-0000 A g0/classes g0/plan.jsonl"
+      [[ "${rq_kind}" != CONFIRM ]] || rq_entry="CONFIRM - 0001"
+      [[ "${rq_said}" == *"queued ${rq_entry} "$'\n'* \
+         && "${rq_said}" == *"basis ${rq_want#rerun }"* \
+         && ! -e "${rq_worker}/obligation_result.jsonl" ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} out of its ${rq_heap} MB heap was \
+not run again at twice it: ${rq_said}" ;;
+    twice)
+      [[ "${rq_said}" == *"landed A"* \
+         && "${rq_said}" != *"queued ${rq_kind}"* \
+         && "$(jq -r '.detail' "${rq_worker}/obligation_result.jsonl")" \
+           == REPLAY_BOUNDED:* ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} out of heap twice was not \
+answered REPLAY_BOUNDED: ${rq_said}" ;;
     queued\ *)
       rq_entry="REPLAY obligations-0000 A g0/classes g0/plan.jsonl"
       [[ "${rq_kind}" != RERUN ]] \
@@ -5748,12 +5796,15 @@ charge was not answered REPLAY_BOUNDED: ${rq_said} \
 $(cat "${rq_worker}/obligation_result.jsonl" 2>&1)" ;;
   esac
 done <<'EOF'
-REPLAY|2900|queued 4352
-RERUN|2900|queued 4352
-CONFIRM|2900|queued 4352
-REPLAY|5000|queued 7552
-REPLAY|5400|queued 8192
-REPLAY|9000|bounded
+REPLAY|2900|-|queued 4352
+RERUN|2900|-|queued 4352
+CONFIRM|2900|-|queued 4352
+REPLAY|5000|-|queued 7552
+REPLAY|5400|-|queued 8192
+REPLAY|9000|-|bounded
+REPLAY|0|1*4096|rerun 16384
+CONFIRM|0|1*4096|rerun 16384
+REPLAY|0|2*8192|twice
 EOF
 
 # HOST-PAR: how many starts of one kind one host runs at once, as many as

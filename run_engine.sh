@@ -2741,6 +2741,7 @@ campaign_replay_refused_mb=""
 # JVM because its host could not take its growth: the resident MB it had
 # reached (campaign_watch_workload).
 campaign_refused_file=workload_refused_mb
+campaign_out_of_heap_file=workload_out_of_heap_mb
 
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
@@ -2764,6 +2765,8 @@ campaign_replay() {
   local status=0 started=${SECONDS}
   campaign_replay_killed=""
   campaign_replay_refused_mb=""
+  local heap
+  heap=$(campaign_replay_heap_mb "${campaign_replay_heap_basis_mb:-${charged}}")
   # Where this replay writes its per-kind rows.  A focused replay is a
   # session: every row it publishes is keyed by it, and every later stage
   # reads the session rather than a folded result.
@@ -2798,6 +2801,12 @@ campaign_replay() {
     "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}/$(basename \
       "${worker}")" \
     >"${worker}/replay.log" 2>&1
+  if (( status == campaign_jvm_out_of_heap_status )); then
+    printf '%s\n' "${heap}" >"${worker}/${campaign_out_of_heap_file}"
+    campaign_replay_killed="ran out of its ${heap} MB heap (exit ${status})"
+    campaign_log "replay role=${role} ${campaign_replay_killed}: ${sessions}"
+    return 0
+  fi
   # The one exit code that is NOT the workload's own: this replay outlived
   # the wall clock its caller gave it and the process group was killed.  Said
   # here, as a fact of the run, and answered by the caller that set the bound
@@ -2984,7 +2993,7 @@ campaign_view_hold_wall_ms() {
 }
 
 campaign_session_replay() {
-  local iteration_dir=$1 bound need charge
+  local iteration_dir=$1 bound need charge runs heap aside session
   [[ "${campaign_recorded_workload_rss_mb}" =~ ^[1-9][0-9]*$ ]] \
     || campaign_fail REPLAY WORKLOAD "${iteration_dir}" "the recording \
 measured no peak resident memory (workload_rss_mb) to charge the seed replay \
@@ -2996,11 +3005,29 @@ with"
   (( charge >= campaign_replay_min_need_mb )) \
     || charge=${campaign_replay_min_need_mb}
   charge=$(campaign_replay_charge_mb "${charge}")
-  campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
-    "${causynth_static_scope_map}" "${charge}" "${bound}" \
-    "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
+  for runs in 1 2; do
+    campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
+      "${causynth_static_scope_map}" "${charge}" "${bound}" \
+      "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s workload and at least \
 replay_timeout_s=${replay_timeout_s}" "${need}"
+    read -r heap 2>/dev/null \
+      <"${iteration_dir}/seed-result/focused/${campaign_out_of_heap_file}" \
+      || break
+    (( runs == 1 )) || campaign_fail REPLAY WORKLOAD \
+      "${iteration_dir}/seed-result/focused" "the seed replay ran out of its \
+${heap} MB heap twice"
+    aside="${iteration_dir}/seed-result/ended-1"
+    mkdir -p -- "${aside}/sessions"
+    mv -f -- "${iteration_dir}/seed-result/focused" "${aside}/"
+    for session in "${iteration_dir}"/sessions/seed-result-*; do
+      [[ ! -e "${session}" ]] || mv -f -- "${session}" "${aside}/sessions/"
+    done
+    campaign_replay_heap_raised "${heap}" "the seed replay, set aside in \
+${aside}"
+    (( need >= 2 * campaign_replay_heap_floor_mb )) \
+      || need=$(( 2 * campaign_replay_heap_floor_mb ))
+  done
   campaign_replay_measured "${iteration_dir}/seed-result/focused"
   (( campaign_replay_peak_mb > 0 )) || campaign_fail REPLAY WORKLOAD \
     "${iteration_dir}/seed-result/focused" "the seed replay stated no peak \
@@ -3019,6 +3046,8 @@ campaign_replay_min_need_mb=512
 # is charged at its start once enough of them did (campaign_replay_typical).
 campaign_replay_peaks=()
 campaign_replay_peak_p90_mb=0
+campaign_replay_least_heap_mb=4096
+campaign_replay_heap_floor_mb=0
 campaign_replay_means=()
 campaign_replay_typical_mb=0
 # What a replay grows by past its charge at its end, in MB (the typical
@@ -3071,6 +3100,28 @@ campaign_replay_need_mb() {
   else
     campaign_need_of_peak_mb "${campaign_replay_peak_p90_mb}"
   fi
+}
+
+campaign_replay_heap_mb() {
+  local heap=$(( $1 / 2 ))
+  (( heap >= campaign_replay_least_heap_mb )) \
+    || heap=${campaign_replay_least_heap_mb}
+  printf '%s\n' "${heap}"
+}
+
+campaign_replay_basis_mb() {
+  local need
+  need=$(campaign_replay_need_mb)
+  (( need >= 2 * campaign_replay_heap_floor_mb )) \
+    || need=$(( 2 * campaign_replay_heap_floor_mb ))
+  printf '%s\n' "${need}"
+}
+
+campaign_replay_heap_raised() {
+  (( 2 * $1 > campaign_replay_heap_floor_mb )) || return 0
+  campaign_replay_heap_floor_mb=$(( 2 * $1 ))
+  campaign_log "a replay ran out of its $1 MB heap (${2}): it runs once \
+more, and every replay from now on, at ${campaign_replay_heap_floor_mb} MB"
 }
 
 # The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
@@ -4258,7 +4309,9 @@ campaign_obligation_replay() {
   # PV7-adhoc-38: 35 replays that had decided (32 ADMITTED) hung in a
   # cluster's shutdown hook after their statement, and were each recorded
   # REPLAY_BOUNDED at replay_timeout_s=2400 with their sessions withdrawn.
-  if [[ -n "${campaign_replay_refused_mb}" && ! -s "${statement}" ]]; then
+  if [[ ( -n "${campaign_replay_refused_mb}" \
+        || -s "${worker}/${campaign_out_of_heap_file}" ) \
+      && ! -s "${statement}" ]]; then
     # Ended for memory before it stated anything: it decided nothing, and it
     # is no answer either -- its run goes aside and the head asks it again
     # at its full need (campaign_stream_replay_again), its question still
@@ -4343,10 +4396,12 @@ session"
 # question stays asked: the run that answers it settles it.
 campaign_replay_ended_files=(replay.log concolic_region_results.jsonl
   workload_rss_mb workload_rss_mean_mb workload_cores_x100
-  "${campaign_refused_file}")
+  "${campaign_refused_file}" "${campaign_out_of_heap_file}")
 campaign_replay_set_aside() {
   local obligation_id=$1 worker=$2 sessions=$3 charged=$4 aside file
-  local ended=0
+  local ended=0 heap=-
+  read -r heap 2>/dev/null <"${worker}/${campaign_out_of_heap_file}" \
+    || heap=-
   for aside in "${worker}"/ended-*; do
     [[ ! -d "${aside}" ]] || ended=$((ended + 1))
   done
@@ -4360,8 +4415,8 @@ campaign_replay_set_aside() {
 anything, and it is asked again"
   campaign_log "obligation ${obligation_id}: replay ${campaign_replay_killed}; \
 its run is set aside in ${aside}, and it is asked again at its full need"
-  printf '%s %s %s\n' "${campaign_replay_refused_mb}" "${charged}" "${aside}" \
-    | campaign_write_whole "${worker}/replay_again"
+  printf '%s %s %s %s\n' "${campaign_replay_refused_mb:-0}" "${charged}" \
+    "${aside}" "${heap}" | campaign_write_whole "${worker}/replay_again"
 }
 
 # ---------------------------------------------------------------------------
@@ -7715,7 +7770,7 @@ campaign_stream_start() {
   local classes=${stream_classes} plan=${stream_plan} started=host.txt
   local -a work=()
   read -r kind round id session <<<"${entry}"
-  need=$(campaign_replay_need_mb)
+  need=$(campaign_replay_basis_mb)
   case "${kind}" in
     OBLIGATION)
       # Its charge, a cold host's solver's to take over
@@ -7988,25 +8043,37 @@ campaign_stream_replays() {
 # (campaign_stream_replay_drop), 0.
 campaign_stream_replay_again() {
   local kind=$1 round=$2 id=$3 session=$4 worker=$5 tree=$6 refused=""
-  local charged="" aside="" file="" full entry
+  local charged="" aside="" file="" full entry heap="" ran=0 again=0
   ls -- "${worker}" >/dev/null 2>&1 || true
   [[ -s "${worker}/replay_again" ]] || return 1
-  read -r refused charged aside <"${worker}/replay_again"
+  read -r refused charged aside heap <"${worker}/replay_again"
   rm -f -- "${worker}/replay_again"
   [[ "${refused}" =~ ^[0-9]+$ ]] || refused=0
+  [[ "${heap}" =~ ^[0-9]+$ ]] || heap=""
   for file in "$(campaign_stream_logs "${kind}" "${worker}")"{stdout.log,\
 stderr.log,host.txt}; do
     [[ ! -e "${file}" || ! -d "${aside}" ]] || mv -f -- "${file}" "${aside}/"
   done
   (( refused <= campaign_replay_peak_mb )) \
     || campaign_replay_peak_mb=${refused}
-  full=$(campaign_replay_charge_mb "$(campaign_replay_need_mb)")
+  full=$(campaign_replay_need_mb)
+  (( full >= $(campaign_need_of_peak_mb "${refused}") )) \
+    || full=$(campaign_need_of_peak_mb "${refused}")
+  full=$(campaign_replay_charge_mb "${full}")
   case "${kind}" in
     REPLAY) entry="REPLAY ${round} ${id} ${tree}" ;;
     RERUN) entry="RERUN ${round} ${id} ${session}" ;;
     CONFIRM) entry="CONFIRM - ${id}" ;;
   esac
-  if (( full > refused )); then
+  if [[ -n "${heap}" ]]; then
+    for file in "${worker}"/ended-*/"${campaign_out_of_heap_file}"; do
+      [[ ! -s "${file}" ]] || ran=$((ran + 1))
+    done
+    (( ran >= 2 )) || again=1
+  else
+    (( full <= refused )) || again=1
+  fi
+  if (( again )); then
     # A REPLAY rests on its path's session as its first queueing did
     # (campaign_stream_ended): one a swap withdrew since is dropped.
     if [[ "${kind}" == REPLAY ]]; then
@@ -8017,6 +8084,11 @@ stderr.log,host.txt}; do
         return 0
       fi
       [[ -z "${file}" ]] || stream_rests[${id}]=${file}
+    fi
+    if [[ -n "${heap}" ]]; then
+      campaign_replay_heap_raised "${heap}" "${kind} ${id}"
+      campaign_stream_enqueue "${entry}"
+      return 0
     fi
     campaign_log "${kind} ${id}: its replay was ended at ${refused} MB, \
 charged ${charged} MB, as its host could not take its growth: queued again \
@@ -8031,8 +8103,14 @@ at its full need, ${full} MB"
   else
     file="${worker}/sessions"
   fi
-  campaign_replay_bounded "${id}" "${worker}" "${file}" "replay was ended at ${refused} MB as its host could not take its growth, \
-and its full need, ${full} MB, is the most a replay is charged"
+  if [[ -n "${heap}" ]]; then
+    campaign_replay_bounded "${id}" "${worker}" "${file}" "replay ran out \
+of its heap twice, the second time at ${heap} MB"
+  else
+    campaign_replay_bounded "${id}" "${worker}" "${file}" "replay was ended \
+at ${refused} MB as its host could not take its growth, and its full need, \
+${full} MB, is the most a replay is charged"
+  fi
   return 1
 }
 
@@ -9396,16 +9474,25 @@ ${campaign_witness_attempt}"
 # an exploration's attempt runs the same three apart, its replay a job of the
 # pool (campaign_stream_attempt).
 campaign_confirm_claim() {
-  local iteration_dir=$1 claims=$2 dir=$3 need charge status=0
+  local iteration_dir=$1 claims=$2 dir=$3 need charge status=0 runs heap
   campaign_confirm_plan "${iteration_dir}" "${claims}" "${dir}"
   if [[ ! -s "${claims}/confirm.json" ]]; then
-    need=$(campaign_replay_need_mb)
-    charge=$(campaign_replay_charge_mb "${need}")
-    ( campaign_head_charged "${charge}" campaign_confirm_replay "${dir}" \
-        "${iteration_dir}/instrumented-classes" \
-        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
-        "${charge}" "${need}" ) || status=$?
-    campaign_replay_measured "${dir}/worker"
+    for runs in 1 2; do
+      status=0
+      need=$(campaign_replay_basis_mb)
+      charge=$(campaign_replay_charge_mb "$(campaign_replay_need_mb)")
+      ( campaign_head_charged "${charge}" campaign_confirm_replay "${dir}" \
+          "${iteration_dir}/instrumented-classes" \
+          "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
+          "${charge}" "${need}" ) || status=$?
+      campaign_replay_measured "${dir}/worker"
+      heap=""
+      [[ ! -s "${dir}/worker/replay_again" ]] \
+        || read -r _ _ _ heap <"${dir}/worker/replay_again"
+      [[ "${heap}" =~ ^[0-9]+$ ]] && (( runs == 1 )) || break
+      rm -f -- "${dir}/worker/replay_again"
+      campaign_replay_heap_raised "${heap}" "CONFIRM"
+    done
     campaign_confirm_decide "${claims}" "${dir}" "${status}"
   fi
   campaign_confirm_settle "${iteration_dir}" "${claims}"

@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
+
 /**
  * The entry point every {@code execute.sh} launches: the workload session
  * opens before the test method and lasts the JVM, so an exported expression
@@ -18,6 +20,7 @@ public final class JUnitMethodRunner {
     public static void main(String[] args) {
         if (RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT) {
             ReplayKeys.install();
+            HeapWatch.start();
         }
         String refusedOpen = ConcolicRegionRuntime.openWorkloadSession();
         if (!refusedOpen.isEmpty()) {
