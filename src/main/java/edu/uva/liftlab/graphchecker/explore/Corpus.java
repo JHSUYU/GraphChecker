@@ -664,6 +664,7 @@ public final class Corpus implements Arms.Rows {
         corpus.domains(rootDomains);
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
+        corpus.uncaptured.addAll(SessionDir.uncaptured(iteration));
         return corpus;
     }
 
@@ -767,6 +768,7 @@ public final class Corpus implements Arms.Rows {
         corpus.domains(rootDomains);
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
+        corpus.uncaptured.addAll(SessionDir.uncaptured(iteration));
         return corpus;
     }
 
@@ -775,6 +777,16 @@ public final class Corpus implements Arms.Rows {
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             declaredDomains.putAll(RootDomain.declared(rootDomains));
         }
+    }
+
+    /** The sessions whose GROW re-run did not land ({@link
+     *  SessionDir#UNCAPTURED}). */
+    private final Set<String> uncaptured = new HashSet<String>();
+
+    /** Whether the regions GROW grew ran uninstrumented in this session,
+     *  its re-run never landed ({@link SessionDir#UNCAPTURED}). */
+    public boolean uncaptured(String sessionId) {
+        return uncaptured.contains(sessionId);
     }
 
     /** The recording's schedule, which run_engine sets beside the sessions. */

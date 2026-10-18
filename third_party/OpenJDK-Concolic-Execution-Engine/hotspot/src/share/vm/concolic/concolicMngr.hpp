@@ -266,13 +266,14 @@ public:
   // Class object for a static one; `index` selects one element of a
   // fixed-shape array.
   /**
-   * Every location this session is tracking, as one
-   * SHARED_TRACKED_LOCATIONS document.  See
+   * One page of the session's read-out of the locations it is tracking, as
+   * one SHARED_TRACKED_LOCATIONS document whose table states only the
+   * definitions no earlier page stated.  See
    * SharedFieldVersions::tracked_locations() for the selection and budget
    * rules; this is the Java-facing spelling of it.
    */
-  static std::string getTrackedLocationVersions(jlong after_event_id,
-                                                jint max_bytes);
+  static std::string readOutTrackedLocations(jlong after_event_id,
+                                             jint max_bytes);
 
   /**
    * Selects one supported associative container's *whole state* as a carrier.

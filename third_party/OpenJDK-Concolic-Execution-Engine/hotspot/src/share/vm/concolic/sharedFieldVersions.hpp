@@ -662,6 +662,8 @@ public:
    * answer at a location boundary: `nextAfterEventId` is one past the last
    * emitted location's highest event, so a resume neither repeats nor skips
    * a location (event ids are unique per location) and never goes back.
+   * The table is the read-out channel's next one (_read_out_channel): the
+   * definitions no earlier page of the session stated, and its `sequence`.
    */
   static std::string tracked_locations(jlong after_event_id, jint max_bytes);
 
@@ -726,6 +728,9 @@ private:
 
   static bool _open;
   static SlotStore _slots;
+  // The read-out's channel: each definition sent once per session, by the
+  // first page whose closure holds it.  Reset with the session.
+  static VmExpressionChannel _read_out_channel;
   static volatile int _carrier_count;
   // Relaxed reader, _mutex writer: the guarded-store table's size, and its
   // install count (thread-local lookups of an older table are discarded),

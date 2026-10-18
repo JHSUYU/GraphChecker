@@ -189,7 +189,7 @@ public class RowRuntimeTest {
         java.util.concurrent.CountDownLatch release =
                 new java.util.concurrent.CountDownLatch(1);
         String[] ran = new String[1];
-        assertTrue(ConcolicResultPublisher.decodeBeforePublication(1L, () -> {
+        assertTrue(ConcolicResultPublisher.decodeInOrder(1L, () -> {
             ran[0] = Thread.currentThread().getName();
             decoding.countDown();
             try {

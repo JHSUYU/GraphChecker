@@ -173,15 +173,15 @@ public class ContractTest {
     }
 
     /**
-     * A paged read-out is read one record at a time against the page's own
-     * table, which comes after its records: each record is expanded and
-     * handed on in page order, sharing the nodes the table shares (and the
-     * store's earlier pages'), the header states the rest and the count, an
-     * unadmitted page hands on nothing, and a record naming a node the
-     * table lacks is refused.
+     * A self-contained envelope of records (a branch window) is read one
+     * record at a time against its own table, which comes after its
+     * records: each record is expanded and handed on in page order, sharing
+     * the nodes the table shares (and the store's earlier envelopes'), the
+     * header states the rest and the count, an unadmitted envelope hands on
+     * nothing, and a record naming a node the table lacks is refused.
      */
     @Test
-    public void aPagedReadOutIsReadOneRecordAtATime() {
+    public void anEnvelopeOfRecordsIsReadOneRecordAtATime() {
         VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
         JsonObject earlier = store.importEnvelope(vmEnvelope(vmReference(1),
                 vmDefinition(1, symbol("M_I_site"))))
@@ -247,15 +247,6 @@ public class ContractTest {
         assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
         assertEquals("a \"q\" } ] \\", read.get(0).get("note").getAsString());
         assertSame(earlier, read.get(1).getAsJsonObject("value"));
-        int[] decodes = {0};
-        for (int pass = 0; pass < 2; pass++) {
-            store.importRepeatedRecords(spelled, "records", stated -> true,
-                    JsonObject.class, record -> {
-                        decodes[0]++;
-                        return record.getAsJsonObject();
-                    }, record -> { });
-        }
-        assertEquals("read again, held", 2, decodes[0]);
         // Refused, never read past: a record naming a node the table lacks;
         // a row spelled otherwise than the VM does (no row start the reader
         // knows: it stays in the row before it, which then holds two); a
@@ -291,6 +282,189 @@ public class ContractTest {
                         refusal.getMessage().contains(refused[1]));
             }
         }
+    }
+
+    /**
+     * A session's read-out pages are one channel: each table states only
+     * what no earlier one stated and is imported in the VM's order, whatever
+     * becomes of its records -- a page withheld (unadmitted) still defines
+     * what a later page names; a record a page states again unchanged is
+     * decoded once; the records are decoded at once and handed on in page
+     * order, up to the first that fails, whose failure is thrown; a table
+     * whose row names a node only a lost table defined is still imported and
+     * the loss remembered; the truncation marker in a definition or a record
+     * marks the store.
+     * Refused by name: an older table, another session, a self-contained
+     * table, no table, a short count, a node no table defined.
+     */
+    @Test
+    public void aReadOutPageIsItsChannelsNextTable() throws Exception {
+        java.util.concurrent.ExecutorService helpers =
+                java.util.concurrent.Executors.newFixedThreadPool(3);
+        try {
+            VmExpressionTable.Store store =
+                    new VmExpressionTable.Store(owner -> false);
+            int[] decodes = {0};
+            java.util.function.Function<com.google.gson.JsonElement,
+                    JsonObject> decode = record -> {
+                        synchronized (decodes) {
+                            decodes[0]++;
+                        }
+                        return record.getAsJsonObject();
+                    };
+            JsonObject first = record("first", vmReference(2));
+            JsonObject second = record("second", vmReference(1));
+            String one = channelPage(1L, new JsonObject[] {first, second},
+                    vmDefinition(1, symbol("M_I_site")), vmDefinition(2,
+                            binary("==", vmReference(1), symbol("M_I_site"))));
+            List<JsonObject> read = new ArrayList<>();
+            assertFalse(store.truncationMarked());
+            JsonObject header = store.importReadOutPage(one, "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT)
+                    .getAsInt());
+            assertEquals(2, decodes[0]);
+            JsonObject site = read.get(1).getAsJsonObject("value");
+            assertSame(site, read.get(0).getAsJsonObject("value")
+                    .get("_left"));
+            // Table 2 names node 2 from table 1 without restating it; page 3
+            // is withheld, its table imported all the same, so page 4 reads
+            // node 4; page 5 states page 1's records again unchanged.
+            read.clear();
+            store.importReadOutPage(channelPage(2L, new JsonObject[] {
+                    record("third", vmReference(3))}, vmDefinition(3,
+                    binary("+", vmReference(2), vmReference(1)))), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertSame(site, read.get(0).getAsJsonObject("value")
+                    .getAsJsonObject("_left").get("_left"));
+            store.importReadOutPage(channelPage(3L, new JsonObject[] {
+                    record("withheld", vmReference(4))}, vmDefinition(4,
+                    symbol("M_I_late"))), "records", stated -> false,
+                    JsonObject.class, decode, read::add, helpers, 3);
+            assertEquals("a withheld page hands on nothing", 1, read.size());
+            store.importReadOutPage(channelPage(4L, new JsonObject[] {
+                    record("late", vmReference(4))}), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals("M_I_late", read.get(1).getAsJsonObject("value")
+                    .get("_exp").getAsString());
+            int before = decodes[0];
+            read.clear();
+            store.importReadOutPage(channelPage(5L, new JsonObject[] {first,
+                    second}), "records", stated -> true, JsonObject.class,
+                    decode, read::add, helpers, 3);
+            assertEquals("held: decoded no more", before, decodes[0]);
+            assertEquals(2, read.size());
+            // Tables 6-8 lost: table 9 is imported whole though a row of
+            // it names node 7, which only a lost table defined; a record
+            // naming that row fails, the records before it are handed on in
+            // page order, and the table's other row serves the next page.
+            JsonObject[] many = new JsonObject[40];
+            for (int index = 0; index < many.length; index++) {
+                many[index] = record("many" + index, vmReference(
+                        index == 17 ? 20 : 1 + index % 4));
+            }
+            read.clear();
+            assertTrue(store.readOutLosses().isEmpty());
+            try {
+                store.importReadOutPage(channelPage(9L, many, vmDefinition(
+                        20, binary("+", vmReference(7), vmReference(1))),
+                        vmDefinition(21, symbol("M_I_kept"))), "records",
+                        stated -> true, JsonObject.class, decode, read::add,
+                        helpers, 3);
+                fail("a node only a lost table defined");
+            } catch (IllegalArgumentException missing) {
+                // a record is never read against a node no table defined
+            }
+            assertFalse(store.readOutLosses().isEmpty());
+            assertEquals("handed on in page order up to the failure", 17,
+                    read.size());
+            for (int index = 0; index < read.size(); index++) {
+                assertEquals("many" + index,
+                        read.get(index).get("name").getAsString());
+            }
+            read.clear();
+            store.importReadOutPage(channelPage(10L, new JsonObject[] {
+                    record("kept", vmReference(21))}), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals("M_I_kept", read.get(0).getAsJsonObject("value")
+                    .get("_exp").getAsString());
+            String[] refusals = {
+                // an older table, another session, a self-contained table
+                // (an image whose read-out restates every definition), no
+                // table, a short count
+                channelPage(10L, new JsonObject[0]),
+                channelPage(11L, new JsonObject[0]).replace(
+                        "\"sessionId\":1,\"sequence\"",
+                        "\"sessionId\":2,\"sequence\""),
+                vmPage(new JsonObject[0]).toString(),
+                "{\"records\":[]}",
+                channelPage(11L, new JsonObject[0], vmDefinition(5,
+                        symbol("M_I_x"))).replace("\"definitionCount\":1",
+                        "\"definitionCount\":2"),
+            };
+            for (String refused : refusals) {
+                try {
+                    store.importReadOutPage(refused, "records",
+                            stated -> true, JsonObject.class, decode,
+                            record -> { }, helpers, 3);
+                    fail("read: " + refused);
+                } catch (IllegalArgumentException expected) {
+                    // refused by name
+                }
+            }
+            assertFalse(store.truncationMarked());
+            JsonObject truncated = new JsonObject();
+            truncated.addProperty("_type", "TruncatedExpression");
+            truncated.addProperty("expressionAuthority",
+                    "VM_SERIALIZATION_TRUNCATION_V1");
+            JsonObject wrapped = binary("==", vmReference(1), truncated);
+            store.importReadOutPage(channelPage(12L, new JsonObject[] {
+                    record("cut", vmReference(6))}, vmDefinition(6,
+                    wrapped)), "records", stated -> true, JsonObject.class,
+                    decode, record -> { }, helpers, 3);
+            assertTrue("a definition holding the marker",
+                    store.truncationMarked());
+            VmExpressionTable.Store fresh =
+                    new VmExpressionTable.Store(owner -> false);
+            fresh.importReadOutPage(channelPage(1L, new JsonObject[] {
+                    record("cut", truncated)}), "records", stated -> true,
+                    JsonObject.class, decode, record -> { }, null, 0);
+            assertTrue("a record holding the marker",
+                    fresh.truncationMarked());
+        } finally {
+            helpers.shutdownNow();
+        }
+    }
+
+    /** A read-out record: a name and a value. */
+    private static JsonObject record(String name, JsonObject value) {
+        JsonObject record = new JsonObject();
+        record.addProperty("name", name);
+        record.add("value", value);
+        return record;
+    }
+
+    /** A read-out page whose table is its channel's {@code sequence}th. */
+    private static String channelPage(long sequence, JsonObject[] records,
+                                      JsonObject... definitions) {
+        JsonObject page = vmPage(records, definitions);
+        JsonObject table = page.getAsJsonObject(VmExpressionTable.FIELD);
+        JsonObject channel = new JsonObject();
+        for (Map.Entry<String, com.google.gson.JsonElement> member
+                : table.entrySet()) {
+            if ("definitionCount".equals(member.getKey())) {
+                channel.addProperty("sequence", sequence);
+            }
+            channel.add(member.getKey(), member.getValue());
+        }
+        channel.addProperty("authority",
+                VmExpressionTable.READ_OUT_AUTHORITY);
+        page.add(VmExpressionTable.FIELD, channel);
+        return page.toString();
     }
 
     /** A read-out page: its records, then its table, as the VM writes it. */

@@ -157,6 +157,19 @@ public final class HeapWatch {
         return new long[] {peak, swept == null ? 0L : swept.getMax()};
     }
 
+    /**
+     * The old generation's live set at its highest since {@link
+     * #takePeakSwept} last read it, in bytes, without starting a new span: a
+     * served planner states it after each round, what its host is charged
+     * for its next ({@code run_engine.sh campaign_planner_need_mb}).
+     */
+    public static long peakSwept() {
+        MemoryPoolMXBean old = oldGeneration();
+        MemoryUsage swept = old == null ? null : old.getCollectionUsage();
+        return Math.max(swept == null ? 0L : swept.getUsed(),
+                PEAK_SWEPT.get());
+    }
+
     private static long collectedMillis() {
         long total = 0L;
         for (GarbageCollectorMXBean collector

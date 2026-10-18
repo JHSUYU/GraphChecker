@@ -286,7 +286,7 @@ SUNWprivate_1.1 {
                 JVM_ArmSharedPrimitiveFieldRead;
                 JVM_ConfirmSharedPrimitiveFieldRead;
                 JVM_GetSharedFieldVersions;
-                JVM_GetTrackedLocationVersions;
+                JVM_ReadOutTrackedLocations;
                 JVM_GetSharedElementVersions;
                 JVM_GetSharedMapVersions;
                 JVM_GetConcolicRegionSummary;

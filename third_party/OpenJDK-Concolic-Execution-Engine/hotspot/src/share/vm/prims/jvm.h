@@ -262,8 +262,8 @@ JVM_GetSharedFieldVersions(JNIEnv *env, jclass ignored, jobject owner,
                            jstring descriptor);
 
 JNIEXPORT jstring JNICALL
-JVM_GetTrackedLocationVersions(JNIEnv *env, jclass ignored,
-                               jlong after_event_id, jint max_bytes);
+JVM_ReadOutTrackedLocations(JNIEnv *env, jclass ignored,
+                            jlong after_event_id, jint max_bytes);
 
 JNIEXPORT jstring JNICALL
 JVM_GetSharedElementVersions(JNIEnv *env, jclass ignored, jobject array,

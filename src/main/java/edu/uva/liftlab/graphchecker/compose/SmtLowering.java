@@ -4451,6 +4451,22 @@ public final class SmtLowering {
         freed(symbol, why, Collections.<String>emptySet());
     }
 
+    /** Why a read of a session whose GROW re-run did not land is free
+     *  ({@link #freedUncaptured}). */
+    public static final String UNCAPTURED = "its GROW re-run did not land: "
+            + "the regions GROW grew ran uninstrumented in this session, "
+            + "so the version this read saw, which no write row states, may "
+            + "be one of their writes: free, never held";
+
+    /**
+     * A read of a version no write states, in a session whose GROW re-run
+     * did not land ({@code Corpus#uncaptured}): FREE, never HELD -- its
+     * producer may be a grown region, which the session ran uninstrumented.
+     */
+    public void freedUncaptured(String subject) {
+        freed(subject, UNCAPTURED, Collections.<String>emptySet());
+    }
+
     /**
      * A value held at what the recording states because no row states its
      * producer ({@link #unbound}): a composer's pin of a read whose version

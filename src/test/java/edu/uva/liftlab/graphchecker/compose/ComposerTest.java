@@ -1307,6 +1307,46 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A READ OF A VERSION NO WRITE STATES IS HELD at what its row states
+     * (Composer#statedReads) -- unless its session is one whose GROW re-run
+     * did not land ({@link SessionDir#UNCAPTURED}, run_engine.sh
+     * campaign_stream_uncaptured): a grown region the session ran
+     * uninstrumented may have written that version, so the read is FREE,
+     * named, never HELD.
+     */
+    @Test
+    public void anUnstatedReadIsHeldUnlessItsSessionsReRunDidNotLand()
+            throws Exception {
+        LocationId keys = LocationId.of(LocationKind.INSTANCE, "Manager",
+                "held");
+        Endpoint read = Endpoint.of(ANCHOR, "Manager#get#3:READ",
+                at("r#1", 0), 0);
+        String subject = SmtLowering.locationKey(keys) + "@7";
+        for (Object[] row : new Object[][]{
+                {false, "HELD " + subject, "FREE " + subject},
+                {true, "FREE " + subject, "HELD " + subject}}) {
+            boolean uncaptured = (Boolean) row[0];
+            Path iteration = folder.newFolder("unstated-read-" + uncaptured)
+                    .toPath();
+            Session session = new Session(iteration, "s0", true);
+            session.read(read, keys, 7L, "read_k", "false");
+            session.target("read_k", false, true);
+            session.write();
+            if (uncaptured) {
+                Files.write(iteration.resolve(SessionDir.UNCAPTURED),
+                        "s0\n".getBytes(StandardCharsets.UTF_8));
+            }
+            Composer.Composition composition = compose(iteration, 4);
+            List<String> named = new ArrayList<String>();
+            for (Composer.Concrete concrete : composition.concrete()) {
+                named.add(concrete.kind + " " + concrete.subject);
+            }
+            assertTrue(uncaptured + ": " + named, named.contains(row[1]));
+            assertFalse(uncaptured + ": " + named, named.contains(row[2]));
+        }
+    }
+
     // ------------------------------------------------------------------
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------
