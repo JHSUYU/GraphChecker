@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
@@ -28,11 +29,14 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.HashSet;
@@ -448,6 +452,55 @@ public final class ObligationFactory {
                 () -> keyed(corpus, task, path, index));
     }
 
+    /** One recorded decision of a task's path whose arm is keyed, or the
+     *  whole path ({@link #OFFERED}). */
+    static final class Keyed {
+        final Task task;
+        final Corpus.RecordedPath path;
+        final int index;
+
+        Keyed(Task task, Corpus.RecordedPath path, int index) {
+            this.task = task;
+            this.path = path;
+            this.index = index;
+        }
+    }
+
+    /**
+     * {@link #dependence} of each of {@code arms}, at its index, on every core
+     * of the host ({@link Parallel#grouped}): one session's arms in their
+     * order on one thread -- a key asks its session's lowering, leaf sets
+     * and names, and they remember the order they were asked in (a lowering
+     * names its refused constructs by count; rows sharing a seq share the
+     * leaf set the first of them was asked for) -- the sessions side by
+     * side.  What a key asks of every session -- the literals a recorded
+     * decision compares an integral configuration with, its domain ({@link
+     * Corpus#comparedLiterals}), each decision lowered by its own session's
+     * lowering -- is asked first, on the same terms ({@link
+     * Corpus#configurationLiterals}).  What a session's keys named and
+     * lowered goes with its last one ({@link Corpus#keysDone}).
+     * hdfs-adhoc-07 EX1's keys were ~260 s of a ~900 s round, SGF8-adhoc-05
+     * round 5's 262 s, on one core.
+     */
+    static List<String> dependences(Corpus corpus, List<Keyed> arms) {
+        corpus.configurationLiterals();
+        // What a session's keys hold goes with its last (Corpus#keysDone).
+        Map<String, Keyed> last = new HashMap<String, Keyed>();
+        for (Keyed arm : arms) last.put(arm.path.sessionId, arm);
+        try {
+            return Parallel.grouped(arms, arm -> arm.path.sessionId, arm -> {
+                String keyed = dependence(corpus, arm.task, arm.path,
+                        arm.index);
+                if (last.get(arm.path.sessionId) == arm) {
+                    corpus.keysDone(arm.path.sessionId);
+                }
+                return keyed;
+            });
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+    }
+
     /** {@link #dependence}, computed. */
     private static String keyed(Corpus corpus, Task task,
                                 Corpus.RecordedPath path, int index) {
@@ -577,9 +630,10 @@ public final class ObligationFactory {
     }
 
     /**
-     * The flips one task offers, recording every already-settled candidate.
+     * The flips the tasks offer, task by task in their order, recording
+     * every already-settled candidate.
      *
-     * <p>PIPELINE §7.4: only decisions at sites the closure demanded for this
+     * <p>PIPELINE §7.4: only decisions at sites the closure demanded for a
      * member (target guards for the anchor, own guards for a writer/producer).
      * Cut only from the paths of sessions that may parent ({@link
      * Branches#parents}): a child inherits the parent's world (PIPELINE
@@ -587,9 +641,13 @@ public final class ObligationFactory {
      * stopped ran none the question is asked in. Such sessions still attest
      * arms ({@link Frontier}).  Every path is keyed; {@code
      * maxPathsPerTask} bounds the paths that offer an owed arm no round has
-     * in flight, so it defers new work only, to the next round.</p>
+     * in flight, so it defers new work only, to the next round.  What a path
+     * offers asks its session's lowering ({@link #offered}): one session's
+     * paths in the tasks' order on one thread, the sessions side by side
+     * ({@link Parallel#grouped}, as {@link #dependences}); the ledger is
+     * asked after, in order.</p>
      *
-     * @param flipSites site ids this task's demand names; null = none
+     * @param flipSites task id -> the site ids its demand names
      * @param branches  which sessions a path may be cut from
      * @param owed      the one ledger of owed arms ({@link Frontier})
      * @param gaps      receives settled candidates, so a shrinking round is
@@ -597,27 +655,114 @@ public final class ObligationFactory {
      * @param keys      the ZooKeeper chain's: a decision over off-chain store
      *                  values alone is no flip
      */
-    public static List<Candidate> candidates(Corpus corpus, Task task,
-                                             Set<String> flipSites,
+    public static List<Candidate> candidates(Corpus corpus, List<Task> tasks,
+                                             Map<String, Set<String>> flipSites,
                                              Bounds bounds, Branches branches,
                                              Frontier owed,
                                              List<GapRow> gaps, ZkKeys keys) {
+        // Every task's paths to cut from, smallest world first; how many
+        // stand past the nesting bound, counted into a gap below.
+        List<List<Corpus.RecordedPath>> cut =
+                new ArrayList<List<Corpus.RecordedPath>>();
+        List<Integer> tooDeep = new ArrayList<Integer>();
+        List<Keyed> offering = new ArrayList<Keyed>();
+        for (Task task : tasks) {
+            List<Corpus.RecordedPath> paths =
+                    new ArrayList<Corpus.RecordedPath>();
+            int deep = 0;
+            for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
+                    corpus.pathsOf(task.focused()))) {
+                // Only a parent's paths are cut (see above).
+                if (!branches.parents(path.sessionId)) continue;
+                if (corpus.world(path.sessionId).flips.size()
+                        > bounds.maxWorldDepth) {
+                    deep++;
+                    continue;
+                }
+                paths.add(path);
+                offering.add(new Keyed(task, path, OFFERED));
+            }
+            cut.add(paths);
+            tooDeep.add(deep);
+        }
+        List<Offered> offers;
+        try {
+            offers = Parallel.grouped(offering, path -> path.path.sessionId,
+                    path -> offered(corpus, path.task,
+                            flipSites.get(path.task.taskId()), path.path,
+                            keys));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        List<Candidate> candidates = new ArrayList<Candidate>();
+        int from = 0;
+        for (int task = 0; task < tasks.size(); task++) {
+            int to = from + cut.get(task).size();
+            candidates.addAll(candidates(tasks.get(task), cut.get(task),
+                    offers.subList(from, to), tooDeep.get(task), bounds,
+                    owed, gaps));
+            from = to;
+        }
+        return candidates;
+    }
+
+    /** A {@link Keyed} that names a whole path, every decision it offers
+     *  ({@link #offered}). */
+    private static final int OFFERED = -1;
+
+    /** What one path offers before the ledger is asked: its flippable
+     *  decisions at the task's flip sites, fault decisions first, and its
+     *  pairing flips; how many decide on off-chain store values alone; the
+     *  gaps its pairing flips name. */
+    private static final class Offered {
+        final List<Candidate> asked = new ArrayList<Candidate>();
+        final List<GapRow> gaps = new ArrayList<GapRow>();
+        int offChain;
+    }
+
+    /** {@link Offered} of one task's path. */
+    private static Offered offered(Corpus corpus, Task task,
+                                   Set<String> flipSites,
+                                   Corpus.RecordedPath path, ZkKeys keys) {
+        Offered offered = new Offered();
+        for (int index : faultFirst(corpus, path)) {
+            DecisionRow decision = path.decisions.get(index);
+            if (!FlipQuery.flippable(decision)) {
+                continue;
+            }
+            if (!keys.flippable(corpus, path.sessionId, decision)) {
+                offered.offChain++;
+                continue;
+            }
+            if (flipSites == null || !FlipQuery.asks(flipSites, decision)) {
+                continue;
+            }
+            offered.asked.add(new Candidate(corpus, task, path, index, false));
+        }
+        // And the reads of a node's view the path may re-pair.
+        offered.asked.addAll(PairingFlip.candidates(corpus, task, path,
+                offered.gaps));
+        return offered;
+    }
+
+    /** One task's candidates, from what its paths offer ({@code paths} and
+     *  {@code offers}, in its paths' order), the ledger asked. */
+    private static List<Candidate> candidates(Task task,
+                                              List<Corpus.RecordedPath> paths,
+                                              List<Offered> offers,
+                                              int tooDeep, Bounds bounds,
+                                              Frontier owed,
+                                              List<GapRow> gaps) {
         List<Candidate> candidates = new ArrayList<Candidate>();
         int offChain = 0;
         Set<String> offered = new LinkedHashSet<String>();
-        int paths = 0;
+        int cut = 0;
         int unread = 0;
-        int tooDeep = 0;
-        for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
-                corpus.pathsOf(task.focused()))) {
-            // Only a parent's paths are cut (see above).
-            if (!branches.parents(path.sessionId)) continue;
-            // The nesting bound; counted into a gap below.
-            if (corpus.world(path.sessionId).flips.size()
-                    > bounds.maxWorldDepth) {
-                tooDeep++;
-                continue;
-            }
+        for (int at = 0; at < paths.size(); at++) {
+            Corpus.RecordedPath path = paths.get(at);
+            Offered of = offers.get(at);
+            offChain += of.offChain;
+            gaps.addAll(of.gaps);
             // Its owed arms: each arm once (the same arm from another path is
             // the same obligation; the first path -- smallest world, fewest
             // inherited constraints -- is its prefix), fault flips first
@@ -626,25 +771,7 @@ public final class ObligationFactory {
             List<Candidate> owedHere = new ArrayList<Candidate>();
             List<Candidate> flying = new ArrayList<Candidate>();
             int unflipped = 0;
-            List<Candidate> asked = new ArrayList<Candidate>();
-            for (int index : faultFirst(corpus, path)) {
-                DecisionRow decision = path.decisions.get(index);
-                if (!FlipQuery.flippable(decision)) {
-                    continue;
-                }
-                if (!keys.flippable(corpus, path.sessionId, decision)) {
-                    offChain++;
-                    continue;
-                }
-                if (flipSites == null
-                        || !FlipQuery.asks(flipSites, decision)) {
-                    continue;
-                }
-                asked.add(new Candidate(corpus, task, path, index, false));
-            }
-            // And the reads of a node's view the path may re-pair.
-            asked.addAll(PairingFlip.candidates(corpus, task, path, gaps));
-            for (Candidate candidate : asked) {
+            for (Candidate candidate : of.asked) {
                 if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate);
                 if (!reason.isEmpty()) {
@@ -681,11 +808,11 @@ public final class ObligationFactory {
             // and once the paths before them are answered or in flight, the
             // ones it left are the first that count (gap below).
             if (owedHere.isEmpty()) continue;
-            if (paths >= bounds.maxPathsPerTask) {
+            if (cut >= bounds.maxPathsPerTask) {
                 unread++;
                 continue;
             }
-            paths++;
+            cut++;
             for (Candidate candidate : owedHere) {
                 offered.add(candidate.obligationId);
                 candidates.add(candidate);
@@ -716,9 +843,9 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     task.taskId() + " max-paths-per-region="
                             + bounds.maxPathsPerTask,
-                    "this task has " + (paths + unread) + " recorded "
+                    "this task has " + (cut + unread) + " recorded "
                             + "path(s) that offer an owed arm and this round "
-                            + "planned from " + paths + ": " + unread
+                            + "planned from " + cut + ": " + unread
                             + " path(s), the ones carrying the largest "
                             + "worlds, wait for a later round"));
         }

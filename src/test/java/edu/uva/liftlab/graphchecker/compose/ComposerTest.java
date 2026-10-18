@@ -2836,12 +2836,17 @@ public class ComposerTest {
             session.target("true", false, true);
             session.write();
         }
-        for (double full : new double[]{0.0, 1.0}) {
+        // A heap past the share, or a cap of one path (a composition that
+        // ran out of the engine heap building its body, run_engine.sh
+        // do_compose): the first composed, the other named.
+        for (double[] each : new double[][]{{0.0, 0}, {1.0, 0}, {0.0, 1}}) {
+            double full = each[0];
+            int cap = (int) each[1];
             Composer.Composition composition = Composer.compose(
                     Corpus.read(iteration, null), ANCHOR, 4,
                     StaticScopeMap.empty(), Collections.<String>emptySet(),
-                    () -> full);
-            boolean bound = full >= Composer.HEAP_SHARE;
+                    () -> full, cap);
+            boolean bound = full >= Composer.HEAP_SHARE || cap == 1;
             assertEquals(full + ": composed", bound ? 1 : 2,
                     composition.disjuncts().size());
             assertEquals(full + ": left out, named: "

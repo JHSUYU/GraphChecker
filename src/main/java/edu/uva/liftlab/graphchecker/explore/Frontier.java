@@ -128,37 +128,47 @@ public final class Frontier {
      *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
      *  attests. Only at the task's flip sites ({@link
      *  ObligationFactory#candidates}): no candidate is keyed anywhere else.
+     *  The keys on every core ({@link ObligationFactory#dependences}),
+     *  settled in the order of the tasks, their paths and decisions.
      *
      *  @param flipSites task id -> the site ids its demand names */
     public Frontier(Corpus corpus, List<Task> tasks,
                     Map<String, Set<String>> flipSites) {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
+        List<ObligationFactory.Keyed> arms =
+                new ArrayList<ObligationFactory.Keyed>();
         for (Task task : this.tasks) {
             Set<String> sites = flipSites.get(task.taskId());
             if (sites == null) continue;
             for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
                 for (int index = 0; index < path.decisions.size(); index++) {
                     DecisionRow decision = path.decisions.get(index);
-                    if (!FlipQuery.asks(sites, decision)
-                            || !FlipQuery.flippable(decision)) {
-                        continue;
+                    if (FlipQuery.asks(sites, decision)
+                            && FlipQuery.flippable(decision)) {
+                        arms.add(new ObligationFactory.Keyed(task, path,
+                                index));
                     }
-                    String arm = ObligationFactory.obligationId(
-                            task.taskId(), decision.siteId(),
-                            decision.ordinal(), decision.outcome(),
-                            ObligationFactory.dependence(corpus, task,
-                                    path, index));
-                    recorded.add(arm);
-                    settle(arm,
-                            "arm already recorded by " + path.sessionId
-                                    + ": this occurrence took that arm at "
-                                    + "that site under what its guard "
-                                    + "depends on, so a focused replay of it "
-                                    + "would collect nothing the corpus "
-                                    + "lacks (PIPELINE §7: exploration "
-                                    + "collects the arms the seed LACKS)");
                 }
             }
+        }
+        List<String> dependences = ObligationFactory.dependences(corpus,
+                arms);
+        for (int at = 0; at < arms.size(); at++) {
+            ObligationFactory.Keyed keyed = arms.get(at);
+            DecisionRow decision = keyed.path.decisions.get(keyed.index);
+            String arm = ObligationFactory.obligationId(
+                    keyed.task.taskId(), decision.siteId(),
+                    decision.ordinal(), decision.outcome(),
+                    dependences.get(at));
+            recorded.add(arm);
+            settle(arm,
+                    "arm already recorded by " + keyed.path.sessionId
+                            + ": this occurrence took that arm at "
+                            + "that site under what its guard "
+                            + "depends on, so a focused replay of it "
+                            + "would collect nothing the corpus "
+                            + "lacks (PIPELINE §7: exploration "
+                            + "collects the arms the seed LACKS)");
         }
     }
 

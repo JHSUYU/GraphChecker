@@ -18,12 +18,14 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.SystemView;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
@@ -85,7 +87,10 @@ import java.util.TreeSet;
  *                              results (the answers then landed), corpus
  *                              (a file naming the sessions it reads, one
  *                              per line) and outputDir, until the process
- *                              is ended
+ *                              is ended; a round whose sessions to read its
+ *                              live set does not hold beside them is
+ *                              answered out of heap, unread ({@link
+ *                              HeapWatch#outgrown})
  * </pre>
  *
  * <p>A round rebuilds the frontier from every session, recorded verdict and
@@ -106,6 +111,11 @@ import java.util.TreeSet;
 public final class ExploreMain {
     /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
+    /** Stated once the round has read its corpus: after it, a round reads
+     *  no session file (the corpus's rows and schedules are read whole by
+     *  {@link Corpus#read(Path, Path, Corpus, Collection)}), only the
+     *  workers' files and the iteration's. */
+    static final String CORPUS_READ = "corpus_read";
 
     private final Path iteration;
     private final String declaredAnchor;
@@ -128,6 +138,10 @@ public final class ExploreMain {
     /** The slot table as the last round left it, and that round. */
     private SlotTable slots;
     private int slotsRound = -1;
+    /** The files a round writes beside its work ({@link #round}): its slot
+     *  changes and its graph. */
+    private final List<Parallel.Beside> writing =
+            new ArrayList<Parallel.Beside>();
 
     /**
      * One exploration's planner.
@@ -154,6 +168,9 @@ public final class ExploreMain {
 
     public static void main(String[] argv) throws Exception {
         HeapWatch.start();
+        // A planner is a head step, one JVM alone on its host (PIPELINE
+        // §7.9): it computes on every core (contract.Parallel).
+        Parallel.width(Parallel.HOST_CORES);
         LongOptions options = LongOptions.parse(argv);
         // The iteration is the parent of --sessions.
         Path sessions = options.path("sessions");
@@ -199,12 +216,25 @@ public final class ExploreMain {
             Service.serve(serve, 0L, (question, out) -> {
                 String flying = JsonFields.optionalString(question,
                         "inFlight");
+                List<String> named = corpus(Paths.get(
+                        JsonFields.primitiveString(question, "corpus")));
+                // A round it cannot hold is not asked: it runs at the most
+                // heap a head JVM is given (run_engine.sh
+                // campaign_stream_plan), so none would hold it.
+                long[] live = HeapWatch.takePeakSwept();
+                long toRead = planner.toRead(named);
+                System.err.printf("round %d: the planner's live set %d MB at "
+                                + "its highest of its %d MB old generation, "
+                                + "%d MB of session files to read%n",
+                        question.get("round").getAsInt(), live[0] >> 20,
+                        live[1] >> 20, toRead >> 20);
+                String past = HeapWatch.outgrown("the planner", live[0],
+                        live[1], toRead);
+                if (past != null) throw new Service.OutOfHeap(past);
                 planner.round(question.get("round").getAsInt(),
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
-                                "results")),
-                        corpus(Paths.get(JsonFields.primitiveString(
-                                question, "corpus"))),
+                                "results")), named,
                         Paths.get(JsonFields.primitiveString(question,
                                 "outputDir")));
             });
@@ -218,6 +248,31 @@ public final class ExploreMain {
         System.out.println(pretty(planner.round(
                 (int) options.number("round", 0), options.path("in-flight"),
                 options.path("results"), null, out)));
+    }
+
+    /**
+     * The bytes of the session files a round over {@code named} reads: of
+     * the sessions it names that the corpus this planner kept does not hold
+     * ({@link Corpus#read(Path, Path, Corpus, Collection)} reads only
+     * those).
+     */
+    long toRead(Collection<String> named) throws IOException {
+        Set<String> held = new LinkedHashSet<String>();
+        if (corpus != null) {
+            for (SessionReader session : corpus.everySession()) {
+                held.add(session.sessionId());
+            }
+        }
+        long bytes = 0L;
+        for (String sessionId : named) {
+            if (held.contains(sessionId)) continue;
+            try (java.nio.file.DirectoryStream<Path> files = Files
+                    .newDirectoryStream(SessionDir.of(iteration, sessionId)
+                            .dir())) {
+                for (Path file : files) bytes += Files.size(file);
+            }
+        }
+        return bytes;
     }
 
     /** The sessions a served round's question names, one per line. */
@@ -262,7 +317,15 @@ public final class ExploreMain {
      */
     JsonObject round(int round, Path inFlight, Path results,
                      Collection<String> named, Path out) throws IOException {
+        // A round that failed may have left its files being written: none
+        // is written over another's.
+        for (Parallel.Beside file : writing) file.await();
+        writing.clear();
         corpus = Corpus.read(iteration, rootDomains, corpus, named);
+        // Every session file this round reads is read: GROW may withdraw a
+        // session of its corpus now (run_engine.sh campaign_stream_swap_due).
+        Files.createDirectories(out);
+        Files.write(out.resolve(CORPUS_READ), new byte[0]);
         // The map is read again only when its file changed.
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
@@ -359,6 +422,12 @@ public final class ExploreMain {
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
                 round);
         gaps.addAll(skeleton.gaps);
+        // The round's change of the table is whole now, and its file is the
+        // round's largest (SGF8-adhoc-05 round 5: 2.8 GB, ~30 s of a 1 Gb/s
+        // link): written beside the rest of the round, which ends once it
+        // is.  The table is the next round's only if this one ends.
+        SlotTable changed = slots;
+        writing.add(Parallel.beside("slots", () -> changed.write(out)));
 
         // The one ledger of owed arms (Frontier).
         Frontier frontier = new Frontier(corpus, tasks, flipSites);
@@ -373,12 +442,8 @@ public final class ExploreMain {
         ZkChain chain = ZkChain.read(iteration.resolve(ZkChain.FILE));
         ZkKeys keys = ZkKeys.of(chain);
         List<ObligationFactory.Candidate> candidates =
-                new ArrayList<ObligationFactory.Candidate>();
-        for (Task task : tasks) {
-            candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    flipSites.get(task.taskId()), bounds, branches, frontier,
-                    gaps, keys));
-        }
+                ObligationFactory.candidates(corpus, tasks, flipSites, bounds,
+                        branches, frontier, gaps, keys);
         // The forced replay of the anchor first (PIPELINE §7.10).
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
@@ -389,8 +454,10 @@ public final class ExploreMain {
         Files.createDirectories(out);
         // G_k and growth (PIPELINE §7.1); empty growth.jsonl +
         // obligations.jsonl with nothing in flight is the driver's fixed
-        // point (§7.9).
-        WaveGraph.of(corpus).write(out, round);
+        // point (§7.9).  The graph, 465 MB of 05 round 5's files, is
+        // written beside the rest of the round.
+        WaveGraph graph = WaveGraph.of(corpus);
+        writing.add(Parallel.beside("graph", () -> graph.write(out, round)));
         // An address is grown once: a planned occurrence no replay ran again
         // since depends on timing the replays do not reproduce (hdfs-17897
         // v83: the NameNode converts a key command only on the heartbeat that
@@ -482,19 +549,22 @@ public final class ExploreMain {
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
-                ceilingCut, witnesses, wave(iteration, corpus), branches,
+                ceilingCut, witnesses, wave(corpus), branches,
                 concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
         manifest.add("boundedFlips", boundedFlips(iteration,
                 frontier.boundedFlips()));
         manifest.add("force", forced.manifest);
+        // The files written beside the round, then its manifest, last: its
+        // time is the round's end (run_engine's campaign_last_round_millis).
+        for (Parallel.Beside file : writing) file.join();
+        writing.clear();
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
-        // Last: the round's change of the slot table, so a round planned
-        // again starts from the table the rounds before it left.
-        slots.write(out);
+        // A round planned again starts from the table the rounds before it
+        // left, folded from their files.
         slotsRound = round;
         return manifest;
     }
@@ -731,22 +801,42 @@ public final class ExploreMain {
      * Every answer this iteration's obligation workers wrote, by the flip
      * each asked ({@link ObligationFactory#flip}), in wave and name order:
      * its question names the flip ({@code <flip>:<content>},
-     * {@link ObligationFactory#question}), else its ask's row does.
+     * {@link ObligationFactory#question}), else its ask's row does.  Read as
+     * the workers stand, while a GROW swap may set one's files to its
+     * re-run's (run_engine.sh campaign_stream_swap_worker): each file is
+     * renamed over whole, and a worker's flip is the same before and after,
+     * so the flip has the exposing replay's answer or the re-run's, as a
+     * round after the swap reads it.
      */
     static Map<String, List<ObligationResult>> answersByFlip(Path iteration)
             throws IOException {
         Map<String, List<ObligationResult>> byFlip =
                 new LinkedHashMap<String, List<ObligationResult>>();
-        for (Path worker : ObligationDir.workerDirs(iteration)) {
-            List<ObligationResult> results = RowCodec.readAll(
-                    worker.resolve(ObligationDir.RESULT),
-                    RowCodec::readObligationResult);
-            String flip = results.isEmpty() ? "" : flipOf(worker);
-            if (flip.isEmpty()) continue;
-            byFlip.computeIfAbsent(flip,
-                    key -> new ArrayList<ObligationResult>()).addAll(results);
+        // Each worker's few small files read side by side: on NFS a read is
+        // its latency (SGF8-adhoc-05 round 5: 917 workers, 20-30 s one at
+        // a time).
+        for (Answered worker : Parallel.map(ObligationDir.workerDirs(
+                iteration), Answered::new, Parallel.directoriesAtOnce())) {
+            if (worker.flip.isEmpty()) continue;
+            byFlip.computeIfAbsent(worker.flip,
+                    key -> new ArrayList<ObligationResult>())
+                    .addAll(worker.results);
         }
         return byFlip;
+    }
+
+    /** One worker's answers and the flip it asked ({@link #answersByFlip}),
+     *  "" where it answered nothing. */
+    private static final class Answered {
+        final List<ObligationResult> results;
+        final String flip;
+
+        Answered(Path worker) throws IOException {
+            this.results = RowCodec.readAll(
+                    worker.resolve(ObligationDir.RESULT),
+                    RowCodec::readObligationResult);
+            this.flip = results.isEmpty() ? "" : flipOf(worker);
+        }
     }
 
     /**
@@ -755,7 +845,8 @@ public final class ExploreMain {
      * path, site, ordinal, the outcome asked; {@code force} for the FORCE
      * run, which asks none, {@link ForcedFlip#flip}) and the obligations whose
      * replays were killed with what killed them: what run_engine's {@code
-     * campaign_bounds} names, the last round's being every one.
+     * campaign_bounds} names, the last round's being every one.  Read as the
+     * workers stand, as {@link #answersByFlip} is.
      */
     static JsonArray boundedFlips(Path iteration, Set<String> flips)
             throws IOException {
@@ -891,15 +982,17 @@ public final class ExploreMain {
      * over the seed alone (a round's wave is its manifest's; one that states
      * none planned from the seed).  It deepens only as sessions land, never
      * with the rounds a streaming campaign plans between them, and
-     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).
+     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).  The workers
+     * are taken as the corpus's read found them ({@link Corpus#landedIn}):
+     * a GROW swap may rename a worker's answer to its re-run's, a session
+     * this round does not read, while the round plans.
      */
-    private static int wave(Path iteration, Corpus corpus)
-            throws IOException {
+    private static int wave(Corpus corpus) throws IOException {
         Map<Path, Integer> waves = new LinkedHashMap<Path, Integer>();
         int deepest = 0;
-        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            if (corpus.session(worker.sessionId()) == null) continue;
-            Path round = worker.dir().getParent();
+        for (Map.Entry<String, Path> landed : corpus.landedIn().entrySet()) {
+            if (corpus.session(landed.getKey()) == null) continue;
+            Path round = landed.getValue();
             Integer of = waves.get(round);
             if (of == null) {
                 Path manifest = round.resolve(MANIFEST_FILE);
@@ -1060,13 +1153,12 @@ public final class ExploreMain {
     private static Set<String> plannedOccurrences(Path iteration)
             throws IOException {
         Set<String> planned = new LinkedHashSet<String>();
-        Path plan = iteration.resolve("execution_task_plan.jsonl");
-        if (!Files.exists(plan)) return planned;
-        for (JsonObject row : RowCodec.readJsonl(plan)) {
-            if (row.has("occurrenceId")) {
-                planned.add(row.get("occurrenceId").getAsString());
-            }
-        }
+        RowCodec.readEach(iteration.resolve("execution_task_plan.jsonl"),
+                row -> row.has("occurrenceId")
+                        ? row.get("occurrenceId").getAsString() : null,
+                occurrence -> {
+                    if (occurrence != null) planned.add(occurrence);
+                });
         return planned;
     }
 
@@ -1075,21 +1167,22 @@ public final class ExploreMain {
     private static Set<String> plannedInputs(Path iteration)
             throws IOException {
         Set<String> planned = new LinkedHashSet<String>();
-        Path plan = iteration.resolve("execution_task_plan.jsonl");
-        if (!Files.exists(plan)) return planned;
-        for (JsonObject row : RowCodec.readJsonl(plan)) {
-            if (!row.has(InputActionCatalog.FIELD)) continue;
-            String taskId = row.has("taskId")
-                    ? row.get("taskId").getAsString() : "";
-            for (JsonElement action
-                    : row.getAsJsonArray(InputActionCatalog.FIELD)) {
-                JsonObject input = action.getAsJsonObject();
-                if (input.has("symbol")) {
-                    planned.add(taskId + " "
-                            + input.get("symbol").getAsString());
-                }
-            }
-        }
+        RowCodec.readEach(iteration.resolve("execution_task_plan.jsonl"),
+                row -> {
+                    List<String> inputs = new ArrayList<String>();
+                    if (!row.has(InputActionCatalog.FIELD)) return inputs;
+                    String taskId = row.has("taskId")
+                            ? row.get("taskId").getAsString() : "";
+                    for (JsonElement action
+                            : row.getAsJsonArray(InputActionCatalog.FIELD)) {
+                        JsonObject input = action.getAsJsonObject();
+                        if (input.has("symbol")) {
+                            inputs.add(taskId + " "
+                                    + input.get("symbol").getAsString());
+                        }
+                    }
+                    return inputs;
+                }, planned::addAll);
         return planned;
     }
 
@@ -1101,14 +1194,13 @@ public final class ExploreMain {
                                                     String mark)
             throws IOException {
         Set<String> doorsOnly = new LinkedHashSet<String>();
-        Path plan = iteration.resolve("execution_task_plan.jsonl");
-        if (!Files.exists(plan)) return doorsOnly;
-        for (JsonObject row : RowCodec.readJsonl(plan)) {
-            if (row.has(mark) && row.get(mark).getAsBoolean()
-                    && row.has("occurrenceId")) {
-                doorsOnly.add(row.get("occurrenceId").getAsString());
-            }
-        }
+        RowCodec.readEach(iteration.resolve("execution_task_plan.jsonl"),
+                row -> row.has(mark) && row.get(mark).getAsBoolean()
+                        && row.has("occurrenceId")
+                        ? row.get("occurrenceId").getAsString() : null,
+                occurrence -> {
+                    if (occurrence != null) doorsOnly.add(occurrence);
+                });
         return doorsOnly;
     }
 

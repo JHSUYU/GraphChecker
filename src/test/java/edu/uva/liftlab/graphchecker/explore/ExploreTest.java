@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
@@ -78,6 +79,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -1281,6 +1283,7 @@ public class ExploreTest {
         String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
                 {"land", "s-b"}, {"unlisted", "s-c"}};
         Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
+        Set<String> held = new LinkedHashSet<String>();
         for (int round = 0; round < landings.length; round++) {
             String[] landing = landings[round];
             if (landing.length > 0 && landing[0].equals("land")) {
@@ -1304,7 +1307,22 @@ public class ExploreTest {
                 landed(iteration, landing[1]);
             }
             Path mine = iteration.resolve(name);
+            // What the round reads, by which its room is judged: the files
+            // of the sessions the planner does not hold yet.
+            long reads = 0L;
+            for (String sessionId : corpus) {
+                if (held.contains(sessionId)) continue;
+                try (java.util.stream.Stream<Path> files = Files.list(
+                        iteration.resolve("sessions").resolve(sessionId))) {
+                    for (Path file : (Iterable<Path>) files::iterator) {
+                        reads += Files.size(file);
+                    }
+                }
+            }
+            assertEquals("round " + round + " reads its new sessions' files",
+                    reads, served.toRead(corpus));
             served.round(round, null, results, corpus, mine);
+            held = new LinkedHashSet<String>(corpus);
             List<String> files = new ArrayList<String>();
             try (java.util.stream.Stream<Path> listed = Files.list(own)) {
                 listed.forEach(file -> files.add(file.getFileName()
@@ -1327,6 +1345,56 @@ public class ExploreTest {
         assertTrue("slots were opened and dropped: " + kinds,
                 kinds.containsKey(SlotTable.OPENED)
                         && kinds.containsKey(SlotTable.DROPPED));
+    }
+
+    /**
+     * A ROUND ON ONE CORE IS A ROUND ON MANY ({@code contract.Parallel}):
+     * the frontier's keys and the candidates, one session's in order to a
+     * thread, the sessions side by side, and every file read and written by
+     * blocks -- byte for byte the files one thread writes.
+     */
+    @Test
+    public void aRoundOnOneCoreIsARoundOnMany() throws Exception {
+        Path iteration = tree.newFolder("cores").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        seed.keyChain();
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
+        for (int world = 0; world < 6; world++) {
+            landed(iteration, "s-" + world);
+            worker(iteration, "obligations-0000", "w-" + world, "o-s-" + world,
+                    "s-" + world, TARGET, "Guard#u8", NONE, NONE);
+        }
+        Path results = results(iteration);
+        Map<Integer, Path> planned = new LinkedHashMap<Integer, Path>();
+        try {
+            for (int cores : new int[] {1, 8}) {
+                Parallel.width(cores);
+                Path out = tree.newFolder("cores-" + cores).toPath();
+                plan(iteration, TARGET_SELECTOR, null, results, out, 1);
+                planned.put(cores, out);
+            }
+        } finally {
+            Parallel.width(1);
+        }
+        List<String> files = new ArrayList<String>();
+        try (java.util.stream.Stream<Path> listed =
+                     Files.list(planned.get(1))) {
+            listed.forEach(file -> files.add(file.getFileName().toString()));
+        }
+        assertTrue("the round wrote its files: " + files,
+                files.contains("obligations.jsonl")
+                        && files.contains(SlotTable.FILE));
+        for (String file : files) {
+            assertArrayEquals(file, Files.readAllBytes(
+                    planned.get(1).resolve(file)), Files.readAllBytes(
+                    planned.get(8).resolve(file)));
+        }
     }
 
     /** A world's admitted session of the served planner's iteration: the
