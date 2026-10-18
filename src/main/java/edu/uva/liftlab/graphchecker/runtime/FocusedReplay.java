@@ -874,6 +874,11 @@ public final class FocusedReplay {
      * or a refusal ends the run.
      */
     static void workloadEnded(Throwable failure, String testClass) {
+        noteFailure(failure, testClass);
+        workloadEnded = true;
+    }
+
+    private static void noteFailure(Throwable failure, String testClass) {
         if (failure != null) {
             String message = failure.getMessage() == null ? ""
                     : failure.getMessage().split("\\R", 2)[0];
@@ -889,15 +894,16 @@ public final class FocusedReplay {
                 }
             }
         }
-        workloadEnded = true;
     }
 
-    static void windowClosed() {
+    static void windowClosed(Throwable failure, String testClass) {
         synchronized (LOCK) {
             if (workloadEnded || !refusedAt.isEmpty()
-                    || !stalledAt.isEmpty()) {
+                    || !stalledAt.isEmpty()
+                    || ConcolicResultPublisher.concluded()) {
                 return;
             }
+            noteFailure(failure, testClass);
             endedAtClose = true;
             workloadEnded = true;
         }

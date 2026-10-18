@@ -97,6 +97,12 @@ final class JUnitLifecycle {
     private JUnitLifecycle() {
     }
 
+    private static volatile Throwable methodFailure;
+
+    static Throwable methodFailure() {
+        return methodFailure;
+    }
+
     static void run(String[] args) throws Exception {
         if (args == null || args.length != 2) {
             throw new IllegalArgumentException(
@@ -141,6 +147,7 @@ final class JUnitLifecycle {
                         -> context(type, testClass, test, testMethod)));
             } catch (Throwable thrown) {
                 failure = thrown;
+                methodFailure = thrown;
             } finally {
                 failure = alsoInvoke(failure, test,
                         lifecycleMethods(testClass, Lifecycle.AFTER_EACH),

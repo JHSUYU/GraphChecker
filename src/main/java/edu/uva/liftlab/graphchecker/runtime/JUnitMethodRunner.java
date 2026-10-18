@@ -13,6 +13,7 @@ public final class JUnitMethodRunner {
     private static final Object ENDING = new Object();
     /** Guarded by {@link #ENDING}: whether some thread ends the run. */
     private static boolean ending;
+    private static volatile String testClass = "";
 
     private JUnitMethodRunner() {
     }
@@ -32,6 +33,7 @@ public final class JUnitMethodRunner {
         ConcolicResultPublisher.watchProgress();
         int status = 0;
         Throwable ended = null;
+        testClass = args == null || args.length == 0 ? "" : args[0];
         try {
             JUnitLifecycle.run(args);
         } catch (Throwable failure) {
@@ -42,8 +44,7 @@ public final class JUnitMethodRunner {
         }
         // The workload ended by itself, whatever it threw: a replay's world
         // may be refuted by it (FocusedReplay#refuted).
-        FocusedReplay.workloadEnded(ended, args == null || args.length == 0
-                ? "" : args[0]);
+        FocusedReplay.workloadEnded(ended, testClass);
         exit(status);
     }
 
@@ -119,7 +120,9 @@ public final class JUnitMethodRunner {
     }
 
     static void endAtWindowClose() {
-        FocusedReplay.windowClosed();
+        Throwable failed = JUnitLifecycle.methodFailure();
+        if (failed != null) EngineConsole.trace(failed);
+        FocusedReplay.windowClosed(failed, testClass);
         EngineConsole.println("Causynth " + java.time.Instant.now()
                 + ": the replay ends at its window's close: its test is"
                 + " over, and its teardown does not run");

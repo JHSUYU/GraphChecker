@@ -5695,7 +5695,8 @@ EOF
 # every replay from then on starts at twice that heap (the heap basis, twice
 # the heap); out of heap twice, REPLAY_BOUNDED.  {kind, the MB it reached,
 # the heap it ran out of (- for a memory end; n*heap: its n runs out of
-# heap), queued at <MB>, rerun at <basis> or bounded}.
+# heap), queued at <MB>, rerun at <basis> or bounded: twice, or once at the
+# most a replay's heap is, half a host's ceiling (8192 here)}.
 while IFS='|' read -r rq_kind rq_mb rq_heap rq_want; do
   rq_dir="${test_tmp}/kill-requeue"
   rm -rf -- "${rq_dir}"
@@ -5804,7 +5805,58 @@ REPLAY|5400|-|queued 8192
 REPLAY|9000|-|bounded
 REPLAY|0|1*4096|rerun 16384
 CONFIRM|0|1*4096|rerun 16384
-REPLAY|0|2*8192|twice
+REPLAY|0|2*4096|twice
+REPLAY|0|1*8192|twice
+EOF
+
+# CONFIRM-IN-PLACE: the final CONFIRM runs its replay in place: a replay
+# ended for memory runs once more at its full need, one out of heap once more
+# at twice its heap; a second end is REPLAY_BOUNDED by name, never a
+# confirmation decided over no replay.  {how the runs end, the runs, the
+# confirmation's worker result}.
+while IFS='|' read -r cp_ends cp_runs cp_result; do
+  cp_dir="${test_tmp}/confirm-in-place"
+  rm -rf -- "${cp_dir}"
+  mkdir -p "${cp_dir}/claims" "${cp_dir}/c/worker" "${cp_dir}/c/sessions"
+  cp_got=$(
+    campaign_log() { :; }
+    campaign_confirm_plan() { :; }
+    campaign_confirm_settle() { :; }
+    campaign_replay_charge_mb() { echo "$(( $1 < 8192 ? $1 : 8192 ))"; }
+    campaign_replay_peak_mb=1000
+    cp_n=0
+    campaign_head_charged() {
+      cp_n=$((cp_n + 1))
+      echo "$1 $7" >>"${cp_dir}/charged"
+      read -r -a cp_end <<<"${cp_ends}"
+      case "${cp_end[cp_n - 1]:-ok}" in
+        heap) mkdir -p "${cp_dir}/c/worker/ended-${cp_n}"
+          echo 4096 >"${cp_dir}/c/worker/ended-${cp_n}/workload_out_of_heap_mb"
+          printf '0 %s %s 4096\n' "$1" "${cp_dir}/c/worker/ended-${cp_n}" \
+            >"${cp_dir}/c/worker/replay_again" ;;
+        memory) printf '2900 %s %s -\n' "$1" \
+            "${cp_dir}/c/worker/ended-${cp_n}" >"${cp_dir}/c/worker/replay_again" ;;
+        ok) jq -n -c '{verdict: "ADMITTED", sessionId: "S"}' \
+            >"${cp_dir}/c/worker/obligation_result.jsonl" ;;
+      esac
+    }
+    campaign_confirm_decide() {
+      jq -r '.verdict + " " + (.detail // "")' \
+        "${cp_dir}/c/worker/obligation_result.jsonl"
+    }
+    campaign_confirm_claim "${cp_dir}" "${cp_dir}/claims" "${cp_dir}/c"
+    echo "runs $(wc -l <"${cp_dir}/charged")"
+  )
+  [[ "${cp_got}" == *"runs ${cp_runs}"* \
+     && "${cp_got}" == *"${cp_result}"* ]] \
+    || fail "CONFIRM-IN-PLACE: ends ${cp_ends} gave ${cp_got}, not ${cp_runs} \
+run(s) and ${cp_result}: $(cat "${cp_dir}/charged")"
+done <<'EOF'
+ok|1|ADMITTED
+heap ok|2|ADMITTED
+memory ok|2|ADMITTED
+heap heap|2|NOT_ADMITTED REPLAY_BOUNDED: the confirmation replay ran out of its 4096 MB heap
+memory memory|2|NOT_ADMITTED REPLAY_BOUNDED: the confirmation replay was ended at 2900 MB
 EOF
 
 # HOST-PAR: how many starts of one kind one host runs at once, as many as

@@ -204,7 +204,7 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
 - Goal 2 (branch solr-replay-end, agent 4): DONE -- the need from the 90th percentile of the stream's peaks
   (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
   `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
-  there; OPTIMIZATIONS 1.37, PIPELINE §7.7). Not yet seen live: no replay ran out of heap in the reproductions.
+  there, at most half a host's ceiling; OPTIMIZATIONS 1.37, PIPELINE §7.7); the exit-3 path checked live on vm-force10.
 - Done (goal 3, branch solr-replay, VM commit 96214b520 + the decoder commit after it; image
   `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, smoke 73 OK): a session's read-out pages are one channel, each expression
   definition sent once, the tables numbered under the channel's lock (VM `VmExpressionChannel`,

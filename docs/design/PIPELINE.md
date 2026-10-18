@@ -393,8 +393,13 @@ A concolic replay -- the seed's, a focused, FORCE or CONFIRM one -- ENDS AT ITS 
 `@After`, before the class's cluster shutdown): the test's thread closing its window goes no further, and the
 end runs on a thread of its own as at the workload's own end -- the activations still live settle on the
 settle's bound while the cluster stays up, every verdict as at the workload's end (`FocusedReplay#windowClosed`:
-a faithful world never entered is still `WORLD_REFUTED`, its (d) naming the close); the log says `the replay
-ends at its window's close`. The recording and a native reproduction run their teardown (natively, seconds;
+a faithful world never entered is still `WORLD_REFUTED`, its (d) naming the close, its exception the test
+method's own failure where the engine's lifecycle ran the method, `JUnitLifecycle#methodFailure`, printed on the
+log; a test its own JUnit runner runs -- Solr's RandomizedRunner -- reports its failure only after its `@After`,
+so none is known at the close); the log says `the replay ends at its window's close`. A close that comes after
+the run concluded (a witness, a forced target, a refusal or a stall) changes no verdict. The test's thread
+waits for the halt holding whatever its `@After` holds (Solr: `CausynthSolrCluster`'s class monitor, which no
+cluster thread takes). The recording and a native reproduction run their teardown (natively, seconds;
 neither records after the close). Nothing after the close is needed: no occurrence is admitted outside the
 window (`ConcolicTaskPlan#select`, `#addressLoopRootInvocation`, `#selectNamed`), the recording states nothing
 after it (`CausynthTraceRecorder#tracing`), the order is settled there (`ScheduleLog#windowClosed`) and the
@@ -1704,12 +1709,17 @@ collects (`contract.HeapWatch`, started by `JUnitMethodRunner#main`); caught by 
 catches Throwable) an OutOfMemoryError had let the replay run on without that thread's work. Its worker
 names the heap it ran at (`workload_out_of_heap_mb`, `campaign_replay`) and sets its run aside the same way,
 `replay_again` naming that heap; the head queues it again once at its kind's charge, and every replay from
-then on -- that one first -- starts at twice that heap (`campaign_replay_heap_raised`,
-`campaign_replay_heap_floor_mb`: the heap basis a start hands on is at least twice it,
-`campaign_replay_basis_mb`; the charge stays the measured need's, the replay VM's Serial collector growing
-its resident memory only as its live set does); out of heap twice it is `REPLAY_BOUNDED`. The seed replay
-and the final CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`); the seed
-out of heap twice fails REPLAY. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
+then on -- that one first -- starts at twice that heap, at most half a host's ceiling
+(`campaign_replay_heap_raised`, `campaign_replay_heap_floor_mb`: the heap basis a start hands on is at least
+twice it and at least the charge it was admitted at, `campaign_replay_basis_mb`, `campaign_stream_start`; the
+charge stays the measured need's, the replay VM's Serial collector growing its resident memory only as its
+live set does); out of heap twice, or once at that most, it is `REPLAY_BOUNDED`. The seed replay and the final
+CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`): out of heap at twice the
+heap, the CONFIRM ended for memory at its full need (`campaign_replay_full_need_mb`); a second end fails the
+seed's REPLAY and bounds the CONFIRM by name (`campaign_replay_bounded`: its confirmation refuted as
+`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). Checked live on vm-force10 with
+the replay's heap overridden to 256 MB (`CAUSYNTH_WORKLOAD_JAVA_OPTS`): `Terminating due to
+java.lang.OutOfMemoryError`, exit 3, the run set aside under `ended-1`, `replay_again` naming the heap. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
 A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,

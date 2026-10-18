@@ -3014,17 +3014,17 @@ replay_timeout_s=${replay_timeout_s}" "${need}"
     read -r heap 2>/dev/null \
       <"${iteration_dir}/seed-result/focused/${campaign_out_of_heap_file}" \
       || break
-    (( runs == 1 )) || campaign_fail REPLAY WORKLOAD \
-      "${iteration_dir}/seed-result/focused" "the seed replay ran out of its \
-${heap} MB heap twice"
     aside="${iteration_dir}/seed-result/ended-1"
+    (( runs == 1 )) && campaign_replay_heap_raised "${heap}" "the seed \
+replay, set aside in ${aside}" || campaign_fail REPLAY WORKLOAD \
+      "${iteration_dir}/seed-result/focused" "the seed replay ran out of its \
+${heap} MB heap $( (( runs == 1 )) && echo "-- the most a replay's heap is" \
+      || echo "a second time")"
     mkdir -p -- "${aside}/sessions"
     mv -f -- "${iteration_dir}/seed-result/focused" "${aside}/"
     for session in "${iteration_dir}"/sessions/seed-result-*; do
       [[ ! -e "${session}" ]] || mv -f -- "${session}" "${aside}/sessions/"
     done
-    campaign_replay_heap_raised "${heap}" "the seed replay, set aside in \
-${aside}"
     (( need >= 2 * campaign_replay_heap_floor_mb )) \
       || need=$(( 2 * campaign_replay_heap_floor_mb ))
   done
@@ -3118,10 +3118,21 @@ campaign_replay_basis_mb() {
 }
 
 campaign_replay_heap_raised() {
+  local cap
+  cap=$(campaign_replay_charge_mb 2147483647)
+  (( $1 < cap )) || return 1
   (( 2 * $1 > campaign_replay_heap_floor_mb )) || return 0
-  campaign_replay_heap_floor_mb=$(( 2 * $1 ))
+  campaign_replay_heap_floor_mb=$(( 2 * $1 < cap ? 2 * $1 : cap ))
   campaign_log "a replay ran out of its $1 MB heap (${2}): it runs once \
 more, and every replay from now on, at ${campaign_replay_heap_floor_mb} MB"
+}
+
+campaign_replay_full_need_mb() {
+  local full peak
+  full=$(campaign_replay_need_mb)
+  peak=$(campaign_need_of_peak_mb "$1")
+  (( full >= peak )) || full=${peak}
+  campaign_replay_charge_mb "${full}"
 }
 
 # The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
@@ -7771,6 +7782,7 @@ campaign_stream_start() {
   local -a work=()
   read -r kind round id session <<<"${entry}"
   need=$(campaign_replay_basis_mb)
+  (( need >= stream_admitted_mb )) || need=${stream_admitted_mb}
   case "${kind}" in
     OBLIGATION)
       # Its charge, a cold host's solver's to take over
@@ -8056,10 +8068,7 @@ stderr.log,host.txt}; do
   done
   (( refused <= campaign_replay_peak_mb )) \
     || campaign_replay_peak_mb=${refused}
-  full=$(campaign_replay_need_mb)
-  (( full >= $(campaign_need_of_peak_mb "${refused}") )) \
-    || full=$(campaign_need_of_peak_mb "${refused}")
-  full=$(campaign_replay_charge_mb "${full}")
+  full=$(campaign_replay_full_need_mb "${refused}")
   case "${kind}" in
     REPLAY) entry="REPLAY ${round} ${id} ${tree}" ;;
     RERUN) entry="RERUN ${round} ${id} ${session}" ;;
@@ -8069,7 +8078,8 @@ stderr.log,host.txt}; do
     for file in "${worker}"/ended-*/"${campaign_out_of_heap_file}"; do
       [[ ! -s "${file}" ]] || ran=$((ran + 1))
     done
-    (( ran >= 2 )) || again=1
+    (( ran >= 2 )) || ! campaign_replay_heap_raised "${heap}" \
+      "${kind} ${id}" || again=1
   else
     (( full <= refused )) || again=1
   fi
@@ -8086,7 +8096,6 @@ stderr.log,host.txt}; do
       [[ -z "${file}" ]] || stream_rests[${id}]=${file}
     fi
     if [[ -n "${heap}" ]]; then
-      campaign_replay_heap_raised "${heap}" "${kind} ${id}"
       campaign_stream_enqueue "${entry}"
       return 0
     fi
@@ -8103,9 +8112,12 @@ at its full need, ${full} MB"
   else
     file="${worker}/sessions"
   fi
-  if [[ -n "${heap}" ]]; then
+  if [[ -n "${heap}" ]] && (( ran >= 2 )); then
     campaign_replay_bounded "${id}" "${worker}" "${file}" "replay ran out \
 of its heap twice, the second time at ${heap} MB"
+  elif [[ -n "${heap}" ]]; then
+    campaign_replay_bounded "${id}" "${worker}" "${file}" "replay ran out \
+of its ${heap} MB heap, the most a replay's heap is"
   else
     campaign_replay_bounded "${id}" "${worker}" "${file}" "replay was ended \
 at ${refused} MB as its host could not take its growth, and its full need, \
@@ -9475,23 +9487,40 @@ ${campaign_witness_attempt}"
 # pool (campaign_stream_attempt).
 campaign_confirm_claim() {
   local iteration_dir=$1 claims=$2 dir=$3 need charge status=0 runs heap
+  local refused full="" why
   campaign_confirm_plan "${iteration_dir}" "${claims}" "${dir}"
   if [[ ! -s "${claims}/confirm.json" ]]; then
     for runs in 1 2; do
       status=0
       need=$(campaign_replay_basis_mb)
       charge=$(campaign_replay_charge_mb "$(campaign_replay_need_mb)")
+      if [[ -n "${full}" ]]; then
+        charge=${full}
+        (( need >= full )) || need=${full}
+      fi
       ( campaign_head_charged "${charge}" campaign_confirm_replay "${dir}" \
           "${iteration_dir}/instrumented-classes" \
           "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
           "${charge}" "${need}" ) || status=$?
       campaign_replay_measured "${dir}/worker"
-      heap=""
-      [[ ! -s "${dir}/worker/replay_again" ]] \
-        || read -r _ _ _ heap <"${dir}/worker/replay_again"
-      [[ "${heap}" =~ ^[0-9]+$ ]] && (( runs == 1 )) || break
+      [[ -s "${dir}/worker/replay_again" ]] || break
+      read -r refused _ _ heap <"${dir}/worker/replay_again"
       rm -f -- "${dir}/worker/replay_again"
-      campaign_replay_heap_raised "${heap}" "CONFIRM"
+      [[ "${refused}" =~ ^[0-9]+$ ]] || refused=0
+      [[ "${heap}" =~ ^[0-9]+$ ]] || heap=""
+      if [[ -n "${heap}" ]]; then
+        why="ran out of its ${heap} MB heap"
+        (( runs == 1 )) && campaign_replay_heap_raised "${heap}" CONFIRM \
+          && continue
+      else
+        why="was ended at ${refused} MB as its host could not take its growth"
+        full=$(campaign_replay_full_need_mb "${refused}")
+        (( runs == 1 && full > refused )) && continue
+      fi
+      campaign_replay_bounded CONFIRM "${dir}/worker" "${dir}/sessions" \
+        "the confirmation replay ${why}, the $( (( runs == 1 )) \
+          && echo "most a replay is given" || echo "second time")"
+      break
     done
     campaign_confirm_decide "${claims}" "${dir}" "${status}"
   fi

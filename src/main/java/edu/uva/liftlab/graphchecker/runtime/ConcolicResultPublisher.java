@@ -661,6 +661,10 @@ final class ConcolicResultPublisher {
         }, "causynth-early-end").start();
     }
 
+    static boolean concluded() {
+        return concluded != null;
+    }
+
     /** Written under {@link #PUBLICATION_LOCK}; volatile for the decoding
      *  threads' look between records ({@link #withholds}). */
     private static volatile Conclusion concluded;

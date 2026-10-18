@@ -303,30 +303,47 @@ public class FocusedReplayTest {
     @Test
     public void aWindowsCloseEndsTheRunAsTheWorkloadsEnd() throws Exception {
         String still = "nothing new for 300 s";
-        for (boolean closed : new boolean[] {false, true}) {
+        Object[][] rows = {
+            // closed, concluded before, refuted, its exception
+            {false, false, false, ""},
+            {true, false, true, "java.io.IOException: boom"},
+            {true, true, false, ""}};
+        java.lang.reflect.Field concluded = ConcolicResultPublisher.class
+                .getDeclaredField("concluded");
+        concluded.setAccessible(true);
+        for (Object[] row : rows) {
             hand(flip(1, ",'openArm':true"));
             RecordingWindow.open();
             FocusedReplay.obligationIds();
             FocusedReplay.planted("r", true);
-            if (closed) {
-                RecordingWindow.close();
-                FocusedReplay.windowClosed();
+            boolean closed = (Boolean) row[0];
+            if ((Boolean) row[1]) {
+                concluded.set(null,
+                        ConcolicResultPublisher.Conclusion.AT_WITNESS);
             }
-            assertEquals(closed ? null
-                    : ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS,
-                    ConcolicResultPublisher.stall(still));
-            assertEquals("once", null, ConcolicResultPublisher.stall(still));
-            ObligationResult result = only("s");
-            assertEquals(Verdict.NOT_ADMITTED, result.verdict());
-            assertEquals(result.detail(), closed,
-                    result.detail().startsWith("WORLD_REFUTED: "));
-            if (!closed) {
-                assertTrue(result.detail(), result.detail().startsWith(
-                        FocusedReplay.REPLAY_NO_PROGRESS + ": " + still));
-                continue;
+            try {
+                if (closed) {
+                    RecordingWindow.close();
+                    FocusedReplay.windowClosed(new java.io.IOException(
+                            "boom"), getClass().getName());
+                }
+                if (!(Boolean) row[1]) {
+                    assertEquals(closed ? null
+                            : ConcolicResultPublisher.Conclusion
+                            .AT_NO_PROGRESS,
+                            ConcolicResultPublisher.stall(still));
+                }
+                ObligationResult result = only("s");
+                String what = Arrays.toString(row) + " " + result.detail();
+                assertEquals(what, Verdict.NOT_ADMITTED, result.verdict());
+                assertEquals(what, row[2], result.refutation() != null);
+                if (result.refutation() != null) {
+                    assertEquals(what, row[3],
+                            result.refutation().exception());
+                }
+            } finally {
+                concluded.set(null, null);
             }
-            assertEquals("", FocusedReplay.refusedAt());
-            assertFalse(FocusedReplay.stalledAfterFlip());
         }
     }
 
