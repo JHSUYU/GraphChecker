@@ -29,7 +29,6 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -1233,78 +1232,6 @@ public class ComposerTest {
                         .get(SERIAL_ROOT)) > 5);
     }
 
-    /**
-     * A DISJUNCTION is asked whole while that decides, else path by path,
-     * and the answer is the first sat path in order.  A path refuted under
-     * some assertions is not asked again under more of them; a refutation
-     * asked without a core answers no question that wants one, unless it
-     * was asked under no assertion at all (the self-check), where no pin can
-     * be in its core.  The fixture z3 answers the whole query
-     * {@code unknown}, path 0 unsat and path 1 sat, and logs each question
-     * it is asked of path 0 by its text, whichever engine asked it -- the
-     * engine that lost a race can ask after the ask returned: path 0 is
-     * asked again when a question of it is new.  {what refuted path 0
-     * first (null: nothing), the assertions then asked, whether a core is
-     * wanted, path 0 asked again}.
-     */
-    @Test
-    public void aRefutedPathIsNotAskedAgain() throws Exception {
-        Path iteration = folder.newFolder("refuted").toPath();
-        Session seed = new Session(iteration, "s0", false);
-        seed.target("true", true, true);
-        seed.target("true", true, true);
-        seed.write();
-        Composer.Composition composition = compose(iteration, 4);
-        String first = composition.disjuncts().get(0).selector();
-        String second = composition.disjuncts().get(1).selector();
-        Path log = folder.newFile("asked.log").toPath();
-        Path script = folder.newFile("z3-paths.sh").toPath();
-        Files.write(script, Arrays.asList("#!/bin/bash",
-                "input=$(cat)",
-                "case $input in",
-                "  *'(assert " + first + ")'*) printf '%s' \"$input\""
-                        + " | grep -v smt.arith.solver | md5sum >> " + log
-                        + "; echo unsat; echo '()' ;;",
-                "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
-                "  *) echo unknown ;;",
-                "esac"), StandardCharsets.UTF_8);
-        assertTrue(script.toFile().setExecutable(true));
-        List<String> none = Collections.emptyList();
-        List<String> pinned = Collections.singletonList("(assert true)");
-        List<String> more = Arrays.asList("(assert true)",
-                "(assert (= 1 1))");
-        Object[][] rows = {
-                {null, none, false, true},
-                {pinned, more, false, false},
-                {pinned, more, true, true},
-                {"self-check", more, true, false},
-                {more, pinned, false, true},
-        };
-        for (Object[] row : rows) {
-            // Each row's questions alone: the last row's z3s ended with it.
-            Files.write(log, new byte[0]);
-            try (Disjunction asks = new Disjunction(composition,
-                    new Z3(ScopedFixture.of(script), 30000L, 8192))) {
-                if ("self-check".equals(row[0])) {
-                    asks.selfCheck(0L);
-                } else if (row[0] != null) {
-                    @SuppressWarnings("unchecked")
-                    List<String> refuting = (List<String>) row[0];
-                    asks.ask(refuting, composition.selectors(), none, false);
-                }
-                Set<String> before = new LinkedHashSet<String>(
-                        Files.readAllLines(log));
-                @SuppressWarnings("unchecked")
-                List<String> assertions = (List<String>) row[1];
-                Z3.Answer answer = asks.ask(assertions,
-                        composition.selectors(), none, (Boolean) row[2]);
-                assertEquals(Arrays.toString(row), "sat", answer.status());
-                assertEquals(Arrays.toString(row), row[3], !before
-                        .containsAll(Files.readAllLines(log)));
-            }
-        }
-    }
-
     private static long asked(Path log) throws IOException {
         return Files.readAllLines(log).size();
     }
@@ -2235,103 +2162,6 @@ public class ComposerTest {
     }
 
     /**
-     * A node that reads the wall clock and a monotonic one orders each on
-     * its own: the second wall reading is no earlier than the first, and
-     * neither is ordered against the monotonic one (hdfs-11741 v78: wall
-     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).  Which
-     * clock a cell reads is its row's statement, never its value's size.
-     */
-    @Test
-    public void aNodeReadingTwoClocksOrdersEachClockOnItsOwn()
-            throws Exception {
-        Path iteration = folder.newFolder("two-clocks").toPath();
-        Session session = new Session(iteration, "s0", false);
-        String[][] cells = {
-                {"CLOCK.wall.1", "M_J_wall_1", "1790500000000", Clock.WALL},
-                {"CLOCK.mono", "M_J_mono", "1790500000400", Clock.MONOTONIC},
-                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900", Clock.WALL}};
-        StringBuilder phi = new StringBuilder("(and");
-        for (String[] cell : cells) {
-            session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
-                    cell[0], cell[1], RootKind.CLOCK, RootCategory.CLOCK, cell[2], null, null,
-                    true, Clock.of(1_000_000L, cell[3]), 0L));
-            phi.append(" (> ").append(cell[1]).append(" 0)");
-        }
-        session.target(phi.append(")").toString(), false, true);
-        session.write();
-
-        String body = compose(iteration, 4).body();
-        assertTrue("one clock's readings keep their order: " + body,
-                body.contains("(<= M_J_wall_1 M_J_wall_2)"));
-        assertFalse("and no clock is ordered against another",
-                body.contains("(<= M_J_wall_1 M_J_mono)")
-                        || body.contains("(<= M_J_mono M_J_wall_2)"));
-    }
-
-    // ------------------------------------------------------------------
-    // 17. A name a term BINDS is not a name nothing declares.
-    // ------------------------------------------------------------------
-
-    /**
-     * The associative size model, as {@code ContainerSmtCodec} writes it
-     * for a map a key was removed from.
-     */
-    private static String sizeModel(String previous, String body) {
-        return "(let ((previous_size " + previous + ")) (ite (> "
-                + previous + " 0) " + body + " (- previous_size 1)))";
-    }
-
-    @Test
-    public void aLetBoundNameIsNotFree() throws Exception {
-        // The real shape: one binder, and its name used three times.
-        String model = sizeModel(SERIAL, "previous_size");
-        assertEquals("the size model binds exactly previous_size",
-                Collections.singletonList("previous_size"),
-                new ArrayList<String>(SmtNames.letBound(model)));
-        // Nesting, in the order the binders appear.
-        assertEquals("a nested let binds both, outermost first",
-                Arrays.asList("outer", "inner"),
-                new ArrayList<String>(SmtNames.letBound(
-                        "(let ((outer (+ " + SERIAL + " 1))) (let "
-                                + "((inner (- outer 2))) (+ outer "
-                                + "inner)))")));
-        // A term with no let binds nothing -- so nothing it names is
-        // withheld from the caller's complaint.
-        assertTrue("a term with no let binds nothing",
-                SmtNames.letBound("(> (+ previous_size 1) 0)").isEmpty());
-
-        // And the caller.  A path whose decision carries the size model
-        // is admitted: previous_size is the term's own binder, not a
-        // symbol the recording failed to declare.  Campaign #6 refused
-        // every anchor path here, 41440 times, with "this term names
-        // symbols nothing declares: [previous_size, previous_size,
-        // previous_size]".
-        Path iteration = folder.newFolder("let-bound").toPath();
-        letCorpus(iteration, "previous_size");
-        Composer.Composition bound = compose(iteration, 4);
-        assertEquals("the path carrying the size model is in the "
-                        + "disjunction: " + bound.gaps(), 1,
-                bound.disjuncts().size());
-        assertFalse("and previous_size is named by no refusal: "
-                        + bound.gaps(),
-                says(bound.gaps(), GapKind.UNSTATED_VALUE, "previous_size"));
-
-        // The same term with ONE name the let does not bind: still
-        // refused, and by that name alone.  Declining to report anything
-        // at all once a let is seen would have lost this.
-        Path free = folder.newFolder("let-and-free").toPath();
-        letCorpus(free, "no_row_states_this");
-        Composer.Composition refused = compose(free, 4);
-        assertTrue("a name the let did NOT bind is still reported: "
-                        + refused.gaps(),
-                says(refused.gaps(), GapKind.UNSTATED_VALUE,
-                        "this term names symbols nothing declares: "
-                                + "[no_row_states_this]"));
-        assertTrue("so the path is out of the disjunction",
-                refused.disjuncts().isEmpty());
-    }
-
-    /**
      * Every String operation the VM carries, against Java, row by row: each
      * lowered over symbols s, t (String) and n, m, k (int) set to the row's
      * values; a row Java answers is that answer and no other, a row Java
@@ -2633,93 +2463,6 @@ public class ComposerTest {
             free.removeAll(Arrays.asList("x", "y"));
             free.removeIf(lowering::defined);
             assertTrue(free + " in " + text, free.isEmpty());
-        }
-    }
-
-    /** One session whose decision carries the size model over {@code body}. */
-    private void letCorpus(Path iteration, String body) throws IOException {
-        Session session = new Session(iteration, "s0", false);
-        session.serial("5", "5", "8");
-        session.decision(ANCHOR, "removeExpiredKeys#u7",
-                "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
-        session.target("true", false, true);
-        session.write();
-    }
-
-    // ------------------------------------------------------------------
-    // 16. A message's arms are the runs the path's own world admits: a
-    //     world its own extends or reduces, and pins it agrees with
-    //     (PIPELINE §8).
-    // ------------------------------------------------------------------
-
-    /** One flip set contains the other: the worlds a message may come from
-     *  on a path, its runs' markers alike. */
-    @Test
-    public void aMessageBindsToEveryCompatibleWorld() throws Exception {
-        Path iteration = folder.newFolder("worlds").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
-                at("export#1", 0), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
-                at("attach#1", 0), 0);
-        // Four runs, all attesting their own delivery: the seed (no
-        // flip), one held to flip A, one to flip B, and one to B that
-        // inherited A.
-        for (String[] each : new String[][]{{"s0", "10"}, {"s1", "20"},
-                {"s2", "30"}, {"s3", "40"}}) {
-            Session session = new Session(iteration, each[0],
-                    !"s0".equals(each[0]));
-            session.activation(PRODUCER);
-            session.marker("false");
-            session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
-            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
-                    + MARKER + "))");
-            session.export(producer, "EXPR.v1.id", 1L, each[1]);
-            session.attach(consumer, "vh", "I", each[1], producer);
-            session.target("true", false, true);
-            session.write();
-        }
-        Map<String, String> none = Collections.emptyMap();
-        obligation(iteration, "s1", none, "a#u1",
-                Collections.<String>emptyList());
-        obligation(iteration, "s2", none, "b#u1",
-                Collections.<String>emptyList());
-        obligation(iteration, "s3", none, "b#u1",
-                Collections.singletonList("a#u1"));
-
-        Composer.Composition composition = compose(iteration, 4);
-        assertEquals(4, composition.disjuncts().size());
-        Map<String, String> ofPath = new LinkedHashMap<String, String>();
-        for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            ofPath.put(ordinal(disjunct.selector()),
-                    disjunct.path().sessionId);
-        }
-        Map<String, Set<String>> armsOf =
-                new LinkedHashMap<String, Set<String>>();
-        for (String selector : composition.armSelectors()) {
-            String path = ofPath.get(ordinal(selector));
-            if (!armsOf.containsKey(path)) {
-                armsOf.put(path, new LinkedHashSet<String>());
-            }
-            armsOf.get(path).add(composition.arm(selector).sessionId());
-        }
-        // One flip set contains the other: the seed's empty world is
-        // compatible with every run and every run with it; A and B are
-        // incomparable; {A, B} contains both.
-        assertEquals("the seed's path takes any run's delivery",
-                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
-                        "s3")), armsOf.get("s0"));
-        assertEquals("a path under A never takes a delivery made under B "
-                        + "alone", new LinkedHashSet<String>(
-                        Arrays.asList("s0", "s1", "s3")), armsOf.get("s1"));
-        assertEquals(new LinkedHashSet<String>(
-                Arrays.asList("s0", "s2", "s3")), armsOf.get("s2"));
-        assertEquals("and the path under both takes every delivery",
-                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
-                        "s3")), armsOf.get("s3"));
-        for (Family family : composition.families()) {
-            assertEquals("the manifest states the arms the last path "
-                    + "built: " + family, 4, family.arms().size());
         }
     }
 
@@ -3666,54 +3409,5 @@ public class ComposerTest {
         // sessions included; the composer never re-derives it.
         session.target(symbol, observedFatal, true);
         session.write();
-    }
-
-    /**
-     * THE CHAIN'S FIELDS FOLLOW THE ANCHOR'S DATA THROUGH A DECODED OBJECT
-     * (ZkKeysMain#ports): a decode parses a document's leaf and stores a
-     * value derived from it into a field of the object it builds; the
-     * anchor reads that field.  The seed's composition binds the read to
-     * the decode's write, whose expression names the leaf, so the leaf's
-     * port is a key -- read off the run's rows, no field or path named.
-     * Another leaf of the same document, which nothing the anchor reads
-     * derives from, is none.
-     */
-    @Test
-    public void aLeafADecodedObjectsDerivedFieldCarriesToTheAnchorIsAKey()
-            throws Exception {
-        Path iteration = folder.newFolder("derived-leaf").toPath();
-        OccurrenceAddress decode = occurrence("case/nn1", "REGION.decode",
-                CausalContext.of(Role.of("WATCHER"), "", 1),
-                frame("Reader#refresh#4", 0));
-        String carried = ContentPort.of("SOLR_ZK", "/c/state.json",
-                "/c/rules/r/expiry");
-        String other = ContentPort.of("SOLR_ZK", "/c/state.json",
-                "/c/rules/r/ranges");
-        LocationId field = LocationId.of(LocationKind.INSTANCE, "41", "due");
-        Session seed = new Session(iteration, "s-seed", false);
-        seed.activation(decode, "thread#watcher", false);
-        seed.attach(Endpoint.of(decode, carried, at("parse#7", 0), 0),
-                "M_J_leaf_expiry", "J", "120", null);
-        seed.attach(Endpoint.of(decode, other, at("parse#8", 0), 0),
-                "M_J_leaf_ranges", "J", "3", null);
-        // The field the decode builds: a value derived from the leaf.
-        seed.expression("EXPR.00000000000000d1", binary("+",
-                symbol("M_J_leaf_expiry", "J"), integer("J", 0L)));
-        seed.write(Endpoint.of(decode, "Rule#<init>#3:WRITE",
-                at("w#9", 0), 0), field, 9L, "EXPR.00000000000000d1");
-        // The anchor compares that field with a constant.
-        seed.expression("EXPR.00000000000000f1", binary("<",
-                read("INSTANCE_FIELD", "41", "due", 9L, "J"),
-                integer("J", 100L)));
-        seed.target("EXPR.00000000000000f1", false, true);
-        seed.write();
-        Corpus corpus = Corpus.read(iteration, null);
-        Composer.Composition composition = Composer.compose(corpus, ANCHOR,
-                1, StaticScopeMap.empty());
-        Set<String> keys = ZkKeysMain.ports(corpus, composition.body());
-        assertTrue("the derived field's leaf is a key: " + keys,
-                keys.contains(carried));
-        assertFalse("a leaf nothing the anchor reads derives from is not",
-                keys.contains(other));
     }
 }

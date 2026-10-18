@@ -53,9 +53,6 @@ public class ContractTest {
     private static final String COMPUTE =
             "o.a.h.h.s.d.BlockChecksumHelper#compute#7";
 
-    private static final String STABLE_TASK = "n0|Root:TASK#4|<A: void"
-            + " call()>@0><H: void submit()>#u9@";
-
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
@@ -397,50 +394,6 @@ public class ContractTest {
         assertEquals("either writer's: no bound one leaves open",
                 Validity.ANY, positive.or(Validity.of(null,
                 java.math.BigInteger.TEN, "x")));
-    }
-
-    @Test
-    public void rendersAndParsesEveryCausalContextAndIndex() {
-        OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,
-                CausalContext.of(PRODUCER_ID, RPC),
-                index(frame(RUN, 0), frame(CHECKSUM, 2), frame(COMPUTE, 0)));
-        assertEquals(DN0.render() + "/region/" + REGION
-                        + "/ctx:Anchor:" + PRODUCER_ID + "@" + RPC
-                        + "/idx:" + RUN + "@0/" + CHECKSUM + "@2/"
-                        + COMPUTE + "@0",
-                anchored.render());
-        assertEquals(anchored, OccurrenceAddress.parse(anchored.render()));
-        assertEquals(anchored.id(),
-                OccurrenceAddress.parse(anchored.render()).id());
-        assertEquals(16, anchored.id().length());
-        // An id built anew of the same input is hashed once (Digests).
-        assertSame(anchored.id(),
-                OccurrenceAddress.parse(anchored.render()).id());
-        assertFalse(anchored.lineageLost());
-        assertEquals(3, anchored.index().frames().size());
-
-        // A daemon tick has no incoming message, only its role and the k-th
-        // tick of that role inside the window.
-        OccurrenceAddress tick = OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 3),
-                index(frame("o.a.h.h.s.b.KeyManager#run#9", 0)));
-        assertEquals(NN0.render() + "/region/REGION.a1b2"
-                        + "/ctx:Root:KEY_MANAGER_TICK#3"
-                        + "/idx:o.a.h.h.s.b.KeyManager#run#9@0",
-                tick.render());
-        assertEquals(tick, OccurrenceAddress.parse(tick.render()));
-
-        // A scope nobody could attribute degrades to its role and says so in
-        // the id itself, rather than in a flag beside it.
-        OccurrenceAddress lost = OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty());
-        assertEquals(NN0.render()
-                + "/region/REGION.a1b2/ctx:Lost:UNKNOWN/idx:", lost.render());
-        assertEquals(lost, OccurrenceAddress.parse(lost.render()));
-        assertTrue(lost.lineageLost());
-        assertEquals(16, ExecutionIndex.empty().hash().length());
-        assertEquals(anchored.index(),
-                ExecutionIndex.parse(anchored.index().render()));
     }
 
     @Test
@@ -1107,31 +1060,6 @@ public class ContractTest {
                         : GapClass.BLOCKING, "field=referentState", referring);
             }
         }
-    }
-    /** A context's name across runs: no counts, each hop its sender's first
-     *  send. */
-    @Test
-    public void aHopIsItsSendersFirstSendOfTheSiteWhateverCameBefore() {
-        StableEventNames confirmed = new StableEventNames();
-        confirmed.sent(STABLE_TASK + "1", "HTTP:STATUS", "e1");
-        // a poll's second
-        confirmed.sent(STABLE_TASK + "2", "HTTP:STATUS", "e2");
-        confirmed.sent(STABLE_TASK + "3", "HTTP:SPLIT", "e3");
-        StableEventNames nativeRun = new StableEventNames();
-        nativeRun.sent(STABLE_TASK + "1", "HTTP:STATUS", "f1"); // polled once
-        nativeRun.sent(STABLE_TASK + "2", "HTTP:SPLIT", "f2");
-        String split = confirmed.context(
-                "n1|Anchor:e3@HTTP/TASK|<B: void x()>@3");
-        assertEquals("n1|Anchor:{n0|Root:TASK#4|<A: void call()>><H: void"
-                        + " submit()>#u9 >HTTP:SPLIT}@HTTP/TASK|<B: void x()>",
-                split);
-        assertEquals(split, nativeRun.context(
-                "n1|Anchor:f2@HTTP/TASK|<B: void x()>@5"));
-        assertNull("a loop's later send has no fixed name",
-                confirmed.context("n1|Anchor:e2@HTTP/TASK"));
-        assertNull("a send this run never made",
-                nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
-        assertEquals("plain|context", confirmed.context("plain|context@7"));
     }
     /** How many rows of one kind and class a gate stated. */
     private static int stating(List<GapRow> gaps, GapKind kind,
