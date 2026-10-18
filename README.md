@@ -261,7 +261,6 @@ src/main/java/edu/uva/liftlab/graphchecker/
   contract/    row kinds, identity types, gap registry, session layout, IMPORT gate, row pool
   smt/         expression IR, arms and families, z3 driver
   annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
-src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
 src/test/                         unit tests; shell/run_engine_campaign_helpers_test.sh
 third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/share/vm/concolic,
                                   interpreter/bytecodeInterpreter.cpp) and its smoke tests

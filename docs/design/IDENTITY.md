@@ -478,7 +478,7 @@ it.
   `END`).
 
 The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`, shipped
-with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
+with GraphChecker on `system/hdfs`: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
 several messages on one thread, possibly opened by a thread serving a request) and
 `HDFS_DATA_TRANSFER` (one op, a request on a correlation of its own: `outboundOp`, `inboundOp`). The HDFS trees call
 it from IPC `Client`/`Server`, the SASL data-transfer classes and the DataTransfer op's two ends. The IPC server's

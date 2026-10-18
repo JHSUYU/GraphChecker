@@ -49,8 +49,8 @@ done
 
 The checkouts leave out `third_party/` (the VM's 47,000 source files, which no build or run reads; step 2 clones them
 apart). `tools/onlift.sh` runs a command in the current directory on the host of `LIFTS` with the most room, with
-Java 8 and Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The three jars
-(`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies,-hadoop-shim}.jar`) are what a run reads; leave a checkout
+Java 8 and Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The jars
+(`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies}.jar`; on `system/hdfs` also `-hadoop-shim`) are what a run reads; leave a checkout
 alone while a run uses it.
 
 ## 2. The concolic VM image

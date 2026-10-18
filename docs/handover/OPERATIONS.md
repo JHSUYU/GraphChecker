@@ -58,9 +58,8 @@ tools/onlift.sh -g 10 bash -c 'mvn -q -o package && bash src/test/shell/run_engi
 `onlift.sh` never picks `lift11` (the control host) unless `LIFTS` names it: with `LIFTS` unset,
 `tools/pick-lift.sh` drops it from `gc-env.sh`'s default list, where it stays a campaign's worker.
 
-Keep `-o` (offline): `~/.m2` is shared over NFS. `mvn package` also builds the `hadoop-shim`
-classifier jar from `src/shim/java`, which the HDFS trees call. A snapshot needs all three jars in
-`target/` (`-jar-with-dependencies`, `-hadoop-shim`, plain).
+Keep `-o` (offline): `~/.m2` is shared over NFS. A snapshot needs both jars in `target/` (`-jar-with-dependencies`,
+plain); the `hadoop-shim` classifier jar the HDFS trees call is built on `system/hdfs`, which keeps `src/shim/java`.
 
 VM: `tools/vm/build-image.sh <new dir>` via `tools/onlift.sh -h lift15 -g 12` (the one lift with gcc-6): the
 checkout's `third_party/` sources built on local disk as a full JDK, then the smoke suite (`<dir>/smoke.log`); a few

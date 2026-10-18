@@ -40,7 +40,7 @@ The discovery hook is the same for every case: with
 occurrence.
 
 The Hadoop side of a case calls the GraphChecker Hadoop shim
-(`src/shim/java`, the `hadoop-shim` classifier jar): no tree carries its own
+(`src/shim/java` and its `hadoop-shim` classifier jar, on `system/hdfs`): no tree carries its own
 facade.  A workload registers every node through
 `org.apache.hadoop.hdfs.server.datanode.CausynthCluster` before any traffic,
 and opens the recorded window with it.  Daemons are not suppressed (owner

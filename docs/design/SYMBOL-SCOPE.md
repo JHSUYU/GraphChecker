@@ -759,7 +759,7 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   is pinned.
 
 A tree may still call `CausynthSymbolicSource.symbolize(String sourceId, Object owner, String
-fieldSignature)` (the Hadoop copy is `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
+fieldSignature)` (the Hadoop copy is `system/hdfs`'s `src/shim/java/org/apache/hadoop/ipc/CausynthSymbolicSource`):
 the block-key trees' `HDFS.BLOCK_KEY.SERIAL_NO` and `EXPIRY_DATE*`, and hdfs-17960's
 `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` in `SnapshotManager.isSnapshotDeletionOrdered()`, on the
 field this section's rules recognize as `CONFIG:dfs.namenode.snapshot.deletion.ordered`: the hook
