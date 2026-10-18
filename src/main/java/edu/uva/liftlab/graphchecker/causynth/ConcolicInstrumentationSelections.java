@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
@@ -29,7 +30,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -93,7 +93,7 @@ public final class ConcolicInstrumentationSelections {
      * regions whose hooks were woven, 62 s each in the head's hands.
      */
     static String weaveKeyFromEnvironment() {
-        MessageDigest digest = sha256();
+        MessageDigest digest = ArtifactIO.sha256Digest();
         Set<String> seen = new LinkedHashSet<>();
         for (InstrumentationPlan plan
                 : instrumentationCampaignFromEnvironment()) {
@@ -101,11 +101,12 @@ public final class ConcolicInstrumentationSelections {
             canonical(plan, value);
             byte[] encoded = value.append('\n').toString()
                     .getBytes(StandardCharsets.UTF_8);
-            if (seen.add(hex(sha256().digest(encoded)))) {
+            if (seen.add(ArtifactIO.hex(ArtifactIO.sha256Digest()
+                    .digest(encoded)))) {
                 digest.update(encoded);
             }
         }
-        return hex(digest.digest());
+        return ArtifactIO.hex(digest.digest());
     }
 
     /**
@@ -178,23 +179,6 @@ public final class ConcolicInstrumentationSelections {
             }
             out.append('}');
         }
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException missing) {
-            throw new IllegalStateException(missing);
-        }
-    }
-
-    private static String hex(byte[] bytes) {
-        StringBuilder text = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            text.append(Character.forDigit((b >> 4) & 0xf, 16))
-                    .append(Character.forDigit(b & 0xf, 16));
-        }
-        return text.toString();
     }
 
     /** One immutable view of the scheduler-selected execution task. */

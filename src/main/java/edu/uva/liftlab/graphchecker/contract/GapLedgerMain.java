@@ -24,7 +24,6 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -700,7 +699,7 @@ public final class GapLedgerMain {
      */
     private static final class Counted extends OutputStream {
         private static final byte[] END = new byte[0];
-        private final MessageDigest digest = sha256();
+        private final MessageDigest digest = ArtifactIO.sha256Digest();
         private final BlockingQueue<byte[]> toDigest =
                 new ArrayBlockingQueue<byte[]>(64);
         private final BlockingQueue<byte[]> toWrite =
@@ -766,7 +765,7 @@ public final class GapLedgerMain {
                 throw new IOException("interrupted", stopped);
             }
             if (failed != null) throw failed;
-            return new Written(bytes, hex(digest.digest()));
+            return new Written(bytes, ArtifactIO.hex(digest.digest()));
         }
 
         private static void hand(BlockingQueue<byte[]> chunks, byte[] chunk)
@@ -778,20 +777,6 @@ public final class GapLedgerMain {
                 throw new IOException("interrupted", stopped);
             }
         }
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException absent) {
-            throw new IllegalStateException(absent);
-        }
-    }
-
-    private static String hex(byte[] hash) {
-        StringBuilder text = new StringBuilder(hash.length * 2);
-        for (byte b : hash) text.append(String.format("%02x", b & 0xff));
-        return text.toString();
     }
 
     /** The ledger's reads of its inputs, as jq's {@code //} and {@code

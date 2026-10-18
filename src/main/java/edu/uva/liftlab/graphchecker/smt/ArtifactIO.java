@@ -42,7 +42,7 @@ import java.util.zip.ZipException;
  */
 public final class ArtifactIO {
     private static final char[] HEX = "0123456789abcdef".toCharArray();
-    /** The SHA-256 every digest is a clone of ({@link #digest()}). */
+    /** The SHA-256 every digest is a clone of ({@link #sha256Digest()}). */
     private static final MessageDigest SHA256 = sha256Instance();
 
     private ArtifactIO() {
@@ -348,7 +348,7 @@ public final class ArtifactIO {
     }
 
     public static String sha256(Path path) throws IOException {
-        MessageDigest digest = digest();
+        MessageDigest digest = sha256Digest();
         byte[] buffer = new byte[8192];
         try (InputStream input = Files.newInputStream(path)) {
             int read;
@@ -360,7 +360,7 @@ public final class ArtifactIO {
     }
 
     public static String sha256(String value) {
-        return hex(digest().digest((value == null ? "" : value)
+        return hex(sha256Digest().digest((value == null ? "" : value)
                 .getBytes(StandardCharsets.UTF_8)));
     }
 
@@ -396,7 +396,7 @@ public final class ArtifactIO {
      *  provider's lock, and the planner's keys, digested on every core,
      *  waited there (SGF8-adhoc-05 round 5: 28 s of waits past 10 ms in a
      *  33 s phase). */
-    private static MessageDigest digest() {
+    public static MessageDigest sha256Digest() {
         try {
             return (MessageDigest) SHA256.clone();
         } catch (CloneNotSupportedException impossible) {
@@ -412,7 +412,7 @@ public final class ArtifactIO {
         }
     }
 
-    private static String hex(byte[] hash) {
+    public static String hex(byte[] hash) {
         char[] encoded = new char[hash.length * 2];
         for (int index = 0; index < hash.length; index++) {
             int value = hash[index] & 0xff;
