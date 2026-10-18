@@ -3428,9 +3428,12 @@ public final class Composer {
      * resolves.  Only for reads neither the write log nor a mint covers
      * (a root's version is its mint's, whatever the run read): no row
      * states their producer, so each is HELD at that value and named
-     * ({@link SmtLowering#unbound}).  Rows stating no value are left to the
-     * join half.  {@code answered} keeps one refusal per row across both
-     * halves.
+     * ({@link SmtLowering#unbound}) -- but in a session whose GROW re-run
+     * did not land ({@link Corpus#uncaptured}), where the producer may be a
+     * grown region the session ran uninstrumented, FREE and named
+     * (over-approximated: an UNSAT stays sound, a false SAT is CONFIRM's).
+     * Rows stating no value are left to the join half.  {@code answered}
+     * keeps one refusal per row across both halves.
      */
     void statedReads(String session, Set<String> occurrences,
                      Independence relevant, SmtLowering.SessionJoin join,
@@ -3445,10 +3448,18 @@ public final class Composer {
                     read.observedVersion()))) {
                 continue;
             }
-            if (pin(session, read, refusals, joins, answered)
-                    && joins.containsKey(read.symbol())) {
-                lowering.held(SmtLowering.locationKey(read.location()) + "@"
-                        + read.observedVersion(), read.concreteValue(),
+            if (!pin(session, read, refusals, joins, answered)
+                    || !joins.containsKey(read.symbol())) {
+                continue;
+            }
+            String subject = SmtLowering.locationKey(read.location()) + "@"
+                    + read.observedVersion();
+            if (corpus.uncaptured(session)) {
+                // Declared and handled as a pin, holding nothing.
+                joins.put(read.symbol(), "true");
+                lowering.freedUncaptured(subject);
+            } else {
+                lowering.held(subject, read.concreteValue(),
                         "no write row states the version this read saw");
             }
         }

@@ -2106,14 +2106,24 @@ done <<'EOF'
 2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
 # PLANNER-START: the planner runs at the engine heap (campaign_stream_plan):
-# one is started there when none lives, a living one is asked as it is, and
-# a round it answers it cannot hold (exit 3) is PLANNER_HEAP_EXCEEDED.  Per
-# row: whether a planner lives (its heap), what the ask returns, the status,
+# one is started there when none lives, charged its need for the round
+# (campaign_planner_need_mb), a living one is asked as it is once its host
+# holds the round's need (campaign_planner_hold), and a round it answers it
+# cannot hold (exit 3) is PLANNER_HEAP_EXCEEDED.  A round planned leaves the
+# planner's measure and the sessions it read for the next round's need; a
+# planner started anew has neither.  Per row: whether a planner lives (its
+# heap), the live set it measured last round (- none), whether it read the
+# round's one session S1 (100 MB of text), what the ask returns, the status,
 # what was done.
 plan_dir="${test_tmp}/planner-start"
-while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
+while IFS='|' read -r plan_heap plan_live plan_read plan_asked plan_status \
+    plan_done; do
   rm -rf -- "${plan_dir}"
   mkdir -p "${plan_dir}/planning-0003" "${plan_dir}/planner"
+  echo S1 >"${plan_dir}/planning-0003/corpus.txt"
+  echo 4321 >"${plan_dir}/planning-0003/planner_live_mb"
+  [[ "${plan_live}" == - ]] || echo "${plan_live}" >"${plan_dir}/planner/live_mb"
+  [[ "${plan_read}" == - ]] || echo S1 >"${plan_dir}/planner/read.txt"
   plan_got=$(
     iteration_dir=${plan_dir}
     engine_memory_mb=16384
@@ -2125,8 +2135,10 @@ while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
       echo "${plan_heap}" >"${plan_dir}/planner/heap"
       echo 1 >"${plan_dir}/planner/id"
     fi
+    campaign_session_bytes() { echo "S1 104857600"; }
     campaign_planner_alive() { (( plan_alive )); }
-    campaign_planner_start() { plan_alive=1; echo "start $1" >>"${plan_dir}/done"; }
+    campaign_planner_start() { plan_alive=1; echo "start $1 $2" >>"${plan_dir}/done"; }
+    campaign_planner_hold() { echo "hold $1" >>"${plan_dir}/done"; }
     campaign_planner_round() { echo ask >>"${plan_dir}/done"; return "${plan_asked}"; }
     status=0
     campaign_stream_plan "${plan_dir}/planning-0003" 2>/dev/null || status=$?
@@ -2136,10 +2148,102 @@ while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
   [[ "${plan_got}" == "${plan_status}|${plan_done}" ]] \
     || fail "PLANNER-START: a planner of ${plan_heap} asked ${plan_asked} \
 gave ${plan_got}, not ${plan_status}|${plan_done}"
+  if (( plan_status == 0 )); then
+    [[ "$(cat "${plan_dir}/planner/live_mb")|$(cat \
+        "${plan_dir}/planner/read.txt")" == "4321|S1" ]] \
+      || fail "PLANNER-START: a planned round left no measure for the next"
+  fi
 done <<'EOF'
-16384|0|0|ask
--|0|0|start 16384 ask
-16384|3|3|ask
+16384|-|-|0|0|hold 3910 ask
+-|2000|S1|0|0|start 16384 3910 hold 3910 ask
+16384|2000|S1|0|0|hold 6521 ask
+16384|2000|-|3|3|hold 6564 ask
+EOF
+
+# PLANNER-NEED: what the planner's host holds for a round
+# (campaign_planner_need_mb): its young generation whole (a fifth of the
+# heap) and 1.25 times its old generation's need -- the live set it measured
+# at its highest last round and 0.35 of the text of the round's sessions it
+# has not read -- at most the heap, as a JVM's footprint.  Per row: the
+# heap, the live set (MB), the sessions read, the round's sessions with
+# their MB, the need.
+need_dir="${test_tmp}/planner-need"
+while IFS='|' read -r need_heap need_live need_read need_round need_want; do
+  rm -rf -- "${need_dir}"
+  mkdir -p "${need_dir}/planner" "${need_dir}/planning-0001"
+  echo "${need_live}" >"${need_dir}/planner/live_mb"
+  tr ' ' '\n' <<<"${need_read}" >"${need_dir}/planner/read.txt"
+  : >"${need_dir}/planning-0001/corpus.txt"
+  : >"${need_dir}/bytes"
+  for need_session in ${need_round}; do
+    echo "${need_session%=*}" >>"${need_dir}/planning-0001/corpus.txt"
+    echo "${need_session%=*} $(( ${need_session#*=} * 1048576 ))" \
+      >>"${need_dir}/bytes"
+  done
+  # A session landed after the round was planned is no session of it.
+  echo "S.late 99999999999" >>"${need_dir}/bytes"
+  need_got=$(
+    iteration_dir=${need_dir}
+    sessions=${need_dir}/sessions
+    campaign_session_bytes() { cat "${need_dir}/bytes"; }
+    campaign_planner_need_mb "${need_dir}/planning-0001" "${need_heap}"
+  )
+  [[ "${need_got}" == "${need_want}" ]] \
+    || fail "PLANNER-NEED: a planner of ${need_heap} MB, ${need_live} MB \
+live, having read ${need_read}, needs ${need_got} for ${need_round}, not \
+${need_want}"
+done <<'EOF'
+24576|0||S1=0|5606
+24576|8000|S1|S1=900 S2=4000|18090
+24576|20000|S1 S2|S1=900 S2=4000|26496
+16384|2000|S1|S1=100|6521
+EOF
+
+# PLANNER-HOLD: a round is asked once the planner's host holds its need
+# (campaign_planner_hold): the reserve is asked of the planner's watcher,
+# and while the watcher holds less the shortfall is held among the head
+# reservations of the planner's host, given up once it holds enough.  Per
+# row: what the watcher holds, what it holds a moment later, the need,
+# whether the round waited.
+hold_dir="${test_tmp}/planner-hold"
+while IFS='|' read -r hold_first hold_later hold_need hold_waited; do
+  rm -rf -- "${hold_dir}"
+  mkdir -p "${hold_dir}/planner" "${hold_dir}/hosts/lift12/heads"
+  echo lift12 >"${hold_dir}/planner/host"
+  echo "${hold_first}" >"${hold_dir}/planner/reserve_mb.held"
+  (
+    iteration_dir=${hold_dir}
+    campaign_host_gate_root=${hold_dir}/hosts
+    campaign_host_poll_s=0.1
+    campaign_planner_alive() { true; }
+    ( sleep 0.5; echo "${hold_later}" >"${hold_dir}/planner/reserve_mb.held"
+    ) &
+    hold_seen=""
+    campaign_head_heartbeat() {
+      [[ -n "${hold_seen}" ]] || hold_seen=$(cat \
+        "${hold_dir}"/hosts/lift12/heads/*.hold 2>/dev/null)
+      echo "${hold_seen}" >"${hold_dir}/seen"
+    }
+    campaign_planner_hold "${hold_need}" 2>"${hold_dir}/said"
+    wait
+  ) || fail "PLANNER-HOLD: the hold failed"
+  [[ "$(cat "${hold_dir}/planner/reserve_mb")" == "${hold_need}" ]] \
+    || fail "PLANNER-HOLD: the watcher was not asked ${hold_need} MB"
+  [[ -z "$(ls "${hold_dir}/hosts/lift12/heads")" ]] \
+    || fail "PLANNER-HOLD: the shortfall's hold outlived the wait"
+  if [[ "${hold_waited}" == yes ]]; then
+    [[ "$(cat "${hold_dir}/seen")" == "$(( hold_need - hold_first ))" ]] \
+      && grep -q "waits for its host to hold ${hold_need} MB" \
+        "${hold_dir}/said" \
+      || fail "PLANNER-HOLD: a short host did not hold the shortfall: \
+$(cat "${hold_dir}/seen" "${hold_dir}/said" 2>/dev/null)"
+  else
+    [[ ! -s "${hold_dir}/said" ]] \
+      || fail "PLANNER-HOLD: a host holding enough waited"
+  fi
+done <<'EOF'
+6000|6000|5000|no
+2000|6000|5000|yes
 EOF
 # PLANNER-LIVE: a served planner's answer that it cannot hold the round (its
 # live set and the round's new sessions past its old generation's room,
@@ -2302,6 +2406,54 @@ done <<'EOF'
 3000|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it
 3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
 28000|0|0|400,486|ran|0|
+EOF
+
+# WATCH-RESERVE: a watched JVM given a reserve file (the served planner's,
+# campaign_planner_hold) is held at what the file asks ahead of its growth,
+# and states what it holds; the reserve refused ends nothing -- the JVM has
+# not grown -- and the JVM's own growth past what it holds is still granted
+# alone, or ends it, as any watched JVM's.  On a host of 10000 MB at a 70%
+# ceiling.  Per row: its MemAvailable, the charge, the reserve asked, the
+# JVM's resident memory at each read, whether it was ended, what it held.
+reserve_dir="${test_tmp}/watch-reserve"
+while IFS='|' read -r reserve_available reserve_charged reserve_asked     reserve_rss reserve_ended reserve_held; do
+  rm -rf -- "${reserve_dir}"
+  mkdir -p "${reserve_dir}/trace" "${reserve_dir}/hosts/gate-head/charges"
+  printf '%s
+' ${reserve_rss//,/ } >"${reserve_dir}/rss"
+  echo "${reserve_asked}" >"${reserve_dir}/reserve"
+  (
+    campaign_host_gate_root="${reserve_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_host_available_mb() { echo "${reserve_available}"; }
+    campaign_host_total_mb() { echo 10000; }
+    campaign_host_max_used_pct=70
+    campaign_watch_interval_s=0.1
+    campaign_process_rss_mb() {
+      local mb
+      mb=$(head -n 1 "${reserve_dir}/rss")
+      [[ -n "${mb}" ]] || { kill "$1"; return 1; }
+      sed -i 1d "${reserve_dir}/rss"
+      echo "${mb}"
+    }
+    sleep 60 &
+    reserve_jvm=$!
+    campaign_watch_workload "${reserve_jvm}" "${reserve_charged}"       "${reserve_dir}/trace" "" "${reserve_dir}/reserve"       2>"${reserve_dir}/said" &
+    reserve_pid=$!
+    reserve_exit=0
+    wait "${reserve_jvm}" 2>/dev/null || reserve_exit=$?
+    wait "${reserve_pid}"
+    echo "${reserve_exit}" >"${reserve_dir}/exit"
+  ) || fail "WATCH-RESERVE: a watch failed"
+  [[ "$( (( $(cat "${reserve_dir}/exit") == 137 )) && echo ended       || echo ran)|$(cat "${reserve_dir}/reserve.held")"       == "${reserve_ended}|${reserve_held}" ]]     || fail "WATCH-RESERVE: a JVM charged ${reserve_charged} MB, reserve ${reserve_asked}, at ${reserve_rss} MB on a host with ${reserve_available} MB was not ${reserve_ended} holding ${reserve_held}: exit $(cat "${reserve_dir}/exit"), held $(cat "${reserve_dir}/reserve.held"); $(cat "${reserve_dir}/said")"
+  [[ -z "$(ls "${reserve_dir}/hosts/gate-head/charges")" ]]     || fail "WATCH-RESERVE: what the JVM was granted outlived it"
+done <<'EOF'
+28000|2000|5000|1000,1000,1000|ran|5000
+5000|2000|5000|1000,1000,1000|ran|2000
+5000|2000|5000|1000,2600,2600|ran|2600
+3000|2000|5000|1000,2600|ended|2000
+28000|2000|1500|1000,1800|ran|2000
 EOF
 
 # RECORDING-END: a JVM with a trace directory (a recording; a native run,

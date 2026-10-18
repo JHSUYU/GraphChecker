@@ -4943,8 +4943,8 @@ campaign_workload_output_bytes() {
   } | awk '{bytes += $1} END {print bytes + 0}'
 }
 
-# campaign_watch_workload <pid> <charged_mb> [dir] [max_trace_mb]: one
-# workload JVM watched until it ends (experiments/lib/execute.sh).  Its mean
+# campaign_watch_workload <pid> <charged_mb> [dir] [max_trace_mb] [reserve]:
+# one workload JVM watched until it ends (experiments/lib/execute.sh).  Its mean
 # resident memory over its life goes to <dir>/workload_rss_mean_mb at its end,
 # its peak, in MB, to <dir>/workload_rss_mb: a recording's trace
 # directory, what a native run of it is charged (REPRODUCE); a replay's
@@ -4964,6 +4964,10 @@ campaign_workload_output_bytes() {
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
 # released when it ends.
+# A JVM given a <reserve> file (the served planner's, campaign_planner_hold)
+# is also held at the MB the file asks, ahead of its growth: grown to them
+# as to a peak, a refusal ended nothing (the JVM has not grown yet) and is
+# asked again the next look; what it holds is stated in <reserve>.held.
 # A JVM given <max_trace_mb> (a recording's, 0 for none: a native run's)
 # is one with a trace directory <dir> and no bound on its waits.  It is ended,
 # saying why in <dir>/${campaign_recording_end_marker}, once its trace
@@ -4977,11 +4981,13 @@ campaign_workload_output_bytes() {
 campaign_clock_ticks=$(getconf CLK_TCK 2>/dev/null) || campaign_clock_ticks=100
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
+  local reserve=${5:-} asked want
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
   local sum=0 reads=0 ticks=0 started=${EPOCHREALTIME/./} lasted=0
   local output="" wrote="" since=${SECONDS}
   local -a grants=() stat=()
   [[ -z "${traced}" ]] || rm -f -- "${dir}/${campaign_recording_end_marker}"
+  [[ -z "${reserve}" ]] || printf '%s\n' "${held}" >"${reserve}.held"
   while kill -0 "${pid}" 2>/dev/null; do
     if (( max_mb > 0 )); then
       written=$(stat -c %s "${dir}/runtime_trace.jsonl" 2>/dev/null) \
@@ -5024,10 +5030,21 @@ ever times out; its threads are dumped on its output; ended"
       [[ -z "${dir}" ]] \
         || printf '%s\n' "${peak}" >"${dir}/workload_rss_mb"
     fi
-    if (( charged > 0 && peak > held )); then
+    want=${peak}
+    if [[ -n "${reserve}" ]] && read -r asked 2>/dev/null <"${reserve}" \
+        && [[ "${asked}" =~ ^[0-9]+$ ]] && (( asked > want )); then
+      want=${asked}
+    fi
+    if (( charged > 0 && want > held )); then
       campaign_host_unlocked campaign_host_try_grow localhost \
-        "$(( peak - held ))"
-      if (( status != 0 )); then
+        "$(( want - held ))"
+      # The reserve refused: what the JVM grew to, alone.
+      if (( status != 0 && want > peak && peak > held )); then
+        want=${peak}
+        campaign_host_unlocked campaign_host_try_grow localhost \
+          "$(( want - held ))"
+      fi
+      if (( status != 0 && peak > held )); then
         refused="the host cannot take the $(( peak - held )) MB more \
 (${campaign_host_wait_reason})"
         kill -KILL "${pid}" 2>/dev/null || true
@@ -5037,8 +5054,12 @@ ever times out; its threads are dumped on its output; ended"
           || printf '%s\n' "${peak}" >"${dir}/${campaign_refused_file}"
         break
       fi
-      grants+=("${campaign_host_charge_id}")
-      held=${peak}
+      if (( status == 0 )); then
+        grants+=("${campaign_host_charge_id}")
+        held=${want}
+        [[ -z "${reserve}" ]] || printf '%s\n' "${held}" >"${reserve}.held"
+      fi
+      status=0
     fi
     sleep "${campaign_watch_interval_s}"
   done
@@ -5462,7 +5483,13 @@ campaign_obligation_unanswered() {
 #                     round's directory, stream_grow_growth its growth rows,
 #                     stream_grow_returned set once it built, not taken
 #   stream_reruns     "<obligation> <exposing session>" -> the directory its
-#                     owed re-run runs in; stream_growing a growth's subject
+#                     owed re-run runs in; stream_rerun_offpath those no
+#                     obligation can come from (campaign_stream_grow_take),
+#                     and of them stream_rerun_composed those COMPOSE waits
+#                     for once the exploration is at its fixed point
+#                     (campaign_stream_fixed_beside); stream_uncaptured the
+#                     exposing sessions whose re-run did not land
+#                     (campaign_stream_uncaptured); stream_growing a growth's subject
 #                     (an occurrence, a task's input #k) -> the re-run, owed
 #                     or swapped in, that captures it
 #                     (campaign_stream_growth_new)
@@ -5482,7 +5509,15 @@ campaign_obligation_unanswered() {
 #               is reaped, a round still planning is dropped, and the corpus
 #               is the one that attempt composed (campaign_stream_end).
 #   FIXED_POINT nothing proposed, exposed, queued, running or unlanded, and
-#               no round planning, untaken or owed.
+#               no round planning, untaken or owed -- but GROW re-runs no
+#               obligation can come from (their worlds past the rounds'
+#               max-world-depth), which hold no fixed point: of those,
+#               COMPOSE waits for the re-runs of the sessions whose paths
+#               it composes, until they land or the campaign's reserve is
+#               reached, and the rest are dropped (campaign_stream_fixed_beside).
+#               A session whose re-run did not land is composed over its own
+#               rows, the versions it read that no write states free
+#               (uncaptured_sessions.txt, compose.Composer).
 #   REGION_PATH_WAVE_BUDGET_REACHED  a round of wave region_path_max_waves
 #               still owes work: it is not dispatched, the queue is
 #               cancelled, and what runs lands.
@@ -5511,7 +5546,7 @@ campaign_explore() {
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
   local stream_share_said="" stream_round_due=false
-  local stream_stop_detail="" stream_anchors="[]"
+  local stream_stop_detail="" stream_anchors="[]" stream_world_depth=""
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local stream_round_pid="" stream_round_dir=""
   local stream_round_returned="" stream_round_dropped=""
@@ -5547,7 +5582,8 @@ campaign_explore() {
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
-    stream_rests=()
+    stream_rests=() stream_rerun_offpath=() stream_rerun_composed=()
+  local -a stream_uncaptured=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
   # those already grown, and the witnesses attempted again once they are.
   local -A stream_chain=() stream_chain_grown=()
@@ -5593,6 +5629,18 @@ campaign_explore() {
     # its stop named in the budget's.  SGF7-adhoc-40's planner ran out of
     # heap 5473 s into its 7200 s case; replays and hard-lane asks drained
     # unbudgeted until the case timeout killed the campaign before COMPOSE.
+    if [[ "${stream_stop}" == FIXED_POINT && -z "${stream_step_pid}" ]] \
+        && ! campaign_claim_room; then
+      # COMPOSE's wait for its paths' re-runs ends at the campaign's
+      # reserve: those still owed are dropped, their sessions composed
+      # uncaptured (campaign_stream_end, campaign_stream_uncaptured).
+      stream_stop_detail="${stream_stop_detail}; the campaign's reserve \
+($(campaign_reserve)s) ended COMPOSE's wait for the re-runs of the paths it \
+composes"
+      campaign_log "exploration: ${stream_stop_detail}"
+      campaign_stream_end
+      break
+    fi
     if [[ "${stream_stop}" != WITNESSED && -z "${stream_step_pid}" ]] \
         && ! campaign_claim_room; then
       stream_stop_detail="${stream_stop:+the exploration stopped \
@@ -5635,6 +5683,16 @@ ${stream_stop_detail}"
       fi
       break
     fi
+    # Nothing owed but re-runs no obligation can come from: the fixed point
+    # beside them, and COMPOSE's wait for those of the paths it composes.
+    if [[ -z "${stream_stop}" ]] && campaign_stream_idle offpath; then
+      campaign_stream_fixed_beside
+    fi
+    if [[ "${stream_stop}" == FIXED_POINT ]] \
+        && campaign_stream_idle composed; then
+      campaign_stream_end
+      break
+    fi
     campaign_stream_wait
   done
   if [[ -n "${stream_ticker}" ]]; then
@@ -5646,6 +5704,7 @@ ${stream_stop_detail}"
   campaign_stream_unread_hosts
   trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
+  campaign_stream_uncaptured
   campaign_stream_truncation
   campaign_stream_manifest
   campaign_log "exploration stopped (${stream_stop}) after ${stream_round} \
@@ -5654,18 +5713,150 @@ $(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
   | LC_ALL=C sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
 }
 
-# Whether an exploration has nothing left to start, run, plan or take
-# (campaign_explore's end): no job runs, nothing waits in the queue or the
-# hard lane -- an ask there is in flight until answered, so no fixed point
-# is declared before it, nor a stop ends with it unasked -- no re-run waits
-# to swap in, no return waits for its gate, and no head step, round, round
-# returned and not taken, or GROW building or returned and not taken.
+# campaign_stream_idle [offpath|composed]: whether an exploration has nothing
+# left to start, run, plan or take (campaign_explore's end): no job runs,
+# nothing waits in the queue or the hard lane -- an ask there is in flight
+# until answered, so no fixed point is declared before it, nor a stop ends
+# with it unasked -- no re-run waits to swap in, no return waits for its
+# gate, and no head step, round, round returned and not taken, or GROW
+# building or returned and not taken.  With offpath, but for GROW re-runs no
+# obligation can come from (stream_rerun_offpath) -- queued, running,
+# returned or owed their gate; with composed, but for those COMPOSE does not
+# wait for (not stream_rerun_composed).
 campaign_stream_idle() {
-  (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} \
-     + ${#stream_swaps[@]} + ${#stream_gate_owed[@]} == 0 )) \
-    && [[ -z "${stream_step_pid}${stream_round_pid}" \
-          && -z "${stream_round_returned}" \
-          && -z "${stream_grow_pid}${stream_grow_returned}" ]]
+  local filter=${1:-} entry kind round id host status session
+  [[ -z "${stream_step_pid}${stream_round_pid}" \
+     && -z "${stream_round_returned}" \
+     && -z "${stream_grow_pid}${stream_grow_returned}" ]] || return 1
+  (( ${#stream_hard[@]} == 0 )) || return 1
+  for entry in "${stream_jobs[@]}"; do
+    read -r kind round id host session <<<"${entry}"
+    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
+      || return 1
+  done
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id session <<<"${entry}"
+    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
+      || return 1
+  done
+  for entry in "${stream_swaps[@]}"; do
+    read -r round id session _ <<<"${entry}"
+    campaign_stream_waived "${filter}" RERUN "${id} ${session}" || return 1
+  done
+  for entry in "${stream_gate_owed[@]}"; do
+    read -r kind round id host status session <<<"${entry%%$'\t'*}"
+    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
+      || return 1
+  done
+  return 0
+}
+
+# campaign_stream_waived <filter> <kind> <key>: whether the work of <kind>
+# keyed <key> ("<obligation> <exposing session>") is no work the idleness
+# <filter> waits for (campaign_stream_idle): a GROW re-run no obligation can
+# come from, under offpath; one of those COMPOSE does not wait for, under
+# composed.
+campaign_stream_waived() {
+  [[ -n "$1" && "$2" == RERUN && -n "${stream_rerun_offpath[$3]:-}" ]] \
+    || return 1
+  [[ "$1" == offpath || -z "${stream_rerun_composed[$3]:-}" ]]
+}
+
+# THE FIXED POINT BESIDE GROW'S RE-RUNS (campaign_explore): nothing is owed
+# but re-runs no obligation can come from -- each world holds more flips
+# than any round cuts a path from (stream_rerun_offpath) -- so the
+# exploration is at its fixed point, and they are off its critical path
+# (SGF8-adhoc-07: 121 re-runs, 36 % of its replay-seconds, the last ~26 of
+# its 81 minutes re-runs alone, at max-world-depth 0).  COMPOSE waits for the
+# re-runs of the exposing sessions whose paths it composes -- a target row at
+# the declared occurrence (compose.RestsOn#admitted) -- each landing as any
+# re-run does (its swap, its gate), until none is owed or the campaign's
+# reserve is reached (campaign_explore); a re-run queued of any other
+# session is dropped now, one running or returned at the end
+# (campaign_stream_end), each exposing session composed uncaptured
+# (campaign_stream_uncaptured).  No witness is attempted from here (a stop
+# is stated: campaign_stream_move), and no round starts.
+campaign_stream_fixed_beside() {
+  local entry kind round id host status session key owed=0 waited=0
+  local -a keys=() kept=()
+  stream_stop=FIXED_POINT
+  for entry in "${stream_jobs[@]}"; do
+    read -r kind round id host session <<<"${entry}"
+    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
+  done
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id session <<<"${entry}"
+    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
+  done
+  for entry in "${stream_swaps[@]}"; do
+    read -r round id session _ <<<"${entry}"
+    keys+=("${id} ${session}")
+  done
+  for entry in "${stream_gate_owed[@]}"; do
+    read -r kind round id host status session <<<"${entry%%$'\t'*}"
+    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
+  done
+  for key in "${keys[@]}"; do
+    owed=$((owed + 1))
+    if campaign_stream_composes "${key#* }"; then
+      stream_rerun_composed[${key}]=1
+      waited=$((waited + 1))
+    fi
+  done
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id session <<<"${entry}"
+    if [[ "${kind}" == RERUN \
+          && -z "${stream_rerun_composed["${id} ${session}"]:-}" ]]; then
+      unset 'stream_queued_at[$entry]'
+      stream_reruns_dropped+=("${id}")
+      mkdir -p "${campaign_root}/explore-reaped/${round}"
+      mv -- "${stream_reruns["${id} ${session}"]}" \
+        "${campaign_root}/explore-reaped/${round}/${id}"
+      campaign_stream_rerun_done "${id} ${session}" dropped
+      continue
+    fi
+    kept+=("${entry}")
+  done
+  stream_queue=("${kept[@]}")
+  stream_stop_detail="round $((stream_round - 1)) proposed nothing, exposed \
+nothing, and nothing is queued, running or unlanded but ${owed} GROW \
+re-run(s) no obligation can come from (each world past max-world-depth \
+${stream_world_depth}); COMPOSE waits for the ${waited} of sessions whose \
+paths it composes, the other $((owed - waited)) dropped"
+  campaign_log "exploration reached its fixed point: ${stream_stop_detail}"
+}
+
+# Whether COMPOSE composes a path of <session>: it holds a target row at the
+# declared occurrence (compose.RestsOn#admitted; the round's
+# anchorOccurrences, as a witness is told, campaign_stream_move).
+campaign_stream_composes() {
+  campaign_rows "${sessions}/$1/targets.jsonl.gz" \
+    | jq -e -s --argjson anchors "${stream_anchors}" \
+      'any(.[]; .occurrence as $at | any($anchors[]; . == $at))' \
+      >/dev/null 2>&1
+}
+
+# THE UNCAPTURED SESSIONS (campaign_explore's end): each exposing session
+# still in the corpus whose GROW re-run did not land -- dropped at a stop or
+# at the fixed point beside re-runs, never run, or not finished
+# (campaign_stream_rerun_done) -- named in uncaptured_sessions.txt
+# (contract.SessionDir#UNCAPTURED): COMPOSE frees the versions its reads saw
+# that no write states (compose.Composer#statedReads) rather than holding
+# them, since a grown region it ran uninstrumented may have written them.
+# None after a witness: its claim is the accepted attempt's, confirmed.
+campaign_stream_uncaptured() {
+  local session
+  local -A named=()
+  [[ "${stream_stop}" != WITNESSED ]] || return 0
+  for session in "${stream_uncaptured[@]}"; do
+    [[ -d "${sessions}/${session}" ]] || continue
+    named[${session}]=1
+  done
+  (( ${#named[@]} > 0 )) || return 0
+  printf '%s\n' "${!named[@]}" | LC_ALL=C sort \
+    >"${iteration_dir}/uncaptured_sessions.txt"
+  campaign_log "${#named[@]} session(s) whose GROW re-run did not land are \
+composed uncaptured: ${iteration_dir}/uncaptured_sessions.txt"
 }
 
 # The planner's arguments that stay the same every round.
@@ -6029,15 +6220,29 @@ campaign_stream_plan() {
     # out of heap (explore.ExploreMain --serve, contract.HeapWatch#outgrown)
     # and the round is PLANNER_HEAP_EXCEEDED, named as predicted.  The files
     # alone tell no such round: 40 ran out over 16.2 GB of files, 05 lived
-    # at ~14.5 GB live over 20.4 GB (shard-study, FINDINGS §3, §7).
+    # at ~14.5 GB live over 20.4 GB (shard-study, FINDINGS §3, §7).  ITS HOST
+    # HOLDS WHAT IT NEEDS, by the same measure (campaign_planner_need_mb),
+    # held before each round is asked (campaign_planner_hold), not the
+    # engine heap's footprint: at the Solr checks' 24576 MB a planner's
+    # 26.5 GB was its host's whole head ceiling, and its host ran no replay.
     if ! campaign_planner_alive; then
       if [[ -s "${state}/id" ]]; then
         campaign_planner_ended "${round_dir}" || return
       fi
-      campaign_planner_start "${engine}"
+      rm -f -- "${state}/live_mb" "${state}/read.txt"
+      campaign_planner_start "${engine}" \
+        "$(campaign_planner_need_mb "${round_dir}" "${engine}")"
     fi
+    campaign_planner_hold "$(campaign_planner_need_mb "${round_dir}" \
+      "${engine}")"
     status=0
     campaign_planner_round "${round_dir}" || status=$?
+    if (( status == 0 )); then
+      # What it measured, and the sessions it read: its next round's need.
+      [[ ! -s "${round_dir}/planner_live_mb" ]] \
+        || cp -f -- "${round_dir}/planner_live_mb" "${state}/live_mb"
+      cp -f -- "${round_dir}/corpus.txt" "${state}/read.txt"
+    fi
     (( status == 5 )) || return "${status}"
     # The planner ended without answering: its holding shell states its
     # exit once it is gone.
@@ -6053,6 +6258,69 @@ end (its log: %s)\n' "$(cat "${state}/host")" "$(basename "${round_dir}")" \
       return 1
     fi
   done
+}
+
+# THE PLANNER'S NEED for the round <round_dir> at the heap <heap_mb>, in MB:
+# what its old generation needs by the rule it judges the round by itself
+# (contract.HeapWatch#outgrown) -- its live set at its highest over its last
+# round (planner_live_mb, which it states beside each round) and
+# campaign_planner_rows_pct of the text of the round's sessions it has not
+# read (campaign_session_bytes; a planner started anew has measured nothing
+# and reads them all) -- at campaign_planner_old_room_pct of it, beside its
+# young generation whole (a fifth of the heap, -XX:NewRatio=4), at most the
+# heap, as a JVM's footprint (campaign_jvm_footprint_mb).
+campaign_planner_rows_pct=35
+campaign_planner_old_room_pct=125
+campaign_planner_need_mb() {
+  local round_dir=$1 heap=$2 state="${iteration_dir}/planner" live=0 new need
+  [[ ! -s "${state}/live_mb" ]] || live=$(<"${state}/live_mb")
+  [[ "${live}" =~ ^[0-9]+$ ]] || live=0
+  new=$(awk 'FILENAME == ARGV[1] {read[$1] = 1; next}
+      FILENAME == ARGV[2] {asked[$1] = 1; next}
+      ($1 in asked) && !($1 in read) {n += $2}
+      END {printf "%d\n", n / 1048576}' \
+    <(cat -- "${state}/read.txt" 2>/dev/null) "${round_dir}/corpus.txt" \
+    <(campaign_session_bytes "${sessions}"))
+  need=$(( heap / 5 + (live + new * campaign_planner_rows_pct / 100) \
+    * campaign_planner_old_room_pct / 100 ))
+  (( need <= heap )) || need=${heap}
+  campaign_jvm_footprint_mb "${need}"
+}
+
+# campaign_planner_hold <need_mb>: the round is asked once the planner's host
+# holds <need_mb> for it: the planner's watcher grows its hold to what its
+# reserve asks (campaign_watch_workload's <reserve>) and states what it
+# holds; while it is short, the shortfall is held among the head
+# reservations of the planner's host (campaign_head_hold) so the starts there
+# leave it, as a waiting head step's need is (campaign_head_place).  A
+# planner that ended is the round's ask to find.
+campaign_planner_hold() {
+  local need=$1 state="${iteration_dir}/planner" held=0 said=false dir
+  local since=${SECONDS}
+  printf '%s\n' "${need}" >"${state}/reserve_mb.part"
+  mv -f -- "${state}/reserve_mb.part" "${state}/reserve_mb"
+  while campaign_planner_alive; do
+    read -r held 2>/dev/null <"${state}/reserve_mb.held" || held=0
+    [[ "${held}" =~ ^[0-9]+$ ]] || held=0
+    (( held < need )) || break
+    if [[ "${said}" == false ]]; then
+      dir="${campaign_host_gate_root}/$(campaign_host_key \
+"$(cat "${state}/host")")/heads"
+      mkdir -p "${dir}"
+      campaign_head_hold="${dir}/$(hostname -s).${BASHPID}.$(date +%s).hold"
+      printf '%s\n' "$(( need - held ))" >"${campaign_head_hold}"
+      campaign_log "the planner's round waits for its host to hold ${need} \
+MB for it (${held} held)" >&2
+      said=true
+    fi
+    campaign_head_heartbeat
+    sleep "${campaign_host_poll_s}"
+  done
+  [[ "${said}" == true ]] || return 0
+  rm -f -- "${campaign_head_hold}"
+  campaign_head_hold=""
+  campaign_log "the planner's host holds ${held} MB for its round after \
+waiting $(( SECONDS - since )) s" >&2
 }
 
 # The exploration's planner ended (it runs at the engine heap,
@@ -6076,12 +6344,15 @@ campaign_planner_alive() {
   [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
 }
 
-# Starts the exploration's planner at <heap_mb>, placed and charged as a
-# head step (campaign_head_place, waiting for room as one does), the charge
-# held by the shell that holds it for as long as it runs.
+# Starts the exploration's planner at <heap_mb>, placed and charged <need_mb>
+# as a head step (campaign_head_place, waiting for room as one does), the
+# charge held by the shell that holds it for as long as it runs, and grown
+# as its watcher grows it (campaign_planner_hold).
 campaign_planner_start() {
-  local heap=$1 state="${iteration_dir}/planner" host charge id busy=""
-  campaign_head_place "$(campaign_jvm_footprint_mb "${heap}")" >&2
+  local heap=$1 need=$2 state="${iteration_dir}/planner" host charge id
+  local busy=""
+  rm -f -- "${state}/reserve_mb" "${state}/reserve_mb.held"
+  campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   charge=${campaign_host_charge_id}
   id="$(date +%s%N)"
@@ -6102,12 +6373,14 @@ campaign_planner_start() {
     if campaign_host_is_local "${host}"; then
       campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
-        "${iteration_dir}/planner.log" "${state}/jvm" \
+        "${iteration_dir}/planner.log" "${state}/jvm" "${need}" \
+        "${state}/reserve_mb" \
         --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     else
       campaign_run_placed "${host}" campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
-        "${iteration_dir}/planner.log" "${state}/jvm" \
+        "${iteration_dir}/planner.log" "${state}/jvm" "${need}" \
+        "${state}/reserve_mb" \
         --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     fi
     [[ -z "${busy}" ]] || rm -f -- "${busy}"
@@ -6116,20 +6389,22 @@ campaign_planner_start() {
     mv -f -- "${state}/status.part" "${state}/status"
   } </dev/null >>"${iteration_dir}/planner.log" 2>&1 &
   printf '%s\n' "$!" >"${state}/pid"
-  campaign_log "the planner service starts on ${host} at ${heap} MB" >&2
+  campaign_log "the planner service starts on ${host} at ${heap} MB, \
+charged ${need}" >&2
 }
 
 # campaign_planner_serve <heap_mb> <id> <peak_file> <log> <jvm_file>
-# <ExploreMain args...>: the planner instance <id>, run on this host until it
-# is ended, its questions in campaign_planner_dir: a JVM at <heap_mb> watched
-# as it grows past it (campaign_watch_workload), its pid stated in
+# <charged_mb> <reserve> <ExploreMain args...>: the planner instance <id>,
+# run on this host until it is ended, its questions in campaign_planner_dir:
+# a JVM at <heap_mb>, charged <charged_mb>, watched as it grows past it and
+# held at what <reserve> asks (campaign_watch_workload), its pid stated in
 # <jvm_file> (the head stops it by it, campaign_planner_stop), its peak
 # folded into <peak_file> (the head's step need, campaign_engine_peak), its
 # output appended to <log>.  Its status is the JVM's.
 campaign_planner_serve() {
-  local heap=$1 id=$2 peak_file=$3 log=$4 jvm_file=$5 dir watched jvm
-  local status=0 peak
-  shift 5
+  local heap=$1 id=$2 peak_file=$3 log=$4 jvm_file=$5 charged=$6 reserve=$7
+  local dir watched jvm status=0 peak
+  shift 7
   local sessions=""
   local -a args=("$@")
   local index
@@ -6161,8 +6436,8 @@ campaign_planner_serve() {
   # A head step: what it grows past its footprint is asked under the head
   # steps' ceiling (campaign_head_max_used_pct).
   campaign_host_max_used_pct=${campaign_head_max_used_pct} \
-    campaign_watch_workload "${jvm}" "$(campaign_jvm_footprint_mb "${heap}")" \
-    "${watched}" 2>>"${log}"
+    campaign_watch_workload "${jvm}" "${charged}" "${watched}" "" \
+    "${reserve}" 2>>"${log}"
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
   # Its server file stays, naming a pid gone: a question asked after says
@@ -6404,6 +6679,12 @@ campaign_stream_take_round() {
   # session a witness (campaign_stream_move).
   stream_anchors=$(jq -c '.anchorOccurrences' \
     "${round_dir}/explore_manifest.json")
+  # The world depth its paths were cut by: a GROW re-run of a deeper world
+  # offers no round an obligation (campaign_stream_grow_take).
+  stream_world_depth=$(jq -er '.maxWorldDepth' \
+    "${round_dir}/explore_manifest.json") \
+    || campaign_fail EXPLORE ExploreMain "${round_dir}" \
+      "${name} states no maxWorldDepth"
   campaign_log "round $((10#${name##*-})) (wave ${wave}): ${proposed} \
 obligation(s), ${exposed} exposure(s), $(grep -c '' \
 "${round_dir}/in_flight.jsonl" || true) in flight, $(jq -r \
@@ -6871,6 +7152,7 @@ campaign_stream_end() {
   for entry in "${dropped_reruns[@]}"; do
     read -r round id session <<<"${entry}"
     stream_reruns_dropped+=("${id}")
+    stream_uncaptured+=("${session}")
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${stream_reruns["${id} ${session}"]}" \
       "${campaign_root}/explore-reaped/${round}/${id}"
@@ -8436,6 +8718,14 @@ before, so it is not re-run again"
     campaign_stream_enqueue "RERUN $(basename "${round_dir}") \
 ${obligation_id} ${session}"
     stream_reruns["${obligation_id} ${session}"]=${rerun}
+    # OFF EXPLORE'S CRITICAL PATH exactly when no obligation can come from
+    # it: its world -- its obligation's, the flip and the flips it inherited
+    # -- holds more flips than any round cuts a path from
+    # (ObligationFactory#candidates, the round's maxWorldDepth), so no path
+    # of its session is ever cut (campaign_stream_fixed_beside).
+    (( $(jq -r '(.inheritedFlips // [] | length) + (if .flip then 1 else 0 end)' \
+        "${worker}/focused_task.jsonl") <= stream_world_depth )) \
+      || stream_rerun_offpath["${obligation_id} ${session}"]=1
     stream_hold=$((stream_hold + 1))
     rerun_count=$((rerun_count + 1))
   done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
@@ -8680,6 +8970,7 @@ woven now, and the re-run's session stands in its place"
 campaign_stream_rerun_done() {
   local key=$1 dropped=${2:-} subject=""
   if [[ -n "${dropped}" ]]; then
+    stream_uncaptured+=("${key#* }")
     for subject in "${!stream_growing[@]}"; do
       [[ "${stream_growing[${subject}]}" != "${key}" ]] \
         || unset 'stream_growing[$subject]'

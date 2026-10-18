@@ -2015,16 +2015,24 @@ every round taken by then -- rounds taken between the attempt and its confirmati
 them -- so its claim may differ from the attempt's: `campaign_confirm` reuses the attempt's
 confirmation for the same model only, and replays CONFIRM for any other. THE PLANNER SERVICE (`campaign_stream_plan`): the
 round's lane starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
-what the planner starts at (`campaign_engine_start_mb`), its charge held for its life by the shell
-that holds it (`campaign_host_keep`, as a host solver's), grown as a watched JVM
-(`campaign_watch_workload`), the head's room marked busy while it runs on the head's host -- and asks
+its need for the round, its charge held for its life by the shell that holds it (`campaign_host_keep`, as a
+host solver's), grown as a watched JVM (`campaign_watch_workload`), the head's room marked busy while it runs
+on the head's host -- and asks
 the round of it on its host (`campaign_planner_ask`, through the remote worker script when it runs on
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
 PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): one started lower outgrew its
 heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
-collecting to its end (~17 min each). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+collecting to its end (~17 min each). ITS HOST HOLDS WHAT IT NEEDS, not the engine heap's footprint (at the
+Solr checks' 24576 MB a planner's 26.5 GB charge was its host's whole head ceiling, and its host ran no
+replay): before each round its need (`campaign_planner_need_mb`) -- its young generation whole (a fifth of the
+heap) and 1.25 times its old generation's need by its own rule below, the live set it stated beside its last
+round (`planner_live_mb`, `HeapWatch#peakSwept`) and 0.35 of the text of the round's sessions it has not read
+(a planner started anew: none measured, every session) -- is asked of its watcher, which holds it ahead of
+the JVM's growth (its reserve: a refusal ends nothing, the JVM's own growth is granted or ends it as any
+watched JVM's), and the round is asked once its host holds it, the shortfall meanwhile held among the
+head reservations of the planner's host (`campaign_planner_hold`). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
 its own measure (`contract.HeapWatch#outgrown`)
 -- its old generation's live set at its highest since the last round (what it held after a full collection, as
 `HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the
