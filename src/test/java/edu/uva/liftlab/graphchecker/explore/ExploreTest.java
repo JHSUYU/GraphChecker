@@ -6327,7 +6327,8 @@ public class ExploreTest {
             session.flush();
         }
         ClosurePlanner.Walk walk = new ClosurePlanner.Walk(
-                Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET);
+                Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET,
+                ClosurePlanner.CORES);
         ClosurePlanner.GroupReads target = walk.reads(TARGET);
         ClosurePlanner.GroupReads reader = walk.reads(READER);
         assertEquals("every occurrence on the map is in both groups", 3,
@@ -6401,6 +6402,85 @@ public class ExploreTest {
         for (Map.Entry<String, Integer> gap : said.entrySet()) {
             assertEquals("said once: " + gap.getKey(), 1,
                     gap.getValue().intValue());
+        }
+    }
+
+    /**
+     * The walk's supersteps run on the planner's cores ({@code
+     * ClosurePlanner#CORES}), and its plan is the one-at-a-time walk's: each
+     * step computed ahead is the walk of its demand's state, and is taken in
+     * queue order only while it still is; what only that order gives -- the
+     * leaves of the anchor's two reads at one seq, held once, the first
+     * asked ({@code Corpus#readLeaves}) -- is computed in it.  Here a
+     * producer whose every delivery a session attached, and a writer each
+     * session's anchor read, over seventy sessions: planned on one core,
+     * where every superstep's steps run one after another, on four and on
+     * the host's, the three plans are one.
+     */
+    @Test
+    public void theWalkInSuperstepsPlansWhatItPlansAlone() throws Exception {
+        Path iteration = tree.newFolder("asked-ahead").toPath();
+        Endpoint other = at(PRODUCER, "XCH.resp.block-key-expiry",
+                "PBHelper#convert#12");
+        Endpoint side = at(TARGET, Endpoint.stateSite(
+                "BlockTokenSecretManager", "retrieveDataEncryptionKey", 9,
+                false), "BlockTokenSecretManager#retrieveDataEncryptionKey#9");
+        for (int at = 0; at < 70; at++) {
+            String sessionId = at == 0 ? "s-seed" : "s-" + at;
+            Session session = new Session(iteration, sessionId);
+            session.activations(false, TARGET, WRITER, PRODUCER);
+            session.constant("e.11999" + at, "11999" + at);
+            session.symbolic("e.stored", "M_HOFF_KEY");
+            session.export(other, "e.11999" + at, 11L + at, "11999" + at);
+            session.attach(DELIVERED, "M_HOFF_KEY", "11999" + at, other);
+            session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY" + at,
+                    "11999" + at);
+            // The next read at the same seq (a store read and its view's).
+            session.seq--;
+            session.read(side, LocationId.of(LocationKind.MAP, "" + (40 + at),
+                    "-3"), 0L, "M_SIDE" + at, "0");
+            session.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8", "(and (= M_READ_KEY"
+                    + at + " 0) (= M_SIDE" + at + " 0))");
+            session.flush();
+        }
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120")));
+        java.util.concurrent.ForkJoinPool four =
+                new java.util.concurrent.ForkJoinPool(4);
+        try {
+            java.util.concurrent.ForkJoinPool one =
+                    new java.util.concurrent.ForkJoinPool(1);
+            List<String> plans = new ArrayList<String>();
+            for (java.util.concurrent.ForkJoinPool cores : Arrays.asList(
+                    one, four, ClosurePlanner.CORES)) {
+                Corpus corpus = Corpus.read(iteration, null);
+                ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                        ClosurePlanner.DEFAULT_MAX_TASKS,
+                        ClosurePlanner.CLOSURE_CEILING, map,
+                        Branches.of(corpus, Collections.singletonList(TARGET),
+                                new ArrayList<GapRow>()),
+                        Collections.<String>emptySet(),
+                        Collections.<String>emptySet(), ClientFaults.NONE,
+                        SystemView.of(""), cores);
+                plans.add(plan.tasks + "\n" + plan.why + "\n"
+                        + plan.flipSites + "\n" + plan.gaps + "\n"
+                        + plan.exposed + "\n" + plan.waiting + "\n"
+                        + plan.truncated + "\n" + plan.unpaused + "\n"
+                        + plan.runWhole);
+            }
+            assertTrue("the producer and the writer are planned: "
+                    + plans.get(0), plans.get(0).contains(
+                    ClosurePlanner.taskId(PRODUCER))
+                    && plans.get(0).contains(ClosurePlanner.taskId(WRITER)));
+            assertEquals("on four cores, the one-core plan", plans.get(0),
+                    plans.get(1));
+            assertEquals("on the host's cores, the one-core plan",
+                    plans.get(0), plans.get(2));
+            one.shutdownNow();
+        } finally {
+            four.shutdownNow();
         }
     }
 

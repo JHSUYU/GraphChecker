@@ -649,7 +649,7 @@ the row joins from its prefix reach (§8 P3) and the reads of those occurrences 
 moves (`Independence`: a root, a clock, a value the session received), the anchor's own prefix
 decisions among them, and no root the session minted that nothing kept reads; a handoff those name
 is resolved to its attach row whoever received it, however many joins away (`ClosurePlanner
-#successors`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
+#step`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
 producer's closure, decides on the expiry dates of nn0's `updateBlockKeys@1` response, whose handler
 no session ran until it was demanded so); closed over the reads those name and the writes they could
 observe. Each (kind, session, occurrence, cutoff, terms) is asked once per walk. CONFIRM's ORDER
@@ -658,6 +658,21 @@ factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
 what the occurrence touches (two readers of one location pass each other nothing).
+
+The walk runs in SUPERSTEPS on the planner host's cores (`ClosurePlanner.CORES`, `Walk#ahead`,
+`#take`): the demands at the head of the queue, up to two a core, are each walked at once against
+the state they stand in, each walk a `Step` that mutates nothing it shares and says, in its order,
+what the one-at-a-time walk changes there (a successor, a gap, a gap or fault-less door said once per
+key, the occurrences offered once per key, a store version's earlier versions); the steps are then
+taken in queue order, each the walk of its demand's state as it is taken -- one an earlier step of the
+superstep grew (`Demand#version`) is walked again there -- so the plan is the one-at-a-time walk's,
+byte for byte, however many cores ran it. Inside one step, what COMPOSE keeps of each path and
+delivery, the folds of its decisions, contributed values and fixed point, and its expansions run in
+parts on the cores too, taken in order (`Walk#asked`, `#each`). Every memo a step reads holds a
+function of its key, but one: a read row's leaves are held by its seq, which read rows share (a store
+read and its view's), the first row asked giving the set (STATUS open defect 70); a step claims such a
+seq where no one asked it yet (`Corpus#readLeaves`, `Corpus.Claims`), and its claims are taken in the
+order (`Corpus#take`) -- one that claimed a seq taken by another row is walked again in the order.
 
 A CONCRETE anchor (R1-ROOTS D0, `ClosurePlanner#concrete`) demands what it read before it decided.
 An admitted path (the seed, or a focused session admitted whole) decided the anchor where it took

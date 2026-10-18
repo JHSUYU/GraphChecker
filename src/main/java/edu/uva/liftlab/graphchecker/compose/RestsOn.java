@@ -36,6 +36,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -60,9 +62,11 @@ public final class RestsOn {
      *  join, its reads all its own. */
     private final OccurrenceAddress anchor;
     /** kind|session|start|cutoff|seed terms -> the symbols it rests on
-     *  ({@link #named}): EXPLORE asks once per walk of a demand. */
+     *  ({@link #named}): EXPLORE asks once per walk of a demand, from any
+     *  core its supersteps run on; a function of the corpus, the map and
+     *  the key alone, so whichever core computes it first holds it. */
     private final Map<String, Set<String>> cache =
-            new LinkedHashMap<String, Set<String>>();
+            new ConcurrentHashMap<String, Set<String>>();
 
     public RestsOn(Corpus corpus, StaticScopeMap scope,
                    OccurrenceAddress anchor) {
@@ -380,13 +384,15 @@ public final class RestsOn {
     /**
      * WHAT EXPLORE DEMANDS of one delivery {@code start} made in this
      * session, the last at {@code cutoff}, of the expressions {@code
-     * delivered}: what COMPOSE keeps of the arm it is ({@link #named}).
+     * delivered}: what COMPOSE keeps of the arm it is ({@link #named}),
+     * asked under {@code claims} ({@code Corpus#readLeaves}).
      */
     public Set<String> ofDelivery(String session, OccurrenceAddress start,
-                                  long cutoff, List<String> delivered) {
+                                  long cutoff, List<String> delivered,
+                                  Corpus.Claims claims) {
         return named("delivery", session, start, cutoff, delivered,
-                seedWrites(session, delivered),
-                Collections.<DecisionRow>emptyList());
+                () -> seedWrites(session, delivered),
+                Collections.<DecisionRow>emptyList(), claims);
     }
 
     /**
@@ -395,12 +401,13 @@ public final class RestsOn {
      * decided ({@link #decided}) among them, over its fatal arm.
      */
     public Set<String> ofPath(String session, TargetRow target,
-                              List<DecisionRow> decisions) {
+                              List<DecisionRow> decisions,
+                              Corpus.Claims claims) {
         Decided at = decided(session, target, decisions);
         // Unseeded, as COMPOSE's path closure (Composer#compose).
         return named("path", session, anchor, at.cutoff,
-                Collections.singletonList(at.fatalTerm), null,
-                before(decisions, at.cutoff));
+                Collections.singletonList(at.fatalTerm), () -> null,
+                before(decisions, at.cutoff), claims);
     }
 
     /**
@@ -415,21 +422,32 @@ public final class RestsOn {
      * No family binds anything here: the session's received values, roots
      * and clocks move by the binding rule ({@link
      * SmtLowering.SessionJoin#moves}).  Once per (kind, session, start,
-     * cutoff, terms).
+     * cutoff, terms); one that read a claim is held by the claims until they
+     * are taken ({@link #take}).
      */
     private Set<String> named(String kind, String session,
                               OccurrenceAddress start, long cutoff,
-                              List<String> seedTerms, List<WriteRow> seeds,
-                              List<DecisionRow> own) {
+                              List<String> seedTerms,
+                              Supplier<List<WriteRow>> seeds,
+                              List<DecisionRow> own, Corpus.Claims claims) {
         String key = kind + "|" + session + "|" + start.id() + "|" + cutoff
                 + "|" + seedTerms;
         Set<String> held = cache.get(key);
         if (held != null) return held;
-        Map<String, Long> reached = closure(session, start, cutoff, seeds);
+        if (claims != null) {
+            held = claims.held.get(key);
+            if (held != null) {
+                claims.readHeld();
+                return held;
+            }
+        }
+        boolean around = claims != null && claims.since();
+        Map<String, Long> reached = closure(session, start, cutoff,
+                seeds.get());
         List<DecisionRow> conditions = new ArrayList<DecisionRow>(own);
         conditions.addAll(reachedConditions(session, reached));
         Independence kept = independence(session, seedTerms,
-                Collections.<String>emptySet(), reached, conditions);
+                Collections.<String>emptySet(), reached, conditions, claims);
         Set<String> symbols = new LinkedHashSet<String>();
         for (DecisionRow decision : conditions) {
             if (kept.keeps(decision)) {
@@ -446,8 +464,24 @@ public final class RestsOn {
                 }
             }
         }
-        cache.put(key, symbols);
-        return symbols;
+        if (claims != null && claims.over(around)) {
+            claims.held.put(key, symbols);
+            return symbols;
+        }
+        Set<String> first = cache.putIfAbsent(key, symbols);
+        return first != null ? first : symbols;
+    }
+
+    /** Takes, in the order, what one computation of {@code claims} claimed
+     *  ({@code Corpus#take}), and holds the answers computed over the
+     *  claims: false, taking none, where it is not the computation the
+     *  order makes. */
+    public boolean take(Corpus.Claims claims) {
+        if (!corpus.take(claims)) return false;
+        for (Map.Entry<String, Set<String>> answer : claims.held.entrySet()) {
+            cache.putIfAbsent(answer.getKey(), answer.getValue());
+        }
+        return true;
     }
 
     /**
@@ -751,15 +785,27 @@ public final class RestsOn {
                               Collection<String> bound,
                               Map<String, Long> reached,
                               List<DecisionRow> conditions) {
+        return independence(session, seeds, bound, reached, conditions,
+                null);
+    }
+
+    /** {@link #independence}, under {@code claims} ({@code
+     *  Corpus#readLeaves}): null for a computation in the order. */
+    private Independence independence(String session, List<String> seeds,
+                                      Collection<String> bound,
+                                      Map<String, Long> reached,
+                                      List<DecisionRow> conditions,
+                                      Corpus.Claims claims) {
         return Independence.of(corpus, session, seeds, bound, conditions,
                 statedRows(session, reached.keySet()),
                 read -> constructionGuards(session, corpus.writeOf(session,
-                        read.location(), read.observedVersion())));
+                        read.location(), read.observedVersion())), claims);
     }
 
-    /** The construction guards already found, by session and write. */
+    /** The construction guards already found, by session and write: a
+     *  function of the write, asked from any core ({@link #cache}). */
     private final Map<String, List<DecisionRow>> built =
-            new LinkedHashMap<String, List<DecisionRow>>();
+            new ConcurrentHashMap<String, List<DecisionRow>>();
 
     /**
      * THE CONSTRUCTION GUARD of a reference write (R3-REFCONT §1.6, D5):
@@ -779,19 +825,22 @@ public final class RestsOn {
         if (write == null || write.referentState() == null) {
             return Collections.<DecisionRow>emptyList();
         }
-        return built.computeIfAbsent(session + "|" + write.location() + "@"
-                + write.version(), unused -> {
-            String site = write.endpoint().site();
-            Set<String> sites = new LinkedHashSet<String>();
-            for (String carrier : scope.carriersAt(site,
-                    write.javaType(), write.location().kind())) {
-                for (StaticScopeMap.Guard guard
-                        : scope.constructionGuards(site, carrier)) {
-                    sites.add(guard.siteId());
-                }
+        // Not computeIfAbsent: a JDK 8 ConcurrentHashMap holds the bin
+        // while the function runs.
+        String key = session + "|" + write.location() + "@" + write.version();
+        List<DecisionRow> held = built.get(key);
+        if (held != null) return held;
+        String site = write.endpoint().site();
+        Set<String> sites = new LinkedHashSet<String>();
+        for (String carrier : scope.carriersAt(site,
+                write.javaType(), write.location().kind())) {
+            for (StaticScopeMap.Guard guard
+                    : scope.constructionGuards(site, carrier)) {
+                sites.add(guard.siteId());
             }
-            List<DecisionRow> guards = new ArrayList<DecisionRow>();
-            if (sites.isEmpty()) return guards;
+        }
+        List<DecisionRow> guards = new ArrayList<DecisionRow>();
+        if (!sites.isEmpty()) {
             Set<JsonElement> free = mutationGuards(session,
                     write.referentState());
             for (DecisionRow decision : corpus.decisionsOf(session,
@@ -802,8 +851,9 @@ public final class RestsOn {
                     guards.add(decision);
                 }
             }
-            return guards;
-        });
+        }
+        held = built.putIfAbsent(key, guards);
+        return held != null ? held : guards;
     }
 
     /**

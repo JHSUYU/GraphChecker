@@ -378,11 +378,25 @@ public final class Corpus implements Arms.Rows {
                 new ConcurrentHashMap<String, Set<Long>>();
         final Map<String, List<StateRead>> stateReads =
                 new ConcurrentHashMap<String, List<StateRead>>();
+        /** The seqs more than one of its read rows stand at (a store read
+         *  and its view's): {@link #readLeaves}' key holds one. */
+        final Set<Long> sharedSeqs;
+        /** "read seq" of a shared seq -> the row whose leaves it holds. */
+        final Map<String, ReadRow> sharedBy =
+                new ConcurrentHashMap<String, ReadRow>();
 
         Derived(SessionReader session) {
             this.session = session;
             this.join = SmtLowering.joinOf(session);
             this.schedule = facts(session);
+            Set<Long> seen = new HashSet<Long>();
+            Set<Long> shared = new HashSet<Long>();
+            for (ReadRow read : session.reads()) {
+                if (read != null && !seen.add(read.seq())) {
+                    shared.add(read.seq());
+                }
+            }
+            this.sharedSeqs = shared;
         }
     }
 
@@ -2467,6 +2481,139 @@ public final class Corpus implements Arms.Rows {
             of.leaves.put(key, found);
         }
         return found;
+    }
+
+    /**
+     * {@link #leaves} of one read row, held by its seq: read rows share a seq
+     * (a store read and its view's), and they share one set, the first row's
+     * asked -- a function of the ORDER the rows are first asked in (STATUS
+     * open defect 70).  A computation that may run ahead of that order asks
+     * under {@code claims}: a shared seq no one has asked yet is CLAIMED
+     * there, by the row it is first asked of, and held there until the
+     * claims are taken in the order ({@link #take}).  Without claims -- a
+     * computation in the order -- the set is held at once.
+     */
+    public Set<String> readLeaves(String sessionId, ReadRow read,
+                                  Claims claims,
+                                  Supplier<Set<String>> compute) {
+        Derived of = bySession.get(sessionId);
+        if (of == null) return compute.get();
+        String key = "read " + read.seq();
+        Set<String> found = of.leaves.get(key);
+        if (found != null) return found;
+        if (claims != null && of.sharedSeqs.contains(read.seq())) {
+            return claims.claim(sessionId, read,
+                    () -> new HeldLeaves(compute.get(), of.leafNames));
+        }
+        found = new HeldLeaves(compute.get(), of.leafNames);
+        if (of.sharedSeqs.contains(read.seq())) {
+            of.sharedBy.put(key, read);
+            of.leaves.put(key, found);
+            return found;
+        }
+        Set<String> first = of.leaves.putIfAbsent(key, found);
+        return first != null ? first : found;
+    }
+
+    /**
+     * Takes, in the order, what one computation claimed ({@link
+     * #readLeaves}): every shared seq it claimed that no one took yet is
+     * held as it claimed it, if each one taken already was taken by the
+     * same row; else nothing is taken, and the computation is not the one
+     * the order makes (false).
+     */
+    public boolean take(Claims claims) {
+        for (Claims.Claim claim : claims.claimed.values()) {
+            Derived of = bySession.get(claim.sessionId);
+            ReadRow by = of.sharedBy.get("read " + claim.read.seq());
+            if (by != null && by != claim.read) return false;
+        }
+        for (Claims.Claim claim : claims.claimed.values()) {
+            Derived of = bySession.get(claim.sessionId);
+            String key = "read " + claim.read.seq();
+            if (of.sharedBy.putIfAbsent(key, claim.read) == null) {
+                of.leaves.put(key, claim.leaves);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * WHAT ONE COMPUTATION CLAIMED ({@link #readLeaves}), in the order it
+     * claimed it, and the answers computed over a claim ({@link #held}):
+     * one computation's at a time, on one thread.
+     */
+    public static final class Claims {
+        private final Map<String, Claim> claimed =
+                new LinkedHashMap<String, Claim>();
+        /** Whether a claim was read since {@link #since}. */
+        private boolean read;
+        /** key -> an answer computed over a claim, held here until the
+         *  claims are taken ({@code compose.RestsOn}). */
+        public final Map<String, Set<String>> held =
+                new LinkedHashMap<String, Set<String>>();
+
+        private Set<String> claim(String sessionId, ReadRow read,
+                                  Supplier<Set<String>> leaves) {
+            String key = sessionId + "|" + read.seq();
+            Claim claim = claimed.get(key);
+            if (claim == null) {
+                claim = new Claim(sessionId, read, leaves.get());
+                claimed.put(key, claim);
+            }
+            this.read = true;
+            return claim.leaves;
+        }
+
+        /** An answer {@link #held} over a claim is read. */
+        public void readHeld() {
+            read = true;
+        }
+
+        /** Starts one answer's computation: whether the one around it read
+         *  a claim, which {@link #over} gives back. */
+        public boolean since() {
+            boolean was = read;
+            read = false;
+            return was;
+        }
+
+        /** Whether the answer begun at {@link #since} read a claim; the one
+         *  around it ({@code was}) has, if either did. */
+        public boolean over(boolean was) {
+            boolean over = read;
+            read = was || over;
+            return over;
+        }
+
+        /** Takes {@code later}'s claims after these, if each it shares
+         *  with these is the same row's; false, taking none, else. */
+        public boolean follow(Claims later) {
+            for (Map.Entry<String, Claim> each : later.claimed.entrySet()) {
+                Claim mine = claimed.get(each.getKey());
+                if (mine != null && mine.read != each.getValue().read) {
+                    return false;
+                }
+            }
+            for (Map.Entry<String, Claim> each : later.claimed.entrySet()) {
+                claimed.putIfAbsent(each.getKey(), each.getValue());
+            }
+            held.putAll(later.held);
+            read |= later.read;
+            return true;
+        }
+
+        private static final class Claim {
+            final String sessionId;
+            final ReadRow read;
+            final Set<String> leaves;
+
+            Claim(String sessionId, ReadRow read, Set<String> leaves) {
+                this.sessionId = sessionId;
+                this.read = read;
+                this.leaves = leaves;
+            }
+        }
     }
 
     /**

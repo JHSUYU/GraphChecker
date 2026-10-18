@@ -741,6 +741,15 @@ Scale and robustness:
     call) answers every call of its site in its occurrence with one symbol: only an observed
     marker's invocations are roots of their own, and only those GROW plans again
     (`UNPLANNED_INPUT`, PIPELINE §7.8). Accepted (solr-timed-wait review M4).
+70. A read row's leaves (`gc/compose/Independence#readLeaves`, the variables its value rests on)
+    are held by its session and seq alone (`gc/explore/Corpus#readLeaves`), and read rows share a
+    seq (a store read and its view's: 830 of one SGF8PLAN-adhoc-05 session's 5904 seqs): the second
+    row asked takes the first one's set, so what a closure keeps turns on the order its reads were
+    first asked in -- and a served planner's on the rounds before it, whose memo it keeps. The
+    superstep walk keeps the one-at-a-time walk's order (claims, PIPELINE §7.2). Keyed by the row,
+    offline (2026-10-17): the same tasks and obligations everywhere, but 21 r13's 55, 19 r10's 259 and
+    SGF8PLAN-adhoc-05 r2's 348 tasks in another order, gaps changed (13 r10 -1, 21 r13 -428, 05 r2
+    -150, 05 r5 +3), and 19 r10 37 more exposed regions grown -- a change of plan, the owner's call.
 
 Fallbacks and dead code:
 
