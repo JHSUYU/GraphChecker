@@ -45,8 +45,10 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
 STAGES = list(dict.fromkeys(stage for chain in CHAINS.values()
                             for stage in chain))
 SIDES = ("baseline", "candidate")
+# A round's corpus_read says when its planner read its corpus (a signal to
+# the head's swaps, explore.ExploreMain#CORPUS_READ), no output.
 NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log",
-              "walls.tsv", "planner.log"}
+              "walls.tsv", "planner.log", "corpus_read"}
 # The slot table (explore.SlotTable): each round's changes in its directory,
 # after the table an iteration recorded before the rounds wrote theirs.  Its
 # EXPLORE stages are compared by the table they leave, folded; where both

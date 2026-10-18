@@ -66,7 +66,7 @@ public final class ObligationDir {
             throws IOException {
         List<ObligationDir> workers = new ArrayList<ObligationDir>();
         for (ObligationDir worker : Parallel.map(workerDirs(iteration),
-                ObligationDir::new)) {
+                ObligationDir::new, Parallel.directoriesAtOnce())) {
             if (!worker.sessionId.isEmpty()) workers.add(worker);
         }
         return workers;

@@ -538,7 +538,9 @@ eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). A member
 per walk, and a group reads its members' indexes in group order (`ClosurePlanner.GroupReads`): the groups
 of a closure overlap, and indexed per group, solr-adhoc-39 PV7 round 6's walk held each member's reads once
 per group it is in, past 14 GB. Outside the closure walk a round's independent work takes every core of
-its host (`contract.Parallel`; a planner is a head step, one JVM alone on its host): the dependences of
+its host (`contract.Parallel`; a planner is a head step, one JVM alone on its host, and its main says so,
+`Parallel#width`; every other engine JVM -- a host solver, a composition, a confirmation -- computes on one
+core beside the work the ledger booked the rest for): the dependences of
 the arms the frontier keys (`ObligationFactory#dependences`: one session's arms in their order on one
 thread -- a key asks its session's lowering, leaf sets and names, which remember the order they were
 asked in -- the sessions side by side, after the literals every integral configuration is compared
@@ -553,8 +555,8 @@ blocks of whole lines and written in runs of rows, each parsed or rendered on a 
 (`RowCodec#readAll`, `#readEach`, `#writeAll`, `Parallel#stream`; the slot table folds a round's
 changes as they are parsed, `SlotTable#read`), and the round's two largest files, its slot changes
 (whole once the skeleton is reconciled) and its graph, are written beside the rest of the round,
-which answers once they are (`Parallel#beside`; a round that failed leaves none written over the
-next one's). Every result is taken in its items' order, so a round's files are byte for byte a
+and its manifest, the round's end (`campaign_last_round_millis`), once they are (`Parallel#beside`; a
+round that failed leaves none written over the next one's). Every result is taken in its items' order, so a round's files are byte for byte a
 one-thread round's. Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --results ... --output-dir ...`, the offline stages' entry over the
@@ -671,7 +673,7 @@ the row joins from its prefix reach (§8 P3) and the reads of those occurrences 
 moves (`Independence`: a root, a clock, a value the session received), the anchor's own prefix
 decisions among them, and no root the session minted that nothing kept reads; a handoff those name
 is resolved to its attach row whoever received it, however many joins away (`ClosurePlanner
-#successors`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
+#step`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
 producer's closure, decides on the expiry dates of nn0's `updateBlockKeys@1` response, whose handler
 no session ran until it was demanded so); closed over the reads those name and the writes they could
 observe. Each (kind, session, occurrence, cutoff, terms) is asked once per walk. CONFIRM's ORDER
@@ -680,6 +682,36 @@ factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
 what the occurrence touches (two readers of one location pass each other nothing).
+
+The walk takes its demands in queue order while their steps run AHEAD on the planner host's cores
+(`ClosurePlanner.CORES`, `Walk#ahead`, `#launch`, `#take`): the steps of the demands at the head of the
+queue, two a core, start in queue order as cores free -- while the steps held weigh under a quarter of
+the heap the old generation left free (`Walk#budget`, `Step#weight`), never one that a step before it
+names as a successor (`Says#successors`: taking that one grows it) -- each against its demand's state as
+it starts (`Step` holds that state: what the walk changes of a running step's demand it copies first,
+`Demand#launched`; what only the demand's own take changes -- its naming, the handoffs it paired, the
+reads it expanded -- the step reads in place, as the walk takes a demand only once its running step
+ended), each a walk that mutates nothing it shares and says, in its order, what the
+one-at-a-time walk changes there (a successor, a gap, a gap or fault-less door said once per key, the
+occurrences offered once per key, a store version's earlier versions); the walk waits only for the step
+it takes, starting others as steps end, and takes it while it is the walk of its demand's state then
+(`Demand#version`), else walks the demand again itself -- so the plan is the one-at-a-time walk's, byte
+for byte, however many cores ran it, and on one core no step runs ahead. What the walk decides in its
+order and a running step reads to leave out what was said already (the gaps and keys said once, the
+occurrences offered, the store versions expanded, the demands and the writes they absorbed) is held in
+concurrent sets that only grow; a step reads its group's index, built on the planner's thread
+(`Walk#reads`, each key's members an array replaced whole); one that threw ahead is walked again in
+the order, so what the walk throws is what the one-at-a-time walk throws (an Error a step of the
+demand's state now threw ends the walk). Inside one step, what
+COMPOSE keeps of each path and delivery, the folds of its decisions, contributed values and fixed
+point, and its expansions run in parts on the cores too, taken in order (`Walk#asked`, `#each`); once
+the row-connected demand runs dry, the steps of the static candidates the bound still plans start
+ahead, in the turns `Candidates#next` would give them (`Candidates#upcoming`, `Walk#prepare`), each
+taken when its candidate is planned while it is still the walk of its state. Every memo a step reads holds a
+function of its key, but one: a read row's leaves are held by its seq, which read rows share (a store
+read and its view's), the first row asked giving the set (STATUS open defect 70); a step claims such a
+seq where no one asked it yet (`Corpus#readLeaves`, `Corpus.Claims`), and its claims are taken in the
+order (`Corpus#take`) -- one that claimed a seq taken by another row is walked again in the order.
 
 A CONCRETE anchor (R1-ROOTS D0, `ClosurePlanner#concrete`) demands what it read before it decided.
 An admitted path (the seed, or a focused session admitted whole) decided the anchor where it took
@@ -1066,7 +1098,7 @@ record beside its query (`obligation_ask.json`, `explore.HardAsk`: the question,
 stated, what an UNSAT says, the model's constants, the query's sha256), and the head moves its answer
 aside (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues its HARD-LANE ask
 (`campaign_stream_hard`, `stream_hard`, `HARD <round> <id>`), which `campaign_stream_dispatch` starts only
-once no other start waits and, as any solve, not while GROW holds the solves: z3 ALONE over that query
+once no other start waits: z3 ALONE over that query
 at the full `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB), in a
 JVM that reads no corpus (`campaign_obligation_decide`, `ObligationSolverMain --decide <worker>`, a
 512 MB heap, `hard-host.txt`), charged that and the room (`campaign_decide_need_mb`, 5024 MB), as many at
@@ -1700,8 +1732,8 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
 and its obligation), `UNPLANNED_INPUT` rows or `ZK_EDGE` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
-GROW's re-runs, as what was queued before them stays queued: they start once the re-runs have
-swapped in, in flight from the round on, so no later round asks them again (solr-bugs-reindex-cleanup
+GROW's re-runs, as what was queued before them stays queued: they start at once, in flight from the
+round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
 obligations, and the witness flip a non-growing round 1 queued in Z9 waited from round 1 to round 5,
 unanswered when the exploration ended). One GROW is one GENERATION of the plan
@@ -1717,34 +1749,71 @@ it holds and a dropped doors-only mark weave that tree again, so the generation 
 of the head's; the key is 0.8 s). Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
-ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session
-and, for the re-run and the swap, the one its queue entry carries): an obligation asked again under its id
+ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session,
+kept for the re-run and its swap, `stream_reruns`): an obligation asked again under its id
 has a worker in each round that asked it, and either may be the exposing one (SGF3-adhoc-21: the first
-ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region). Until every
-re-run has returned and swapped, no round is planned; solves go on while re-runs run, and from the last
-re-run's return until no solve runs and no witness's confirmation is queued, runs or waits for its
-verdict, no solve starts (`campaign_stream_swap_owed`; SGF7-adhoc-09: holding the solves from GROW to the
-swap cost 51 min over six GROWs, 15 and 16 min behind one re-run the stall rule ended). A REPLAY reads no
-corpus and goes on, on its solve's generation, but one still queued whose path rests on a session the swap
-withdraws is dropped then, before it starts (its `pathId` is that session's and occurrence's: no replay,
-no re-ask). A confirmation confirms against the
-corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
-with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
-(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). A re-run that did
-not finish (failed, stalled, past its bound) is dropped: not swapped in, the exposing session stays,
-and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it failed the
-campaign). Then
-each re-run SWAPS in (`campaign_stream_swap`): the exposing session (that session alone: another ask's
-session of the obligation stays) moves to
-`<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
-renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
-through a name it cached), its session lands, and its verdict replaces the exposing ask's row in
-`obligation_results.jsonl` (another ask's row of the obligation stays). The queue stays first and in flight: the round after the swap gets it as
-`--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
-HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
-obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no
-session of this corpus still states path ...") and a later round asks it again of the re-run's
-session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region).
+
+GROW HOLDS NOTHING (2026-10-17): no round, solve or swap waits for its slowest re-run. Before, no round was
+planned until every re-run had returned and swapped, no solve started from the last re-run's return to the
+swap, the swaps waited for every running solve, and ran one by one: SGF8-adhoc-05's round 4 -> 5 took 56.2 min
+(weave 2.6, re-runs 37.2 -- 62 re-runs, p50 609 s, the slowest six 27-37 min -- swaps 10.2, ~9.6 s each, gate
+6.2) while the pool ran ~32 replays of ~200. Now each re-run SWAPS in (`campaign_stream_swap`) at the head
+step after it returns, once no reader of the session it withdraws runs (`campaign_stream_swap_due`). The
+readers of a session's files, from the code: a witness's confirmation queued, running or undecided
+(`stream_confirming`) whose attempt composed it (its `corpus.txt`): it confirms against that corpus
+(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session), so a confirmed one ends
+the exploration with the swap dropped, its directory to `explore-reaped/` and the corpus exactly the
+attempt's; a witness owed an attempt -- gated and not attempted (`stream_witnesses`: a confirmation owed
+holds the attempt, not the landing) or deferred until a confirmation's verdict (`stream_deferred`) --
+withdrawn first, the attempt would compose without it and a re-run that did not take the flip would lose
+it (Z2M's class; an open chain's witnesses wait for exactly these swaps, under the confirmation's hold, and
+are attempted again once the chain's GROW swapped in); the round planning, while its `corpus.txt` names it and its planner has not stated
+`<round>/corpus_read` (`ExploreMain#CORPUS_READ`): a round reads session files only in its corpus read
+(`Corpus#read`, rows and schedules), and fails on a session its corpus names that is gone. Nothing else:
+a head step never runs beside a swap; a REPLAY, a re-run, a CONFIRM replay and a hard-lane ask read no
+session; and a host's solver reads the corpus as it stands without what GROW withdrew -- the iteration's
+`withdrawn.txt`, made empty as the exploration starts (before any solver serves) and appended before each
+withdrawn session leaves -- and reads again when one left under its read (`ObligationSolverMain#standing`,
+`#readWhole`, each read again said in the solver's log; a session leaves once and never returns, so one the
+journal does not name after the read stood whole while it was read; the journal, not the listing, says what
+left, and it is opened, never looked up first: a peer's NFS listing or lookup may be a minute old, while an
+open reads the file as the head closed it). So solves run on through swaps (SGF7-adhoc-09: holding them
+cost 51 min over six GROWs). WORKER FILES a swap sets to the re-run's are read as they stand, each renamed
+over whole: a round's wave is taken from the workers its corpus read found (`Corpus#landedIn`), its answers
+and bounds by flip (`ExploreMain#answersByFlip`, `#boundedFlips`) are a worker's flip's either way, and a
+solver's settled questions (`ObligationDir#answered`) name the plan generation they were asked under, which
+the GROW changed before any of its swaps, so a question asked since is another one (and one whose plan read
+the same would be settled as it was before the swap). A replay owed on
+the path of a session a swap withdrew (its focus row's `pathSessionId`, the solver's) is dropped
+(`campaign_stream_replay_drop`): queued at the swap, or returned SAT from a solve that read the corpus
+before it -- no replay, out of flight, so a later round may ask its arm again of the re-run's session;
+one that runs finishes as usual. A kept obligation cut from an exposing session is answered by its
+solver by name (`NOT_ADMITTED`, "no session of this corpus still states path ...") and a later round
+asks it again of the re-run's session. ROUNDS PLAN WHILE RE-RUNS RUN, over their frozen corpus with the
+exposing sessions in it (§7.9): such a round, or one taken after a re-run swapped in, sees what the
+re-runs capture uncaptured still (`ClosurePlanner#uncaptured` names a demanded occurrence no session of
+its corpus runs as a task, whatever the plan holds), so its growth rows are IN FLIGHT and not grown
+again (`campaign_stream_growth_new`) where the exposing session has a re-run owed or was withdrawn by
+one, or the subject (an occurrence, a task's `<symbol>#<k>`) was grown with the re-run of a session the
+round's corpus names (`stream_growing`: planned before that re-run's session landed); the round after
+the swap sees what a round always saw after it. A re-run that did not finish (failed, stalled, past its
+bound) is dropped: not swapped in, the exposing session stays (what it would have captured is no longer
+in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
+failed the campaign).
+
+One swap: the exposing session (that session alone: another ask's session of the obligation stays),
+named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
+files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
+opens an old inode through a name it cached), its session lands and is gated in the step the swap
+begins, and its verdict replaces the exposing ask's row in `obligation_results.jsonl` (another ask's row
+of the obligation stays). The swaps due at a step go in ONE PASS: the exposing session is the one the
+re-run's entry names, all their manifests read by one jq, each worker's files moved in a subshell of its
+own (`campaign_stream_swap_jobs`, 16, waited by pid), the ledger rewritten once, the queue scanned in the
+head's maps (`stream_rests`, `stream_withdrawn`). The queue stays first and in flight: the next round
+gets it as `--in-flight` and proposes only what none of it asks, its new obligations queued behind it
+(hdfs-11741 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of
+409). The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
 the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
 run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
@@ -1809,7 +1878,9 @@ life anyway). Between two head steps, in the head's hands, in this order:
    landed, or once nothing is queued, running or returned unlanded but confirmations and the hard lane's
    asks running (z3 alone at the full budget, up to 30 min: SGF8-adhoc-40 round 6 idled the 13 lifts
    12 min behind two; their obligations stay in flight and their verdicts land in whichever round is open
-   when they return) and an answer came since the last round started (`campaign_stream_plan_due`) --
+   when they return) and an answer came since the last round started (`campaign_stream_plan_due`;
+   GROW's re-runs hold none: a re-run is a question left to wait for, which lands a session, and the
+   round plans over the exposing sessions it stands in for, §7.8) --
    over inputs frozen now, written into `planning-NNNN/` beside its files:
    `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
    landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
@@ -1817,10 +1888,13 @@ life anyway). Between two head steps, in the head's hands, in this order:
    answer that lands meanwhile is the round's (§7.1). The obligation workers' own files -- each one's
    answer, focus row and question, read for the worlds, the answers by flip and the killed replays
    (`Corpus#indexWorlds`, `ExploreMain#answersByFlip`, `#boundedFlips`) -- it reads as they stand when
-   it reads them, as a round always did: a worker writes its own answer as its replay ends, and a
-   landing writes an unfinished one's (`campaign_obligation_unfinished`);
+   it reads them, as a round always did: a worker writes its own answer as its replay ends, a
+   landing writes an unfinished one's (`campaign_obligation_unfinished`), a swap a re-run's (§7.8);
+   its sessions' files it reads in its corpus read alone, and says so (`corpus_read`), from which on a
+   swap may withdraw one of them;
 3. everything that returned meanwhile LANDS (`campaign_stream_step_start`): each verdict is appended to
-   `obligation_results.jsonl` (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the
+   `obligation_results.jsonl` (`campaign_stream_land`), GROW's returned re-runs swap in, each one no
+   reader of its exposing session holds (§7.8), and the
    sessions the workers staged move into the corpus (`campaign_stream_move`); the next head step then
    takes them in: ONE IMPORT gate (§6) over exactly them (the list `gate`, its summary
    `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT), while no round starts
@@ -1850,11 +1924,19 @@ the round of it on its host (`campaign_planner_ask`, through the remote worker s
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
-PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): a planner holds about its
-session files (SGF8 10, 40, 14 ran out of 16384-18432 MB over 16058-21867 MB), and one started lower outgrew its
+PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): one started lower outgrew its
 heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
-collecting to its end (~17 min each); a corpus past `campaign_planner_hold_pct` (90) of the engine heap is
-PLANNER_HEAP_EXCEEDED before any planner is asked (`heap-predicted`, named so). A planner or a composer is a HEAD
+collecting to its end (~17 min each). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+its own measure (`contract.HeapWatch#outgrown`)
+-- its old generation's live set at its highest since the last round (what it held after a full collection, as
+`HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the
+sessions new to it (`ExploreMain#toRead`), past `HeapWatch#FULL` (90 %) of its old generation -- and a round past
+it is answered out of heap unread (`Service.OutOfHeap`, exit 3), the planner serving on; the round is
+PLANNER_HEAP_EXCEEDED, its `heap-predicted` the planner's words (`campaign_planner_ask`). The rows are a steady
+third of their files (0.32-0.37 over six SGF8 rounds of 05, 07, 10, 14, 40), what a round adds to them comes and
+goes (peaks of 0.57 to over 1.09 times the files, in `Frontier.<init>` in three of the six), so no rule over the
+files alone tells a corpus a planner holds from one it does not: 40 ran out over 16.2 GB of files, 05 lived at
+~14.5 GB live of its 21.5 GB heap over 20.4 GB (shard-study FINDINGS §3, §7). A planner or a composer is a HEAD
 STEP, one JVM alone on its host: placed, grown and given its z3 room under the head steps' ceiling
 (`campaign_head_max_used_pct`, 88 %; the replays' and solvers' stays `CAUSYNTH_HOST_MAX_USED_PCT`, 70 %), so the
 Solr study checks' engine heap is 24576 MB, a solver's at most 16384 (`campaign_solver_max_heap_mb`); every engine
@@ -1965,8 +2047,8 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
   what runs lands, and the stop is a
-  DIAGNOSTIC row naming the round, the corpus's size as it decodes and the planner's error, or that the
-  corpus was past what a planner holds, unasked -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+  DIAGNOSTIC row naming the round, the corpus's size as it decodes and the planner's error, or the
+  planner's measure of the round it could not hold, unread (§7.9) -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations

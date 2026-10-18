@@ -26,20 +26,25 @@ import java.util.function.Function;
  * #grouped}): the items of one key run in their order on one thread, the
  * keys side by side.
  *
- * <p>A planner's round is a head step, one JVM alone on its host (PIPELINE
- * §7.9): its independent keys and rows take every core ({@link #CORES}), and
- * so do the reads of many small files (on NFS a read is its latency: HR1
- * hdfs-adhoc-07's 1897 obligation workers, one after another, two of
- * COMPOSE's minutes); a corpus's sessions, hundreds of MB of rows each, are
- * read {@link #READS} at a time (hdfs-11741 i1's 175 sessions took 45-70 s
- * one at a time), each file's blocks parsed on every core ({@code
- * RowCodec#readAll}).</p>
+ * <p>A JVM computes on {@link #width} cores: one, unless its main is a
+ * head step, one JVM alone on its host -- the planner ({@code ExploreMain}),
+ * whose independent keys and rows take every core ({@link #HOST_CORES});
+ * every other one (a host solver, a composition, a confirmation, a replay)
+ * runs beside work the host ledger booked the other cores for.  Reads of
+ * many small files take at least {@link #READS} at once (on NFS a read is
+ * its latency: HR1 hdfs-adhoc-07's 1897 obligation workers, one after
+ * another, two of COMPOSE's minutes), and a corpus's sessions, hundreds of
+ * MB of rows each, {@link #READS} at a time (hdfs-11741 i1's 175 sessions
+ * took 45-70 s one at a time).</p>
  */
 public final class Parallel {
     /** The host's cores. */
-    public static final int CORES = Runtime.getRuntime().availableProcessors();
-    /** How many sessions are read at once. */
+    public static final int HOST_CORES =
+            Runtime.getRuntime().availableProcessors();
+    /** How many sessions are read at once, and directories at least. */
     public static final int READS = 8;
+    /** The cores this JVM computes on ({@link #width(int)}). */
+    private static volatile int width = 1;
 
     /** One item's work, failing as reading fails. */
     public interface Fn<F, T> {
@@ -49,11 +54,28 @@ public final class Parallel {
     private Parallel() {
     }
 
-    /** {@code fn} of each of {@code from} on every core, in {@code from}'s
-     *  order; the first failure as it was thrown. */
+    /** The cores this JVM computes on: one unless its main said more. */
+    public static int width() {
+        return width;
+    }
+
+    /** How many small files' directories are read at once: {@link
+     *  #READS}, or {@link #width} where that is more. */
+    public static int directoriesAtOnce() {
+        return Math.max(READS, width);
+    }
+
+    /** This JVM computes on {@code cores} cores: a head step's main says
+     *  its host's ({@link #HOST_CORES}). */
+    public static void width(int cores) {
+        width = Math.max(1, cores);
+    }
+
+    /** {@code fn} of each of {@code from} on {@link #width} cores, in
+     *  {@code from}'s order; the first failure as it was thrown. */
     public static <F, T> List<T> map(List<F> from, Fn<F, T> fn)
             throws IOException {
-        return map(from, fn, CORES);
+        return map(from, fn, width);
     }
 
     /** {@link #map}, at most {@code atOnce} at a time. */
@@ -85,7 +107,7 @@ public final class Parallel {
         groups.sort((one, other) -> Integer.compare(other.size(),
                 one.size()));
         Object[] done = new Object[from.size()];
-        run(groups.size(), CORES, group -> {
+        run(groups.size(), width, group -> {
             for (int at : groups.get(group)) {
                 done[at] = fn.apply(from.get(at));
             }
@@ -104,20 +126,25 @@ public final class Parallel {
         void take(T done) throws IOException;
     }
 
-    /** How many items a {@link #stream} holds at once. */
-    static final int AHEAD = CORES;
-
     /**
-     * {@code fn} of each item {@code source} gives, on every core, each
-     * result handed to {@code sink} in the order the items came.  This
+     * {@code fn} of each item {@code source} gives, on {@link #width} cores,
+     * each result handed to {@code sink} in the order the items came.  This
      * thread takes the items and hands the results, so a source reading a
      * file and a sink writing one do nothing else, and at most {@link
-     * #AHEAD} items are in hand at once: a file's text is never all held.
-     * One item alone is computed here.  The items run on one pool of the
-     * JVM's ({@link Streams}), so {@code fn} never streams itself.
+     * #width} items are in hand at once: a file's text is never all held.
+     * On one core, or for one item alone, it all runs here.  The items run
+     * on one pool of the JVM's ({@link Streams}), so {@code fn} never
+     * streams itself.
      */
     public static <F, T> void stream(Source<F> source, Fn<F, T> fn,
                                      Sink<T> sink) throws IOException {
+        int ahead = width;
+        if (ahead <= 1) {
+            for (F item = source.next(); item != null; item = source.next()) {
+                sink.take(fn.apply(item));
+            }
+            return;
+        }
         F first = source.next();
         if (first == null) return;
         F second = source.next();
@@ -131,7 +158,7 @@ public final class Parallel {
             for (F item = second; item != null; item = source.next()) {
                 F one = item;
                 pending.add(Streams.POOL.submit(() -> fn.apply(one)));
-                if (pending.size() >= AHEAD) sink.take(done(pending.poll()));
+                if (pending.size() >= ahead) sink.take(done(pending.poll()));
             }
             while (!pending.isEmpty()) sink.take(done(pending.poll()));
         } finally {
@@ -139,11 +166,12 @@ public final class Parallel {
         }
     }
 
-    /** The streams' workers, one per core, made as first asked and kept
-     *  (a corpus read streams each file of every session it reads). */
+    /** The streams' workers, one per core of the host, made as first asked
+     *  and kept (a corpus read streams each file of every session it
+     *  reads). */
     private static final class Streams {
         static final ExecutorService POOL = Executors.newFixedThreadPool(
-                CORES, work -> {
+                HOST_CORES, work -> {
                     Thread thread = new Thread(work, "stream");
                     thread.setDaemon(true);
                     return thread;

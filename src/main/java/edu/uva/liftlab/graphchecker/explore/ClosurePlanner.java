@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -45,6 +46,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -102,6 +107,13 @@ public final class ClosurePlanner {
     /** Holds a static export site of a demanded port. */
     public static final String STATIC_CANDIDATE_PRODUCER =
             "STATIC_CANDIDATE_PRODUCER";
+
+    /**
+     * THE PLANNER HOST'S CORES, which a walk runs its demands' steps on
+     * ahead of taking them ({@link Walk#ahead}).
+     */
+    static final ForkJoinPool CORES = new ForkJoinPool(
+            Runtime.getRuntime().availableProcessors());
 
     private ClosurePlanner() {
     }
@@ -211,9 +223,18 @@ public final class ClosurePlanner {
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
                      ClientFaults faults, SystemView view) {
-        Walk walk = new Walk(corpus, scope, anchor);
-        Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
-        Deque<String> pending = new ArrayDeque<String>();
+        return plan(corpus, anchor, maxTasks, ceiling, scope, branches,
+                doorsOnly, heldDoorsOnly, faults, view, CORES);
+    }
+
+    /** {@link #plan}, its steps on {@code cores} (a test's). */
+    static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
+                     int ceiling, StaticScopeMap scope, Branches branches,
+                     Set<String> doorsOnly, Set<String> heldDoorsOnly,
+                     ClientFaults faults, SystemView view, ForkJoinPool cores) {
+        Walk walk = new Walk(corpus, scope, anchor, cores);
+        Map<String, Demand> demands = walk.demands;
+        Deque<String> pending = walk.pending;
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
         // The anchor flips only the decisions on its way to the throw: the
         // target's guard set (PIPELINE §7.2) and, when no admitted run of it
@@ -239,8 +260,7 @@ public final class ClosurePlanner {
         }
         start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
                 scope));
-        demands.put(anchor.id(), start);
-        pending.add(anchor.id());
+        walk.admit(start);
         Set<String> truncated = new LinkedHashSet<String>();
         Set<String> ceilingCut = new LinkedHashSet<String>();
         Candidates candidates = new Candidates(corpus);
@@ -251,56 +271,75 @@ public final class ClosurePlanner {
         // demand reached the ceiling: then no candidate stays planned.
         Set<String> plannedCandidates = new LinkedHashSet<String>();
         boolean ceilingReached = false;
-        while (true) {
-            while (!pending.isEmpty()) {
-                Demand demand = demands.get(pending.remove());
-                demand.dirty = false;
-                for (Demand next : successors(walk, demand)) {
-                    Demand held = demands.get(next.occurrence.id());
-                    if (held != null) {
-                        if (held.absorb(next) && !held.dirty) {
-                            held.dirty = true;
-                            pending.add(held.occurrence.id());
-                        }
-                        continue;
-                    }
-                    Demand queued = candidates.take(next);
-                    if (queued == null) continue;
-                    if (connectedPlanned >= ceiling) {
-                        truncated.add(queued.occurrence.render());
-                        ceilingCut.add(queued.occurrence.render());
-                        // A recorded writer is never cut while a static
-                        // candidate is kept: the candidates planned so far
-                        // leave the plan.
-                        for (String id : plannedCandidates) {
-                            Demand planned = demands.get(id);
-                            if (planned == null
-                                    || !Candidates.staticCandidate(planned)) {
-                                continue;
+        try {
+            while (true) {
+                while (!pending.isEmpty()) {
+                    // The demands behind the head are walked ahead on the cores,
+                    // each against its state as its step starts ({@link
+                    // Walk#ahead}), while the walk takes them in queue order,
+                    // each step taken while it is the walk of its demand's state
+                    // as it is taken, else walked again here ({@link
+                    // Walk#take}).  So the walk is the one-at-a-time walk's,
+                    // step for step (PIPELINE §7.2).
+                    walk.ahead();
+                    Demand demand = demands.get(pending.remove());
+                    demand.dirty = false;
+                    for (Demand next : walk.take(demand)) {
+                        Demand held = demands.get(next.occurrence.id());
+                        if (held != null) {
+                            if (held.absorb(next) && !held.dirty) {
+                                held.dirty = true;
+                                pending.add(held.occurrence.id());
                             }
-                            demands.remove(id);
-                            pending.remove(id);
-                            truncated.add(planned.occurrence.render());
+                            continue;
                         }
-                        plannedCandidates.clear();
-                        ceilingReached = true;
-                        continue;
+                        Demand queued = candidates.take(next);
+                        if (queued == null) continue;
+                        if (connectedPlanned >= ceiling) {
+                            truncated.add(queued.occurrence.render());
+                            ceilingCut.add(queued.occurrence.render());
+                            // A recorded writer is never cut while a static
+                            // candidate is kept: the candidates planned so far
+                            // leave the plan.
+                            for (String id : plannedCandidates) {
+                                Demand planned = demands.get(id);
+                                if (planned == null
+                                        || !Candidates.staticCandidate(
+                                                planned)) {
+                                    continue;
+                                }
+                                walk.drop(planned);
+                                truncated.add(planned.occurrence.render());
+                            }
+                            plannedCandidates.clear();
+                            ceilingReached = true;
+                            continue;
+                        }
+                        connectedPlanned++;
+                        walk.admit(queued);
                     }
-                    connectedPlanned++;
-                    admit(queued, demands, pending);
                 }
+                // Row-connected demand is exhausted: the next static candidate,
+                // while the bound has room -- the walks of the next ones
+                // computed at once, each taken when its candidate is planned
+                // while it is the walk of its state then ({@link Walk#prepare}).
+                if (!ceilingReached && candidatesPlanned < maxTasks) {
+                    walk.prepare(candidates.upcoming(maxTasks
+                            - candidatesPlanned));
+                }
+                Demand candidate = candidates.next();
+                if (candidate == null) break;
+                if (ceilingReached || candidatesPlanned >= maxTasks) {
+                    truncated.add(candidate.occurrence.render());
+                    continue;
+                }
+                candidatesPlanned++;
+                plannedCandidates.add(candidate.occurrence.id());
+                walk.admit(candidate);
             }
-            // Row-connected demand is exhausted: the next static candidate,
-            // while the bound has room.
-            Demand candidate = candidates.next();
-            if (candidate == null) break;
-            if (ceilingReached || candidatesPlanned >= maxTasks) {
-                truncated.add(candidate.occurrence.render());
-                continue;
-            }
-            candidatesPlanned++;
-            plannedCandidates.add(candidate.occurrence.id());
-            admit(candidate, demands, pending);
+        } finally {
+            // No step runs on after the walk: each reads it.
+            walk.drain();
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -414,12 +453,7 @@ public final class ClosurePlanner {
         return unit < 0 ? site : site.substring(0, unit);
     }
 
-    /** Plans one demand. */
-    private static void admit(Demand demand, Map<String, Demand> demands,
-                              Deque<String> pending) {
-        demands.put(demand.occurrence.id(), demand);
-        pending.add(demand.occurrence.id());
-    }
+
 
     /**
      * THE TASK BOUND COUNTS STATIC CANDIDATES ONLY (owner: a genuinely large
@@ -500,6 +534,25 @@ public final class ClosurePlanner {
                 return next;
             }
             return null;
+        }
+
+        /** The next {@code most} waiting candidates {@link #next} would
+         *  give, as they wait now. */
+        private List<Demand> upcoming(int most) {
+            List<Demand> upcoming = new ArrayList<Demand>();
+            Deque<String> keys = new ArrayDeque<String>(turn);
+            Map<String, java.util.Iterator<Demand>> rest =
+                    new HashMap<String, java.util.Iterator<Demand>>();
+            while (upcoming.size() < most && !keys.isEmpty()) {
+                String key = keys.remove();
+                java.util.Iterator<Demand> queue = rest.computeIfAbsent(key,
+                        unused -> new ArrayList<Demand>(byClass.getOrDefault(
+                                key, new ArrayDeque<Demand>())).iterator());
+                if (!queue.hasNext()) continue;
+                upcoming.add(queue.next());
+                if (queue.hasNext()) keys.add(key);
+            }
+            return upcoming;
         }
 
         private String classOf(OccurrenceAddress occurrence) {
@@ -889,7 +942,10 @@ public final class ClosurePlanner {
                                 1));
         /** The contribution this demand's values are exactly, or null. */
         private Contribution exactly;
-        private final Set<String> flipSites = new LinkedHashSet<String>();
+        private Set<String> flipSites = new LinkedHashSet<String>();
+        /** Whether {@link #flipSites} is a step's still ({@link
+         *  #launched}), copied before this demand changes it. */
+        private boolean flipsShared;
         /** The symbols of a concrete anchor's predicate reads ({@link
          *  #concrete}); none on any other demand. */
         private final Set<String> predicate = new LinkedHashSet<String>();
@@ -903,8 +959,11 @@ public final class ClosurePlanner {
          *  #wrote}): the senders of what it applied produce that value. */
         private boolean storeWriter;
         private boolean dirty;
+        /** How often its state changed: a step computed ahead of one
+         *  version is that version's walk only ({@link Walk#take}). */
+        private int version;
         /*
-         * WHAT ITS WALKS EXPANDED ALREADY ({@link #successors}).  A demand is
+         * WHAT ITS WALKS EXPANDED ALREADY ({@link #step}).  A demand is
          * walked again each time it grows, and what it demands only grows,
          * so each walk expands only what no walk before it did: a demanded
          * read's writers, a paired handoff's producers, a contributed
@@ -929,8 +988,9 @@ public final class ClosurePlanner {
          *  null: all it holds, and all it ever will, it holds of it. */
         private WriteRow madeOf;
         /** The writes whose writer's demand it absorbed ({@link #absorb});
-         *  null until one. */
-        private Set<WriteRow> absorbed;
+         *  null until one.  Steps on the cores ask it ({@link
+         *  Says#writer}) while the walk adds to it. */
+        private volatile Set<WriteRow> absorbed;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
@@ -949,6 +1009,21 @@ public final class ClosurePlanner {
             shared = true;
             holds.add(values);
             exactly = values;
+        }
+
+        /** Whether it holds what {@code write}'s writer's demand holds: it
+         *  was made of it, or absorbed it ({@link #absorb}). */
+        private boolean absorbs(WriteRow write) {
+            return write == madeOf
+                    || absorbed != null && absorbed.contains(write);
+        }
+
+        /** A step of it runs on the cores, over its values and flip sites
+         *  as they stand ({@link Step}): what changes them next copies them
+         *  first. */
+        private void launched() {
+            shared = true;
+            flipsShared = true;
         }
 
         /** Its own values, before it changes them. */
@@ -987,9 +1062,8 @@ public final class ClosurePlanner {
                     return false;
                 }
                 if (absorbed == null) {
-                    absorbed = Collections.newSetFromMap(
-                            new java.util.IdentityHashMap<WriteRow, Boolean>(
-                                    1));
+                    // A row's equality is its identity.
+                    absorbed = ConcurrentHashMap.newKeySet(1);
                 }
                 absorbed.add(write);
             }
@@ -1006,6 +1080,10 @@ public final class ClosurePlanner {
                 }
                 if (grew) exactly = null;
                 holds.addAll(other.holds);
+            }
+            if (flipsShared && !flipSites.containsAll(other.flipSites)) {
+                flipSites = new LinkedHashSet<String>(flipSites);
+                flipsShared = false;
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
@@ -1025,6 +1103,7 @@ public final class ClosurePlanner {
                 storeWriter = true;
                 grew = true;
             }
+            if (grew) version++;
             return grew;
         }
 
@@ -1049,15 +1128,28 @@ public final class ClosurePlanner {
             return true;
         }
 
-        /** The expressions this occurrence contributed in one session. */
-        private List<String> delivered(String sessionId) {
-            List<String> refs = new ArrayList<String>();
+        /** The expressions of {@code contributed} (session|ref), by
+         *  session, each session's in contributed order: in one pass, not
+         *  one per session (a hub every session contributes to). */
+        private static Map<String, List<String>> delivered(
+                Set<String> contributed) {
+            Map<String, List<String>> bySession =
+                    new HashMap<String, List<String>>();
             for (String each : contributed) {
-                if (each.startsWith(sessionId + "|")) {
-                    refs.add(each.substring(sessionId.length() + 1));
-                }
+                int split = each.indexOf('|');
+                if (split < 0) continue;
+                bySession.computeIfAbsent(each.substring(0, split),
+                        session -> new ArrayList<String>())
+                        .add(each.substring(split + 1));
             }
-            return refs;
+            return bySession;
+        }
+
+        /** The expressions one session's {@link #delivered} lists. */
+        private static List<String> delivered(
+                Map<String, List<String>> bySession, String sessionId) {
+            List<String> refs = bySession.get(sessionId);
+            return refs == null ? new ArrayList<String>() : refs;
         }
     }
 
@@ -1069,7 +1161,7 @@ public final class ClosurePlanner {
      * of more seeds is the closure of the old ones joined with the new
      * ones': a walk closes only the seeds no walk named before, and the
      * rows it then expands are only those naming a symbol it added ({@link
-     * #successors}).  The seeds grow with the demand -- its flip sites'
+     * #step}).  The seeds grow with the demand -- its flip sites'
      * decisions, its contributed values -- except what COMPOSE keeps of its
      * deliveries, asked again per walk ({@link RestsOn#ofDelivery}): where
      * that no longer holds all it held, the demand is named anew, whole, as
@@ -1078,15 +1170,19 @@ public final class ClosurePlanner {
      * every row of the group another tenth).
      */
     private static final class Named {
-        /** The symbols. */
-        final Set<String> symbols = new HashSet<String>();
+        /** What the demand's last walk named, which this walk adds to
+         *  ({@link #taken}), or null: this walk names them all. */
+        private final Named before;
+        /** The symbols (this walk's, beside {@link #before}'s). */
+        private final Set<String> symbols = new HashSet<String>();
         /** Those this walk added, in the order added. */
         List<String> fresh = new ArrayList<String>();
         /** Whether this walk named them all: the demand's first walk, or
          *  one whose kept symbols shrank. */
         boolean whole = true;
-        /** The decisions at its flip sites whose symbols it holds. */
-        final Set<DecisionRow> decisions = Collections.newSetFromMap(
+        /** The decisions at its flip sites whose symbols it holds (this
+         *  walk's, beside {@link #before}'s). */
+        private final Set<DecisionRow> decisions = Collections.newSetFromMap(
                 new java.util.IdentityHashMap<DecisionRow, Boolean>());
         /** How many of the demand's contributed values' symbols it holds,
          *  in {@link Demand#contributed}'s order (which only appends). */
@@ -1094,14 +1190,45 @@ public final class ClosurePlanner {
         /** What COMPOSE kept of the demand's paths and deliveries. */
         Set<String> kept = Collections.<String>emptySet();
 
-        /** Named again: what this walk adds is fresh. */
-        void again() {
-            fresh = new ArrayList<String>();
+        Named() {
+            before = null;
+        }
+
+        /** Named again, by a walk of its own ({@link Step}), over what the
+         *  last walk named: what this one adds is fresh. */
+        private Named(Named before) {
+            this.before = before;
             whole = false;
+            contributed = before.contributed;
+            kept = before.kept;
+        }
+
+        boolean holds(String symbol) {
+            return symbols.contains(symbol)
+                    || before != null && before.symbols.contains(symbol);
+        }
+
+        /** Whether this decision is named here the first time. */
+        boolean decide(DecisionRow decision) {
+            return !(before != null && before.decisions.contains(decision))
+                    && decisions.add(decision);
+        }
+
+        /** What the demand holds once this walk is taken: the last walk's
+         *  naming with this one's added. */
+        Named taken() {
+            if (before == null) return this;
+            before.symbols.addAll(symbols);
+            before.decisions.addAll(decisions);
+            before.fresh = fresh;
+            before.whole = whole;
+            before.contributed = contributed;
+            before.kept = kept;
+            return before;
         }
 
         void add(String symbol) {
-            if (symbols.add(symbol)) fresh.add(symbol);
+            if (!holds(symbol) && symbols.add(symbol)) fresh.add(symbol);
         }
 
         void addAll(Collection<String> named) {
@@ -1123,6 +1250,249 @@ public final class ClosurePlanner {
     }
 
     /**
+     * WHAT A WALK OF ONE DEMAND SAYS ({@link #step}) -- a successor, a gap,
+     * a gap or a fault-less door said once per key, the occurrences offered
+     * once per key, a store version's earlier versions, a write's writer --
+     * in the order the walk says it, applied when the walk is taken ({@link
+     * Step#apply}), so every rule the walk decides by its order is decided
+     * there.  What the walk has said already is not said again: what it
+     * holds only grows, so what a step read as said is said when the step
+     * is taken; else the steps held would hold it all again (SGF8-adhoc-05
+     * round 5: 12 million offers and 11 million gaps in 192 steps ran a
+     * 21 GB heap out).
+     */
+    private static class Says {
+        final Walk walk;
+        final Demand demand;
+        final List<Said> said = new ArrayList<Said>();
+        /** The keys of the gaps said here ({@link #gap}). */
+        private Set<String> gaps;
+        /** The occurrences of the successors said here, null for none: the
+         *  demands taking it may grow ({@link Walk#launch}). */
+        Set<String> successors;
+
+        Says(Walk walk, Demand demand) {
+            this.walk = walk;
+            this.demand = demand;
+        }
+
+        private void succeeds(String occurrenceId) {
+            if (successors == null) successors = new HashSet<String>();
+            successors.add(occurrenceId);
+        }
+
+        /** What one part said, said here in its place ({@link #step}). */
+        void say(Says part) {
+            said.addAll(part.said);
+            if (part.successors != null) {
+                for (String occurrenceId : part.successors) {
+                    succeeds(occurrenceId);
+                }
+            }
+        }
+
+        void next(Demand successor) {
+            succeeds(successor.occurrence.id());
+            said.add((at, next) -> next.add(successor));
+        }
+
+        /** A gap made as it is taken, one per {@code key}: what it states
+         *  ({@link Walk#gapKeys}). */
+        void gap(String key, Supplier<GapRow> row) {
+            if (walk.gapKeys.contains(key)) return;
+            if (gaps == null) gaps = new HashSet<String>();
+            if (!gaps.add(key)) return;
+            said.add((at, next) -> {
+                if (at.gapKeys.add(key)) at.gaps.add(row.get());
+            });
+        }
+
+        /** A gap said once per {@code key} ({@link Walk#cut}). */
+        void once(String key, Supplier<GapRow> row) {
+            if (walk.cut.contains(key)) return;
+            said.add((at, next) -> {
+                if (at.cut.add(key)) at.gaps.add(row.get());
+            });
+        }
+
+        /** A door that decided no fault, said once ({@link
+         *  #controlProducer}). */
+        void faultless(String doorId, Supplier<GapRow> row) {
+            if (walk.faultless.contains(doorId)) return;
+            said.add((at, next) -> {
+                if (at.faultless.add(doorId)) at.gaps.add(row.get());
+            });
+        }
+
+        /** {@link #candidates}: the holders not offered under {@code key}
+         *  and not holding others' objects only, offered. */
+        void offer(List<Object> key, List<OccurrenceAddress> holders,
+                   String why, Collection<String> guards, String sessionId,
+                   LocationId location) {
+            Set<String> offered = walk.offered.get(key);
+            List<OccurrenceAddress> asked = new ArrayList<OccurrenceAddress>();
+            for (OccurrenceAddress occurrence : holders) {
+                if (offered == null || !offered.contains(occurrence.id())) {
+                    asked.add(occurrence);
+                }
+            }
+            // Whether each holds others' objects only, asked on the cores:
+            // a session's first asks fill its owner sets, which made one
+            // part of SGF8-adhoc-05 round 5's walk 9-15 s.
+            List<Boolean> others = location == null ? null
+                    : walk.each(asked, occurrence -> walk.holdsOthersOnly(
+                    occurrence, sessionId, location));
+            List<OccurrenceAddress> offering =
+                    new ArrayList<OccurrenceAddress>();
+            for (int at = 0; at < asked.size(); at++) {
+                if (others == null || !others.get(at)) {
+                    offering.add(asked.get(at));
+                }
+            }
+            if (offering.isEmpty()) return;
+            for (OccurrenceAddress occurrence : offering) {
+                succeeds(occurrence.id());
+            }
+            said.add((at, next) -> {
+                Set<String> now = at.offered.computeIfAbsent(key,
+                        unused -> ConcurrentHashMap.newKeySet());
+                for (OccurrenceAddress occurrence : offering) {
+                    if (!now.add(occurrence.id())) continue;
+                    Demand candidate = new Demand(occurrence, why, false);
+                    candidate.flipSites.addAll(guards);
+                    next.add(candidate);
+                }
+            });
+        }
+
+        /** {@link #earlierVersions} of a store version written, where
+         *  some are not demanded yet ({@link Walk#storeExpanded}). */
+        void earlier(WriteRow write) {
+            Long first = walk.storeExpanded.get(write.sessionId() + "|"
+                    + SmtLowering.locationKey(write.location()));
+            if (first != null && first >= write.version()) return;
+            said.add((at, next) -> earlierVersions(at, write, next));
+        }
+
+        /** The demand of one write's writer ({@link ClosurePlanner#writer}),
+         *  made as it is taken -- unless the writer's demand holds the
+         *  write already ({@link Demand#absorbs}). */
+        void writer(WriteRow write) {
+            Demand held = walk.admitted.get(
+                    write.endpoint().occurrence().id());
+            if (held != null && held.absorbs(write)) return;
+            succeeds(write.endpoint().occurrence().id());
+            said.add((at, next) -> next.add(ClosurePlanner.writer(at,
+                    write)));
+        }
+    }
+
+    /**
+     * ONE WALK OF ONE DEMAND -- what it says ({@link Says}) and what it
+     * leaves the demand -- computed against the demand's state as it
+     * stands; what it says about one expansion, apart, is a {@link Says} of
+     * its own, said in its place ({@link #step}).
+     */
+    private static final class Step extends Says {
+        /** The demand's {@link Demand#version} this walk is of. */
+        private final int version;
+        /** Its group's reads, indexed before it ran ({@link Walk#reads}). */
+        private final GroupReads group;
+        private final Set<String> paired = new HashSet<String>();
+        private final Set<ReadRow> expanded = Collections.newSetFromMap(
+                new java.util.IdentityHashMap<ReadRow, Boolean>());
+        private int contributed;
+        private Named named;
+        /** What its walk claimed of the leaves its order alone makes
+         *  ({@code Corpus#readLeaves}): taken when it is ({@link
+         *  Walk#take}). */
+        private final Corpus.Claims claims = new Corpus.Claims();
+        /** what -> the endpoint ids of the unread said here: once a step,
+         *  with no key built per row ({@link Walk#unread}). */
+        private final Map<String, Set<String>> unread =
+                new HashMap<String, Set<String>>(4);
+
+        /*
+         * The demand as it stood when the step was made, on the planner's
+         * thread: the walk changes a demand while steps of others run, and
+         * what it changes of a running step's demand it copies first
+         * ({@link Demand#launched}).  What only the demand's own take
+         * changes -- its naming, the handoffs it paired, the reads it
+         * expanded -- the step reads in place: the walk takes a demand only
+         * once its running step ended ({@link Walk#take}).
+         */
+        private final Set<String> values;
+        private final Map<String, Long> cutoffs;
+        private final Set<String> flipSites;
+        private final String why;
+        private final boolean value;
+        private final boolean storeWriter;
+
+        Step(Walk walk, Demand demand, GroupReads group) {
+            super(walk, demand);
+            this.version = demand.version;
+            this.group = group;
+            this.contributed = demand.expandedContributed;
+            this.named = demand.named;
+            this.values = demand.contributed;
+            this.cutoffs = demand.cutoffs;
+            this.flipSites = demand.flipSites;
+            this.why = demand.why;
+            this.value = demand.value;
+            this.storeWriter = demand.storeWriter;
+        }
+
+        /** What it holds until taken: each thing it said, each claim and
+         *  each answer over one ({@link Walk#launch}). */
+        long weight() {
+            return said.size() + claims.size();
+        }
+
+        /** Whether this handoff (session|symbol) is paired the first time. */
+        boolean pair(String key) {
+            return !demand.paired.contains(key) && paired.add(key);
+        }
+
+        /** Whether this demanded read is expanded the first time. */
+        boolean expand(ReadRow read) {
+            return !demand.expandedReads.contains(read)
+                    && expanded.add(read);
+        }
+
+        /** {@link #unread} of an undemanded row, into {@code into}. */
+        void unread(List<Object> into, String sessionId, Endpoint endpoint,
+                    String what) {
+            Set<String> said = walk.unread.get(what);
+            if (said != null && said.contains(endpoint.id())
+                    || !unread.computeIfAbsent(what,
+                    unused -> new HashSet<String>()).add(endpoint.id())) {
+                return;
+            }
+            into.add((Said) (walk, next) -> ClosurePlanner.unread(walk,
+                    sessionId, endpoint, what));
+        }
+
+        /** Takes this walk: its demand holds what it expanded and named,
+         *  and what it said is applied in order; its successors, in
+         *  theirs. */
+        List<Demand> apply(Walk walk) {
+            demand.paired.addAll(paired);
+            demand.expandedReads.addAll(expanded);
+            demand.expandedContributed = contributed;
+            demand.named = named.taken();
+            demand.version++;
+            List<Demand> next = new ArrayList<Demand>();
+            for (Said each : said) each.apply(walk, next);
+            return next;
+        }
+    }
+
+    /** One change a step says ({@link Step}), applied when it is taken. */
+    private interface Said {
+        void apply(Walk walk, List<Demand> next);
+    }
+
+    /**
      * One anchor's walk over the corpus: the gaps it says (the same gap said
      * twice is one gap, as {@link ExploreMain} publishes them), the unread
      * deliveries it said ({@link #unread}), the static candidates it
@@ -1137,39 +1507,49 @@ public final class ClosurePlanner {
          *  #demanded}). */
         private final RestsOn restsOn;
         private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
+        /** The keys of the gaps that state no holder of a static site
+         *  ({@link Says#gap}): the walk says each once. */
+        private final Set<String> gapKeys = ConcurrentHashMap.newKeySet();
+        /** occurrence id -> its demand: the walk's ({@link #plan}), in the
+         *  order admitted. */
+        private final Map<String, Demand> demands =
+                new LinkedHashMap<String, Demand>();
+        /** The same, for the steps on the cores ({@link Says#writer}). */
+        private final Map<String, Demand> admitted =
+                new ConcurrentHashMap<String, Demand>();
         /** what -> the endpoint ids of the deliveries said unread: asked of
          *  every undemanded row a whole walk meets, no key is built for it
          *  (SGF8PLAN-adhoc-05 round 2: the concatenated what|id was 6 % of
          *  the walk). */
         private final Map<String, Set<String>> unread =
-                new HashMap<String, Set<String>>();
+                new ConcurrentHashMap<String, Set<String>>();
         /** (site, node) -> the activated occurrences that hold the site. */
         private final Map<List<Object>, List<OccurrenceAddress>> holders =
-                new HashMap<List<Object>, List<OccurrenceAddress>>();
+                new ConcurrentHashMap<List<Object>, List<OccurrenceAddress>>();
         /** (reason, site, guards, node) -> the occurrences offered under it. */
         private final Map<List<Object>, Set<String>> offered =
-                new HashMap<List<Object>, Set<String>>();
+                new ConcurrentHashMap<List<Object>, Set<String>>();
         /** session|occurrence id -> the owners of every location it read or
          *  wrote in that session. */
         private final Map<String, Set<String>> held =
-                new HashMap<String, Set<String>>();
+                new ConcurrentHashMap<String, Set<String>>();
         private final Map<String, Set<String>> guards =
-                new HashMap<String, Set<String>>();
+                new ConcurrentHashMap<String, Set<String>>();
         private final Map<String, List<StaticScopeMap.Site>> writers =
-                new HashMap<String, List<StaticScopeMap.Site>>();
+                new ConcurrentHashMap<String, List<StaticScopeMap.Site>>();
         /** occurrence id -> whether a session recorded a fault decision of
          *  it ({@link #faulted}). */
         private final Map<String, Boolean> faults =
-                new HashMap<String, Boolean>();
+                new ConcurrentHashMap<String, Boolean>();
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
-        private final Set<String> faultless = new LinkedHashSet<String>();
+        private final Set<String> faultless = ConcurrentHashMap.newKeySet();
         /** The narrowings' cuts already named (occurrence, message, kind). */
-        private final Set<String> cut = new LinkedHashSet<String>();
+        private final Set<String> cut = ConcurrentHashMap.newKeySet();
         /** session|store location -> the highest version whose earlier
          *  versions' writers are demanded ({@link #earlierVersions}). */
         private final Map<String, Long> storeExpanded =
-                new HashMap<String, Long>();
+                new ConcurrentHashMap<String, Long>();
         /** occurrence id -> its group (it and its state-connected factor)
          *  and the group's reads: a demand is walked again each time it
          *  grows (hdfs-adhoc-07 EX1: 93 walks of 31 demands). */
@@ -1186,31 +1566,76 @@ public final class ClosurePlanner {
          *  MemberReads#symbolsAt}, {@link MemberReads#returning}), in the
          *  order indexed: a group asks only them, not each of its members
          *  ({@link GroupReads}). */
-        private final Map<String, List<MemberReads>> naming =
-                new HashMap<String, List<MemberReads>>();
-        private final Map<String, List<MemberReads>> locating =
-                new HashMap<String, List<MemberReads>>();
-        private final Map<String, List<MemberReads>> returning =
-                new HashMap<String, List<MemberReads>>();
+        private final Map<String, MemberReads[]> naming =
+                new ConcurrentHashMap<String, MemberReads[]>();
+        private final Map<String, MemberReads[]> locating =
+                new ConcurrentHashMap<String, MemberReads[]>();
+        private final Map<String, MemberReads[]> returning =
+                new ConcurrentHashMap<String, MemberReads[]>();
         /** producer endpoint id -> {@link #contribution}. */
         private final Map<String, Contribution> contributions =
-                new HashMap<String, Contribution>();
+                new ConcurrentHashMap<String, Contribution>();
+        /** The cores the steps run on ({@link #ahead}). */
+        private final ForkJoinPool cores;
+        /** The thread the walk is taken on: the only one that writes it. */
+        private final Thread planner;
+        /** The ids of the demands to walk, in the order they are taken. */
+        final Deque<String> pending = new ArrayDeque<String>();
+        /** demand -> its step computed ahead, {@link #RUNNING} while it
+         *  runs, or what it threw, until taken ({@link #take}). */
+        private final Map<Demand, Object> steps =
+                new java.util.IdentityHashMap<Demand, Object>();
+        /** A step on the cores, not yet {@link #received}. */
+        private static final Object RUNNING = new Object();
+        /** The steps that ran, each with its demand, as they end. */
+        private final java.util.concurrent.BlockingQueue<Object[]> done =
+                new java.util.concurrent.LinkedBlockingQueue<Object[]>();
+        /** How many steps run. */
+        private int running;
 
-        Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor) {
+        Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor,
+             ForkJoinPool cores) {
+            this.planner = Thread.currentThread();
             this.corpus = corpus;
             this.map = map;
             this.restsOn = new RestsOn(corpus, map, anchor);
+            this.cores = cores;
         }
+
+        /*
+         * WHAT A STEP READS.  A step ({@link Step}) runs on any core while
+         * the walk takes others, and reads the corpus, the map and the
+         * walk's memos -- each below holds a function of its key, filled by
+         * whichever core asks first ({@code putIfAbsent}: a JDK 8
+         * ConcurrentHashMap holds a bin while computeIfAbsent computes), so
+         * every core reads the value the walk alone would have; what only
+         * the order gives, a read's leaves by seq, it claims ({@code
+         * Corpus#readLeaves}) -- its demand as it stood when the step was
+         * made ({@link Step}: what the walk changes of it, it copies first,
+         * {@link Demand#launched}; what only the demand's take changes, in
+         * place, as the walk waits for its step), and its group's reads,
+         * indexed on the planner's thread ({@link #reads}: each key's
+         * members an array the walk replaces whole).  What the walk decides
+         * in its order (the gaps, the keys said once, the occurrences
+         * offered, the store versions expanded, the demands and the writes
+         * they absorbed) a step writes none of: it reads them, concurrent,
+         * only to leave out what was said already ({@link Says}).
+         */
 
         /** Whether a session recorded a fault decision of {@code
          *  occurrence} ({@link Corpus#faultSites}), asked once. */
         private boolean faulted(OccurrenceAddress occurrence) {
-            return faults.computeIfAbsent(occurrence.id(),
-                    id -> !corpus.faultSites(occurrence).isEmpty());
+            Boolean held = faults.get(occurrence.id());
+            if (held == null) {
+                held = !corpus.faultSites(occurrence).isEmpty();
+                faults.putIfAbsent(occurrence.id(), held);
+            }
+            return held;
         }
 
         /** What every session's exports at one producer endpoint
-         *  contribute, in their order: once per walk. */
+         *  contribute, in their order: once per walk, one instance (a
+         *  demand holds it by identity, {@link Demand#holds}). */
         private Contribution contribution(Endpoint producer) {
             Contribution held = contributions.get(producer.id());
             if (held != null) return held;
@@ -1220,13 +1645,368 @@ public final class ClosurePlanner {
                 built.contributes(export.sessionId(), export.expressionRef(),
                         export.seq());
             }
-            held = new Contribution(built);
-            contributions.put(producer.id(), held);
-            return held;
+            held = contributions.putIfAbsent(producer.id(),
+                    new Contribution(built));
+            return held != null ? held : contributions.get(producer.id());
+        }
+
+        /** Plans one demand: it is walked as its turn comes. */
+        void admit(Demand demand) {
+            demands.put(demand.occurrence.id(), demand);
+            admitted.put(demand.occurrence.id(), demand);
+            pending.add(demand.occurrence.id());
+        }
+
+        /** Takes a planned demand out of the plan, and its step. */
+        void drop(Demand demand) {
+            demands.remove(demand.occurrence.id());
+            admitted.remove(demand.occurrence.id());
+            pending.remove(demand.occurrence.id());
+            steps.remove(demand);
+        }
+
+        /**
+         * STEPS AHEAD: while the walk takes its demands in queue order, the
+         * steps of the ones behind the head run on the cores ({@link
+         * #launch}) -- each against its demand's state as it starts, the
+         * walk going on as they run -- and the walk waits only for the step
+         * it takes, starting others as steps end; one that runs none, it
+         * walks itself, beside them ({@link #take}: SGF8-adhoc-05 round 5's
+         * walk 303 s so, 337 s with such a head started on the cores and
+         * waited for).  On one core none runs ahead: a step there runs
+         * alone, as the walk takes it.
+         */
+        void ahead() {
+            received(false);
+            launch(true);
+        }
+
+        /** The steps of {@code upcoming}'s demands, run ahead as the
+         *  queue's are ({@link #launch}): the static candidates planned one
+         *  at a time, each walked as its turn comes. */
+        void prepare(List<Demand> upcoming) {
+            received(false);
+            launch(upcoming, false);
+        }
+
+        /** {@link #launch} over the queue's first demands, {@link #WINDOW}
+         *  a core, each its first time there. */
+        private void launch(boolean headTaken) {
+            if (cores.getParallelism() < 2) return;
+            int window = WINDOW * cores.getParallelism();
+            Set<Demand> seen = Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<Demand, Boolean>());
+            List<Demand> head = new ArrayList<Demand>();
+            for (String id : pending) {
+                Demand demand = demands.get(id);
+                if (demand == null || !seen.add(demand)) continue;
+                head.add(demand);
+                if (head.size() == window) break;
+            }
+            launch(head, headTaken);
+        }
+
+        /** The demands a window holds a core ({@link #launch}): as many
+         *  again as run at once, to keep the cores busy as steps end. */
+        static final int WINDOW = 2;
+        /** The heap one unit of a held step's weight may hold ({@link
+         *  Step#weight}): at most a successor said with its sets, about
+         *  2 KB; most are a lambda over rows the corpus holds anyway. */
+        static final long WEIGHT_BYTES = 2048L;
+        /** The share of the heap the old generation left free after its
+         *  last collection that the steps held may take. */
+        static final double HELD_SHARE = 0.25;
+
+        /** How much the steps held at once may weigh ({@link #launch}):
+         *  {@link #HELD_SHARE} of the heap the old generation left free
+         *  after its last collection ({@code HeapWatch}), so a walk whose
+         *  heap fills holds fewer -- down to none, the walk one step at a
+         *  time. */
+        private static long budget() {
+            long heap = Runtime.getRuntime().maxMemory();
+            double free = 1.0 - HeapWatch.oldGenerationSwept();
+            return (long) (heap * free * HELD_SHARE / WEIGHT_BYTES);
+        }
+
+        /**
+         * Starts the steps of {@code order}'s demands -- queue order, the
+         * first the one the walk takes next where {@code headTaken} -- that
+         * hold no step of their state and run none, in order, while fewer
+         * than the cores run and the steps held weigh less than the {@link
+         * #budget} -- held until taken, a step holds everything
+         * it said ({@link Step#weight}): SGF8-adhoc-05 round 5's 96 at once
+         * took its 21 GB heap to 22 GB resident -- and none that a step
+         * before it, ended, names a successor of ({@link Says#successors}):
+         * taking that one grows it, so its step now would be another
+         * state's (SGF8-adhoc-19 round 10: 699 of 1,611 were).  Their
+         * groups are indexed here, on the planner's thread ({@link
+         * #reads}).
+         */
+        private void launch(List<Demand> order, boolean headTaken) {
+            if (cores.getParallelism() < 2) return;
+            long weight = 0L;
+            for (Object step : steps.values()) {
+                if (step instanceof Step) weight += ((Step) step).weight();
+            }
+            long budget = budget();
+            Set<String> named = new HashSet<String>();
+            for (int at = 0; at < order.size(); at++) {
+                Demand demand = order.get(at);
+                Object held = steps.get(demand);
+                if (held == RUNNING) continue;
+                if (held != null) {
+                    Object current = current(demand);
+                    if (current instanceof Step) {
+                        Step step = (Step) current;
+                        if (step.successors != null) {
+                            named.addAll(step.successors);
+                        }
+                        continue;
+                    }
+                    // What a step of its state threw: walked in the order.
+                    if (current != null) continue;
+                    if (held instanceof Step) {
+                        weight -= ((Step) held).weight();
+                    }
+                }
+                if (at == 0 && headTaken
+                        || named.contains(demand.occurrence.id())) {
+                    continue;
+                }
+                if (running >= cores.getParallelism() || weight >= budget) {
+                    return;
+                }
+                Step step = new Step(this, demand, reads(demand.occurrence));
+                demand.launched();
+                // Counted once it runs: a pool that cannot run it throws.
+                cores.execute(() -> done.add(new Object[] {demand,
+                        stepAhead(step)}));
+                steps.put(demand, RUNNING);
+                running++;
+            }
+        }
+
+        /** {@code demand}'s step held -- or what it threw -- where it is of
+         *  its state now ({@link Demand#version}); else none, and none is
+         *  held. */
+        private Object current(Demand demand) {
+            Object held = steps.get(demand);
+            int version = held instanceof Step ? ((Step) held).version
+                    : held instanceof Thrown ? ((Thrown) held).version : -1;
+            if (version < 0) return null;
+            if (version == demand.version) return held;
+            steps.remove(demand);
+            return null;
+        }
+
+        /** What a step computed ahead threw, and the demand's version it
+         *  was of. */
+        private static final class Thrown {
+            final int version;
+            final Throwable thrown;
+
+            Thrown(int version, Throwable thrown) {
+                this.version = version;
+                this.thrown = thrown;
+            }
+        }
+
+        /** {@code step}, computed on a core, or what it threw ({@link
+         *  #take}). */
+        private Object stepAhead(Step step) {
+            try {
+                return step(this, step);
+            } catch (RuntimeException | Error thrown) {
+                return new Thrown(step.version, thrown);
+            }
+        }
+
+        /** Holds the steps that ended -- waiting for one where {@code
+         *  wait} -- each where its demand is still planned. */
+        private void received(boolean wait) {
+            Object[] ended;
+            try {
+                ended = wait ? done.take() : done.poll();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("the walk was interrupted"
+                        + " waiting for a step");
+            }
+            for (; ended != null; ended = done.poll()) {
+                running--;
+                Demand demand = (Demand) ended[0];
+                if (steps.get(demand) == RUNNING) {
+                    steps.put(demand, ended[1]);
+                }
+            }
+        }
+
+        /** Waits for every step that runs: none reads the walk after it. */
+        void drain() {
+            while (running > 0) received(true);
+            steps.clear();
+        }
+
+        /** The fewest items a part of a fold holds: a fold of fewer than
+         *  two parts' items is computed here. */
+        private static final int PART = 16;
+        /** At most this many parts of one fold. */
+        private static final int PARTS = 192;
+
+        /**
+         * {@code each} of {@code items}, in their order: a long list in
+         * parts on the walk's cores, a short one here.  {@code each} is a
+         * function of its item and the walk's memos, which hold functions
+         * of their keys, so the list is the one computed here alone.
+         */
+        <T, R> List<R> each(List<T> items, Function<T, R> each) {
+            int size = items.size();
+            List<R> done = new ArrayList<R>(size);
+            if (size < 2 * PART) {
+                for (T item : items) done.add(each.apply(item));
+                return done;
+            }
+            int parts = Math.min(PARTS, size / PART);
+            List<ForkJoinTask<List<R>>> asked =
+                    new ArrayList<ForkJoinTask<List<R>>>(parts);
+            for (int part = 0; part < parts; part++) {
+                int from = (int) ((long) size * part / parts);
+                int to = (int) ((long) size * (part + 1) / parts);
+                asked.add(ForkJoinTask.adapt(() -> {
+                    List<R> one = new ArrayList<R>(to - from);
+                    for (int at = from; at < to; at++) {
+                        one.add(each.apply(items.get(at)));
+                    }
+                    return one;
+                }));
+            }
+            run(asked);
+            for (ForkJoinTask<List<R>> part : asked) {
+                done.addAll(part.join());
+            }
+            return done;
+        }
+
+        /**
+         * Takes one demand's walk ({@link #step}): its step that runs is
+         * waited for -- the steps behind it started as others end ({@link
+         * #launch}) -- and taken where it is the walk of the demand's state
+         * now ({@link Demand#version}) and what it claimed is still no other
+         * row's ({@code RestsOn#take}), else one computed here; here too
+         * where one computed ahead threw: what the walk throws is what the
+         * walk in its order throws, never what a step threw at another
+         * moment.  An Error a step of the demand's state now threw ends the
+         * walk (a group indexed off the planner's thread, {@link #reads});
+         * one of an earlier state's is walked again.  Waiting for the
+         * demand's own step is what lets a step read in place what only its
+         * demand's take changes ({@link Step}).  Its memos and its events
+         * are applied in the order the step said them, and its successors
+         * returned in theirs.
+         */
+        List<Demand> take(Demand demand) {
+            while (steps.get(demand) == RUNNING) {
+                received(true);
+                launch(false);
+            }
+            Object held = current(demand);
+            steps.remove(demand);
+            if (held instanceof Thrown
+                    && ((Thrown) held).thrown instanceof Error) {
+                throw (Error) ((Thrown) held).thrown;
+            }
+            Step step = held instanceof Step
+                    && restsOn.take(((Step) held).claims) ? (Step) held
+                    : null;
+            if (step == null) {
+                // Its walk now, here, in the order: what it claims no one
+                // has taken.
+                step = step(this, new Step(this, demand,
+                        reads(demand.occurrence)));
+                if (!restsOn.take(step.claims)) {
+                    throw new IllegalStateException("a walk in the order "
+                            + "claimed a read's leaves another row holds: "
+                            + demand.occurrence.render());
+                }
+            }
+            return step.apply(this);
+        }
+
+        /**
+         * What COMPOSE keeps of each of a step's paths and deliveries, in
+         * their order ({@link RestsOn#ofDelivery}): a long list in parts on
+         * the walk's cores, each under claims of its own ({@code
+         * Corpus#readLeaves}) taken after the parts before it ({@code
+         * Claims#follow}) -- a part that claimed a seq one before it
+         * claimed by another row computed again here, under theirs.
+         */
+        List<Set<String>> asked(
+                List<Function<Corpus.Claims, Set<String>>> asks,
+                Corpus.Claims claims) {
+            int size = asks.size();
+            List<Set<String>> done = new ArrayList<Set<String>>(size);
+            if (size < 2 * PART) {
+                for (Function<Corpus.Claims, Set<String>> ask : asks) {
+                    done.add(ask.apply(claims));
+                }
+                return done;
+            }
+            int parts = Math.min(PARTS, size / PART);
+            List<Corpus.Claims> partClaims = new ArrayList<Corpus.Claims>();
+            List<ForkJoinTask<List<Set<String>>>> computed =
+                    new ArrayList<ForkJoinTask<List<Set<String>>>>(parts);
+            for (int part = 0; part < parts; part++) {
+                int from = (int) ((long) size * part / parts);
+                int to = (int) ((long) size * (part + 1) / parts);
+                Corpus.Claims own = new Corpus.Claims();
+                partClaims.add(own);
+                computed.add(ForkJoinTask.adapt(() -> {
+                    List<Set<String>> one =
+                            new ArrayList<Set<String>>(to - from);
+                    for (int at = from; at < to; at++) {
+                        one.add(asks.get(at).apply(own));
+                    }
+                    return one;
+                }));
+            }
+            run(computed);
+            for (int part = 0; part < parts; part++) {
+                List<Set<String>> one = computed.get(part).join();
+                if (!claims.follow(partClaims.get(part))) {
+                    int from = (int) ((long) size * part / parts);
+                    int to = (int) ((long) size * (part + 1) / parts);
+                    one = new ArrayList<Set<String>>(to - from);
+                    for (int at = from; at < to; at++) {
+                        one.add(asks.get(at).apply(claims));
+                    }
+                }
+                done.addAll(one);
+            }
+            return done;
+        }
+
+        /** Runs these on the walk's cores until each is done, whatever
+         *  one threw: its caller joins them in their order. */
+        private <T> void run(List<ForkJoinTask<T>> tasks) {
+            if (ForkJoinTask.getPool() == cores) {
+                all(tasks);
+            } else {
+                cores.invoke(ForkJoinTask.adapt(() -> all(tasks)));
+            }
+        }
+
+        /** Every one of these done: JDK 8's invokeAll returns at the first
+         *  that throws, the others still reading the walk while its taker
+         *  writes it. */
+        private static <T> void all(List<ForkJoinTask<T>> tasks) {
+            for (int at = tasks.size() - 1; at > 0; at--) tasks.get(at).fork();
+            tasks.get(0).quietlyInvoke();
+            for (int at = 1; at < tasks.size(); at++) {
+                tasks.get(at).quietlyJoin();
+            }
         }
 
         /** The occurrence and its state-connected factor: one symbolic
-         *  unit ({@link #successors}). */
+         *  unit ({@link #step}). */
         private List<OccurrenceAddress> group(OccurrenceAddress occurrence) {
             return groups.computeIfAbsent(occurrence.id(), id -> {
                 List<OccurrenceAddress> group =
@@ -1238,8 +2018,17 @@ public final class ClosurePlanner {
         }
 
         /** {@link GroupReads} of an occurrence's {@link #group}: its
-         *  members' {@link MemberReads}, each indexed once per walk. */
+         *  members' {@link MemberReads}, each indexed once per walk -- on
+         *  the planner's thread, before a step reads it ({@link #ahead},
+         *  {@link #take}): a JDK 8 HashMap resizes at the computeIfAbsent
+         *  after the insert that filled it, whatever the key, so cores
+         *  asking at once lose the keys held and index groups again into
+         *  lists others iterate. */
         GroupReads reads(OccurrenceAddress occurrence) {
+            if (Thread.currentThread() != planner) {
+                throw new AssertionError("a group indexed off the planner"
+                        + " thread: " + occurrence.render());
+            }
             return groupReads.computeIfAbsent(occurrence.id(), id -> {
                 List<MemberReads> members = new ArrayList<MemberReads>();
                 for (OccurrenceAddress member : group(occurrence)) {
@@ -1257,11 +2046,17 @@ public final class ClosurePlanner {
             return member;
         }
 
-        private static void index(Map<String, List<MemberReads>> into,
+        /** Each key's members, a new array each time one is added: a
+         *  step on the cores reads the one it got whole. */
+        private static void index(Map<String, MemberReads[]> into,
                                   Set<String> keys, MemberReads member) {
+            MemberReads[] one = {member};
             for (String key : keys) {
-                into.computeIfAbsent(key, unused -> new ArrayList<MemberReads>(
-                        1)).add(member);
+                into.merge(key, one, (held, added) -> {
+                    MemberReads[] grown = Arrays.copyOf(held, held.length + 1);
+                    grown[held.length] = member;
+                    return grown;
+                });
             }
         }
 
@@ -1269,39 +2064,43 @@ public final class ClosurePlanner {
          *  METHOD it wrote from (bci vs unit index do not compare); may be
          *  one too many. */
         private Set<String> guardsAt(String recordedSite) {
-            return guards.computeIfAbsent(recordedSite, key -> {
-                Set<String> held = new LinkedHashSet<String>();
-                for (StaticScopeMap.Site site : map.sitesAt(recordedSite)) {
-                    held.addAll(site.guards);
-                }
-                return held;
-            });
+            Set<String> held = guards.get(recordedSite);
+            if (held != null) return held;
+            held = new LinkedHashSet<String>();
+            for (StaticScopeMap.Site site : map.sitesAt(recordedSite)) {
+                held.addAll(site.guards);
+            }
+            Set<String> first = guards.putIfAbsent(recordedSite, held);
+            return first != null ? first : held;
         }
 
         /** {@link StaticScopeMap#writersOf}. */
         private List<StaticScopeMap.Site> writersOf(String carrier) {
-            return writers.computeIfAbsent(carrier, map::writersOf);
+            List<StaticScopeMap.Site> held = writers.get(carrier);
+            if (held != null) return held;
+            held = map.writersOf(carrier);
+            List<StaticScopeMap.Site> first = writers.putIfAbsent(carrier,
+                    held);
+            return first != null ? first : held;
         }
 
         /** Every activated occurrence holding one static site, on {@code
          *  node} (null = any): one scan of the corpus per site and node. */
         private List<OccurrenceAddress> holders(StaticScopeMap.Site site,
                                                 NodeId node) {
-            return holders.computeIfAbsent(Arrays.<Object>asList(site, node),
-                    key -> {
-                        List<OccurrenceAddress> found =
-                                new ArrayList<OccurrenceAddress>();
-                        for (OccurrenceAddress occurrence
-                                : corpus.occurrences()) {
-                            if (holds(map, occurrence.regionId(), site)
-                                    && (node == null
-                                    || node.equals(occurrence.node()))
-                                    && activated(corpus, occurrence)) {
-                                found.add(occurrence);
-                            }
-                        }
-                        return found;
-                    });
+            List<Object> key = Arrays.<Object>asList(site, node);
+            List<OccurrenceAddress> found = holders.get(key);
+            if (found != null) return found;
+            found = new ArrayList<OccurrenceAddress>();
+            for (OccurrenceAddress occurrence : corpus.occurrences()) {
+                if (holds(map, occurrence.regionId(), site)
+                        && (node == null || node.equals(occurrence.node()))
+                        && activated(corpus, occurrence)) {
+                    found.add(occurrence);
+                }
+            }
+            List<OccurrenceAddress> first = holders.putIfAbsent(key, found);
+            return first != null ? first : found;
         }
 
         /**
@@ -1319,19 +2118,19 @@ public final class ClosurePlanner {
                     || !Arms.namedOwner(location)) {
                 return false;
             }
-            Set<String> owners = held.computeIfAbsent(
-                    sessionId + "|" + occurrence.id(), key -> {
-                        Set<String> found = new HashSet<String>();
-                        for (ReadRow read
-                                : corpus.readsOn(sessionId, occurrence)) {
-                            found.add(read.location().owner());
-                        }
-                        for (WriteRow write
-                                : corpus.writesOn(sessionId, occurrence)) {
-                            found.add(write.location().owner());
-                        }
-                        return found;
-                    });
+            String key = sessionId + "|" + occurrence.id();
+            Set<String> owners = held.get(key);
+            if (owners == null) {
+                owners = new HashSet<String>();
+                for (ReadRow read : corpus.readsOn(sessionId, occurrence)) {
+                    owners.add(read.location().owner());
+                }
+                for (WriteRow write : corpus.writesOn(sessionId, occurrence)) {
+                    owners.add(write.location().owner());
+                }
+                Set<String> first = held.putIfAbsent(key, owners);
+                if (first != null) owners = first;
+            }
             return !owners.isEmpty() && !owners.contains(location.owner());
         }
     }
@@ -1349,40 +2148,39 @@ public final class ClosurePlanner {
      * and every Overseer mutation, and each of those, a member, made its own
      * group's members members in turn).</p>
      */
-    private static List<Demand> successors(Walk walk, Demand demand) {
+    private static Step step(Walk walk, Step step) {
+        Demand demand = step.demand;
+        GroupReads group = step.group;
         Corpus corpus = walk.corpus;
-        GroupReads group = walk.reads(demand.occurrence);
         Map<String, Set<String>> kept = new LinkedHashMap<String,
                 Set<String>>();
-        Named named = demanded(walk, demand, kept);
-        Set<String> demanded = named.symbols;
-        List<Demand> next = new ArrayList<Demand>();
-        Set<String> paired = demand.paired;
+        Named named = demanded(walk, step, kept);
+        Named demanded = named;
         // Named whole, every row of the group is asked; named again, only
         // the rows naming a symbol this walk added, in the same order: every
         // other demanded row was expanded by the walk that named its symbol,
         // and every undemanded one was said unread by the last whole walk.
+        // What it expands, in order -- the unread said between -- each
+        // expansion's events computed on the walk's cores ({@link
+        // Walk#each}) and said in place.
+        List<Object> expanding = new ArrayList<Object>();
         if (named.whole) {
             for (MemberReads member : group.members) {
                 for (AttachRow attach : member.attaches) {
-                    if (!demanded.contains(attach.symbol())) {
-                        unread(walk, attach.sessionId(), attach.endpoint(),
-                                "handoff");
-                        continue;
-                    }
-                    if (paired.add(attach.sessionId() + "|"
+                    if (!demanded.holds(attach.symbol())) {
+                        step.unread(expanding, attach.sessionId(),
+                                attach.endpoint(), "handoff");
+                    } else if (step.pair(attach.sessionId() + "|"
                             + attach.symbol())) {
-                        producers(walk, attach, next);
+                        expanding.add(attach);
                     }
                 }
                 for (ReadRow row : member.rows) {
-                    if (!demanded.contains(row.symbol())) {
-                        unread(walk, row.sessionId(), row.endpoint(),
-                                "state read");
-                        continue;
-                    }
-                    if (demand.expandedReads.add(row)) {
-                        writers(walk, row, next);
+                    if (!demanded.holds(row.symbol())) {
+                        step.unread(expanding, row.sessionId(),
+                                row.endpoint(), "state read");
+                    } else if (step.expand(row)) {
+                        expanding.add(row);
                     }
                 }
             }
@@ -1392,17 +2190,31 @@ public final class ClosurePlanner {
                 int item = (int) at;
                 if (item < member.attaches.size()) {
                     AttachRow attach = member.attaches.get(item);
-                    if (paired.add(attach.sessionId() + "|"
+                    if (step.pair(attach.sessionId() + "|"
                             + attach.symbol())) {
-                        producers(walk, attach, next);
+                        expanding.add(attach);
                     }
                 } else {
                     ReadRow row = member.rows.get(item
                             - member.attaches.size());
-                    if (demand.expandedReads.add(row)) {
-                        writers(walk, row, next);
-                    }
+                    if (step.expand(row)) expanding.add(row);
                 }
+            }
+        }
+        for (Object said : walk.each(expanding, item -> {
+            if (item instanceof Said) return item;
+            Says part = new Says(walk, demand);
+            if (item instanceof AttachRow) {
+                producers(walk, (AttachRow) item, part);
+            } else {
+                writers(walk, (ReadRow) item, part);
+            }
+            return part;
+        })) {
+            if (said instanceof Said) {
+                step.said.add((Said) said);
+            } else {
+                step.say((Says) said);
             }
         }
         // A handoff what COMPOSE keeps names, whoever received it: the
@@ -1415,28 +2227,28 @@ public final class ClosurePlanner {
                 // A forced world's arrival came from no run's world.
                 if (attach != null && attach.seq()
                         < corpus.forcedFrom(session.getKey())
-                        && paired.add(session.getKey() + "|" + symbol)) {
-                    producers(walk, attach, next);
+                        && step.pair(session.getKey() + "|" + symbol)) {
+                    producers(walk, attach, step);
                 }
             }
         }
-        statedReads(walk, demand, next);
+        statedReads(walk, step);
         // A control producer contributes no value: whether its own message
         // exists is no question of the anchor's (solr-18413 round Z7: the
         // doors of every request and queue item behind the store writers'
         // items, six hops deep, doubled the plan).  Nor does a store fetch.
-        if (demand.value) {
-            controlProducer(walk, demand, next);
-        } else if (CONTROL_PRODUCER.equals(demand.why)
-                && !walk.corpus.startedBy(demand.occurrence).isEmpty()
-                && walk.cut.add(demand.occurrence.id() + "|producer")) {
-            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+        if (step.value) {
+            controlProducer(walk, step);
+        } else if (CONTROL_PRODUCER.equals(step.why)
+                && !walk.corpus.startedBy(demand.occurrence).isEmpty()) {
+            step.once(demand.occurrence.id() + "|producer",
+                    () -> GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     demand.occurrence.render(), "a control producer "
                             + "contributes no value: the doors of the message"
                             + " that started it are not asked"));
         }
-        return next;
+        return step;
     }
 
     /** What COMPOSE keeps of one session's path or delivery, joined. */
@@ -1465,29 +2277,25 @@ public final class ClosurePlanner {
      *  removed as much as a value it set, and the doors of the sender's own
      *  message are asked in turn -- once: the sender's cells are not
      *  demanded. */
-    private static void controlProducer(Walk walk, Demand demand,
-                                        List<Demand> next) {
+    private static void controlProducer(Walk walk, Step step) {
         Corpus corpus = walk.corpus;
-        for (String endpoint : corpus.startedBy(demand.occurrence)) {
-            doorsOf(walk, demand, endpoint, next);
+        for (String endpoint : corpus.startedBy(step.demand.occurrence)) {
+            doorsOf(walk, step, endpoint);
         }
     }
 
     /** {@link #controlProducer} over the doors of one message that started
      *  the demanded occurrence. */
-    private static void doorsOf(Walk walk, Demand demand, String endpoint,
-                                List<Demand> next) {
+    private static void doorsOf(Walk walk, Step step, String endpoint) {
         Corpus corpus = walk.corpus;
+        Demand demand = step.demand;
         Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
         List<OccurrenceAddress> doors = corpus.doorsOf(endpoint,
                 demand.occurrence, cut);
         // Each narrowing names what it cut (counted, DIAGNOSTIC).
         for (Map.Entry<String, Integer> each : cut.entrySet()) {
-            if (!walk.cut.add(demand.occurrence.id() + "|" + endpoint + "|"
-                    + each.getKey())) {
-                continue;
-            }
-            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            step.once(demand.occurrence.id() + "|" + endpoint + "|"
+                    + each.getKey(), () -> GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     demand.occurrence.render(), each.getValue()
                             + " occurrence(s) of " + (Corpus.OWN_TURN.equals(
@@ -1504,12 +2312,13 @@ public final class ClosurePlanner {
             // (solr-bugs-overseer-lock-leak: the Runner's item removes
             // readOnly from state.json v8; the queue tick's markTaskAsRunning
             // door decides whether the Runner runs).
-            if (demand.storeWriter && door.equals(sender)) {
-                next.add(new Demand(door, STORE_ITEM_PRODUCER, false));
+            if (step.storeWriter && door.equals(sender)) {
+                step.next(new Demand(door, STORE_ITEM_PRODUCER, false));
             } else if (walk.faulted(door)) {
-                next.add(new Demand(door, CONTROL_PRODUCER, false));
-            } else if (walk.faultless.add(door.id())) {
-                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                step.next(new Demand(door, CONTROL_PRODUCER, false));
+            } else {
+                step.faultless(door.id(), () -> GapRow.of(
+                        ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         door.render(), "a door of the message that started "
                                 + demand.occurrence.render() + " decided no "
@@ -1531,25 +2340,25 @@ public final class ClosurePlanner {
      * compose.RestsOn#seedWrites}. Never the anchor (it contributes no
      * delivery).</p>
      */
-    private static void statedReads(Walk walk, Demand demand,
-                                    List<Demand> into) {
+    private static void statedReads(Walk walk, Step step) {
+        Demand demand = step.demand;
         if (demand.anchor) return;
         int index = 0;
-        int done = demand.expandedContributed;
-        demand.expandedContributed = demand.contributed.size();
-        for (String contributed : demand.contributed) {
+        int done = step.contributed;
+        step.contributed = step.values.size();
+        for (String contributed : step.values) {
             if (index++ < done) continue;
             int split = contributed.indexOf('|');
             if (split < 0) continue;
             String sessionId = contributed.substring(0, split);
             for (Corpus.StateRead read : walk.corpus.expressionStateReads(
                     sessionId, contributed.substring(split + 1))) {
-                writersOfVersion(walk, sessionId, demand.occurrence,
+                writersOfVersion(walk, step, sessionId, demand.occurrence,
                         read.write().location(), read.write().version(),
                         Collections.<String>emptySet(), null,
                         demand.occurrence.id(), demand.occurrence::render,
                         () -> read.locationKey() + " (read at event "
-                                + read.readEventId() + ")", into);
+                                + read.readEventId() + ")");
             }
         }
     }
@@ -1568,10 +2377,17 @@ public final class ClosurePlanner {
      *  and demands nothing here. Terms are EXPR references, asked of their
      *  expressions' DAG ({@link Corpus#termSymbols}), never rendered.
      *  Each walk adds only what its demand grew by ({@link Named}). */
-    private static Named demanded(Walk walk, Demand demand,
+    private static Named demanded(Walk walk, Step step,
                                   Map<String, Set<String>> kept) {
+        Demand demand = step.demand;
         Corpus corpus = walk.corpus;
-        GroupReads reads = walk.reads(demand.occurrence);
+        GroupReads reads = step.group;
+        // Each fold below takes, per item, what the item names -- a function
+        // of the item alone, computed on the walk's cores ({@link
+        // Walk#each}) -- and adds it in the items' order.
+        List<String> sessions = new ArrayList<String>();
+        List<Function<Corpus.Claims, Set<String>>> asks =
+                new ArrayList<Function<Corpus.Claims, Set<String>>>();
         if (demand.anchor) {
             // COMPOSE's disjuncts, by its one admission rule.
             for (Corpus.RecordedPath path : walk.restsOn.admitted(
@@ -1579,71 +2395,122 @@ public final class ClosurePlanner {
                 TargetRow target = corpus.target(path.sessionId,
                         demand.occurrence);
                 if (target == null) continue;
-                keep(kept, path.sessionId, walk.restsOn.ofPath(
-                        path.sessionId, target, path.decisions));
+                sessions.add(path.sessionId);
+                asks.add(claims -> walk.restsOn.ofPath(path.sessionId,
+                        target, path.decisions, claims));
             }
         }
-        for (Map.Entry<String, Long> cutoff : demand.cutoffs.entrySet()) {
-            keep(kept, cutoff.getKey(), walk.restsOn.ofDelivery(
-                    cutoff.getKey(), demand.occurrence, cutoff.getValue(),
-                    demand.delivered(cutoff.getKey())));
+        Map<String, List<String>> delivered =
+                Demand.delivered(step.values);
+        for (Map.Entry<String, Long> cutoff : step.cutoffs.entrySet()) {
+            String session = cutoff.getKey();
+            long at = cutoff.getValue();
+            List<String> refs = Demand.delivered(delivered, session);
+            sessions.add(session);
+            asks.add(claims -> walk.restsOn.ofDelivery(session,
+                    demand.occurrence, at, refs, claims));
+        }
+        List<Set<String>> answers = walk.asked(asks, step.claims);
+        for (int at = 0; at < answers.size(); at++) {
+            keep(kept, sessions.get(at), answers.get(at));
         }
         Set<String> keeps = new HashSet<String>();
         for (Set<String> symbols : kept.values()) keeps.addAll(symbols);
         Named named = demand.named;
-        if (named == null || !keeps.containsAll(named.kept)) {
-            named = new Named();
-            demand.named = named;
-        } else {
-            named.again();
-        }
+        named = named == null || !keeps.containsAll(named.kept)
+                ? new Named() : new Named(named);
+        step.named = named;
         named.kept = keeps;
+        List<Supplier<List<Collection<String>>>> decided =
+                new ArrayList<Supplier<List<Collection<String>>>>();
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
             for (DecisionRow decision : path.decisions) {
-                if (!FlipQuery.asks(demand.flipSites, decision)
-                        || !named.decisions.add(decision)) {
+                if (!FlipQuery.asks(step.flipSites, decision)
+                        || !named.decide(decision)) {
                     continue;
                 }
-                named.addAll(corpus.termSymbols(path.sessionId,
+                decided.add(() -> termNames(corpus, reads, path.sessionId,
                         decision.term()));
-                reads.under(corpus, path.sessionId, decision.term(), named);
             }
+        }
+        for (List<Collection<String>> names : walk.each(decided,
+                Supplier::get)) {
+            for (Collection<String> symbols : names) named.addAll(symbols);
         }
         if (demand.anchor && named.whole) {
             for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
-                named.addAll(corpus.termSymbols(target.sessionId(),
-                        target.phiTerm()));
-                reads.under(corpus, target.sessionId(), target.phiTerm(),
-                        named);
+                for (Collection<String> symbols : termNames(corpus, reads,
+                        target.sessionId(), target.phiTerm())) {
+                    named.addAll(symbols);
+                }
             }
             named.addAll(demand.predicate);
         }
         int index = 0;
         int done = named.contributed;
-        named.contributed = demand.contributed.size();
-        for (String contributed : demand.contributed) {
+        named.contributed = step.values.size();
+        List<String> values = new ArrayList<String>();
+        for (String contributed : step.values) {
             if (index++ < done) continue;
+            if (contributed.indexOf('|') >= 0) values.add(contributed);
+        }
+        for (Set<String> symbols : walk.each(values, contributed -> {
             int split = contributed.indexOf('|');
-            if (split < 0) continue;
-            named.addAll(corpus.expressionSymbols(
-                    contributed.substring(0, split),
-                    contributed.substring(split + 1)));
+            return corpus.expressionSymbols(contributed.substring(0, split),
+                    contributed.substring(split + 1));
+        })) {
+            named.addAll(symbols);
         }
         named.addAll(keeps);
         // The fixed point, over the symbols this walk added: those an
-        // earlier walk added brought theirs then.
-        for (int next = 0; next < named.fresh.size(); next++) {
-            for (ReadRow row : reads.of(named.fresh.get(next))) {
-                reads.holding(row, named);
-                for (WriteRow write : corpus.eligibleWrites(row.sessionId(),
-                        SmtLowering.locationKey(row.location()),
-                        row.observedVersion(), row.endpoint().occurrence())) {
-                    named.addAll(corpus.expressionSymbols(write.sessionId(),
-                            write.expressionRef()));
+        // earlier walk added brought theirs then.  A level of fresh symbols
+        // at once, each one's part added in its order: the next level is
+        // what they added, in the order a fold one symbol at a time adds it.
+        for (int next = 0; next < named.fresh.size(); ) {
+            int end = named.fresh.size();
+            for (List<Collection<String>> brought : walk.each(
+                    new ArrayList<String>(named.fresh.subList(next, end)),
+                    symbol -> brought(corpus, reads, symbol))) {
+                for (Collection<String> symbols : brought) {
+                    named.addAll(symbols);
                 }
             }
+            next = end;
         }
         return named;
+    }
+
+    /** What one term names, in the order {@link #demanded} adds it: its
+     *  symbols, then the symbols of the group's reads its expressions read
+     *  by structure ({@link GroupReads#under}). */
+    private static List<Collection<String>> termNames(Corpus corpus,
+                                                      GroupReads reads,
+                                                      String sessionId,
+                                                      String term) {
+        List<Collection<String>> names = new ArrayList<Collection<String>>();
+        names.add(corpus.termSymbols(sessionId, term));
+        reads.under(corpus, sessionId, term, names);
+        return names;
+    }
+
+    /** What one fresh symbol brings in {@link #demanded}'s fixed point, in
+     *  the order it is added: for each group row stating it, the reference
+     *  reads its container rests on ({@link GroupReads#holding}), then the
+     *  symbols of each write the row could observe. */
+    private static List<Collection<String>> brought(Corpus corpus,
+                                                    GroupReads reads,
+                                                    String symbol) {
+        List<Collection<String>> brought = new ArrayList<Collection<String>>();
+        for (ReadRow row : reads.of(symbol)) {
+            reads.holding(row, brought);
+            for (WriteRow write : corpus.eligibleWrites(row.sessionId(),
+                    SmtLowering.locationKey(row.location()),
+                    row.observedVersion(), row.endpoint().occurrence())) {
+                brought.add(corpus.expressionSymbols(write.sessionId(),
+                        write.expressionRef()));
+            }
+        }
+        return brought;
     }
 
     /**
@@ -1728,14 +2595,14 @@ public final class ClosurePlanner {
         /** member -> its place in {@link #members}. */
         private final Map<MemberReads, Integer> place =
                 new java.util.IdentityHashMap<MemberReads, Integer>();
-        private final Map<String, List<MemberReads>> naming;
-        private final Map<String, List<MemberReads>> locating;
-        private final Map<String, List<MemberReads>> returning;
+        private final Map<String, MemberReads[]> naming;
+        private final Map<String, MemberReads[]> locating;
+        private final Map<String, MemberReads[]> returning;
 
         private GroupReads(List<MemberReads> members,
-                           Map<String, List<MemberReads>> naming,
-                           Map<String, List<MemberReads>> locating,
-                           Map<String, List<MemberReads>> returning) {
+                           Map<String, MemberReads[]> naming,
+                           Map<String, MemberReads[]> locating,
+                           Map<String, MemberReads[]> returning) {
             this.members = members;
             for (int index = 0; index < members.size(); index++) {
                 place.put(members.get(index), index);
@@ -1746,10 +2613,10 @@ public final class ClosurePlanner {
         }
 
         /** Those of {@code indexed} in this group, in group order. */
-        private List<MemberReads> in(List<MemberReads> indexed) {
+        private List<MemberReads> in(MemberReads[] indexed) {
             if (indexed == null) return Collections.<MemberReads>emptyList();
             List<MemberReads> held = new ArrayList<MemberReads>(
-                    indexed.size());
+                    indexed.length);
             for (MemberReads member : indexed) {
                 if (place.containsKey(member)) held.add(member);
             }
@@ -1772,11 +2639,11 @@ public final class ClosurePlanner {
          * it), and the store of another list would then be no writer of
          * the state the anchor read.
          */
-        private void holding(ReadRow row, Named named) {
+        private void holding(ReadRow row, List<Collection<String>> into) {
             if (row.location().kind() != LocationKind.MAP) return;
             String key = row.sessionId() + "|" + row.location().owner();
             for (MemberReads member : in(returning.get(key))) {
-                named.addAll(member.returning.get(key));
+                into.add(member.returning.get(key));
             }
         }
 
@@ -1837,11 +2704,11 @@ public final class ClosurePlanner {
          * which the join made the constant false).
          */
         private void under(Corpus corpus, String sessionId, String term,
-                           Named named) {
+                           List<Collection<String>> into) {
             for (String location : corpus.readLocations(sessionId, term)) {
                 String key = sessionId + "|" + location;
                 for (MemberReads member : in(locating.get(key))) {
-                    named.addAll(member.symbolsAt.get(key));
+                    into.add(member.symbolsAt.get(key));
                 }
             }
         }
@@ -1856,7 +2723,7 @@ public final class ClosurePlanner {
     private static void unread(Walk walk, String sessionId,
                                Endpoint endpoint, String what) {
         if (!walk.unread.computeIfAbsent(what,
-                unused -> new HashSet<String>()).add(endpoint.id())) {
+                unused -> ConcurrentHashMap.newKeySet()).add(endpoint.id())) {
             return;
         }
         walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
@@ -1874,8 +2741,7 @@ public final class ClosurePlanner {
      * on the paired producer's node. An unpaired attach restricts nothing (and
      * is reported LINEAGE_LOST).</p>
      */
-    private static void producers(Walk walk, AttachRow attach,
-                                  List<Demand> into) {
+    private static void producers(Walk walk, AttachRow attach, Says step) {
         String portId = attach.endpoint().site();
         List<StaticScopeMap.Site> exports = walk.map.exportsOf(portId);
         Set<String> guards = new LinkedHashSet<String>();
@@ -1884,24 +2750,23 @@ public final class ClosurePlanner {
         }
         if (attach.producer() == null) {
             // Once per endpoint, as the first session states it.
-            if (walk.cut.add(attach.endpoint().id() + "|unpaired")) {
-                walk.gaps.add(GapRow.of(attach.sessionId(),
+            step.once(attach.endpoint().id() + "|unpaired",
+                    () -> GapRow.of(attach.sessionId(),
                         GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                         attach.endpoint().toString(), "attach is unpaired:"
                                 + " no producer endpoint to close over"));
-            }
         } else {
-            crossCheck(walk, attach);
+            crossCheck(attach, step);
             Demand paired = new Demand(attach.producer().occurrence(),
                     CLOSURE_MEMBER, walk.contribution(attach.producer()));
             paired.flipSites.addAll(guards);
-            into.add(paired);
+            step.next(paired);
         }
         // N2: null (unpaired) means every node.
         NodeId sender = attach.producer() == null ? null
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
-            candidates(walk, site, STATIC_CANDIDATE_PRODUCER, guards, into,
+            candidates(walk, site, STATIC_CANDIDATE_PRODUCER, guards, step,
                     attach.sessionId(), "port " + portId, sender, null);
         }
     }
@@ -1919,18 +2784,19 @@ public final class ClosurePlanner {
      * candidates only on the reader's node (Writers_W(l) is per concrete
      * object, SYMBOL-SCOPE §5.5).</p>
      */
-    private static void writers(Walk walk, ReadRow row, List<Demand> into) {
+    private static void writers(Walk walk, ReadRow row, Says step) {
         if (row.location().kind() == LocationKind.STORE) {
-            storeWriters(walk, row, into);
-            storeFetches(walk, row, into);
+            storeWriters(walk, row, step);
+            storeFetches(walk, row, step);
             return;
         }
-        writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
+        writersOfVersion(walk, step, row.sessionId(),
+                row.endpoint().occurrence(),
                 row.location(), row.observedVersion(),
                 walk.map.carriersAt(row.endpoint().site(), row.javaType(),
                         row.location().kind()),
                 row, row.endpoint().id(), row.endpoint()::toString,
-                () -> String.valueOf(row.location()), into);
+                () -> String.valueOf(row.location()));
     }
 
     /**
@@ -1952,15 +2818,15 @@ public final class ClosurePlanner {
      * @param subject what that diagnostic is addressed at
      * @param located how the location reads in it
      */
-    private static void writersOfVersion(Walk walk, String sessionId,
+    private static void writersOfVersion(Walk walk, Says step,
+                                         String sessionId,
                                          OccurrenceAddress reader,
                                          LocationId location,
                                          long observedVersion,
                                          Set<String> readCarriers,
                                          ReadRow read, String readAt,
                                          Supplier<String> subject,
-                                         Supplier<String> located,
-                                         List<Demand> into) {
+                                         Supplier<String> located) {
         Corpus corpus = walk.corpus;
         String locationKey = SmtLowering.locationKey(location);
         // Every carrier the static map names for the location, and the
@@ -1973,29 +2839,28 @@ public final class ClosurePlanner {
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
-            wrote(walk, write, into);
+            wrote(walk, write, step);
             if (read == null) continue;
             for (WriteRow state : corpus.referentStates(write, read)) {
-                wrote(walk, state, into);
+                wrote(walk, state, step);
             }
         }
         if (carriers.isEmpty() && walk.map.stated()) {
-            if (walk.cut.add(readAt + "|" + field(location) + "|carrier")) {
-                walk.gaps.add(GapRow.of(sessionId,
+            step.once(readAt + "|" + field(location) + "|carrier",
+                    () -> GapRow.of(sessionId,
                         GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                         subject.get(), "no recorded write of "
                                 + located.get() + " matches a write site of"
                                 + " the static map, so this location's "
                                 + "carrier is unnamed and no static "
                                 + "candidate writer of it can be"));
-            }
             return;
         }
         // N1: the heap this read observed is the reader JVM's.
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : walk.writersOf(carrier)) {
                 candidates(walk, site, STATIC_CANDIDATE_WRITER, site.guards,
-                        into, sessionId, "carrier " + carrier, reader.node(),
+                        step, sessionId, "carrier " + carrier, reader.node(),
                         location);
             }
         }
@@ -2009,12 +2874,11 @@ public final class ClosurePlanner {
      * ({@link #wrote}).  No static candidate: a store location is a path,
      * which no site of the map stores.
      */
-    private static void storeWriters(Walk walk, ReadRow row,
-                                     List<Demand> into) {
+    private static void storeWriters(Walk walk, ReadRow row, Says step) {
         for (WriteRow write : walk.corpus.eligibleWrites(row.sessionId(),
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(), row.endpoint().occurrence())) {
-            wrote(walk, write, into);
+            wrote(walk, write, step);
         }
     }
 
@@ -2026,17 +2890,16 @@ public final class ClosurePlanner {
      * watch, so the node never fetches the next version and its reader reads
      * an older one.  Each joins contributing no value, flipped at its fault
      * decisions, as every task is, and is not followed ({@link
-     * #successors}).
+     * #step}).
      */
-    private static void storeFetches(Walk walk, ReadRow row,
-                                     List<Demand> into) {
+    private static void storeFetches(Walk walk, ReadRow row, Says step) {
         NodeId reader = row.endpoint().occurrence().node();
         boolean asked = false;
         for (String fetch : walk.map.storeFetches(row.location().owner(),
                 row.location().slot())) {
             OccurrenceAddress occurrence = OccurrenceAddress.parse(fetch);
             if (reader.equals(occurrence.node())) {
-                into.add(new Demand(occurrence, STORE_FETCH, false));
+                step.next(new Demand(occurrence, STORE_FETCH, false));
                 asked = true;
             }
         }
@@ -2044,9 +2907,9 @@ public final class ClosurePlanner {
         // demands beyond them has none asked, named once per location and
         // node: no read door on its flow is flippable.
         String location = SmtLowering.locationKey(row.location());
-        if (!asked && walk.cut.add(location + "|" + reader.render()
-                + "|fetch")) {
-            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+        if (!asked) {
+            step.once(location + "|" + reader.render() + "|fetch",
+                    () -> GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     location + " @ " + reader.render(), "a demanded store"
                             + " read of this location on this node rests on"
@@ -2089,11 +2952,11 @@ public final class ClosurePlanner {
      *  wrote; a store version also rests on its location's earlier ones
      *  ({@link #earlierVersions}).  An INITIAL has no writer: no run
      *  decided it. */
-    private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
+    private static void wrote(Walk walk, WriteRow write, Says step) {
         if (write.initial()) return;
-        into.add(writer(walk, write));
+        step.writer(write);
         if (write.location().kind() == LocationKind.STORE) {
-            earlierVersions(walk, write, into);
+            step.earlier(write);
         }
     }
 
@@ -2142,26 +3005,16 @@ public final class ClosurePlanner {
      */
     private static void candidates(Walk walk, StaticScopeMap.Site site,
                                    String why, Collection<String> guards,
-                                   List<Demand> into, String sessionId,
+                                   Says step, String sessionId,
                                    String what, NodeId node,
                                    LocationId location) {
         List<OccurrenceAddress> holders = walk.holders(site, node);
-        Set<String> offered = walk.offered.computeIfAbsent(
-                Arrays.<Object>asList(why, site, guards, node),
-                key -> new HashSet<String>());
-        for (OccurrenceAddress occurrence : holders) {
-            if (offered.contains(occurrence.id())) continue;
-            if (location != null && walk.holdsOthersOnly(occurrence,
-                    sessionId, location)) {
-                continue;
-            }
-            offered.add(occurrence.id());
-            Demand candidate = new Demand(occurrence, why, false);
-            candidate.flipSites.addAll(guards);
-            into.add(candidate);
-        }
+        step.offer(Arrays.<Object>asList(why, site, guards, node),
+                holders, why, guards, sessionId, location);
         if (!holders.isEmpty()) return;
-        walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
+        step.gap(why + "|" + sessionId + "|" + site.regionId + "|"
+                + site.siteId + "|" + what + "|" + node,
+                () -> GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, site.regionId,
                 "a static " + (STATIC_CANDIDATE_WRITER.equals(why)
                         ? "write" : "export") + " site of " + what + " is in "
@@ -2217,17 +3070,15 @@ public final class ClosurePlanner {
      *  the runtime's defect, reported once per consumer endpoint and
      *  producer, as the first session states it (every replay repeats the
      *  seed's pairings). Root/Lost contexts raise nothing. */
-    private static void crossCheck(Walk walk, AttachRow attach) {
+    private static void crossCheck(AttachRow attach, Says step) {
         CausalContext context = attach.endpoint().occurrence().context();
         if (!(context instanceof CausalContext.Anchor)) return;
         String anchored = ((CausalContext.Anchor) context)
                 .producerEndpointId();
         String recorded = attach.producer().id();
-        if (anchored.equals(recorded) || !walk.cut.add(attach.endpoint().id()
-                + "|" + recorded + "|pairing")) {
-            return;
-        }
-        walk.gaps.add(GapRow.of(attach.sessionId(),
+        if (anchored.equals(recorded)) return;
+        step.once(attach.endpoint().id() + "|" + recorded + "|pairing",
+                () -> GapRow.of(attach.sessionId(),
                 GapKind.TOPOLOGY_DIVERGENCE,
                 GapClass.DIAGNOSTIC, attach.endpoint().toString(),
                 "the recorded pairing names producer endpoint " + recorded

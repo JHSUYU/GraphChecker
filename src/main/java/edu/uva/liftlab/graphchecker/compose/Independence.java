@@ -102,7 +102,8 @@ public final class Independence {
                            Collection<String> families,
                            List<DecisionRow> conditions,
                            List<ReadRow> readRows,
-                           Function<ReadRow, List<DecisionRow>> built) {
+                           Function<ReadRow, List<DecisionRow>> built,
+                           Corpus.Claims claims) {
         SmtLowering.SessionJoin join = corpus.join(session);
         Set<String> bound = new LinkedHashSet<String>(families);
         Predicate<String> moving = variable -> bound.contains(variable)
@@ -123,7 +124,7 @@ public final class Independence {
         List<List<DecisionRow>> guards = new ArrayList<List<DecisionRow>>(
                 readRows.size());
         for (ReadRow read : readRows) {
-            Set<String> leaves = readLeaves(corpus, session, read);
+            Set<String> leaves = readLeaves(corpus, session, read, claims);
             List<DecisionRow> shaped = built.apply(read);
             // Read only: a read no construction guard shaped is its leaves.
             Set<String> value = shaped.isEmpty() ? leaves
@@ -202,7 +203,7 @@ public final class Independence {
         List<Set<String>> byRead = new ArrayList<Set<String>>(
                 readRows.size());
         for (ReadRow read : readRows) {
-            byRead.add(readLeaves(corpus, session, read));
+            byRead.add(readLeaves(corpus, session, read, null));
         }
         boolean[] keptCondition = new boolean[conditions.size()];
         boolean[] keptRead = new boolean[readRows.size()];
@@ -246,10 +247,12 @@ public final class Independence {
     }
 
     /** A read's variables: its location, its symbol, and what its observed
-     *  write stated (one walk per read and session, {@link Corpus#leaves}). */
+     *  write stated (one walk per read and session, {@link
+     *  Corpus#readLeaves}, under {@code claims} where it may run ahead of
+     *  its order). */
     private static Set<String> readLeaves(Corpus corpus, String session,
-                                          ReadRow read) {
-        return corpus.leaves(session, "read " + read.seq(),
+                                          ReadRow read, Corpus.Claims claims) {
+        return corpus.readLeaves(session, read, claims,
                 () -> walkRead(corpus, session, read,
                         corpus.expressions(session)));
     }

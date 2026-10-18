@@ -307,6 +307,11 @@ public final class Corpus implements Arms.Rows {
      *  the session states in its own file. */
     private final Map<String, Map<String, ObligationResult>> waveVerdicts =
             new LinkedHashMap<String, Map<String, ObligationResult>>();
+    /** Session id -> the round directory of the worker that landed it, as
+     *  the read found the workers: a round reads it after its corpus read,
+     *  while GROW may swap a worker's files (ExploreMain#wave). */
+    private final Map<String, Path> landedIn =
+            new LinkedHashMap<String, Path>();
     /** Producer endpoint id of a SEND -> the stance its SEND stood in. */
     private final Map<String, ContextShape.Stance> senderStanceByEndpoint =
             new HashMap<String, ContextShape.Stance>();
@@ -384,11 +389,25 @@ public final class Corpus implements Arms.Rows {
                 new ConcurrentHashMap<String, Set<Long>>();
         final Map<String, List<StateRead>> stateReads =
                 new ConcurrentHashMap<String, List<StateRead>>();
+        /** The seqs more than one of its read rows stand at (a store read
+         *  and its view's): {@link #readLeaves}' key holds one. */
+        final Set<Long> sharedSeqs;
+        /** "read seq" of a shared seq -> the row whose leaves it holds. */
+        final Map<String, ReadRow> sharedBy =
+                new ConcurrentHashMap<String, ReadRow>();
 
         Derived(SessionReader session) {
             this.session = session;
             this.join = SmtLowering.joinOf(session);
             this.schedule = facts(session);
+            Set<Long> seen = new HashSet<Long>();
+            Set<Long> shared = new HashSet<Long>();
+            for (ReadRow read : session.reads()) {
+                if (read != null && !seen.add(read.seq())) {
+                    shared.add(read.seq());
+                }
+            }
+            this.sharedSeqs = shared;
         }
     }
 
@@ -626,13 +645,14 @@ public final class Corpus implements Arms.Rows {
      *  from it drops skews). A planted assignment is stated by the ask alone
      *  ({@code ConcolicRegionRuntime#applyFocusedRootAssignment}). */
     private void indexWorlds(Path iteration) throws IOException {
-        workers = ObligationDir.workersIn(iteration);
+        List<ObligationDir> workers = ObligationDir.workersIn(iteration);
         for (Map.Entry<String, JsonObject> world
                 : ObligationDir.worlds(workers).entrySet()) {
             worlds.put(world.getKey(), ExploreCodec.readWorld(
                     world.getValue()));
         }
         for (ObligationDir worker : workers) {
+            landedIn.put(worker.sessionId(), worker.dir().getParent());
             for (ObligationResult result : worker.results()) {
                 waveVerdicts.computeIfAbsent(worker.sessionId(),
                         key -> new LinkedHashMap<String, ObligationResult>())
@@ -656,14 +676,10 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    /** Every obligation worker of the iteration that published a session,
-     *  as this corpus read them ({@link ObligationDir#workersIn}). */
-    private List<ObligationDir> workers =
-            Collections.<ObligationDir>emptyList();
-
-    /** {@link #workers}: a round's wave reads them again from these. */
-    List<ObligationDir> workers() {
-        return Collections.unmodifiableList(workers);
+    /** Each session of the workers' answers -> the round directory of the
+     *  worker that landed it, as this corpus's read found them. */
+    public Map<String, Path> landedIn() {
+        return Collections.unmodifiableMap(landedIn);
     }
 
     /** How many distinct worlds (by digest) replays refuted for one flip:
@@ -1762,9 +1778,31 @@ public final class Corpus implements Arms.Rows {
                 producerEndpointId, Collections.<String>emptySet());
         if (stances.isEmpty() && handlers.isEmpty()) return doors;
         String own = ContextShape.Stance.of(served).render();
-        for (OccurrenceAddress occurrence : occurrenceById.values()) {
+        // The occurrences at those stances, in corpus order: no other
+        // occurrence is a door or a cut (a scan of every occurrence per
+        // demand was 93 s of SGF8-adhoc-05 round 5's walk).
+        StanceIndex index = stanceIndex();
+        Set<String> asked = new HashSet<String>(stances);
+        asked.addAll(handlers);
+        int count = 0;
+        List<int[]> standing = new ArrayList<int[]>();
+        for (String stance : asked) {
+            int[] places = index.places.get(stance);
+            if (places == null) continue;
+            standing.add(places);
+            count += places.length;
+        }
+        int[] places = new int[count];
+        int next = 0;
+        for (int[] each : standing) {
+            System.arraycopy(each, 0, places, next, each.length);
+            next += each.length;
+        }
+        Arrays.sort(places);
+        for (int place : places) {
+            OccurrenceAddress occurrence = index.occurrences.get(place);
             if (occurrence.equals(served)) continue;
-            String stance = ContextShape.Stance.of(occurrence).render();
+            String stance = index.stances[place];
             if (stances.contains(stance) && !stance.equals(own)) {
                 if (!doors.contains(occurrence)) doors.add(occurrence);
             } else if (stances.contains(stance)) {
@@ -1774,6 +1812,49 @@ public final class Corpus implements Arms.Rows {
             }
         }
         return doors;
+    }
+
+    /** Every occurrence in corpus order, its stance, and stance -> the
+     *  places of the occurrences standing there ({@link #doorsOf}). */
+    private static final class StanceIndex {
+        final List<OccurrenceAddress> occurrences;
+        final String[] stances;
+        final Map<String, int[]> places = new HashMap<String, int[]>();
+
+        StanceIndex(Collection<OccurrenceAddress> all) {
+            occurrences = new ArrayList<OccurrenceAddress>(all);
+            stances = new String[occurrences.size()];
+            Map<String, List<Integer>> at =
+                    new HashMap<String, List<Integer>>();
+            for (int place = 0; place < stances.length; place++) {
+                stances[place] = ContextShape.Stance.of(
+                        occurrences.get(place)).render();
+                at.computeIfAbsent(stances[place],
+                        stance -> new ArrayList<Integer>()).add(place);
+            }
+            for (Map.Entry<String, List<Integer>> each : at.entrySet()) {
+                int[] held = new int[each.getValue().size()];
+                for (int index = 0; index < held.length; index++) {
+                    held[index] = each.getValue().get(index);
+                }
+                places.put(each.getKey(), held);
+            }
+        }
+    }
+
+    /** {@link StanceIndex}, built at the first {@link #doorsOf}: a corpus
+     *  does not change once read. */
+    private volatile StanceIndex stanceIndex;
+
+    private StanceIndex stanceIndex() {
+        StanceIndex held = stanceIndex;
+        if (held != null) return held;
+        synchronized (this) {
+            if (stanceIndex == null) {
+                stanceIndex = new StanceIndex(occurrenceById.values());
+            }
+            return stanceIndex;
+        }
     }
 
     /** What {@link #doorsOf} cut, by narrowing: the served occurrence's own
@@ -2140,7 +2221,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** {@link #sessions} and the forced ones, as read. */
-    private List<SessionReader> everySession() {
+    List<SessionReader> everySession() {
         List<SessionReader> every = new ArrayList<SessionReader>(sessions);
         every.addAll(forcedSessions);
         return every;
@@ -2544,6 +2625,144 @@ public final class Corpus implements Arms.Rows {
             of.leaves.put(key, found);
         }
         return found;
+    }
+
+    /**
+     * {@link #leaves} of one read row, held by its seq: read rows share a seq
+     * (a store read and its view's), and they share one set, the first row's
+     * asked -- a function of the ORDER the rows are first asked in (STATUS
+     * open defect 70).  A computation that may run ahead of that order asks
+     * under {@code claims}: a shared seq no one has asked yet is CLAIMED
+     * there, by the row it is first asked of, and held there until the
+     * claims are taken in the order ({@link #take}).  Without claims -- a
+     * computation in the order -- the set is held at once.
+     */
+    public Set<String> readLeaves(String sessionId, ReadRow read,
+                                  Claims claims,
+                                  Supplier<Set<String>> compute) {
+        Derived of = bySession.get(sessionId);
+        if (of == null) return compute.get();
+        String key = "read " + read.seq();
+        Set<String> found = of.leaves.get(key);
+        if (found != null) return found;
+        if (claims != null && of.sharedSeqs.contains(read.seq())) {
+            return claims.claim(sessionId, read,
+                    () -> new HeldLeaves(compute.get(), of.leafNames));
+        }
+        found = new HeldLeaves(compute.get(), of.leafNames);
+        if (of.sharedSeqs.contains(read.seq())) {
+            of.sharedBy.put(key, read);
+            of.leaves.put(key, found);
+            return found;
+        }
+        Set<String> first = of.leaves.putIfAbsent(key, found);
+        return first != null ? first : found;
+    }
+
+    /**
+     * Takes, in the order, what one computation claimed ({@link
+     * #readLeaves}): every shared seq it claimed that no one took yet is
+     * held as it claimed it, if each one taken already was taken by the
+     * same row; else nothing is taken, and the computation is not the one
+     * the order makes (false).
+     */
+    public boolean take(Claims claims) {
+        for (Claims.Claim claim : claims.claimed.values()) {
+            Derived of = bySession.get(claim.sessionId);
+            ReadRow by = of.sharedBy.get("read " + claim.read.seq());
+            if (by != null && by != claim.read) return false;
+        }
+        for (Claims.Claim claim : claims.claimed.values()) {
+            Derived of = bySession.get(claim.sessionId);
+            String key = "read " + claim.read.seq();
+            if (of.sharedBy.putIfAbsent(key, claim.read) == null) {
+                of.leaves.put(key, claim.leaves);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * WHAT ONE COMPUTATION CLAIMED ({@link #readLeaves}), in the order it
+     * claimed it, and the answers computed over a claim ({@link #held}):
+     * one computation's at a time, on one thread.
+     */
+    public static final class Claims {
+        private final Map<String, Claim> claimed =
+                new LinkedHashMap<String, Claim>();
+        /** Whether a claim was read since {@link #since}. */
+        private boolean read;
+        /** key -> an answer computed over a claim, held here until the
+         *  claims are taken ({@code compose.RestsOn}). */
+        public final Map<String, Set<String>> held =
+                new LinkedHashMap<String, Set<String>>();
+
+        private Set<String> claim(String sessionId, ReadRow read,
+                                  Supplier<Set<String>> leaves) {
+            String key = sessionId + "|" + read.seq();
+            Claim claim = claimed.get(key);
+            if (claim == null) {
+                claim = new Claim(sessionId, read, leaves.get());
+                claimed.put(key, claim);
+            }
+            this.read = true;
+            return claim.leaves;
+        }
+
+        /** How many claims and answers over them it holds. */
+        public int size() {
+            return claimed.size() + held.size();
+        }
+
+        /** An answer {@link #held} over a claim is read. */
+        public void readHeld() {
+            read = true;
+        }
+
+        /** Starts one answer's computation: whether the one around it read
+         *  a claim, which {@link #over} gives back. */
+        public boolean since() {
+            boolean was = read;
+            read = false;
+            return was;
+        }
+
+        /** Whether the answer begun at {@link #since} read a claim; the one
+         *  around it ({@code was}) has, if either did. */
+        public boolean over(boolean was) {
+            boolean over = read;
+            read = was || over;
+            return over;
+        }
+
+        /** Takes {@code later}'s claims after these, if each it shares
+         *  with these is the same row's; false, taking none, else. */
+        public boolean follow(Claims later) {
+            for (Map.Entry<String, Claim> each : later.claimed.entrySet()) {
+                Claim mine = claimed.get(each.getKey());
+                if (mine != null && mine.read != each.getValue().read) {
+                    return false;
+                }
+            }
+            for (Map.Entry<String, Claim> each : later.claimed.entrySet()) {
+                claimed.putIfAbsent(each.getKey(), each.getValue());
+            }
+            held.putAll(later.held);
+            read |= later.read;
+            return true;
+        }
+
+        private static final class Claim {
+            final String sessionId;
+            final ReadRow read;
+            final Set<String> leaves;
+
+            Claim(String sessionId, ReadRow read, Set<String> leaves) {
+                this.sessionId = sessionId;
+                this.read = read;
+                this.leaves = leaves;
+            }
+        }
     }
 
     /**
@@ -3067,14 +3286,15 @@ public final class Corpus implements Arms.Rows {
      * decisions'.
      */
     void configurationLiterals() {
+        // Every symbol a key may ask the domain of: each session's mints by
+        // symbol, as a key finds them (#rootBySymbol), so no key asks one
+        // first (a root minted under two symbols keeps one in rootsById).
         Map<String, Pattern> roots = new LinkedHashMap<String, Pattern>();
-        for (Map<String, RootMintRow> mints : rootsById.values()) {
-            for (RootMintRow mint : mints.values()) {
-                if (mint.kind() == RootKind.INTEGRAL
-                        && mint.category() == RootCategory.CONFIG
-                        && !compared.containsKey(mint.symbol())) {
-                    roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
-                }
+        for (RootMintRow mint : rootBySymbol.values()) {
+            if (mint.kind() == RootKind.INTEGRAL
+                    && mint.category() == RootCategory.CONFIG
+                    && !compared.containsKey(mint.symbol())) {
+                roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
             }
         }
         List<Map.Entry<String, Map.Entry<String, DecisionRow>>> asked =

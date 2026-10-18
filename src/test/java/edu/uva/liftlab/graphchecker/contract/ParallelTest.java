@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonObject;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -29,6 +31,17 @@ import static org.junit.Assert.fail;
 public class ParallelTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
+
+    /** As a planner's JVM computes, on more cores than one. */
+    @Before
+    public void manyCores() {
+        Parallel.width(8);
+    }
+
+    @After
+    public void oneCore() {
+        Parallel.width(1);
+    }
 
     /** Results in the items' order however long each took; the first
      *  failure in the items' order is the one thrown. */

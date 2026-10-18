@@ -5,10 +5,12 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -78,6 +80,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -1281,6 +1284,7 @@ public class ExploreTest {
         String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
                 {"land", "s-b"}, {"unlisted", "s-c"}};
         Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
+        Set<String> held = new LinkedHashSet<String>();
         for (int round = 0; round < landings.length; round++) {
             String[] landing = landings[round];
             if (landing.length > 0 && landing[0].equals("land")) {
@@ -1304,7 +1308,22 @@ public class ExploreTest {
                 landed(iteration, landing[1]);
             }
             Path mine = iteration.resolve(name);
+            // What the round reads, by which its room is judged: the files
+            // of the sessions the planner does not hold yet, as they decode.
+            long reads = 0L;
+            for (String sessionId : corpus) {
+                if (held.contains(sessionId)) continue;
+                try (java.util.stream.Stream<Path> files = Files.list(
+                        iteration.resolve("sessions").resolve(sessionId))) {
+                    for (Path file : (Iterable<Path>) files::iterator) {
+                        reads += ArtifactIO.decodedSize(file);
+                    }
+                }
+            }
+            assertEquals("round " + round + " reads its new sessions' files",
+                    reads, served.toRead(corpus));
             served.round(round, null, results, corpus, mine);
+            held = new LinkedHashSet<String>(corpus);
             List<String> files = new ArrayList<String>();
             try (java.util.stream.Stream<Path> listed = Files.list(own)) {
                 listed.forEach(file -> files.add(file.getFileName()
@@ -1327,6 +1346,56 @@ public class ExploreTest {
         assertTrue("slots were opened and dropped: " + kinds,
                 kinds.containsKey(SlotTable.OPENED)
                         && kinds.containsKey(SlotTable.DROPPED));
+    }
+
+    /**
+     * A ROUND ON ONE CORE IS A ROUND ON MANY ({@code contract.Parallel}):
+     * the frontier's keys and the candidates, one session's in order to a
+     * thread, the sessions side by side, and every file read and written by
+     * blocks -- byte for byte the files one thread writes.
+     */
+    @Test
+    public void aRoundOnOneCoreIsARoundOnMany() throws Exception {
+        Path iteration = tree.newFolder("cores").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.marker(TARGET, "CASE.MARKER", "M_MARKER", "false");
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        seed.keyChain();
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
+        for (int world = 0; world < 6; world++) {
+            landed(iteration, "s-" + world);
+            worker(iteration, "obligations-0000", "w-" + world, "o-s-" + world,
+                    "s-" + world, TARGET, "Guard#u8", NONE, NONE);
+        }
+        Path results = results(iteration);
+        Map<Integer, Path> planned = new LinkedHashMap<Integer, Path>();
+        try {
+            for (int cores : new int[] {1, 8}) {
+                Parallel.width(cores);
+                Path out = tree.newFolder("cores-" + cores).toPath();
+                plan(iteration, TARGET_SELECTOR, null, results, out, 1);
+                planned.put(cores, out);
+            }
+        } finally {
+            Parallel.width(1);
+        }
+        List<String> files = new ArrayList<String>();
+        try (java.util.stream.Stream<Path> listed =
+                     Files.list(planned.get(1))) {
+            listed.forEach(file -> files.add(file.getFileName().toString()));
+        }
+        assertTrue("the round wrote its files: " + files,
+                files.contains("obligations.jsonl")
+                        && files.contains(SlotTable.FILE));
+        for (String file : files) {
+            assertArrayEquals(file, Files.readAllBytes(
+                    planned.get(1).resolve(file)), Files.readAllBytes(
+                    planned.get(8).resolve(file)));
+        }
     }
 
     /** A world's admitted session of the served planner's iteration: the
@@ -6327,7 +6396,8 @@ public class ExploreTest {
             session.flush();
         }
         ClosurePlanner.Walk walk = new ClosurePlanner.Walk(
-                Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET);
+                Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET,
+                ClosurePlanner.CORES);
         ClosurePlanner.GroupReads target = walk.reads(TARGET);
         ClosurePlanner.GroupReads reader = walk.reads(READER);
         assertEquals("every occurrence on the map is in both groups", 3,
@@ -6402,6 +6472,266 @@ public class ExploreTest {
             assertEquals("said once: " + gap.getKey(), 1,
                     gap.getValue().intValue());
         }
+    }
+
+    /**
+     * The walk's steps run ahead on the planner's cores ({@code
+     * ClosurePlanner#CORES}), and its plan is the one-at-a-time walk's: each
+     * step computed ahead is the walk of its demand's state, and is taken in
+     * queue order only while it still is; what only that order gives -- the
+     * leaves of the anchor's two reads at one seq, held once, the first
+     * asked ({@code Corpus#readLeaves}) -- is computed in it.  Here a
+     * producer whose every delivery a session attached, and a writer each
+     * session's anchor read, over seventy sessions: planned on one core --
+     * the walk one step at a time -- on four and on the host's, the three
+     * plans are one.
+     */
+    @Test
+    public void theWalkAheadPlansWhatItPlansAlone() throws Exception {
+        Path iteration = tree.newFolder("asked-ahead").toPath();
+        Endpoint other = at(PRODUCER, "XCH.resp.block-key-expiry",
+                "PBHelper#convert#12");
+        Endpoint side = at(TARGET, Endpoint.stateSite(
+                "BlockTokenSecretManager", "retrieveDataEncryptionKey", 9,
+                false), "BlockTokenSecretManager#retrieveDataEncryptionKey#9");
+        for (int at = 0; at < 70; at++) {
+            String sessionId = at == 0 ? "s-seed" : "s-" + at;
+            Session session = new Session(iteration, sessionId);
+            session.activations(false, TARGET, WRITER, PRODUCER);
+            session.constant("e.11999" + at, "11999" + at);
+            session.symbolic("e.stored", "M_HOFF_KEY");
+            session.export(other, "e.11999" + at, 11L + at, "11999" + at);
+            session.attach(DELIVERED, "M_HOFF_KEY", "11999" + at, other);
+            session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY" + at,
+                    "11999" + at);
+            // The next read at the same seq (a store read and its view's).
+            session.seq--;
+            session.read(side, LocationId.of(LocationKind.MAP, "" + (40 + at),
+                    "-3"), 0L, "M_SIDE" + at, "0");
+            session.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8", "(and (= M_READ_KEY"
+                    + at + " 0) (= M_SIDE" + at + " 0))");
+            session.flush();
+        }
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120")));
+        List<String> plans = onEachPool(iteration, map);
+        assertTrue("the producer and the writer are planned: "
+                + plans.get(0), plans.get(0).contains(
+                ClosurePlanner.taskId(PRODUCER))
+                && plans.get(0).contains(ClosurePlanner.taskId(WRITER)));
+        assertEquals("on four cores, the one-core plan", plans.get(0),
+                plans.get(1));
+        assertEquals("on the host's cores, the one-core plan",
+                plans.get(0), plans.get(2));
+    }
+
+    /**
+     * A step computed ahead whose demand an earlier step grew, or whose
+     * walk claimed the leaves of a seq another row asked first in the
+     * order, is not the walk of its demand there ({@code
+     * ClosurePlanner.Walk#take}): W1's delivery is W4's
+     * handoff, so W1's step grows W4, which then reads e, W5's; W1 and W2
+     * read a and b at one seq ({@code Corpus#readLeaves}: the first row
+     * asked holds it), a holding W8's handoff through W7's write, so in
+     * the order W2's delivery rests on a's leaves -- which name f, W6's --
+     * not on b's; over seventy sessions.  On one core -- the walk one step
+     * at a time -- on four and on the host's, one plan.
+     */
+    @Test
+    public void aStepWhoseDemandChangedIsWalkedAgain() throws Exception {
+        Path iteration = tree.newFolder("walked-again").toPath();
+        OccurrenceAddress w1 = occurrence("hdfs-case/dn0", "REGION.w1",
+                CausalContext.of(Role.of("RV_W1"), "", 1), "o.a.Rv#w1#1");
+        OccurrenceAddress w2 = occurrence("hdfs-case/dn0", "REGION.w2",
+                CausalContext.of(Role.of("RV_W2"), "", 1), "o.a.Rv#w2#1");
+        OccurrenceAddress w4 = occurrence("hdfs-case/dn0", "REGION.w4",
+                CausalContext.of(Role.of("RV_W4"), "", 1), "o.a.Rv#w4#1");
+        OccurrenceAddress w5 = occurrence("hdfs-case/dn1", "REGION.w5",
+                CausalContext.of(Role.of("RV_W5"), "", 1), "o.a.Rv#w5#1");
+        OccurrenceAddress w6 = occurrence("hdfs-case/dn1", "REGION.w6",
+                CausalContext.of(Role.of("RV_W6"), "", 1), "o.a.Rv#w6#1");
+        OccurrenceAddress w7 = occurrence("hdfs-case/dn1", "REGION.w7",
+                CausalContext.of(Role.of("RV_W7"), "", 1), "o.a.Rv#w7#1");
+        OccurrenceAddress w8 = occurrence("hdfs-case/dn2", "REGION.w8",
+                CausalContext.of(Role.of("RV_W8"), "", 1), "o.a.Rv#w8#1");
+        LocationId a = LocationId.of(LocationKind.MAP, "51", "a");
+        LocationId b = LocationId.of(LocationKind.MAP, "52", "b");
+        LocationId e = LocationId.of(LocationKind.MAP, "54", "e");
+        LocationId f = LocationId.of(LocationKind.MAP, "55", "f");
+        Endpoint wroteE = at(w5, Endpoint.stateSite("Rv", "w5", 3, true),
+                "Rv#w5#3");
+        Endpoint readE = at(w4, Endpoint.stateSite("Rv", "w4", 4, false),
+                "Rv#w4#4");
+        Endpoint wroteF = at(w6, Endpoint.stateSite("Rv", "w6", 3, true),
+                "Rv#w6#3");
+        Endpoint readF = at(w2, Endpoint.stateSite("Rv", "w2", 6, false),
+                "Rv#w2#6");
+        Endpoint wroteA = at(w7, Endpoint.stateSite("Rv", "w7", 3, true),
+                "Rv#w7#3");
+        Endpoint x8 = at(w8, "XCH.resp.rv8", "Rv#x8#1");
+        Endpoint r8 = at(w7, "XCH.resp.rv8", "Rv#r8#1");
+        Endpoint readA = at(w1, Endpoint.stateSite("Rv", "w1", 5, false),
+                "Rv#w1#5");
+        Endpoint readB = at(w2, Endpoint.stateSite("Rv", "w2", 5, false),
+                "Rv#w2#5");
+        Endpoint x1 = at(w1, "XCH.resp.rv1", "Rv#x1#1");
+        Endpoint x2 = at(w2, "XCH.resp.rv2", "Rv#x2#1");
+        Endpoint x4 = at(w4, "XCH.resp.rv4", "Rv#x4#1");
+        Endpoint x4b = at(w4, "XCH.resp.rv4b", "Rv#x4b#1");
+        Endpoint t1 = at(TARGET, "XCH.resp.rv1", "Rv#t1#1");
+        Endpoint t2 = at(TARGET, "XCH.resp.rv2", "Rv#t2#1");
+        Endpoint t4 = at(TARGET, "XCH.resp.rv4", "Rv#t4#1");
+        Endpoint r4b = at(w1, "XCH.resp.rv4b", "Rv#r4b#1");
+        for (int at = 0; at < 70; at++) {
+            String sessionId = at == 0 ? "s-seed" : "s-" + at;
+            Session session = new Session(iteration, sessionId);
+            session.activations(false, TARGET, w1, w2, w4, w5, w6, w7, w8);
+            session.constant("e.w5", "5" + at);
+            session.constant("e.w8", "8" + at);
+            session.symbolic("e.a", "M_P" + at);
+            session.constant("e.w6", "6" + at);
+            session.constant("e.h4", "4" + at);
+            session.symbolic("e.h4b", "M_Q" + at);
+            session.symbolic("e.h1", "M_C" + at);
+            session.symbolic("e.h2", "M_B" + at);
+            session.write(wroteE, e, 1L, "e.w5");
+            session.write(wroteF, f, 1L, "e.w6");
+            session.read(readE, e, 1L, "M_Q" + at, "5" + at);
+            session.export(x4b, "e.h4b", 30L + at, "5" + at);
+            session.export(x4, "e.h4", 40L + at, "4" + at);
+            session.attach(r4b, "M_C" + at, "5" + at, x4b);
+            // a's version 1 is W8's handoff, which moves: a and b's seq
+            // holds a's leaves where W1 asked it first.
+            session.export(x8, "e.w8", 50L + at, "8" + at);
+            session.attach(r8, "M_P" + at, "8" + at, x8);
+            session.write(wroteA, a, 1L, "e.a");
+            session.read(readA, a, 1L, "M_A" + at, "8" + at);
+            session.seq--;
+            session.read(readB, b, 0L, "M_B" + at, "0");
+            session.read(readF, f, 1L, "M_A" + at, "6" + at);
+            session.export(x1, "e.h1", 10L + at, "5" + at);
+            session.export(x2, "e.h2", 20L + at, "0");
+            session.attach(t1, "M_H1", "5" + at, x1);
+            session.attach(t2, "M_H2", "0", x2);
+            session.attach(t4, "M_H4", "4" + at, x4);
+            session.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8",
+                    "(and (= M_H1 0) (= M_H2 0) (= M_H4 0))");
+            session.flush();
+        }
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120")));
+        List<String> plans = onEachPool(iteration, map);
+        assertTrue("W4 grown reads e, which W5 wrote: " + plans.get(0),
+                plans.get(0).contains(ClosurePlanner.taskId(w5)));
+        assertTrue("W2's delivery rests on the leaves W1's row gave the"
+                + " seq, which name f, which W6 wrote: " + plans.get(0),
+                plans.get(0).contains(ClosurePlanner.taskId(w6)));
+        assertEquals("on four cores, the one-core plan", plans.get(0),
+                plans.get(1));
+        assertEquals("on the host's cores, the one-core plan",
+                plans.get(0), plans.get(2));
+    }
+
+    /**
+     * A step reads its group's index; it never builds one: groups are
+     * indexed on the planner's thread as the steps that walk them start
+     * ({@code ClosurePlanner.Walk#reads}).  Here the anchor's step demands
+     * twelve producers, so the steps started next index the thirteenth
+     * group -- the insert after which a JDK 8 HashMap resizes at its next
+     * computeIfAbsent, whatever its key -- and the walk, planned two hundred
+     * times on the host's cores, is the one-core walk each time.
+     */
+    @Test
+    public void aStepNeverIndexesAGroup() throws Exception {
+        Path iteration = tree.newFolder("indexed-ahead").toPath();
+        List<OccurrenceAddress> producers = new ArrayList<OccurrenceAddress>();
+        StringBuilder phi = new StringBuilder("(and");
+        for (int at = 1; at <= 12; at++) {
+            producers.add(occurrence("hdfs-case/dn" + at, "REGION.p" + at,
+                    CausalContext.of(Role.of("RV_P" + at), "", 1),
+                    "o.a.Rv#p" + at + "#1"));
+            phi.append(" (= M_H").append(at).append(" 0)");
+        }
+        phi.append(")");
+        for (int run = 0; run < 3; run++) {
+            String sessionId = run == 0 ? "s-seed" : "s-" + run;
+            Session session = new Session(iteration, sessionId);
+            session.activation(TARGET, false);
+            for (int at = 1; at <= 12; at++) {
+                OccurrenceAddress producer = producers.get(at - 1);
+                Endpoint sent = at(producer, "XCH.resp.p" + at,
+                        "Rv#p" + at + "#1");
+                session.activation(producer, false);
+                session.constant("e.p" + at, "" + at);
+                session.export(sent, "e.p" + at, 10L * at + run, "" + at);
+                session.attach(at(TARGET, "XCH.resp.p" + at,
+                        "Rv#t" + at + "#1"), "M_H" + at, "" + at, sent);
+            }
+            session.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8", phi.toString());
+            session.flush();
+        }
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120")));
+        String alone = onEachPool(iteration, map).get(0);
+        for (OccurrenceAddress producer : producers) {
+            assertTrue("every producer is planned: " + alone,
+                    alone.contains(ClosurePlanner.taskId(producer)));
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        for (int run = 0; run < 200; run++) {
+            assertEquals("run " + run + " on the host's cores", alone,
+                    rendered(plannedOn(corpus, map, ClosurePlanner.CORES)));
+        }
+    }
+
+    /** The plans of {@code iteration}'s corpus, each read anew, on one
+     *  core -- the walk one step at a time -- on four, and on the host's
+     *  ({@code ClosurePlanner#CORES}). */
+    private static List<String> onEachPool(Path iteration,
+                                           StaticScopeMap map)
+            throws IOException {
+        java.util.concurrent.ForkJoinPool one =
+                new java.util.concurrent.ForkJoinPool(1);
+        java.util.concurrent.ForkJoinPool four =
+                new java.util.concurrent.ForkJoinPool(4);
+        try {
+            List<String> plans = new ArrayList<String>();
+            for (java.util.concurrent.ForkJoinPool cores : Arrays.asList(
+                    one, four, ClosurePlanner.CORES)) {
+                plans.add(rendered(plannedOn(Corpus.read(iteration, null),
+                        map, cores)));
+            }
+            return plans;
+        } finally {
+            one.shutdownNow();
+            four.shutdownNow();
+        }
+    }
+
+    /** {@link #closure} of {@link #TARGET}, its steps on {@code
+     *  cores}. */
+    private static ClosurePlanner.Plan plannedOn(Corpus corpus,
+            StaticScopeMap map, java.util.concurrent.ForkJoinPool cores) {
+        return ClosurePlanner.plan(corpus, TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                ClosurePlanner.CLOSURE_CEILING, map,
+                Branches.of(corpus, Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+                Collections.<String>emptySet(),
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""), cores);
+    }
+
+    /** Everything a plan states, as text. */
+    private static String rendered(ClosurePlanner.Plan plan) {
+        return plan.tasks + "\n" + plan.why + "\n" + plan.flipSites + "\n"
+                + plan.gaps + "\n" + plan.exposed + "\n" + plan.waiting
+                + "\n" + plan.truncated + "\n" + plan.unpaused + "\n"
+                + plan.runWhole + "\n" + plan.ceilingCut;
     }
 
     /**

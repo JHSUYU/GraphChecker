@@ -7,6 +7,7 @@ import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * AN ENGINE JVM THAT ONLY COLLECTS IS OUT OF HEAP.  Past
@@ -28,7 +29,11 @@ public final class HeapWatch {
     static final long WINDOW_MS = 60_000L;
     static final long LOOK_MS = 5_000L;
     static final double COLLECTING = 0.5;
-    static final double FULL = 0.9;
+    public static final double FULL = 0.9;
+
+    /** The most the old generation held after a sweep, as the watch saw
+     *  it, since {@link #takePeakSwept} last read it, in bytes. */
+    private static final AtomicLong PEAK_SWEPT = new AtomicLong();
 
     private HeapWatch() {
     }
@@ -66,6 +71,9 @@ public final class HeapWatch {
             long[] first = looks.peekFirst();
             long span = now - first[0];
             MemoryUsage swept = old.getCollectionUsage();
+            if (swept != null) {
+                PEAK_SWEPT.accumulateAndGet(swept.getUsed(), Math::max);
+            }
             if (span < WINDOW_MS - LOOK_MS || swept == null
                     || swept.getMax() <= 0L) {
                 continue;
@@ -96,6 +104,57 @@ public final class HeapWatch {
         MemoryUsage swept = old == null ? null : old.getCollectionUsage();
         return swept == null || swept.getMax() <= 0L ? 0.0
                 : (double) swept.getUsed() / swept.getMax();
+    }
+
+    /**
+     * How much of a session's files its rows hold once read, per byte of
+     * their text (a gzip file's as it decodes, {@code
+     * smt.ArtifactIO#decodedSize}): a steady third of them (0.32-0.37 over
+     * six rounds of SGF8 05, 07, 10, 14 and 40, their files then plain).
+     * What a round adds to the rows comes and goes (the walk's, the
+     * frontier's per-session state: peaks of 0.57 to over 1.09 times the
+     * files, in Frontier.<init> in three of the six), so no rule over the
+     * files alone tells a corpus a JVM holds from one it does not (40: 16.2
+     * GB of files out of a 21.5 GB heap; 05: 18.6 GB in it).
+     */
+    public static final double ROWS_PER_FILE_BYTE = 0.35;
+
+    /**
+     * WHETHER A JVM HOLDS ITS NEXT READ -- a served planner its next round,
+     * a planner shard its next sessions: its live set at its highest since
+     * it last asked ({@code peak}, {@link #takePeakSwept}) with {@link
+     * #ROWS_PER_FILE_BYTE} of the session files it reads now ({@code
+     * files}), against {@link #FULL} of its old generation ({@code old}),
+     * where it would only collect.  Null when it holds it, else why not,
+     * {@code who} named, the numbers in MB.  A JVM that measured nothing
+     * yet ({@code old} 0) holds it.
+     */
+    public static String outgrown(String who, long peak, long old,
+                                  long files) {
+        if (old <= 0L) return null;
+        long need = peak + (long) (ROWS_PER_FILE_BYTE * files);
+        if (need <= FULL * old) return null;
+        return who + " needs ~" + (need >> 20) + " MB of its " + (old >> 20)
+                + " MB old generation: " + (peak >> 20) + " MB live at its "
+                + "highest last round and " + ROWS_PER_FILE_BYTE + " of the "
+                + (files >> 20) + " MB of session files it reads now, past "
+                + Math.round(FULL * 100) + " % of it";
+    }
+
+    /**
+     * The old generation's live set at its highest since the last read --
+     * the most it held after a sweep, as the watch saw it every {@link
+     * #LOOK_MS}, or after the sweep now -- in bytes, and its most: the
+     * measure a served planner judges its next round's room by ({@link
+     * #outgrown}).  Reading it starts the next span at what the old
+     * generation holds now.
+     */
+    public static long[] takePeakSwept() {
+        MemoryPoolMXBean old = oldGeneration();
+        MemoryUsage swept = old == null ? null : old.getCollectionUsage();
+        long now = swept == null ? 0L : swept.getUsed();
+        long peak = Math.max(now, PEAK_SWEPT.getAndSet(now));
+        return new long[] {peak, swept == null ? 0L : swept.getMax()};
     }
 
     private static long collectedMillis() {

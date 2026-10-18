@@ -274,8 +274,11 @@ field=<f> <subject>`.
   inheritedFlips: [{focusedOccurrenceId, siteId, ordinal, outcome, obligationId}], rootAssignments,
   clockDeltas: {rootId: skew}, answers, pairings: {reader: writer} (each as `Confirmation#id`
   names it, `INITIAL` for a location's INITIAL), rootMints: {rootId: rendered mint occurrence},
-  unproducible, schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}, openArm?, force?}` (`openArm`
+  unproducible, schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}, openArm?, force?,
+  pathSessionId?}` (`openArm`
   true on an open decider arm's flip toward the arm, `Corpus#openArmFlip`: its replay may refute its world;
+  `pathSessionId` on a solved flip's, the session its path ran in: a replay owed on a path whose session GROW
+  withdrew is dropped, `run_engine.sh campaign_stream_replay_drop`;
   `force` true on a FORCE run's, `flip: null`, PIPELINE §7.10; written nulls stated,
   `ExploreCodec#writeFocusFile`). A clock's counterfactual is a skew
   the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned

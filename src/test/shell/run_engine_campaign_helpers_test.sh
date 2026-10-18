@@ -2097,13 +2097,13 @@ done <<'EOF'
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
 2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
-# PLANNER-CORPUS: the planner runs at the engine heap (campaign_stream_plan):
-# one is started there when none lives, a living one is asked as it is, and a
-# corpus past 90 % of the engine heap is PLANNER_HEAP_EXCEEDED before any
-# planner is asked, named as predicted.  Per row: the corpus, whether a
-# planner lives (and its heap), the status, what was done.
-plan_dir="${test_tmp}/planner-corpus"
-while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
+# PLANNER-START: the planner runs at the engine heap (campaign_stream_plan):
+# one is started there when none lives, a living one is asked as it is, and
+# a round it answers it cannot hold (exit 3) is PLANNER_HEAP_EXCEEDED.  Per
+# row: whether a planner lives (its heap), what the ask returns, the status,
+# what was done.
+plan_dir="${test_tmp}/planner-start"
+while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
   rm -rf -- "${plan_dir}"
   mkdir -p "${plan_dir}/planning-0003" "${plan_dir}/planner"
   plan_got=$(
@@ -2117,30 +2117,57 @@ while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
       echo "${plan_heap}" >"${plan_dir}/planner/heap"
       echo 1 >"${plan_dir}/planner/id"
     fi
-    campaign_corpus_mb() { printf '%s\n' "${plan_corpus}"; }
     campaign_planner_alive() { (( plan_alive )); }
     campaign_planner_start() { plan_alive=1; echo "start $1" >>"${plan_dir}/done"; }
-    campaign_planner_round() { echo ask >>"${plan_dir}/done"; return 0; }
+    campaign_planner_round() { echo ask >>"${plan_dir}/done"; return "${plan_asked}"; }
     status=0
     campaign_stream_plan "${plan_dir}/planning-0003" 2>/dev/null || status=$?
     printf '%s|%s' "${status}" "$(paste -sd ' ' "${plan_dir}/done" \
       2>/dev/null)"
   )
   [[ "${plan_got}" == "${plan_status}|${plan_done}" ]] \
-    || fail "a corpus of ${plan_corpus} MB beside a planner of ${plan_heap} \
+    || fail "PLANNER-START: a planner of ${plan_heap} asked ${plan_asked} \
 gave ${plan_got}, not ${plan_status}|${plan_done}"
-  if (( plan_status == campaign_jvm_out_of_heap_status )); then
-    grep -q "more than a planner holds" \
-      "${plan_dir}/planning-0003/heap-predicted" \
-      || fail "a predicted PLANNER_HEAP_EXCEEDED is not named so"
-  fi
 done <<'EOF'
-15000|16384|3|
-15000|-|3|
-7000|16384|0|ask
-3000|-|0|start 16384 ask
-14000|-|0|start 16384 ask
+16384|0|0|ask
+-|0|0|start 16384 ask
+16384|3|3|ask
 EOF
+# PLANNER-LIVE: a served planner's answer that it cannot hold the round (its
+# live set and the round's new sessions past its old generation's room,
+# explore.ExploreMain --serve, exit 3) is the ask's 3, the planner's words
+# in the round's heap-predicted, which names the stop.
+(
+  plan_dir="${test_tmp}/planner-live"
+  mkdir -p "${plan_dir}/planning-0006"
+  live_dir=$(campaign_planner_dir "${plan_dir}/sessions" 7)
+  mkdir -p "${live_dir}/requests" "${live_dir}/answers"
+  printf '%s\n' "${BASHPID}" >"${live_dir}/server"
+  (
+    for (( waited = 0; waited < 100; waited++ )); do
+      for request in "${live_dir}"/requests/*.json; do
+        [[ -e "${request}" ]] || continue
+        name=$(basename "${request}" .json)
+        jq -n -c '{exit: 3, error: "the planner needs ~16900 MB of its 17203 MB old generation: 14500 MB live at its highest last round and 0.35 of the 6857 MB of session files it reads now, past 90 % of it"}' \
+          >"${live_dir}/answers/${name}.json"
+        exit 0
+      done
+      sleep 0.1
+    done
+  ) &
+  status=0
+  campaign_planner_ask "${plan_dir}/sessions" 7 6 \
+    "${plan_dir}/planning-0006/in_flight.jsonl" "${plan_dir}/planning-0006" \
+    "${plan_dir}/answers.jsonl" "${plan_dir}/corpus.txt" 2>/dev/null \
+    || status=$?
+  wait
+  (( status == campaign_jvm_out_of_heap_status )) \
+    || fail "PLANNER-LIVE: a planner's out-of-heap answer asked ${status}"
+  grep -q "14500 MB live at its highest last round" \
+    "${plan_dir}/planning-0006/heap-predicted" \
+    || fail "PLANNER-LIVE: the predicted stop does not carry the planner's \
+measure"
+)
 
 # MEASURED-CORES: a replay is counted the cores the seed replay kept busy
 # alone (workload_cores_x100, rounded up), then at least the 90th percentile
@@ -3086,9 +3113,6 @@ stream_fixture() {
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
   engine_memory_mb=1
-  # A 1 MB engine heap holds no corpus: the planner's corpus bound
-  # (campaign_stream_plan, PLANNER-CORPUS) is not this fixture's question.
-  campaign_planner_hold_pct=1000000000
   causynth_static_scope_map=""
   causynth_root_domains=""
   declared_target_occurrence=""
@@ -3105,6 +3129,7 @@ stream_fixture() {
 # (3: out of heap, its JVM's last words in its log).
 stream_planner_serve() {
   local heap=$1 id=$2 log=$4 sessions="" dir request name round status
+  local refused
   printf '%s\n' "${BASHPID}" >"$5"
   shift 5
   while [[ $# -gt 0 ]]; do
@@ -3128,6 +3153,14 @@ space" >>"${log}"
         rm -rf -- "${dir}/requests" "${dir}/answers"
         return "${status}"
       fi
+      refused=$(stream_planner_refuses "${round}")
+      if [[ -n "${refused}" ]]; then
+        jq -n -c --arg why "${refused}" '{exit: 3, error: $why}' \
+          >"${dir}/answers/${name}.part"
+        mv -- "${dir}/answers/${name}.part" "${dir}/answers/${name}.json"
+        rm -f -- "${dir}/requests/${name}.taken"
+        continue
+      fi
       stream_planner --round "${round}" --output-dir "$(jq -r '.outputDir' \
         "${dir}/requests/${name}.taken")" --in-flight "$(jq -r '.inFlight' \
         "${dir}/requests/${name}.taken")" --corpus "$(jq -r '.corpus // ""' \
@@ -3141,6 +3174,10 @@ space" >>"${log}"
   done
 }
 stream_planner_dies() { :; }
+# stream_planner_refuses <round> says why the served planner answers that it
+# cannot hold that round (ExploreMain --serve's out-of-heap answer), or
+# nothing.
+stream_planner_refuses() { :; }
 
 # The planner's JVM is stopped by the pid it stated, on its host, whatever
 # still holds it (SG2: peers' planners outlived their campaigns by 75-105
@@ -3184,6 +3221,8 @@ stream_planner() {
   jq -r '.obligationId' "${flying}" | LC_ALL=C sort | paste -sd ' ' - \
     >"${out}/in-flight.txt"
   [[ ! -f "${corpus}" ]] || paste -sd ' ' - <"${corpus}" >"${out}/read.txt"
+  # Its sessions read (ExploreMain#CORPUS_READ): a swap may withdraw one.
+  : >"${out}/corpus_read"
   [[ ! -f "${answers}" ]] || jq -r '.obligationId' "${answers}" \
     | LC_ALL=C sort | paste -sd ' ' - >"${out}/answers-read.txt"
   : >"${out}/obligations.jsonl"
@@ -3282,6 +3321,23 @@ stream_stubs() {
     for gated in "$@"; do basename "${gated}"; done | paste -sd ' ' - \
       >>"${stream_dir}/gated.txt"
   }
+}
+
+# The exploration loop's state, as campaign_explore declares it, for a case
+# that calls one of its helpers alone.
+stream_loop_state() {
+  declare -gA stream_reruns=() stream_growing=() stream_withdrawn=() \
+    stream_rests=() stream_queued_at=() stream_flying=() stream_chain=() \
+    stream_confirming=()
+  stream_queue=()
+  stream_swaps=()
+  stream_staged=()
+  stream_reaped=()
+  stream_witnesses=()
+  stream_deferred=()
+  stream_hold=0
+  stream_dirty=0
+  stream_round_dir=""
 }
 
 # STREAM-1: NO BARRIER.  A round is planned as soon as a session lands, while
@@ -3906,6 +3962,37 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   && [[ ! -e "${stream_dir}/obligations-0001" ]] \
   || fail "a planner out of heap did not end the exploration by name: \
 $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
+
+# STREAM-3f: A ROUND THE PLANNER CANNOT HOLD.  A served planner that answers a
+# round out of heap unread -- its live set at its highest last round and the
+# round's new sessions past its old generation's room -- ends the exploration
+# PLANNER_HEAP_EXCEEDED on the rounds before it, the stop naming the
+# planner's measure, as a planner that ran out of heap does.
+stream_fixture stream-3f
+(
+  stream_stubs
+  stream_planner_refuses() {
+    [[ "$1" != 1 ]] || echo "the planner needs ~16900 MB of its 17203 MB \
+old generation: 14500 MB live at its highest last round"
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
+  campaign_obligation_worker() {
+    stream_answer "$4" A ADMITTED SESSION.A
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a round the planner cannot hold failed the exploration: \
+$(cat "${stream_dir}/explore.log")"
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
+  | .detail | test("obligations-0001: the planner needs")
+    and test("14500 MB live at its highest")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1
+    and .roundDropped == "planning-0001"' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  || fail "a round the planner cannot hold did not end the exploration by \
+name: $(cat "${stream_dir}/campaign_gaps.jsonl" \
+"${stream_dir}/exploration.json")"
 
 # STREAM-SERVE: ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1, §7.9).  It is
 # started once, at the engine heap, every round asked of it, and it is ended
@@ -4551,18 +4638,21 @@ EOF
 
 # STREAM-IDLE: the exploration ends -- its fixed point, or a stop already
 # stated -- only with nothing left to start, run, plan or take: an ask waiting
-# in the hard lane is in flight, never lost to a fixed point.  Per row: a job
-# running, an entry queued, an ask in the hard lane, a head step, a round
-# planning, a round returned, and whether that is the end.
-while IFS='|' read -r si_job si_queue si_hard si_step si_round si_returned \
-    si_want; do
+# in the hard lane is in flight, never lost to a fixed point, and so is a
+# returned re-run whose swap a reader holds.  Per row: a job running, an
+# entry queued, an ask in the hard lane, a re-run awaiting its swap, a head
+# step, a round planning, a round returned, and whether that is the end.
+while IFS='|' read -r si_job si_queue si_hard si_swap si_step si_round \
+    si_returned si_want; do
   si_said=$(
     declare -A stream_jobs=()
     stream_queue=()
     stream_hard=()
+    stream_swaps=()
     [[ "${si_job}" == 0 ]] || stream_jobs[4242]="HARD r A lift12 "
     [[ "${si_queue}" == 0 ]] || stream_queue=("OBLIGATION r B again")
     [[ "${si_hard}" == 0 ]] || stream_hard=("HARD r C")
+    [[ "${si_swap}" == 0 ]] || stream_swaps=("obligations-0002 R S 0")
     stream_step_pid=${si_step}
     stream_round_pid=${si_round}
     stream_round_returned=${si_returned}
@@ -4570,33 +4660,35 @@ while IFS='|' read -r si_job si_queue si_hard si_step si_round si_returned \
   )
   [[ "${si_said}" == "${si_want}" ]] \
     || fail "STREAM-IDLE: job ${si_job}, queue ${si_queue}, hard ${si_hard}, \
-step '${si_step}', round '${si_round}', returned '${si_returned}': \
-${si_said}, not ${si_want}"
+swap ${si_swap}, step '${si_step}', round '${si_round}', returned \
+'${si_returned}': ${si_said}, not ${si_want}"
 done <<'EOF'
-0|0|0||||end
-0|0|1||||on
-0|1|0||||on
-1|0|0||||on
-0|0|0|77|||on
-0|0|0||78||on
-0|0|0|||obligations-0001|on
+0|0|0|0||||end
+0|0|1|0||||on
+0|1|0|0||||on
+1|0|0|0||||on
+0|0|0|1||||on
+0|0|0|0|77|||on
+0|0|0|0||78||on
+0|0|0|0|||obligations-0001|on
 EOF
 
 # STREAM-PLAN-DUE: a round is owed once an answer came since the last one
 # and a session landed, or nothing is left to wait for but confirmations and
 # the hard lane's asks running: z3 alone at the full budget, up to 30 min
 # (SGF8-adhoc-40 round 6: the 13 lifts idle 12 min behind two asks), their
-# obligations in flight; never while GROW owes re-runs or swaps.  Per row:
-# answers since the last round, GROW's hold, sessions landed, the kinds
-# running, queued and returned unlanded (- none), and whether it is owed.
-while IFS='|' read -r pd_dirty pd_hold pd_landed pd_jobs pd_queue \
-    pd_pending pd_want; do
+# obligations in flight.  GROW's re-runs hold no round: one plans over its
+# frozen corpus while they run, once a session landed; a re-run is a
+# question left to wait for (it lands a session).  Per row: answers since the
+# last round, sessions landed, the kinds running, queued and returned
+# unlanded (- none), and whether it is owed.
+while IFS='|' read -r pd_dirty pd_landed pd_jobs pd_queue pd_pending \
+    pd_want; do
   pd_said=$(
     declare -A stream_jobs=()
     stream_queue=()
     stream_pending=()
     stream_dirty=${pd_dirty}
-    stream_hold=${pd_hold}
     stream_landed=${pd_landed}
     pd_at=100
     for pd_kind in ${pd_jobs//,/ }; do
@@ -4614,24 +4706,27 @@ while IFS='|' read -r pd_dirty pd_hold pd_landed pd_jobs pd_queue \
     if campaign_stream_plan_due; then echo due; else echo wait; fi
   )
   [[ "${pd_said}" == "${pd_want}" ]] \
-    || fail "STREAM-PLAN-DUE: answered ${pd_dirty}, hold ${pd_hold}, landed \
-${pd_landed}, running ${pd_jobs}, queued ${pd_queue}, unlanded \
-${pd_pending}: ${pd_said}, not ${pd_want}"
+    || fail "STREAM-PLAN-DUE: answered ${pd_dirty}, landed ${pd_landed}, \
+running ${pd_jobs}, queued ${pd_queue}, unlanded ${pd_pending}: ${pd_said}, \
+not ${pd_want}"
 done <<'EOF'
-0|0|0|-|-|-|wait
-1|0|0|-|-|-|due
-1|0|1|OBLIGATION,REPLAY|OBLIGATION|-|due
-1|0|0|REPLAY|-|-|wait
-1|0|0|OBLIGATION|-|-|wait
-1|0|0|CONFIRM|-|-|due
-1|0|0|HARD|-|-|due
-1|0|0|HARD,HARD,CONFIRM|-|-|due
-1|0|0|HARD,REPLAY|-|-|wait
-1|0|0|HARD|OBLIGATION|-|wait
-1|0|0|HARD|-|HARD|wait
-1|0|0|-|CONFIRM|CONFIRM|due
-1|1|0|HARD|-|-|wait
-1|1|1|-|-|-|wait
+0|0|-|-|-|wait
+1|0|-|-|-|due
+1|1|OBLIGATION,REPLAY|OBLIGATION|-|due
+1|0|REPLAY|-|-|wait
+1|0|OBLIGATION|-|-|wait
+1|0|CONFIRM|-|-|due
+1|0|HARD|-|-|due
+1|0|HARD,HARD,CONFIRM|-|-|due
+1|0|HARD,REPLAY|-|-|wait
+1|0|HARD|OBLIGATION|-|wait
+1|0|HARD|-|HARD|wait
+1|0|-|CONFIRM|CONFIRM|due
+1|1|RERUN,RERUN,OBLIGATION|RERUN|-|due
+1|0|RERUN|-|-|wait
+1|0|HARD|RERUN|-|wait
+1|0|-|-|RERUN|wait
+0|1|RERUN|-|-|wait
 EOF
 
 # STREAM-END-AGAIN: an end (a witness, the budget) takes the solves in flight
@@ -4681,21 +4776,19 @@ HARD outlived the end"
 iteration $(ls "${end_owed}/it/obligations-0000" | tr '\n' ' ')"
 
 # SOLVE-LANES-DISPATCH: the hard lane starts once no other start waits, its
-# asks in order while a host admits one, and like any solve not while GROW
-# holds the solves -- from its re-runs' return to their swap, never while a
-# re-run runs.  Per row: GROW's hold (1: a swap owed, 2: a re-run running),
-# how many hard asks a host admits, and the starts made, in order.
-while IFS='|' read -r ld_hold ld_admits ld_started; do
+# asks in order while a host admits one; GROW holds no start (a solver reads
+# the corpus without what GROW withdrew, a replay none).  Per row: whether a
+# GROW re-run's swap is held (1) or none is owed (0), how many hard asks a
+# host admits, and the starts made, in order.
+while IFS='|' read -r ld_held ld_admits ld_started; do
   ld_said=$(
     declare -A stream_queued_at=()
     stream_queue=("OBLIGATION obligations-0001 B"
       "REPLAY obligations-0000 C g0/c g0/p")
-    [[ "${ld_hold}" -ne 1 ]] || stream_queue=()
     stream_hard=("HARD obligations-0000 A" "HARD obligations-0000 D")
-    # 1: a re-run returned and its swap is owed; 2: a re-run still runs.
-    stream_hold=$(( ld_hold > 0 ? 1 : 0 ))
+    stream_hold=${ld_held}
     stream_swaps=()
-    [[ "${ld_hold}" -ne 1 ]] || stream_swaps=("obligations-0001 R S 0")
+    [[ "${ld_held}" -ne 1 ]] || stream_swaps=("obligations-0001 R S 0")
     ld_hard=0
     campaign_stream_collect_jobs() { :; }
     campaign_stream_has_slot() { return 0; }
@@ -4710,11 +4803,10 @@ while IFS='|' read -r ld_hold ld_admits ld_started; do
     campaign_stream_dispatch
   )
   [[ "${ld_said}" == "${ld_started}" ]] \
-    || fail "hold ${ld_hold}: started '${ld_said}', not '${ld_started}'"
+    || fail "held ${ld_held}: started '${ld_said}', not '${ld_started}'"
 done <<'EOF'
 0|2|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;HARD obligations-0000 D;
-1|2|
-2|2|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;HARD obligations-0000 D;
+1|2|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;HARD obligations-0000 D;
 0|1|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;
 EOF
 
@@ -4866,7 +4958,8 @@ chain_said=$(
       obligationId: "O8", sessionId: "S8"}' >"${chain_dir}/round/growth.jsonl"
   campaign_stream_grow() { printf 'grew %s\n' "$(jq -r .occurrence "$2")"; }
   stream_cancelled=()
-  campaign_stream_chain_round "${chain_dir}/round" O5 O6
+  campaign_stream_chain_round "${chain_dir}/round" \
+    "${chain_dir}/round/growth.jsonl" O5 O6
   printf 'cancelled=%s grown=%s\n' "${stream_cancelled[*]}" \
     "${!stream_chain_grown[*]}"
   # The same chain again, its producer grown since the step began: nothing
@@ -4923,11 +5016,9 @@ ROWS
 # STREAM-DISPATCH: the first entry a host admits starts, a kind no host
 # admits holding nothing behind it; an entry queued past the wait bound goes
 # first and alone, but a witness's confirmation or a GROW re-run never waits
-# behind it; no solve starts while GROW owes a swap.  Per row: the queue
-# (kind:age in s), the kinds hosts admit, GROW's hold, and the entries
-# started, in order.
-while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
-    dispatch_expect; do
+# behind it.  Per row: the queue (kind:age in s), the kinds hosts admit,
+# and the entries started, in order.
+while IFS='|' read -r dispatch_queue dispatch_admits dispatch_expect; do
   dispatch_said=$(
     declare -A stream_queued_at=()
     stream_queue=()
@@ -4941,9 +5032,6 @@ while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
       stream_queue+=("${d_entry}")
       stream_queued_at["${d_entry}"]=$((now - d_age))
     done
-    stream_hold=${dispatch_hold}
-    stream_swaps=()
-    (( dispatch_hold == 0 )) || stream_swaps=("r R S 0")
     campaign_stream_collect_jobs() { :; }
     campaign_stream_has_slot() { return 0; }
     campaign_stream_admit_host() {
@@ -4958,18 +5046,17 @@ while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
   )
   [[ "${dispatch_said}" == "${dispatch_expect}" ]] \
     || fail "dispatching [${dispatch_queue}] with hosts admitting \
-[${dispatch_admits}], hold ${dispatch_hold}, started ${dispatch_said}, not \
-${dispatch_expect}"
+[${dispatch_admits}] started ${dispatch_said}, not ${dispatch_expect}"
 done <<'ROWS'
-OBLIGATION:5 OBLIGATION:5 REPLAY:5|OBLIGATION REPLAY|0|OBLIGATION:q1,OBLIGATION:q2,REPLAY:q3,
-REPLAY:5 OBLIGATION:5|OBLIGATION|0|OBLIGATION:q2,
-OBLIGATION:5 REPLAY:5|REPLAY|0|REPLAY:q2,
-OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION|0|
-OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION REPLAY|0|REPLAY:q2,OBLIGATION:q1,OBLIGATION:q3,
-OBLIGATION:900 REPLAY:5|REPLAY|1|REPLAY:q2,
-CONFIRM:5 OBLIGATION:5|CONFIRM OBLIGATION|0|CONFIRM:q1,OBLIGATION:q2,
-CONFIRM:5 REPLAY:900 OBLIGATION:5|CONFIRM OBLIGATION|0|CONFIRM:q1,
-RERUN:5 REPLAY:900 OBLIGATION:5|RERUN OBLIGATION REPLAY|0|RERUN:q1,REPLAY:q2,OBLIGATION:q3,
+OBLIGATION:5 OBLIGATION:5 REPLAY:5|OBLIGATION REPLAY|OBLIGATION:q1,OBLIGATION:q2,REPLAY:q3,
+REPLAY:5 OBLIGATION:5|OBLIGATION|OBLIGATION:q2,
+OBLIGATION:5 REPLAY:5|REPLAY|REPLAY:q2,
+OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION|
+OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION REPLAY|REPLAY:q2,OBLIGATION:q1,OBLIGATION:q3,
+CONFIRM:5 OBLIGATION:5|CONFIRM OBLIGATION|CONFIRM:q1,OBLIGATION:q2,
+CONFIRM:5 REPLAY:900 OBLIGATION:5|CONFIRM OBLIGATION|CONFIRM:q1,
+RERUN:5 REPLAY:900 OBLIGATION:5|RERUN OBLIGATION REPLAY|RERUN:q1,REPLAY:q2,OBLIGATION:q3,
+RERUN:5 OBLIGATION:900 REPLAY:5|RERUN OBLIGATION REPLAY|RERUN:q1,OBLIGATION:q2,REPLAY:q3,
 ROWS
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
@@ -6026,6 +6113,7 @@ for grow_rows in same more; do
     "${stream_dir}/obligations-0000/OB.x/grow-obligations-0002"
   (
     iteration_dir=${stream_dir}
+    stream_loop_state
     stream_generation=1
     stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
     stream_classes="${stream_dir}/instrumented-classes"
@@ -6052,7 +6140,11 @@ for grow_rows in same more; do
         && "${stream_plan}" == "${stream_dir}/generations/g2/execution_task_plan.jsonl" \
         && -s "${stream_plan}" \
         && "${stream_queue[*]}" == "RERUN obligations-0002 OB.x SESSION.regrown" \
-        && "${stream_hold}" == 1 ]] \
+        && "${stream_hold}" == 1 \
+        && "${stream_reruns[OB.x SESSION.regrown]}" \
+          == "${stream_dir}/obligations-0000/OB.x/grow-obligations-0002/OB.x" \
+        && "${stream_growing[TASK.seed SYM.marker#3]}" \
+          == "OB.x SESSION.regrown" ]] \
       || fail "a growth of its tree's key did not keep the tree under the \
 new plan and re-run its replay: ${stream_classes} ${stream_plan} \
 ${stream_queue[*]}"
@@ -6316,25 +6408,23 @@ while IFS='|' read -r reask_case reask_exposing reask_other reask_first; do
     iteration_dir=${reask_iteration}
     sessions=${reask_sessions}
     results=${reask_results}
-    [[ "$(campaign_stream_rerun_dir obligations-0009 OB.r SESSION.exposing)" \
-        == "${reask_rerun}" ]] \
+    [[ "$(campaign_obligation_worker_dir "${reask_iteration}" OB.r \
+        SESSION.exposing)" == "${reask_worker}" ]] \
       || fail "GROW-REASK ${reask_case}: the re-run is not the exposing \
 ask's"
+    stream_loop_state
+    stream_reruns["OB.r SESSION.exposing"]=${reask_rerun}
     stream_swaps=("obligations-0009 OB.r SESSION.exposing 0")
-    stream_staged=()
     stream_hold=1
     # GROW-SWAP-DROP: two replays queued from solves that read the corpus
     # before the swap; the one whose path rests on the withdrawn session is
-    # dropped before it starts, the other, and a solve, stay queued.
+    # dropped before it starts, out of flight, the other, and a solve, stay
+    # queued.
     campaign_root=${reask_dir}
-    declare -A stream_queued_at=()
-    stream_reaped=()
     for queued in OB.on:SESSION.exposing OB.off:SESSION.other; do
       mkdir -p "${reask_iteration}/obligations-0010/${queued%%:*}"
-      jq -n -c --arg path "$(printf '%s|%s' "${queued#*:}" OCC \
-        | sha256sum | cut -c1-16)" '{pathId: $path,
-        focusedOccurrenceId: "OCC"}' \
-        >"${reask_iteration}/obligations-0010/${queued%%:*}/focused_task.jsonl"
+      stream_rests[${queued%%:*}]=${queued#*:}
+      stream_flying[${queued%%:*}]="{}"
     done
     stream_queue=("REPLAY obligations-0010 OB.on g0/c g0/p"
       "REPLAY obligations-0010 OB.off g0/c g0/p"
@@ -6342,6 +6432,7 @@ ask's"
     campaign_stream_swap
     printf '%s\n' "${stream_staged[@]}" >"${reask_dir}/staged.txt"
     printf '%s;' "${stream_queue[@]}" "${stream_reaped[@]}" \
+      "${!stream_flying[@]}" "${stream_hold}" "${#stream_reruns[@]}" \
       >"${reask_dir}/queue.txt"
   ) </dev/null >"${reask_dir}/swap.log" 2>&1 \
     || fail "GROW-REASK ${reask_case}: the swap failed: \
@@ -6364,9 +6455,10 @@ $(cat "${reask_dir}/swap.log")"
     || fail "GROW-REASK ${reask_case}: the exposing ask was not the one \
 swapped: $(cat "${reask_results}") $(cat "${reask_dir}/swap.log")"
   [[ "$(cat "${reask_dir}/queue.txt")" == "REPLAY obligations-0010 OB.off \
-g0/c g0/p;OBLIGATION obligations-0010 OB.x;OB.on;" \
+g0/c g0/p;OBLIGATION obligations-0010 OB.x;OB.on;OB.off;0;0;" \
       && -d "${reask_dir}/explore-reaped/obligations-0010/OB.on" \
-      && -d "${reask_iteration}/obligations-0010/OB.off" ]] \
+      && -d "${reask_iteration}/obligations-0010/OB.off" \
+      && "$(cat "${reask_iteration}/withdrawn.txt")" == SESSION.exposing ]] \
     || fail "GROW-SWAP-DROP ${reask_case}: the queue after the swap is \
 $(cat "${reask_dir}/queue.txt")"
 done <<'EOF'
@@ -6391,12 +6483,16 @@ reset_config
     >"${drop_worker}/focused_task.jsonl"
   jq -n -c '{obligationId: "OB.d", verdict: "ADMITTED",
     sessionId: "SESSION.exposing"}' >"${drop_worker}/obligation_result.jsonl"
+  stream_loop_state
+  stream_reruns["OB.d SESSION.exposing"]="${drop_worker}/grow-obligations-0002/OB.d"
+  stream_growing["W#1"]="OB.d SESSION.exposing"
   stream_swaps=("obligations-0002 OB.d SESSION.exposing 137")
-  stream_staged=()
   stream_hold=1
   campaign_stream_swap >/dev/null
   [[ -d "${sessions}/SESSION.exposing" && -s "${drop_worker}/grow-dropped" \
-      && "${stream_hold}" == 0 && ${#stream_staged[@]} -eq 0 ]] \
+      && "${stream_hold}" == 0 && ${#stream_staged[@]} -eq 0 \
+      && ${#stream_reruns[@]} -eq 0 && ${#stream_growing[@]} -eq 0 \
+      && ! -e "${drop_iteration}/withdrawn.txt" ]] \
     || fail "GROW-DROP: a re-run that did not finish was swapped in, or \
 not marked dropped"
   mkdir -p "${drop_iteration}/obligations-0003" \
@@ -6426,6 +6522,431 @@ not marked dropped"
 again: ${stream_queue[*]}"
 ) || fail "GROW-DROP failed"
 reset_config
+
+# STREAM-SWAP-DUE: a returned re-run swaps in once no reader of the session
+# it withdraws runs: a witness's confirmation owed whose attempt composed it
+# (an attempt stating no corpus holds every swap); a witness owed an attempt,
+# gated and not attempted (a confirmation owed holds the attempt) or
+# deferred until a confirmation's verdict (Z2M's class); or the round
+# planning while its corpus names it and its planner has not read it.  A
+# solve running holds none (a solver reads the corpus without what GROW
+# withdrew, ObligationSolverMain#standing).  Per row: the attempts under
+# confirmation (<attempt>:<its corpus, +-joined>, <attempt>:! where it states
+# none; - none), the witnesses waiting for an attempt and the deferred ones
+# (+-joined; - none), the planning round's corpus (+-joined; - no round),
+# whether its planner read it, the jobs running, and whether the swap of
+# session A is due.
+swap_due_n=0
+while IFS='|' read -r sd_confirming sd_witnesses sd_deferred sd_round \
+    sd_read sd_jobs sd_want; do
+  swap_due_n=$((swap_due_n + 1))
+  sd_said=$(
+    iteration_dir="${test_tmp}/swap-due-${swap_due_n}"
+    mkdir -p "${iteration_dir}"
+    stream_loop_state
+    declare -A stream_jobs=()
+    for sd_attempt in ${sd_confirming//,/ }; do
+      [[ "${sd_attempt}" != - ]] || continue
+      stream_confirming[${sd_attempt%%:*}]=model
+      mkdir -p "${iteration_dir}/witness-attempts/${sd_attempt%%:*}"
+      [[ "${sd_attempt#*:}" == '!' ]] || tr '+' '\n' <<<"${sd_attempt#*:}" \
+        >"${iteration_dir}/witness-attempts/${sd_attempt%%:*}/corpus.txt"
+    done
+    [[ "${sd_witnesses}" == - ]] || read -r -a stream_witnesses \
+      <<<"${sd_witnesses//+/ }"
+    [[ "${sd_deferred}" == - ]] || read -r -a stream_deferred \
+      <<<"${sd_deferred//+/ }"
+    if [[ "${sd_round}" != - ]]; then
+      stream_round_dir="${iteration_dir}/planning-0003"
+      mkdir -p "${stream_round_dir}"
+      tr '+' '\n' <<<"${sd_round}" >"${stream_round_dir}/corpus.txt"
+      [[ "${sd_read}" != yes ]] || : >"${stream_round_dir}/corpus_read"
+    fi
+    for sd_kind in ${sd_jobs//,/ }; do
+      [[ "${sd_kind}" == - ]] || stream_jobs[$((100 + ${#stream_jobs[@]}))]="\
+${sd_kind} obligations-0002 X lift12 "
+    done
+    if campaign_stream_swap_due A; then echo due; else echo held; fi
+  )
+  [[ "${sd_said}" == "${sd_want}" ]] \
+    || fail "STREAM-SWAP-DUE: confirming ${sd_confirming}, witnesses \
+${sd_witnesses}, deferred ${sd_deferred}, round ${sd_round} (read ${sd_read}), \
+running ${sd_jobs}: ${sd_said}, not ${sd_want}"
+done <<'EOF'
+-|-|-|-|-|-|due
+-|-|-|-|-|OBLIGATION,HARD,REPLAY,RERUN|due
+0000:A+B|-|-|-|-|-|held
+0000:B|-|-|-|-|-|due
+0000:B,0001:C+A|-|-|-|-|-|held
+0000:!|-|-|-|-|-|held
+0000:B|A|-|-|-|-|held
+0000:B|C+A|-|-|-|-|held
+-|-|A|-|-|-|held
+0000:B|B+C|D|-|-|OBLIGATION|due
+-|-|-|A+B|no|-|held
+-|-|-|A+B|yes|OBLIGATION|due
+-|-|-|B+C|no|OBLIGATION|due
+0000:B|-|-|A|yes|OBLIGATION|due
+EOF
+
+# GROW-SWAP-BATCH: the re-runs that returned swap in together, each one due:
+# OB.a's, OB.d's and OB.e's (their sessions read by no one) swap --
+# withdrawn.txt names their exposing sessions before any leaves, their
+# workers' files set aside and replaced, two workers' subshells at a time
+# here (campaign_stream_swap_jobs, sixteen in a campaign: a full batch
+# waited, then the rest), their ledger rows replaced at the end, their
+# sessions staged; OB.b's waits for the round planning over its exposing
+# session to read it; OB.c's, which did not finish, is dropped.  The queued
+# replay on a withdrawn session's path is dropped, out of flight; the one on
+# OB.b's exposing session's waits, and goes once that swap does.
+(
+  batch_root="${test_tmp}/grow-swap-batch"
+  iteration_dir="${batch_root}/iteration-0000"
+  sessions="${iteration_dir}/sessions"
+  results="${iteration_dir}/obligation_results.jsonl"
+  campaign_root=${batch_root}
+  campaign_stream_swap_jobs=2
+  stream_loop_state
+  mkdir -p "${iteration_dir}"
+  : >"${results}"
+  for batch_id in a b c d e; do
+    batch_worker="${iteration_dir}/obligations-0001/OB.${batch_id}"
+    batch_rerun="${batch_worker}/grow-obligations-0002/OB.${batch_id}"
+    mkdir -p "${batch_rerun}/sessions/R.${batch_id}"
+    if [[ "${batch_id}" != c ]]; then
+      mkdir -p "${sessions}/S.${batch_id}"
+      jq -n -c --arg id "OB.${batch_id}" '{obligationIds: [$id]}' \
+        >"${sessions}/S.${batch_id}/manifest.json"
+    fi
+    printf 'exposing %s\n' "${batch_id}" >"${batch_worker}/replay.log"
+    printf 'Q.%s\n' "${batch_id}" >"${batch_worker}/question.txt"
+    jq -n -c --arg id "OB.${batch_id}" --arg s "S.${batch_id}" \
+      '{obligationId: $id, verdict: "ADMITTED", sessionId: $s}' \
+      | tee "${batch_worker}/obligation_result.jsonl" >>"${results}"
+    printf 're-run %s\n' "${batch_id}" >"${batch_rerun}/replay.log"
+    jq -n -c --arg id "OB.${batch_id}" --arg s "R.${batch_id}" \
+      '{obligationId: $id, verdict: "ADMITTED", sessionId: $s}' \
+      >"${batch_rerun}/obligation_result.jsonl"
+    stream_reruns["OB.${batch_id} S.${batch_id}"]=${batch_rerun}
+    stream_growing["X.${batch_id}"]="OB.${batch_id} S.${batch_id}"
+    mkdir -p "${iteration_dir}/obligations-0003/OB.p${batch_id}"
+    stream_rests[OB.p${batch_id}]=S.${batch_id}
+    stream_flying[OB.p${batch_id}]="{}"
+  done
+  jq -n -c '{obligationId: "OB.z", verdict: "UNSAT", sessionId: ""}' \
+    >>"${results}"
+  stream_swaps=("obligations-0002 OB.a S.a 0" "obligations-0002 OB.b S.b 0"
+    "obligations-0002 OB.c S.c 1" "obligations-0002 OB.d S.d 0"
+    "obligations-0002 OB.e S.e 0")
+  stream_hold=5
+  stream_queue=("REPLAY obligations-0003 OB.pa g0/c g0/p"
+    "REPLAY obligations-0003 OB.pb g0/c g0/p"
+    "OBLIGATION obligations-0003 OB.o")
+  stream_round_dir="${iteration_dir}/planning-0005"
+  mkdir -p "${stream_round_dir}"
+  printf 'S.b\nS.x\n' >"${stream_round_dir}/corpus.txt"
+  campaign_stream_swap >"${batch_root}/swap1.log"
+  batch_staged=""
+  for batch_id in a d e; do
+    batch_worker="${iteration_dir}/obligations-0001/OB.${batch_id}"
+    batch_staged+="${batch_worker} ${batch_worker}/grow-obligations-0002/\
+OB.${batch_id}/sessions R.${batch_id};"
+    [[ -s "${batch_worker}/before-obligations-0002/sessions/S.${batch_id}/manifest.json" \
+        && "$(jq -r .sessionId "${batch_worker}/obligation_result.jsonl")" \
+          == "R.${batch_id}" \
+        && "$(jq -r .sessionId \
+          "${batch_worker}/before-obligations-0002/obligation_result.jsonl")" \
+          == "S.${batch_id}" \
+        && "$(cat "${batch_worker}/replay.log")" == "re-run ${batch_id}" \
+        && "$(cat "${batch_worker}/before-obligations-0002/question.txt")" \
+          == "Q.${batch_id}" \
+        && ! -e "${batch_worker}/question.txt" \
+        && -n "${stream_withdrawn[S.${batch_id}]:-}" ]] \
+      || fail "GROW-SWAP-BATCH: OB.${batch_id}'s worker was not swapped: \
+$(ls -R "${batch_worker}") $(cat "${batch_root}/swap1.log")"
+  done
+  [[ "$(paste -sd ' ' "${iteration_dir}/withdrawn.txt")" == "S.a S.d S.e" \
+      && "$(ls "${sessions}")" == S.b \
+      && "$(printf '%s;' "${stream_staged[@]}")" == "${batch_staged}" \
+      && "${stream_swaps[*]}" == "obligations-0002 OB.b S.b 0" \
+      && "${stream_hold}" == 1 && "${!stream_reruns[*]}" == "OB.b S.b" \
+      && "$(printf '%s\n' "${!stream_growing[@]}" | sort | paste -sd ' ')" \
+        == "X.a X.b X.d X.e" \
+      && -s "${iteration_dir}/obligations-0001/OB.c/grow-dropped" \
+      && "$(jq -s -c 'map([.obligationId, .sessionId])' "${results}")" \
+        == '[["OB.b","S.b"],["OB.c","S.c"],["OB.z",""],["OB.a","R.a"],["OB.d","R.d"],["OB.e","R.e"]]' \
+      && "${stream_queue[*]}" == "REPLAY obligations-0003 OB.pb g0/c g0/p \
+OBLIGATION obligations-0003 OB.o" \
+      && "${stream_reaped[*]}" == OB.pa \
+      && -d "${batch_root}/explore-reaped/obligations-0003/OB.pa" \
+      && -z "${stream_flying[OB.pa]:-}" ]] \
+    || fail "GROW-SWAP-BATCH: the first pass left withdrawn \
+[$(cat "${iteration_dir}/withdrawn.txt" 2>/dev/null)], corpus [$(ls \
+"${sessions}")], swaps [${stream_swaps[*]}], hold ${stream_hold}, ledger \
+$(jq -s -c 'map([.obligationId, .sessionId])' "${results}"), queue \
+[${stream_queue[*]}]: $(cat "${batch_root}/swap1.log")"
+  grep -q 'obligation OB.e: re-run under the grown tree, verdict=ADMITTED' \
+      "${batch_root}/swap1.log" \
+    && grep -q 'OB.c: its re-run under the grown tree did not finish' \
+      "${batch_root}/swap1.log" \
+    || fail "GROW-SWAP-BATCH: the swap did not say what it swapped and \
+dropped: $(cat "${batch_root}/swap1.log")"
+  # The round read its corpus: OB.b's swap is due, and the replay on S.b's
+  # path goes with it.
+  : >"${stream_round_dir}/corpus_read"
+  stream_staged=()
+  campaign_stream_swap >"${batch_root}/swap2.log"
+  [[ "$(paste -sd ' ' "${iteration_dir}/withdrawn.txt")" == "S.a S.d S.e S.b" \
+      && -z "$(ls "${sessions}")" && "${stream_hold}" == 0 \
+      && ${#stream_swaps[@]} -eq 0 && ${#stream_reruns[@]} -eq 0 \
+      && "$(jq -s -c 'map([.obligationId, .sessionId])' "${results}")" \
+        == '[["OB.c","S.c"],["OB.z",""],["OB.a","R.a"],["OB.d","R.d"],["OB.e","R.e"],["OB.b","R.b"]]' \
+      && "${stream_queue[*]}" == "OBLIGATION obligations-0003 OB.o" \
+      && "${stream_reaped[*]}" == "OB.pa OB.pb" ]] \
+    || fail "GROW-SWAP-BATCH: the second pass left withdrawn \
+[$(cat "${iteration_dir}/withdrawn.txt")], hold ${stream_hold}, ledger \
+$(jq -s -c 'map([.obligationId, .sessionId])' "${results}"), queue \
+[${stream_queue[*]}]: $(cat "${batch_root}/swap2.log")"
+) || fail "GROW-SWAP-BATCH failed"
+reset_config
+
+# GROW-SWAP-FAIL: a worker's swap that fails in its subshell -- its re-run
+# already set aside for that round -- fails the campaign by name, after the
+# subshells of its batch are waited for.
+(
+  fail_root="${test_tmp}/grow-swap-fail"
+  iteration_dir="${fail_root}/iteration-0000"
+  sessions="${iteration_dir}/sessions"
+  results="${iteration_dir}/obligation_results.jsonl"
+  campaign_root=${fail_root}
+  stream_loop_state
+  fail_worker="${iteration_dir}/obligations-0001/OB.f"
+  mkdir -p "${fail_worker}/grow-obligations-0002/OB.f" \
+    "${fail_worker}/before-obligations-0002" "${sessions}/S.f"
+  jq -n -c '{obligationIds: ["OB.f"]}' >"${sessions}/S.f/manifest.json"
+  jq -n -c '{obligationId: "OB.f", verdict: "ADMITTED", sessionId: "S.f"}' \
+    | tee "${fail_worker}/obligation_result.jsonl" >"${results}"
+  stream_reruns["OB.f S.f"]="${fail_worker}/grow-obligations-0002/OB.f"
+  stream_swaps=("obligations-0002 OB.f S.f 0")
+  stream_hold=1
+  if (campaign_stream_swap) >"${fail_root}.log" 2>&1; then
+    fail "GROW-SWAP-FAIL: a failed worker swap did not fail the campaign"
+  fi
+  grep -q 'reason=obligation OB.f: its re-run.s swap failed' "${fail_root}.log" \
+    && grep -q 'OB.f was already swapped for obligations-0002' \
+      "${fail_root}.log" \
+    || fail "GROW-SWAP-FAIL: the failure does not say what failed: \
+$(cat "${fail_root}.log")"
+) || fail "GROW-SWAP-FAIL failed"
+
+# GROW-INFLIGHT: a round planned while GROW's re-runs run, or taken after one
+# swapped in, saw the sessions they stand in for, and the occurrences they
+# capture uncaptured still: a growth row is not grown again when its
+# exposing (obligation, session) has a re-run owed or its session was
+# withdrawn by one, or when its subject was grown with the re-run of a
+# session the round's corpus names (planned before that re-run's session
+# landed); every other row grows, rows of other kinds kept, and a round
+# whose growth is all in flight grows nothing and queues its proposals as
+# any round.  Per case: the round's corpus, and the rows GROW was handed.
+while IFS='|' read -r inflight_case inflight_corpus inflight_grown; do
+  (
+    inflight_dir="${test_tmp}/grow-inflight-${inflight_case}"
+    round_dir="${inflight_dir}/obligations-0004"
+    iteration_dir=${inflight_dir}
+    mkdir -p "${round_dir}"
+    stream_loop_state
+    # OB.a's re-run is owed; OB.s's swapped in (S.s withdrawn, R.s landed);
+    # OB.w's exposing session S.w was withdrawn by its swap.
+    stream_reruns["OB.a S.a"]="${inflight_dir}/rerun"
+    stream_growing["X.owed"]="OB.a S.a"
+    stream_growing["T.u S.u#2"]="OB.a S.a"
+    stream_growing["X.swapped"]="OB.s S.s"
+    stream_withdrawn[S.s]=1
+    stream_withdrawn[S.w]=1
+    region_path_max_waves=99
+    campaign_log() { :; }
+    campaign_stream_grow() {
+      jq -r '.kind + " " + (.occurrence // .taskId // "")' "$2" \
+        | paste -sd ',' >"${inflight_dir}/grown.txt"
+    }
+    tr '+' '\n' <<<"${inflight_corpus}" >"${round_dir}/corpus.txt"
+    {
+      printf '%s\n' \
+        '{"kind":"EXPOSED_REGION","occurrence":"X.other","sessionId":"S.a","obligationId":"OB.a"}' \
+        '{"kind":"EXPOSED_REGION","occurrence":"X.owed","sessionId":"S.b","obligationId":"OB.b"}' \
+        '{"kind":"UNPLANNED_INPUT","taskId":"T.u","symbol":"S.u","k":2,"sessionId":"S.c","obligationId":"OB.c"}' \
+        '{"kind":"ZK_EDGE","occurrence":"Z.w","sessionId":"S.w","obligationId":"OB.w"}' \
+        '{"kind":"EXPOSED_REGION","occurrence":"X.swapped","sessionId":"S.e","obligationId":"OB.e"}' \
+        '{"kind":"FRONTIER","open":0}'
+      [[ "${inflight_case}" == all ]] || printf '%s\n' \
+        '{"kind":"EXPOSED_REGION","occurrence":"X.new","sessionId":"S.d","obligationId":"OB.d"}' \
+        '{"kind":"DOORS_ONLY_UNPAUSED","occurrence":"D.1","sessionId":"","obligationId":""}'
+    } >"${round_dir}/growth.jsonl"
+    printf '{"obligationId":"P1"}\n' >"${round_dir}/obligations.jsonl"
+    : >"${round_dir}/in_flight.jsonl"
+    jq -n '{wave: 0, branchesStopped: 0, anchorOccurrences: []}' \
+      >"${round_dir}/explore_manifest.json"
+    campaign_stream_take_round "${round_dir}"
+    [[ "$(cat "${inflight_dir}/grown.txt" 2>/dev/null || echo -)" \
+        == "${inflight_grown}" ]] \
+      || fail "GROW-INFLIGHT ${inflight_case}: GROW was handed \
+$(cat "${inflight_dir}/grown.txt" 2>/dev/null || echo nothing)"
+    [[ "${stream_queue[*]}" == "OBLIGATION obligations-0004 P1" ]] \
+      || fail "GROW-INFLIGHT ${inflight_case}: the round's proposals were \
+not queued: ${stream_queue[*]}"
+  ) || fail "GROW-INFLIGHT ${inflight_case} failed"
+done <<'EOF'
+before|S.a+S.b+S.s|FRONTIER ,EXPOSED_REGION X.new,DOORS_ONLY_UNPAUSED D.1
+after|S.a+S.b+R.s|EXPOSED_REGION X.swapped,FRONTIER ,EXPOSED_REGION X.new,DOORS_ONLY_UNPAUSED D.1
+all|S.a+S.s|-
+EOF
+reset_config
+
+# GROW-ROUND: GROW's re-runs hold no round.  OB.x's replay exposed a region
+# (round 1 grows it and proposes OB.y beside the growth); OB.y's session
+# lands while OB.x's re-run runs, and round 2 plans then, over the corpus
+# frozen with the exposing session in it -- the re-run waits for that round
+# to read its corpus, so a round held behind the re-run never comes.  Round
+# 2 states the exposure again (its re-run has not landed what captures it):
+# in flight, not grown again.  The re-run swaps in once round 2 read its
+# corpus, and round 3 plans over its session.
+stream_fixture grow-round
+mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+printf '4\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+sed "s|@ITERATION@|${stream_dir}|g" >"${stream_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for _ in $(seq 1 300); do
+  [[ ! -e @ITERATION@/planning-0002/corpus_read \
+     && ! -e @ITERATION@/obligations-0002/corpus_read ]] || break
+  sleep 0.1
+done
+[[ -e @ITERATION@/planning-0002/corpus_read \
+   || -e @ITERATION@/obligations-0002/corpus_read ]] \
+  || { echo "no round was planned while the re-run ran" >&2; exit 6; }
+mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "ADMITTED", sessionId: "SESSION.regrown", detail: "re-run"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+chmod +x "${stream_dir}/replay.sh"
+(
+  stream_stubs
+  concolic_replay_command="${stream_dir}/replay.sh"
+  replay_timeout_s=60
+  schedule_max_jobs=1
+  trace_test=T
+  custom_jdk_home=""
+  workload_work_dir="${stream_dir}"
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" OB.x ;;
+      1|2) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+             >>"$2/growth.jsonl"
+           [[ "$1" != 1 ]] || stream_propose "$2" OB.y ;;
+    esac
+  }
+  run_java_main() {
+    [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]] \
+      || fail "the step ran an engine main GROW does not: $1"
+    local args=" $* " output plan
+    plan=${args##* --plan }
+    plan=${plan%% *}
+    output=${args##* --output }
+    output=${output%% *}
+    { cat "${plan}"
+      printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+    } >"${output}"
+  }
+  campaign_instrument() {
+    mkdir -p "$2"
+    : >"$2/woven"
+    printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
+    if [[ "${id}" == OB.x ]]; then
+      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+    else
+      stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id#OB.}"
+    fi
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "GROW-ROUND: the exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+[[ "$(cat "${stream_dir}/obligations-0002/read.txt")" \
+      == "SESSION.exposing SESSION.y" \
+    && "$(cat "${stream_dir}/obligations-0003/read.txt")" \
+      == "SESSION.regrown SESSION.y" \
+    && "$(cat "${stream_dir}/withdrawn.txt")" == SESSION.exposing ]] \
+  || fail "GROW-ROUND: round 2 did not plan over the exposing session while \
+the re-run ran, or round 3 not over the re-run's: \
+$(cat "${stream_dir}"/obligations-000[23]/read.txt) \
+$(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "FIXED_POINT" and .generations == 1 and .rerunsDropped == []' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  && grep -q 'obligations-0002: 1 growth row(s) in flight' \
+    "${stream_dir}/explore.log" \
+  && jq -e -s 'map(select(.obligationId == "OB.x")) | length == 1
+      and .[0].sessionId == "SESSION.regrown"' \
+    "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  || fail "GROW-ROUND: the exposure round 2 stated again was grown again, or \
+the re-run did not swap in once: $(cat "${stream_dir}/exploration.json") \
+$(cat "${stream_dir}/explore.log")"
+reset_config
+
+# STREAM-REPLAY-DROP: a solve that read the corpus before a swap and returns
+# SAT after it, on the path of a session the swap withdrew (its focus row's
+# pathSessionId), owes no replay: dropped, out of flight, its worker reaped;
+# one on a standing session's path is queued, its path's session kept for a
+# later swap's scan.
+(
+  drop_root="${test_tmp}/replay-drop"
+  iteration_dir="${drop_root}/iteration-0000"
+  campaign_root=${drop_root}
+  stream_loop_state
+  declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
+    stream_job_tree=() stream_job_since=() stream_job_cores=() \
+    stream_solver_seen=()
+  stream_ticker=""
+  stream_step_pid=""
+  stream_round_pid=""
+  stream_pending=()
+  campaign_stream_release() { :; }
+  campaign_replay_measured() { :; }
+  campaign_stream_host_count() { :; }
+  campaign_stream_seated() { return 1; }
+  campaign_log() { :; }
+  stream_withdrawn[S.gone]=1
+  for drop_rest in gone kept; do
+    drop_worker="${iteration_dir}/obligations-0003/OB.${drop_rest}"
+    mkdir -p "${drop_worker}"
+    jq -n -c --arg id "OB.${drop_rest}" '{obligationId: $id,
+      verdict: "SAT_MODEL_READY", sessionId: "", detail: ""}' \
+      >"${drop_worker}/obligation_result.jsonl"
+    jq -n -c --arg s "S.${drop_rest}" '{pathSessionId: $s}' \
+      >"${drop_worker}/focused_task.jsonl"
+    stream_flying[OB.${drop_rest}]="{}"
+    drop_pid=$((4000 + ${#stream_reaped[@]} + ${#stream_queue[@]}))
+    stream_jobs[${drop_pid}]="OBLIGATION obligations-0003 OB.${drop_rest} lift12 "
+    stream_job_worker[${drop_pid}]=${drop_worker}
+    stream_job_tree[${drop_pid}]="g0/c g0/p"
+    campaign_stream_ended "${drop_pid}" 0
+  done
+  [[ "${stream_queue[*]}" == "REPLAY obligations-0003 OB.kept g0/c g0/p" \
+      && "${stream_rests[OB.kept]}" == S.kept && -z "${stream_rests[OB.gone]:-}" \
+      && "${stream_reaped[*]}" == OB.gone && "${!stream_flying[*]}" == OB.kept \
+      && -d "${drop_root}/explore-reaped/obligations-0003/OB.gone" \
+      && ${#stream_jobs[@]} -eq 0 ]] \
+    || fail "STREAM-REPLAY-DROP: queue [${stream_queue[*]}], reaped \
+[${stream_reaped[*]}], in flight [${!stream_flying[*]}]"
+) || fail "STREAM-REPLAY-DROP failed"
 
 # CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
 # task and the replay are stubbed -- the first writes the focus row and the

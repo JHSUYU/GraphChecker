@@ -26,12 +26,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -129,6 +131,18 @@ public final class ObligationSolverMain {
      * its own, reading that corpus, would write.  A read past {@code
      * retirePastBytes} of session files (0: none) is not made: the question
      * is given back ({@link Service.Outgrown}) for a solver sized anew.
+     *
+     * <p>THE CORPUS STANDS WITHOUT WHAT GROW WITHDREW ({@link #standing}),
+     * and a read is of whole sessions: GROW's swaps withdraw sessions while
+     * solvers serve ({@code run_engine.sh campaign_stream_swap}), each named
+     * in {@link #WITHDRAWN} before its directory leaves.  A session the
+     * journal names once the read is done -- or one gone under it, failing
+     * the read -- may have been read in part (a file missing reads as no
+     * rows), and the corpus is read again without it; a session leaves once
+     * and never returns, so one still unnamed after the read stood whole
+     * while it was read.  The journal, not the listing, says what left: a
+     * peer's listing of the directory may be its NFS client's, up to a
+     * minute old, while a file's open reads it as the head closed it.</p>
      */
     private static Service.Answerer answerer(Path sessions,
                                              Path rootDomains, Path z3,
@@ -147,28 +161,43 @@ public final class ObligationSolverMain {
                     throws Exception {
                 Path obligations = Paths.get(JsonFields.primitiveString(
                         question, "obligations"));
-                List<String> now = listing(sessions);
+                List<String> now = standing(sessions);
                 if (corpus == null || stale(read.keySet(), now,
                         round(obligations, now))) {
-                    Map<String, Long> reading = new HashMap<String, Long>();
-                    long bytes = 0L;
-                    for (String name : now) {
-                        Long held = read.get(name);
-                        long size = held != null ? held
-                                : bytes(sessions.resolve(name));
-                        reading.put(name, size);
-                        bytes += size;
-                    }
-                    if (retirePastBytes > 0L && bytes > retirePastBytes) {
-                        throw new Service.Outgrown("its corpus is "
-                                + (bytes >> 20) + " MB of sessions, past the "
-                                + (retirePastBytes >> 20) + " MB its heap "
-                                + "was started for");
-                    }
-                    corpus = Corpus.read(iteration, rootDomains, corpus,
-                            null);
+                    Whole<Map<String, Long>> whole = readWhole(sessions, now,
+                            standing -> {
+                        Map<String, Long> reading =
+                                new HashMap<String, Long>();
+                        long bytes = 0L;
+                        for (String name : standing) {
+                            Long held = read.get(name);
+                            long size = held != null ? held
+                                    : bytes(sessions.resolve(name));
+                            reading.put(name, size);
+                            bytes += size;
+                        }
+                        if (retirePastBytes > 0L && bytes > retirePastBytes) {
+                            throw new Service.Outgrown("its corpus is "
+                                    + (bytes >> 20) + " MB of sessions, past "
+                                    + "the " + (retirePastBytes >> 20)
+                                    + " MB its heap was started for");
+                        }
+                        // A read GROW withdrew a session under keeps the
+                        // others, whole, for the next.
+                        corpus = Corpus.read(iteration, rootDomains, corpus,
+                                standing);
+                        return reading;
+                    });
                     read.clear();
-                    read.putAll(reading);
+                    read.putAll(whole.read);
+                    if (!whole.left.isEmpty()) {
+                        System.err.println("ObligationSolverMain: question "
+                                + JsonFields.primitiveString(question,
+                                "obligationId") + ": the corpus was read "
+                                + whole.again + " time(s) more, GROW having "
+                                + "withdrawn " + whole.left + " under the "
+                                + "read");
+                    }
                 } else {
                     corpus.freshLowerings();
                 }
@@ -182,6 +211,59 @@ public final class ObligationSolverMain {
                                 Paths.get(decided)));
             }
         };
+    }
+
+    /** One read of the corpus: the sessions {@code standing} in it. */
+    interface Reading<T> {
+        T read(List<String> standing) throws Exception;
+    }
+
+    /** What {@link #readWhole} read, the sessions withdrawn under its reads
+     *  and how many times it read again. */
+    static final class Whole<T> {
+        final T read;
+        final Set<String> left;
+        final int again;
+
+        Whole(T read, Set<String> left, int again) {
+            this.read = read;
+            this.left = left;
+            this.again = again;
+        }
+    }
+
+    /**
+     * A read of the sessions standing, {@code now} first, whole: read again,
+     * of what stands then, while {@link #WITHDRAWN} names a session of the
+     * read once it is done, or one it read when it failed (a session gone
+     * under it; a failure no withdrawal explains is thrown).  A session
+     * leaves once, named first, and never returns, so a read none of whose
+     * sessions the journal names after it read each one whole.
+     */
+    static <T> Whole<T> readWhole(Path sessions, List<String> now,
+                                  Reading<T> reading) throws Exception {
+        Path iteration = sessions.getParent();
+        List<String> standing = now;
+        Set<String> left = new LinkedHashSet<String>();
+        for (int again = 0; ; again++) {
+            T read;
+            Set<String> gone;
+            try {
+                read = reading.read(standing);
+            } catch (IOException failed) {
+                gone = withdrawn(iteration);
+                gone.retainAll(standing);
+                if (gone.isEmpty()) throw failed;
+                left.addAll(gone);
+                standing = standing(sessions);
+                continue;
+            }
+            gone = withdrawn(iteration);
+            gone.retainAll(standing);
+            if (gone.isEmpty()) return new Whole<T>(read, left, again);
+            left.addAll(gone);
+            standing = standing(sessions);
+        }
     }
 
     /** Whether a corpus read from the sessions {@code read} lacks one the
@@ -231,8 +313,38 @@ public final class ObligationSolverMain {
         return bytes;
     }
 
-    /** The session directory names of a corpus, sorted. */
-    static List<String> listing(Path sessions) throws IOException {
+    /**
+     * The sessions GROW's swaps withdrew from the corpus, one per line,
+     * beside it: made empty as the exploration starts, before any solver
+     * serves, and each appended by the head before its directory leaves
+     * ({@code run_engine.sh campaign_explore}, {@code campaign_stream_swap}).
+     */
+    static final String WITHDRAWN = "withdrawn.txt";
+
+    /**
+     * The sessions {@link #WITHDRAWN} names.  Opened, never looked up first:
+     * an open reads the file as the head closed it (NFS close-to-open), where
+     * a stat may answer from a lookup cached as absent for up to a minute.
+     * Absent, it is a corpus whose exploration has not started: none left.
+     */
+    static Set<String> withdrawn(Path iteration) throws IOException {
+        Set<String> named = new HashSet<String>();
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(iteration.resolve(WITHDRAWN),
+                    StandardCharsets.UTF_8);
+        } catch (NoSuchFileException absent) {
+            return named;
+        }
+        for (String line : lines) {
+            if (!line.trim().isEmpty()) named.add(line.trim());
+        }
+        return named;
+    }
+
+    /** The session directory names of a corpus, sorted, but those GROW
+     *  withdrew ({@link #WITHDRAWN}). */
+    static List<String> standing(Path sessions) throws IOException {
         List<String> names = new ArrayList<String>();
         try (DirectoryStream<Path> entries =
                      Files.newDirectoryStream(sessions)) {
@@ -242,6 +354,7 @@ public final class ObligationSolverMain {
                 }
             }
         }
+        names.removeAll(withdrawn(sessions.getParent()));
         Collections.sort(names);
         return names;
     }
@@ -374,6 +487,11 @@ public final class ObligationSolverMain {
     /** The query a worker's ask published. */
     static final String QUERY = "obligation_query.smt2";
 
+    /** A flip's focus row: the session its path ran in, by which a replay
+     *  owed on a path whose session GROW withdrew is dropped ({@code
+     *  run_engine.sh campaign_stream_replay_drop}). */
+    static final String PATH_SESSION = "pathSessionId";
+
     /** Solves one published obligation over the corpus of {@code
      *  iteration} and writes every artifact of it; {@code decided}, the
      *  hard lane's model of its flip, finishes it without z3's verdict. */
@@ -453,6 +571,7 @@ public final class ObligationSolverMain {
         // An open decider arm's flip: its replay may refute its world
         // (FocusedReplay#refuted).
         if (outcome.openArm) focus.addProperty(FocusedReplay.OPEN_ARM, true);
+        focus.addProperty(PATH_SESSION, candidate.path.sessionId);
         JsonObject published = publish(out, outcome.obligation,
                 outcome.result, outcome.smt2, outcome.gaps, focus);
         // Asked, and settled only by what its replay decides: its worker
