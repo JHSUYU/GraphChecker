@@ -954,8 +954,8 @@ An id drifts as sessions land (the factor, and so the input shape, grows), so on
 again under new ids (SOLR-18413 r5: 185 questions asked 717 times, 118 of the 166 re-asked with
 byte-identical queries). Its **question** (`ObligationFactory#question`) does not drift while what its
 answer rests on reads the same: `<flip>:<content>`, the flip (`#flip`: task, path, site, ordinal,
-flipped outcome), then a digest of the query as its solver is asked it (or the refusal that leaves
-none) and all its replay is given -- the world it plants (the path's world: roots, clock skews,
+flipped outcome), then a digest of its solver key -- the sha256 of the query as its solver is asked
+it (or the refusal that leaves none) -- and all its replay is given -- the world it plants (the path's world: roots, clock skews,
 answers, inherited flips), the focused occurrence, the factor (a set) and the seed session of the focus row
 (the schedule cut is the path's session cut at the focus and factor), the declared occurrence, and
 the plan generation (a digest of the iteration's task plan, which GROW appends to and re-weaves
@@ -969,6 +969,20 @@ an undecided solver (the held re-ask included), a replay killed on its bound, a 
 without a publication (`RowRuntime#closeSession` withdraws the question), a solver that died, or a
 worker that did not finish. A settled question stands only while its worker holds it and, for an
 `ADMITTED` one, while its session is in the corpus (`ObligationDir#answered`).
+
+**The solver key** (`explore/Solved`): what z3 decides of a query -- unsat, or sat and a model's
+values -- is a fact of the query's text alone, whatever obligation, world, task, focus or plan
+generation built it, and is kept under the text's sha256 in the iteration (`solved/<sha256>.json`)
+once z3 decided it; every later ask of the same text (the first ask, the held re-ask, the hard
+lane's: `HardAsk#solved` names the store) is answered with it and runs no z3 (SOLR-18413 b05: 312
+of 519 solver-decided asks asked a text asked before, 1417 s of solves). The answer is mapped for
+each ask as z3's own is (`ObligationFactory#settled`, the model planted and checked for that
+candidate), so a kept answer writes what a z3 run deciding the same writes, and settles its
+question as that run would; the question stays its own replay key. A kept model is one model of
+the text, as a run gives one (each run races two engines). Only a decided answer is kept: a
+timeout, a memout, unknown, an error or disagreeing engines say nothing of the text, and the next
+ask runs z3 at its own budget and room. An entry is written whole (moved into place); an ask that
+does not see it yet asks z3.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 

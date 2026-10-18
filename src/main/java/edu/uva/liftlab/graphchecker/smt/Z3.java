@@ -151,10 +151,17 @@ public final class Z3 {
             this.reason = reason;
         }
 
-        /** A sat answer whose model another run decided: the hard lane's,
-         *  over the same query ({@code ObligationSolverMain --decide}). */
-        public static Answer sat(Map<String, String> values) {
-            return new Answer("sat", values,
+        /** A decided answer -- {@code sat} and its model's values, or
+         *  {@code unsat} -- another run gave the same query text: the hard
+         *  lane's ({@code ObligationSolverMain --decide}), or one kept by
+         *  the text ({@code explore.Solved}); no core. */
+        public static Answer decided(String status,
+                                     Map<String, String> values) {
+            if (!"sat".equals(status) && !"unsat".equals(status)) {
+                throw new IllegalArgumentException("not a decided answer: "
+                        + status);
+            }
+            return new Answer(status, values,
                     Collections.<String>emptyList(), false, "");
         }
 

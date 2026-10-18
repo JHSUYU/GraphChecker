@@ -677,7 +677,9 @@ public class ExploreTest {
         // THE HARD LANE'S MODEL, FINISHED BY THE CORPUS: a first ask out of
         // budget leaves its record, the hard lane decides it with no corpus,
         // and its model is planted as it is: the same world the corpus's own
-        // ask planted.
+        // ask planted.  (w0's answer is kept by its text, Solved: the first
+        // ask is of a store without it, or no budget would run out.)
+        deleteTree(iteration.resolve(Solved.DIR));
         Path hard = out.resolve("hard");
         ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
                 wave0.resolve("obligations.jsonl"),
@@ -719,6 +721,8 @@ public class ExploreTest {
                 wave0.resolve("obligations.jsonl"),
                 proposed.get(0).obligationId(), alone, Paths.get("z3"),
                 10_000L, 1152, null);
+        // Every seat's z3 runs beside the others': none kept yet.
+        deleteTree(iteration.resolve(Solved.DIR));
         Corpus shared = Corpus.read(iteration, null);
         List<Thread> seats = new ArrayList<>();
         List<Throwable> failed = Collections.synchronizedList(
@@ -5393,6 +5397,68 @@ public class ExploreTest {
     }
 
     /**
+     * THE SOLVER KEY ({@link Solved}): z3's decided answer is a fact of its
+     * query's text alone, kept by it, and an ask of the same text under
+     * another question -- another plan generation, world, task -- runs no
+     * z3 and comes to the outcome a z3 run deciding the same comes to; the
+     * question stays its own (SOLR-18413 b05: 312 of 519 solver-decided asks
+     * asked a text asked before).  An undecided answer is kept nowhere.  Per
+     * row: the flipped term, its verdict.
+     */
+    @Test
+    public void aQueryTextIsAnsweredOnceWhateverAsksIt() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Object[][] rows = {
+                {"(= M_READ_KEY 2)", Verdict.SAT_MODEL_READY},
+                {"(and (= M_READ_KEY 2) (= M_READ_KEY 3))", Verdict.UNSAT},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "solver-key-" + at++;
+            Path iteration = twoWriters(name, (String) row[0], null);
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation lookup = named(obligations(wave0), "Lookup#u8");
+            Corpus corpus = Corpus.read(iteration, null);
+            ObligationFactory.Candidate candidate =
+                    ObligationFactory.locate(corpus, lookup);
+            Solved solved = Solved.in(iteration);
+            Map<String, ObligationDir.Answer> none =
+                    Collections.<String, ObligationDir.Answer>emptyMap();
+            ObligationFactory.Outcome asked = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("z3"), 10_000L, 1152), solved,
+                            "plan A", none, null));
+            assertEquals(name + ": " + asked.result.detail(), row[1],
+                    asked.result.verdict());
+            Path kept = solved.dir().resolve(edu.uva.liftlab.graphchecker
+                    .smt.ArtifactIO.sha256(asked.smt2) + ".json");
+            assertTrue(name + ": kept by its text", Files.exists(kept));
+            ObligationFactory.Outcome again = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("no-z3-here"), 10_000L, 1152), solved,
+                            "plan B", none, null));
+            assertFalse(name, asked.question.equals(again.question));
+            assertEquals(name, RowCodec.writeObligationResult(asked.result),
+                    RowCodec.writeObligationResult(again.result));
+            assertEquals(name, asked.obligation, again.obligation);
+            assertEquals(name, asked.smt2, again.smt2);
+            assertEquals(name, asked.settles, again.settles);
+            // Undecided at its budget: no answer of the text, none kept.
+            Files.delete(kept);
+            ObligationFactory.Outcome timedOut = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("z3"), 1L, 1152), solved, "plan C",
+                            none, null));
+            assertTrue(name + ": " + timedOut.result.detail(),
+                    timedOut.result.detail().startsWith("SOLVER_TIMEOUT"));
+            assertFalse(name, Files.exists(kept));
+        }
+    }
+
+    /**
      * An ADMITTED replay settles its flip whatever id the arm has since
      * ({@link Frontier#consume}): sessions landing after it move the
      * dependence, and the same flip of the same path would plant the same
@@ -7576,14 +7642,29 @@ public class ExploreTest {
                     query.getBytes(StandardCharsets.UTF_8));
             GapRow built = GapRow.of("S", GapKind.ADMISSION_GAP,
                     GapClass.DIAGNOSTIC, "OB.1", "built");
+            String sha = edu.uva.liftlab.graphchecker.smt.ArtifactIO
+                    .sha256(query);
+            Path solved = worker.resolve(Solved.DIR);
             new HardAsk("OB.1", "S", "the question",
                     "no world of this corpus takes the other arm at s#1",
-                    Collections.singletonList(built), symbols,
-                    edu.uva.liftlab.graphchecker.smt.ArtifactIO.sha256(query))
+                    Collections.singletonList(built), symbols, sha, solved)
                     .write(worker.resolve(HardAsk.FILE));
             ObligationSolverMain.decide(obligations, "OB.1", worker,
                     Paths.get("z3"), (Long) row[1], 1152);
             String says = Arrays.toString(row);
+            // Its decided answer is kept by its text, an undecided one
+            // nowhere; asked again, a kept one is the answer, no z3 run.
+            Path kept = solved.resolve(sha + ".json");
+            assertEquals(says, !"NOT_ADMITTED".equals(row[2]),
+                    Files.exists(kept));
+            if (Files.exists(kept)) {
+                for (String file : new String[] {ObligationDir.RESULT,
+                        HardAsk.Model.FILE, ObligationDir.QUESTION}) {
+                    Files.deleteIfExists(worker.resolve(file));
+                }
+                ObligationSolverMain.decide(obligations, "OB.1", worker,
+                        Paths.get("no-z3-here"), (Long) row[1], 1152);
+            }
             if ("MODEL".equals(row[2])) {
                 assertFalse(says, Files.exists(
                         worker.resolve(ObligationDir.RESULT)));

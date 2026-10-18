@@ -379,7 +379,9 @@ public final class ObligationSolverMain {
     /**
      * THE HARD LANE: one flip's ask at the full budget, z3 alone, over the
      * query its first ask published and the record beside it ({@link
-     * HardAsk}), in a JVM that reads no corpus.  Its answer is mapped as the
+     * HardAsk}), in a JVM that reads no corpus -- or no z3 at all where the
+     * record's store holds an answer to the text, and a decided one is kept
+     * there ({@link Solved}).  Its answer is mapped as the
      * corpus's ask maps one ({@code ObligationFactory#settled}) and published
      * into the worker as that ask publishes it: UNSAT settling its question,
      * or no verdict by name.  A sat answer leaves its model ({@link
@@ -416,17 +418,10 @@ public final class ObligationSolverMain {
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
         Z3 solver = new Z3(z3, budget, z3RoomMb);
-        Z3.Answer answer = solver.ask(output -> {
-            try (java.io.Reader in = new java.io.InputStreamReader(
-                    new java.io.BufferedInputStream(
-                            new LimitedInput(Files.newInputStream(query),
-                                    body)), StandardCharsets.UTF_8)) {
-                char[] buffer = new char[1 << 16];
-                for (int read; (read = in.read(buffer)) > 0; ) {
-                    output.write(buffer, 0, read);
-                }
-            }
-        }, ask.modelSymbols, false);
+        // Kept by its text, its answer is the store's (Solved): no z3 run.
+        Z3.Answer answer = Solved.at(ask.solved).answer(ask.querySha256,
+                () -> solver.ask(output -> body(query, body, output),
+                        ask.modelSymbols, false));
         // The query stays as its first ask published it.
         ObligationFactory.Outcome settled = ObligationFactory.settled(ask,
                 answer, budget, solver, null);
@@ -438,6 +433,20 @@ public final class ObligationSolverMain {
         publish(worker, proposal, settled.result, null, settled.gaps, null);
         if (settled.settles) {
             ask(worker.resolve(ObligationDir.QUESTION), settled.question);
+        }
+    }
+
+    /** The first {@code body} bytes of the query file, written out. */
+    private static void body(Path query, long body, java.io.Writer output)
+            throws IOException {
+        try (java.io.Reader in = new java.io.InputStreamReader(
+                new java.io.BufferedInputStream(new LimitedInput(
+                        Files.newInputStream(query), body)),
+                StandardCharsets.UTF_8)) {
+            char[] buffer = new char[1 << 16];
+            for (int read; (read = in.read(buffer)) > 0; ) {
+                output.write(buffer, 0, read);
+            }
         }
     }
 
@@ -544,8 +553,8 @@ public final class ObligationSolverMain {
                 : declared.render()) + "\nplan " + (Files.isRegularFile(plan)
                 ? ArtifactIO.sha256(plan) : "");
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
-                candidate, solver, given, ObligationDir.answered(iteration),
-                decided);
+                candidate, solver, Solved.in(iteration), given,
+                ObligationDir.answered(iteration), decided);
         if (!outcome.issued()) {
             JsonObject published = publish(out, proposal, outcome.result,
                     outcome.smt2, outcome.gaps, null);
