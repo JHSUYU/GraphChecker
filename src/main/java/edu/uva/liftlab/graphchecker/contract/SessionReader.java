@@ -3,9 +3,11 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -363,16 +365,32 @@ public final class SessionReader {
         synchronized (this) {
             held = state;
             if (held == null) {
-                RowPool pool = new RowPool();
-                held = new State(again(directory.writes(),
-                        json -> RowCodec.readWrite(json, pool), pool),
-                        again(directory.reads(),
-                                json -> RowCodec.readRead(json, pool), pool));
+                held = reread();
                 state = held;
             }
         }
         holding.loaded(this, RowHold.Kind.STATE);
         return held;
+    }
+
+    /** Its reads and writes read again, the two files side by side (about
+     *  as large: SGF8-adhoc-07's 7.7 and 7.0 GB). */
+    @SuppressWarnings("unchecked")
+    private State reread() {
+        RowPool pool = new RowPool();
+        Object[] read = new Object[2];
+        try {
+            Parallel.map(Arrays.asList(0, 1), which -> {
+                read[which] = which == 0 ? again(directory.writes(),
+                        json -> RowCodec.readWrite(json, pool), pool)
+                        : again(directory.reads(),
+                        json -> RowCodec.readRead(json, pool), pool);
+                return which;
+            }, 2);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        return new State((List<WriteRow>) read[0], (List<ReadRow>) read[1]);
     }
 
     /** One file of rows its hold let go of, read again: what it read first

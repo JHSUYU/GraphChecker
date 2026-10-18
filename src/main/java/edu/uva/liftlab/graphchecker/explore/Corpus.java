@@ -544,49 +544,73 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * COMPOSE'S CORPUS (PIPELINE §8): every index built from every session's
-     * rows, the sessions read {@link Parallel#READS} at a time, and their
-     * reads, writes and gaps held by {@code hold} -- at most its bytes,
-     * read again as asked for -- so the corpus never holds them all.  The
-     * sessions are indexed in the order {@link #Corpus(Path, List, Corpus)}
-     * indexes them (each read one in read order, the forced ones after),
-     * and each answer is the one that corpus gives.
+     * rows, the sessions read {@link Parallel#READS} at a time -- the next
+     * ones read while these are indexed -- and their reads, writes and gaps
+     * held by {@code hold}, at most its bytes, read again as asked for, so
+     * the corpus never holds them all.  The sessions are indexed in the
+     * order {@link #Corpus(Path, List, Corpus)} indexes them (each read one
+     * in read order, the forced ones after), and each answer is the one
+     * that corpus gives.
      */
     private Corpus(Path iteration, List<SessionDir> dirs, long bytes)
             throws IOException {
         this.iteration = iteration;
         this.hold = new RowHold(bytes, this::released);
         List<SessionReader> real = new ArrayList<SessionReader>();
-        List<SessionReader> forced = new ArrayList<SessionReader>();
+        List<Derived> forced = new ArrayList<Derived>();
         SessionReader.Pooled reader = new SessionReader.Pooled();
+        List<Derived> read = derived(reader, dirs, 0);
         for (int from = 0; from < dirs.size(); from += Parallel.READS) {
-            List<SessionReader> read = Parallel.map(dirs.subList(from,
-                    Math.min(dirs.size(), from + Parallel.READS)), dir -> {
-                SessionReader session = reader.read(dir);
-                digestIds(session);
-                return session;
-            }, Parallel.READS);
-            for (SessionReader session : read) {
-                // As the corpus that holds every session reads them.
-                if (session.forced()) {
-                    if (forcedTarget(session)) forced.add(session);
-                    continue;
+            int next = from + Parallel.READS;
+            List<List<Derived>> ahead = new ArrayList<List<Derived>>();
+            Parallel.Beside reading = Parallel.beside("corpus-read",
+                    () -> ahead.add(derived(reader, dirs, next)));
+            try {
+                for (Derived of : read) {
+                    // As the corpus that holds every session reads them.
+                    if (of.session.forced()) {
+                        if (forcedTarget(of.session)) forced.add(of);
+                        continue;
+                    }
+                    real.add(of.session);
+                    indexHeld(of, false);
                 }
-                real.add(session);
-                indexHeld(session, false);
+            } finally {
+                reading.await();
             }
+            reading.join();
+            read = ahead.get(0);
         }
-        for (SessionReader session : forced) indexHeld(session, true);
+        List<SessionReader> apart = new ArrayList<SessionReader>();
+        for (Derived of : forced) {
+            apart.add(of.session);
+            indexHeld(of, true);
+        }
         this.sessions = Collections.unmodifiableList(real);
-        this.forcedSessions = Collections.unmodifiableList(forced);
+        this.forcedSessions = Collections.unmodifiableList(apart);
         this.arms = new Arms(this);
     }
 
+    /** The {@link Parallel#READS} sessions from {@code from} on, read side by
+     *  side, each with what its rows alone give but its {@link StateRows},
+     *  built as asked. */
+    private static List<Derived> derived(SessionReader.Pooled reader,
+                                         List<SessionDir> dirs, int from)
+            throws IOException {
+        if (from >= dirs.size()) return Collections.<Derived>emptyList();
+        return Parallel.map(dirs.subList(from, Math.min(dirs.size(),
+                from + Parallel.READS)), dir -> {
+            SessionReader session = reader.read(dir);
+            digestIds(session);
+            return new Derived(session, false);
+        }, Parallel.READS);
+    }
+
     /** One session read, indexed, and taken into the hold. */
-    private void indexHeld(SessionReader session, boolean apart) {
-        Derived of = new Derived(session, false);
-        bySession.put(session.sessionId(), of);
+    private void indexHeld(Derived of, boolean apart) {
+        bySession.put(of.session.sessionId(), of);
         index(of, apart);
-        hold.take(session);
+        hold.take(of.session);
     }
 
     /**

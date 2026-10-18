@@ -2367,12 +2367,13 @@ paths the composer said it composed (`ComposeMain --max-paths`, the rest named `
 until one composition ends or one path is all it had.
 
 THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
-`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time and indexed as a corpus
-holding every row indexes it (each session in read order, the forced ones after), and of each session's rows its
-reads and writes -- with what the corpus builds of them alone: its state join, its writes by version and by
-location, its reads by symbol, its rows by occurrence, the answers that hold rows (`Corpus.StateRows`) -- and its
-gaps are held apart: at most 0.15 of the heap of their text as it decodes, the ones asked for least recently let
-go of and read again from their files when next asked, value for value (a landed session's files never change).
+`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time, the next ones read while
+these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
+and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join, its
+writes by version and by location, its reads by symbol, its rows by occurrence, the answers that hold rows
+(`Corpus.StateRows`) -- and its gaps are held apart: at most 0.15 of the heap of their text as it decodes, the ones asked for least recently let
+go of and read again from their files when next asked, value for value (a landed session's files never change;
+its reads and writes side by side).
 Every other row of every session stays held -- decisions, activations, attaches, exports, roots, targets,
 expressions -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
 sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
