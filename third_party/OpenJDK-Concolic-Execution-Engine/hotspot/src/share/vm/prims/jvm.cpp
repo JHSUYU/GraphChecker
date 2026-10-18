@@ -910,7 +910,7 @@ JVM_ENTRY(jstring, JVM_ReadOutTrackedLocations(
       "\"nextAfterEventId\":0,\"vmExpressionTable\":{\"schemaVersion\":1,"
       "\"kind\":\"VM_EXPRESSION_TABLE\","
       "\"authority\":\"VM_READ_OUT_EXPRESSION_DELTA_V1\",\"sessionId\":0,"
-      "\"sequence\":0,\"definitionCount\":0,\"definitions\":[]}}", THREAD);
+      "\"sequence\":1,\"definitionCount\":0,\"definitions\":[]}}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
