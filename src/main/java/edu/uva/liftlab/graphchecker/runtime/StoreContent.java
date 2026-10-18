@@ -786,13 +786,4 @@ final class StoreContent {
         RowRuntime.ambientActivation(here);
         return here;
     }
-
-    /** Test seam: forgets every document, fetch and export. */
-    static void resetForTests() {
-        WRITTEN.clear();
-        FETCHED.clear();
-        synchronized (EXPORTS) {
-            EXPORTS.clear();
-        }
-    }
 }
