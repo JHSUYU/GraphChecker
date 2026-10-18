@@ -66,6 +66,11 @@ final class SharedStateCapture {
         String fault = "";
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
+            if (ConcolicResultPublisher.endedEarly()) {
+                // Withheld: this activation submits after the end.
+                fault = "the replay ended before this read-out completed";
+                break;
+            }
             final String serialized;
             long asked = System.nanoTime();
             try {
@@ -211,10 +216,11 @@ final class SharedStateCapture {
      * nothing.
      */
     private static void decodeTrackedLocations(String serialized,
-                                               ActiveRegion active) {
+                                               ActiveRegion active,
+                                               SharedStateReadOut readOut) {
         long started = System.nanoTime();
         try {
-            decodePage(serialized, active);
+            decodePage(serialized, active, readOut);
         } finally {
             DECODE_NANOS.addAndGet(System.nanoTime() - started);
         }
@@ -226,9 +232,12 @@ final class SharedStateCapture {
      * every location touched since its entry, so the enclosing ones state
      * an inner one's again -- is filed as the decoding of its first reading
      * ({@link VmExpressionTable.Store#importRepeatedRecords}), not decoded
-     * again.
+     * again.  A page the session withholds meanwhile ({@code
+     * ConcolicResultPublisher#withholds}: the replay ended early) stops at
+     * its next record ({@link Withheld}).
      */
-    private static void decodePage(String serialized, ActiveRegion active) {
+    private static void decodePage(String serialized, ActiveRegion active,
+                                   SharedStateReadOut readOut) {
         // One page's versions share their subexpressions (one import): a
         // node scanned clean once is not scanned again.
         Set<JsonElement> clean = Collections.newSetFromMap(
@@ -250,7 +259,22 @@ final class SharedStateCapture {
                 return false;
             }
             return true;
-        }, element -> decoded(element, clean), filed -> file(filed, active));
+        }, element -> {
+            if (readOut != null && ConcolicResultPublisher.withholds(readOut)) {
+                throw Withheld.INSTANCE;
+            }
+            return decoded(element, clean);
+        }, filed -> file(filed, active));
+    }
+
+    /** A page's decoding stopped: no publication reads it any more. */
+    private static final class Withheld extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        static final Withheld INSTANCE = new Withheld();
+
+        private Withheld() {
+            super("withheld", null, false, false);
+        }
     }
 
     /**
@@ -446,13 +470,20 @@ final class SharedStateCapture {
         private final List<Runnable> refusals = new ArrayList<>();
         /** Pages handed to the decoding thread and not yet decoded. */
         private int pending;
+        /** Its publication's place in submission order, 0 until submitted;
+         *  guarded by the publisher's lock ({@code ConcolicResultPublisher
+         *  #withholds}). */
+        long ordinal;
 
         /**
          * Queues one page's decoding on the decoding thread, once the pages
          * queued before it leave room ({@code ConcolicResultPublisher
-         * #decodeBeforePublication}).
+         * #decodeBeforePublication}); a page the session withholds by the
+         * time its turn comes is not decoded ({@code ConcolicResultPublisher
+         * #withholds}).
          *
-         * @return false when the decoding thread refused the work
+         * @return false when the decoding thread refused the work, or the
+         *         replay ended early
          */
         private boolean decodeLater(String page, ActiveRegion active) {
             synchronized (this) {
@@ -460,9 +491,15 @@ final class SharedStateCapture {
             }
             boolean handed = ConcolicResultPublisher.decodeBeforePublication(
                     page.length(), () -> {
+                        if (ConcolicResultPublisher.withholds(this)) {
+                            decoded();
+                            return;
+                        }
                         DECODING.set(refusals);
                         try {
-                            decodeTrackedLocations(page, active);
+                            decodeTrackedLocations(page, active, this);
+                        } catch (Withheld withheld) {
+                            // Its publication is withheld: nothing to file.
                         } catch (Throwable throwable) {
                             refuse(MALFORMED_ENVELOPE, "",
                                     rootCause(throwable));
