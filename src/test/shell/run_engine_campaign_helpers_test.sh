@@ -4314,8 +4314,9 @@ reset_config
 # first solve alone -- it starts the host's solver -- and the three after it
 # at once on the solver's seats (campaign_stream_has_seat).  Per row: the
 # campaign's measured peak (- outside a shared pool), the fresh and the stale
-# entries of other explorations, the most of four one-second solves that ran
-# at once, and how many explorations the wait names (- for none).
+# entries of other explorations, the most of four three-second solves that
+# ran at once (a second each let a loaded host's dispatch start one after
+# another had ended), and how many explorations the wait names (- for none).
 while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
   stream_fixture "stream-cap-${cap_peak}-${cap_fresh}-${cap_stale}"
   campaign_replay_peak_mb=0
@@ -4340,7 +4341,7 @@ while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
       local id=$1 worker=$4
       date +%s.%N >"${worker}/started-at"
       printf '%s\n' "$5" >"${worker}/charged"
-      sleep 1
+      sleep 3
       date +%s.%N >"${worker}/ended-at"
       stream_answer "${worker}" "${id}" UNSAT
     }
@@ -5393,15 +5394,16 @@ reset_config
 # CONFIRM of HG4 lost every result and no test ran it).  A's solve runs on
 # lift12 as --run-obligation, charged what a solver starts at; its
 # SAT_MODEL_READY comes back through the shared home, and its REPLAY runs as
-# a placed step on lift13 -- not its solve's host -- in A's worker, where it
-# must find the model its solve left (the focus row), on the solve's tree,
-# charged the replay's need; the session it staged lands from there.  B's
+# a placed step on a peer, in A's worker, where it must find the model its
+# solve left (the focus row), on the solve's tree, charged the replay's
+# need; the session it staged lands from there.  B's
 # solve answers UNSAT and replays nothing; it runs on lift12 too, a question
 # of A's solver there, charged nothing (a warm question), since lift13's
 # ledger has room for a replay's charge but not for a cold solve's, a
 # solver's start; and the REPLAY, queued behind it, goes to the host with
-# the most room, lift13 (1000 MB) while A's solver holds all but 63 of
-# lift12's 2752.  The stub stands where the network
+# the most room, lift12 (2752 MB, the stub's peer solver holding nothing
+# once A's question returned) over lift13 (1000), as a placed step there.
+# The stub stands where the network
 # stands, as in HOSTS-4: it reads the generated script's arguments as a
 # peer's shell would.
 stream_fixture stream-split-remote
@@ -5471,11 +5473,11 @@ done
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a remote split exploration did not finish: \
 $(cat "${stream_dir}/explore.log")"
-[[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
-$(campaign_solver_need_mb)
-lift12 SOLVE B $(campaign_stream_charge_mb OBLIGATION warm)
-lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
-generations/g0/execution_task_plan.jsonl" ]] \
+[[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 REPLAY A \
+$(campaign_stream_charge_mb REPLAY) instrumented-classes \
+generations/g0/execution_task_plan.jsonl
+lift12 SOLVE A $(campaign_solver_need_mb)
+lift12 SOLVE B $(campaign_stream_charge_mb OBLIGATION warm)" ]] \
   || fail "the remote solves and REPLAY did not run where and as they \
 should: $(cat "${stream_dir}/ssh-calls.txt")"
 jq -e -s 'length == 2 and (map({(.obligationId): .verdict}) | add)
@@ -5484,7 +5486,7 @@ jq -e -s 'length == 2 and (map({(.obligationId): .verdict}) | add)
   && [[ -f "${stream_dir}/sessions/SESSION.A/manifest.json" \
      && "$(cat "${stream_dir}/obligations-0000/A/host.txt")" == lift12 \
      && "$(cat "${stream_dir}/obligations-0000/A/replay-host.txt")" \
-       == lift13 ]] \
+       == lift12 ]] \
   || fail "the remote REPLAY's answer did not land as A's: \
 $(cat "${stream_dir}/obligation_results.jsonl")"
 reset_config
@@ -8409,7 +8411,8 @@ done
 # admits beside it once placed: ROOM-GRANT), less where its footprint and
 # that would not fit under the head steps' ceiling (88 % of 30000 MB here,
 # campaign_head_max_used_pct: a composer is a head step), the
-# least room (256 MB) where nothing is left; a solver a question's room; a
+# least room (256 MB) where nothing is left; a solver the room its seats
+# share, two questions' (campaign_solver_z3_mb); a
 # hard-lane ask the hard lane's 4096 MB beside its corpus-free JVM's 512 MB
 # heap (campaign_decide_need_mb); a main that starts no z3 none.  Per row:
 # the main (or a solver lane), the heap, the room, the charge.  A composer at 8 and at 16 GB
@@ -8441,8 +8444,8 @@ compose.ComposeMain|20000|2048|23682
 compose.ComposeMain|24000|516|26400
 compose.ComposeMain|25000|256|27202
 explore.ExploreMain|8192|0|9088
-explore.ObligationSolverMain|2048|1152|3712
-solver|2048|1152|3712
+explore.ObligationSolverMain|2048|2304|4864
+solver|2048|2304|4864
 HARD|512|4096|5024
 EOF
   campaign_z3_room_flag z3_flag edu.uva.liftlab.graphchecker.compose.ComposeMain \
