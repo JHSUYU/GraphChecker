@@ -9,20 +9,25 @@ import com.google.gson.JsonSyntaxException;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.StringReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -628,8 +633,18 @@ public final class RowCodec {
 
     // ---- files ---------------------------------------------------------
 
-    /** Writes one kind's file: one object per line, nothing else in it,
-     *  each row's object made as its line is written, never all held. */
+    /** How many rows one rendering of {@link #writeAll} takes. */
+    private static final int ROWS_AT_ONCE = 1024;
+
+    /**
+     * Writes one kind's file: one object per line, nothing else in it, each
+     * row's object made as its line is written, never all held -- the rows
+     * {@link #ROWS_AT_ONCE} at a time, each run rendered on a core of its
+     * own ({@link Parallel#stream}; {@code writer} is asked side by side)
+     * and written in order: what is left is the disk's (SGF8-adhoc-05 round
+     * 5's slot table, 6.6 GB of rows: 52 -> 17-23 s to a local disk; to NFS
+     * ~74 s either way, its link's).
+     */
     public static <T> void writeAll(Path file, List<T> rows,
                                     Function<T, JsonObject> writer)
             throws IOException {
@@ -642,12 +657,21 @@ public final class RowCodec {
         Path partial = Files.createTempFile(parent,
                 file.getFileName().toString(), ".partial");
         try {
-            try (BufferedWriter out = Files.newBufferedWriter(partial,
-                    StandardCharsets.UTF_8)) {
-                for (T row : rows) {
-                    out.write(toLine(writer.apply(row)));
-                    out.write("\n");
-                }
+            try (OutputStream out = new BufferedOutputStream(
+                    Files.newOutputStream(partial), 1 << 16)) {
+                int[] next = {0};
+                Parallel.stream(() -> {
+                    int from = next[0];
+                    if (from >= rows.size()) return null;
+                    next[0] = Math.min(rows.size(), from + ROWS_AT_ONCE);
+                    return rows.subList(from, next[0]);
+                }, run -> {
+                    StringBuilder text = new StringBuilder();
+                    for (T row : run) {
+                        text.append(toLine(writer.apply(row))).append('\n');
+                    }
+                    return text.toString().getBytes(StandardCharsets.UTF_8);
+                }, out::write);
             }
             Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
@@ -665,14 +689,113 @@ public final class RowCodec {
 
     /**
      * The same read, its strings from {@code pool}, each line read into its
-     * row as it is parsed: a file's parsed lines are never all held.
+     * row as it is parsed: a file's parsed lines are never all held.  The
+     * file is read in blocks of whole lines ({@link Lines}), each parsed on
+     * a core of its own ({@link Parallel#stream}; {@code reader} is asked
+     * side by side), the rows in the file's order: what is left is the
+     * disk's (SGF8-adhoc-05 round 4's 6.6 GB of slot changes, which a
+     * planner of its own reads whole: 104-117 -> 39-54 s from a local disk;
+     * from NFS its link's).  A line that does not read fails the read as
+     * the first such line of the file.
      */
     static <T> List<T> readAll(Path file, RowPool pool,
                                Function<JsonObject, T> reader)
             throws IOException {
         List<T> rows = new ArrayList<>();
-        eachLine(file, line -> rows.add(reader.apply(fromLine(line, pool))));
+        readEach(file, pool, reader, rows::add);
         return rows;
+    }
+
+    /** {@link #readAll(Path, Function)}, each row handed to {@code each} in
+     *  the file's order as its block is parsed, none held. */
+    public static <T> void readEach(Path file, Function<JsonObject, T> reader,
+                                    Consumer<T> each) throws IOException {
+        readEach(file, new RowPool(), reader, each);
+    }
+
+    private static <T> void readEach(Path file, RowPool pool,
+                                     Function<JsonObject, T> reader,
+                                     Consumer<T> each) throws IOException {
+        if (file == null || !Files.isRegularFile(file)) return;
+        try (InputStream in = Files.newInputStream(file)) {
+            Parallel.stream(new Lines(in), block -> {
+                List<T> parsed = new ArrayList<T>();
+                String text = block.text();
+                for (int at = 0; at < text.length(); ) {
+                    int end = text.indexOf('\n', at);
+                    if (end < 0) end = text.length();
+                    String line = text.substring(at, end > at
+                            && text.charAt(end - 1) == '\r' ? end - 1 : end);
+                    at = end + 1;
+                    if (line.trim().isEmpty()) continue;
+                    parsed.add(reader.apply(fromLine(line, pool)));
+                }
+                return parsed;
+            }, parsed -> parsed.forEach(each));
+        }
+    }
+
+    /** How many bytes of a file one block of {@link Lines} holds, at
+     *  least. */
+    private static final int BLOCK = 1 << 18;
+
+    /** A file's bytes as blocks of whole lines, read in order, decoded where
+     *  they are parsed ({@link #readAll(Path, RowPool, Function)}). */
+    private static final class Lines implements Parallel.Source<Lines.Block> {
+        /** Whole lines of the file, as read. */
+        static final class Block {
+            private final byte[] bytes;
+            private final int length;
+
+            Block(byte[] bytes, int length) {
+                this.bytes = bytes;
+                this.length = length;
+            }
+
+            /** The block's text, refused where it is no UTF-8, as a reader
+             *  of the file refuses it. */
+            String text() throws IOException {
+                return StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(ByteBuffer.wrap(bytes, 0, length))
+                        .toString();
+            }
+        }
+
+        private final InputStream in;
+        /** What the last block read after its last line. */
+        private byte[] carry = new byte[0];
+        private boolean ended;
+
+        Lines(InputStream in) {
+            this.in = in;
+        }
+
+        @Override
+        public Block next() throws IOException {
+            if (ended) return null;
+            byte[] block = Arrays.copyOf(carry,
+                    Math.max(BLOCK, 2 * carry.length));
+            int filled = carry.length;
+            while (true) {
+                int read = in.read(block, filled, block.length - filled);
+                if (read < 0) {
+                    ended = true;
+                    return filled == 0 ? null : new Block(block, filled);
+                }
+                filled += read;
+                if (filled < block.length) continue;
+                int end = filled - 1;
+                while (end >= 0 && block[end] != '\n') end--;
+                if (end >= 0) {
+                    carry = Arrays.copyOfRange(block, end + 1, filled);
+                    return new Block(block, end + 1);
+                }
+                // One line longer than the block: the block grows.
+                block = Arrays.copyOf(block, 2 * block.length);
+            }
+        }
     }
 
     public static void writeJsonl(Path file, List<JsonObject> rows)

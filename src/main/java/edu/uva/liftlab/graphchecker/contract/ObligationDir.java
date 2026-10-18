@@ -65,8 +65,8 @@ public final class ObligationDir {
     public static List<ObligationDir> workersIn(Path iteration)
             throws IOException {
         List<ObligationDir> workers = new ArrayList<ObligationDir>();
-        for (ObligationDir worker : ParallelReads.each(workerDirs(iteration),
-                ObligationDir::new, iteration)) {
+        for (ObligationDir worker : Parallel.map(workerDirs(iteration),
+                ObligationDir::new)) {
             if (!worker.sessionId.isEmpty()) workers.add(worker);
         }
         return workers;

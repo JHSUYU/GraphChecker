@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -15,7 +16,6 @@ import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,30 +47,67 @@ final class WaveGraph {
     private WaveGraph() {
     }
 
-    static WaveGraph of(Corpus corpus) {
+    /** Every admitted session's nodes and edges, each session's found and
+     *  its edges' ids digested on a core of its own ({@link Parallel#map}),
+     *  taken in the sessions' order. */
+    static WaveGraph of(Corpus corpus) throws IOException {
         WaveGraph graph = new WaveGraph();
+        List<SessionReader> admitted = new ArrayList<SessionReader>();
         for (SessionReader session : corpus.sessions()) {
-            if (!session.admitted()) continue;
-            String world = ObligationFactory.worldDigest(
-                    corpus.world(session.sessionId()));
-            for (ActivationRow activation : session.activations()) {
+            if (session.admitted()) admitted.add(session);
+        }
+        for (Ran ran : Parallel.map(admitted, session -> new Ran(corpus,
+                session))) {
+            for (ActivationRow activation : ran.session.activations()) {
                 graph.node(activation.occurrence(), activation.instrumented(),
-                        world);
+                        ran.world);
             }
+            for (Edge edge : ran.edges) {
+                graph.edge(edge, ran.world);
+            }
+        }
+        return graph;
+    }
+
+    /** What one admitted session states of the graph: its world, and its
+     *  WIRE pairings, then its STATE joins, in its rows' order. */
+    private static final class Ran {
+        final SessionReader session;
+        final String world;
+        final List<Edge> edges = new ArrayList<Edge>();
+
+        Ran(Corpus corpus, SessionReader session) {
+            this.session = session;
+            this.world = ObligationFactory.worldDigest(
+                    corpus.world(session.sessionId()));
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
-                graph.edge(InteractionKind.WIRE, attach.producer(),
-                        attach.endpoint(), world);
+                edges.add(new Edge(InteractionKind.WIRE, attach.producer(),
+                        attach.endpoint()));
             }
             for (ReadRow read : session.reads()) {
                 WriteRow write = corpus.writeOf(read.sessionId(),
                         read.location(), read.observedVersion());
                 if (write == null) continue;
-                graph.edge(InteractionKind.STATE, write.endpoint(),
-                        read.endpoint(), world);
+                edges.add(new Edge(InteractionKind.STATE, write.endpoint(),
+                        read.endpoint()));
             }
         }
-        return graph;
+    }
+
+    /** One pairing or join, with its interaction's id. */
+    private static final class Edge {
+        final InteractionKind kind;
+        final Endpoint producer;
+        final Endpoint consumer;
+        final String id;
+
+        Edge(InteractionKind kind, Endpoint producer, Endpoint consumer) {
+            this.kind = kind;
+            this.producer = producer;
+            this.consumer = consumer;
+            this.id = Interaction.of(kind, producer, consumer).id();
+        }
     }
 
     private void node(OccurrenceAddress occurrence, boolean instrumented,
@@ -91,25 +128,23 @@ final class WaveGraph {
         nodeWorlds.get(occurrence.id()).add(world);
     }
 
-    private void edge(InteractionKind kind, Endpoint producer,
-                      Endpoint consumer, String world) {
-        String id = Interaction.of(kind, producer, consumer).id();
-        JsonObject row = edges.get(id);
+    private void edge(Edge edge, String world) {
+        JsonObject row = edges.get(edge.id);
         if (row == null) {
             row = new JsonObject();
             row.addProperty("kind", "EDGE");
-            row.addProperty("edgeId", id);
-            row.addProperty("edge", kind.name());
-            row.addProperty("producer", producer.render());
+            row.addProperty("edgeId", edge.id);
+            row.addProperty("edge", edge.kind.name());
+            row.addProperty("producer", edge.producer.render());
             row.addProperty("producerOccurrenceId",
-                    producer.occurrence().id());
-            row.addProperty("consumer", consumer.render());
+                    edge.producer.occurrence().id());
+            row.addProperty("consumer", edge.consumer.render());
             row.addProperty("consumerOccurrenceId",
-                    consumer.occurrence().id());
-            edges.put(id, row);
-            edgeWorlds.put(id, new TreeSet<String>());
+                    edge.consumer.occurrence().id());
+            edges.put(edge.id, row);
+            edgeWorlds.put(edge.id, new TreeSet<String>());
         }
-        edgeWorlds.get(id).add(world);
+        edgeWorlds.get(edge.id).add(world);
     }
 
     /** Writes {@code graph.jsonl} with its FRONTIER against the previous
@@ -120,16 +155,17 @@ final class WaveGraph {
             Path previous = roundDir.resolveSibling(
                     String.format("obligations-%04d", round - 1))
                     .resolve(GRAPH);
-            if (Files.isRegularFile(previous)) {
-                for (JsonObject row : RowCodec.readJsonl(previous)) {
-                    if (row.has("occurrenceId")) {
-                        before.add(row.get("occurrenceId").getAsString());
-                    }
-                    if (row.has("edgeId")) {
-                        before.add(row.get("edgeId").getAsString());
-                    }
+            // Its ids alone, each line parsed on a core (RowCodec#readEach).
+            RowCodec.readEach(previous, row -> {
+                List<String> ids = new ArrayList<String>(1);
+                if (row.has("occurrenceId")) {
+                    ids.add(row.get("occurrenceId").getAsString());
                 }
-            }
+                if (row.has("edgeId")) {
+                    ids.add(row.get("edgeId").getAsString());
+                }
+                return ids;
+            }, before::addAll);
         }
         List<JsonObject> rows = new ArrayList<JsonObject>();
         int newNodes = 0;

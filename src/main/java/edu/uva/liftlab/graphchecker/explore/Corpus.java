@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ByIdentity;
 import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -16,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
@@ -31,7 +33,6 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
-import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -169,9 +170,10 @@ public final class Corpus implements Arms.Rows {
     private final List<SessionReader> sessions;
     private final Map<String, SessionReader> sessionById =
             new LinkedHashMap<String, SessionReader>();
-    /** One lowering per session. */
+    /** One lowering per session; concurrent, as a session's keys renew
+     *  its own ({@link #keysDone}). */
     private final Map<String, SmtLowering> loweringById =
-            new LinkedHashMap<String, SmtLowering>();
+            new ConcurrentHashMap<String, SmtLowering>();
     /** session id -> what this corpus derives from that session's rows
      *  alone ({@link Derived}). */
     private final Map<String, Derived> bySession =
@@ -233,10 +235,14 @@ public final class Corpus implements Arms.Rows {
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
-    /** root id -> whether the corpus ran it at more than one value. */
-    private final Map<String, Boolean> varied = new HashMap<String, Boolean>();
+    /** root id -> whether the corpus ran it at more than one value;
+     *  concurrent, as every memo of a corpus asked by keys computed side
+     *  by side ({@code ObligationFactory#dependences}). */
+    private final Map<String, Boolean> varied =
+            new ConcurrentHashMap<String, Boolean>();
     /** {@link #derived}, once per root. */
-    private final Map<String, Boolean> derived = new HashMap<String, Boolean>();
+    private final Map<String, Boolean> derived =
+            new ConcurrentHashMap<String, Boolean>();
     /** root id -> every session's mint of it, built on first ask. */
     private Map<String, List<RootMintRow>> roots;
     /** Root symbol -> every root id declared under it. */
@@ -423,24 +429,52 @@ public final class Corpus implements Arms.Rows {
         }
         this.sessions = Collections.unmodifiableList(real);
         this.forcedSessions = Collections.unmodifiableList(forced);
-        for (SessionReader session : real) {
-            index(derived(session, previous), false);
-        }
-        for (SessionReader session : forced) {
-            index(derived(session, previous), true);
+        List<SessionReader> every = new ArrayList<SessionReader>(real);
+        every.addAll(forced);
+        List<Derived> derived = derived(every, previous);
+        for (int at = 0; at < every.size(); at++) {
+            bySession.put(every.get(at).sessionId(), derived.get(at));
+            index(derived.get(at), at >= real.size());
         }
         this.arms = new Arms(this);
     }
 
-    /** What {@code previous} derived from one session's rows alone, else
-     *  derived anew; this corpus's from now on. */
-    private Derived derived(SessionReader session, Corpus previous) {
-        Derived kept = previous == null ? null
-                : previous.bySession.get(session.sessionId());
-        Derived of = kept != null && kept.session == session ? kept
-                : new Derived(session);
-        bySession.put(session.sessionId(), of);
-        return of;
+    /** What {@code previous} derived from each session's rows alone, else
+     *  derived anew -- each a function of its session's rows (its schedule
+     *  read from its file), so a few sessions at a time ({@link
+     *  Parallel#READS}), in the sessions' order -- and a new session's rows'
+     *  ids digested there, each held by its row ({@code Endpoint#id}): the
+     *  index keys by them (SGF8-adhoc-05 round 5 read whole: 45 % of its
+     *  42 s on one core). */
+    private static List<Derived> derived(List<SessionReader> sessions,
+                                         Corpus previous) {
+        try {
+            return Parallel.map(sessions, session -> {
+                Derived kept = previous == null ? null
+                        : previous.bySession.get(session.sessionId());
+                if (kept != null && kept.session == session) return kept;
+                digestIds(session);
+                return new Derived(session);
+            }, Parallel.READS);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+    }
+
+    /** The ids of the endpoints and occurrences one session's rows name,
+     *  digested once ({@link #derived}). */
+    private static void digestIds(SessionReader session) {
+        for (ActivationRow row : session.activations()) {
+            row.occurrence().id();
+            if (row.anchorProducer() != null) row.anchorProducer().id();
+        }
+        for (ExportRow row : session.exports()) row.endpoint().id();
+        for (AttachRow row : session.attaches()) {
+            row.endpoint().id();
+            if (row.producer() != null) row.producer().id();
+        }
+        for (WriteRow row : session.writes()) row.endpoint().id();
+        for (ReadRow row : session.reads()) row.endpoint().id();
     }
 
     /** Whether a session states a forced target row. */
@@ -592,7 +626,7 @@ public final class Corpus implements Arms.Rows {
      *  from it drops skews). A planted assignment is stated by the ask alone
      *  ({@code ConcolicRegionRuntime#applyFocusedRootAssignment}). */
     private void indexWorlds(Path iteration) throws IOException {
-        List<ObligationDir> workers = ObligationDir.workersIn(iteration);
+        workers = ObligationDir.workersIn(iteration);
         for (Map.Entry<String, JsonObject> world
                 : ObligationDir.worlds(workers).entrySet()) {
             worlds.put(world.getKey(), ExploreCodec.readWorld(
@@ -620,6 +654,16 @@ public final class Corpus implements Arms.Rows {
                         ExploreCodec.readWorld(focus), result.refutation()));
             }
         }
+    }
+
+    /** Every obligation worker of the iteration that published a session,
+     *  as this corpus read them ({@link ObligationDir#workersIn}). */
+    private List<ObligationDir> workers =
+            Collections.<ObligationDir>emptyList();
+
+    /** {@link #workers}: a round's wave reads them again from these. */
+    List<ObligationDir> workers() {
+        return Collections.unmodifiableList(workers);
     }
 
     /** How many distinct worlds (by digest) replays refuted for one flip:
@@ -780,8 +824,8 @@ public final class Corpus implements Arms.Rows {
                 if (symbolKind(sessionId, symbol) != SymbolKind.HANDOFF) {
                     continue;
                 }
-                String bound = tokenName("handoff|" + sessionId + "|"
-                        + symbol, () -> handoffName(attach(sessionId,
+                String bound = tokenName(sessionId, "handoff|" + sessionId
+                        + "|" + symbol, () -> handoffName(attach(sessionId,
                         symbol), new Naming()));
                 if (at == 0) {
                     guard.add(bound);
@@ -811,44 +855,44 @@ public final class Corpus implements Arms.Rows {
      */
     private static final class OfTask {
         /** {@link #feeders(Task)}, once asked. */
-        List<OccurrenceAddress> feeders;
+        volatile List<OccurrenceAddress> feeders;
         /** path id#decision index -> its dependence. */
-        final Map<String, String> dependence = new HashMap<String, String>();
+        final Map<String, String> dependence =
+                new ConcurrentHashMap<String, String>();
     }
 
-    private final Map<Task, OfTask> ofTask =
-            new java.util.IdentityHashMap<Task, OfTask>();
+    /** By the task object; concurrent, as keys are computed on every core
+     *  ({@code ObligationFactory#dependences}). */
+    private final Map<ByIdentity<Task>, OfTask> ofTask =
+            new ConcurrentHashMap<ByIdentity<Task>, OfTask>();
 
-    private synchronized OfTask ofTask(Task task) {
-        return ofTask.computeIfAbsent(task, key -> new OfTask());
+    private OfTask ofTask(Task task) {
+        return ofTask.computeIfAbsent(new ByIdentity<Task>(task),
+                key -> new OfTask());
     }
 
     /** One arm's dependence ({@code ObligationFactory#dependence}) of one
      *  task, by its path and decision: computed once. */
     String dependence(Task task, String decision, Supplier<String> compute) {
         OfTask of = ofTask(task);
-        synchronized (of) {
-            String held = of.dependence.get(decision);
-            if (held != null) return held;
-        }
+        String held = of.dependence.get(decision);
+        if (held != null) return held;
         String keyed = compute.get();
-        synchronized (of) {
-            of.dependence.put(decision, keyed);
-        }
+        of.dependence.put(decision, keyed);
         return keyed;
     }
 
     /** {@link #feeders(OccurrenceAddress, List)} of one task's occurrence
-     *  and factor, once per task. */
+     *  and factor, once per task (a function of the corpus's indexes). */
     public List<OccurrenceAddress> feeders(Task task) {
         OfTask of = ofTask(task);
-        synchronized (of) {
-            if (of.feeders == null) {
-                of.feeders = Collections.unmodifiableList(
-                        feeders(task.focused(), task.factor()));
-            }
-            return of.feeders;
+        List<OccurrenceAddress> held = of.feeders;
+        if (held == null) {
+            held = Collections.unmodifiableList(feeders(task.focused(),
+                    task.factor()));
+            of.feeders = held;
         }
+        return held;
     }
 
     /** The members of a factor that WRITE state the occurrence reads, in
@@ -885,7 +929,8 @@ public final class Corpus implements Arms.Rows {
     private Set<String> handoffs(String sessionId,
                                  OccurrenceAddress occurrence,
                                  boolean stores) {
-        String key = sessionId + "|" + occurrence.id() + "|" + stores;
+        Map<String, Set<String>> handoffsOf = names(sessionId).handoffs;
+        String key = occurrence.id() + "|" + stores;
         Set<String> held = handoffsOf.get(key);
         if (held != null) return held;
         Set<String> fed = new TreeSet<String>(BY_SHAPE);
@@ -907,11 +952,6 @@ public final class Corpus implements Arms.Rows {
         return fed;
     }
 
-    /** {@link #handoffs}, once per session, occurrence and {@code stores}:
-     *  every arm's key asks its task's members again (a corpus does not
-     *  change once read). */
-    private final Map<String, Set<String>> handoffsOf =
-            new ConcurrentHashMap<String, Set<String>>();
 
     /**
      * {@code text} with each sequential znode's counter ({@link
@@ -1191,8 +1231,8 @@ public final class Corpus implements Arms.Rows {
     private String term(String sessionId, String expressionRef,
                         Naming naming) {
         if (expressionRef == null || expressionRef.isEmpty()) return null;
-        String name = step("term|" + sessionId + "|" + expressionRef, naming,
-                false, () -> {
+        String name = step(sessionId, "term|" + sessionId + "|"
+                + expressionRef, naming, false, () -> {
                     SmtLowering lowering = lowering(sessionId);
                     SmtLowering.Lowered lowered = lowering == null ? null
                             : lowering.lower(expressionRef);
@@ -1230,8 +1270,9 @@ public final class Corpus implements Arms.Rows {
      * subterm in it marks the enclosing walk (a container subterm's does; a
      * term answers {@link #UNSUPPORTED} for itself).
      */
-    private String step(String key, Naming naming, boolean taints,
-                        Supplier<String> body) {
+    private String step(String sessionId, String key, Naming naming,
+                        boolean taints, Supplier<String> body) {
+        Map<String, String> canonicalNames = names(sessionId).canonical;
         String held = canonicalNames.get(key);
         if (held != null) {
             naming.unsupported |= taints && held.charAt(0) == 'U';
@@ -1439,8 +1480,8 @@ public final class Corpus implements Arms.Rows {
         if (SmtNames.BUILTIN.contains(token)) return null;
         String body = lowering == null ? null : lowering.sharedBody(token);
         if (body != null) {
-            return "dag:" + step("dag|" + sessionId + "|" + token, naming,
-                    true, () -> canonical(sessionId, body, naming));
+            return "dag:" + step(sessionId, "dag|" + sessionId + "|" + token,
+                    naming, true, () -> canonical(sessionId, body, naming));
         }
         switch (symbolKind(sessionId, token)) {
             case ROOT: {
@@ -1449,10 +1490,11 @@ public final class Corpus implements Arms.Rows {
                         + root.rootId();
             }
             case HANDOFF:
-                return tokenName("handoff|" + sessionId + "|" + token,
-                        () -> handoffName(attach(sessionId, token), naming));
+                return tokenName(sessionId, "handoff|" + sessionId + "|"
+                        + token, () -> handoffName(attach(sessionId, token),
+                        naming));
             case READ:
-                return tokenName("read|" + sessionId + "|" + token,
+                return tokenName(sessionId, "read|" + sessionId + "|" + token,
                         () -> readName(sessionId, read(sessionId, token),
                                 naming));
             default:
@@ -1582,7 +1624,9 @@ public final class Corpus implements Arms.Rows {
      *  ({@link #step}): a handoff names its arms' conditions, which name the
      *  handoffs they read, so a name held whole grew with every level of a
      *  chain that fans in (solr-adhoc-40 SL1: 8 GB of one name). */
-    private String tokenName(String key, Supplier<String> name) {
+    private String tokenName(String sessionId, String key,
+                             Supplier<String> name) {
+        Map<String, String> tokenNames = names(sessionId).tokens;
         String held = tokenNames.get(key);
         if (held != null) return held;
         String named = name.get();
@@ -1592,13 +1636,46 @@ public final class Corpus implements Arms.Rows {
         return unit;
     }
 
-    /** {@link #tokenName}'s memo. */
-    private final Map<String, String> tokenNames =
-            new ConcurrentHashMap<String, String>();
+    /**
+     * WHAT ONE SESSION'S ARM KEYS NAME ({@code ObligationFactory#dependence}),
+     * held while they are computed: the canonical names of its terms and
+     * container subterms ({@link #step}), of its handoffs and reads ({@link
+     * #tokenName}), and what fed each of its occurrences ({@link
+     * #handoffs}) -- each a function of the session's rows alone, so let go
+     * once its keys are ({@link #keysDone}).
+     */
+    private static final class Names {
+        final Map<String, String> canonical =
+                new ConcurrentHashMap<String, String>();
+        final Map<String, String> tokens =
+                new ConcurrentHashMap<String, String>();
+        final Map<String, Set<String>> handoffs =
+                new ConcurrentHashMap<String, Set<String>>();
+    }
 
-    /** {@link #step}: the canonical names asked so far, per session. */
-    private final Map<String, String> canonicalNames =
-            new java.util.concurrent.ConcurrentHashMap<String, String>();
+    /** {@link Names}, by session. */
+    private final Map<String, Names> names =
+            new ConcurrentHashMap<String, Names>();
+
+    private Names names(String sessionId) {
+        return names.computeIfAbsent(sessionId, any -> new Names());
+    }
+
+    /**
+     * One session's arm keys are computed: what they named ({@link Names})
+     * goes, and what its lowering lowered for them -- a fresh lowering, as
+     * a JVM of its own starts with ({@link #freshLowerings}), lowers what
+     * the round asks of the session after them.  Held for every session to
+     * the round's end, the lowerings' memos were a planner's peak
+     * (SGF8-adhoc-40 planning-7: 8.9 GB live before its keys, 2.2 M memo
+     * entries and the 21504 MB heap full in them).
+     */
+    void keysDone(String sessionId) {
+        names.remove(sessionId);
+        SessionReader session = sessionById.get(sessionId);
+        loweringById.put(sessionId, SmtLowering.forSession(session,
+                bySession.get(sessionId).join));
+    }
 
     /** The verdict the WAVE's file states for one obligation in the session
      *  its worker landed, or null.  Only a cross-check: the SESSION's row is
@@ -2818,7 +2895,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     @Override
-    public Map<String, List<RootMintRow>> roots() {
+    public synchronized Map<String, List<RootMintRow>> roots() {
         if (roots == null) {
             Map<String, List<RootMintRow>> byRoot =
                     new LinkedHashMap<String, List<RootMintRow>>();
@@ -2976,7 +3053,59 @@ public final class Corpus implements Arms.Rows {
 
     /** symbol -> the literals recorded decisions compare it with. */
     private final Map<String, Set<java.math.BigInteger>> compared =
-            new HashMap<String, Set<java.math.BigInteger>>();
+            new ConcurrentHashMap<String, Set<java.math.BigInteger>>();
+
+    /**
+     * {@link #comparedLiterals} of every integral configuration root, the
+     * roots whose domain an arm's key names ({@code
+     * ObligationFactory#dependence}): asked of every session's decisions,
+     * each lowered by its own session's lowering, so asked before keys are
+     * computed one session to a thread ({@code
+     * ObligationFactory#dependences}), and asked the same way -- one
+     * session's decisions in the roots' order on one thread ({@link
+     * Parallel#grouped}) -- each root's literals the union of its
+     * decisions'.
+     */
+    void configurationLiterals() {
+        Map<String, Pattern> roots = new LinkedHashMap<String, Pattern>();
+        for (Map<String, RootMintRow> mints : rootsById.values()) {
+            for (RootMintRow mint : mints.values()) {
+                if (mint.kind() == RootKind.INTEGRAL
+                        && mint.category() == RootCategory.CONFIG
+                        && !compared.containsKey(mint.symbol())) {
+                    roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
+                }
+            }
+        }
+        List<Map.Entry<String, Map.Entry<String, DecisionRow>>> asked =
+                new ArrayList<Map.Entry<String,
+                        Map.Entry<String, DecisionRow>>>();
+        for (String symbol : roots.keySet()) {
+            for (Map.Entry<String, DecisionRow> decided : deciding(symbol)) {
+                asked.add(new java.util.AbstractMap.SimpleImmutableEntry<
+                        String, Map.Entry<String, DecisionRow>>(symbol,
+                        decided));
+            }
+        }
+        List<Set<java.math.BigInteger>> found;
+        try {
+            found = Parallel.grouped(asked, one -> one.getValue().getKey(),
+                    one -> literals(roots.get(one.getKey()),
+                            one.getValue().getKey(),
+                            one.getValue().getValue()));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        Map<String, Set<java.math.BigInteger>> literals =
+                new LinkedHashMap<String, Set<java.math.BigInteger>>();
+        for (String symbol : roots.keySet()) {
+            literals.put(symbol, new java.util.TreeSet<java.math.BigInteger>());
+        }
+        for (int at = 0; at < asked.size(); at++) {
+            literals.get(asked.get(at).getKey()).addAll(found.get(at));
+        }
+        compared.putAll(literals);
+    }
 
     /**
      * Root symbol -> the recorded predicate decisions whose terms reach it,
@@ -2988,7 +3117,8 @@ public final class Corpus implements Arms.Rows {
      */
     private Map<String, List<Map.Entry<String, DecisionRow>>> deciding;
 
-    private List<Map.Entry<String, DecisionRow>> deciding(String symbol) {
+    private synchronized List<Map.Entry<String, DecisionRow>> deciding(
+            String symbol) {
         if (deciding == null) {
             Set<String> wanted = new HashSet<String>();
             for (Map<String, RootMintRow> mints : rootsById.values()) {
@@ -3033,23 +3163,40 @@ public final class Corpus implements Arms.Rows {
         if (known != null) return known;
         Set<java.math.BigInteger> literals =
                 new java.util.TreeSet<java.math.BigInteger>();
-        String name = java.util.regex.Pattern.quote(symbol);
-        String literal = "(-?[0-9]+|\\(-\\s+[0-9]+\\))";
-        java.util.regex.Pattern atom = java.util.regex.Pattern.compile(
-                "\\((?:<=|>=|<|>|=)\\s+(?:" + literal + "\\s+\\|?" + name
-                        + "\\|?|\\|?" + name + "\\|?\\s+" + literal + ")\\)");
+        Pattern atom = comparing(symbol);
         for (Map.Entry<String, DecisionRow> decided : deciding(symbol)) {
-            java.util.regex.Matcher found = atom.matcher(
-                    FlipQuery.statedTerm(this, decided.getKey(),
-                            decided.getValue().term()));
-            while (found.find()) {
-                String spelled = found.group(1) != null
-                        ? found.group(1) : found.group(2);
-                literals.add(new java.math.BigInteger(spelled
-                        .replaceAll("[()\\s]", "")));
-            }
+            literals.addAll(literals(atom, decided.getKey(),
+                    decided.getValue()));
         }
         compared.put(symbol, literals);
+        return literals;
+    }
+
+    /** A comparison of {@code symbol} with an integral literal, as {@link
+     *  #comparedLiterals} finds it. */
+    private static Pattern comparing(String symbol) {
+        String name = Pattern.quote(symbol);
+        String literal = "(-?[0-9]+|\\(-\\s+[0-9]+\\))";
+        return Pattern.compile("\\((?:<=|>=|<|>|=)\\s+(?:" + literal
+                + "\\s+\\|?" + name + "\\|?|\\|?" + name + "\\|?\\s+"
+                + literal + ")\\)");
+    }
+
+    /** The literals one decision of one session compares a symbol with
+     *  ({@code atom}, {@link #comparing}), its term lowered by its
+     *  session's lowering. */
+    private Set<java.math.BigInteger> literals(Pattern atom, String sessionId,
+                                               DecisionRow decision) {
+        Set<java.math.BigInteger> literals =
+                new java.util.TreeSet<java.math.BigInteger>();
+        Matcher found = atom.matcher(FlipQuery.statedTerm(this, sessionId,
+                decision.term()));
+        while (found.find()) {
+            String spelled = found.group(1) != null
+                    ? found.group(1) : found.group(2);
+            literals.add(new java.math.BigInteger(spelled
+                    .replaceAll("[()\\s]", "")));
+        }
         return literals;
     }
 }

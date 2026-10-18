@@ -56,7 +56,15 @@ public final class SmtNames {
      * two cannot drift.
      */
     public static Set<String> preambleNames() {
-        if (PREAMBLE_NAMES.isEmpty()) {
+        return Preamble.NAMES;
+    }
+
+    /** {@link #preambleNames}, read once, as the class is first used (keys
+     *  ask it side by side, {@code explore.ObligationFactory#dependences}). */
+    private static final class Preamble {
+        static final Set<String> NAMES = names();
+
+        private static Set<String> names() {
             List<String> lines = new ArrayList<String>(
                     VmTermLowering.preamble());
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
@@ -64,15 +72,11 @@ public final class SmtNames {
             lines.add(VmTermLowering.JAVA_ASCII_UPPER);
             lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
             lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
-            for (String line : lines) {
-                for (String name : declaredIn(line)) PREAMBLE_NAMES.add(name);
-            }
+            Set<String> names = new LinkedHashSet<String>();
+            for (String line : lines) names.addAll(declaredIn(line));
+            return Collections.unmodifiableSet(names);
         }
-        return PREAMBLE_NAMES;
     }
-
-    private static final Set<String> PREAMBLE_NAMES =
-            new LinkedHashSet<String>();
 
     /** The names one preamble line states: the head of every list in it. */
     private static List<String> declaredIn(String line) {

@@ -186,18 +186,33 @@ public final class SlotTable {
         for (Path file : files(iteration, round)) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
-            // Each line read into its slot as it is parsed.
-            for (Change change : RowCodec.readAll(file, row -> new Change(
+            // Each line read into its slot and key on the core that parses
+            // it (RowCodec#readEach), folded in the file's order.
+            RowCodec.readEach(file, row -> new ChangeRead(
                     ExploreCodec.readSlot(row),
-                    JsonFields.optionalString(row, "kind")))) {
+                    JsonFields.optionalString(row, "kind")), change -> {
                 if (DROPPED.equals(change.kind)) {
-                    table.byInteraction.remove(key(change.slot));
+                    table.byInteraction.remove(change.key);
                 } else {
-                    table.byInteraction.put(key(change.slot), change.slot);
+                    table.byInteraction.put(change.key, change.slot);
                 }
-            }
+            });
         }
         return table;
+    }
+
+    /** One row of a round's changes as {@link #read} folds it: the slot,
+     *  its key ({@link #key}) and whether it opened or dropped. */
+    private static final class ChangeRead {
+        final Slot slot;
+        final String key;
+        final String kind;
+
+        ChangeRead(Slot slot, String kind) {
+            this.slot = slot;
+            this.key = key(slot);
+            this.kind = kind;
+        }
     }
 
     /** The files {@link #read(Path)} reads, there or not: what a
@@ -261,26 +276,33 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
+    /** A slot's key in {@link #byInteraction}: its interaction's id and
+     *  its world. */
     private static String key(Slot slot) {
-        return slot.interactionId() + "|" + slot.world;
+        return key(slot.kind, slot.producer, slot.consumer, slot.world);
+    }
+
+    private static String key(InteractionKind kind, Endpoint producer,
+                              Endpoint consumer, String world) {
+        return Interaction.of(kind, producer, consumer).id() + "|" + world;
     }
 
     /** Opens a slot, or replaces the one of its key: a change of the
      *  round ({@link #write}).  {@code answered}: as {@link #index}. */
-    private void open(Slot slot, boolean answered) {
-        byInteraction.put(key(slot), slot);
+    private void open(String key, Slot slot, boolean answered) {
+        byInteraction.put(key, slot);
         changes.add(new Change(slot, OPENED));
-        index(slot, answered);
+        index(key, slot, answered);
     }
 
     /** {@code answered}: the slot's consumer stands in an occurrence its
      *  opening session answered by its question ({@link
-     *  SessionReader#answered}). */
-    private void index(Slot slot, boolean answered) {
+     *  SessionReader#answered}); {@code key}, the slot's ({@link #key}). */
+    private void index(String key, Slot slot, boolean answered) {
         if (answered) {
-            answeredSlots.add(key(slot));
+            answeredSlots.add(key);
         } else {
-            answeredSlots.remove(key(slot));
+            answeredSlots.remove(key);
         }
         if (slot.kind != InteractionKind.WIRE) return;
         if (answered) {
@@ -308,17 +330,18 @@ public final class SlotTable {
         answeredSlots.clear();
         slotOfConsumer.clear();
         ownChainOf.clear();
-        for (Iterator<Slot> held = byInteraction.values()
-                .iterator(); held.hasNext(); ) {
-            Slot slot = held.next();
+        for (Iterator<Map.Entry<String, Slot>> held = byInteraction
+                .entrySet().iterator(); held.hasNext(); ) {
+            Map.Entry<String, Slot> entry = held.next();
+            Slot slot = entry.getValue();
             Set<String> answered = answeredIn.get(slot.openedBySession);
             if (answered == null) {
                 held.remove();
                 changes.add(new Change(slot, DROPPED));
                 continue;
             }
-            index(slot, slot.kind == InteractionKind.WIRE && answered.contains(
-                    slot.consumer.occurrence().render()));
+            index(entry.getKey(), slot, slot.kind == InteractionKind.WIRE
+                    && answered.contains(slot.consumer.occurrence().render()));
         }
         return answeredIn;
     }
@@ -509,7 +532,9 @@ public final class SlotTable {
                         attach.endpoint().occurrence().render())) {
                     continue;
                 }
-                Slot held = replaced(InteractionKind.WIRE, attach.producer(),
+                Slot held = replaced(key(InteractionKind.WIRE,
+                        attach.producer(), attach.endpoint(), world),
+                        InteractionKind.WIRE, attach.producer(),
                         attach.endpoint(), session.sessionId(), world);
                 if (held == null) continue;
                 if (!seen.add(session.sessionId() + "|"
@@ -527,14 +552,11 @@ public final class SlotTable {
 
     /** The slot this pairing, of an occurrence its session did not answer
      *  by its question, contradicts: same-world WIRE consumer, other
-     *  producer, other session. */
-    private Slot replaced(InteractionKind kind, Endpoint producer,
+     *  producer, other session; {@code key}, the pairing's ({@link #key}). */
+    private Slot replaced(String key, InteractionKind kind, Endpoint producer,
                           Endpoint consumer, String sessionId, String world) {
         if (kind != InteractionKind.WIRE) return null;
-        if (holds(Interaction.of(kind, producer, consumer).id() + "|" + world,
-                false)) {
-            return null;
-        }
+        if (holds(key, false)) return null;
         Slot held = slotOfConsumer.get(consumer.id() + "|" + world);
         if (held == null || held.producer.id().equals(producer.id())) {
             return null;
@@ -566,9 +588,10 @@ public final class SlotTable {
                          boolean authority, boolean answered, int round,
                          List<Slot> opened, List<GapRow> gaps) {
         Slot slot = new Slot(kind, producer, consumer, sessionId, round, world);
-        if (holds(key(slot), answered)) return Outcome.FILLED;
+        String key = key(slot);
+        if (holds(key, answered)) return Outcome.FILLED;
         Slot contradicted = answered ? null
-                : replaced(kind, producer, consumer, sessionId, world);
+                : replaced(key, kind, producer, consumer, sessionId, world);
         if (contradicted != null) {
             gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
                     authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
@@ -604,7 +627,7 @@ public final class SlotTable {
                             + "neither opens a slot"));
             return Outcome.AMBIGUOUS;
         }
-        open(slot, answered);
+        open(key, slot, answered);
         opened.add(slot);
         return Outcome.OPENED;
     }
@@ -638,6 +661,8 @@ public final class SlotTable {
         }
         Map<CausalContext, List<String>> shapes =
                 new HashMap<CausalContext, List<String>>();
+        // Member id -> the worlds a session ran it in, once per member.
+        Map<String, Set<String>> running = new HashMap<String, Set<String>>();
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
             boolean authority = session.admitted();
@@ -684,7 +709,9 @@ public final class SlotTable {
                 boolean sameWorld = false;
                 StringBuilder held = new StringBuilder();
                 for (OccurrenceAddress member : members) {
-                    sameWorld |= worldsRunning(corpus, member).contains(world);
+                    sameWorld |= running.computeIfAbsent(member.id(),
+                            id -> worldsRunning(corpus, member))
+                            .contains(world);
                     if (held.length() > 0) held.append(", ");
                     held.append(member.context().render());
                 }

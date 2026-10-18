@@ -10,11 +10,13 @@ import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -49,47 +51,84 @@ final class ZkEdges {
     }
 
     /** The round's growth rows, in corpus and row order. */
-    static List<JsonObject> of(Corpus corpus, ZkChain chain) {
+    static List<JsonObject> of(Corpus corpus, ZkChain chain)
+            throws IOException {
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
         Map<String, Set<String>> keys = chain.pointers();
         if (keys.isEmpty()) return new ArrayList<JsonObject>();
-        for (SessionReader session : corpus.sessions()) {
-            boolean exposing = !session.seed() && session.admitted();
-            Set<String> consumed = consumed(session, chain);
-            Map<String, Set<String>> leaves = null;
-            for (WriteRow write : session.writes()) {
-                // An INITIAL's endpoint observed the location; it wrote
-                // nothing.
-                LocationId location = write.location();
-                String transport = transport(location);
-                OccurrenceAddress at = write.endpoint().occurrence();
-                Set<String> held = transport == null ? null
-                        : keys.get(location.slot());
-                if (held == null || write.initial() || at.role()
-                        || chain.holds(at.render())
-                        || !chain.holdsPath(transport, location.slot())
-                        || !consumed.contains(version(location,
-                        write.version()))) {
-                    continue;
-                }
-                if (leaves == null) leaves = leaves(session);
-                Set<String> fields = new LinkedHashSet<String>();
-                for (String leaf : leaves.getOrDefault(at.render() + "\n"
-                        + location.slot(), Collections.<String>emptySet())) {
-                    for (String key : held) {
-                        if (ContentPort.covers(Collections.singleton(key),
-                                leaf)) {
-                            fields.add(key);
-                        }
-                    }
-                }
-                if (!fields.isEmpty()) {
-                    edge(edges, transport, location, write.version(), at,
-                            session, exposing, fields);
-                }
+        // Each session's writes past the chain found on a core of its own
+        // (Parallel#map), taken in the corpus's order.
+        for (List<OffChain> found : Parallel.map(corpus.sessions(),
+                session -> offChain(session, chain, keys))) {
+            for (OffChain write : found) {
+                edge(edges, write.transport, write.write.location(),
+                        write.write.version(),
+                        write.write.endpoint().occurrence(), write.session,
+                        write.exposing, write.fields);
             }
         }
         return new ArrayList<JsonObject>(edges.values());
+    }
+
+    /** One store write a replay ran past the chain, and the chain's
+     *  fields it wrote. */
+    private static final class OffChain {
+        final SessionReader session;
+        final boolean exposing;
+        final String transport;
+        final WriteRow write;
+        final Set<String> fields;
+
+        OffChain(SessionReader session, boolean exposing, String transport,
+                 WriteRow write, Set<String> fields) {
+            this.session = session;
+            this.exposing = exposing;
+            this.transport = transport;
+            this.write = write;
+            this.fields = fields;
+        }
+    }
+
+    /** One session's writes past the chain, in its rows' order. */
+    private static List<OffChain> offChain(SessionReader session,
+                                           ZkChain chain,
+                                           Map<String, Set<String>> keys) {
+        List<OffChain> found = new ArrayList<OffChain>();
+        boolean exposing = !session.seed() && session.admitted();
+        Set<String> consumed = consumed(session, chain);
+        Map<String, Set<String>> leaves = null;
+        for (WriteRow write : session.writes()) {
+            // An INITIAL's endpoint observed the location; it wrote
+            // nothing.
+            LocationId location = write.location();
+            String transport = transport(location);
+            OccurrenceAddress at = write.endpoint().occurrence();
+            Set<String> held = transport == null ? null
+                    : keys.get(location.slot());
+            if (held == null || write.initial() || at.role()
+                    || chain.holds(at.render())
+                    || !chain.holdsPath(transport, location.slot())
+                    || !consumed.contains(version(location,
+                    write.version()))) {
+                continue;
+            }
+            if (leaves == null) leaves = leaves(session);
+            Set<String> fields = new LinkedHashSet<String>();
+            for (String leaf : leaves.getOrDefault(at.render() + "\n"
+                    + location.slot(), Collections.<String>emptySet())) {
+                for (String key : held) {
+                    if (ContentPort.covers(Collections.singleton(key),
+                            leaf)) {
+                        fields.add(key);
+                    }
+                }
+            }
+            if (!fields.isEmpty()) {
+                found.add(new OffChain(session, exposing, transport, write,
+                        fields));
+            }
+        }
+        return found;
     }
 
     /** The versions a session's chain occurrences consumed ({@link

@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ByIdentity;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -24,7 +25,6 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -293,8 +293,12 @@ public final class Arms {
      *  row states ({@link #eligible}); the rows never change. */
     private final Map<String, NavigableSet<Long>> unrowed =
             new ConcurrentHashMap<String, NavigableSet<Long>>();
-    /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
+    /** {@code slotId|sessionId|rootId}, in the order the arms were refused;
+     *  guarded by itself (keys are computed side by side, {@code
+     *  explore.ObligationFactory#dependences}). */
     private final Set<String> refusals = new LinkedHashSet<String>();
+    /** Whether {@link #refusals} holds any. */
+    private volatile boolean refused;
     /**
      * {@code sessionId expressionRef} -> every symbol that expression names
      * ({@link #symbolsIn}): an export is walked once, however many paths
@@ -302,7 +306,7 @@ public final class Arms {
      * per path and nesting level, was a quarter of a 7-minute composition).
      */
     private final Map<String, Set<String>> symbolsByExpression =
-            new HashMap<String, Set<String>>();
+            new ConcurrentHashMap<String, Set<String>>();
     /** {@link #rootGuards}, per session. */
     private final Map<String, List<RootGuard>> rootGuards =
             new ConcurrentHashMap<String, List<RootGuard>>();
@@ -311,9 +315,8 @@ public final class Arms {
      *  two versions, for every version and reader a location is asked at,
      *  and its frame scan was half the closure walk's first minutes
      *  (SGF8PLAN-adhoc-05 round 2, cold {@code Corpus#eligibleWrites}). */
-    private final Map<WriteRow, Boolean> constructed =
-            Collections.synchronizedMap(
-                    new java.util.IdentityHashMap<WriteRow, Boolean>());
+    private final Map<ByIdentity<WriteRow>, Boolean> constructed =
+            new ConcurrentHashMap<ByIdentity<WriteRow>, Boolean>();
 
     public Arms(Rows rows) {
         this.rows = rows;
@@ -326,9 +329,14 @@ public final class Arms {
      * one twice.
      */
     public Set<String> drainRefusals() {
-        Set<String> drained = new LinkedHashSet<String>(refusals);
-        refusals.clear();
-        return drained;
+        // Most drains find none: asked on every core, they take no lock.
+        if (!refused) return new LinkedHashSet<String>();
+        synchronized (refusals) {
+            Set<String> drained = new LinkedHashSet<String>(refusals);
+            refusals.clear();
+            refused = false;
+            return drained;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -667,12 +675,8 @@ public final class Arms {
      * {@code DataNodeDiskMetrics.<init>} starts).
      */
     private boolean constructs(WriteRow write) {
-        Boolean held = constructed.get(write);
-        if (held == null) {
-            held = Boolean.valueOf(constructedAt(write));
-            constructed.put(write, held);
-        }
-        return held.booleanValue();
+        return constructed.computeIfAbsent(new ByIdentity<WriteRow>(write),
+                key -> constructedAt(write));
     }
 
     private static boolean constructedAt(WriteRow write) {
@@ -802,7 +806,11 @@ public final class Arms {
                 // Refuse, never emit unguarded -- an empty guard would
                 // admit the arm under every valuation of this root.
                 if (!Collections.disjoint(symbols, root.minted)) {
-                    refusals.add(slotId + "|" + session + "|" + root.rootId);
+                    synchronized (refusals) {
+                        refusals.add(slotId + "|" + session + "|"
+                                + root.rootId);
+                        refused = true;
+                    }
                     return null;
                 }
                 continue;

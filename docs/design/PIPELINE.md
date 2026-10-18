@@ -535,7 +535,25 @@ the closure's walks of a demand that grew reuse its group, its members' reads an
 eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). A member's reads are indexed once
 per walk, and a group reads its members' indexes in group order (`ClosurePlanner.GroupReads`): the groups
 of a closure overlap, and indexed per group, solr-adhoc-39 PV7 round 6's walk held each member's reads once
-per group it is in, past 14 GB. Every index across sessions
+per group it is in, past 14 GB. Outside the closure walk a round's independent work takes every core of
+its host (`contract.Parallel`; a planner is a head step, one JVM alone on its host): the dependences of
+the arms the frontier keys (`ObligationFactory#dependences`: one session's arms in their order on one
+thread -- a key asks its session's lowering, leaf sets and names, which remember the order they were
+asked in -- the sessions side by side, after the literals every integral configuration is compared
+with, which lower every session's decisions, `Corpus#configurationLiterals`, asked the same way; what a
+session's keys named and lowered goes with its last one, `Corpus#keysDone`: held for every session to
+the round's end, the lowerings' memos filled SGF8-adhoc-40 planning-7's 21504 MB heap), what each task's path
+offers before the ledger is asked (`ObligationFactory#candidates`, by session as the keys), each new
+session's derived rows and row ids (`Parallel#READS` at a time), each admitted session's graph nodes
+and edges (`WaveGraph#of`) and store writes past the chain (`ZkEdges#of`), and every obligation
+worker's files (`ExploreMain#answersByFlip`, `ObligationDir#workersIn`); a JSONL file is read in
+blocks of whole lines and written in runs of rows, each parsed or rendered on a core
+(`RowCodec#readAll`, `#readEach`, `#writeAll`, `Parallel#stream`; the slot table folds a round's
+changes as they are parsed, `SlotTable#read`), and the round's two largest files, its slot changes
+(whole once the skeleton is reconciled) and its graph, are written beside the rest of the round,
+which answers once they are (`Parallel#beside`; a round that failed leaves none written over the
+next one's). Every result is taken in its items' order, so a round's files are byte for byte a
+one-thread round's. Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --results ... --output-dir ...`, the offline stages' entry over the
 same code, reading every session its iteration holds; gated by `offline-ab.sh` `EXPLORE.serve`, whose served side
@@ -590,7 +608,7 @@ corpus names, each worker's focus row as that session's world, the verdicts, the
    planned occurrence's and replace none, whichever session lands first, since each slot is
    indexed by whether its opening session answered its consumer's occurrence; only another
    answered pairing fills such a slot. On disk the table is its rounds' changes: each round writes,
-   last among its files, `obligations-NNNN/slots.jsonl`, the slots it opened or replaced (`SLOT`,
+   beside the rest of its work once reconciled, `obligations-NNNN/slots.jsonl`, the slots it opened or replaced (`SLOT`,
    the row the slot holds now) and those it dropped (`SLOT_DROPPED`), in order; the table is those
    files folded in round order, after an iteration's whole `slots.jsonl` where a run recorded before
    the per-round files has one (`SlotTable#read`). A round's planner folds the rounds before its own
@@ -2680,7 +2698,8 @@ another model of it in one Long value and 7 message arms, was replayed again (CO
 
 **Cost.** COMPOSE reads the whole corpus -- every session (`SessionReader#readAll`) and every
 obligation worker's answer with, once it published a session, its focus row (`ObligationDir#workersIn`),
-8 directories at a time (`contract.ParallelReads`: on NFS a read is its latency) -- composes each
+8 directories at a time (`contract.Parallel#READS`: on NFS a read is its latency; each file's blocks of
+whole lines parsed on every core, `RowCodec#readAll`) -- composes each
 admitted path and decides (§9). Where each top-level command of the body ends, the path selector
 guarding it and whether it asserts a refuted claim (its name closes it, so only its last 64
 characters are read) are found once, as the composition is built (`Composition#commandEnds`,

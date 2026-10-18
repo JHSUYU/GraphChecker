@@ -29,6 +29,8 @@ import java.util.zip.GZIPInputStream;
  */
 public final class ArtifactIO {
     private static final char[] HEX = "0123456789abcdef".toCharArray();
+    /** The SHA-256 every digest is a clone of ({@link #digest()}). */
+    private static final MessageDigest SHA256 = sha256Instance();
 
     private ArtifactIO() {
     }
@@ -184,7 +186,20 @@ public final class ArtifactIO {
         return parent == null ? Paths.get(name) : parent.resolve(name);
     }
 
+    /** A fresh SHA-256, cloned from one never updated: {@code
+     *  MessageDigest#getInstance} looks its provider up under the
+     *  provider's lock, and the planner's keys, digested on every core,
+     *  waited there (SGF8-adhoc-05 round 5: 28 s of waits past 10 ms in a
+     *  33 s phase). */
     private static MessageDigest digest() {
+        try {
+            return (MessageDigest) SHA256.clone();
+        } catch (CloneNotSupportedException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static MessageDigest sha256Instance() {
         try {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException impossible) {

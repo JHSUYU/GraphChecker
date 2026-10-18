@@ -276,11 +276,11 @@ public final class SessionReader {
             kept.put(session.directory, session);
         }
         RowPool pool = new RowPool();
-        return ParallelReads.each(named == null
+        return Parallel.map(named == null
                         ? SessionDir.sessionsIn(iteration)
                         : SessionDir.named(iteration, named),
                 dir -> kept.containsKey(dir) ? kept.get(dir)
-                        : read(dir, pool), iteration);
+                        : read(dir, pool), Parallel.READS);
     }
 
     public String sessionId() {
