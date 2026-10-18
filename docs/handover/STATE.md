@@ -19,9 +19,10 @@ for a handover (2026-10-18 ~15:45). Nothing runs on any lift. Read, in order: [R
 concurrency; how to measure; how to debug), [TODO.md](TODO.md) "Solr: the rewrite" (each workstream's branch, head,
 what is left, the exact next step), then RULES, AGENTS, OPERATIONS, PARALLEL, CHECKING.
 
-**Acceptance (owner):** after the rewrite, rerun ALL 20 Solr cases (`experiments/solr/solr-cases.tsv`) each alone on
-lift02-10 + lift12-15, bug checks first; the 8 bug checks must stay SAT + CONFIRMED + native, the study checks' claims
-equal or more complete; debug what breaks; then readings, STATUS, STATE, TODO, OPTIMIZATIONS. Old code is deleted for
+**Acceptance (owner):** after the rewrite, rerun the 12 study checks (solr-adhoc-*) each alone on lift02-10 +
+lift12-15, after every speed change is merged; the 8 bug checks keep their SGF7 results (owner 2026-10-18 evening); the
+study checks' claims equal or more complete; the bar is a `.smt` with the right causal chain and, for a SAT, its replay
+(CONFIRM, REPRODUCE), not byte-identity; debug what breaks; then readings, STATUS, STATE, TODO, OPTIMIZATIONS. Old code is deleted for
 good (no flags, no fallbacks). The world-depth parameter stays the owner's control of the branch count.
 
 **`system/solr` (= `solr-int`, worktrees `/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`)** holds, gated:
