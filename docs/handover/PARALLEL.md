@@ -201,3 +201,12 @@ ssh lift06 env -u BASH_ENV bash /bigtemp/vnr3ne/analysis/solr-2026-10-12/watch-r
 branch head that moved; as a Monitor's command it notifies the session per event, re-armed every 30 min). Agents report at their
 gates; at every check-in compare each agent's last commit time and newest run (AGENTS.md: an agent listed as running
 may be idle).
+
+## 7. 2026-10-18: what changed
+
+- The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
+  keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
+  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+- Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
+  the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
+  scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.

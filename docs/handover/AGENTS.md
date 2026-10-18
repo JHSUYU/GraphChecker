@@ -321,3 +321,18 @@ rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and 
 - **Reviews keep paying:** every batch of the night (force2, Z1, Z2, EX, READ doors) had real blockers the gates passed --
   silent drops in COMPOSE, CONFIRM checking nothing for store reads, keys merging different worlds. Launch the review beside
   the live gate, not after it, to keep the wall time.
+
+## Lessons from the 2026-10-17/18 rewrite
+
+- Give each coding agent its own hosts (e.g. lift02-07, lift08, lift09/10/12/13, lift14/15; lift11 for gates) and
+  tell it which classes/methods the other agents change; relay one agent's member list to the other before either
+  commits (compaction vs exploration in ClosurePlanner).
+- Merge order follows dependencies: a branch that rewrote shared structures (the holding composer's Corpus) merges
+  first, the next rebases on it; an integration merge is gated before system/solr moves.
+- Read-only analysts are cheap and decisive: the idle-pool, replay-tail, redundancy, obligation-redundancy,
+  world-dedup and capability studies each changed the plan; have them write results to files (the harness may refuse
+  .md writes from subagents: then they send the text and the lead saves it).
+- A subagent can hang inside one tool call (3 h on 2026-10-18): no file activity for > 30 min = TaskStop and resume
+  it with SendMessage (context kept). Stop stale background waiters (until-loops on files that never appear).
+- At a stop, every agent commits gated work, commits the rest as 'WIP (not gated): <what>' on its branch (not a
+  stash), kills its JVMs by pid and reports branch, head, done, WIP, next step and traps in <= 8 lines.

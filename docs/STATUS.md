@@ -122,12 +122,12 @@ Latest evidence per case (the detailed rows below are each case's history):
 | solr-adhoc-19 | SGF8 (sgf28) | formula UNSAT at CAMPAIGN_BUDGET_REACHED (5 of 23 paths; 17 on unplaced clock cells) | 6752 |
 | solr-adhoc-13 | SGF8 (sgf32 e60df391d) | formula UNSAT at FIXED_POINT, closure truncated (126/126 paths) | 3128 |
 | solr-adhoc-10 | SGF8 (sgf32) | formula UNSAT at PLANNER_HEAP_EXCEEDED, closure truncated (382/382 paths) | 7660 |
-| solr-adhoc-40 | SGF8 (sgf41 85944a0dd) | queued (SGF8Z3ROOM: no claim, its composer fitted no lift at heap 18432) | |
+| solr-adhoc-40 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8Z3ROOM (no claim: its composer fitted no lift at heap 18432) | |
 | solr-adhoc-39 | SGF8 (sgf36 2aa686ec9) | formula UNSAT at FIXED_POINT (57/57 paths; 3 planned occurrences no session ran, named) | 2581 |
-| solr-adhoc-05 | SGF8 (sgf41 85944a0dd) | queued (SGF8-adhoc-05 on sgf39: MISSING, the composer out of heap in the body after 332 paths, 12186 s; reruns last) | |
-| solr-adhoc-07 | SGF8 (sgf41 85944a0dd) | formula UNSAT at PLANNER_HEAP_EXCEEDED, 1 of 309 paths composed (COMPOSE_HEAP_BOUND: the 28.4 GB corpus fills the composer) | 7306 |
-| solr-adhoc-31 | SGF8 (sgf41 85944a0dd) | queued | |
-| solr-adhoc-14 | SGF8 (sgf41 85944a0dd) | queued (SGF8OOM: every path refused, composer out of heap; fixed by havoc + the heap bound) | |
+| solr-adhoc-05 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8BODY on sgf39 (MISSING: the composer out of heap in the body after 332 paths, 12186 s) | |
+| solr-adhoc-07 | SGF8 (sgf41 85944a0dd); reruns after the rewrite | formula UNSAT at PLANNER_HEAP_EXCEEDED, 1 of 309 paths composed (COMPOSE_HEAP_BOUND); the holding composer composes all 309 offline: UNSAT_CLOSED, no blocker | 7306 |
+| solr-adhoc-31 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8STOP-adhoc-31 (stopped in exploration on sgf41) | |
+| solr-adhoc-14 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8OOM (every path refused, composer out of heap) | |
 
 | case | branch, round | verdict | reading |
 | --- | --- | --- | --- |
