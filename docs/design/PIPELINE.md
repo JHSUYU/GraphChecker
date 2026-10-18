@@ -1708,16 +1708,27 @@ readers of a session's files, from the code: a witness's confirmation queued, ru
 (`stream_confirming`) whose attempt composed it (its `corpus.txt`): it confirms against that corpus
 (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session), so a confirmed one ends
 the exploration with the swap dropped, its directory to `explore-reaped/` and the corpus exactly the
-attempt's; the round planning, while its `corpus.txt` names it and its planner has not stated
+attempt's; a witness owed an attempt -- gated and not attempted (`stream_witnesses`: a confirmation owed
+holds the attempt, not the landing) or deferred until a confirmation's verdict (`stream_deferred`) --
+withdrawn first, the attempt would compose without it and a re-run that did not take the flip would lose
+it (Z2M's class; an open chain's witnesses wait for exactly these swaps, under the confirmation's hold, and
+are attempted again once the chain's GROW swapped in); the round planning, while its `corpus.txt` names it and its planner has not stated
 `<round>/corpus_read` (`ExploreMain#CORPUS_READ`): a round reads session files only in its corpus read
 (`Corpus#read`, rows and schedules), and fails on a session its corpus names that is gone. Nothing else:
 a head step never runs beside a swap; a REPLAY, a re-run, a CONFIRM replay and a hard-lane ask read no
 session; and a host's solver reads the corpus as it stands without what GROW withdrew -- the iteration's
-`withdrawn.txt`, appended before each withdrawn session leaves -- and reads again when one left under its
-read (`ObligationSolverMain#standing`; a session leaves once and never returns, so one the journal does
-not name after the read stood whole while it was read; the journal, not the listing, says what left,
-since a peer's NFS listing may be a minute old while a file's open reads it as the head closed it). So
-solves run on through swaps (SGF7-adhoc-09: holding them cost 51 min over six GROWs). A replay owed on
+`withdrawn.txt`, made empty as the exploration starts (before any solver serves) and appended before each
+withdrawn session leaves -- and reads again when one left under its read (`ObligationSolverMain#standing`,
+`#readWhole`, each read again said in the solver's log; a session leaves once and never returns, so one the
+journal does not name after the read stood whole while it was read; the journal, not the listing, says what
+left, and it is opened, never looked up first: a peer's NFS listing or lookup may be a minute old, while an
+open reads the file as the head closed it). So solves run on through swaps (SGF7-adhoc-09: holding them
+cost 51 min over six GROWs). WORKER FILES a swap sets to the re-run's are read as they stand, each renamed
+over whole: a round's wave is taken from the workers its corpus read found (`Corpus#landedIn`), its answers
+and bounds by flip (`ExploreMain#answersByFlip`, `#boundedFlips`) are a worker's flip's either way, and a
+solver's settled questions (`ObligationDir#answered`) name the plan generation they were asked under, which
+the GROW changed before any of its swaps, so a question asked since is another one (and one whose plan read
+the same would be settled as it was before the swap). A replay owed on
 the path of a session a swap withdrew (its focus row's `pathSessionId`, the solver's) is dropped
 (`campaign_stream_replay_drop`): queued at the swap, or returned SAT from a solve that read the corpus
 before it -- no replay, out of flight, so a later round may ask its arm again of the re-run's session;

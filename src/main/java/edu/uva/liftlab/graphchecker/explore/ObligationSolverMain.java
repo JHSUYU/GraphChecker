@@ -26,12 +26,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -162,44 +164,39 @@ public final class ObligationSolverMain {
                 List<String> now = standing(sessions);
                 if (corpus == null || stale(read.keySet(), now,
                         round(obligations, now))) {
-                    while (true) {
+                    Whole<Map<String, Long>> whole = readWhole(sessions, now,
+                            standing -> {
                         Map<String, Long> reading =
                                 new HashMap<String, Long>();
-                        Corpus next;
-                        try {
-                            long bytes = 0L;
-                            for (String name : now) {
-                                Long held = read.get(name);
-                                long size = held != null ? held
-                                        : bytes(sessions.resolve(name));
-                                reading.put(name, size);
-                                bytes += size;
-                            }
-                            if (retirePastBytes > 0L
-                                    && bytes > retirePastBytes) {
-                                throw new Service.Outgrown("its corpus is "
-                                        + (bytes >> 20) + " MB of sessions, "
-                                        + "past the " + (retirePastBytes >> 20)
-                                        + " MB its heap was started for");
-                            }
-                            next = Corpus.read(iteration, rootDomains,
-                                    corpus, now);
-                        } catch (IOException failed) {
-                            if (Collections.disjoint(withdrawn(iteration),
-                                    now)) {
-                                throw failed;
-                            }
-                            now = standing(sessions);
-                            continue;
+                        long bytes = 0L;
+                        for (String name : standing) {
+                            Long held = read.get(name);
+                            long size = held != null ? held
+                                    : bytes(sessions.resolve(name));
+                            reading.put(name, size);
+                            bytes += size;
                         }
-                        // Its sessions whole stand in the next read too.
-                        corpus = next;
-                        if (Collections.disjoint(withdrawn(iteration), now)) {
-                            read.clear();
-                            read.putAll(reading);
-                            break;
+                        if (retirePastBytes > 0L && bytes > retirePastBytes) {
+                            throw new Service.Outgrown("its corpus is "
+                                    + (bytes >> 20) + " MB of sessions, past "
+                                    + "the " + (retirePastBytes >> 20)
+                                    + " MB its heap was started for");
                         }
-                        now = standing(sessions);
+                        // A read GROW withdrew a session under keeps the
+                        // others, whole, for the next.
+                        corpus = Corpus.read(iteration, rootDomains, corpus,
+                                standing);
+                        return reading;
+                    });
+                    read.clear();
+                    read.putAll(whole.read);
+                    if (!whole.left.isEmpty()) {
+                        System.err.println("ObligationSolverMain: question "
+                                + JsonFields.primitiveString(question,
+                                "obligationId") + ": the corpus was read "
+                                + whole.again + " time(s) more, GROW having "
+                                + "withdrawn " + whole.left + " under the "
+                                + "read");
                     }
                 } else {
                     corpus.freshLowerings();
@@ -214,6 +211,59 @@ public final class ObligationSolverMain {
                                 Paths.get(decided)));
             }
         };
+    }
+
+    /** One read of the corpus: the sessions {@code standing} in it. */
+    interface Reading<T> {
+        T read(List<String> standing) throws Exception;
+    }
+
+    /** What {@link #readWhole} read, the sessions withdrawn under its reads
+     *  and how many times it read again. */
+    static final class Whole<T> {
+        final T read;
+        final Set<String> left;
+        final int again;
+
+        Whole(T read, Set<String> left, int again) {
+            this.read = read;
+            this.left = left;
+            this.again = again;
+        }
+    }
+
+    /**
+     * A read of the sessions standing, {@code now} first, whole: read again,
+     * of what stands then, while {@link #WITHDRAWN} names a session of the
+     * read once it is done, or one it read when it failed (a session gone
+     * under it; a failure no withdrawal explains is thrown).  A session
+     * leaves once, named first, and never returns, so a read none of whose
+     * sessions the journal names after it read each one whole.
+     */
+    static <T> Whole<T> readWhole(Path sessions, List<String> now,
+                                  Reading<T> reading) throws Exception {
+        Path iteration = sessions.getParent();
+        List<String> standing = now;
+        Set<String> left = new LinkedHashSet<String>();
+        for (int again = 0; ; again++) {
+            T read;
+            Set<String> gone;
+            try {
+                read = reading.read(standing);
+            } catch (IOException failed) {
+                gone = withdrawn(iteration);
+                gone.retainAll(standing);
+                if (gone.isEmpty()) throw failed;
+                left.addAll(gone);
+                standing = standing(sessions);
+                continue;
+            }
+            gone = withdrawn(iteration);
+            gone.retainAll(standing);
+            if (gone.isEmpty()) return new Whole<T>(read, left, again);
+            left.addAll(gone);
+            standing = standing(sessions);
+        }
     }
 
     /** Whether a corpus read from the sessions {@code read} lacks one the
@@ -261,18 +311,28 @@ public final class ObligationSolverMain {
 
     /**
      * The sessions GROW's swaps withdrew from the corpus, one per line,
-     * beside it: each appended by the head before its directory leaves
-     * ({@code run_engine.sh campaign_stream_swap}).
+     * beside it: made empty as the exploration starts, before any solver
+     * serves, and each appended by the head before its directory leaves
+     * ({@code run_engine.sh campaign_explore}, {@code campaign_stream_swap}).
      */
     static final String WITHDRAWN = "withdrawn.txt";
 
-    /** The sessions {@link #WITHDRAWN} names. */
+    /**
+     * The sessions {@link #WITHDRAWN} names.  Opened, never looked up first:
+     * an open reads the file as the head closed it (NFS close-to-open), where
+     * a stat may answer from a lookup cached as absent for up to a minute.
+     * Absent, it is a corpus whose exploration has not started: none left.
+     */
     static Set<String> withdrawn(Path iteration) throws IOException {
         Set<String> named = new HashSet<String>();
-        Path journal = iteration.resolve(WITHDRAWN);
-        if (!Files.isRegularFile(journal)) return named;
-        for (String line : Files.readAllLines(journal,
-                StandardCharsets.UTF_8)) {
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(iteration.resolve(WITHDRAWN),
+                    StandardCharsets.UTF_8);
+        } catch (NoSuchFileException absent) {
+            return named;
+        }
+        for (String line : lines) {
             if (!line.trim().isEmpty()) named.add(line.trim());
         }
         return named;

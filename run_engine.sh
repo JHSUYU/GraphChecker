@@ -5339,6 +5339,10 @@ campaign_explore() {
   local -a stream_chain_witnesses=()
   : >"${results}"
   : >"${attempts}"
+  # The sessions GROW's swaps withdraw, named before each leaves: stated
+  # before any solver serves, so a solver opens it (as the head closed it)
+  # and never caches it as absent (ObligationSolverMain#withdrawn).
+  : >"${iteration_dir}/withdrawn.txt"
   mkdir -p "$(dirname "${stream_plan}")"
   ln -f "${iteration_dir}/execution_task_plan.jsonl" "${stream_plan}"
   mapfile -t stream_hosts < <(campaign_worker_host_list)
@@ -7644,6 +7648,15 @@ campaign_stream_land() {
 #     re-run did not take the flip, and in Z2N the confirmed claim's final
 #     COMPOSE lost it).  A confirmed one ends the exploration with the swap
 #     owed (campaign_stream_end), a refuted one lets it swap;
+#   - a witness owed an attempt: gated and not attempted yet
+#     (stream_witnesses: a confirmation owed holds the attempt, not the
+#     landing), or deferred until a confirmation's verdict
+#     (stream_deferred): withdrawn first, the attempt would compose without
+#     it, and a re-run that did not take the flip would lose the witness
+#     (Z2M's class).  An open chain's witnesses (stream_chain_witnesses) wait
+#     for exactly these swaps -- attempted again once the chain's GROW swapped
+#     in, the re-run landing as a witness of its own -- under the
+#     confirmation's hold above;
 #   - the round planning, while its corpus.txt names it and its planner has
 #     not stated <round>/corpus_read: a round reads its sessions' files only
 #     in its corpus read (Corpus#read: rows, schedules), and fails on a
@@ -7659,7 +7672,10 @@ campaign_stream_land() {
 #     replay a solve then owes on the withdrawn session's path is dropped
 #     (campaign_stream_replay_drop).
 campaign_stream_swap_due() {
-  local session=$1 attempt
+  local session=$1 attempt="" witness=""
+  for witness in "${stream_witnesses[@]}" "${stream_deferred[@]}"; do
+    [[ "${witness}" != "${session}" ]] || return 1
+  done
   for attempt in "${!stream_confirming[@]}"; do
     # An attempt states its corpus before it composes; one that does not
     # holds every swap.

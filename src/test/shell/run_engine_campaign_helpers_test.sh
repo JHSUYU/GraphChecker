@@ -3278,6 +3278,8 @@ stream_loop_state() {
   stream_swaps=()
   stream_staged=()
   stream_reaped=()
+  stream_witnesses=()
+  stream_deferred=()
   stream_hold=0
   stream_dirty=0
   stream_round_dir=""
@@ -6437,16 +6439,20 @@ reset_config
 
 # STREAM-SWAP-DUE: a returned re-run swaps in once no reader of the session
 # it withdraws runs: a witness's confirmation owed whose attempt composed it
-# (an attempt stating no corpus holds every swap), or the round planning
-# while its corpus names it and its planner has not read it.  A solve
-# running holds none (a solver reads the corpus without what GROW withdrew,
-# ObligationSolverMain#standing).  Per row: the attempts under confirmation
-# (<attempt>:<its corpus, +-joined>, <attempt>:! where it states none; -
-# none), the planning round's corpus (+-joined; - no round), whether its
-# planner read it, the jobs running, and whether the swap of session A is
-# due.
+# (an attempt stating no corpus holds every swap); a witness owed an attempt,
+# gated and not attempted (a confirmation owed holds the attempt) or
+# deferred until a confirmation's verdict (Z2M's class); or the round
+# planning while its corpus names it and its planner has not read it.  A
+# solve running holds none (a solver reads the corpus without what GROW
+# withdrew, ObligationSolverMain#standing).  Per row: the attempts under
+# confirmation (<attempt>:<its corpus, +-joined>, <attempt>:! where it states
+# none; - none), the witnesses waiting for an attempt and the deferred ones
+# (+-joined; - none), the planning round's corpus (+-joined; - no round),
+# whether its planner read it, the jobs running, and whether the swap of
+# session A is due.
 swap_due_n=0
-while IFS='|' read -r sd_confirming sd_round sd_read sd_jobs sd_want; do
+while IFS='|' read -r sd_confirming sd_witnesses sd_deferred sd_round \
+    sd_read sd_jobs sd_want; do
   swap_due_n=$((swap_due_n + 1))
   sd_said=$(
     iteration_dir="${test_tmp}/swap-due-${swap_due_n}"
@@ -6460,6 +6466,10 @@ while IFS='|' read -r sd_confirming sd_round sd_read sd_jobs sd_want; do
       [[ "${sd_attempt#*:}" == '!' ]] || tr '+' '\n' <<<"${sd_attempt#*:}" \
         >"${iteration_dir}/witness-attempts/${sd_attempt%%:*}/corpus.txt"
     done
+    [[ "${sd_witnesses}" == - ]] || read -r -a stream_witnesses \
+      <<<"${sd_witnesses//+/ }"
+    [[ "${sd_deferred}" == - ]] || read -r -a stream_deferred \
+      <<<"${sd_deferred//+/ }"
     if [[ "${sd_round}" != - ]]; then
       stream_round_dir="${iteration_dir}/planning-0003"
       mkdir -p "${stream_round_dir}"
@@ -6473,41 +6483,47 @@ ${sd_kind} obligations-0002 X lift12 "
     if campaign_stream_swap_due A; then echo due; else echo held; fi
   )
   [[ "${sd_said}" == "${sd_want}" ]] \
-    || fail "STREAM-SWAP-DUE: confirming ${sd_confirming}, round \
-${sd_round} (read ${sd_read}), running ${sd_jobs}: ${sd_said}, not ${sd_want}"
+    || fail "STREAM-SWAP-DUE: confirming ${sd_confirming}, witnesses \
+${sd_witnesses}, deferred ${sd_deferred}, round ${sd_round} (read ${sd_read}), \
+running ${sd_jobs}: ${sd_said}, not ${sd_want}"
 done <<'EOF'
--|-|-|-|due
--|-|-|OBLIGATION,HARD,REPLAY,RERUN|due
-0000:A+B|-|-|-|held
-0000:B|-|-|-|due
-0000:B,0001:C+A|-|-|-|held
-0000:!|-|-|-|held
--|A+B|no|-|held
--|A+B|yes|OBLIGATION|due
--|B+C|no|OBLIGATION|due
-0000:B|A|yes|OBLIGATION|due
+-|-|-|-|-|-|due
+-|-|-|-|-|OBLIGATION,HARD,REPLAY,RERUN|due
+0000:A+B|-|-|-|-|-|held
+0000:B|-|-|-|-|-|due
+0000:B,0001:C+A|-|-|-|-|-|held
+0000:!|-|-|-|-|-|held
+0000:B|A|-|-|-|-|held
+0000:B|C+A|-|-|-|-|held
+-|-|A|-|-|-|held
+0000:B|B+C|D|-|-|OBLIGATION|due
+-|-|-|A+B|no|-|held
+-|-|-|A+B|yes|OBLIGATION|due
+-|-|-|B+C|no|OBLIGATION|due
+0000:B|-|-|A|yes|OBLIGATION|due
 EOF
 
 # GROW-SWAP-BATCH: the re-runs that returned swap in together, each one due:
-# OB.a's (its session read by no one) swaps -- withdrawn.txt names its
-# exposing session before the session leaves, its worker's files set aside
-# and replaced, its ledger row replaced at the end, its session staged; OB.b's
-# waits for the round planning over its exposing session to read it; OB.c's,
-# which did not finish, is dropped.  The queued replay on the withdrawn
-# session's path is dropped, out of flight; the one on OB.b's exposing
-# session's waits, and goes once that swap does.  One worker subshell at a
-# time here (campaign_stream_swap_jobs), sixteen in a campaign.
+# OB.a's, OB.d's and OB.e's (their sessions read by no one) swap --
+# withdrawn.txt names their exposing sessions before any leaves, their
+# workers' files set aside and replaced, two workers' subshells at a time
+# here (campaign_stream_swap_jobs, sixteen in a campaign: a full batch
+# waited, then the rest), their ledger rows replaced at the end, their
+# sessions staged; OB.b's waits for the round planning over its exposing
+# session to read it; OB.c's, which did not finish, is dropped.  The queued
+# replay on a withdrawn session's path is dropped, out of flight; the one on
+# OB.b's exposing session's waits, and goes once that swap does.
 (
   batch_root="${test_tmp}/grow-swap-batch"
   iteration_dir="${batch_root}/iteration-0000"
   sessions="${iteration_dir}/sessions"
   results="${iteration_dir}/obligation_results.jsonl"
   campaign_root=${batch_root}
-  campaign_stream_swap_jobs=1
+  campaign_stream_swap_jobs=2
   stream_loop_state
   mkdir -p "${iteration_dir}"
   : >"${results}"
-  for batch_id in a b c; do
+  for batch_id in a b c d e; do
     batch_worker="${iteration_dir}/obligations-0001/OB.${batch_id}"
     batch_rerun="${batch_worker}/grow-obligations-0002/OB.${batch_id}"
     mkdir -p "${batch_rerun}/sessions/R.${batch_id}"
@@ -6534,8 +6550,9 @@ EOF
   jq -n -c '{obligationId: "OB.z", verdict: "UNSAT", sessionId: ""}' \
     >>"${results}"
   stream_swaps=("obligations-0002 OB.a S.a 0" "obligations-0002 OB.b S.b 0"
-    "obligations-0002 OB.c S.c 1")
-  stream_hold=3
+    "obligations-0002 OB.c S.c 1" "obligations-0002 OB.d S.d 0"
+    "obligations-0002 OB.e S.e 0")
+  stream_hold=5
   stream_queue=("REPLAY obligations-0003 OB.pa g0/c g0/p"
     "REPLAY obligations-0003 OB.pb g0/c g0/p"
     "OBLIGATION obligations-0003 OB.o")
@@ -6543,25 +6560,35 @@ EOF
   mkdir -p "${stream_round_dir}"
   printf 'S.b\nS.x\n' >"${stream_round_dir}/corpus.txt"
   campaign_stream_swap >"${batch_root}/swap1.log"
-  worker_a="${iteration_dir}/obligations-0001/OB.a"
-  [[ "$(cat "${iteration_dir}/withdrawn.txt")" == S.a \
+  batch_staged=""
+  for batch_id in a d e; do
+    batch_worker="${iteration_dir}/obligations-0001/OB.${batch_id}"
+    batch_staged+="${batch_worker} ${batch_worker}/grow-obligations-0002/\
+OB.${batch_id}/sessions R.${batch_id};"
+    [[ -s "${batch_worker}/before-obligations-0002/sessions/S.${batch_id}/manifest.json" \
+        && "$(jq -r .sessionId "${batch_worker}/obligation_result.jsonl")" \
+          == "R.${batch_id}" \
+        && "$(jq -r .sessionId \
+          "${batch_worker}/before-obligations-0002/obligation_result.jsonl")" \
+          == "S.${batch_id}" \
+        && "$(cat "${batch_worker}/replay.log")" == "re-run ${batch_id}" \
+        && "$(cat "${batch_worker}/before-obligations-0002/question.txt")" \
+          == "Q.${batch_id}" \
+        && ! -e "${batch_worker}/question.txt" \
+        && -n "${stream_withdrawn[S.${batch_id}]:-}" ]] \
+      || fail "GROW-SWAP-BATCH: OB.${batch_id}'s worker was not swapped: \
+$(ls -R "${batch_worker}") $(cat "${batch_root}/swap1.log")"
+  done
+  [[ "$(paste -sd ' ' "${iteration_dir}/withdrawn.txt")" == "S.a S.d S.e" \
       && "$(ls "${sessions}")" == S.b \
-      && -s "${worker_a}/before-obligations-0002/sessions/S.a/manifest.json" \
-      && "$(jq -r .sessionId "${worker_a}/obligation_result.jsonl")" == R.a \
-      && "$(jq -r .sessionId \
-        "${worker_a}/before-obligations-0002/obligation_result.jsonl")" == S.a \
-      && "$(cat "${worker_a}/replay.log")" == "re-run a" \
-      && "$(cat "${worker_a}/before-obligations-0002/question.txt")" == Q.a \
-      && ! -e "${worker_a}/question.txt" \
-      && "${stream_staged[*]}" == "${worker_a} \
-${worker_a}/grow-obligations-0002/OB.a/sessions R.a" \
+      && "$(printf '%s;' "${stream_staged[@]}")" == "${batch_staged}" \
       && "${stream_swaps[*]}" == "obligations-0002 OB.b S.b 0" \
       && "${stream_hold}" == 1 && "${!stream_reruns[*]}" == "OB.b S.b" \
       && "$(printf '%s\n' "${!stream_growing[@]}" | sort | paste -sd ' ')" \
-        == "X.a X.b" && -n "${stream_withdrawn[S.a]:-}" \
+        == "X.a X.b X.d X.e" \
       && -s "${iteration_dir}/obligations-0001/OB.c/grow-dropped" \
       && "$(jq -s -c 'map([.obligationId, .sessionId])' "${results}")" \
-        == '[["OB.b","S.b"],["OB.c","S.c"],["OB.z",""],["OB.a","R.a"]]' \
+        == '[["OB.b","S.b"],["OB.c","S.c"],["OB.z",""],["OB.a","R.a"],["OB.d","R.d"],["OB.e","R.e"]]' \
       && "${stream_queue[*]}" == "REPLAY obligations-0003 OB.pb g0/c g0/p \
 OBLIGATION obligations-0003 OB.o" \
       && "${stream_reaped[*]}" == OB.pa \
@@ -6572,7 +6599,7 @@ OBLIGATION obligations-0003 OB.o" \
 "${sessions}")], swaps [${stream_swaps[*]}], hold ${stream_hold}, ledger \
 $(jq -s -c 'map([.obligationId, .sessionId])' "${results}"), queue \
 [${stream_queue[*]}]: $(cat "${batch_root}/swap1.log")"
-  grep -q 'obligation OB.a: re-run under the grown tree, verdict=ADMITTED' \
+  grep -q 'obligation OB.e: re-run under the grown tree, verdict=ADMITTED' \
       "${batch_root}/swap1.log" \
     && grep -q 'OB.c: its re-run under the grown tree did not finish' \
       "${batch_root}/swap1.log" \
@@ -6583,13 +6610,11 @@ dropped: $(cat "${batch_root}/swap1.log")"
   : >"${stream_round_dir}/corpus_read"
   stream_staged=()
   campaign_stream_swap >"${batch_root}/swap2.log"
-  [[ "$(paste -sd ' ' "${iteration_dir}/withdrawn.txt")" == "S.a S.b" \
+  [[ "$(paste -sd ' ' "${iteration_dir}/withdrawn.txt")" == "S.a S.d S.e S.b" \
       && -z "$(ls "${sessions}")" && "${stream_hold}" == 0 \
       && ${#stream_swaps[@]} -eq 0 && ${#stream_reruns[@]} -eq 0 \
-      && "$(printf '%s\n' "${!stream_growing[@]}" | sort | paste -sd ' ')" \
-        == "X.a X.b" \
       && "$(jq -s -c 'map([.obligationId, .sessionId])' "${results}")" \
-        == '[["OB.c","S.c"],["OB.z",""],["OB.a","R.a"],["OB.b","R.b"]]' \
+        == '[["OB.c","S.c"],["OB.z",""],["OB.a","R.a"],["OB.d","R.d"],["OB.e","R.e"],["OB.b","R.b"]]' \
       && "${stream_queue[*]}" == "OBLIGATION obligations-0003 OB.o" \
       && "${stream_reaped[*]}" == "OB.pa OB.pb" ]] \
     || fail "GROW-SWAP-BATCH: the second pass left withdrawn \
@@ -6598,6 +6623,35 @@ $(jq -s -c 'map([.obligationId, .sessionId])' "${results}"), queue \
 [${stream_queue[*]}]: $(cat "${batch_root}/swap2.log")"
 ) || fail "GROW-SWAP-BATCH failed"
 reset_config
+
+# GROW-SWAP-FAIL: a worker's swap that fails in its subshell -- its re-run
+# already set aside for that round -- fails the campaign by name, after the
+# subshells of its batch are waited for.
+(
+  fail_root="${test_tmp}/grow-swap-fail"
+  iteration_dir="${fail_root}/iteration-0000"
+  sessions="${iteration_dir}/sessions"
+  results="${iteration_dir}/obligation_results.jsonl"
+  campaign_root=${fail_root}
+  stream_loop_state
+  fail_worker="${iteration_dir}/obligations-0001/OB.f"
+  mkdir -p "${fail_worker}/grow-obligations-0002/OB.f" \
+    "${fail_worker}/before-obligations-0002" "${sessions}/S.f"
+  jq -n -c '{obligationIds: ["OB.f"]}' >"${sessions}/S.f/manifest.json"
+  jq -n -c '{obligationId: "OB.f", verdict: "ADMITTED", sessionId: "S.f"}' \
+    | tee "${fail_worker}/obligation_result.jsonl" >"${results}"
+  stream_reruns["OB.f S.f"]="${fail_worker}/grow-obligations-0002/OB.f"
+  stream_swaps=("obligations-0002 OB.f S.f 0")
+  stream_hold=1
+  if (campaign_stream_swap) >"${fail_root}.log" 2>&1; then
+    fail "GROW-SWAP-FAIL: a failed worker swap did not fail the campaign"
+  fi
+  grep -q 'reason=obligation OB.f: its re-run.s swap failed' "${fail_root}.log" \
+    && grep -q 'OB.f was already swapped for obligations-0002' \
+      "${fail_root}.log" \
+    || fail "GROW-SWAP-FAIL: the failure does not say what failed: \
+$(cat "${fail_root}.log")"
+) || fail "GROW-SWAP-FAIL failed"
 
 # GROW-INFLIGHT: a round planned while GROW's re-runs run, or taken after one
 # swapped in, saw the sessions they stand in for, and the occurrences they

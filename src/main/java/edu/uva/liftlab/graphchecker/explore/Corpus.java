@@ -301,6 +301,11 @@ public final class Corpus implements Arms.Rows {
      *  the session states in its own file. */
     private final Map<String, Map<String, ObligationResult>> waveVerdicts =
             new LinkedHashMap<String, Map<String, ObligationResult>>();
+    /** Session id -> the round directory of the worker that landed it, as
+     *  the read found the workers: a round reads it after its corpus read,
+     *  while GROW may swap a worker's files (ExploreMain#wave). */
+    private final Map<String, Path> landedIn =
+            new LinkedHashMap<String, Path>();
     /** Producer endpoint id of a SEND -> the stance its SEND stood in. */
     private final Map<String, ContextShape.Stance> senderStanceByEndpoint =
             new HashMap<String, ContextShape.Stance>();
@@ -599,6 +604,7 @@ public final class Corpus implements Arms.Rows {
                     world.getValue()));
         }
         for (ObligationDir worker : workers) {
+            landedIn.put(worker.sessionId(), worker.dir().getParent());
             for (ObligationResult result : worker.results()) {
                 waveVerdicts.computeIfAbsent(worker.sessionId(),
                         key -> new LinkedHashMap<String, ObligationResult>())
@@ -620,6 +626,12 @@ public final class Corpus implements Arms.Rows {
                         ExploreCodec.readWorld(focus), result.refutation()));
             }
         }
+    }
+
+    /** Each session of the workers' answers -> the round directory of the
+     *  worker that landed it, as this corpus's read found them. */
+    public Map<String, Path> landedIn() {
+        return Collections.unmodifiableMap(landedIn);
     }
 
     /** How many distinct worlds (by digest) replays refuted for one flip:
