@@ -220,8 +220,8 @@ JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
                                   jint start_index, jint end_index);
 
 JNIEXPORT jstring JNICALL
-JVM_GetTrackedLocationVersions(JNIEnv *env, jclass ignored,
-                               jlong after_event_id, jint max_bytes);
+JVM_ReadOutTrackedLocations(JNIEnv *env, jclass ignored,
+                            jlong after_event_id, jint max_bytes);
 
 JNIEXPORT jlong JNICALL
 JVM_ArmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored, jobject owner,

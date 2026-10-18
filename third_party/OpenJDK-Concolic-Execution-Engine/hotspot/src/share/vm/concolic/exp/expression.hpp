@@ -10,6 +10,8 @@
 #include "utilities/ostream.hpp"
 #include "webridge/utils/rapidjson/writer.h"
 
+#include <pthread.h>
+
 #include <map>
 #include <cstdio>
 #include <vector>
@@ -163,6 +165,49 @@ public:
 };
 
 /**
+ * A session channel over which each expression definition is sent once: the
+ * paged read-out (SharedFieldVersions::read_out_tracked_locations).  A table
+ * written to it (VmExpressionArtifactScope::write_table(writer, channel))
+ * states only the definitions of its closure that no earlier table of the
+ * channel stated, and its place in the channel, `sequence`.  Choosing the
+ * definitions, registering them as sent and numbering the table are one step
+ * under the channel's lock, so tables are numbered in the order their
+ * definitions were registered, across threads: a reader that imports every
+ * table of the channel in sequence order -- every one, whatever it does with
+ * the records beside it -- holds each definition before any record names it.
+ *
+ * Its own read-outs restated every definition of their closure: 82 % of a
+ * Solr replay's read-out text was the expression table and 92 % of its
+ * definitions had been sent by an earlier page (07's obligation
+ * 615997597e3c4202), which the Java side scanned past again on every page.
+ *
+ * Reset when the session opens and closes: expression ids restart then.
+ */
+class VmExpressionChannel {
+private:
+  friend class VmExpressionArtifactScope;
+
+  pthread_mutex_t _mutex;
+  // One bit per expression id: sent by a table of this channel.
+  std::vector<julong> _sent;
+  // Tables written this session; the last one's `sequence`.
+  jlong _tables;
+
+  // Under _mutex.
+  bool sent(uint id) const;
+  void mark_sent(uint id);
+
+  VmExpressionChannel(const VmExpressionChannel &);
+  VmExpressionChannel &operator=(const VmExpressionChannel &);
+
+public:
+  VmExpressionChannel();
+
+  /** Forgets every definition sent and every table numbered. */
+  void reset();
+};
+
+/**
  * One explicit artifact envelope whose expression values are references into
  * a session-local DAG table.
  *
@@ -170,7 +215,8 @@ public:
  * unless a caller creates this scope.  While the scope is live, every call to
  * serialize() writes only a VmExpressionReference.  write_table() then emits
  * the transitive definitions once, with child expressions represented by the
- * same references.  The pair (sessionId, expressionId) is the raw identity;
+ * same references (or, written to a VmExpressionChannel, those the channel
+ * has not sent).  The pair (sessionId, expressionId) is the raw identity;
  * portable/content-addressed identity is assigned by the artifact importer.
  *
  * A scope owns no Expression.  All pointers remain owned by the open
@@ -199,6 +245,14 @@ private:
   void write_reference(
       rapidjson::Writer<rapidjson::StringBuffer> &writer,
       Expression *expression, bool record_definition);
+  // Renders every definition still pending and closes the scope to new
+  // references: the start of either write_table.
+  void close_table();
+  // The `vmExpressionTable` member: every definition, or with `channel` (its
+  // lock held) those it has not sent, registered as sent, numbered
+  // `sequence`.
+  void write_rows(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                  VmExpressionChannel *channel, jlong sequence);
 
   // A scope is stack state.  Copying it would install two owners of the same
   // thread-local activation and make destruction order ambiguous.
@@ -231,6 +285,17 @@ public:
 
   /** Writes the `vmExpressionTable` member of the currently open object. */
   void write_table(rapidjson::Writer<rapidjson::StringBuffer> &writer);
+
+  /**
+   * Writes the `vmExpressionTable` member as `channel`'s next table
+   * (authority VM_READ_OUT_EXPRESSION_DELTA_V1): the definitions of this
+   * scope's closure the channel has not sent, now registered as sent, and
+   * the table's `sequence` in the channel, all under the channel's lock.
+   * Every other definition of the closure was stated by an earlier table of
+   * the channel.
+   */
+  void write_table(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                   VmExpressionChannel &channel);
 
   // Called only by Expression::serialize().
   void serialize_reference(

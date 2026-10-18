@@ -200,7 +200,7 @@ public final class RegionLeafBrokerSmoke {
         require(minted.contains("M_J_field_HOFF.inside"), minted);
         String pathBefore = System.getConcolicPathConditionRange(0,
                 Integer.MAX_VALUE);
-        String logBefore = System.getTrackedLocationVersions(0L, 0);
+        String logBefore = System.readOutTrackedLocations(0L, 0);
         String[] peeks = {
             expect(System.exportLeaf(source, FIELD, n), "OK",
                     "\"source\":\"SLOT\"", "M_J_field_SRC.n"),
@@ -225,15 +225,17 @@ public final class RegionLeafBrokerSmoke {
         };
         String pathAfter = System.getConcolicPathConditionRange(0,
                 Integer.MAX_VALUE);
-        String logAfter = System.getTrackedLocationVersions(0L, 0);
+        String logAfter = System.readOutTrackedLocations(0L, 0);
         require(conditionCount(pathBefore) == conditionCount(pathAfter),
                 "a peek recorded a condition: " + pathBefore + " / "
                         + pathAfter);
-        require(count(logBefore, "\"readEventId\"")
-                        == count(logAfter, "\"readEventId\""),
+        // Counted in the locations only: a read-out's table states only the
+        // definitions no earlier read-out of the session stated.
+        require(count(locations(logBefore), "\"readEventId\"")
+                        == count(locations(logAfter), "\"readEventId\""),
                 "a peek recorded a read: " + logBefore + "\n" + logAfter);
-        require(count(logBefore, "\"writerContextId\"")
-                        == count(logAfter, "\"writerContextId\""),
+        require(count(locations(logBefore), "\"writerContextId\"")
+                        == count(locations(logAfter), "\"writerContextId\""),
                 "a peek published a version: " + logAfter);
         require(peeks.length == 9, "peek rows");
         require(System.finishConcolicRegion().contains("\"complete\":true"),
@@ -513,7 +515,7 @@ public final class RegionLeafBrokerSmoke {
         String pair = System.getSymbolicExpression(minted.pair);
         require(pair.contains("M_I_field_HOFF.int")
                 && pair.contains("M_L'String'_field_HOFF.str"), pair);
-        require(System.getTrackedLocationVersions(0L, 0)
+        require(System.readOutTrackedLocations(0L, 0)
                 .contains("M_J_field_HOFF.id"),
                 "a field mint published no version");
         require(System.finishConcolicRegion().contains("\"complete\":true"),
@@ -576,6 +578,13 @@ public final class RegionLeafBrokerSmoke {
             ++end;
         }
         return Integer.parseInt(range.substring(at + key.length(), end));
+    }
+
+    /** A read-out page's text before its expression table. */
+    private static String locations(String page) {
+        int table = page.indexOf(",\"vmExpressionTable\":");
+        require(table > 0, "a read-out page with no table: " + page);
+        return page.substring(0, table);
     }
 
     private static int count(String text, String needle) {

@@ -191,8 +191,8 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   order); expression refs differ across sessions for 45 % of pre-cut decisions (compare structure, not refs); two
   GzCopy runs into one destination collide.
 
-**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, head fc70638e2 (on b07793ee9), GATED
-(mvn with tests + the shell test); merge it into solr-int next.**
+**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, on solr-int 5396683d6 (goal 1, fc70638e2,
+merged there); goal 3 GATED (mvn with tests + the shell test): merge it into solr-int before solr-replay-end.**
 - Done (goal 1): the stall-end run-on (07: 43 of 72 stall-ended replays ran on, 5 to the 2400 s timeout). Cause
   confirmed by thread dumps of an old-jar reproduction (07's 70f7d6878c96ed36): the settle thread waited in
   ConcolicResultPublisher#awaitSelectedResultPublications while an activation that closed after the end read out page
@@ -205,13 +205,17 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
   `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
   there; OPTIMIZATIONS 1.37, PIPELINE §7.7). Not yet seen live: no replay ran out of heap in the reproductions.
-- Goal 3: decoding (measured on pages captured from 07's 615997597e3c4202, `analysis/solr-2026-10-18/replay-e/`): the
-  Zero VM decodes 0.65 s per million chars (HotSpot ~95x faster); 82 % of page text is the expression table and 92 % of
-  its definitions are re-sent from earlier pages; profile: table reading 40 %, truncation scan 16.5 % (read-out pages
-  never hold a truncation marker), expansion 17 % (under a lock), parsing 17 %; whole-page parallel decode was 2.25x
-  faster for 53 % more CPU. So: the VM sends each expression definition once per session (VM serializer
-  exp/expression.cpp + the Java decoder, emission and table registration under one lock), skip the truncation scan when
-  nothing is marked, decode records within a page in parallel.
+- Done (goal 3, branch solr-replay, VM commit 96214b520 + the decoder commit after it; image
+  `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, smoke 73 OK): a session's read-out pages are one channel, each expression
+  definition sent once, the tables numbered under the channel's lock (VM `VmExpressionChannel`,
+  `System.readOutTrackedLocations`; the runtime refuses vm-force8 by name); the engine reads and hands pages on under
+  one lock and imports every table in order, a withheld page's too; the truncation scan runs only once the store holds
+  a marker; a page's table rows and records decode on the decoding thread and three record decoders, filed in page
+  order; the store takes no lock. 07's 353 captured pages (vm-decode/): 612 -> 206 M chars; Zero decode 659.6 s ->
+  197.9 s wall (527.6 s CPU); all 33,309 location records decode alike. Live reproductions (vm-decode/): 0c5f 1132 ->
+  677 s wall, end -> halt 190 -> 16 s; 9fc5 905 -> 649 s; sessions import alike. Left: the VM still renders each page's whole
+  closure before choosing what to send (about 0.2 s per 20 MB, natively); the decoding thread imports the tables in
+  order, alone.
 - Goal 4 (branch solr-replay-end, agent 4): DONE -- a concolic replay ends at its window's close
   (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.36); evidence
   `analysis/solr-2026-10-18/replay-end/` (postclose2.py, cutclose.py + plan13.sh, closehalt.py, runs/).
