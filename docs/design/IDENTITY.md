@@ -734,7 +734,7 @@ orders DataNodes as they are added, and block placement picks pipelines by posit
 order:
 
 - the order is the source session's prefix (`CAUSYNTH_SCHEDULE_PREFIX` / `causynth.schedule.prefix`)
-  then its rest (`schedule_suffix.jsonl`), cut by `explore/SchedulePrefix` at the task's target;
+  then its rest (`schedule_suffix.jsonl.gz`), cut by `explore/SchedulePrefix` at the task's target;
 - an event takes the earliest open or given-up slot of its key that its own occurrence made, else
   the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
   and must not swap slots); with none it runs free. In a timed-wait loop's turn (`Root:WAKE/<wait>#k`)

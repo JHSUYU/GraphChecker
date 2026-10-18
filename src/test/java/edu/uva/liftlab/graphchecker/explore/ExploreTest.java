@@ -999,8 +999,7 @@ public class ExploreTest {
         assertTrue(carried.get("outcome").getAsBoolean());
         assertEquals("named by the obligation that first asked for it",
                 "OBL.other", carried.get("obligationId").getAsString());
-        String query = new String(Files.readAllBytes(
-                nested.directory.resolve("obligation_query.smt2")), "UTF-8");
+        String query = queryText(nested.directory);
         // The parent's flipped conjunct shares nothing with this guard
         // (FlipQuery#cone): it holds as the world ran it, its root carried
         // whole, so the query need not state it.
@@ -3341,8 +3340,7 @@ public class ExploreTest {
                 reasked.get(0), out, "w1");
         assertEquals("no other world takes the arm", Verdict.UNSAT,
                 second.verdict);
-        String query = new String(Files.readAllBytes(second.directory
-                .resolve("obligation_query.smt2")), StandardCharsets.UTF_8);
+        String query = queryText(second.directory);
         assertTrue(query, query.contains("; refuted world "
                 + worlds.get(0).getAsJsonObject().get("world")
                 .getAsString()));
@@ -3535,8 +3533,7 @@ public class ExploreTest {
                 applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
                 applied > 300L);
-        String tickedQuery = new String(Files.readAllBytes(ticked.directory
-                .resolve("obligation_query.smt2")), "UTF-8");
+        String tickedQuery = queryText(ticked.directory);
         assertTrue("because the query ceilings the clock a window above the"
                         + " reading, so no model can overflow the long the"
                         + " workload adds to it: " + tickedQuery,
@@ -6097,8 +6094,7 @@ public class ExploreTest {
                 wave.resolve("obligations.jsonl"),
                 named(obligations(wave), "Expiry#u15").obligationId(),
                 worker, z3, 10_000L, 1152, null);
-        String query = new String(Files.readAllBytes(worker.resolve(
-                "obligation_query.smt2")), StandardCharsets.UTF_8);
+        String query = queryText(worker);
         assertFalse("the marker's decision shares nothing with the expiry: "
                 + query, query.contains("HARD"));
         assertEquals(query, Verdict.SAT_MODEL_READY, RowCodec.readAll(
@@ -6309,9 +6305,19 @@ public class ExploreTest {
     }
 
     private static String query(Worker worker) throws IOException {
-        return new String(Files.readAllBytes(
-                worker.directory.resolve("obligation_query.smt2")),
-                java.nio.charset.StandardCharsets.UTF_8);
+        return queryText(worker.directory);
+    }
+
+    private static String queryText(Path worker) throws IOException {
+        java.io.ByteArrayOutputStream text = new java.io.ByteArrayOutputStream();
+        try (java.io.InputStream in = ArtifactIO.input(
+                worker.resolve(ObligationSolverMain.QUERY))) {
+            byte[] buffer = new byte[1 << 16];
+            for (int read; (read = in.read(buffer)) > 0; ) {
+                text.write(buffer, 0, read);
+            }
+        }
+        return new String(text.toByteArray(), StandardCharsets.UTF_8);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
@@ -7676,7 +7682,7 @@ public class ExploreTest {
             List<String> symbols = Collections.singletonList("x");
             String query = Z3.modelQuery((String) row[0], symbols);
             Files.write(worker.resolve(ObligationSolverMain.QUERY),
-                    query.getBytes(StandardCharsets.UTF_8));
+                    ArtifactIO.gzip(query.getBytes(StandardCharsets.UTF_8)));
             GapRow built = GapRow.of("S", GapKind.ADMISSION_GAP,
                     GapClass.DIAGNOSTIC, "OB.1", "built");
             String sha = edu.uva.liftlab.graphchecker.smt.ArtifactIO
@@ -7745,7 +7751,7 @@ public class ExploreTest {
                 ExploreCodec::readObligation);
         assertEquals(1, solved.size());
         assertTrue("the query is published whatever the verdict",
-                Files.size(worker.resolve("obligation_query.smt2")) > 0);
+                !queryText(worker).isEmpty());
         return new Worker(rows.get(0).verdict(), solved.get(0), worker);
     }
 
@@ -7767,9 +7773,8 @@ public class ExploreTest {
      *  round's ({@link ExploreMain#GAPS_FILE}) or a worker's. */
     private static boolean anyGap(Path dir,
             java.util.function.Predicate<GapRow> named) throws IOException {
-        Path round = dir.resolve(ExploreMain.GAPS_FILE);
-        return RowCodec.readAll(Files.isRegularFile(round) ? round
-                        : dir.resolve("gaps.jsonl"), RowCodec::readGap)
+        return RowCodec.readAll(dir.resolve(ExploreMain.GAPS_FILE),
+                        RowCodec::readGap)
                 .stream().anyMatch(named);
     }
 

@@ -60,9 +60,9 @@ public class GapLedgerMainTest {
         gzip(iteration.resolve("obligations-0000/gaps.jsonl.gz"),
                 "{\"sessionId\":\"\",\"stage\":\"EXPLORE\",\"kind\":\"TASK_UNANSWERED\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"task.1 view-hold-max=3000\\nsecond line\",\"detail\":\"x\"}",
                 "{\"sessionId\":\"W1\",\"kind\":\"ADMISSION_GAP\",\"subject\":\"OCC.x\",\"detail\":\"no cls\"}");
-        // A worker's, plain, read before the session's: its row naming the
+        // A worker's, read before the session's: its row naming the
         // session's hook at REPLAY is the one kept, BLOCKING.
-        write(iteration.resolve("obligations-0000/abc123/gaps.jsonl"),
+        gzip(iteration.resolve("obligations-0000/abc123/gaps.jsonl.gz"),
                 "{\"sessionId\":\"W1\",\"kind\":\"UNPRODUCIBLE_ANSWER\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"OBL.slow\",\"detail\":\"SOLVER_TIMEOUT\"}",
                 "{\"sessionId\":\"S1\",\"stage\":\"REPLAY\",\"kind\":\"HOOK_UNDECLARED\",\"cls\":\"BLOCKING\",\"subject\":\"hook.a\",\"detail\":\"ran concrete\"}");
         // The campaign's own: IMPORT's gate states no stage, the others do.
@@ -384,7 +384,7 @@ public class GapLedgerMainTest {
     public void aGapFileWhereNoStageWritesFailsTheLedger() throws Exception {
         Path root = folder.getRoot().toPath();
         fixture(root);
-        write(root.resolve("iteration-0000/planner/gaps.jsonl"),
+        gzip(root.resolve("iteration-0000/planner/gaps.jsonl.gz"),
                 "{\"kind\":\"STRAY\"}");
         try {
             ledger(root);

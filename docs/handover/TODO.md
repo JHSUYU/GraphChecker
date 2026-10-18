@@ -230,14 +230,20 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
   offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
   checkout with third_party/ and gcc-6 on lift15.
 
-**F serial fixed cost -- branch solr-serial (= a28597a8f, nothing committed).** Measured: 07 SEED 540 s, of which the
-static pass is only 91 s (seedAnalysis 32, skeletonPlanning 32); ~450 s of SEED is unattributed (likely the recording);
-INSTRUMENT 83 s; the seed replay 569 s (13: 435/145/325 s). Next: split SEED/INSTRUMENT/REPLAY by phase from
-solr-adhoc-07.log's timestamped lines, then cache/parallelize what depends only on the tree + static-pass code, and
-decide whether the seed replay can overlap INSTRUMENT/PLAN.
+**F serial fixed cost -- branch solr-serial (agent 5).** Measured (`analysis/solr-2026-10-18/serial/`: jstack samples,
+0.5 s ps samples, a timestamped xtrace of run_engine): SEED's "~450 unattributed s" were the static pass run 2-4 times
+(07 4 passes 337 s, 13 2 passes 177 s; no pass repeats its inputs: each follows new demanded doors or a scope growth),
+the aggregation (07 48 s, 13 80 s), ScopeGrowth (13 38 s) and ~10 s shell gaps around every engine JVM (the ledger's
+lease keeper holds a saved copy of the caller's pipe: agent 1's fix). Done: 1.42 (dispatch targets resolved once,
+foldedUnion by hash), 1.43 (parallel tree digest), 1.45 (a lambda class joins the live hierarchy): a pass 80-94 ->
+29-31 s, the recording weave 54-61 -> 39-40 s, INSTRUMENT's weave 54 -> 40 s, the aggregation 50-78 -> 11-14 s. Not
+adopted: 5.7 (doors and growth together grew another scope). The seed replay cannot overlap PLAN or INSTRUMENT (it reads
+PLAN's plan and recorded schedule and INSTRUMENT's woven classes); its split (13): Zero VM start to the test's first
+line 30 s, the test 257 s (window 224 s), the halt at once. Open: a cross-run cache of SEED's static part (jar + inputs
+digest) helps only reruns of one snapshot or a precompute of every case before a round (~2-3 min a case).
 
-**G NFS leftovers -- not started.** Worker schedule prefix/suffix (625 MB in 05 round 0) and flip query files
-(1.47 GB round 4) to gzip through ArtifactIO (grep every reader); `campaign_solver_read_seed_mb_s` 20 -> ~160.
+**G NFS leftovers -- done (1.44).** A worker's schedule prefix/suffix, flip query and gap rows are gzip through
+ArtifactIO (05: queries 59x, schedules 25x, gaps 33x smaller); `campaign_solver_read_seed_mb_s` = 160.
 
 **How to resume: five coding agents in parallel (owner 2026-10-18), one per row, own branch and hosts.** Resume an
 agent's branch where it stands; tell each the other agents' files before it commits; the lead merges and gates.

@@ -237,7 +237,7 @@ Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
 `report/<case>/report.md` (blocking gaps, witness findings, causal cone) → `out/<case>/schedule/final/`
 (`claim.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `gaps.json`)
 → how EXPLORE ended `iteration-0000/exploration.json` → per planner round
-`iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2`, `obligation_result.jsonl`,
+`iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2.gz`, `obligation_result.jsonl`,
 `replay.log`) → sessions `iteration-0000/sessions/<id>/`
 (`targets.jsonl.gz` has `reachedAnchor` and `observedFatal`). `experiments/accept/cone.py` and
 `probe.sh` re-check a published formula. `tools/analysis/timeline.py`

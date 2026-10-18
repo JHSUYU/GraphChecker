@@ -103,9 +103,9 @@ public final class ScheduleLog {
     public static final String PREFIX_ENV = "CAUSYNTH_SCHEDULE_PREFIX";
     /** The same, as a system property; the property wins. */
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
-    public static final String PREFIX_FILE = "schedule_prefix.jsonl";
+    public static final String PREFIX_FILE = "schedule_prefix.jsonl.gz";
     /** The rest, beside the prefix in the worker directory. */
-    public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
+    public static final String SUFFIX_FILE = "schedule_suffix.jsonl.gz";
     /** The recording's schedule beside its trace ({@link #installFile}),
      *  plain JSONL: SEED copies it to the iteration's recorded schedule. */
     public static final String RECORDING_FILE = "schedule.jsonl";
