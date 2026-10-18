@@ -146,7 +146,7 @@ every tool call starts a shell there.
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
 `LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
-verdict; OPTIMIZATIONS 1.26):
+verdict; OPTIMIZATIONS 1.27):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
   LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
@@ -157,7 +157,7 @@ cd ~/gc-run/<snap> && env -u BASH_ENV \
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
-The head's own chain is short (OPTIMIZATIONS 1.27): an answer lands as it is collected, a session is gated where its
+The head's own chain is short (OPTIMIZATIONS 1.28): an answer lands as it is collected, a session is gated where its
 worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
 GROW's planner and weave build their generation beside the loop -- the pool is never left idle while the head gates,
 grows or waits for a step.

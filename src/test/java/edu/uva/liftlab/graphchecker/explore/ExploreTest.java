@@ -2115,7 +2115,7 @@ public class ExploreTest {
                 task |= planned.focused().equals(producer);
             }
             String lineage = "";
-            for (GapRow gap : plan.gaps) {
+            for (GapRow gap : gapsOf(plan)) {
                 if (!gap.subject().equals(producer.render())) continue;
                 assertEquals("never BLOCKING while a session ran it: "
                         + gap.detail(), GapClass.DIAGNOSTIC, gap.cls());
@@ -2124,7 +2124,7 @@ public class ExploreTest {
             String label = producer.regionId() + " captured=" + captured
                     + " focused=" + focused + " recorded=" + recorded;
             String tick = "";
-            for (GapRow gap : plan.gaps) {
+            for (GapRow gap : gapsOf(plan)) {
                 if (gap.subject().equals(producer.render())
                         && gap.detail().contains("daemon tick")) {
                     tick = gap.detail();
@@ -3634,7 +3634,8 @@ public class ExploreTest {
         // focused replay ran it, so none is re-run), and it is named.
         seed.doorsOnly.add(WRITER.render());
         seed.flush();
-        ClosurePlanner.Plan doors = ClosurePlanner.plan(
+        Set<GapRow> doorsSaid = new LinkedHashSet<GapRow>();
+        ClosurePlanner.Plan doors = saying(ClosurePlanner.plan(
                 Corpus.read(iteration, null), TARGET,
                 ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty(),
                 Branches.of(Corpus.read(iteration, null),
@@ -3642,12 +3643,12 @@ public class ExploreTest {
                         new ArrayList<GapRow>()),
                 Collections.singleton(WRITER.render()),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), doorsSaid::add), doorsSaid);
         assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
         assertEquals("no focused replay ran it: the fixed point names it",
                 Collections.singleton(WRITER), doors.runWhole);
         boolean named = false;
-        for (GapRow gap : doors.gaps) {
+        for (GapRow gap : gapsOf(doors)) {
             named |= gap.subject().equals(WRITER.render())
                     && gap.detail().contains("doors alone");
         }
@@ -3713,7 +3714,7 @@ public class ExploreTest {
         assertEquals(anchor.focused(), recovered.focused());
         // The recorded pairing and the consumer's own causal anchor agree
         // here, so there is nothing to tell anybody.
-        for (GapRow gap : plan.gaps) {
+        for (GapRow gap : gapsOf(plan)) {
             assertFalse(gap.kind() == GapKind.TOPOLOGY_DIVERGENCE);
         }
 
@@ -3829,7 +3830,7 @@ public class ExploreTest {
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), gap -> { });
             List<String> kept = focused(cut);
             List<String> expected = new ArrayList<String>(Arrays.asList(
                     target.render(), writer.render(), producer.render()));
@@ -3864,7 +3865,7 @@ public class ExploreTest {
                 scopedWhy.get(producer.render()));
         boolean saidNeverRan = false;
         boolean saidNotHere = false;
-        for (GapRow gap : scoped.gaps) {
+        for (GapRow gap : gapsOf(scoped)) {
             if (gap.kind() != GapKind.ADMISSION_GAP
                     || gap.cls() != GapClass.DIAGNOSTIC) {
                 continue;
@@ -3988,7 +3989,7 @@ public class ExploreTest {
                         + divergentFocused,
                 divergentFocused.contains(producer.render()));
         boolean told = false;
-        for (GapRow gap : divergent.gaps) {
+        for (GapRow gap : gapsOf(divergent)) {
             told |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
                     && gap.cls() == GapClass.DIAGNOSTIC
                     && gap.detail().contains(exported.id());
@@ -4455,7 +4456,7 @@ public class ExploreTest {
         stated.flush();
         ClosurePlanner.Plan lowered = closure(Corpus.read(viaRef, null),
                 target, map);
-        for (GapRow gap : lowered.gaps) {
+        for (GapRow gap : gapsOf(lowered)) {
             assertFalse("the anchor's own read is what its phi rests on: "
                             + gap.detail(),
                     gap.subject().equals(refRead.toString())
@@ -4713,7 +4714,7 @@ public class ExploreTest {
                         + "flip there: " + flipsOf,
                 flipsOf.get(expiring.render())
                         .contains("BlockTokenSecretManager#u15"));
-        for (GapRow gap : demanded.gaps) {
+        for (GapRow gap : gapsOf(demanded)) {
             // The row states the value it wrote as a bare reference and the
             // map states the field's descriptor; read as equality, every
             // container write row disagreed with its own cell and the
@@ -6243,7 +6244,7 @@ public class ExploreTest {
             for (Task task : plan.tasks) {
                 planned |= task.focused().id().equals(REST_HANDLER.id());
             }
-            assertEquals(kind + ": " + plan.tasks + " " + plan.gaps,
+            assertEquals(kind + ": " + plan.tasks + " " + gapsOf(plan),
                     row[1], planned);
         }
     }
@@ -6397,7 +6398,7 @@ public class ExploreTest {
         }
         ClosurePlanner.Walk walk = new ClosurePlanner.Walk(
                 Corpus.read(iteration, null), StaticScopeMap.empty(), TARGET,
-                ClosurePlanner.CORES);
+                ClosurePlanner.CORES, gap -> { });
         ClosurePlanner.GroupReads target = walk.reads(TARGET);
         ClosurePlanner.GroupReads reader = walk.reads(READER);
         assertEquals("every occurrence on the map is in both groups", 3,
@@ -6456,7 +6457,7 @@ public class ExploreTest {
         ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
                 TARGET, map);
         Map<String, Integer> said = new LinkedHashMap<String, Integer>();
-        for (GapRow gap : plan.gaps) {
+        for (GapRow gap : gapsOf(plan)) {
             if (gap.kind() == GapKind.DECLARATION_MISSING
                     || gap.kind() == GapKind.TOPOLOGY_DIVERGENCE) {
                 said.merge(gap.kind() + " " + gap.subject(), 1, Integer::sum);
@@ -6716,20 +6717,21 @@ public class ExploreTest {
      *  cores}. */
     private static ClosurePlanner.Plan plannedOn(Corpus corpus,
             StaticScopeMap map, java.util.concurrent.ForkJoinPool cores) {
-        return ClosurePlanner.plan(corpus, TARGET,
+        Set<GapRow> said = new LinkedHashSet<GapRow>();
+        return saying(ClosurePlanner.plan(corpus, TARGET,
                 ClosurePlanner.DEFAULT_MAX_TASKS,
                 ClosurePlanner.CLOSURE_CEILING, map,
                 Branches.of(corpus, Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""), cores);
+                SystemView.of(""), cores, said::add), said);
     }
 
     /** Everything a plan states, as text. */
     private static String rendered(ClosurePlanner.Plan plan) {
         return plan.tasks + "\n" + plan.why + "\n" + plan.flipSites + "\n"
-                + plan.gaps + "\n" + plan.exposed + "\n" + plan.waiting
+                + gapsOf(plan) + "\n" + plan.exposed + "\n" + plan.waiting
                 + "\n" + plan.truncated + "\n" + plan.unpaused + "\n"
                 + plan.runWhole + "\n" + plan.ceilingCut;
     }
@@ -6914,13 +6916,32 @@ public class ExploreTest {
     private static ClosurePlanner.Plan closure(Corpus corpus,
                                                OccurrenceAddress anchor,
                                                StaticScopeMap map) {
-        return ClosurePlanner.plan(corpus, anchor,
+        Set<GapRow> said = new LinkedHashSet<GapRow>();
+        return saying(ClosurePlanner.plan(corpus, anchor,
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), said::add), said);
+    }
+
+    /** The gaps each plan's walk said, each once, as a round writes them
+     *  ({@code RoundGaps}). */
+    private static final Map<ClosurePlanner.Plan, List<GapRow>> SAID =
+            Collections.synchronizedMap(new java.util.IdentityHashMap<
+                    ClosurePlanner.Plan, List<GapRow>>());
+
+    /** {@code plan}, whose walk said {@code said}. */
+    private static ClosurePlanner.Plan saying(ClosurePlanner.Plan plan,
+                                              Set<GapRow> said) {
+        SAID.put(plan, new ArrayList<GapRow>(said));
+        return plan;
+    }
+
+    /** The gaps {@code plan}'s walk said ({@link #saying}). */
+    private static List<GapRow> gapsOf(ClosurePlanner.Plan plan) {
+        return SAID.get(plan);
     }
 
     /**
@@ -6994,7 +7015,7 @@ public class ExploreTest {
                             new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), gap -> { });
             Set<String> planned = new LinkedHashSet<String>();
             for (Task task : plan.tasks) planned.add(task.focused().render());
             Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
@@ -7019,7 +7040,7 @@ public class ExploreTest {
                         new ArrayList<GapRow>()),
             Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), gap -> { });
         Set<String> kept = new LinkedHashSet<String>();
         for (Task task : capped.tasks) kept.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -7102,7 +7123,7 @@ public class ExploreTest {
                         new ArrayList<GapRow>()),
                     Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""));
+                SystemView.of(""), gap -> { });
         Set<String> planned = new LinkedHashSet<String>();
         for (Task task : plan.tasks) planned.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -7723,7 +7744,7 @@ public class ExploreTest {
                 task |= planned.focused().equals(door);
             }
             int rows = 0;
-            for (GapRow gap : plan.gaps) {
+            for (GapRow gap : gapsOf(plan)) {
                 if (gap.subject().equals(door.render())
                         && gap.detail().contains("decided no fault")) {
                     assertEquals(label, GapClass.DIAGNOSTIC, gap.cls());

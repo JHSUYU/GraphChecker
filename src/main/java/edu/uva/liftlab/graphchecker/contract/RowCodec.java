@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -652,41 +653,102 @@ public final class RowCodec {
     public static <T> void writeAll(Path file, List<T> rows,
                                     Function<T, JsonObject> writer)
             throws IOException {
-        // Whole or not at all: a JVM ended mid-write (a planner past its
-        // heap, run again at twice it) leaves the last whole file.  CC3-07:
-        // the rerun read the half a dead planner wrote of slots.jsonl, and
-        // the exploration's every later round failed on it.
+        boolean gzip = ArtifactIO.gzipped(file);
+        writeWhole(file, out -> {
+            int[] next = {0};
+            Parallel.stream(() -> {
+                int from = next[0];
+                if (from >= rows.size()) return null;
+                next[0] = Math.min(rows.size(), from + ROWS_AT_ONCE);
+                return rows.subList(from, next[0]);
+            }, run -> {
+                StringBuilder text = new StringBuilder();
+                for (T row : run) {
+                    text.append(toLine(writer.apply(row))).append('\n');
+                }
+                byte[] bytes = text.toString()
+                        .getBytes(StandardCharsets.UTF_8);
+                return gzip ? ArtifactIO.gzip(bytes) : bytes;
+            }, out::write);
+            if (gzip && rows.isEmpty()) {
+                out.write(ArtifactIO.gzip(new byte[0]));
+            }
+        });
+    }
+
+    /** What {@link #writeWhole} writes, into the file's stream. */
+    private interface Body {
+        void write(OutputStream out) throws IOException;
+    }
+
+    /**
+     * A file written whole or not at all: a JVM ended mid-write (a planner
+     * past its heap, run again at twice it) leaves the last whole file.
+     * CC3-07: the rerun read the half a dead planner wrote of slots.jsonl,
+     * and the exploration's every later round failed on it.
+     */
+    private static void writeWhole(Path file, Body body) throws IOException {
         Path parent = file.toAbsolutePath().getParent();
         Files.createDirectories(parent);
         Path partial = Files.createTempFile(parent,
                 file.getFileName().toString(), ".partial");
-        boolean gzip = ArtifactIO.gzipped(file);
         try {
             try (OutputStream out = new BufferedOutputStream(
                     Files.newOutputStream(partial), 1 << 16)) {
-                int[] next = {0};
-                Parallel.stream(() -> {
-                    int from = next[0];
-                    if (from >= rows.size()) return null;
-                    next[0] = Math.min(rows.size(), from + ROWS_AT_ONCE);
-                    return rows.subList(from, next[0]);
-                }, run -> {
-                    StringBuilder text = new StringBuilder();
-                    for (T row : run) {
-                        text.append(toLine(writer.apply(row))).append('\n');
-                    }
-                    byte[] bytes = text.toString()
-                            .getBytes(StandardCharsets.UTF_8);
-                    return gzip ? ArtifactIO.gzip(bytes) : bytes;
-                }, out::write);
-                if (gzip && rows.isEmpty()) {
-                    out.write(ArtifactIO.gzip(new byte[0]));
-                }
+                body.write(out);
             }
             Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
         } finally {
             Files.deleteIfExists(partial);
+        }
+    }
+
+    /**
+     * ONE KIND'S FILE AS ITS ROWS COME, one line at a time ({@link #add}),
+     * never all held: each run of {@link #ROWS_AT_ONCE} lines, as it fills,
+     * is held as {@link #writeAll} writes it -- for a gzip file deflated,
+     * one member -- and the file is written whole at {@link #write}, byte
+     * for byte {@link #writeAll}'s of the same rows.  One thread adds.
+     */
+    public static final class Runs {
+        private final boolean gzip;
+        private final List<byte[]> written = new ArrayList<byte[]>();
+        private ByteArrayOutputStream run =
+                new ByteArrayOutputStream();
+        private int lines;
+        private boolean any;
+
+        /** The runs of {@code file}'s kind: gzip by its name. */
+        public Runs(Path file) {
+            this.gzip = ArtifactIO.gzipped(file);
+        }
+
+        /** One row's line ({@link #toLine}), UTF-8, without its newline. */
+        public void add(byte[] line) throws IOException {
+            run.write(line);
+            run.write('\n');
+            any = true;
+            if (++lines == ROWS_AT_ONCE) close();
+        }
+
+        /** The run being filled, as it is written. */
+        private void close() throws IOException {
+            if (lines == 0) return;
+            byte[] bytes = run.toByteArray();
+            written.add(gzip ? ArtifactIO.gzip(bytes) : bytes);
+            run = new ByteArrayOutputStream();
+            lines = 0;
+        }
+
+        /** Writes {@code file} whole: every run, a gzip file of no rows one
+         *  empty member. */
+        public void write(Path file) throws IOException {
+            close();
+            writeWhole(file, out -> {
+                for (byte[] bytes : written) out.write(bytes);
+                if (gzip && !any) out.write(ArtifactIO.gzip(new byte[0]));
+            });
         }
     }
 

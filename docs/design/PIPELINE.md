@@ -538,7 +538,10 @@ the campaign lands sessions while a round plans, and the round reads none of the
 workers' own files it reads as they stand, §7.9). What it read
 for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus, Collection)`:
 a landed session's rows never change, so only the sessions new to the round's corpus are parsed, and
-one that left -- a GROW swap, after-witness trimming -- is dropped) with what was derived from each
+one that left -- a GROW swap, after-witness trimming -- is dropped; of a session's gap rows, every one
+read and only the kinds a corpus reads held, `SessionReader#gaps(GapKind)`: ADDRESS_UNSTABLE,
+BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE -- EMIT reads the gap files themselves, §11 -- in every
+JVM that reads a corpus) with what was derived from each
 session's rows
 alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
 expressions: symbols, leaves, read locations and events, state reads), the static map while its
@@ -643,7 +646,11 @@ corpus names, each worker's focus row as that session's world, the verdicts, the
    WIRE pairing and STATE join, each with the world digests it was seen in, and a FRONTIER row with
    the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl.gz`, `gaps.jsonl.gz`
    (the round's large files, and `slots.jsonl.gz`, gzip: `RowCodec#writeAll` deflates each run of
-   1024 rows on the core that rendered it, one gzip member each, CONTRACT-SPEC §2.2) and
+   1024 rows on the core that rendered it, one gzip member each, CONTRACT-SPEC §2.2; the gaps are
+   written as the round says them, the closure walk's among them: `explore.RoundGaps` renders,
+   deduplicates (by the line's 128-bit murmur3 digest) and deflates each run of 1024 distinct rows on a
+   thread of its own and holds no row, `RowCodec.Runs`, the file written whole at the round's end, byte
+   for byte the one `writeAll` wrote of their distinct list) and
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, `force` (§7.10), state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in

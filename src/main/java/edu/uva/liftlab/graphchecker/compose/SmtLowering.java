@@ -787,8 +787,7 @@ public final class SmtLowering {
                 new LinkedHashMap<String, Set<String>>();
         Map<String, List<JsonElement>> exports =
                 new LinkedHashMap<String, List<JsonElement>>();
-        for (GapRow gap : session.gaps()) {
-            if (gap.kind() != GapKind.UNSTATED_VALUE) continue;
+        for (GapRow gap : session.gaps(GapKind.UNSTATED_VALUE)) {
             String occurrence;
             try {
                 occurrence = OccurrenceAddress.parse(gap.subject()).id();

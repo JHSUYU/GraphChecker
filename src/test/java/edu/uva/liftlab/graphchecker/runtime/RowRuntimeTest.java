@@ -1105,7 +1105,7 @@ public class RowRuntimeTest {
         assertEquals(Arrays.asList("INITIAL 0", "1"), writes(LocationKind.VIEW,
                 write -> (write.initial() ? "INITIAL " : "")
                         + write.version()));
-        for (GapRow gap : SessionReader.read(session()).gaps()) {
+        for (GapRow gap : gaps()) {
             assertFalse("the unregistered decode names nothing: " + gap,
                     gap.subject().contains("nobody")
                             || gap.detail().contains("nobody"));
