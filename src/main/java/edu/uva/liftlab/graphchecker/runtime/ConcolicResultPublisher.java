@@ -101,57 +101,84 @@ final class ConcolicResultPublisher {
      * JUnitMethodRunner#exit}).
      *
      * <p>After the workload's own end it waits until no selected activation
-     * is live and no publication runs; after an early end only for the
-     * publications, and every activation still live is stranded at once
-     * (retrying its work, it would keep resetting any grace).  Either way
-     * the wait is bounded by progress: it gives up once nothing has moved
-     * for {@link #TERMINAL_GRACE_MILLIS} ({@link #progressLocked}: no loop
-     * body charged, no activation settled, no publication finished, no CPU
-     * on the publication or the decoding thread and no garbage
-     * collection), so a
-     * publication that computes is never cut and one blocked is
-     * (unbounded, a stuck publication kept a decided replay running to its
-     * {@code replay_timeout_s}).  Then every activation still live is
-     * stranded, and the publication still running and every one queued
-     * behind it are named ({@code RESULT_PUBLICATION_UNSETTLED}, a seed's
-     * or a confirmation's session included); the run ends without them, and
-     * a later settle of the same run waits for nothing.</p>
+     * is live and no publication runs.  After an early end -- before the
+     * settle, or met while it waits -- every activation still live is
+     * stranded at once, before any wait: its root runs on, but its terminal
+     * reads nothing out ({@code ConcolicRegionRuntime#closeStranded}), and
+     * one that closed meanwhile, its read-out cut ({@link #endedEarly}),
+     * publishes only its mints; so the wait is for the publications the
+     * session owes, those submitted by the end, and the mints of the ones
+     * after it -- and, at a refusal or a stall before any flip, whose
+     * session is withdrawn, for none (a publication still running writes
+     * into the withdrawn session until its close, under the session's
+     * lock).  Waited for as live, the activations kept closing behind
+     * the end, each reading out pages the one decoding thread decoded for
+     * no publication, every one resetting the grace (SGF8-adhoc-07: 43 of
+     * 72 replays that stalled ran on 209 s at the median, 5 to their
+     * {@code replay_timeout_s}).  Either way the wait is bounded by
+     * progress: it gives up once nothing has moved for
+     * {@link #TERMINAL_GRACE_MILLIS} ({@link #progressLocked}: no loop body
+     * charged, no activation settled, no publication finished, no CPU on
+     * the publication or the decoding thread, and no garbage collection
+     * while one of them computes), so a publication that computes is never
+     * cut and one blocked is (unbounded, a stuck publication kept a decided
+     * replay running to its {@code replay_timeout_s}).  Then every
+     * activation still live is stranded, and the publication still running
+     * and every one queued behind it are named ({@code
+     * RESULT_PUBLICATION_UNSETTLED}, a seed's or a confirmation's session
+     * included); the run ends without them, and a later settle of the same
+     * run waits for nothing.</p>
      */
     public static void awaitSelectedResultPublications() {
         boolean interrupted = false;
         List<ActiveRegion> stranded = new ArrayList<>();
         ActiveRegion running = null;
         List<ActiveRegion> behind = new ArrayList<>();
-        final Conclusion end;
-        synchronized (PUBLICATION_LOCK) {
-            Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
-                    System.nanoTime(), progressLocked());
-            boolean spent = gaveUp;
-            // An early end met while waiting stops the wait for the live.
-            while (!spent && ((concluded == null && liveSelectedRegions > 0)
-                    || resultPublicationsInFlight > 0)) {
-                long remaining = grace.remaining(System.nanoTime(),
-                        progressLocked());
-                if (remaining <= 0L) {
-                    spent = true;
-                    break;
+        Conclusion end;
+        while (true) {
+            List<ActiveRegion> live = null;
+            synchronized (PUBLICATION_LOCK) {
+                Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
+                        System.nanoTime(), progressLocked());
+                boolean spent = gaveUp;
+                while (!spent && (concluded == null || strandedAtEnd)
+                        && (concluded == null ? liveSelectedRegions > 0
+                        || resultPublicationsInFlight > 0
+                        : stands(concluded)
+                        && resultPublicationsInFlight > 0)) {
+                    long remaining = grace.remaining(System.nanoTime(),
+                            progressLocked());
+                    if (remaining <= 0L) {
+                        spent = true;
+                        break;
+                    }
+                    try {
+                        PUBLICATION_LOCK.wait(remaining / 1_000_000L,
+                                (int) (remaining % 1_000_000L));
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
                 }
-                try {
-                    PUBLICATION_LOCK.wait(remaining / 1_000_000L,
-                            (int) (remaining % 1_000_000L));
-                } catch (InterruptedException ignored) {
-                    interrupted = true;
+                end = concluded;
+                if (!spent && end != null && !strandedAtEnd) {
+                    // The early end strands the live, then waits again.
+                    strandedAtEnd = true;
+                    live = new ArrayList<>(ACTIVE.values());
+                } else {
+                    if (end != null || spent) stranded.addAll(ACTIVE.values());
+                    if (spent && !gaveUp) {
+                        // The one running, and every one queued behind it:
+                        // the one publication thread will reach none of them.
+                        running = publishingNow;
+                        behind.addAll(queued);
+                    }
+                    gaveUp = spent;
                 }
             }
-            end = concluded;
-            if (end != null || spent) stranded.addAll(ACTIVE.values());
-            if (spent && !gaveUp) {
-                // The one running, and every one queued behind it: the one
-                // publication thread will reach none of them.
-                running = publishingNow;
-                behind.addAll(queued);
+            if (live == null) break;
+            for (ActiveRegion active : live) {
+                strandWithoutTerminal(active, endedThere(end));
             }
-            gaveUp = spent;
         }
         // Outside the barrier lock: each of these files a durable row.
         for (ActiveRegion active : stranded) {
@@ -161,8 +188,7 @@ final class ConcolicResultPublisher {
                     + " workload ended while nothing progressed, so this"
                     + " occurrence reached no NORMAL, THROW or bounded CUT"
                     + " terminal"
-                    : end + ": the region root was still running when "
-                    + end.when + ", and the replay ended there");
+                    : endedThere(end));
         }
         String stall = " for " + TERMINAL_GRACE_MILLIS + "ms (no loop"
                 + " body, settled activation, finished publication,"
@@ -177,6 +203,13 @@ final class ConcolicResultPublisher {
                     + stall + ": it published no row");
         }
         if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    /** Why an activation still live at the early end {@code end} is
+     *  settled without its terminal. */
+    private static String endedThere(Conclusion end) {
+        return end + ": the region root was still running when " + end.when
+                + ", and the replay ended there";
     }
 
     /** Names one publication the run ended without; the replay's
@@ -217,7 +250,10 @@ final class ConcolicResultPublisher {
     /**
      * What moves while a run settles: what {@link #movedLocked} counts, the
      * CPU the publication and the decoding threads spent, and the JVM's
-     * time in garbage collection (a collection stops them too).
+     * time in garbage collection while one of them computes (a collection
+     * stops them too).  A collection while both wait is the workload's:
+     * its cluster runs on through the settle, and counted, it kept a
+     * blocked publication's grace from ever being spent.
      * Called under {@link #PUBLICATION_LOCK}.
      */
     private static long[] progressLocked() {
@@ -225,13 +261,27 @@ final class ConcolicResultPublisher {
         long[] progress = Arrays.copyOf(moved, moved.length + 3);
         progress[moved.length] = cpu(publishingThread);
         progress[moved.length + 1] = cpu(decodingThread);
-        progress[moved.length + 2] = ScheduleLog.collectedMillis();
+        if (computing(publishingThread) || computing(decodingThread)) {
+            collectedComputing = ScheduleLog.collectedMillis();
+        }
+        progress[moved.length + 2] = collectedComputing;
         return progress;
     }
+
+    /** The JVM's collection time at the last look a publication or a
+     *  decoding computed; guarded by {@link #PUBLICATION_LOCK}. */
+    private static long collectedComputing;
 
     private static long cpu(Thread thread) {
         return thread == null ? 0L : ManagementFactory.getThreadMXBean()
                 .getThreadCpuTime(thread.getId());
+    }
+
+    /** Whether an engine thread is computing rather than waiting for its
+     *  next task (an idle pool thread waits in its queue). */
+    private static boolean computing(Thread thread) {
+        return thread != null
+                && thread.getState() == Thread.State.RUNNABLE;
     }
 
     /**
@@ -468,6 +518,8 @@ final class ConcolicResultPublisher {
             new LinkedHashSet<ActiveRegion>();
     private static long publicationsFinished;
     private static boolean gaveUp;
+    /** Whether a settle stranded the live at the run's early end. */
+    private static boolean strandedAtEnd;
     /** Read-out text handed to the decoding thread and not yet decoded,
      *  in chars ({@link #decodeBeforePublication}). */
     private static long undecodedChars;
@@ -604,8 +656,9 @@ final class ConcolicResultPublisher {
         }, "causynth-early-end").start();
     }
 
-    /** Guarded by {@link #PUBLICATION_LOCK}. */
-    private static Conclusion concluded;
+    /** Written under {@link #PUBLICATION_LOCK}; volatile for the decoding
+     *  threads' look between records ({@link #withholds}). */
+    private static volatile Conclusion concluded;
     /**
      * Publications submitted, and how many were when the replay's end
      * stood: one completed after it is no part of the question, and
@@ -694,9 +747,11 @@ final class ConcolicResultPublisher {
      * before it, not yet decoded, leave room for it under
      * {@link #UNDECODED_BOUND_CHARS} (or none is left); until then the
      * reading thread waits, bounded by progress as the settle is
-     * ({@link Grace}), so a stuck decoding delays it, never holds it.
+     * ({@link Grace}), so a stuck decoding delays it, never holds it; an
+     * early end ends the wait, and the page is not handed on.
      *
-     * @return false when the executor refused the work
+     * @return false when the executor refused the work, or the run ended
+     *         early ({@link #endedEarly})
      */
     static boolean decodeBeforePublication(long chars, Runnable decode) {
         boolean interrupted = false;
@@ -705,7 +760,7 @@ final class ConcolicResultPublisher {
                     System.nanoTime(), progressLocked());
             while (undecodedChars > 0L
                     && undecodedChars + chars > UNDECODED_BOUND_CHARS
-                    && !gaveUp) {
+                    && !gaveUp && concluded == null) {
                 long remaining = grace.remaining(System.nanoTime(),
                         progressLocked());
                 if (remaining <= 0L) break;
@@ -715,6 +770,12 @@ final class ConcolicResultPublisher {
                 } catch (InterruptedException ignored) {
                     interrupted = true;
                 }
+            }
+            // A page read after an early end is of a read-out the session
+            // withholds (#endedEarly): it is not decoded.
+            if (concluded != null) {
+                if (interrupted) Thread.currentThread().interrupt();
+                return false;
             }
             undecodedChars += chars;
         }
@@ -745,6 +806,33 @@ final class ConcolicResultPublisher {
     }
 
     /**
+     * Whether the replay ended early ({@link #conclude}): a read-out still
+     * reading belongs to an activation that submits after the end, whose
+     * publication is withheld ({@link #publishCompletedResult}), so it reads
+     * no more pages ({@code SharedStateCapture#captureRecordedSharedState}).
+     */
+    static boolean endedEarly() {
+        synchronized (PUBLICATION_LOCK) {
+            return concluded != null;
+        }
+    }
+
+    /**
+     * Whether the session withholds what {@code readOut} reads: the replay
+     * ended early and its publication was not submitted by then, or was
+     * submitted after (or, at a refusal or a stall before any flip, not
+     * started).  Its pages still undecoded are not decoded: no publication
+     * reads them.
+     */
+    static boolean withholds(SharedStateReadOut readOut) {
+        if (concluded == null) return false;
+        synchronized (PUBLICATION_LOCK) {
+            return concluded != null && (readOut.ordinal == 0L
+                    || readOut.ordinal > submittedAtEnd);
+        }
+    }
+
+    /**
      * The most read-out text the decoding thread may hold undecoded:
      * four pages ({@code SharedStateCapture#READ_OUT_PAGE_BYTES}), 128 MB
      * of chars.  Unbounded, an owner that reads faster than one thread
@@ -767,6 +855,7 @@ final class ConcolicResultPublisher {
         synchronized (PUBLICATION_LOCK) {
             ordinal = ++submitted;
             queued.add(active);
+            if (sharedState != null) sharedState.ordinal = ordinal;
         }
         try {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {

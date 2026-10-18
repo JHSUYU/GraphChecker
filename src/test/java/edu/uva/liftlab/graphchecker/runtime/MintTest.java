@@ -1169,8 +1169,9 @@ public class MintTest {
                 filing.set(deferred);
                 try {
                     call(SharedStateCapture.class, "decodeTrackedLocations",
-                            new Class<?>[] {String.class, ActiveRegion.class},
-                            page, active);
+                            new Class<?>[] {String.class, ActiveRegion.class,
+                                    SharedStateCapture.SharedStateReadOut.class},
+                            page, active, null);
                 } finally {
                     filing.remove();
                 }
