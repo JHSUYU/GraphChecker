@@ -2718,11 +2718,20 @@ campaign_verify_woven_classes() {
 }
 
 # Why the last bounded campaign_replay was killed, or empty: its wall-clock
-# bound, or a SIGKILL that came before the bound (the kernel's memory killer,
-# an operator) -- hdfs-17960 v65-v67 read a 30-second 16 GB death as "exceeded
-# replay_timeout_s=2400".  Read by the caller that set the bound; every other
-# caller leaves the bound empty and this empty.
+# bound, its watcher ending it for memory, or a SIGKILL that came before the
+# bound (the kernel's memory killer, an operator) -- hdfs-17960 v65-v67 read a
+# 30-second 16 GB death as "exceeded replay_timeout_s=2400".  Read by the
+# caller that set the bound; every other caller leaves the bound empty and
+# this empty.  campaign_replay_refused_mb is what the replay's resident memory
+# had reached when its watcher ended it because its host could not take its
+# growth (campaign_refused_file), else empty: that replay decided nothing,
+# and its caller asks it again at its full need (campaign_obligation_replay).
 campaign_replay_killed=""
+campaign_replay_refused_mb=""
+# The file a workload JVM's watcher writes beside its peak when it ended the
+# JVM because its host could not take its growth: the resident MB it had
+# reached (campaign_watch_workload).
+campaign_refused_file=workload_refused_mb
 
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
@@ -2745,6 +2754,7 @@ campaign_replay() {
   local region_results=${8:-required}
   local status=0 started=${SECONDS}
   campaign_replay_killed=""
+  campaign_replay_refused_mb=""
   # Where this replay writes its per-kind rows.  A focused replay is a
   # session: every row it publishes is keyed by it, and every later stage
   # reads the session rather than a folded result.
@@ -2791,7 +2801,14 @@ campaign_replay() {
     if [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
         || (( lived >= campaign_adapter_timeout_s )); then
       campaign_replay_killed="exceeded ${campaign_adapter_timeout_rule}"
+    elif read -r campaign_replay_refused_mb 2>/dev/null \
+        <"${worker}/${campaign_refused_file}" \
+        && [[ "${campaign_replay_refused_mb}" =~ ^[0-9]+$ ]]; then
+      campaign_replay_killed="was ended at ${campaign_replay_refused_mb} MB \
+after ${lived}s: its host could not take its growth (its watcher, \
+campaign_watch_workload)"
     else
+      campaign_replay_refused_mb=""
       campaign_replay_killed="was killed (exit ${status}) after ${lived}s, \
 inside its ${campaign_adapter_timeout_s}s bound: by its memory \
 reservation (the replay log says so), the kernel's memory killer or an \
@@ -4160,23 +4177,22 @@ campaign_obligation_replay() {
   # PV7-adhoc-38: 35 replays that had decided (32 ADMITTED) hung in a
   # cluster's shutdown hook after their statement, and were each recorded
   # REPLAY_BOUNDED at replay_timeout_s=2400 with their sessions withdrawn.
+  if [[ -n "${campaign_replay_refused_mb}" && ! -s "${statement}" ]]; then
+    # Ended for memory before it stated anything: it decided nothing, and it
+    # is no answer either -- its run goes aside and the head asks it again
+    # at its full need (campaign_stream_replay_again), its question still
+    # asked.
+    campaign_replay_set_aside "${obligation_id}" "${worker}" "${sessions}" \
+      "${charged}"
+    return 0
+  fi
   if [[ -n "${campaign_replay_killed}" && ! -s "${statement}" ]]; then
     # Killed before it stated anything, it decided nothing: its question
     # stays unsettled, and its answer says so
     # (ObligationResult#REPLAY_BOUNDED: no fact about its arm or its world;
     # a flip killed twice is held BOUNDED and named, campaign_bounds).
-    rm -f -- "${worker}/question.asked"
-    campaign_log "obligation ${obligation_id}: \
-replay ${campaign_replay_killed}"
-    campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
-      "${worker}/timed-out-sessions" "its manifest names this obligation \
-and its rows state no verdict, which no later stage may read as a corpus \
-session"
-    jq -n -c --arg id "${obligation_id}" \
-      --arg detail "REPLAY_BOUNDED: replay ${campaign_replay_killed}" \
-      '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
-        verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
-      | campaign_write_whole "${result_row}"
+    campaign_replay_bounded "${obligation_id}" "${worker}" "${sessions}" \
+      "replay ${campaign_replay_killed}"
     return 0
   fi
   [[ -z "${campaign_replay_killed}" ]] || campaign_log "obligation \
@@ -4214,6 +4230,58 @@ prefix of a run"
     || mv -f -- "${worker}/question.asked" "${worker}/question.txt"
 }
 
+
+# campaign_replay_bounded <obligation_id> <worker> <sessions> <why>: a replay
+# killed before it stated anything (at its wall-clock bound, or ended for
+# memory at the most a replay is charged, campaign_stream_replay_again)
+# decided nothing: its question stays unsettled, what it staged is withdrawn
+# under its worker, and its answer says so -- REPLAY_BOUNDED, no fact about
+# its arm or its world (ObligationResult#REPLAY_BOUNDED; a flip killed twice
+# is held BOUNDED and named, campaign_bounds).
+campaign_replay_bounded() {
+  local obligation_id=$1 worker=$2 sessions=$3 why=$4
+  rm -f -- "${worker}/question.asked"
+  campaign_log "obligation ${obligation_id}: ${why}"
+  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+    "${worker}/timed-out-sessions" "its manifest names this obligation \
+and its rows state no verdict, which no later stage may read as a corpus \
+session"
+  jq -n -c --arg id "${obligation_id}" --arg detail "REPLAY_BOUNDED: ${why}" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
+    | campaign_write_whole "${worker}/obligation_result.jsonl"
+}
+
+# campaign_replay_set_aside <obligation_id> <worker> <sessions> <charged_mb>:
+# a replay its watcher ended for memory before it stated anything
+# (campaign_replay_refused_mb): what its run wrote in its worker -- its log,
+# its results, its measures, what it staged -- moves to <worker>/ended-<n>/,
+# so the worker is as it was before the run, and <worker>/replay_again says
+# what the run reached, what it was charged and where it went, for the head
+# to ask it again at its full need (campaign_stream_replay_again).  Its
+# question stays asked: the run that answers it settles it.
+campaign_replay_ended_files=(replay.log concolic_region_results.jsonl
+  workload_rss_mb workload_rss_mean_mb workload_cores_x100
+  "${campaign_refused_file}")
+campaign_replay_set_aside() {
+  local obligation_id=$1 worker=$2 sessions=$3 charged=$4 aside file
+  local ended=0
+  for aside in "${worker}"/ended-*; do
+    [[ ! -d "${aside}" ]] || ended=$((ended + 1))
+  done
+  aside="${worker}/ended-$((ended + 1))"
+  mkdir -p -- "${aside}"
+  for file in "${campaign_replay_ended_files[@]}"; do
+    [[ ! -e "${worker}/${file}" ]] || mv -f -- "${worker}/${file}" "${aside}/"
+  done
+  campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
+    "${aside}/sessions" "its replay was ended for memory before it stated \
+anything, and it is asked again"
+  campaign_log "obligation ${obligation_id}: replay ${campaign_replay_killed}; \
+its run is set aside in ${aside}, and it is asked again at its full need"
+  printf '%s %s %s\n' "${campaign_replay_refused_mb}" "${charged}" "${aside}" \
+    | campaign_write_whole "${worker}/replay_again"
+}
 
 # ---------------------------------------------------------------------------
 # THE POOL'S HOSTS
@@ -4938,6 +5006,10 @@ ever times out; its threads are dumped on its output; ended"
         refused="the host cannot take the $(( peak - held )) MB more \
 (${campaign_host_wait_reason})"
         kill -KILL "${pid}" 2>/dev/null || true
+        # Ended for memory, at what it reached: its caller's to ask again
+        # at its full need (campaign_replay, campaign_stream_replay_again).
+        [[ -z "${dir}" ]] \
+          || printf '%s\n' "${peak}" >"${dir}/${campaign_refused_file}"
         break
       fi
       grants+=("${campaign_host_charge_id}")
@@ -5399,7 +5471,7 @@ campaign_explore() {
   local stream_classes="${iteration_dir}/instrumented-classes"
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
-  local stream_generation=0 stream_next_host=0 stream_ticker=""
+  local stream_generation=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
   local stream_share_said="" stream_round_due=false
@@ -5419,6 +5491,9 @@ campaign_explore() {
   local stream_read_mb_s=0
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_job_cores=()
+  # A queued entry's own charge: a replay ended for memory, asked again at
+  # its full need (campaign_stream_replay_again).
+  local -A stream_entry_need=()
   local -A stream_host_busy=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
   # The head's view of each host's ledger (campaign_stream_view), the
@@ -6807,7 +6882,7 @@ campaign_stream_reap() {
 # The charge the head took for job <pid> (campaign_stream_admit_host),
 # released: the job ended, or was ended.
 campaign_stream_release() {
-  local kind round id host mb at charged held used
+  local kind round id host mb at charged held used recent
   [[ -n "${stream_job_charge[$1]:-}" ]] || return 0
   read -r kind round id host _ <<<"${stream_jobs[$1]}"
   campaign_host_release "${host}" "${stream_job_charge[$1]}"
@@ -6815,9 +6890,10 @@ campaign_stream_release() {
   # charge is named by its MB.
   mb=${stream_job_charge[$1]%%.*}
   if [[ "${mb}" =~ ^[0-9]+$ && -n "${stream_host_view[${host}]:-}" ]]; then
-    read -r at charged held used <<<"${stream_host_view[${host}]}"
+    read -r at charged held used recent <<<"${stream_host_view[${host}]}"
     charged=$(( charged > mb ? charged - mb : 0 ))
-    stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+    recent=$(( ${recent:-0} > mb ? recent - mb : 0 ))
+    stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent}"
   fi
   unset 'stream_job_charge[$1]'
 }
@@ -6866,7 +6942,7 @@ campaign_process_tree() {
 # and 28 a second.
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry kind at first started now refused oldest="" kinds
+  local entry kind at first started now refused oldest="" kinds need=""
   # What the pass reads once (campaign_stream_memo).
   local -A stream_pass_memo=()
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
@@ -6910,26 +6986,29 @@ campaign_stream_dispatch() {
     for at in "${!stream_queue[@]}"; do
       entry=${stream_queue[at]}
       kind=${entry%% *}
+      need=${stream_entry_need[${entry}]:-}
       # Behind an entry that goes first and alone waits everything but a
       # witness's confirmation and GROW's re-runs, which lead the queue:
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
-      [[ "${refused}" != *" ${kind} "* ]] || continue
-      if campaign_stream_admit_host "${kind}"; then
+      [[ "${refused}" != *" ${kind}${need:+:${need}} "* ]] || continue
+      if campaign_stream_admit_host "${kind}" "${need}"; then
         started=${at}
         break
       fi
-      refused+="${kind} "
-      # Every kind a queue holds refused: no entry behind starts either.
-      kinds=$((kinds + 1))
+      refused+="${kind}${need:+:${need}} "
+      # Every kind a queue holds refused at its kind's charge: no entry
+      # behind starts either (one asked again at its own, larger need says
+      # nothing of the rest of its kind).
+      [[ -n "${need}" ]] || kinds=$((kinds + 1))
       (( kinds < 4 )) || break
     done
     (( started >= 0 )) || return 0
     entry=${stream_queue[started]}
     stream_queue=("${stream_queue[@]:0:started}" \
       "${stream_queue[@]:started+1}")
-    unset 'stream_queued_at[$entry]'
+    unset 'stream_queued_at[$entry]' 'stream_entry_need[$entry]'
     # A solve left the queue: the solves queued are counted again
     # (campaign_stream_solver_due).
     [[ "${entry}" != OBLIGATION\ * ]] || unset 'stream_pass_memo[solves]'
@@ -6998,11 +7077,12 @@ campaign_stream_unenroll() {
 }
 
 # Picks the host for one start of <kind> (OBLIGATION, HARD, REPLAY, RERUN
-# or CONFIRM) and charges it there
-# (stream_admitted_host, stream_admitted_mb):
-# the pool from the host after the last one chosen, each start charged its
-# need for as long as it runs (campaign_stream_charge_mb); an OBLIGATION
-# goes first to a host where this
+# or CONFIRM) and charges it there (stream_admitted_host,
+# stream_admitted_mb): each start charged its need for as long as it runs
+# (campaign_stream_charge_mb), or <need_mb> where the entry states its own (a
+# replay ended for memory, asked again at its full need:
+# campaign_stream_replay_again), and offered first to THE HOST WITH THE MOST
+# ROOM (campaign_stream_by_room); an OBLIGATION first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one answered there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
@@ -7014,9 +7094,15 @@ campaign_stream_unenroll() {
 # Its kind's charge and cores are read once a dispatch pass
 # (stream_pass_memo, campaign_stream_memo).  1 when no host has room now,
 # said once per wait.
+#
+# By room, never round-robin: one cursor for every kind sat on the host
+# after the one warm solver each solve chose, so every replay's scan started
+# there (SGF8-adhoc-07 rounds 7-11: 17 of 19 replays on lift04, 16 at once,
+# 14.6 GB in use against 3-4 GB on the other lifts, 12 ended at its 70 %
+# guard; 33 replays ended so in the run, 240 replay-minutes).
 campaign_stream_admit_host() {
-  local kind=$1 host turn count pass is status=0 mb cores
-  count=${#stream_hosts[@]}
+  local kind=$1 need=${2:-} host pass mb cores
+  local -a order=()
   campaign_stream_memo "${kind} cores" campaign_stream_kind_cores "${kind}"
   cores=${stream_pass_memo["${kind} cores"]}
   for pass in warm cold; do
@@ -7024,18 +7110,17 @@ campaign_stream_admit_host() {
     # A question starts a host's solver only when one more is due.
     [[ "${pass}" == warm ]] || ! campaign_stream_seated "${kind}" \
       || campaign_stream_solver_due || continue
-    campaign_stream_memo "${kind} ${pass}" campaign_stream_charge_mb \
-      "${kind}" "${pass}"
-    mb=${stream_pass_memo["${kind} ${pass}"]}
-    for ((turn = 0; turn < count; turn++)); do
-      host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
-      # A seated question tries each host once, in the pass of its warmth.
-      is=cold
-      ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
-        || is=warm
-      [[ "${is}" == "${pass}" ]] || continue
-      if campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
-          "${cores}"; then
+    if [[ -n "${need}" ]]; then
+      mb=${need}
+    else
+      campaign_stream_memo "${kind} ${pass}" campaign_stream_charge_mb \
+        "${kind}" "${pass}"
+      mb=${stream_pass_memo["${kind} ${pass}"]}
+    fi
+    campaign_stream_by_room "${kind}" "${pass}"
+    for host in "${order[@]}"; do
+      if campaign_stream_try_host "${host}" "${mb}" "${kind}" "${cores}" \
+          "${need}"; then
         stream_admitted_pass=${pass}
         return 0
       fi
@@ -7047,6 +7132,52 @@ campaign_stream_admit_host() {
     stream_waiting=1
   fi
   return 1
+}
+
+# campaign_stream_by_room <kind> <pass>: the caller's `order`, the hosts of
+# the pool a start of <kind> tries in <pass> (a seated question tries each
+# host once, in the pass of its warmth; every other kind every host, cold),
+# the most room first: what its ledger, as the head's view holds it
+# (campaign_stream_view), leaves under the ceiling -- the ceiling less the
+# room heads hold there and the larger of its live charges and its real use,
+# the two the ledger's rule bounds (campaign_host_fits), the use counting what
+# this head started there since the host's reading, which the reading does
+# not hold yet (a burst on the host with the most room otherwise went to it
+# until its charges passed its use) -- the pool's order
+# breaking ties, so a burst of equal starts goes one to each host in turn and
+# each start after it to the host its charges left the most room.  A host
+# whose memory cannot be read goes last, where its admission names it
+# (campaign_stream_unreadable).
+campaign_stream_unread_room=-1073741824
+campaign_stream_by_room() {
+  local kind=$1 pass=$2 host at best is dir="" total="" limit=0 seen=""
+  local charged=0 held=0 used=0 recent=0
+  local -a hosts=() rooms=()
+  for host in "${stream_hosts[@]}"; do
+    is=cold
+    ! campaign_stream_seated "${kind}" || ! campaign_stream_warm "${host}" \
+      || is=warm
+    [[ "${is}" == "${pass}" ]] || continue
+    hosts+=("${host}")
+    if campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
+      read -r dir total limit <<<"${stream_host_ledger[${host}]}"
+      read -r seen charged held used recent <<<"${stream_host_view[${host}]}"
+      used=$(( used + ${recent:-0} ))
+      rooms+=("$(( limit - held - (charged > used ? charged : used) ))")
+    else
+      rooms+=("${campaign_stream_unread_room}")
+    fi
+  done
+  order=()
+  while (( ${#order[@]} < ${#hosts[@]} )); do
+    best=-1
+    for ((at = 0; at < ${#hosts[@]}; at++)); do
+      [[ -n "${rooms[at]}" ]] || continue
+      (( best >= 0 && rooms[at] <= rooms[best] )) || best=${at}
+    done
+    order+=("${hosts[best]}")
+    rooms[best]=""
+  done
 }
 
 # campaign_stream_memo <key> <command...>: what <command> prints, read once
@@ -7176,28 +7307,30 @@ campaign_stream_charge_mb() {
   fi
 }
 
-# One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen, charged <mb>, for a start of <kind>
-# that keeps <cores> busy: only while the cores this campaign's starts keep
-# busy there leave the start's own (campaign_stream_has_cores), a solve only
-# on a seat of the host's solver that answers it at once
-# (campaign_stream_has_seat), and only where the ledger admits its charge
-# (campaign_stream_try_charge) -- so each kind runs on a host as many at
-# once as its cores and the room at that kind's measured charge hold, and no
-# fixed count beside them: 0 with it charged and chosen
-# (stream_admitted_host, stream_admitted_mb, stream_admitted_cores).
+# One host's admission for campaign_stream_admit_host, charged <mb>, for a
+# start of <kind> that keeps <cores> busy: only while the cores this
+# campaign's starts keep busy there leave the start's own
+# (campaign_stream_has_cores), a solve only on a seat of the host's solver
+# that answers it at once (campaign_stream_has_seat), and only where the
+# ledger admits its charge (campaign_stream_try_charge) -- so each kind runs
+# on a host as many at once as its cores and the room at that kind's
+# measured charge hold, and no fixed count beside them: 0 with it charged and
+# chosen (stream_admitted_host, stream_admitted_mb, stream_admitted_cores).
+# <own_need>, when the entry states its need (a replay asked again at its
+# full need), is charged whole: no room for an end beside it.
 campaign_stream_try_host() {
-  local host=$1 turn=$2 mb=$3 kind=${4:-} cores=${5:-1}
-  local count=${#stream_hosts[@]} status=0
+  local host=$1 mb=$2 kind=${3:-} cores=${4:-1} own=${5:-} status=0
+  local spare=$(( campaign_replay_spikes * campaign_replay_spike_mb ))
   campaign_stream_has_cores "${host}" "${cores}" || return 1
   ! campaign_stream_seated "${kind}" || campaign_stream_has_seat "${host}" \
     || return 1
   # A replay leaves room for the ends its charge does not cover
-  # (campaign_replay_typical); a solve's charge is its whole.
+  # (campaign_replay_typical); a solve's charge is its whole, as is a
+  # replay's charged its full need.
+  [[ -z "${own}" ]] || spare=0
   case "${kind}" in
     OBLIGATION|HARD) campaign_stream_try_charge "${host}" "${mb}" ;;
-    *) campaign_stream_try_charge "${host}" "${mb}" \
-         "$(( campaign_replay_spikes * campaign_replay_spike_mb ))" ;;
+    *) campaign_stream_try_charge "${host}" "${mb}" "${spare}" ;;
   esac
   case "${status}" in
     0)
@@ -7205,7 +7338,6 @@ campaign_stream_try_host() {
       stream_admitted_mb=${mb}
       stream_admitted_cores=${cores}
       unset 'stream_host_unread[$host]'
-      stream_next_host=$(( (stream_next_host + turn + 1) % count ))
       stream_waiting=""
       return 0 ;;
     2) campaign_stream_unreadable "${host}" ;;
@@ -7294,13 +7426,14 @@ campaign_stream_has_seat() {
 # head's room.
 campaign_stream_try_charge() {
   local host=$1 need=$2 spare=${3:-0} dir total limit at charged held used
+  local recent=0
   status=0
   if ! campaign_stream_view "${host}" "${EPOCHSECONDS}"; then
     status=2
     return 0
   fi
   read -r dir total limit <<<"${stream_host_ledger[${host}]}"
-  read -r at charged held used <<<"${stream_host_view[${host}]}"
+  read -r at charged held used recent <<<"${stream_host_view[${host}]}"
   if ! campaign_host_fits "${charged}" "${used}" "${held}" "${need}" \
       "${spare}" "${limit}"; then
     campaign_host_refused "${dir##*/}" "${charged}" "${used}" "${held}" \
@@ -7313,11 +7446,12 @@ campaign_stream_try_charge() {
     "${limit}" "${used}" "${held}" "${need}" "${spare}"
   charged=${campaign_host_admitted_charged}
   (( status != 0 )) || charged=$(( charged + need ))
-  stream_host_view[${host}]="${at} ${charged} ${held} ${used}"
+  (( status != 0 )) || recent=$(( ${recent:-0} + need ))
+  stream_host_view[${host}]="${at} ${charged} ${held} ${used} ${recent:-0}"
 }
 
 # THE HEAD'S VIEW of <host>'s ledger at <now>, stream_host_view[<host>],
-# "<at> <charged_mb> <held_mb> <used_mb>": its live charges
+# "<at> <charged_mb> <held_mb> <used_mb> <recent_mb>": its live charges
 # (campaign_host_charged), the room heads hold there
 # (campaign_host_head_room) and its real use, its MemTotal less the ledger's
 # MemAvailable -- which the host's reader keeps fresh
@@ -7326,7 +7460,10 @@ campaign_stream_try_charge() {
 # campaign_host_poll_s, as old as a start's reading of its host ever was;
 # between, the charges as this head's own starts found them under the lock
 # (campaign_stream_try_charge) and less what it released
-# (campaign_stream_release).  Another campaign's charges since are found
+# (campaign_stream_release), and what this head charged there since the
+# reading, its starts' memory the reading does not hold yet, less what it
+# released (recent: the room order counts it with the real use,
+# campaign_stream_by_room).  Another campaign's charges since are found
 # under the lock, its releases at the next reading.  The host's directory,
 # MemTotal and ceiling never move: read once, stream_host_ledger[<host>].
 # 1 when the host's memory cannot be read.
@@ -7346,7 +7483,7 @@ $(campaign_host_limit_mb "${total}")"
     campaign_host_memory_reading "${host}" "${dir}" "${now}") || return 1
   stream_host_view[${host}]="${now} $(campaign_host_charged "${dir}" \
 "${now}") $(campaign_host_head_room "${dir}" "${now}") \
-$(( total - available ))"
+$(( total - available )) 0"
 }
 
 # THE POOL'S READINGS.  A start is admitted by its host's MemAvailable as
@@ -7545,7 +7682,7 @@ campaign_stream_wait() {
 # other return waits in stream_pending for the next head step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer again
-  local rests=""
+  local rests="" requeued=0
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
@@ -7561,7 +7698,12 @@ campaign_stream_ended() {
       "${stream_job_cores[${pid}]:-}"
     answer=""
     again=""
-    if [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
+    if [[ "${status}" -eq 0 ]] && campaign_stream_replays "${kind}" \
+        && campaign_stream_replay_again "${kind}" "${round}" "${id}" \
+          "${session}" "${worker}" "${stream_job_tree[${pid}]}"; then
+      # Ended for memory and queued again at its full need: nothing lands.
+      requeued=1
+    elif [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
       again=$(jq -r '.why // ""' "${worker}/solve_again" 2>/dev/null) \
         || again=""
       [[ -n "${again}" ]] \
@@ -7576,7 +7718,9 @@ campaign_stream_ended() {
     elif campaign_stream_seated "${kind}" && [[ -n "${again}" ]]; then
       unset 'stream_solver_seen[$host]'
     fi
-    if [[ -n "${again}" ]]; then
+    if (( requeued )); then
+      :
+    elif [[ -n "${again}" ]]; then
       rm -f -- "${worker}/solve_again"
       campaign_stream_solve_again "${kind}" "${round}" "${id}" "${host}" \
         "${worker}" "${again}"
@@ -7642,6 +7786,80 @@ of ${charge} MB; answered NOT_ADMITTED"
   fi
   campaign_log "obligation ${id}: ${why}; asked again of a host's solver"
   campaign_stream_enqueue "OBLIGATION ${round} ${id} again"
+}
+
+# Whether a start of <kind> is a replay of the pool: an obligation's REPLAY,
+# a GROW re-run, a witness's confirmation.
+campaign_stream_replays() {
+  [[ "${1:-}" == REPLAY || "${1:-}" == RERUN || "${1:-}" == CONFIRM ]]
+}
+
+# campaign_stream_replay_again <kind> <round> <id> <session> <worker>
+# <tree>: a replay of the pool its watcher ended for memory before it stated
+# anything (<worker>/replay_again, campaign_replay_set_aside: what its
+# resident memory reached, what it was charged, where its run went) decided
+# nothing, so no verdict of it lands and nothing of it reaches a planner: its
+# peak joins the measured need (campaign_replay_need_mb), and its entry --
+# the same REPLAY on the tree its solve started on, RERUN, or CONFIRM, still
+# in flight, owed or under confirmation as it was -- is QUEUED AGAIN AT ITS
+# FULL NEED (stream_entry_need: that need at most half a host's ceiling,
+# campaign_replay_charge_mb, charged whole with no end's room beside it,
+# campaign_stream_try_host), 0.  SGF8-adhoc-07: 33 replays ended so, 240
+# replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later
+# rounds.  A replay whose full need is no more than it reached -- one past
+# the most a replay is charged -- would end again as it did: it is answered
+# REPLAY_BOUNDED (campaign_replay_bounded) and lands as any return, 1.  1
+# too for a return that states no such end.  A REPLAY whose path's session a
+# swap withdrew meanwhile is dropped, as one queued then is
+# (campaign_stream_replay_drop), 0.
+campaign_stream_replay_again() {
+  local kind=$1 round=$2 id=$3 session=$4 worker=$5 tree=$6 refused=""
+  local charged="" aside="" file="" full entry
+  ls -- "${worker}" >/dev/null 2>&1 || true
+  [[ -s "${worker}/replay_again" ]] || return 1
+  read -r refused charged aside <"${worker}/replay_again"
+  rm -f -- "${worker}/replay_again"
+  [[ "${refused}" =~ ^[0-9]+$ ]] || refused=0
+  for file in "$(campaign_stream_logs "${kind}" "${worker}")"{stdout.log,\
+stderr.log,host.txt}; do
+    [[ ! -e "${file}" || ! -d "${aside}" ]] || mv -f -- "${file}" "${aside}/"
+  done
+  (( refused <= campaign_replay_peak_mb )) \
+    || campaign_replay_peak_mb=${refused}
+  full=$(campaign_replay_charge_mb "$(campaign_replay_need_mb)")
+  case "${kind}" in
+    REPLAY) entry="REPLAY ${round} ${id} ${tree}" ;;
+    RERUN) entry="RERUN ${round} ${id} ${session}" ;;
+    CONFIRM) entry="CONFIRM - ${id}" ;;
+  esac
+  if (( full > refused )); then
+    # A REPLAY rests on its path's session as its first queueing did
+    # (campaign_stream_ended): one a swap withdrew since is dropped.
+    if [[ "${kind}" == REPLAY ]]; then
+      file=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
+        2>/dev/null) || file=""
+      if [[ -n "${file}" && -n "${stream_withdrawn[${file}]:-}" ]]; then
+        campaign_stream_replay_drop "${entry}" "${file}"
+        return 0
+      fi
+      [[ -z "${file}" ]] || stream_rests[${id}]=${file}
+    fi
+    campaign_log "${kind} ${id}: its replay was ended at ${refused} MB, \
+charged ${charged} MB, as its host could not take its growth: queued again \
+at its full need, ${full} MB"
+    stream_entry_need[${entry}]=${full}
+    campaign_stream_enqueue "${entry}"
+    return 0
+  fi
+  if [[ "${kind}" == CONFIRM ]]; then
+    id=CONFIRM
+    file="$(dirname "${worker}")/sessions"
+  else
+    file="${worker}/sessions"
+  fi
+  campaign_replay_bounded "${id}" "${worker}" "${file}" "replay was ended at ${refused} MB as its host could not take its growth, \
+and its full need, ${full} MB, is the most a replay is charged"
+  return 1
 }
 
 # campaign_stream_hard <round> <id> <host> <worker> <why>: a first ask

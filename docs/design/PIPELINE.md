@@ -1538,8 +1538,14 @@ the obligation's. The replay's answer replaces the solver's row as a new inode
 NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: the replay's row,
 then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
 first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
-counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
-ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
+counts like any start), on the host of `campaign_worker_hosts` (empty: this machine, no
+ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`: the ceiling less
+the room heads hold there and the larger of its live charges and its real use, as the head's view
+of its ledger holds them, the pool's order breaking ties, so a burst of equal starts goes one to
+each host in turn and every start after it to the host its charges left the most room; one
+round-robin cursor for every kind sat, after each solve the one warm solver took, on the host after
+it, and every replay's scan started there: SGF8-adhoc-07 rounds 7-11 put 17 of 19 replays on lift04,
+16 at once, 14.6 GB in use against 3-4 GB on the other lifts, 12 of them ended at its 70 % guard), a solve
 first on a host where one returned answered within the solver's idle time (`campaign_stream_warm`,
 set when a solve returns answered there, cleared when one returns asking again: that host's
 solver of its corpus serves, so the question needs no solver started and no corpus read), and on
@@ -1553,7 +1559,17 @@ first lane holding a seat 12 s per question on average, 102 of about 570 the who
 waits for a serving solver's seat and the other hosts keep their room for replays (SGF7-adhoc-39: a
 solver of its 21 GB corpus held 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
 round-robin warmed one on all 13 lifts for questions answered in about a second); a REPLAY on whichever host admits it (its worker is on the
-shared home). A host is taken for a start of a
+shared home). A REPLAY, a re-run or a confirmation THE WATCHER ENDED FOR MEMORY (its host could not
+take its growth, `campaign_watch_workload`: it states what it reached, `workload_refused_mb`) before
+it stated anything decided nothing and is no answer: its run -- log, measures, the session it opened
+-- goes aside under its worker (`<worker>/ended-<n>/`, `campaign_replay_set_aside`), its question
+stays asked, and the head, reading `<worker>/replay_again`, takes its peak into the measured need and
+queues its entry again unchanged (the REPLAY on the tree its solve started on, the RERUN, the CONFIRM;
+in flight, owed or under confirmation as it was) at ITS FULL NEED, charged whole with no end's room
+beside it (`campaign_stream_replay_again`, the entry's `stream_entry_need`); only one whose full need,
+at most half a host's ceiling, is no more than it reached would end again, and is answered
+`REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`). SGF8-adhoc-07: 33 replays
+ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,

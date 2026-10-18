@@ -2750,6 +2750,61 @@ $(cat "${worker_dir}/worker.log")"
   || fail "a replay killed inside its bound is recorded as something else: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
 
+# REPLAY-ENDED-MEMORY: a replay its watcher ended because its host could not
+# take its growth (campaign_watch_workload states what it reached,
+# workload_refused_mb) decided nothing and is no answer: its run -- log,
+# measures, the session it opened -- goes aside under its worker, the
+# solver's row and its question stay, and replay_again tells the head what it
+# reached, what it was charged and where it went (campaign_replay_set_aside),
+# for the head to ask it again at its full need.
+worker_dir="${bound_dir}/ended"
+mkdir -p "${worker_dir}/sessions/SESSION.E"
+printf '{"obligationIds":["OB.E"]}\n' \
+  >"${worker_dir}/sessions/SESSION.E/manifest.json"
+replay_timeout_s=60
+concolic_replay_command='printf "%s\n" 2900 >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/\
+workload_refused_mb"; echo 2900 >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/\
+workload_rss_mb"; kill -KILL $$'
+bound_solved "${worker_dir}" OB.E
+: >"${worker_dir}/question.asked"
+(
+  campaign_obligation_replay OB.E "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1536
+) >"${bound_dir}/ended.log" 2>&1 \
+  || fail "the worker did not return when its replay was ended for memory: \
+$(cat "${bound_dir}/ended.log")"
+read -r ended_mb ended_charged ended_aside <"${worker_dir}/replay_again" \
+  || ended_mb=""
+[[ "${ended_mb} ${ended_charged} ${ended_aside}" \
+    == "2900 1024 ${worker_dir}/ended-1" \
+   && "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
+    == SAT_MODEL_READY && -e "${worker_dir}/question.asked" \
+   && -s "${worker_dir}/ended-1/replay.log" \
+   && -s "${worker_dir}/ended-1/workload_refused_mb" \
+   && -s "${worker_dir}/ended-1/workload_rss_mb" \
+   && -d "${worker_dir}/ended-1/sessions/SESSION.E" \
+   && ! -e "${worker_dir}/replay.log" && ! -e "${worker_dir}/workload_rss_mb" \
+   && ! -e "${worker_dir}/sessions/SESSION.E" ]] \
+  || fail "a replay ended for memory was not set aside to be asked again: \
+$(cat "${worker_dir}/replay_again" 2>&1) $(ls -R "${worker_dir}") \
+$(cat "${bound_dir}/ended.log")"
+# Its worker is as before the run: the next run of it starts there.
+rm -f -- "${worker_dir}/replay_again"
+concolic_replay_command='kill -KILL $$'
+(
+  campaign_obligation_replay OB.E "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 4352 4352
+) >"${bound_dir}/ended2.log" 2>&1 \
+  || fail "a replay asked again in its worker did not run there: \
+$(cat "${bound_dir}/ended2.log")"
+[[ ! -e "${worker_dir}/replay_again" \
+   && "$(jq -r '.detail' "${worker_dir}/obligation_result.jsonl")" \
+    == "REPLAY_BOUNDED: replay was killed (exit 137) after "*"s, inside its \
+60s bound: by its memory reservation (the replay log says so), the kernel's \
+memory killer or an operator" ]] \
+  || fail "a replay killed, not for memory, after a memory end was not \
+answered REPLAY_BOUNDED: $(cat "${worker_dir}/obligation_result.jsonl")"
+
 # REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
 # SessionPublisher writes manifest.json at the OPEN, so a replay killed at
 # work has a session that NAMES its obligation and states no verdict for it
@@ -4446,9 +4501,12 @@ while IFS='|' read -r split_verdict split_status split_host split_first \
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
       stream_job_tree=() stream_host_busy=() stream_solver_seen=() \
       stream_host_solves=()
-    declare -A stream_queued_at=()
+    declare -A stream_queued_at=() stream_entry_need=()
     stream_queue=("OBLIGATION obligations-0000 B")
     stream_pending=()
+    stream_ticker=""
+    stream_step_pid=""
+    stream_round_pid=""
     stream_ticker=""
     stream_step_pid=""
     stream_round_pid=""
@@ -4799,7 +4857,7 @@ iteration $(ls "${end_owed}/it/obligations-0000" | tr '\n' ' ')"
 # host admits, and the starts made, in order.
 while IFS='|' read -r ld_held ld_admits ld_started; do
   ld_said=$(
-    declare -A stream_queued_at=()
+    declare -A stream_queued_at=() stream_entry_need=()
     stream_queue=("OBLIGATION obligations-0001 B"
       "REPLAY obligations-0000 C g0/c g0/p")
     stream_hard=("HARD obligations-0000 A" "HARD obligations-0000 D")
@@ -5008,7 +5066,7 @@ ${chain_said}"
 # the entry queued, and the kinds after.
 while IFS='|' read -r confirm_before confirm_kind confirm_after; do
   confirm_said=$(
-    declare -A stream_queued_at=()
+    declare -A stream_queued_at=() stream_entry_need=()
     stream_queue=()
     for kind in ${confirm_before}; do
       stream_queue+=("${kind} r q")
@@ -5037,7 +5095,7 @@ ROWS
 # and the entries started, in order.
 while IFS='|' read -r dispatch_queue dispatch_admits dispatch_expect; do
   dispatch_said=$(
-    declare -A stream_queued_at=()
+    declare -A stream_queued_at=() stream_entry_need=()
     stream_queue=()
     stream_hard=()
     now=$(date +%s)
@@ -5257,9 +5315,11 @@ reset_config
 # charged the replay's need; the session it staged lands from there.  B's
 # solve answers UNSAT and replays nothing; it runs on lift12 too, a question
 # of A's solver there, since lift13's ledger has room for a replay's charge
-# but not for a cold solve's, a solver's start.  The stub stands where the
-# network stands, as in HOSTS-4: it reads the generated script's arguments
-# as a peer's shell would.
+# but not for a cold solve's, a solver's start; and the REPLAY, queued
+# behind it, goes to the host with the most room, lift13 (1000 MB) while B's
+# question holds 1152 of lift12's 1600.  The stub stands where the network
+# stands, as in HOSTS-4: it reads the generated script's arguments as a
+# peer's shell would.
 stream_fixture stream-split-remote
 campaign_worker_hosts="lift12 lift13"
 campaign_local_host_names=" localhost this-machine "
@@ -5273,9 +5333,10 @@ for split_host in lift12 lift13; do
 done
 (
   stream_stubs
-  # 70 % of 30000 MB less 20000 in use: 1000 MB of room on lift13.
+  # 70 % of 30000 MB less 20000 in use: 1000 MB of room on lift13; less
+  # 19400, 1600 on lift12.
   campaign_host_available_mb() {
-    [[ "$1" == lift13 ]] && echo 10000 || echo 30000
+    [[ "$1" == lift13 ]] && echo 10000 || echo 10600
   }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B; }
   ssh() {
@@ -5301,6 +5362,8 @@ done
         printf '{"taskId":"TASK.A"}\n' >"${words[4]}/focused_task.jsonl"
         stream_answer "${words[4]}" A SAT_MODEL_READY
       else
+        # Still asked when A's REPLAY is placed.
+        command sleep 2
         stream_answer "${words[4]}" "${words[1]}" UNSAT
       fi
       return 0
@@ -5342,21 +5405,28 @@ jq -e -s 'length == 2 and (map({(.obligationId): .verdict}) | add)
 $(cat "${stream_dir}/obligation_results.jsonl")"
 reset_config
 
-# The pool's choice over three hosts that all admit: a replay (a REPLAY, a
-# re-run) and a hard-lane ask go round-robin; an obligation's solve goes to
-# a host where its campaign's solver serves (one answered there within the
-# solver's idle time) while a seat of that solver is free (two here), else
-# round-robin to a cold host that runs none -- a cold host's one solve
-# starts its solver, and no question waits behind that start (a:1).
-# {kind, the hosts warm (- none), the solves each runs, the hosts chosen in
-# turn}.
-while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
+# DISPATCH-SPREAD: the pool's choice over three hosts, each start offered
+# first to the host with the most room, as the head's view of its ledger
+# holds it (campaign_stream_by_room: its ceiling less a head's room and the
+# larger of its charges and its real use), ties in the pool's order: a
+# replay (a REPLAY, a re-run) and a hard-lane ask anywhere; an obligation's
+# solve to a host where its campaign's solver serves (one answered there
+# within the solver's idle time) while a seat of that solver is free (two
+# here), else to a cold host that runs none -- a cold host's one solve starts
+# its solver, and no question waits behind that start (a:1).  Never one
+# cursor for every kind: after each solve the one warm solver took, it sat on
+# the next host, and every replay went there (SGF8-adhoc-07: 17 of 19 on
+# lift04).  Each start is charged 1000 MB, its host's room shrinking by it.
+# {the kinds in turn, the hosts warm (- none), the solves each runs, each
+# host's room in MB (= all 5000), the hosts chosen in turn}.
+while IFS='|' read -r admit_kinds admit_warm admit_solves admit_rooms \
+    admit_want; do
   (
     stream_hosts=(a b c)
-    stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=()
     declare -A stream_host_solves=() stream_pass_memo=()
+    declare -A stream_host_ledger=() stream_host_view=()
     for admit_host in ${admit_solves//,/ }; do
       [[ "${admit_host}" == - ]] \
         || stream_host_solves[${admit_host%%:*}]=${admit_host#*:}
@@ -5365,32 +5435,142 @@ while IFS='|' read -r admit_kind admit_warm admit_solves admit_want; do
       [[ "${admit_host}" == - ]] \
         || stream_solver_seen[${admit_host}]=$(date +%s)
     done
+    for admit_host in a b c; do
+      admit_room=5000
+      [[ "${admit_rooms}" == = ]] || admit_room=$(tr ',' '\n' \
+        <<<"${admit_rooms}" | sed -n "s/^${admit_host}://p")
+      stream_host_ledger[${admit_host}]="/dev/null 31583 22109"
+      stream_host_view[${admit_host}]="$(date +%s) $(( 22109 - admit_room \
+)) 0 0 0"
+    done
+    campaign_host_poll_s=600
     campaign_solver_seats() { printf '2\n'; }
     campaign_stream_has_cores() { return 0; }
-    campaign_stream_try_charge() { status=0; campaign_host_charge_id=x; }
+    campaign_stream_charge_mb() { printf '1000\n'; }
+    # The ledger's charge, as the view takes it.
+    campaign_stream_try_charge() {
+      local at charged held used
+      read -r at charged held used recent <<<"${stream_host_view[$1]}"
+      stream_host_view[$1]="${at} $(( charged + $2 )) ${held} ${used} \
+$(( recent + $2 ))"
+      status=0
+      campaign_host_charge_id=x
+    }
     # One more solver due (STREAM-SOLVER-DUE says when).
     campaign_stream_solver_due() { return 0; }
     chosen=()
-    for _ in 1 2 3; do
+    for admit_kind in ${admit_kinds//,/ }; do
       campaign_stream_admit_host "${admit_kind}" || exit 1
       chosen+=("${stream_admitted_host}")
     done
     [[ "${chosen[*]}" == "${admit_want}" ]] \
-      || fail "${admit_kind} with ${admit_warm} warm, ${admit_solves} \
-solving chose ${chosen[*]}, not ${admit_want}"
-  ) || fail "the pool admitted nothing for ${admit_kind} with \
-${admit_warm} warm, ${admit_solves} solving"
+      || fail "DISPATCH-SPREAD: ${admit_kinds} with ${admit_warm} warm, \
+${admit_solves} solving, rooms ${admit_rooms} chose ${chosen[*]}, not \
+${admit_want}"
+  ) || fail "DISPATCH-SPREAD: the pool admitted nothing for ${admit_kinds} \
+with ${admit_warm} warm, ${admit_solves} solving"
 done <<'EOF'
-RERUN|b|-|a b c
-REPLAY|b|-|a b c
-HARD|b|b:2|a b c
-OBLIGATION|-|-|a b c
-OBLIGATION|b|-|b b b
-OBLIGATION|b|b:1|b b b
-OBLIGATION|b|b:2|a c a
-OBLIGATION|-|a:1|b c b
-OBLIGATION|b|a:1,b:2|c c c
-REPLAY|b|b:2|a b c
+RERUN,RERUN,RERUN|b|-|=|a b c
+REPLAY,REPLAY,REPLAY|b|-|=|a b c
+HARD,HARD,HARD|b|b:2|=|a b c
+OBLIGATION,OBLIGATION,OBLIGATION|-|-|=|a b c
+OBLIGATION,OBLIGATION,OBLIGATION|b|-|=|b b b
+OBLIGATION,OBLIGATION,OBLIGATION|b|b:1|=|b b b
+OBLIGATION,OBLIGATION,OBLIGATION|b|b:2|=|a c a
+OBLIGATION,OBLIGATION,OBLIGATION|-|a:1|=|b c b
+OBLIGATION,OBLIGATION,OBLIGATION|b|a:1,b:2|=|c c c
+REPLAY,REPLAY,REPLAY|b|b:2|=|a b c
+OBLIGATION,REPLAY,OBLIGATION,REPLAY,REPLAY,REPLAY|b|-|=|b a b c a c
+REPLAY,REPLAY,REPLAY,REPLAY|-|-|a:3000,b:4500,c:4000|b c b a
+CONFIRM,REPLAY,REPLAY|-|-|a:1000,b:9000,c:7500|b b c
+EOF
+
+# KILL-REQUEUE: a replay of the pool its watcher ended for memory returns
+# with its run set aside (replay_again: what it reached, what it was
+# charged, where it went; campaign_replay_set_aside) and is no answer:
+# nothing lands, its peak raises the measured need, and its entry is queued
+# again unchanged -- a REPLAY on the tree its solve started on, a RERUN, a
+# CONFIRM -- at its full need (stream_entry_need: 1.5 times the largest
+# peak, rounded up to 128 MB, at most half a host's ceiling, 8192 here),
+# charged whole (campaign_stream_try_host).  One whose full need is no more
+# than it reached would end again: answered REPLAY_BOUNDED, it lands as any
+# return.  {kind, the MB it reached, queued at <MB> or bounded}.
+while IFS='|' read -r rq_kind rq_mb rq_want; do
+  rq_dir="${test_tmp}/kill-requeue"
+  rm -rf -- "${rq_dir}"
+  rq_worker="${rq_dir}/it/obligations-0000/A"
+  [[ "${rq_kind}" != CONFIRM ]] || rq_worker="${rq_dir}/witness-confirm/0001/worker"
+  mkdir -p "${rq_worker}/ended-1" "${rq_dir}/it/sessions"
+  printf '%s 1024 %s\n' "${rq_mb}" "${rq_worker}/ended-1" \
+    >"${rq_worker}/replay_again"
+  rq_logs=$(campaign_stream_logs "${rq_kind}" "${rq_worker}")
+  echo out >"${rq_logs}stdout.log"
+  echo lift12 >"${rq_logs}host.txt"
+  rq_said=$(
+    iteration_dir="${rq_dir}/it"
+    sessions="${iteration_dir}/sessions"
+    campaign_root=${rq_dir}
+    campaign_log() { :; }
+    campaign_replay_charge_mb() { echo "$(( $1 < 8192 ? $1 : 8192 ))"; }
+    campaign_replay_peak_mb=1000
+    rq_id=A
+    [[ "${rq_kind}" != CONFIRM ]] || rq_id=0001
+    rq_round=obligations-0000
+    [[ "${rq_kind}" != CONFIRM ]] || rq_round=-
+    stream_queue=("OBLIGATION obligations-0000 B")
+    stream_pending=()
+    stream_ticker=""
+    stream_step_pid=""
+    stream_round_pid=""
+    rq_session=""
+    [[ "${rq_kind}" != RERUN ]] || rq_session=EXPOSING
+    declare -A stream_jobs=([4242]="${rq_kind} ${rq_round} ${rq_id} lift12 \
+${rq_session}") stream_job_worker=([4242]=${rq_worker}) \
+      stream_job_tree=([4242]="g0/classes g0/plan.jsonl") \
+      stream_job_charge=() stream_job_since=() stream_job_cores=() \
+      stream_host_busy=([lift12]=1) stream_host_solves=() \
+      stream_entry_need=() stream_queued_at=() stream_solver_seen=() \
+      stream_withdrawn=() stream_rests=()
+    campaign_stream_ended 4242 0
+    for rq_entry in "${stream_queue[@]}"; do
+      printf 'queued %s %s\n' "${rq_entry}" \
+        "${stream_entry_need[${rq_entry}]:-}"
+    done
+    printf 'pending %s\n' "${stream_pending[@]}"
+    printf 'need %s\n' "$(campaign_replay_need_mb)"
+  )
+  case "${rq_want}" in
+    queued\ *)
+      rq_entry="REPLAY obligations-0000 A g0/classes g0/plan.jsonl"
+      [[ "${rq_kind}" != RERUN ]] \
+        || rq_entry="RERUN obligations-0000 A EXPOSING"
+      [[ "${rq_kind}" != CONFIRM ]] || rq_entry="CONFIRM - 0001"
+      [[ "${rq_said}" == *"queued ${rq_entry} ${rq_want#queued }"* \
+         && "${rq_said}" == *"pending "$'\n'* \
+         && "${rq_said}" == *"queued OBLIGATION obligations-0000 B "* \
+         && ! -e "${rq_worker}/replay_again" \
+         && -s "${rq_worker}/ended-1/${rq_logs#"${rq_worker}"/}stdout.log" \
+         && ! -e "${rq_worker}/obligation_result.jsonl" ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} ended at ${rq_mb} MB was not \
+queued again at its full need ${rq_want#queued }: ${rq_said}" ;;
+    bounded)
+      [[ "${rq_said}" == *"pending ${rq_kind} "* \
+         && "${rq_said}" != *"queued ${rq_kind}"* \
+         && "$(jq -r '.verdict + " " + .detail' \
+           "${rq_worker}/obligation_result.jsonl")" == "NOT_ADMITTED \
+REPLAY_BOUNDED: replay was ended at ${rq_mb} MB as its host could not take \
+its growth, and its full need, 8192 MB, is the most a replay is charged" ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} ended at ${rq_mb} MB past every \
+charge was not answered REPLAY_BOUNDED: ${rq_said} \
+$(cat "${rq_worker}/obligation_result.jsonl" 2>&1)" ;;
+  esac
+done <<'EOF'
+REPLAY|2900|queued 4352
+RERUN|2900|queued 4352
+CONFIRM|2900|queued 4352
+REPLAY|5000|queued 7552
+REPLAY|5400|queued 8192
+REPLAY|9000|bounded
 EOF
 
 # HOST-PAR: how many starts of one kind one host runs at once, as many as
@@ -5419,7 +5599,6 @@ while IFS='|' read -r par_kind par_mb par_cores par_warm par_most; do
     campaign_stream_charge_mb() { printf '%s\n' "${par_mb}"; }
     campaign_log() { :; }
     stream_hosts=(lift12)
-    stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=() \
       stream_host_solves=() stream_host_busy=() stream_host_cores=() \
@@ -5476,7 +5655,6 @@ while IFS='|' read -r mix_head mix_want; do
     }
     campaign_log() { :; }
     stream_hosts=(lift12)
-    stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=([lift12]=$(date +%s)) \
       stream_host_unread=() stream_host_solves=() stream_host_busy=() \
@@ -5572,7 +5750,7 @@ EOF
 # takes none (the head started about one job a second, each reading its
 # host's memory over ssh, ~350 ms, once its reading was older than the
 # poll: parallel audit 2026-10-17).  Each host ends charged its share of the
-# starts, round-robin.  Per row: the hosts, the starts queued (REPLAYs of
+# starts, each start to the host with the most room.  Per row: the hosts, the starts queued (REPLAYs of
 # 512 MB, room for all), a reading's seconds, the poll, and the least rate.
 while IFS='|' read -r rate_hosts rate_starts rate_read_s rate_poll \
     rate_least; do
@@ -5604,7 +5782,6 @@ while IFS='|' read -r rate_hosts rate_starts rate_read_s rate_poll \
     stream_shared_pool=false
     stream_classes=g0/classes
     stream_plan=g0/plan.jsonl
-    stream_next_host=0
     stream_waiting=""
     stream_hold=0
     stream_admitted_cores=""
@@ -5616,7 +5793,8 @@ while IFS='|' read -r rate_hosts rate_starts rate_read_s rate_poll \
       stream_job_since=() stream_job_tree=() stream_job_cores=() \
       stream_host_busy=() stream_host_cores=() stream_host_unread=() \
       stream_host_solves=() stream_solver_seen=() stream_queued_at=() \
-      stream_host_ledger=() stream_host_view=() stream_pass_memo=()
+      stream_host_ledger=() stream_host_view=() stream_pass_memo=() \
+      stream_entry_need=()
     for ((rate_at = 0; rate_at < rate_starts; rate_at++)); do
       mkdir -p "${iteration_dir}/obligations-0000/OB.${rate_at}"
       stream_queue+=("REPLAY obligations-0000 OB.${rate_at} c p")
@@ -5650,7 +5828,7 @@ ${rate_least} a second or more"
   [[ "$(find "${rate_dir}/hosts" -path '*/charges/*' -type f -printf '%h\n' \
       | LC_ALL=C sort | uniq -c | awk '{print $1}' | LC_ALL=C sort -u \
       | paste -sd ' ' -)" == "$(( rate_starts / rate_hosts ))" ]] \
-    || fail "START-RATE: the starts were not spread round-robin: \
+    || fail "START-RATE: the starts were not spread by room: \
 $(find "${rate_dir}/hosts" -path '*/charges/*' -type f -printf '%h\n' \
   | LC_ALL=C sort | uniq -c)"
 done <<'EOF'
@@ -6135,7 +6313,7 @@ for grow_rows in same more; do
     stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
     stream_classes="${stream_dir}/instrumented-classes"
     stream_queue=()
-    declare -A stream_queued_at=()
+    declare -A stream_queued_at=() stream_entry_need=()
     stream_hold=0
     run_java_main() {
       local args=" $* " output
@@ -6193,7 +6371,7 @@ printf '%s\n' \
   stream_dirty=0
   stream_hold=0
   stream_queue=()
-  declare -A stream_queued_at=()
+  declare -A stream_queued_at=() stream_entry_need=()
   run_java_main() { fail "the exposed-region planner ran with no exposure"; }
   campaign_weave_key() { test_weave_key "$1"; }
   campaign_instrument() { fail "a generation that only dropped a mark wove"; }
@@ -6242,7 +6420,7 @@ done >>"${growzk}/obligations-0003/growth.jsonl"
   stream_dirty=0
   stream_hold=0
   stream_queue=()
-  declare -A stream_queued_at=()
+  declare -A stream_queued_at=() stream_entry_need=()
   run_java_main() {
     local args=" $* " plan output
     [[ "${args}" == *" --zk-chain ${growzk}/zk_chain.jsonl "* \
@@ -6526,7 +6704,7 @@ not marked dropped"
   stream_classes="${drop_iteration}/instrumented-classes"
   stream_generation=0
   stream_queue=()
-  declare -A stream_queued_at=()
+  declare -A stream_queued_at=() stream_entry_need=()
   run_java_main() {
     local args=" $* " output
     output=${args##* --output }

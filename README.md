@@ -167,7 +167,7 @@ is written.
 
 Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
 and GROW's re-runs, fan out over the hosts in
-`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, round-robin, as many on a host as its ledger admits, up to its
+`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, each to the host with the most room, as many on a host as its ledger admits, up to its
 cores. A head's own steps go to its host when it has room, else to the pool's host with the most
 room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
