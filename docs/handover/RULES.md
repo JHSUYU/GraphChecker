@@ -200,6 +200,10 @@ recommendation.
   优化看什么，debug我们的各种经验"): keep STATE/TODO/LESSONS current at every milestone; at a stop, agents checkpoint as
   gated commits + 'WIP (not gated)' commits on their branches.
 - **Stay on the liftlab servers** (2026-10-18: "算了算了还是用liftlab的server吧"), Solr only for now ("hbase的当前不用做").
+- **No comments in the code** (2026-10-18 evening: "注释我觉得可以彻底删了。31k太夸张了"): the code carries no comments
+  (Java, run_engine.sh, tools/, experiments/); what the code does and why is in docs/design. They are stripped once
+  every branch of the rewrite is merged, proved by identical bytecode (`javap -c -p`) and identical `declare -f`;
+  new code adds none. Shebangs and text inside strings or heredocs are data, not comments.
 - **No byte-identity gate after the rewrite** (2026-10-18 evening: "由于我们改动很大。不再要求做语义一致逐字节比较。跑出.smt包含正确的因果链即可，小问题不用死磕"; "我说的validaiton是.smt给出sat后的重放"): a change is
   accepted when each case's `.smt` holds the right causal chain and a SAT is replayed -- CONFIRM in the VM (strict) and
   REPRODUCE natively; small issues are not ground on. This supersedes rule 5 of "Code health" below (its byte-identical gate)
@@ -313,8 +317,8 @@ recommendation.
 4. **Very ugly code is refactored when a change truly needs it** (owner 2026-10-11: not frequently): a method of more than ~150-200 lines or ~50 branches becomes named steps over one
    context object; parallel switch ladders become one table; a file that mixes responsibilities is split by them
    (`SmtLowering` -> `VmTermLowering` + `SmtSymbolTable`; `CausynthTraceRecorder`'s offline aggregation into its own
-   class; `CausynthPipeline`'s weaves apart from the analysis orchestration). Comments state what the code does, at
-   its points; history belongs in git.
+   class; `CausynthPipeline`'s weaves apart from the analysis orchestration). The code carries no comments (owner
+   2026-10-18, above); history belongs in git.
 5. **A refactor or deletion changes no result**: gated by `tools/regress/offline-ab.sh` with byte-identical outputs of
    every stage it touches (COMPOSE's `candidate.smt2`/`claim.json`/manifest, SEED.static), only named run-to-run noise
    excluded (`solverRuns`, `unsatCore`), plus `mvn -q -o package` and the shell test on every commit.
