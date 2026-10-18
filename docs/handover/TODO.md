@@ -158,8 +158,8 @@ not on a loaded host; the shell suite has timing-sensitive cases), then fast-for
 
 **Merged (system/solr / solr-int):** A compaction (all 4 steps, b4518df43 via a28597a8f), B holding composer, the
 GROW pipeline, the superstep/window walk, the parallel round, the live-set hold rule, gzip rows, EMIT's ledger. The
-last integration merge a28597a8f (compaction 3-4) was being gated at the stop (`analysis/solr-2026-10-18/int-gate3/`):
-check gate.txt; if green, fast-forward system/solr to it.
+last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (mvn with tests + the shell test,
+`analysis/solr-2026-10-18/int-gate3/`); system/solr = solr-int holds it and these docs.
 
 **C scheduler -- branch solr-stream2, worktree /bigtemp/vnr3ne/wt/gc-stream2, head dd0a1ce64.**
 - Gated: 5acb7c73c (replays spread by most room per kind; a killed replay re-queued, never a verdict), 55dd258ab (the
