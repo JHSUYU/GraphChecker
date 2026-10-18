@@ -3683,8 +3683,8 @@ recording's own is not kept apart.
    `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `telemetryCount`, `byStage`, `byCode`,
-   in jq 1.6's order and text: the document the jq this main replaced (2026-10-18) wrote, byte for
-   byte. Beside it, `iteration-*/emit_gaps.json`, what EMIT itself reads of it (`campaign_bounds`,
+   one row per distinct (stage, source, code, subject, detail), texts in their UTF-8 byte order (Gson's
+   writer, two-space indent). Beside it, `iteration-*/emit_gaps.json`, what EMIT itself reads of it (`campaign_bounds`,
    the result, the counts): every BLOCKING row and the counts, of the DIAGNOSTIC rows only those
    EMIT selects (a subject naming a bound `<name>=<count>` at a line's end, `HOOK_UNDECLARED`), and
    `published`, the ledger's bytes and sha256 as written (the run manifest's digest of it). A
