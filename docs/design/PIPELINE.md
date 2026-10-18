@@ -373,8 +373,9 @@ on, before any hook runs (`#shutdownBegun`) -- states nothing and halts: a verdi
 decided end's. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
 nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
-finished, no CPU on the publication or the decoding thread and no garbage collection), so a publication that
-computes is never cut and one blocked is: every activation still live is then stranded, and the
+finished, no CPU on the publication or the decoding thread, and no garbage collection while one of
+them computes -- a collection while both wait is the cluster's, which runs on through the settle), so
+a publication that computes is never cut and one blocked is: every activation still live is then stranded, and the
 publication left running and every one queued behind it (the one publication thread reaches none)
 are each a `TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED`, a seed's or a confirmation's session
 included, which holds every obligation of the replay `NOT_ADMITTED`
@@ -409,14 +410,22 @@ A focused replay ends early, once, for one of seven reasons (`ConcolicResultPubl
 - `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
   workload's own end, nothing decided, every verdict settled as there (§7.6).
 
-Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
-publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
-with the reason; after the workload's own end, one live while nothing progressed for the grace is
-`TERMINAL_NEVER_REACHED`), and a publication
-not yet started is withheld (the reason again): at the witness, a forced target or a stall after a
-flip, one submitted after it (the session is read whole up to there, and its schedule states the run
-cut there); at a refusal or a stall before any flip, every one (the session is withdrawn, and
-draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
+Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log,
+every activation still live is stranded at once, before the settle waits for anything
+(`TASK_UNANSWERED` with the reason; after the workload's own end, one live while nothing progressed
+for the grace is `TERMINAL_NEVER_REACHED`), and a publication not yet started is withheld (the
+reason again): at the witness, a forced target or a stall after a flip, one submitted after it (the
+session is read whole up to there, and its schedule states the run cut there); at a refusal or a
+stall before any flip, every one (the session is withdrawn, and draining the queue into it cost a
+Solr replay two to five minutes past the test's end). So the settle waits only for the publications
+the session owes and the mints of the ones after the end: a stranded activation's terminal reads
+nothing out (`ConcolicRegionRuntime#closeStranded`); a read-out still reading at the end reads no
+more pages and hands none on (`ConcolicResultPublisher#endedEarly`, `#decodeBeforePublication`), and
+a page of a read-out the session withholds -- not submitted by the end, or submitted after -- is not
+decoded (`#withholds`). Waited for as live, the activations kept closing behind the end, each reading
+out pages the one decoding thread decoded for no publication, and each reset the grace: SGF8-adhoc-07,
+43 of 72 replays that stalled ran on, 38 to the test's own end (+209 s p50, +572 s p90) and 5 into
+`replay_timeout_s`, which lost their verdicts and sessions. A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose halt
 ends the in-process cluster (its threads and ports) with the JVM.
@@ -543,9 +552,36 @@ read and only the kinds a corpus reads held, `SessionReader#gaps(GapKind)`: ADDR
 BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE -- EMIT reads the gap files themselves, §11 -- in every
 JVM that reads a corpus) with what was derived from each
 session's rows
-alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
-expressions: symbols, leaves, read locations and events, state reads), the static map while its
-file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
+alone (`Corpus.Derived`: its state join, its schedule's facts, read once, its rows by what they name --
+the first activation and the decisions of each occurrence, the attach, root and read minting each symbol, a
+forced session's own messages by interaction and producer -- and the walks of its expressions: symbols,
+leaves, read locations and events, state reads), the static map while its
+file reads the same (by digest), and the slot table it changed (step 4). WHAT A CORPUS HOLDS IS HELD
+COMPACT, in every JVM that reads one, with no change to what any stage computes or writes: a session's
+rows are keyed by what they name inside its `Derived`, never by a key spelled of the session and the name,
+and its state join by a location's key and a version (`contract.VersionMap`, `SmtLowering#joinOf`, which also
+answers a write by its version, `SessionJoin#write`: the corpus keeps no index of its own of writes); a
+read's endpoints, locations, occurrences, index frames and strings are held once per read of a corpus
+(`contract.RowPool`; the slot table's once per its read, `SlotTable#read`), a location's key spelled once
+(`LocationId#key`) and an expression node's interned (`SmtLowering#locationKey(JsonObject)`); a set made once
+and only read is a `contract.FrozenSet` (one array, its order kept: what a delivery rests on,
+`RestsOn#named`; an expression's symbols, read locations and events, `Corpus#expressionSymbols`,
+`#readLocations`, `#readEvents`; the join's read symbols; a member's reads by location and object,
+`ClosurePlanner.MemberReads`), indexed for `contains` only the first time it is asked, a set the walk only
+adds to and asks is a `contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is
+read of) or, of rows, a `contract.IdentitySet` (a walk's decisions); a demand's expanded reads are bits over its
+group's reads, by each read's place there (`ClosurePlanner.GroupReads#readAt`: a demand's walks have the one group
+of its occurrence); a handoff the walk paired is a pair of references in a `contract.PairSet`, never a
+`session|symbol` string, and every other key of several names is their list, never one string spelled of them
+(the walk's once-said gaps, a member's reads by session and location or object, a location's write sites by site
+and Java type, `Corpus#writeSitesOf`). A list an
+index holds for good is cut to its size (`contract.Held`); every location key in a JVM is one string
+(`LocationId#key`, interned), and so is every name a corpus derives from a session's schedule and leaf sets
+(`Corpus#NAMES`: its facts' ids, stances and renders, `HeldLeaves`); the slot table is keyed by its
+interactions' parts and world (`SlotTable.Key`), never their digested id spelled with the world; a round
+takes what its manifest states of the reconciliation at once (`ExploreMain#skeleton`), its gaps written; an
+expression table drops a node's reference once the collector let the node go (`ExpressionTable.Live`).
+Within a round, what a
 round asks again of the same corpus is answered once: an arm's dependence per task and decision
 (`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
 the closure's walks of a demand that grew reuse its group, its members' reads and each read's
@@ -2468,6 +2504,32 @@ minute says how full the old generation is. A composition whose paths all fit th
 building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then composes again with half the
 paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
 until one composition ends or one path is all it had.
+
+THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
+`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time, the next ones read while
+these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
+and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join (its
+writes by version and by location among what it answers), its reads by symbol, its rows by occurrence, the answers that hold rows
+(`Corpus.StateRows`) -- are held apart: at most 0.15 of the heap of their text as it decodes, the sessions asked
+for least recently let go of and read again from their files when next asked, value for value (a landed
+session's files never change; reads and writes side by side). Every other row of every session stays held --
+decisions, activations, attaches, exports, roots, targets, expressions, the gap kinds a corpus reads -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
+sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
+and 1-8 for their reads and writes (the path's own session and the producers whose arms it closes); the final
+phase asks every session once. Reads and writes are most of a held corpus: SGF8-adhoc-13's 201 sessions held
+1260 MB with them, 516 without; SGF8-adhoc-07's 358 (28.4 GB of rows, 14.6 GB of them reads and writes, 1.9 GB
+gaps) filled 85 % of its composer's old generation, and 1 of its 309 paths was composed. Nothing else the
+composer keeps holds a row it let go of: an index across sessions keeps an endpoint's occurrence, never the
+endpoint (`Corpus#occurrenceOf`); `Arms#constructs` remembers a write by its endpoint's id; the slot table is
+read for the sessions that replace a slot and the WIRE consumers it opened, then let go of (`Composer#unopened`;
+07's 1.58 M slots held their own endpoints and frames); and a root's domain asks for the literals recorded
+decisions compare it with only where they widen it (`RootDomain#widened`: an integral configuration the case
+declares nothing for), each root's a walk of every session's decisions reaching it, lowered with that session's
+reads and writes (07's 367 fault markers were each asked). The formula, its manifest rows and gaps are byte for
+byte a whole corpus's (13, 39, 21, 10 at the composer's hold and at none; every composer test composes over a
+corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 2.9 GB live after the read, the old generation
+54 % after the last path; 1322 s (read 173, admission 134 -- the slot table's read --, paths 1000 -- the last 9
+of them 336 --, the rest 148), 1359 sessions read again (61.9 GB of text).
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the

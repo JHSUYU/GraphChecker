@@ -445,9 +445,11 @@ public final class ExploreMain {
             slots = SlotTable.read(iteration, round);
         }
         slotsRound = -1;
-        SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
-                round);
-        gaps.addAll(skeleton.gaps);
+        // What the manifest states of the reconciliation is taken now, its
+        // gaps written: none is held to the round's end (SGF8-adhoc-05
+        // round 5: 53 K rows, 157 MB, held through the frontier).
+        JsonObject skeleton = skeleton(slots, slots.reconcile(corpus, closure,
+                round), gaps);
         // The round's change of the table is whole now, and its file is the
         // round's largest (SGF8-adhoc-05 round 5: 2.8 GB, ~30 s of a 1 Gb/s
         // link): written beside the rest of the round, which ends once it
@@ -575,9 +577,9 @@ public final class ExploreMain {
         }
         gaps.write();
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps.byKind(), slots, skeleton, exposed,
-                truncated, ceilingCut, witnesses, wave(corpus), branches,
-                concrete);
+                topologyEpoch, gaps.byKind(), skeleton, exposed,
+                truncated, ceilingCut, witnesses, wave(corpus),
+                bounds.maxWorldDepth, branches, concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
         manifest.add("boundedFlips", boundedFlips(iteration,
@@ -1250,12 +1252,12 @@ public final class ExploreMain {
                                        Frontier.Round open,
                                        String topologyEpoch,
                                        Map<String, Integer> gaps,
-                                       SlotTable slots,
-                                       SlotTable.Reconciliation skeleton,
+                                       JsonObject skeleton,
                                        int exposed, int truncated,
                                        int ceilingCut,
                                        List<String> witnesses,
-                                       int wave, Branches branches,
+                                       int wave, int maxWorldDepth,
+                                       Branches branches,
                                        Map<OccurrenceAddress,
                                                ClosurePlanner.Concrete>
                                                concrete) {
@@ -1276,7 +1278,7 @@ public final class ExploreMain {
         // The world depth its paths were cut by (ObligationFactory
         // #candidates): a GROW re-run of a deeper world offers no round an
         // obligation (run_engine.sh campaign_stream_grow_take).
-        manifest.addProperty("maxWorldDepth", bounds.maxWorldDepth);
+        manifest.addProperty("maxWorldDepth", maxWorldDepth);
         // FIXED_POINT: nothing proposed, exposed or in flight; AWAITING:
         // nothing new while arms are still in flight.
         manifest.addProperty("state", !open.empty() || exposed > 0
@@ -1292,13 +1294,7 @@ public final class ExploreMain {
         // closure ceiling (ClosurePlanner#CLOSURE_CEILING).
         manifest.addProperty("truncated", truncated);
         manifest.addProperty("ceilingCut", ceilingCut);
-        JsonObject skeletonRow = new JsonObject();
-        skeletonRow.addProperty("slots", slots.size());
-        skeletonRow.addProperty("opened", skeleton.opened.size());
-        skeletonRow.addProperty("filled", skeleton.filled);
-        skeletonRow.addProperty("outsideTheClosure", skeleton.outside);
-        skeletonRow.addProperty("replaced", skeleton.replaced);
-        manifest.add("skeleton", skeletonRow);
+        manifest.add("skeleton", skeleton);
         manifest.addProperty("tasks", tasks.size());
         manifest.addProperty("proposed", open.obligations.size());
         manifest.addProperty("answered", frontier.answeredCount());
@@ -1337,6 +1333,22 @@ public final class ExploreMain {
         }
         manifest.add("concreteAnchors", concreteAnchors);
         return manifest;
+    }
+
+    /** A reconciliation's gaps, said, and what the manifest states of it:
+     *  the table's slots and what it opened, filled, left outside and
+     *  replaced. */
+    private static JsonObject skeleton(SlotTable slots,
+                                       SlotTable.Reconciliation reconciled,
+                                       RoundGaps gaps) {
+        gaps.addAll(reconciled.gaps);
+        JsonObject row = new JsonObject();
+        row.addProperty("slots", slots.size());
+        row.addProperty("opened", reconciled.opened.size());
+        row.addProperty("filled", reconciled.filled);
+        row.addProperty("outsideTheClosure", reconciled.outside);
+        row.addProperty("replaced", reconciled.replaced);
+        return row;
     }
 
     /** The same gap said twice is one gap. */

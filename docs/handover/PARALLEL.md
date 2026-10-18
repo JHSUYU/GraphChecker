@@ -11,7 +11,7 @@ the way there is that no work waits in series for anything but a real dependency
 | --- | --- | --- |
 | inside one case | its obligations (each a SOLVE, then a REPLAY when SAT), GROW's re-runs, CONFIRM, REPRODUCE's native runs | `run_engine.sh` streams them over every lift of `CAUSYNTH_CAMPAIGN_WORKER_HOSTS` (= `LIFTS`), each start charged on the host ledger; a head's engine JVMs go wherever there is room ([../design/PERFORMANCE.md](../design/PERFORMANCE.md) §2) |
 | across cases | many campaigns, several rounds at once | `tools/adhoc/sweep.sh` (`heads-per-host`, a shared pool: each exploration takes its share of the slots and grows as others end); several sweeps side by side (one per purpose: a rerun group, the named-bug baseline, deep closures with a longer `CASE_TIMEOUT_SECONDS`); no case needs the cluster alone |
-| across development | up to 4 coding agents, read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
+| across development | up to 5 coding agents (owner 2026-10-18; 4 before), read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
 
 The only limit is memory: no lift above 70 % (the ledger refuses a start past it, a running JVM past it is ended).
 Cores and load are not limits: 48 per lift.
@@ -146,7 +146,7 @@ every tool call starts a shell there.
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
 `LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
-verdict; OPTIMIZATIONS 1.27):
+verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
   LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
@@ -157,7 +157,7 @@ cd ~/gc-run/<snap> && env -u BASH_ENV \
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
-The head's own chain is short (OPTIMIZATIONS 1.28): an answer lands as it is collected, a session is gated where its
+The head's own chain is short (OPTIMIZATIONS 1.33): an answer lands as it is collected, a session is gated where its
 worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
 GROW's planner and weave build their generation beside the loop -- the pool is never left idle while the head gates,
 grows or waits for a step.
@@ -171,7 +171,7 @@ the 13 lifts 12 min behind two; PIPELINE §7.9).  The head starts a round's burs
 host's memory read beside the loop rather than over ssh per start (PIPELINE §7.7; it started one a second, a round 0
 of 600 solves and ~500 replays ~18 min of starts).  No question is answered in a corpus
 JVM of its own: a cold host's question hands its charge to the solver it starts. A host's solver answers eight questions
-at once over its one corpus read (OPTIMIZATIONS 1.29). A question starts a new corpus solver only when none serves
+at once over its one corpus read (OPTIMIZATIONS 1.34). A question starts a new corpus solver only when none serves
 or starts yet, when the queued questions at this campaign's measured seat time would outlast a solver's measured
 corpus read on the serving solvers' seats, or when the oldest of them has already waited that long
 (`campaign_stream_solver_due`): a big corpus keeps one warm solver and
@@ -193,7 +193,7 @@ and an unrelated undecidable conjunct no longer makes the flip unknown.
   After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
 - Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.
 
-**4. Agents and trees.** At most four coding agents, each with its own branch, worktree (`tools/lib/worktree-add.sh`,
+**4. Agents and trees.** At most five coding agents (owner 2026-10-18; four before), each with its own branch, worktree (`tools/lib/worktree-add.sh`,
 a sha), frozen snapshots `~/gc-run/<prefix><n>`, `GC_OUT` and at most two live runs; read-only reviewers beside the
 runs, not after them. Each Solr tree has ONE owner who builds it; anyone else only reads it. Before any build: `pgrep
 -fc '[l]ucene-solr-<name>'` on every lift. When a tree is read by others' runs and needs a change, build a second
@@ -209,3 +209,12 @@ ssh lift06 env -u BASH_ENV bash /bigtemp/vnr3ne/analysis/solr-2026-10-12/watch-r
 branch head that moved; as a Monitor's command it notifies the session per event, re-armed every 30 min). Agents report at their
 gates; at every check-in compare each agent's last commit time and newest run (AGENTS.md: an agent listed as running
 may be idle).
+
+## 7. 2026-10-18: what changed
+
+- The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
+  keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
+  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+- Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
+  the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
+  scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.

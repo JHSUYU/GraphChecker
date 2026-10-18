@@ -101,22 +101,27 @@ public final class ComposeMain {
             return reuse(arguments, inputs, started);
         }
         // Root domains are read once, with the corpus (Corpus#domainOf).
-        Corpus corpus = Corpus.read(arguments.iteration,
-                arguments.rootDomains);
+        Corpus corpus = Corpus.holding(arguments.iteration,
+                arguments.rootDomains,
+                (long) (HELD_ROWS * Runtime.getRuntime().maxMemory()));
         System.err.println("compose: read " + corpus.sessions().size()
                 + " session(s) in " + seconds(System.nanoTime() - started)
-                + " s");
+                + " s, holding " + corpus.held() / (1024 * 1024) + " of at"
+                + " most " + corpus.holdable() / (1024 * 1024) + " MB of"
+                + " their reads' and writes' text");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         StaticScopeMap scope = StaticScopeMap.read(arguments.scopeMap);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 arguments.maxValuations, scope,
                 Collections.<String>emptySet(), arguments.maxPaths);
         long lowered = System.nanoTime();
+        long[] again = corpus.readAgain();
         System.err.println("compose: " + composition.disjuncts().size()
                 + " path(s) composed, a " + composition.body().length()
                 / (1024 * 1024) + " MB body and " + composition.valuations()
                 .size() + " valuation(s), in " + seconds(lowered - started)
-                + " s; deciding");
+                + " s, " + again[0] + " session(s) let go of read again ("
+                + again[1] / (1024 * 1024) + " MB); deciding");
         Z3 solver = solver(arguments);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
@@ -167,6 +172,20 @@ public final class ComposeMain {
 
     /** The claim beside the manifest. */
     static final String CLAIM = "claim.json";
+
+    /**
+     * THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR: of its sessions'
+     * reads and writes -- most of a corpus's heap, and asked of a few
+     * sessions a path (its own, and the producers whose arms its families
+     * close) -- at most their text's share of the engine heap this is, the
+     * ones asked for least recently let go of and read again when asked
+     * ({@code Corpus#holding}, {@code contract.RowHold}); every other row
+     * of every session is held, as every path's families ask them of most
+     * sessions.  Held, a session's text weighs about 0.6 of itself (its
+     * rows, their indexes and its state join: SGF8-adhoc-13's 1288 MB of
+     * reads and writes, 745 MB), so about a tenth of the heap.
+     */
+    static final double HELD_ROWS = 0.15;
 
     /** The solver of one decide: its rooms here and on other hosts, what
      *  remote z3s read first written beside the query. */

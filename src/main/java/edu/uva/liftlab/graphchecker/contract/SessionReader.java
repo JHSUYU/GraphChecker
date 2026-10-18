@@ -3,8 +3,11 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -22,6 +25,10 @@ import java.util.function.Function;
  * One replay session's rows, one file per kind, read once and whole (symbols,
  * versions and expression refs are session-local and joined across kinds).
  * The one reader of the corpus layout; interprets and lowers nothing.
+ *
+ * <p>Its reads and writes are held as read, or -- taken into a {@link
+ * RowHold} -- let go of by the hold and read again from their files when
+ * next asked for, value for value the rows read first.</p>
  */
 public final class SessionReader {
     private final SessionDir directory;
@@ -29,8 +36,8 @@ public final class SessionReader {
     private final List<DecisionRow> decisions;
     private final List<ExportRow> exports;
     private final List<AttachRow> attaches;
-    private final List<WriteRow> writes;
-    private final List<ReadRow> reads;
+    /** Its reads and writes, null while its hold has let them go. */
+    private volatile State state;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
     /** The gaps a corpus reads ({@link #HELD_GAPS}), by kind. */
@@ -39,6 +46,23 @@ public final class SessionReader {
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
     private final String incomplete;
+    /** The hold that may let its rows go ({@link RowHold#take}); null:
+     *  held for good. */
+    private volatile RowHold hold;
+    /** What its reads and writes decode to; -1 until asked ({@link
+     *  #heldBytes}). */
+    private volatile long stateBytes = -1L;
+
+    /** Its reads and writes: what a hold holds of it. */
+    private static final class State {
+        final List<WriteRow> writes;
+        final List<ReadRow> reads;
+
+        State(List<WriteRow> writes, List<ReadRow> reads) {
+            this.writes = Collections.unmodifiableList(writes);
+            this.reads = Collections.unmodifiableList(reads);
+        }
+    }
 
     /**
      * THE GAPS A CORPUS READS of a session, each kind where its one reader
@@ -89,13 +113,25 @@ public final class SessionReader {
         this.decisions = Collections.unmodifiableList(decisions);
         this.exports = Collections.unmodifiableList(exports);
         this.attaches = Collections.unmodifiableList(attaches);
-        this.writes = Collections.unmodifiableList(writes);
-        this.reads = Collections.unmodifiableList(reads);
+        this.state = new State(writes, reads);
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
         this.gaps = held(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
+    }
+
+    /**
+     * Sessions read one by one with one pool among them ({@link RowPool}),
+     * as {@link #readAll} reads them all: a corpus that holds only some of
+     * its sessions' rows ({@link RowHold}) reads them a few at a time.
+     */
+    public static final class Pooled {
+        private final RowPool pool = new RowPool();
+
+        public SessionReader read(SessionDir dir) throws IOException {
+            return SessionReader.read(dir, pool);
+        }
     }
 
     /** Reads one session directory of an iteration. */
@@ -146,7 +182,7 @@ public final class SessionReader {
                 file -> SessionExpressionLog.read(file, pool),
                 ExpressionTable.empty());
         SessionManifest manifest = partial.read(dir.manifest(),
-                RowCodec::readManifest, null);
+                file -> RowCodec.readManifest(file, pool), null);
         return new SessionReader(dir, activations, decisions, exports,
                 attaches, writes, reads, roots, targets, gaps, obligations,
                 expressions, manifest, partial.reason);
@@ -315,12 +351,12 @@ public final class SessionReader {
         for (SessionReader session : held) {
             kept.put(session.directory, session);
         }
-        RowPool pool = new RowPool();
+        Pooled reader = new Pooled();
         return Parallel.map(named == null
                         ? SessionDir.sessionsIn(iteration)
                         : SessionDir.named(iteration, named),
                 dir -> kept.containsKey(dir) ? kept.get(dir)
-                        : read(dir, pool), Parallel.READS);
+                        : reader.read(dir), Parallel.READS);
     }
 
     public String sessionId() {
@@ -344,11 +380,92 @@ public final class SessionReader {
     }
 
     public List<WriteRow> writes() {
-        return writes;
+        return state().writes;
     }
 
     public List<ReadRow> reads() {
-        return reads;
+        return state().reads;
+    }
+
+    /** Its reads and writes, read again where its hold let them go. */
+    private State state() {
+        State held = state;
+        RowHold holding = hold;
+        if (holding == null) return held;
+        if (held != null) {
+            holding.used(this);
+            return held;
+        }
+        synchronized (this) {
+            held = state;
+            if (held == null) {
+                held = reread();
+                state = held;
+            }
+        }
+        holding.loaded(this);
+        return held;
+    }
+
+    /** Its reads and writes read again, the two files side by side (about
+     *  as large: SGF8-adhoc-07's 7.7 and 7.0 GB). */
+    @SuppressWarnings("unchecked")
+    private State reread() {
+        RowPool pool = new RowPool();
+        Object[] read = new Object[2];
+        try {
+            Parallel.map(Arrays.asList(0, 1), which -> {
+                read[which] = which == 0 ? again(directory.writes(),
+                        json -> RowCodec.readWrite(json, pool), pool)
+                        : again(directory.reads(),
+                        json -> RowCodec.readRead(json, pool), pool);
+                return which;
+            }, 2);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        return new State((List<WriteRow>) read[0], (List<ReadRow>) read[1]);
+    }
+
+    /** One file of rows its hold let go of, read again: what it read first
+     *  read whole, so a failure now is a fault of the files, thrown. */
+    private static <T> List<T> again(Path file, Function<JsonObject, T> reader,
+                                     RowPool pool) {
+        try {
+            return Files.isRegularFile(file)
+                    ? RowCodec.readAll(file, pool, reader)
+                    : Collections.<T>emptyList();
+        } catch (IOException | RuntimeException unreadable) {
+            throw new IllegalStateException("the rows " + file + " held were"
+                    + " let go of and do not read again: " + unreadable,
+                    unreadable);
+        }
+    }
+
+    /** Taken into {@code hold}, which may let its rows go from now on. */
+    void heldBy(RowHold hold) {
+        this.hold = hold;
+    }
+
+    /** Lets its reads and writes go (its hold's call, {@link
+     *  RowHold#loaded}): read again when next asked for. */
+    void release() {
+        state = null;
+    }
+
+    /** What its reads and writes decode to, as their files state. */
+    long heldBytes() {
+        long bytes = stateBytes;
+        if (bytes < 0L) {
+            bytes = RowHold.decoded(directory.reads(), directory.writes());
+            stateBytes = bytes;
+        }
+        return bytes;
+    }
+
+    /** The directory it was read from. */
+    SessionDir directory() {
+        return directory;
     }
 
     public List<RootMintRow> roots() {

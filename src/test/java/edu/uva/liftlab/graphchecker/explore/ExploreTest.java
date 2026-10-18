@@ -196,15 +196,14 @@ public class ExploreTest {
     public TemporaryFolder tree = new TemporaryFolder();
 
     /** A leaf set as a session keeps it (Corpus.HeldLeaves): the names in
-     *  the order computed, each name one instance across the session's
-     *  sets, read-only. */
+     *  the order computed, each name one instance across the sets,
+     *  read-only. */
     @Test
     public void aHeldLeafSetKeepsItsOrderAndOneInstancePerName() {
-        Map<String, String> held = new LinkedHashMap<String, String>();
         Set<String> first = new Corpus.HeldLeaves(new LinkedHashSet<String>(
-                Arrays.asList(new String("loc:MAP/o#s"), "M_A", "b")), held);
+                Arrays.asList(new String("loc:MAP/o#s"), "M_A", "b")));
         Set<String> second = new Corpus.HeldLeaves(new LinkedHashSet<String>(
-                Arrays.asList("b", new String("loc:MAP/o#s"))), held);
+                Arrays.asList("b", new String("loc:MAP/o#s"))));
         assertEquals(Arrays.asList("loc:MAP/o#s", "M_A", "b"),
                 new ArrayList<String>(first));
         assertEquals(Arrays.asList("b", "loc:MAP/o#s"),

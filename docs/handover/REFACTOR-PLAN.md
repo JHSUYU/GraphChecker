@@ -13,7 +13,7 @@ number below is measured (analysis dirs under `/bigtemp/vnr3ne/analysis/solr-202
 3. Where semantics change (the exploration core), regression = the 8 bug checks stay SAT + CONFIRMED + native; the
    study checks' claims are equal or more complete.
 4. Measure first; a change lands with its before/after numbers.
-5. At most 4 coding agents; one branch each; the lead reviews and merges into `solr-int` = `system/solr`.
+5. At most 5 coding agents (owner 2026-10-18); one branch each; the lead reviews and merges into `solr-int` = `system/solr`.
 
 ## Already on system/solr
 

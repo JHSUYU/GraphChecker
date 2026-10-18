@@ -85,9 +85,8 @@ public final class RootDomain extends Value {
                                       Map<String, RootDomain> declared,
                                       Collection<BigInteger> compared) {
         RootDomain mint = resolved(row, row.recordedValue(), declared);
-        if (declared != null && declared.containsKey(row.rootId())
-                || row.kind() != RootKind.INTEGRAL
-                || row.category() != RootCategory.CONFIG) {
+        if (!widened(row, declared != null
+                && declared.containsKey(row.rootId()))) {
             return mint;
         }
         BigInteger low = mint.min == null ? null : new BigInteger(mint.min);
@@ -112,6 +111,14 @@ public final class RootDomain extends Value {
         }
         return of(row.rootId(), row.kind(), row.recordedValue(),
                 low.toString(), high.toString());
+    }
+
+    /** Whether {@code compared} widens one root's domain ({@link
+     *  #resolved}): an integral configuration the case declares nothing
+     *  for; any other root's is its mint's, whatever was compared. */
+    public static boolean widened(RootMintRow row, boolean declared) {
+        return !declared && row.kind() == RootKind.INTEGRAL
+                && row.category() == RootCategory.CONFIG;
     }
 
     /**
