@@ -420,7 +420,8 @@ public final class ObligationSolverMain {
         Z3 solver = new Z3(z3, budget, z3RoomMb);
         // Kept by its text, its answer is the store's (Solved): no z3 run.
         Z3.Answer answer = Solved.at(ask.solved).answer(ask.querySha256,
-                () -> solver.ask(output -> body(query, body, output),
+                ask.modelSymbols, () -> solver.ask(
+                        output -> body(query, body, output),
                         ask.modelSymbols, false));
         // The query stays as its first ask published it.
         ObligationFactory.Outcome settled = ObligationFactory.settled(ask,

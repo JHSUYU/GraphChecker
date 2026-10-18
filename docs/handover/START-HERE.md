@@ -8,14 +8,16 @@ the documents it names. Repo: `/u/vnr3ne/GraphChecker`; integration worktree `/b
 
 ## 1. Mission and completion condition
 
-Finish the Solr rewrite (five open workstreams), merge everything into `system/solr`, then rerun all 20 Solr cases
-(`experiments/solr/solr-cases.tsv`), each ALONE on lift02-10 + lift12-15, bug checks first, and debug what breaks.
+Finish the Solr rewrite (five open workstreams), merge everything into `system/solr`, then rerun the 12 study checks
+(solr-adhoc-* in `experiments/solr/solr-cases.tsv`), each ALONE on lift02-10 + lift12-15, and debug what breaks. The 8
+bug checks keep their SGF7 results (owner 2026-10-18 evening ("8个bug check不用跑了，我们就用已有的数据即可。剩下的study check重新跑一下")). Every
+change that affects speed is merged before the round starts (owner: "影响速度的都要搞好才能跑").
 
-Done when: the five workstream branches are merged into `system/solr` and gated; the 20 cases each have a result
+Done when: the five workstream branches are merged into `system/solr` and gated; the 12 study checks each have a result
 meeting the acceptance below; STATUS "Solr checks", STATE §S, TODO, OPTIMIZATIONS and LESSONS are updated.
 
-Acceptance: the 8 bug checks (solr-18406, solr-18413, the 6 solr-bugs-*) are SAT + CONFIRMED + native-reproduced;
-the 12 study checks (solr-adhoc-*) end SAT or UNSAT (or at a named bound) with claims equal to or more complete than the
+Acceptance: the 8 bug checks (solr-18406, solr-18413, the 6 solr-bugs-*) stand on their SAT + CONFIRMED + native SGF7
+results (an exploration change is checked on their recorded corpora offline); the 12 study checks (solr-adhoc-*) end SAT or UNSAT (or at a named bound) with claims equal to or more complete than the
 old ones (STATUS "Solr checks"); each case has its time breakdown (`/bigtemp/vnr3ne/analysis/solr-2026-10-14/final-stats.py`)
 and a light `.smt` reading (`/bigtemp/vnr3ne/analysis/solr-2026-10-14/final-readings.md`).
 

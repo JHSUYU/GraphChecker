@@ -244,7 +244,7 @@ only in docs/handover/OPTIMIZATIONS.md (row numbers): renumber its row after the
 construction: ~4-6 h (the measured pace of 2026-10-18: compaction 4 steps ~3 h, the holding composer ~4 h, the GROW
 pipeline ~3 h with its review fixes, EMIT ~1.7 h, the stall-end fix ~1.5 h), then ~1 h integration, then the rerun.
 
-**Then the acceptance:** a snapshot of the integrated system/solr, all 20 Solr cases each alone (bug checks first),
+**Then the acceptance:** a snapshot of the integrated system/solr, the 12 study checks each alone (the 8 bug checks keep SGF7),
 debug, readings (`analysis/solr-2026-10-14/final-readings.md`), STATUS "Solr checks", STATE, TODO, OPTIMIZATIONS.
 
 **Cleanup owed:** worktrees gc-compact, gc-composebatch, gc-emitgaps, gc-growpipe, gc-parkeys, gc-nfs, gc-shard,

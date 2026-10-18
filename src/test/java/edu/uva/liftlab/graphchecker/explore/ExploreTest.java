@@ -85,6 +85,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -5393,6 +5394,43 @@ public class ExploreTest {
         assertFalse("a reuse settles nothing itself: its source does",
                 Files.exists(settled.directory.resolve(
                         ObligationDir.QUESTION)));
+    }
+
+    /**
+     * A KEPT ANSWER IS ALL ITS TEXT SAYS ({@link Solved#whole}): unsat, or
+     * sat with a value of every symbol the text asks the model of -- a sat
+     * whose model's run was cut short is answered, never kept, so the next
+     * ask of the text runs z3 again; and a store that cannot be written
+     * leaves the answer answered.  Per row: the verdict, the symbols its
+     * model valued, whether the next ask is answered as kept.
+     */
+    @Test
+    public void onlyAWholeAnswerIsKept() throws Exception {
+        List<String> asks = Arrays.asList("x", "y");
+        for (Object[] row : new Object[][]{
+                {"unsat", "", true},
+                {"sat", "x y", true},
+                {"sat", "x", false},
+                {"sat", "", false}}) {
+            Map<String, String> values = new LinkedHashMap<String, String>();
+            for (String symbol : ((String) row[1]).split(" ")) {
+                if (!symbol.isEmpty()) values.put(symbol, "1");
+            }
+            Z3.Answer z3 = Z3.Answer.decided((String) row[0], values);
+            Solved solved = Solved.in(tree.newFolder().toPath());
+            assertSame(z3, solved.answer("q", asks, () -> z3));
+            int[] runs = {0};
+            solved.answer("q", asks, () -> {
+                runs[0]++;
+                return z3;
+            });
+            assertEquals(Arrays.toString(row), row[2], runs[0] == 0);
+        }
+        Z3.Answer unsat = Z3.Answer.decided("unsat",
+                Collections.<String, String>emptyMap());
+        Solved unwritable = Solved.at(tree.newFile("a-file").toPath()
+                .resolve(Solved.DIR));
+        assertSame(unsat, unwritable.answer("q", asks, () -> unsat));
     }
 
     /**

@@ -1454,13 +1454,13 @@ public class ContractTest {
             unattributed.read(epoch);
             Path whole = epoch.resolve("whole.jsonl");
             ImportGateMain.gate(epoch, gates(epoch, "s-gate", "s-abandoned"),
-                    null, whole, "e");
+                    Collections.<String>emptySet(), null, whole, "e");
             Path ledger = epoch.resolve("gated");
             Path stepped = epoch.resolve("stepped.jsonl");
             String first = mintFirst ? "s-gate" : "s-abandoned";
             String later = mintFirst ? "s-abandoned" : "s-gate";
-            ImportGateMain.gate(epoch, gates(epoch, first), ledger, stepped,
-                    "e");
+            ImportGateMain.gate(epoch, gates(epoch, first),
+                    Collections.<String>emptySet(), ledger, stepped, "e");
             // Staged elsewhere, as a replay's worker stages it.
             Path staged = epoch.resolve("worker/sessions/" + later);
             Files.createDirectories(staged.getParent());
@@ -1472,12 +1472,13 @@ public class ContractTest {
             }
             List<Path> none = Collections.<Path>emptyList();
             ImportGateMain.gate(epoch, Collections.singletonList(
-                    new ImportGateMain.Gate(staged, none)), ledger, stepped,
-                    "e");
+                    new ImportGateMain.Gate(staged, none)),
+                    Collections.<String>emptySet(), ledger, stepped, "e");
             JsonObject again = ImportGateMain.gate(epoch, Arrays.asList(
                     new ImportGateMain.Gate(staged, none),
                     new ImportGateMain.Gate(SessionDir.of(epoch, first).dir(),
-                            none)), ledger, stepped, "e");
+                            none)), Collections.<String>emptySet(), ledger,
+                    stepped, "e");
             List<String> filed = Files.readAllLines(stepped);
             assertEquals("mint first: " + mintFirst,
                     new LinkedHashSet<>(Files.readAllLines(whole)),
@@ -1485,16 +1486,23 @@ public class ContractTest {
             assertEquals("invariants 1 and 11, each once: " + filed, 2,
                     filed.size());
             assertEquals(0, again.get("sessions").getAsInt());
-            // Withdrawn, the first is no longer of the epoch: of the three
-            // sessions stating SEED, the epoch holds two.
-            Files.write(epoch.resolve(SessionDir.WITHDRAWN),
-                    Collections.singletonList(first));
+            // Withdrawn -- or replaced by a session gated now, as a re-run's
+            // is before its swap withdraws the one it replaces -- the first
+            // is no longer of the epoch: of the three sessions stating SEED,
+            // the epoch holds two.
+            Set<String> replaced = Collections.<String>emptySet();
+            if (mintFirst) {
+                Files.write(epoch.resolve(SessionDir.WITHDRAWN),
+                        Collections.singletonList(first));
+            } else {
+                replaced = Collections.singleton(first);
+            }
             Path late = epoch.resolve("late.jsonl");
             Rows another = clean();
             another.id = "s-late";
             another.read(epoch);
-            ImportGateMain.gate(epoch, gates(epoch, "s-late"), ledger, late,
-                    "e");
+            ImportGateMain.gate(epoch, gates(epoch, "s-late"), replaced,
+                    ledger, late, "e");
             assertEquals("the epoch without " + first + ": "
                             + Files.readAllLines(late),
                     1L, Files.readAllLines(late).stream()
