@@ -1238,6 +1238,16 @@ printf 'one\n' >"${digest_root}/tree/a.txt"
   || fail "the string kind does not digest the string it was handed"
 campaign_kind_digest bogus x >/dev/null 2>&1 \
   && fail "an unknown frozen input kind produced a digest"
+for digest_n in $(seq 1 600); do
+  mkdir -p "${digest_root}/tree/d$(( digest_n % 7 ))"
+  printf '%s\n' "${digest_n}" \
+    >"${digest_root}/tree/d$(( digest_n % 7 ))/f${digest_n}.class"
+done
+[[ "$(campaign_tree_digest "${digest_root}/tree")" \
+    == "$( (cd "${digest_root}/tree" && find . -type f -print0 \
+      | LC_ALL=C sort -z | xargs -0 -r sha256sum) | sha256sum \
+      | awk '{print $1}')" ]] \
+  || fail "the tree digest is not the sorted listing's"
 
 # A non-zero exit that is data leaves errexit exactly as it found it.
 status=0

@@ -1575,8 +1575,9 @@ campaign_tree_digest() {
     campaign_digest "$1"
     return 0
   fi
-  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z \
-    | xargs -0 -r sha256sum) | sha256sum | awk '{print $1}'
+  (cd "$1" && find . -type f -print0 \
+    | xargs -0 -r -n 256 -P 16 sha256sum | LC_ALL=C sort -k 2) \
+    | sha256sum | awk '{print $1}'
 }
 
 # FREEZE-1: the one place that knows how each kind of frozen input is
