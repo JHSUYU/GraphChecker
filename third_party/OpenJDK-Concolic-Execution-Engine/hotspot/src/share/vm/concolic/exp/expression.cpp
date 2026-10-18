@@ -413,6 +413,37 @@ void SerializationScope::render(Expression *root,
 
 __thread VmExpressionArtifactScope *VmExpressionArtifactScope::_active = NULL;
 
+VmExpressionChannel::VmExpressionChannel() : _tables(0) {
+  pthread_mutex_init(&_mutex, NULL);
+}
+
+void VmExpressionChannel::reset() {
+  pthread_mutex_lock(&_mutex);
+  // Released, not kept: a session's ids are dense from 1, and the next
+  // session's start again.
+  std::vector<julong>().swap(_sent);
+  _tables = 0;
+  pthread_mutex_unlock(&_mutex);
+}
+
+bool VmExpressionChannel::sent(uint id) const {
+  const size_t word = id >> 6;
+  return word < _sent.size()
+      && (_sent[word] & ((julong) 1 << (id & 63))) != 0;
+}
+
+void VmExpressionChannel::mark_sent(uint id) {
+  const size_t word = id >> 6;
+  if (word >= _sent.size()) {
+    // Doubling: ids grow by one, and a resize per new word would copy the
+    // whole set once per 64 ids.
+    size_t size = _sent.empty() ? 1024 : _sent.size();
+    while (size <= word) size *= 2;
+    _sent.resize(size, 0);
+  }
+  _sent[word] |= (julong) 1 << (id & 63);
+}
+
 namespace {
 
 // The fixed JSON around one definition ("_type", "sessionId", "expressionId",
@@ -520,8 +551,7 @@ size_t VmExpressionArtifactScope::pending_table_size() {
   return _definition_bytes + TABLE_ENVELOPE_BYTES;
 }
 
-void VmExpressionArtifactScope::write_table(
-    rapidjson::Writer<rapidjson::StringBuffer> &writer) {
+void VmExpressionArtifactScope::close_table() {
   guarantee(!_table_written,
             "a VM expression artifact table may be written only once");
   guarantee(_active == this,
@@ -538,6 +568,36 @@ void VmExpressionArtifactScope::write_table(
   guarantee(_definitions.size() == _expressions.size(),
             "every VM expression reference requires one definition");
   _table_written = true;
+}
+
+void VmExpressionArtifactScope::write_table(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) {
+  close_table();
+  write_rows(writer, NULL, 0);
+}
+
+void VmExpressionArtifactScope::write_table(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer,
+    VmExpressionChannel &channel) {
+  close_table();
+  // Choosing, registering and numbering in one step: a table numbered later
+  // was chosen against every definition this one registers.  Under the lock
+  // only the rows are copied into the caller's buffer; every definition was
+  // rendered above, outside it.
+  pthread_mutex_lock(&channel._mutex);
+  const jlong sequence = ++channel._tables;
+  write_rows(writer, &channel, sequence);
+  pthread_mutex_unlock(&channel._mutex);
+}
+
+void VmExpressionArtifactScope::write_rows(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer,
+    VmExpressionChannel *channel, jlong sequence) {
+  jlong count = 0;
+  for (definition_map_t::const_iterator it = _definitions.begin();
+       it != _definitions.end(); ++it) {
+    if (channel == NULL || !channel->sent(it->first)) count++;
+  }
 
   writer.Key("vmExpressionTable");
   writer.StartObject();
@@ -546,15 +606,24 @@ void VmExpressionArtifactScope::write_table(
   writer.Key("kind");
   writer.String("VM_EXPRESSION_TABLE");
   writer.Key("authority");
-  writer.String("VM_SESSION_EXPRESSION_ID_V1");
+  writer.String(channel == NULL ? "VM_SESSION_EXPRESSION_ID_V1"
+                                : "VM_READ_OUT_EXPRESSION_DELTA_V1");
   writer.Key("sessionId");
   writer.Int64(_session_id);
+  if (channel != NULL) {
+    writer.Key("sequence");
+    writer.Int64(sequence);
+  }
   writer.Key("definitionCount");
-  writer.Int64((jlong)_definitions.size());
+  writer.Int64(count);
   writer.Key("definitions");
   writer.StartArray();
   for (definition_map_t::const_iterator it = _definitions.begin();
        it != _definitions.end(); ++it) {
+    if (channel != NULL) {
+      if (channel->sent(it->first)) continue;
+      channel->mark_sent(it->first);
+    }
     writer.StartObject();
     writer.Key("_type");
     writer.String("VmExpressionDefinition");

@@ -32,6 +32,7 @@
 
 bool SharedFieldVersions::_open = false;
 SharedFieldVersions::SlotStore SharedFieldVersions::_slots;
+VmExpressionChannel SharedFieldVersions::_read_out_channel;
 volatile int SharedFieldVersions::_carrier_count = 0;
 volatile int SharedFieldVersions::_guarded_store_count = 0;
 pthread_mutex_t SharedFieldVersions::_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -82,6 +83,7 @@ void SharedFieldVersions::open_session() {
   MAP_LOCK;
   guarantee(_slots.empty(), "versions outlived the previous session");
   _carrier_count = 0;
+  _read_out_channel.reset();
   _open = true;
 }
 
@@ -96,6 +98,7 @@ void SharedFieldVersions::close_session() {
     MAP_LOCK;
     _slots.clear();
     _carrier_count = 0;
+    _read_out_channel.reset();
     _open = false;
   }
   for (int stripe = STRIPES - 1; stripe >= 0; --stripe) {
@@ -1359,14 +1362,16 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
   Writer<StringBuffer> writer(buffer);
   VmExpressionArtifactScope expression_artifact;
   writer.StartObject();
+  // 2: the table states only what no earlier page of the session's read-out
+  // stated (VmExpressionChannel).
   writer.Key("schemaVersion");
-  writer.Int(1);
+  writer.Int(2);
   writer.Key("kind");
   writer.String("SHARED_TRACKED_LOCATIONS");
   writer.Key("sessionId");
   writer.Int64(GlobalSymbolicSession::session_id());
   writer.Key("authority");
-  writer.String("VM_TRACKED_LOCATION_VERSIONS_V1");
+  writer.String("VM_TRACKED_LOCATION_VERSIONS_V2");
   writer.Key("locations");
   writer.StartArray();
 
@@ -1377,6 +1382,9 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
   for (size_t index = 0; index < selected.size(); ++index) {
     // Stop at a location boundary, never inside one; the first location is
     // always emitted, so a budget smaller than one envelope still progresses.
+    // The budget counts the page's whole closure, not the part of it the
+    // read-out channel has not sent: where a page is cut does not depend on
+    // what other threads' read-outs sent meanwhile.
     if (budget != 0 && emitted > 0
         && envelope_bytes(buffer, expression_artifact) >= budget) {
       complete = false;
@@ -1400,7 +1408,7 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
   writer.Bool(complete);
   writer.Key("nextAfterEventId");
   writer.Int64(next_after);
-  expression_artifact.write_table(writer);
+  expression_artifact.write_table(writer, _read_out_channel);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
@@ -1487,8 +1495,8 @@ bool SharedFieldVersions::resolve_field(oop owner_oop,
   return true;
 }
 
-std::string ConcolicMngr::getTrackedLocationVersions(jlong after_event_id,
-                                                     jint max_bytes) {
+std::string ConcolicMngr::readOutTrackedLocations(jlong after_event_id,
+                                                  jint max_bytes) {
   return SharedFieldVersions::tracked_locations(after_event_id, max_bytes);
 }
 
