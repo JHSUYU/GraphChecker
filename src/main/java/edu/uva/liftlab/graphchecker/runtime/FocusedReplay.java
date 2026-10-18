@@ -736,8 +736,9 @@ public final class FocusedReplay {
      *   <li>the recorded order held until the world first acted: no slot was
      *       given up before the first plant, answer or hold
      *       ({@link #worldActed}, {@link #departed});</li>
-     *   <li>the workload ended by itself ({@link #workloadEnded}), not at a
-     *       bound, a witness or a refusal.</li>
+     *   <li>the workload ended by itself ({@link #workloadEnded}) or its
+     *       window closed ({@link #windowClosed}), not at a bound, a witness
+     *       or a refusal.</li>
      * </ol>
      * Anything short of them stays a plain NOT_ADMITTED, the conditions
      * that failed added to {@code unrefuted}.  Called under {@link #LOCK}.
@@ -801,8 +802,8 @@ public final class FocusedReplay {
         conditions.add("(c) the recorded order held until the world first"
                 + " acted" + (departed == 0L ? ": no slot was given up"
                 : ": the first slot given up came after it"));
-        conditions.add(!endedOver.isEmpty()
-                ? "(d) the workload's test was over: " + endedOver
+        conditions.add(endedAtClose
+                ? "(d) the workload's test was over: its window closed"
                 : "(d) the workload ended by itself"
                 + (endedBy.isEmpty() ? ", its method returning"
                 : ": " + endedBy + " thrown at " + endedAt
@@ -857,11 +858,10 @@ public final class FocusedReplay {
     /** The first slot given up, as the schedule names it. */
     private static volatile String firstDeparture = "";
 
-    /** Whether the workload ended by itself ({@link #workloadEnded}). */
+    /** Whether the workload ended by itself ({@link #workloadEnded}), or
+     *  its test was over at its window's close ({@link #windowClosed}). */
     private static volatile boolean workloadEnded;
-    /** How its test was over when its teardown, not the method, ended the
-     *  run ({@link #testOver}); "" otherwise. */
-    private static volatile String endedOver = "";
+    private static volatile boolean endedAtClose;
     /** Its terminating throwable, its innermost frame and the test
      *  method's frame it passed; "" where none. */
     private static volatile String endedBy = "";
@@ -874,6 +874,11 @@ public final class FocusedReplay {
      * or a refusal ends the run.
      */
     static void workloadEnded(Throwable failure, String testClass) {
+        noteFailure(failure, testClass);
+        workloadEnded = true;
+    }
+
+    private static void noteFailure(Throwable failure, String testClass) {
         if (failure != null) {
             String message = failure.getMessage() == null ? ""
                     : failure.getMessage().split("\\R", 2)[0];
@@ -889,28 +894,18 @@ public final class FocusedReplay {
                 }
             }
         }
-        workloadEnded = true;
     }
 
-    /**
-     * The workload's test was over -- its window closed -- and its teardown
-     * then stood ({@code ConcolicResultPublisher#watchProgress}: {@code
-     * how}, it made nothing new for so long): the run ends as at the
-     * workload's own end, nothing decided, every verdict settled as there,
-     * a world refuted included.  The teardown answers nothing the question
-     * asked: no occurrence of the window runs after its close.
-     *
-     * @return whether the replay ends here, not already ending otherwise
-     */
-    static boolean testOver(String how) {
+    static void windowClosed(Throwable failure, String testClass) {
         synchronized (LOCK) {
             if (workloadEnded || !refusedAt.isEmpty()
-                    || !stalledAt.isEmpty()) {
-                return false;
+                    || !stalledAt.isEmpty()
+                    || ConcolicResultPublisher.concluded()) {
+                return;
             }
-            endedOver = trimmed(how);
+            noteFailure(failure, testClass);
+            endedAtClose = true;
             workloadEnded = true;
-            return true;
         }
     }
 
@@ -1415,7 +1410,7 @@ public final class FocusedReplay {
             FIRST_DEPARTURE.set(0L);
             firstDeparture = "";
             workloadEnded = false;
-            endedOver = "";
+            endedAtClose = false;
             endedBy = "";
             endedAt = "";
             endedInTest = "";

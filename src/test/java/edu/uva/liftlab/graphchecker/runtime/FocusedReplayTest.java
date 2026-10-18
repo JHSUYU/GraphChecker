@@ -300,42 +300,50 @@ public class FocusedReplayTest {
         }
     }
 
-    /**
-     * A TEST OVER ({@code ConcolicResultPublisher#stall}): a replay whose
-     * window closed and whose teardown then stood ends as at the workload's
-     * own end -- nothing decided, no stall rewriting a verdict, and a
-     * faithful world never entered still refuted, its (d) naming the stand;
-     * once.  Inside the window the same stand is the stall, which decides a
-     * replay no flip of which was taken.
-     */
     @Test
-    public void aTeardownThatStandsEndsTheRunAsTheWorkloadsEnd()
-            throws Exception {
+    public void aWindowsCloseEndsTheRunAsTheWorkloadsEnd() throws Exception {
         String still = "nothing new for 300 s";
-        for (boolean over : new boolean[] {false, true}) {
+        Object[][] rows = {
+            // closed, concluded before, refuted, its exception
+            {false, false, false, ""},
+            {true, false, true, "java.io.IOException: boom"},
+            {true, true, false, ""}};
+        java.lang.reflect.Field concluded = ConcolicResultPublisher.class
+                .getDeclaredField("concluded");
+        concluded.setAccessible(true);
+        for (Object[] row : rows) {
             hand(flip(1, ",'openArm':true"));
             RecordingWindow.open();
             FocusedReplay.obligationIds();
             FocusedReplay.planted("r", true);
-            if (over) RecordingWindow.close();
-            assertEquals(over ? ConcolicResultPublisher.Conclusion.TEST_OVER
-                    : ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS,
-                    ConcolicResultPublisher.stall(still));
-            assertEquals("once", null, ConcolicResultPublisher.stall(still));
-            ObligationResult result = only("s");
-            assertEquals(Verdict.NOT_ADMITTED, result.verdict());
-            assertEquals(result.detail(), over,
-                    result.detail().startsWith("WORLD_REFUTED: "));
-            if (!over) {
-                assertTrue(result.detail(), result.detail().startsWith(
-                        FocusedReplay.REPLAY_NO_PROGRESS + ": " + still));
-                continue;
+            boolean closed = (Boolean) row[0];
+            if ((Boolean) row[1]) {
+                concluded.set(null,
+                        ConcolicResultPublisher.Conclusion.AT_WITNESS);
             }
-            assertEquals("", FocusedReplay.refusedAt());
-            assertFalse(FocusedReplay.stalledAfterFlip());
-            assertEquals("(d) the workload's test was over: its window"
-                    + " closed, and its teardown then made " + still,
-                    result.refutation().conditions().get(3));
+            try {
+                if (closed) {
+                    RecordingWindow.close();
+                    FocusedReplay.windowClosed(new java.io.IOException(
+                            "boom"), getClass().getName());
+                }
+                if (!(Boolean) row[1]) {
+                    assertEquals(closed ? null
+                            : ConcolicResultPublisher.Conclusion
+                            .AT_NO_PROGRESS,
+                            ConcolicResultPublisher.stall(still));
+                }
+                ObligationResult result = only("s");
+                String what = Arrays.toString(row) + " " + result.detail();
+                assertEquals(what, Verdict.NOT_ADMITTED, result.verdict());
+                assertEquals(what, row[2], result.refutation() != null);
+                if (result.refutation() != null) {
+                    assertEquals(what, row[3],
+                            result.refutation().exception());
+                }
+            } finally {
+                concluded.set(null, null);
+            }
         }
     }
 

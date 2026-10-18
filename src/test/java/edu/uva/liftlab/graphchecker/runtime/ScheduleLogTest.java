@@ -1457,10 +1457,6 @@ public class ScheduleLogTest {
         }
         assertEquals("another node", made + 3, ScheduleLog.newKeys());
         progress((made + 3) + " distinct event(s), at most ");
-        watched = ConcolicResultPublisher.watched(0L);
-        RecordingWindow.close();
-        assertFalse("the window's close is a step", Arrays.equals(watched,
-                ConcolicResultPublisher.watched(0L)));
     }
 
     /**

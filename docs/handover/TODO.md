@@ -208,10 +208,10 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
   their decoding, wait only for publications submitted by the end; GC counts as progress only while a publication or
   decode computes. An AT_NO_PROGRESS replay halted 44 s after its end; a STALLED_AFTER_FLIP one 190 s (decoding its
   session still needs: goal 3).
-- Goal 2 next: the replay need from the 90th percentile of measured peaks plus an out-of-heap guard
-  (-XX:+ExitOnOutOfMemoryError + HeapWatch in replays; a replay exiting 3 reruns once at twice its heap; later replays
-  start there); the replay VM's GC is Serial, so -Xmx caps the heap without growing RSS; update the MEASURED-NEED rows
-  of the shell test.
+- Goal 2 (branch solr-replay-end, agent 4): DONE -- the need from the 90th percentile of the stream's peaks
+  (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
+  `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
+  there, at most half a host's ceiling; OPTIMIZATIONS 1.41, PIPELINE §7.7); the exit-3 path checked live on vm-force10.
 - Done (goal 3, branch solr-replay, VM commit 96214b520 + the decoder commit after it; image
   `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, smoke 73 OK): a session's read-out pages are one channel, each expression
   definition sent once, the tables numbered under the channel's lock (VM `VmExpressionChannel`,
@@ -223,8 +223,9 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
   677 s wall, end -> halt 190 -> 16 s; 9fc5 905 -> 649 s; sessions import alike. Left: the VM still renders each page's whole
   closure before choosing what to send (about 0.2 s per 20 MB, natively); the decoding thread imports the tables in
   order, alone.
-- Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
-  rows first.
+- Goal 4 (branch solr-replay-end, agent 4): DONE -- a concolic replay ends at its window's close
+  (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.40); evidence
+  `analysis/solr-2026-10-18/replay-end/` (postclose2.py, cutclose.py + plan13.sh, closehalt.py, runs/).
 - Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
   offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
   checkout with third_party/ and gcc-6 on lift15.

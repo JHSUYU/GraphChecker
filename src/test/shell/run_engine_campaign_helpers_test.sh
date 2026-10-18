@@ -2031,9 +2031,10 @@ EOF
 # MEASURED-NEED: every replay that returns -- an obligation's, a GROW
 # re-run's, a CONFIRM's -- states its peak in its worker directory
 # (workload_rss_mb, experiments/lib/execute.sh), and the campaign's need is
-# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB: it
-# never falls, a worker that states none (its solver answered) leaves it,
-# and it is said when it is first measured and whenever it moves.  Per row:
+# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB, until
+# eight replays after the seed's returned (MEASURED-TYPICAL: then their
+# peaks' 90th percentile); a worker that states none (its solver answered)
+# leaves it, and it is said when it is first measured and whenever it moves.  Per row:
 # the peaks in turn (- a worker that states none), the need after each, and
 # how many times it was said.
 measured_dir="${test_tmp}/measured"
@@ -2063,7 +2064,8 @@ done <<'EOF'
 171 - 300 400|512 512 512 640|2
 - 238|512 512|1
 EOF
-# MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
+# MEASURED-TYPICAL: once eight replays after the seed's returned, the need is
+# their peaks' 90th percentile times 1.5, and a replay of
 # the stream is charged the 90th percentile of their lives' mean resident
 # memory (rounded up to 128 MB, at least 512, at most the need; a replay that
 # stated no mean counts its peak), its heap still the need, and a host keeps
@@ -2098,12 +2100,13 @@ while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge \
     || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
 ${typical_got}, not ${typical_need}|${typical_charge}|${typical_spike}"
 done <<'EOF'
-2234|918 900 950 1000 880 1242 920 910|3456|1280|0
+2234|918 900 950 1000 880 1242 920 910|1920|1280|0
 3454|1583 1600 1500|5248|4352|0
 1600/867|1991/1040 2088/1000|3200|1152|936
-2234|300 310 320 330 340 350 360 370|3456|512|0
+2234|300 310 320 330 340 350 360 370|640|512|0
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
-2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
+2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|2432|896|661
+1000|900 950 1000 1100 1200 1300 1400 1500 1450 1350 6476|2304|1536|0
 EOF
 # PLANNER-START: the planner runs at the engine heap (campaign_stream_plan):
 # one is started there when none lives, charged its need for the round
@@ -2992,10 +2995,10 @@ bound_solved "${worker_dir}" OB.E
 ) >"${bound_dir}/ended.log" 2>&1 \
   || fail "the worker did not return when its replay was ended for memory: \
 $(cat "${bound_dir}/ended.log")"
-read -r ended_mb ended_charged ended_aside <"${worker_dir}/replay_again" \
-  || ended_mb=""
-[[ "${ended_mb} ${ended_charged} ${ended_aside}" \
-    == "2900 1024 ${worker_dir}/ended-1" \
+read -r ended_mb ended_charged ended_aside ended_heap \
+  <"${worker_dir}/replay_again" || ended_mb=""
+[[ "${ended_mb} ${ended_charged} ${ended_aside} ${ended_heap}" \
+    == "2900 1024 ${worker_dir}/ended-1 -" \
    && "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
     == SAT_MODEL_READY && -e "${worker_dir}/question.asked" \
    && -s "${worker_dir}/ended-1/replay.log" \
@@ -3023,6 +3026,28 @@ $(cat "${bound_dir}/ended2.log")"
 memory killer or an operator" ]] \
   || fail "a replay killed, not for memory, after a memory end was not \
 answered REPLAY_BOUNDED: $(cat "${worker_dir}/obligation_result.jsonl")"
+# A replay out of heap (exit 3: -XX:+ExitOnOutOfMemoryError or HeapWatch) is
+# set aside the same way, replay_again naming the heap it ran out of.
+worker_dir="${bound_dir}/heap"
+mkdir -p "${worker_dir}"
+concolic_replay_command='echo 900 >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/\
+workload_rss_mb"; exit 3'
+bound_solved "${worker_dir}" OB.H
+(
+  campaign_obligation_replay OB.H "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 9216
+) >"${bound_dir}/heap.log" 2>&1 \
+  || fail "the worker did not return when its replay ran out of heap: \
+$(cat "${bound_dir}/heap.log")"
+read -r ended_mb ended_charged ended_aside ended_heap \
+  <"${worker_dir}/replay_again" || ended_mb=""
+[[ "${ended_charged} ${ended_aside} ${ended_heap}" \
+    == "1024 ${worker_dir}/ended-1 4608" \
+   && "$(cat "${worker_dir}/ended-1/workload_out_of_heap_mb")" == 4608 \
+   && "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
+    == SAT_MODEL_READY ]] \
+  || fail "a replay out of heap was not set aside to be asked again: \
+$(cat "${worker_dir}/replay_again" 2>&1) $(cat "${bound_dir}/heap.log")"
 
 # REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
 # SessionPublisher writes manifest.json at the OPEN, so a replay killed at
@@ -6082,16 +6107,27 @@ EOF
 # peak, rounded up to 128 MB, at most half a host's ceiling, 8192 here),
 # charged whole (campaign_stream_try_host).  One whose full need is no more
 # than it reached would end again: answered REPLAY_BOUNDED, it lands as any
-# answer, as it is collected.  {kind, the MB it reached, queued at <MB> or
-# bounded}.
-while IFS='|' read -r rq_kind rq_mb rq_want; do
+# answer, as it is collected.  A replay out of heap (its runs out of heap so
+# far, the last one's heap) is queued again once, its own need unset, and
+# every replay from then on starts at twice that heap (the heap basis, twice
+# the heap); out of heap twice, REPLAY_BOUNDED.  {kind, the MB it reached,
+# the heap it ran out of (- for a memory end; n*heap: its n runs out of
+# heap), queued at <MB>, rerun at <basis> or bounded: twice, or once at the
+# most a replay's heap is, half a host's ceiling (8192 here)}.
+while IFS='|' read -r rq_kind rq_mb rq_heap rq_want; do
   rq_dir="${test_tmp}/kill-requeue"
   rm -rf -- "${rq_dir}"
   rq_worker="${rq_dir}/it/obligations-0000/A"
   [[ "${rq_kind}" != CONFIRM ]] || rq_worker="${rq_dir}/witness-confirm/0001/worker"
   mkdir -p "${rq_worker}/ended-1" "${rq_dir}/it/sessions"
-  printf '%s 1024 %s\n' "${rq_mb}" "${rq_worker}/ended-1" \
-    >"${rq_worker}/replay_again"
+  rq_runs=0
+  [[ "${rq_heap}" == - ]] || rq_runs=${rq_heap%%\**}
+  for (( rq_n = 1; rq_n <= rq_runs; rq_n++ )); do
+    mkdir -p "${rq_worker}/ended-${rq_n}"
+    echo "${rq_heap#*\*}" >"${rq_worker}/ended-${rq_n}/workload_out_of_heap_mb"
+  done
+  printf '%s 1024 %s %s\n' "${rq_mb}" "${rq_worker}/ended-$(( \
+    rq_runs > 1 ? rq_runs : 1 ))" "${rq_heap#*\*}" >"${rq_worker}/replay_again"
   rq_logs=$(campaign_stream_logs "${rq_kind}" "${rq_worker}")
   echo out >"${rq_logs}stdout.log"
   echo lift12 >"${rq_logs}host.txt"
@@ -6135,8 +6171,24 @@ ${rq_session}") stream_job_worker=([4242]=${rq_worker}) \
     printf 'landed %s\n' "$(jq -r -s 'map(.obligationId) | join(" ")' \
       "${results}" 2>/dev/null)"
     printf 'need %s\n' "$(campaign_replay_need_mb)"
+    printf 'basis %s\n' "$(campaign_replay_basis_mb)"
   )
   case "${rq_want}" in
+    rerun\ *)
+      rq_entry="REPLAY obligations-0000 A g0/classes g0/plan.jsonl"
+      [[ "${rq_kind}" != CONFIRM ]] || rq_entry="CONFIRM - 0001"
+      [[ "${rq_said}" == *"queued ${rq_entry} "$'\n'* \
+         && "${rq_said}" == *"basis ${rq_want#rerun }"* \
+         && ! -e "${rq_worker}/obligation_result.jsonl" ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} out of its ${rq_heap} MB heap was \
+not run again at twice it: ${rq_said}" ;;
+    twice)
+      [[ "${rq_said}" == *"landed A"* \
+         && "${rq_said}" != *"queued ${rq_kind}"* \
+         && "$(jq -r '.detail' "${rq_worker}/obligation_result.jsonl")" \
+           == REPLAY_BOUNDED:* ]] \
+        || fail "KILL-REQUEUE: a ${rq_kind} out of heap twice was not \
+answered REPLAY_BOUNDED: ${rq_said}" ;;
     queued\ *)
       rq_entry="REPLAY obligations-0000 A g0/classes g0/plan.jsonl"
       [[ "${rq_kind}" != RERUN ]] \
@@ -6162,12 +6214,66 @@ charge was not answered REPLAY_BOUNDED: ${rq_said} \
 $(cat "${rq_worker}/obligation_result.jsonl" 2>&1)" ;;
   esac
 done <<'EOF'
-REPLAY|2900|queued 4352
-RERUN|2900|queued 4352
-CONFIRM|2900|queued 4352
-REPLAY|5000|queued 7552
-REPLAY|5400|queued 8192
-REPLAY|9000|bounded
+REPLAY|2900|-|queued 4352
+RERUN|2900|-|queued 4352
+CONFIRM|2900|-|queued 4352
+REPLAY|5000|-|queued 7552
+REPLAY|5400|-|queued 8192
+REPLAY|9000|-|bounded
+REPLAY|0|1*4096|rerun 16384
+CONFIRM|0|1*4096|rerun 16384
+REPLAY|0|2*4096|twice
+REPLAY|0|1*8192|twice
+EOF
+
+# CONFIRM-IN-PLACE: the final CONFIRM runs its replay in place: a replay
+# ended for memory runs once more at its full need, one out of heap once more
+# at twice its heap; a second end is REPLAY_BOUNDED by name, never a
+# confirmation decided over no replay.  {how the runs end, the runs, the
+# confirmation's worker result}.
+while IFS='|' read -r cp_ends cp_runs cp_result; do
+  cp_dir="${test_tmp}/confirm-in-place"
+  rm -rf -- "${cp_dir}"
+  mkdir -p "${cp_dir}/claims" "${cp_dir}/c/worker" "${cp_dir}/c/sessions"
+  cp_got=$(
+    campaign_log() { :; }
+    campaign_confirm_plan() { :; }
+    campaign_confirm_settle() { :; }
+    campaign_replay_charge_mb() { echo "$(( $1 < 8192 ? $1 : 8192 ))"; }
+    campaign_replay_peak_mb=1000
+    cp_n=0
+    campaign_head_charged() {
+      cp_n=$((cp_n + 1))
+      echo "$1 $7" >>"${cp_dir}/charged"
+      read -r -a cp_end <<<"${cp_ends}"
+      case "${cp_end[cp_n - 1]:-ok}" in
+        heap) mkdir -p "${cp_dir}/c/worker/ended-${cp_n}"
+          echo 4096 >"${cp_dir}/c/worker/ended-${cp_n}/workload_out_of_heap_mb"
+          printf '0 %s %s 4096\n' "$1" "${cp_dir}/c/worker/ended-${cp_n}" \
+            >"${cp_dir}/c/worker/replay_again" ;;
+        memory) printf '2900 %s %s -\n' "$1" \
+            "${cp_dir}/c/worker/ended-${cp_n}" >"${cp_dir}/c/worker/replay_again" ;;
+        ok) jq -n -c '{verdict: "ADMITTED", sessionId: "S"}' \
+            >"${cp_dir}/c/worker/obligation_result.jsonl" ;;
+      esac
+    }
+    campaign_confirm_decide() {
+      jq -r '.verdict + " " + (.detail // "")' \
+        "${cp_dir}/c/worker/obligation_result.jsonl"
+    }
+    campaign_confirm_claim "${cp_dir}" "${cp_dir}/claims" "${cp_dir}/c"
+    echo "runs $(wc -l <"${cp_dir}/charged")"
+  )
+  [[ "${cp_got}" == *"runs ${cp_runs}"* \
+     && "${cp_got}" == *"${cp_result}"* ]] \
+    || fail "CONFIRM-IN-PLACE: ends ${cp_ends} gave ${cp_got}, not ${cp_runs} \
+run(s) and ${cp_result}: $(cat "${cp_dir}/charged")"
+done <<'EOF'
+ok|1|ADMITTED
+heap ok|2|ADMITTED
+memory ok|2|ADMITTED
+heap heap|2|NOT_ADMITTED REPLAY_BOUNDED: the confirmation replay ran out of its 4096 MB heap
+memory memory|2|NOT_ADMITTED REPLAY_BOUNDED: the confirmation replay was ended at 2900 MB
 EOF
 
 # HOST-PAR: how many starts of one kind one host runs at once, as many as

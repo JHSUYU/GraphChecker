@@ -103,8 +103,6 @@ charged_mb=${CAUSYNTH_CHARGED_MB:-0}
 # campaign_replay_charge_mb); its heap is half its whole need
 # (CAUSYNTH_HEAP_BASIS_MB), so the cap places it and the ledger grants its
 # growth, but the heap never stops it first.
-heap_mb=$(( ${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}} / 2 ))
-(( heap_mb >= 4096 )) || heap_mb=4096
 
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one
@@ -117,10 +115,15 @@ heap_mb=$(( ${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}} / 2 ))
 # directory, what a native run of it is charged (REPRODUCE); a replay's in its
 # worker directory, the campaign's measured replay need (run_engine.sh
 # campaign_replay_measured).
+out_of_heap=()
+[[ ${CAUSYNTH_TRACE_MODE:-} != replay-context ]] \
+  || out_of_heap=(-XX:+ExitOnOutOfMemoryError)
 # shellcheck source=../../run_engine.sh
 source "${lib}/../../run_engine.sh"
+heap_mb=$(campaign_replay_heap_mb "${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}}")
 set +e
-"${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
+"${jdk}/bin/java" -ea -Xmx${heap_mb}m "${out_of_heap[@]+"${out_of_heap[@]}"}" \
+  -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${tmpdir}" "${jvm_properties[@]}" \
