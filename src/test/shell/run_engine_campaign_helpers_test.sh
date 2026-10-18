@@ -2040,9 +2040,10 @@ EOF
 # MEASURED-NEED: every replay that returns -- an obligation's, a GROW
 # re-run's, a CONFIRM's -- states its peak in its worker directory
 # (workload_rss_mb, experiments/lib/execute.sh), and the campaign's need is
-# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB: it
-# never falls, a worker that states none (its solver answered) leaves it,
-# and it is said when it is first measured and whenever it moves.  Per row:
+# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB, until
+# eight replays after the seed's returned (MEASURED-TYPICAL: then their
+# peaks' 90th percentile); a worker that states none (its solver answered)
+# leaves it, and it is said when it is first measured and whenever it moves.  Per row:
 # the peaks in turn (- a worker that states none), the need after each, and
 # how many times it was said.
 measured_dir="${test_tmp}/measured"
@@ -2072,7 +2073,8 @@ done <<'EOF'
 171 - 300 400|512 512 512 640|2
 - 238|512 512|1
 EOF
-# MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
+# MEASURED-TYPICAL: once eight replays after the seed's returned, the need is
+# their peaks' 90th percentile times 1.5, and a replay of
 # the stream is charged the 90th percentile of their lives' mean resident
 # memory (rounded up to 128 MB, at least 512, at most the need; a replay that
 # stated no mean counts its peak), its heap still the need, and a host keeps
@@ -2107,12 +2109,13 @@ while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge \
     || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
 ${typical_got}, not ${typical_need}|${typical_charge}|${typical_spike}"
 done <<'EOF'
-2234|918 900 950 1000 880 1242 920 910|3456|1280|0
+2234|918 900 950 1000 880 1242 920 910|1920|1280|0
 3454|1583 1600 1500|5248|4352|0
 1600/867|1991/1040 2088/1000|3200|1152|936
-2234|300 310 320 330 340 350 360 370|3456|512|0
+2234|300 310 320 330 340 350 360 370|640|512|0
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
-2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
+2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|2432|896|661
+1000|900 950 1000 1100 1200 1300 1400 1500 1450 1350 6476|2304|1536|0
 EOF
 # PLANNER-START: the planner runs at the engine heap (campaign_stream_plan):
 # one is started there when none lives, a living one is asked as it is, and

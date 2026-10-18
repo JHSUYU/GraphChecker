@@ -1676,8 +1676,11 @@ JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
-CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
-times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
+CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) -- until eight
+replays after the seed's returned, then the 90th percentile of their peaks (`campaign_replay_peak_p90_mb`:
+SGF8-adhoc-07's largest of 538 peaks, 6476 MB, had raised every replay's heap basis and full charge to 9728 MB;
+their 90th percentile, 3547 MB, gives 5376), times 1.5, rounded up to 128 MB, at least 512 MB, and charged at
+most half a host's ceiling
 (`campaign_replay_charge_mb`). The need sizes a replay's heap; until eight replays after the seed's
 returned, a replay of the stream is CHARGED a quarter more than the seed replay's life's mean, with room for
 four ends that reach the largest peak so far (charged 1.5 times the seed's peak, SGF8POOL-adhoc-05's round 0 of 600
@@ -1690,8 +1693,8 @@ SGF7B-adhoc-10: 19 replays, peaks 680-1557 MB, lives' medians 413-834 MB); charg
 of real use and admitted nothing more (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB). An obligation replay peaks near its own seed replay (round HG4:
 hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
 and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
-use (HG5A); one that outgrows the need grows its charge as below and raises the need of every
-start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
+use (HG5A); one that outgrows the need grows its charge as below, and before eight returned raises the
+need of every start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
 start (`campaign_stream_admit_host`, `stream_admitted_mb`, handed to the job); the head holds it,
 the job releases it as soon as its work returned, before the head waits to see what a peer wrote,
 and the head again once it collected or reaped the job (`campaign_stream_release`). A replay JVM

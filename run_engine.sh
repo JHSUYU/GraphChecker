@@ -2992,6 +2992,7 @@ campaign_replay_min_need_mb=512
 # re-run's, a CONFIRM's) as they returned, and what a replay of the stream
 # is charged at its start once enough of them did (campaign_replay_typical).
 campaign_replay_peaks=()
+campaign_replay_peak_p90_mb=0
 campaign_replay_means=()
 campaign_replay_typical_mb=0
 # What a replay grows by past its charge at its end, in MB (the typical
@@ -3020,9 +3021,14 @@ campaign_replay_cores_x100=()
 campaign_replay_typical_after=8
 
 # The memory, in MB, one replay of this campaign needs once one was measured
-# -- an obligation's, a GROW re-run's, a CONFIRM's: the largest peak its
-# replays stated so far times 1.5, rounded up to 128 MB, at least
-# campaign_replay_min_need_mb.  An obligation replay peaks near its own seed
+# -- an obligation's, a GROW re-run's, a CONFIRM's: the 90th percentile of
+# the peaks of the replays after the seed's once campaign_replay_typical_after
+# of them returned (campaign_replay_peak_p90_mb), the largest peak so far
+# before that, times 1.5, rounded up to 128 MB, at least
+# campaign_replay_min_need_mb.  The largest peak ever seen raised every
+# replay's heap and full charge after it (SGF8-adhoc-07: 9728 MB from one
+# replay of 6476 MB, the 90th percentile of 538 being 3547).  An obligation
+# replay peaks near its own seed
 # replay (round HG4, seed / obligations, MB: hdfs-11741 674 / 662-715,
 # hdfs-17897 552 / 540-555, hdfs-17899-bug1 548 / 548-550, hdfs-adhoc-07
 # 238 / 134-257), while the static 2500 MB per obligation and seven times
@@ -3034,7 +3040,11 @@ campaign_replay_typical_after=8
 # 939-2003).  The need sizes the replay JVM's heap (CAUSYNTH_HEAP_BASIS_MB,
 # execute.sh); the charge it starts with is campaign_replay_charge_mb's.
 campaign_replay_need_mb() {
-  campaign_need_of_peak_mb "${campaign_replay_peak_mb}"
+  if (( ${#campaign_replay_peaks[@]} < campaign_replay_typical_after )); then
+    campaign_need_of_peak_mb "${campaign_replay_peak_mb}"
+  else
+    campaign_need_of_peak_mb "${campaign_replay_peak_p90_mb}"
+  fi
 }
 
 # The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
@@ -3058,23 +3068,24 @@ campaign_replay_measured() {
   [[ "${peak}" =~ ^[0-9]+$ ]] || return 0
   read -r mean 2>/dev/null <"$1/workload_rss_mean_mb" || mean=${peak}
   [[ "${mean}" =~ ^[0-9]+$ ]] || mean=${peak}
+  before=$(campaign_replay_need_mb)
   (( first )) || campaign_replay_typical "${peak}" "${mean}"
   campaign_replay_cores_measured "$1" "${first}"
-  (( peak > campaign_replay_peak_mb )) || return 0
-  before=$(campaign_replay_need_mb)
-  campaign_replay_peak_mb=${peak}
-  # Until the stream's own replays are measured (campaign_replay_typical),
-  # a replay of the stream is charged a quarter more than the seed replay
-  # held over its life (solr-adhoc-05's replays held 1040 MB in 9 of 10, its
-  # seed 867), and a host keeps room for ends that reach the largest peak so
-  # far: charged 1.5 times the seed's peak (2432 MB, SGF8POOL-adhoc-05), a
-  # round 0 of 600 obligations filled every host at seven replays of 200-300
-  # MB each, 12-38 % of its memory in use, and held them so for the round.
-  if (( ${#campaign_replay_peaks[@]} < campaign_replay_typical_after )); then
-    (( ! first )) || campaign_replay_typical_mb=$(campaign_replay_life_mb \
-      "$(( mean * 5 / 4 ))")
-    campaign_replay_spike_mb=$(( peak > campaign_replay_typical_mb \
-      ? peak - campaign_replay_typical_mb : 0 ))
+  if (( peak > campaign_replay_peak_mb )); then
+    campaign_replay_peak_mb=${peak}
+    # Until the stream's own replays are measured (campaign_replay_typical),
+    # a replay of the stream is charged a quarter more than the seed replay
+    # held over its life (solr-adhoc-05's replays held 1040 MB in 9 of 10, its
+    # seed 867), and a host keeps room for ends that reach the largest peak so
+    # far: charged 1.5 times the seed's peak (2432 MB, SGF8POOL-adhoc-05), a
+    # round 0 of 600 obligations filled every host at seven replays of 200-300
+    # MB each, 12-38 % of its memory in use, and held them so for the round.
+    if (( ${#campaign_replay_peaks[@]} < campaign_replay_typical_after )); then
+      (( ! first )) || campaign_replay_typical_mb=$(campaign_replay_life_mb \
+        "$(( mean * 5 / 4 ))")
+      campaign_replay_spike_mb=$(( peak > campaign_replay_typical_mb \
+        ? peak - campaign_replay_typical_mb : 0 ))
+    fi
   fi
   (( first )) || [[ "$(campaign_replay_need_mb)" != "${before}" ]] || return 0
   campaign_log "a replay peaked at ${peak} MB (${1}): every replay from now \
@@ -3147,6 +3158,7 @@ campaign_replay_typical() {
     || return 0
   p90=$(campaign_percentile_90 "${campaign_replay_means[@]}")
   p90_peak=$(campaign_percentile_90 "${campaign_replay_peaks[@]}")
+  campaign_replay_peak_p90_mb=${p90_peak}
   typical=$(campaign_replay_life_mb "${p90}")
   campaign_replay_spike_mb=$(( p90_peak > typical ? p90_peak - typical : 0 ))
   (( ${#campaign_replay_peaks[@]} > campaign_replay_typical_after \
