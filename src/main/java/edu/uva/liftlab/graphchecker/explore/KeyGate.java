@@ -30,7 +30,8 @@ import java.util.Set;
 /**
  * THE KEY GATE: every flip a recorded run asked, keyed again by this build
  * ({@link ObligationFactory#obligationId} over {@link
- * ObligationFactory#dependence}), and every key read for what it folds.  One
+ * ObligationFactory#dependence}), and every key read for what it folds: the
+ * merge gate of any change to an arm's key (OPERATIONS §6).  One
  * key is one question to the ledger ({@link Frontier}): its first answer
  * settles every other ask under it.  So a key is SOUND only where its asks
  * agree on what the solver can say: no key may hold an ask whose query was
@@ -147,8 +148,11 @@ public final class KeyGate {
         Set<String> arms = new LinkedHashSet<String>();
         Set<String> idsBefore = new LinkedHashSet<String>();
         int asked = 0;
+        // One task object per id, as a round has: a key is held by it
+        // (Corpus#dependence), and a task is costly to make.
+        Map<String, Task> tasks = new LinkedHashMap<String, Task>();
         for (Path worker : ObligationDir.workerDirs(iteration)) {
-            Asked arm = rekeyed(corpus, worker, byKey);
+            Asked arm = rekeyed(corpus, worker, byKey, tasks);
             if (arm == null) continue;
             asked++;
             arms.add(arm.arm);
@@ -249,7 +253,8 @@ public final class KeyGate {
     /** One worker's asked flip, filed under its key; null when it is no
      *  decision's flip, or its task or path is no longer in the corpus. */
     private static Asked rekeyed(Corpus corpus, Path worker,
-                                 Map<String, List<Asked>> byKey)
+                                 Map<String, List<Asked>> byKey,
+                                 Map<String, Task> tasks)
             throws IOException {
         Path row = worker.resolve(ObligationDir.OBLIGATION);
         Path result = worker.resolve(ObligationDir.RESULT);
@@ -273,7 +278,8 @@ public final class KeyGate {
         Answer answer = last.verdict() == Verdict.ADMITTED ? Answer.ADMITTED
                 : last.verdict() == Verdict.UNSAT ? Answer.UNSAT
                 : model ? Answer.SAT : Answer.NONE;
-        Task task = ClosurePlanner.taskOf(corpus, obligation.taskId());
+        Task task = tasks.computeIfAbsent(obligation.taskId(),
+                id -> ClosurePlanner.taskOf(corpus, id));
         if (task == null) return null;
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
             if (!path.pathId.equals(obligation.pathId())) continue;

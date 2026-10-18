@@ -438,12 +438,7 @@ Correctness:
     Keys that close it pass the key gate (`KeyGate`, branch `hdfs-u18-fix`) but cost throughput, so
     neither is merged: the occurrence's own earlier faults kept (`hdfs-u18-fix` 8ed56ddeb; 05: 269
     asks in 27 min) and the kept conditions of the prefix closure (rule 1, `hdfs-rule1` 7d2819214;
-    05: 470 in 30 min), against 187 in all on the merged key. Where the stated terms reach a handoff of
-    the task's own occurrence (the query offers it every run's arms, each pinned to its run's
-    valuation), the key names the run's valuation that decides which of them the query admits
-    (`Corpus#heldValuation`: the roots the path's earlier decisions reach, every root it ran beside a
-    family of its run alone; PIPELINE §7.3, its LIMIT there) -- this gap's shape; not re-checked on
-    hdfs-adhoc-11's corpus.
+    05: 470 in 30 min), against 187 in all on the merged key.
 52. Codec capture attaches nothing, and names nothing, when a getter's message no door decoded:
     right for a message built here (07's `getSegmentInfo`), but silent for one parsed where no door
     walks it (`parseFrom` from disk, a receiver-side `toBuilder()`/`mergeFrom` copy, a map field's
@@ -552,18 +547,21 @@ Correctness:
     21: RX1 12.2 asks per arm, every replay's new Solr ports; RX2 6.9, a searcher's name spelling its
     identity hash). A session that did not close states no spellings and keeps them (a re-ask, never
     a fold). Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
-    raw ids in its name (an id its predicates state), so arms that
+    raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
     differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
-    its id alone (as before). A producer arm's guard is named by the roots its term and predicates
-    reach, by root id; another root's value only where the question reads it (PIPELINE §7.3: Z3S-18413
-    round 1 replayed, 992 ids over 313 arms by the whole guard, 357 so).
-70. A clock reading the program kept concrete reaches an arm's key as a term's constant: Solr's
+    its id alone (as before). A producer arm's guard named by only the roots its term and predicates
+    reach (branch `solr-armkey` 3bfdca7bc: Z3S-18413's 1478 asks under 787 keys instead of 1416) folds
+    sibling worlds: the key gate (`explore.KeyGate`) finds SliceMutator#addRoutingRule's `#u17#1 ->
+    false` UNSAT in one depth-1 fault world under the key of two sibling fault worlds whose queries
+    were satisfiable (models their replays did not take), where the whole guard keeps them apart; so it
+    is not merged (`analysis/solr-2026-10-18/explore/gate/d2b/z3s18413.json`, base side `gate/base/`).
+71. A clock reading the program kept concrete reaches an arm's key as a term's constant: Solr's
     `MigrateCmd` (243) and `OverseerCollectionMessageHandler` (1024) name a sub-request
     `asyncId + Math.abs(System.nanoTime())`, a reading no root mints (only declared clock sites are
-    roots), so the Overseer queue item's `async` leaf differs in every run (Z3S-18413 round 1: what
-    still re-keys 4 tasks' arms, 72ff1904's among them). Fix: the runtime states the concrete clock readings
-    a run's program got, as it states `runSpellings`, and `Corpus#programNames` names them by their
-    clock.
+    roots), so the Overseer queue item's `async` leaf differs in every run (Z3S-18413 round 1: it
+    re-keys 4 tasks' arms, 72ff1904's among them): a re-ask, never a fold. Fix: the runtime states the
+    concrete clock readings a run's program got, as it states `runSpellings`, and
+    `Corpus#programNames` names them by their clock.
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is

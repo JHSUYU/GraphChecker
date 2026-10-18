@@ -216,7 +216,15 @@ a planner of its own per round (baseline side) against ONE served planner (candi
 to what the planner keeps across rounds (`ExploreMain --serve`) is gated by passing one jar as both
 sides, every round's files identical; each side's per-round walls are `walls-<case>.EXPLORE.serve.tsv`.
 Both replays run each side's whole loop on one host, placed by its heap.
-No replay: it cannot see VM, runtime or identity changes — those need a live round. Read the
+No replay: it cannot see VM, runtime or identity changes — those need a live round.
+
+A change to an arm's key (`ObligationFactory#dependence`, `Corpus#inputShape`) is gated by `explore.KeyGate` over
+recorded corpora (gzip rows): `java -cp <jar> edu.uva.liftlab.graphchecker.explore.KeyGate --iteration
+<iteration-0000> [--claim <final/claim.json>] --out <keys.json>`, with `-Dcausynth.system.doors` and the case's heap.
+It re-keys every asked flip against what the run answered; exit 1 on a key folding a satisfiable ask beside an UNSAT
+one of a sibling world, an UNSAFE first settling answer, or a lost witness ask. The corpora and driver of
+2026-10-18: `analysis/solr-2026-10-18/explore/` (`corpora.tsv`, `gate.sh`); Z3S-18413 (`corpora/z3s18413b`) and
+SGF5-adhoc-14 (`corpora/sgf5-14`) hold answered child-world asks. Read the
 header for `AB_HEAP_MB`, `AB_BASELINE_REPO` (when declarations differ between sides), `AB_HOSTS`.
 Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
 
