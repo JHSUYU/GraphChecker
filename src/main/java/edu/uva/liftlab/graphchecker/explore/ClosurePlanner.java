@@ -109,8 +109,8 @@ public final class ClosurePlanner {
             "STATIC_CANDIDATE_PRODUCER";
 
     /**
-     * THE PLANNER HOST'S CORES, which each superstep of a walk runs its
-     * demands' steps on ({@link Walk#ahead}).
+     * THE PLANNER HOST'S CORES, which a walk runs its demands' steps on
+     * ahead of taking them ({@link Walk#ahead}).
      */
     static final ForkJoinPool CORES = new ForkJoinPool(
             Runtime.getRuntime().availableProcessors());
@@ -227,14 +227,14 @@ public final class ClosurePlanner {
                 doorsOnly, heldDoorsOnly, faults, view, CORES);
     }
 
-    /** {@link #plan}, its supersteps on {@code cores} (a test's). */
+    /** {@link #plan}, its steps on {@code cores} (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
                      ClientFaults faults, SystemView view, ForkJoinPool cores) {
         Walk walk = new Walk(corpus, scope, anchor, cores);
         Map<String, Demand> demands = walk.demands;
-        Deque<String> pending = new ArrayDeque<String>();
+        Deque<String> pending = walk.pending;
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
         // The anchor flips only the decisions on its way to the throw: the
         // target's guard set (PIPELINE §7.2) and, when no admitted run of it
@@ -260,8 +260,7 @@ public final class ClosurePlanner {
         }
         start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
                 scope));
-        demands.put(anchor.id(), start);
-        pending.add(anchor.id());
+        walk.admit(start);
         Set<String> truncated = new LinkedHashSet<String>();
         Set<String> ceilingCut = new LinkedHashSet<String>();
         Candidates candidates = new Candidates(corpus);
@@ -272,19 +271,17 @@ public final class ClosurePlanner {
         // demand reached the ceiling: then no candidate stays planned.
         Set<String> plannedCandidates = new LinkedHashSet<String>();
         boolean ceilingReached = false;
-        while (true) {
-            while (!pending.isEmpty()) {
-                // ONE SUPERSTEP: the walks of the demands at the head of the
-                // queue that no step holds are computed at once, each
-                // against its demand's state now ({@link Walk#ahead}); then
-                // the demands are taken in queue order -- the head, and each
-                // next one while a step of its state is held -- each step
-                // taken while it is the walk of its demand's state as it is
-                // taken, else walked again there ({@link Walk#take}).  So
-                // the walk is the one-at-a-time walk's, step for step
-                // (PIPELINE §7.2).
-                walk.ahead(pending, demands);
-                do {
+        try {
+            while (true) {
+                while (!pending.isEmpty()) {
+                    // The demands behind the head are walked ahead on the cores,
+                    // each against its state as its step starts ({@link
+                    // Walk#ahead}), while the walk takes them in queue order,
+                    // each step taken while it is the walk of its demand's state
+                    // as it is taken, else walked again here ({@link
+                    // Walk#take}).  So the walk is the one-at-a-time walk's,
+                    // step for step (PIPELINE §7.2).
+                    walk.ahead();
                     Demand demand = demands.get(pending.remove());
                     demand.dirty = false;
                     for (Demand next : walk.take(demand)) {
@@ -311,9 +308,7 @@ public final class ClosurePlanner {
                                                 planned)) {
                                     continue;
                                 }
-                                demands.remove(id);
-                                pending.remove(id);
-                                walk.steps.remove(planned);
+                                walk.drop(planned);
                                 truncated.add(planned.occurrence.render());
                             }
                             plannedCandidates.clear();
@@ -321,28 +316,30 @@ public final class ClosurePlanner {
                             continue;
                         }
                         connectedPlanned++;
-                        admit(queued, demands, pending);
+                        walk.admit(queued);
                     }
-                } while (!pending.isEmpty()
-                        && walk.ready(demands.get(pending.peek())));
+                }
+                // Row-connected demand is exhausted: the next static candidate,
+                // while the bound has room -- the walks of the next ones
+                // computed at once, each taken when its candidate is planned
+                // while it is the walk of its state then ({@link Walk#prepare}).
+                if (!ceilingReached && candidatesPlanned < maxTasks) {
+                    walk.prepare(candidates.upcoming(maxTasks
+                            - candidatesPlanned));
+                }
+                Demand candidate = candidates.next();
+                if (candidate == null) break;
+                if (ceilingReached || candidatesPlanned >= maxTasks) {
+                    truncated.add(candidate.occurrence.render());
+                    continue;
+                }
+                candidatesPlanned++;
+                plannedCandidates.add(candidate.occurrence.id());
+                walk.admit(candidate);
             }
-            // Row-connected demand is exhausted: the next static candidate,
-            // while the bound has room -- the walks of the next ones
-            // computed at once, each taken when its candidate is planned
-            // while it is the walk of its state then ({@link Walk#prepare}).
-            if (!ceilingReached && candidatesPlanned < maxTasks) {
-                walk.prepare(candidates.upcoming(maxTasks
-                        - candidatesPlanned));
-            }
-            Demand candidate = candidates.next();
-            if (candidate == null) break;
-            if (ceilingReached || candidatesPlanned >= maxTasks) {
-                truncated.add(candidate.occurrence.render());
-                continue;
-            }
-            candidatesPlanned++;
-            plannedCandidates.add(candidate.occurrence.id());
-            admit(candidate, demands, pending);
+        } finally {
+            // No step runs on after the walk: each reads it.
+            walk.drain();
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -456,12 +453,7 @@ public final class ClosurePlanner {
         return unit < 0 ? site : site.substring(0, unit);
     }
 
-    /** Plans one demand. */
-    private static void admit(Demand demand, Map<String, Demand> demands,
-                              Deque<String> pending) {
-        demands.put(demand.occurrence.id(), demand);
-        pending.add(demand.occurrence.id());
-    }
+
 
     /**
      * THE TASK BOUND COUNTS STATIC CANDIDATES ONLY (owner: a genuinely large
@@ -950,7 +942,10 @@ public final class ClosurePlanner {
                                 1));
         /** The contribution this demand's values are exactly, or null. */
         private Contribution exactly;
-        private final Set<String> flipSites = new LinkedHashSet<String>();
+        private Set<String> flipSites = new LinkedHashSet<String>();
+        /** Whether {@link #flipSites} is a step's still ({@link
+         *  #launched}), copied before this demand changes it. */
+        private boolean flipsShared;
         /** The symbols of a concrete anchor's predicate reads ({@link
          *  #concrete}); none on any other demand. */
         private final Set<String> predicate = new LinkedHashSet<String>();
@@ -993,8 +988,9 @@ public final class ClosurePlanner {
          *  null: all it holds, and all it ever will, it holds of it. */
         private WriteRow madeOf;
         /** The writes whose writer's demand it absorbed ({@link #absorb});
-         *  null until one. */
-        private Set<WriteRow> absorbed;
+         *  null until one.  Steps on the cores ask it ({@link
+         *  Says#writer}) while the walk adds to it. */
+        private volatile Set<WriteRow> absorbed;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
@@ -1020,6 +1016,14 @@ public final class ClosurePlanner {
         private boolean absorbs(WriteRow write) {
             return write == madeOf
                     || absorbed != null && absorbed.contains(write);
+        }
+
+        /** A step of it runs on the cores, over its values and flip sites
+         *  as they stand ({@link Step}): what changes them next copies them
+         *  first. */
+        private void launched() {
+            shared = true;
+            flipsShared = true;
         }
 
         /** Its own values, before it changes them. */
@@ -1058,9 +1062,8 @@ public final class ClosurePlanner {
                     return false;
                 }
                 if (absorbed == null) {
-                    absorbed = Collections.newSetFromMap(
-                            new java.util.IdentityHashMap<WriteRow, Boolean>(
-                                    1));
+                    // A row's equality is its identity.
+                    absorbed = ConcurrentHashMap.newKeySet(1);
                 }
                 absorbed.add(write);
             }
@@ -1077,6 +1080,10 @@ public final class ClosurePlanner {
                 }
                 if (grew) exactly = null;
                 holds.addAll(other.holds);
+            }
+            if (flipsShared && !flipSites.containsAll(other.flipSites)) {
+                flipSites = new LinkedHashSet<String>(flipSites);
+                flipsShared = false;
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
@@ -1248,11 +1255,11 @@ public final class ClosurePlanner {
      * once per key, a store version's earlier versions, a write's writer --
      * in the order the walk says it, applied when the walk is taken ({@link
      * Step#apply}), so every rule the walk decides by its order is decided
-     * there.  What the walk has said already is not said again -- what it
-     * holds only grows, and no step is taken while steps are computed: a
-     * superstep's steps would hold it all at once (SGF8-adhoc-05 round 5:
-     * 12 million offers and 11 million gaps in 192 steps ran a 21 GB heap
-     * out).
+     * there.  What the walk has said already is not said again: what it
+     * holds only grows, so what a step read as said is said when the step
+     * is taken; else the steps held would hold it all again (SGF8-adhoc-05
+     * round 5: 12 million offers and 11 million gaps in 192 steps ran a
+     * 21 GB heap out).
      */
     private static class Says {
         final Walk walk;
@@ -1261,7 +1268,7 @@ public final class ClosurePlanner {
         /** The keys of the gaps said here ({@link #gap}). */
         private Set<String> gaps;
         /** The occurrences of the successors said here, null for none: the
-         *  demands taking it may grow ({@link Walk#compute}). */
+         *  demands taking it may grow ({@link Walk#launch}). */
         Set<String> successors;
 
         Says(Walk walk, Demand demand) {
@@ -1348,7 +1355,7 @@ public final class ClosurePlanner {
             }
             said.add((at, next) -> {
                 Set<String> now = at.offered.computeIfAbsent(key,
-                        unused -> new HashSet<String>());
+                        unused -> ConcurrentHashMap.newKeySet());
                 for (OccurrenceAddress occurrence : offering) {
                     if (!now.add(occurrence.id())) continue;
                     Demand candidate = new Demand(occurrence, why, false);
@@ -1371,7 +1378,7 @@ public final class ClosurePlanner {
          *  made as it is taken -- unless the writer's demand holds the
          *  write already ({@link Demand#absorbs}). */
         void writer(WriteRow write) {
-            Demand held = walk.demands.get(
+            Demand held = walk.admitted.get(
                     write.endpoint().occurrence().id());
             if (held != null && held.absorbs(write)) return;
             succeeds(write.endpoint().occurrence().id());
@@ -1405,16 +1412,35 @@ public final class ClosurePlanner {
         private final Map<String, Set<String>> unread =
                 new HashMap<String, Set<String>>(4);
 
+        /*
+         * The demand as it stood when the step was made, on the planner's
+         * thread: the walk changes a demand while steps of others run, and
+         * what it changes of a running step's demand it copies first
+         * ({@link Demand#launched}).
+         */
+        private final Set<String> values;
+        private final Map<String, Long> cutoffs;
+        private final Set<String> flipSites;
+        private final String why;
+        private final boolean value;
+        private final boolean storeWriter;
+
         Step(Walk walk, Demand demand, GroupReads group) {
             super(walk, demand);
             this.version = demand.version;
             this.group = group;
             this.contributed = demand.expandedContributed;
             this.named = demand.named;
+            this.values = demand.contributed;
+            this.cutoffs = demand.cutoffs;
+            this.flipSites = demand.flipSites;
+            this.why = demand.why;
+            this.value = demand.value;
+            this.storeWriter = demand.storeWriter;
         }
 
         /** What it holds until taken: each thing it said, each claim and
-         *  each answer over one ({@link Walk#compute}). */
+         *  each answer over one ({@link Walk#launch}). */
         long weight() {
             return said.size() + claims.size();
         }
@@ -1480,22 +1506,26 @@ public final class ClosurePlanner {
         private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
         /** The keys of the gaps that state no holder of a static site
          *  ({@link Says#gap}): the walk says each once. */
-        private final Set<String> gapKeys = new HashSet<String>();
-        /** occurrence id -> its demand: the walk's ({@link #plan}). */
+        private final Set<String> gapKeys = ConcurrentHashMap.newKeySet();
+        /** occurrence id -> its demand: the walk's ({@link #plan}), in the
+         *  order admitted. */
         private final Map<String, Demand> demands =
                 new LinkedHashMap<String, Demand>();
+        /** The same, for the steps on the cores ({@link Says#writer}). */
+        private final Map<String, Demand> admitted =
+                new ConcurrentHashMap<String, Demand>();
         /** what -> the endpoint ids of the deliveries said unread: asked of
          *  every undemanded row a whole walk meets, no key is built for it
          *  (SGF8PLAN-adhoc-05 round 2: the concatenated what|id was 6 % of
          *  the walk). */
         private final Map<String, Set<String>> unread =
-                new HashMap<String, Set<String>>();
+                new ConcurrentHashMap<String, Set<String>>();
         /** (site, node) -> the activated occurrences that hold the site. */
         private final Map<List<Object>, List<OccurrenceAddress>> holders =
                 new ConcurrentHashMap<List<Object>, List<OccurrenceAddress>>();
         /** (reason, site, guards, node) -> the occurrences offered under it. */
         private final Map<List<Object>, Set<String>> offered =
-                new HashMap<List<Object>, Set<String>>();
+                new ConcurrentHashMap<List<Object>, Set<String>>();
         /** session|occurrence id -> the owners of every location it read or
          *  wrote in that session. */
         private final Map<String, Set<String>> held =
@@ -1510,13 +1540,13 @@ public final class ClosurePlanner {
                 new ConcurrentHashMap<String, Boolean>();
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
-        private final Set<String> faultless = new LinkedHashSet<String>();
+        private final Set<String> faultless = ConcurrentHashMap.newKeySet();
         /** The narrowings' cuts already named (occurrence, message, kind). */
-        private final Set<String> cut = new LinkedHashSet<String>();
+        private final Set<String> cut = ConcurrentHashMap.newKeySet();
         /** session|store location -> the highest version whose earlier
          *  versions' writers are demanded ({@link #earlierVersions}). */
         private final Map<String, Long> storeExpanded =
-                new HashMap<String, Long>();
+                new ConcurrentHashMap<String, Long>();
         /** occurrence id -> its group (it and its state-connected factor)
          *  and the group's reads: a demand is walked again each time it
          *  grows (hdfs-adhoc-07 EX1: 93 walks of 31 demands). */
@@ -1533,23 +1563,32 @@ public final class ClosurePlanner {
          *  MemberReads#symbolsAt}, {@link MemberReads#returning}), in the
          *  order indexed: a group asks only them, not each of its members
          *  ({@link GroupReads}). */
-        private final Map<String, List<MemberReads>> naming =
-                new HashMap<String, List<MemberReads>>();
-        private final Map<String, List<MemberReads>> locating =
-                new HashMap<String, List<MemberReads>>();
-        private final Map<String, List<MemberReads>> returning =
-                new HashMap<String, List<MemberReads>>();
+        private final Map<String, MemberReads[]> naming =
+                new ConcurrentHashMap<String, MemberReads[]>();
+        private final Map<String, MemberReads[]> locating =
+                new ConcurrentHashMap<String, MemberReads[]>();
+        private final Map<String, MemberReads[]> returning =
+                new ConcurrentHashMap<String, MemberReads[]>();
         /** producer endpoint id -> {@link #contribution}. */
         private final Map<String, Contribution> contributions =
                 new ConcurrentHashMap<String, Contribution>();
-        /** The cores a superstep's steps run on ({@link #ahead}). */
+        /** The cores the steps run on ({@link #ahead}). */
         private final ForkJoinPool cores;
         /** The thread the walk is taken on: the only one that writes it. */
         private final Thread planner;
-        /** demand -> its step computed ahead, or what that threw, until
-         *  taken ({@link #take}). */
-        final Map<Demand, Object> steps =
+        /** The ids of the demands to walk, in the order they are taken. */
+        final Deque<String> pending = new ArrayDeque<String>();
+        /** demand -> its step computed ahead, {@link #RUNNING} while it
+         *  runs, or what it threw, until taken ({@link #take}). */
+        private final Map<Demand, Object> steps =
                 new java.util.IdentityHashMap<Demand, Object>();
+        /** A step on the cores, not yet {@link #received}. */
+        private static final Object RUNNING = new Object();
+        /** The steps that ran, each with its demand, as they end. */
+        private final java.util.concurrent.BlockingQueue<Object[]> done =
+                new java.util.concurrent.LinkedBlockingQueue<Object[]>();
+        /** How many steps run. */
+        private int running;
 
         Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor,
              ForkJoinPool cores) {
@@ -1561,17 +1600,22 @@ public final class ClosurePlanner {
         }
 
         /*
-         * WHAT A STEP READS.  A step ({@link Step}) runs on any core and
-         * reads the corpus, the map and the walk's memos -- each below holds
-         * a function of its key, filled by whichever core asks first ({@code
-         * putIfAbsent}: a JDK 8 ConcurrentHashMap holds a bin while
-         * computeIfAbsent computes), so every core reads the value the walk
-         * alone would have -- and its group's reads, indexed before it runs
-         * ({@link #compute}).  What the walk decides in its order (the gaps,
-         * the keys said once, the occurrences offered, the store versions
-         * expanded, the demands) a step writes none of: it reads them only
-         * to leave out what was said already, since they only grow and no
-         * step is taken while steps run ({@link Says}).
+         * WHAT A STEP READS.  A step ({@link Step}) runs on any core while
+         * the walk takes others, and reads the corpus, the map and the
+         * walk's memos -- each below holds a function of its key, filled by
+         * whichever core asks first ({@code putIfAbsent}: a JDK 8
+         * ConcurrentHashMap holds a bin while computeIfAbsent computes), so
+         * every core reads the value the walk alone would have; what only
+         * the order gives, a read's leaves by seq, it claims ({@code
+         * Corpus#readLeaves}) -- its demand as it stood when the step was
+         * made ({@link Step}: what the walk changes of it, it copies first,
+         * {@link Demand#launched}), and its group's reads, indexed on the
+         * planner's thread ({@link #reads}: each key's members an array the
+         * walk replaces whole).  What the walk decides in its order (the
+         * gaps, the keys said once, the occurrences offered, the store
+         * versions expanded, the demands and the writes they absorbed) a
+         * step writes none of: it reads them, concurrent, only to leave out
+         * what was said already ({@link Says}).
          */
 
         /** Whether a session recorded a fault decision of {@code
@@ -1602,14 +1646,48 @@ public final class ClosurePlanner {
             return held != null ? held : contributions.get(producer.id());
         }
 
+        /** Plans one demand: it is walked as its turn comes. */
+        void admit(Demand demand) {
+            demands.put(demand.occurrence.id(), demand);
+            admitted.put(demand.occurrence.id(), demand);
+            pending.add(demand.occurrence.id());
+        }
+
+        /** Takes a planned demand out of the plan, and its step. */
+        void drop(Demand demand) {
+            demands.remove(demand.occurrence.id());
+            admitted.remove(demand.occurrence.id());
+            pending.remove(demand.occurrence.id());
+            steps.remove(demand);
+        }
+
         /**
-         * THE STEPS OF A SUPERSTEP, AHEAD: of the first demands at the head
-         * of {@code pending}, {@link #WINDOW} a core, each its first time
-         * there, the steps not {@link #ready} are computed ({@link
-         * #compute}).  On one core none is: a step there runs alone, as the
-         * walk takes it.
+         * STEPS AHEAD: while the walk takes its demands in queue order, the
+         * steps of the ones behind the head run on the cores ({@link
+         * #launch}) -- each against its demand's state as it starts, the
+         * walk going on as they run -- and the walk waits only for the step
+         * it takes, starting others as steps end; one that runs none, it
+         * walks itself, beside them ({@link #take}: SGF8-adhoc-05 round 5's
+         * walk 303 s so, 337 s with such a head started on the cores and
+         * waited for).  On one core none runs ahead: a step there runs
+         * alone, as the walk takes it.
          */
-        void ahead(Deque<String> pending, Map<String, Demand> demands) {
+        void ahead() {
+            received(false);
+            launch(true);
+        }
+
+        /** The steps of {@code upcoming}'s demands, run ahead as the
+         *  queue's are ({@link #launch}): the static candidates planned one
+         *  at a time, each walked as its turn comes. */
+        void prepare(List<Demand> upcoming) {
+            received(false);
+            launch(upcoming, false);
+        }
+
+        /** {@link #launch} over the queue's first demands, {@link #WINDOW}
+         *  a core, each its first time there. */
+        private void launch(boolean headTaken) {
             if (cores.getParallelism() < 2) return;
             int window = WINDOW * cores.getParallelism();
             Set<Demand> seen = Collections.newSetFromMap(
@@ -1621,19 +1699,11 @@ public final class ClosurePlanner {
                 head.add(demand);
                 if (head.size() == window) break;
             }
-            compute(head);
+            launch(head, headTaken);
         }
 
-        /** The steps of {@code upcoming}'s demands, computed as {@link
-         *  #ahead} computes the queue's: the static candidates planned one
-         *  at a time, each walked as its turn comes. */
-        void prepare(List<Demand> upcoming) {
-            if (cores.getParallelism() < 2) return;
-            compute(upcoming);
-        }
-
-        /** The demands a superstep's window holds a core ({@link #ahead}):
-         *  as many again as run at once, to fill the cores as steps end. */
+        /** The demands a window holds a core ({@link #launch}): as many
+         *  again as run at once, to keep the cores busy as steps end. */
         static final int WINDOW = 2;
         /** The heap one unit of a held step's weight may hold ({@link
          *  Step#weight}): at most a successor said with its sets, about
@@ -1643,108 +1713,113 @@ public final class ClosurePlanner {
          *  last collection that the steps held may take. */
         static final double HELD_SHARE = 0.25;
 
-        /** How much the steps held at once may weigh ({@link #compute}):
+        /** How much the steps held at once may weigh ({@link #launch}):
          *  {@link #HELD_SHARE} of the heap the old generation left free
          *  after its last collection ({@code HeapWatch}), so a walk whose
-         *  heap fills holds fewer -- down to the head alone, the walk one
-         *  step at a time. */
+         *  heap fills holds fewer -- down to none, the walk one step at a
+         *  time. */
         private static long budget() {
             long heap = Runtime.getRuntime().maxMemory();
             double free = 1.0 - HeapWatch.oldGenerationSwept();
             return (long) (heap * free * HELD_SHARE / WEIGHT_BYTES);
         }
 
-        /** Whether {@code demand}'s step is ready: computed ahead against
-         *  its state now, or what that threw ({@link #take}). */
-        boolean ready(Demand demand) {
-            Object step = steps.get(demand);
-            return step instanceof Step
-                    ? ((Step) step).version == demand.version : step != null;
-        }
-
         /**
-         * The steps of {@code order}'s demands -- queue order -- that are
-         * not {@link #ready}, two or more, computed on the walk's cores
-         * against each demand's state now, their groups indexed here first
-         * ({@link #reads}): in order, a core's worth at a time; the next
-         * only while the steps held weigh less than the {@link #budget} --
-         * held until taken, a step holds everything it said ({@link
-         * Step#weight}): SGF8-adhoc-05 round 5's 96 at once took its 21 GB
-         * heap to 22 GB resident -- and none that a step before it, known,
-         * names a successor of ({@link Says#successors}): taking that one
-         * grows it, and its step now would be another state's (SGF8-adhoc-19
-         * round 10: 699 of 1,611 were).  Those left out, a later superstep
-         * computes.
+         * Starts the steps of {@code order}'s demands -- queue order, the
+         * first the one the walk takes next where {@code headTaken} -- that
+         * hold no step of their state and run none, in order, while fewer
+         * than the cores run and the steps held weigh less than the {@link
+         * #budget} -- held until taken, a step holds everything
+         * it said ({@link Step#weight}): SGF8-adhoc-05 round 5's 96 at once
+         * took its 21 GB heap to 22 GB resident -- and none that a step
+         * before it, ended, names a successor of ({@link Says#successors}):
+         * taking that one grows it, so its step now would be another
+         * state's (SGF8-adhoc-19 round 10: 699 of 1,611 were).  Their
+         * groups are indexed here, on the planner's thread ({@link
+         * #reads}).
          */
-        private void compute(List<Demand> order) {
-            List<Demand> missing = new ArrayList<Demand>();
-            for (Demand demand : order) {
-                if (!ready(demand)) {
-                    steps.remove(demand);
-                    missing.add(demand);
-                }
-            }
-            if (missing.size() < 2) return;
-            Map<Demand, GroupReads> groups =
-                    new java.util.IdentityHashMap<Demand, GroupReads>();
-            for (Demand demand : missing) {
-                groups.put(demand, reads(demand.occurrence));
-            }
+        private void launch(List<Demand> order, boolean headTaken) {
+            if (cores.getParallelism() < 2) return;
             long weight = 0L;
             for (Object step : steps.values()) {
                 if (step instanceof Step) weight += ((Step) step).weight();
             }
             long budget = budget();
             Set<String> named = new HashSet<String>();
-            java.util.concurrent.BlockingQueue<Object[]> done =
-                    new java.util.concurrent.LinkedBlockingQueue<Object[]>();
-            int at = 0;
-            int running = 0;
-            while (true) {
-                while (at < order.size() && running < cores.getParallelism()
-                        && weight < budget) {
-                    Demand demand = order.get(at++);
-                    GroupReads group = groups.get(demand);
-                    Object held = steps.get(demand);
-                    if (held instanceof Step) {
-                        named((Step) held, named);
-                    } else if (group != null
-                            && !named.contains(demand.occurrence.id())) {
-                        running++;
-                        cores.execute(() -> done.add(new Object[] {demand,
-                                stepAhead(demand, group)}));
+            for (int at = 0; at < order.size(); at++) {
+                Demand demand = order.get(at);
+                Object held = steps.get(demand);
+                if (held == RUNNING || held instanceof Throwable) continue;
+                if (held != null) {
+                    Step step = current(demand);
+                    if (step != null) {
+                        if (step.successors != null) {
+                            named.addAll(step.successors);
+                        }
+                        continue;
                     }
+                    weight -= ((Step) held).weight();
                 }
-                if (running == 0) return;
-                Object[] step;
-                try {
-                    step = done.take();
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("the walk was"
-                            + " interrupted in a superstep");
+                if (at == 0 && headTaken
+                        || named.contains(demand.occurrence.id())) {
+                    continue;
                 }
-                running--;
-                steps.put((Demand) step[0], step[1]);
-                if (step[1] instanceof Step) {
-                    weight += ((Step) step[1]).weight();
-                    named((Step) step[1], named);
+                if (running >= cores.getParallelism() || weight >= budget) {
+                    return;
                 }
+                Step step = new Step(this, demand, reads(demand.occurrence));
+                demand.launched();
+                steps.put(demand, RUNNING);
+                running++;
+                cores.execute(() -> done.add(new Object[] {demand,
+                        stepAhead(step)}));
             }
         }
 
-        /** {@code demand}'s step, computed ahead on a core, or what it
-         *  threw, held in its place ({@link #take}). */
-        private Object stepAhead(Demand demand, GroupReads group) {
+        /** {@code demand}'s step held, where it is the walk of its state
+         *  now ({@link Demand#version}); else none, and none is held. */
+        private Step current(Demand demand) {
+            Object held = steps.get(demand);
+            if (!(held instanceof Step)) return null;
+            if (((Step) held).version == demand.version) return (Step) held;
+            steps.remove(demand);
+            return null;
+        }
+
+        /** {@code step}, computed on a core, or what it threw ({@link
+         *  #take}). */
+        private Object stepAhead(Step step) {
             try {
-                return step(this, demand, group);
+                return step(this, step);
             } catch (RuntimeException | Error thrown) {
                 return thrown;
             }
         }
 
-        private static void named(Step step, Set<String> named) {
-            if (step.successors != null) named.addAll(step.successors);
+        /** Holds the steps that ended -- waiting for one where {@code
+         *  wait} -- each where its demand is still planned. */
+        private void received(boolean wait) {
+            Object[] ended;
+            try {
+                ended = wait ? done.take() : done.poll();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("the walk was interrupted"
+                        + " waiting for a step");
+            }
+            for (; ended != null; ended = done.poll()) {
+                running--;
+                Demand demand = (Demand) ended[0];
+                if (steps.get(demand) == RUNNING) {
+                    steps.put(demand, ended[1]);
+                }
+            }
+        }
+
+        /** Waits for every step that runs: none reads the walk after it. */
+        void drain() {
+            while (running > 0) received(true);
+            steps.clear();
         }
 
         /** The fewest items a part of a fold holds: a fold of fewer than
@@ -1788,28 +1863,34 @@ public final class ClosurePlanner {
         }
 
         /**
-         * Takes one demand's walk ({@link #step}): the step held -- of its
-         * state now, a demand is taken only while it is {@link #ready}, the
-         * head of a superstep after {@link #ahead} dropped what no longer
-         * was -- where what it claimed is still no other row's ({@code
-         * RestsOn#take}), else one computed here; here too where one
-         * computed ahead threw: what the walk throws is what the walk in
-         * its order throws, never what a step threw at another moment.  An
-         * Error ends the walk wherever it is thrown (a group indexed off
-         * the planner's thread, {@link #reads}).  Its memos and its events
-         * are applied in the order the step said them, and its successors
-         * returned in theirs.
+         * Takes one demand's walk ({@link #step}): its step that runs is
+         * waited for -- the steps behind it started as others end ({@link
+         * #launch}) -- and taken where it is the walk of the demand's state
+         * now ({@link Demand#version}) and what it claimed is still no other
+         * row's ({@code RestsOn#take}), else one computed here; here too
+         * where one computed ahead threw: what the walk throws is what the
+         * walk in its order throws, never what a step threw at another
+         * moment.  An Error ends the walk wherever it is thrown (a group
+         * indexed off the planner's thread, {@link #reads}).  Its memos and
+         * its events are applied in the order the step said them, and its
+         * successors returned in theirs.
          */
         List<Demand> take(Demand demand) {
-            Object ahead = steps.remove(demand);
-            if (ahead instanceof Error) throw (Error) ahead;
-            Step step = ahead instanceof Step
-                    && restsOn.take(((Step) ahead).claims)
-                    ? (Step) ahead : null;
+            while (steps.get(demand) == RUNNING) {
+                received(true);
+                launch(false);
+            }
+            if (steps.get(demand) instanceof Error) {
+                throw (Error) steps.remove(demand);
+            }
+            Step step = current(demand);
+            steps.remove(demand);
+            if (step != null && !restsOn.take(step.claims)) step = null;
             if (step == null) {
                 // Its walk now, here, in the order: what it claims no one
                 // has taken.
-                step = step(this, demand, reads(demand.occurrence));
+                step = step(this, new Step(this, demand,
+                        reads(demand.occurrence)));
                 if (!restsOn.take(step.claims)) {
                     throw new IllegalStateException("a walk in the order "
                             + "claimed a read's leaves another row holds: "
@@ -1934,11 +2015,17 @@ public final class ClosurePlanner {
             return member;
         }
 
-        private static void index(Map<String, List<MemberReads>> into,
+        /** Each key's members, a new array each time one is added: a
+         *  step on the cores reads the one it got whole. */
+        private static void index(Map<String, MemberReads[]> into,
                                   Set<String> keys, MemberReads member) {
+            MemberReads[] one = {member};
             for (String key : keys) {
-                into.computeIfAbsent(key, unused -> new ArrayList<MemberReads>(
-                        1)).add(member);
+                into.merge(key, one, (held, added) -> {
+                    MemberReads[] grown = Arrays.copyOf(held, held.length + 1);
+                    grown[held.length] = member;
+                    return grown;
+                });
             }
         }
 
@@ -2030,8 +2117,9 @@ public final class ClosurePlanner {
      * and every Overseer mutation, and each of those, a member, made its own
      * group's members members in turn).</p>
      */
-    private static Step step(Walk walk, Demand demand, GroupReads group) {
-        Step step = new Step(walk, demand, group);
+    private static Step step(Walk walk, Step step) {
+        Demand demand = step.demand;
+        GroupReads group = step.group;
         Corpus corpus = walk.corpus;
         Map<String, Set<String>> kept = new LinkedHashMap<String,
                 Set<String>>();
@@ -2118,9 +2206,9 @@ public final class ClosurePlanner {
         // exists is no question of the anchor's (solr-18413 round Z7: the
         // doors of every request and queue item behind the store writers'
         // items, six hops deep, doubled the plan).  Nor does a store fetch.
-        if (demand.value) {
+        if (step.value) {
             controlProducer(walk, step);
-        } else if (CONTROL_PRODUCER.equals(demand.why)
+        } else if (CONTROL_PRODUCER.equals(step.why)
                 && !walk.corpus.startedBy(demand.occurrence).isEmpty()) {
             step.once(demand.occurrence.id() + "|producer",
                     () -> GapRow.of(ExploreCodec.EXPLORATION,
@@ -2158,7 +2246,7 @@ public final class ClosurePlanner {
      *  removed as much as a value it set, and the doors of the sender's own
      *  message are asked in turn -- once: the sender's cells are not
      *  demanded. */
-    private static void controlProducer(Walk walk, Says step) {
+    private static void controlProducer(Walk walk, Step step) {
         Corpus corpus = walk.corpus;
         for (String endpoint : corpus.startedBy(step.demand.occurrence)) {
             doorsOf(walk, step, endpoint);
@@ -2167,7 +2255,7 @@ public final class ClosurePlanner {
 
     /** {@link #controlProducer} over the doors of one message that started
      *  the demanded occurrence. */
-    private static void doorsOf(Walk walk, Says step, String endpoint) {
+    private static void doorsOf(Walk walk, Step step, String endpoint) {
         Corpus corpus = walk.corpus;
         Demand demand = step.demand;
         Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
@@ -2193,7 +2281,7 @@ public final class ClosurePlanner {
             // (solr-bugs-overseer-lock-leak: the Runner's item removes
             // readOnly from state.json v8; the queue tick's markTaskAsRunning
             // door decides whether the Runner runs).
-            if (demand.storeWriter && door.equals(sender)) {
+            if (step.storeWriter && door.equals(sender)) {
                 step.next(new Demand(door, STORE_ITEM_PRODUCER, false));
             } else if (walk.faulted(door)) {
                 step.next(new Demand(door, CONTROL_PRODUCER, false));
@@ -2226,8 +2314,8 @@ public final class ClosurePlanner {
         if (demand.anchor) return;
         int index = 0;
         int done = step.contributed;
-        step.contributed = demand.contributed.size();
-        for (String contributed : demand.contributed) {
+        step.contributed = step.values.size();
+        for (String contributed : step.values) {
             if (index++ < done) continue;
             int split = contributed.indexOf('|');
             if (split < 0) continue;
@@ -2282,8 +2370,8 @@ public final class ClosurePlanner {
             }
         }
         Map<String, List<String>> delivered =
-                Demand.delivered(demand.contributed);
-        for (Map.Entry<String, Long> cutoff : demand.cutoffs.entrySet()) {
+                Demand.delivered(step.values);
+        for (Map.Entry<String, Long> cutoff : step.cutoffs.entrySet()) {
             String session = cutoff.getKey();
             long at = cutoff.getValue();
             List<String> refs = Demand.delivered(delivered, session);
@@ -2306,7 +2394,7 @@ public final class ClosurePlanner {
                 new ArrayList<Supplier<List<Collection<String>>>>();
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
             for (DecisionRow decision : path.decisions) {
-                if (!FlipQuery.asks(demand.flipSites, decision)
+                if (!FlipQuery.asks(step.flipSites, decision)
                         || !named.decide(decision)) {
                     continue;
                 }
@@ -2329,9 +2417,9 @@ public final class ClosurePlanner {
         }
         int index = 0;
         int done = named.contributed;
-        named.contributed = demand.contributed.size();
+        named.contributed = step.values.size();
         List<String> values = new ArrayList<String>();
-        for (String contributed : demand.contributed) {
+        for (String contributed : step.values) {
             if (index++ < done) continue;
             if (contributed.indexOf('|') >= 0) values.add(contributed);
         }
@@ -2476,14 +2564,14 @@ public final class ClosurePlanner {
         /** member -> its place in {@link #members}. */
         private final Map<MemberReads, Integer> place =
                 new java.util.IdentityHashMap<MemberReads, Integer>();
-        private final Map<String, List<MemberReads>> naming;
-        private final Map<String, List<MemberReads>> locating;
-        private final Map<String, List<MemberReads>> returning;
+        private final Map<String, MemberReads[]> naming;
+        private final Map<String, MemberReads[]> locating;
+        private final Map<String, MemberReads[]> returning;
 
         private GroupReads(List<MemberReads> members,
-                           Map<String, List<MemberReads>> naming,
-                           Map<String, List<MemberReads>> locating,
-                           Map<String, List<MemberReads>> returning) {
+                           Map<String, MemberReads[]> naming,
+                           Map<String, MemberReads[]> locating,
+                           Map<String, MemberReads[]> returning) {
             this.members = members;
             for (int index = 0; index < members.size(); index++) {
                 place.put(members.get(index), index);
@@ -2494,10 +2582,10 @@ public final class ClosurePlanner {
         }
 
         /** Those of {@code indexed} in this group, in group order. */
-        private List<MemberReads> in(List<MemberReads> indexed) {
+        private List<MemberReads> in(MemberReads[] indexed) {
             if (indexed == null) return Collections.<MemberReads>emptyList();
             List<MemberReads> held = new ArrayList<MemberReads>(
-                    indexed.size());
+                    indexed.length);
             for (MemberReads member : indexed) {
                 if (place.containsKey(member)) held.add(member);
             }
@@ -2604,7 +2692,7 @@ public final class ClosurePlanner {
     private static void unread(Walk walk, String sessionId,
                                Endpoint endpoint, String what) {
         if (!walk.unread.computeIfAbsent(what,
-                unused -> new HashSet<String>()).add(endpoint.id())) {
+                unused -> ConcurrentHashMap.newKeySet()).add(endpoint.id())) {
             return;
         }
         walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,

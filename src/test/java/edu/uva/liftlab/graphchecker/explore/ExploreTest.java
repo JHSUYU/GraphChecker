@@ -6406,7 +6406,7 @@ public class ExploreTest {
     }
 
     /**
-     * The walk's supersteps run on the planner's cores ({@code
+     * The walk's steps run ahead on the planner's cores ({@code
      * ClosurePlanner#CORES}), and its plan is the one-at-a-time walk's: each
      * step computed ahead is the walk of its demand's state, and is taken in
      * queue order only while it still is; what only that order gives -- the
@@ -6418,7 +6418,7 @@ public class ExploreTest {
      * plans are one.
      */
     @Test
-    public void theWalkInSuperstepsPlansWhatItPlansAlone() throws Exception {
+    public void theWalkAheadPlansWhatItPlansAlone() throws Exception {
         Path iteration = tree.newFolder("asked-ahead").toPath();
         Endpoint other = at(PRODUCER, "XCH.resp.block-key-expiry",
                 "PBHelper#convert#12");
@@ -6462,7 +6462,7 @@ public class ExploreTest {
      * A step computed ahead whose demand an earlier step grew, or whose
      * walk claimed the leaves of a seq another row asked first in the
      * order, is not the walk of its demand there ({@code
-     * ClosurePlanner.Walk#ready}, {@code #take}): W1's delivery is W4's
+     * ClosurePlanner.Walk#take}): W1's delivery is W4's
      * handoff, so W1's step grows W4, which then reads e, W5's; W1 and W2
      * read a and b at one seq ({@code Corpus#readLeaves}: the first row
      * asked holds it), a holding W8's handoff through W7's write, so in
@@ -6471,7 +6471,7 @@ public class ExploreTest {
      * at a time -- on four and on the host's, one plan.
      */
     @Test
-    public void aStepItsSuperstepChangedIsWalkedAgain() throws Exception {
+    public void aStepWhoseDemandChangedIsWalkedAgain() throws Exception {
         Path iteration = tree.newFolder("walked-again").toPath();
         OccurrenceAddress w1 = occurrence("hdfs-case/dn0", "REGION.w1",
                 CausalContext.of(Role.of("RV_W1"), "", 1), "o.a.Rv#w1#1");
@@ -6568,9 +6568,9 @@ public class ExploreTest {
 
     /**
      * A step reads its group's index; it never builds one: groups are
-     * indexed on the planner's thread before the superstep that walks them
+     * indexed on the planner's thread as the steps that walk them start
      * ({@code ClosurePlanner.Walk#reads}).  Here the anchor's step demands
-     * twelve producers, so the second superstep indexes the thirteenth
+     * twelve producers, so the steps started next index the thirteenth
      * group -- the insert after which a JDK 8 HashMap resizes at its next
      * computeIfAbsent, whatever its key -- and the walk, planned two hundred
      * times on the host's cores, is the one-core walk each time.
@@ -6643,7 +6643,7 @@ public class ExploreTest {
         }
     }
 
-    /** {@link #closure} of {@link #TARGET}, its supersteps on {@code
+    /** {@link #closure} of {@link #TARGET}, its steps on {@code
      *  cores}. */
     private static ClosurePlanner.Plan plannedOn(Corpus corpus,
             StaticScopeMap map, java.util.concurrent.ForkJoinPool cores) {
