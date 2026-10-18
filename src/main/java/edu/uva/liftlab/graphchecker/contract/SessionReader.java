@@ -182,7 +182,7 @@ public final class SessionReader {
                 file -> SessionExpressionLog.read(file, pool),
                 ExpressionTable.empty());
         SessionManifest manifest = partial.read(dir.manifest(),
-                RowCodec::readManifest, null);
+                file -> RowCodec.readManifest(file, pool), null);
         return new SessionReader(dir, activations, decisions, exports,
                 attaches, writes, reads, roots, targets, gaps, obligations,
                 expressions, manifest, partial.reason);

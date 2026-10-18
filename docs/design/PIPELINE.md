@@ -531,9 +531,24 @@ read and only the kinds a corpus reads held, `SessionReader#gaps(GapKind)`: ADDR
 BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE -- EMIT reads the gap files themselves, §11 -- in every
 JVM that reads a corpus) with what was derived from each
 session's rows
-alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
-expressions: symbols, leaves, read locations and events, state reads), the static map while its
-file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
+alone (`Corpus.Derived`: its state join, its schedule's facts, read once, its rows by what they name --
+the first activation and the decisions of each occurrence, the attach, root and read minting each symbol, a
+forced session's own messages by interaction and producer -- and the walks of its expressions: symbols,
+leaves, read locations and events, state reads), the static map while its
+file reads the same (by digest), and the slot table it changed (step 4). WHAT A CORPUS HOLDS IS HELD
+COMPACT, in every JVM that reads one, with no change to what any stage computes or writes: a session's
+rows are keyed by what they name inside its `Derived`, never by a key spelled of the session and the name,
+and its state join by a location's key and a version (`contract.VersionMap`, `SmtLowering#joinOf`, which also
+answers a write by its version, `SessionJoin#write`: the corpus keeps no index of its own of writes); a
+read's endpoints, locations, occurrences, index frames and strings are held once per read of a corpus
+(`contract.RowPool`; the slot table's once per its read, `SlotTable#read`), a location's key spelled once
+(`LocationId#key`) and an expression node's interned (`SmtLowering#locationKey(JsonObject)`); a set made once
+and only read is a `contract.FrozenSet` (one array, its order kept: what a delivery rests on,
+`RestsOn#named`; an expression's symbols, read locations and events, `Corpus#expressionSymbols`,
+`#readLocations`, `#readEvents`; the join's read symbols), a set the walk only adds to and asks is a
+`contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is read of), and a
+handoff the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string.
+Within a round, what a
 round asks again of the same corpus is answered once: an arm's dependence per task and decision
 (`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
 the closure's walks of a demand that grew reuse its group, its members' reads and each read's
@@ -2376,8 +2391,8 @@ until one composition ends or one path is all it had.
 THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
 `ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time, the next ones read while
 these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
-and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join, its
-writes by version and by location, its reads by symbol, its rows by occurrence, the answers that hold rows
+and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join (its
+writes by version and by location among what it answers), its reads by symbol, its rows by occurrence, the answers that hold rows
 (`Corpus.StateRows`) -- are held apart: at most 0.15 of the heap of their text as it decodes, the sessions asked
 for least recently let go of and read again from their files when next asked, value for value (a landed
 session's files never change; reads and writes side by side). Every other row of every session stays held --

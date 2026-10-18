@@ -15,6 +15,9 @@ public final class LocationId extends Value {
     private final LocationKind kind;
     private final String owner;
     private final String slot;
+    /** {@link #key()}, spelled once: a corpus asks every row's location
+     *  for it, and holds it in every index by location. */
+    private String key;
 
     private LocationId(LocationKind kind, String owner, String slot) {
         this.kind = kind;
@@ -37,6 +40,17 @@ public final class LocationId extends Value {
 
     public String slot() {
         return slot;
+    }
+
+    /** The VM's location key, {@code KIND/owner#slot}: the one spelling
+     *  every join and index of rows keys a location by. */
+    public String key() {
+        String spelled = key;
+        if (spelled == null) {
+            spelled = kind + "/" + owner + "#" + slot;
+            key = spelled;
+        }
+        return spelled;
     }
 
     @Override

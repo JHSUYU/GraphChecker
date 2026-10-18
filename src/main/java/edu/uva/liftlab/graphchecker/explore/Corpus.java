@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -188,19 +189,11 @@ public final class Corpus implements Arms.Rows {
     /** occurrence id -> the activations of it, across sessions. */
     private final Map<String, List<ActivationRow>> activations =
             new LinkedHashMap<String, List<ActivationRow>>();
-    /** session|occurrence -> that path's decisions, in recorded order. */
-    private final Map<String, List<DecisionRow>> decisions =
-            new LinkedHashMap<String, List<DecisionRow>>();
     /** producer endpoint id -> every export recorded at it. */
     private final Map<String, List<ExportRow>> exports =
             new LinkedHashMap<String, List<ExportRow>>();
-    /** session|symbol -> the minting row. */
-    private final Map<String, AttachRow> attachBySymbol =
-            new LinkedHashMap<String, AttachRow>();
     /** Every symbol some session's attach minted. */
     private final Set<String> handoffSymbols = new LinkedHashSet<String>();
-    private final Map<String, RootMintRow> rootBySymbol =
-            new LinkedHashMap<String, RootMintRow>();
     /** occurrence id -> session id -> its attaches, targets. */
     private final ByOccurrence<AttachRow> attachesOn =
             new ByOccurrence<AttachRow>();
@@ -227,14 +220,6 @@ public final class Corpus implements Arms.Rows {
     /** interaction id -> the interaction itself, for every pairing stated. */
     private final Map<String, Interaction> interactions =
             new LinkedHashMap<String, Interaction>();
-    /** {@code session|interaction id} -> a forced session's attaches from
-     *  before its forced world: its own path's messages alone. */
-    private final Map<String, List<AttachRow>> ownAttaches =
-            new LinkedHashMap<String, List<AttachRow>>();
-    /** {@code session|producer id} -> a forced session's exports from
-     *  before its forced world, as {@link #ownAttaches}. */
-    private final Map<String, List<ExportRow>> ownExports =
-            new LinkedHashMap<String, List<ExportRow>>();
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
@@ -251,9 +236,6 @@ public final class Corpus implements Arms.Rows {
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
-    /** session|occurrence -> that session's first activation of it. */
-    private final Map<String, ActivationRow> activationByOccurrence =
-            new LinkedHashMap<String, ActivationRow>();
     /** endpoint id -> its occurrence, so an anchor's producer can be found:
      *  its occurrence alone, the endpoint (its execution index) held by the
      *  rows a hold may let go of. */
@@ -377,7 +359,8 @@ public final class Corpus implements Arms.Rows {
         /** Its schedule, as the corpus indexes it: {@link Fact}s in
          *  order. */
         final List<Fact> schedule;
-        /** expression ref -> {@link #expressionSymbols}. */
+        /** expression ref -> {@link #expressionSymbols}, each a {@link
+         *  FrozenSet}: 7-10 M symbols in SGF8-adhoc-05 round 5's planner. */
         final Map<String, Set<String>> symbolsByExpression =
                 new ConcurrentHashMap<String, Set<String>>();
         /** {@link #leaves}: the variables one term or read rests on; a
@@ -401,6 +384,33 @@ public final class Corpus implements Arms.Rows {
         /** "read seq" of a shared seq -> the row whose leaves it holds. */
         final Map<String, ReadRow> sharedBy =
                 new ConcurrentHashMap<String, ReadRow>();
+        /*
+         * ITS ROWS BY WHAT THEY NAME, in this session alone: keyed by the
+         * name, never by a key spelled of the session and the name (a
+         * corpus of such keys held a string per row, 1.3 GB of
+         * SGF8-adhoc-05 round 5's planner), built once with the session.
+         */
+        /** occurrence id -> its first activation here. */
+        final Map<String, ActivationRow> activationByOccurrence =
+                new HashMap<String, ActivationRow>();
+        /** occurrence id -> its decisions here, in recorded order; in the
+         *  order first decided ({@link #deciding}). */
+        final Map<String, List<DecisionRow>> decisions =
+                new LinkedHashMap<String, List<DecisionRow>>();
+        /** symbol -> the attach that minted it here. */
+        final Map<String, AttachRow> attachBySymbol =
+                new HashMap<String, AttachRow>();
+        /** symbol -> the root minted under it here, in mint order
+         *  ({@link #configurationLiterals}). */
+        final Map<String, RootMintRow> rootBySymbol =
+                new LinkedHashMap<String, RootMintRow>();
+        /** A forced session's attaches from before its forced world, by
+         *  interaction id: its own path's messages alone; and its exports,
+         *  by producer endpoint id.  Empty for any other session. */
+        final Map<String, List<AttachRow>> ownAttaches =
+                new HashMap<String, List<AttachRow>>();
+        final Map<String, List<ExportRow>> ownExports =
+                new HashMap<String, List<ExportRow>>();
 
         /** {@code state}: its {@link StateRows} built now, as a corpus that
          *  holds every session's rows reads them; else as first asked. */
@@ -408,6 +418,37 @@ public final class Corpus implements Arms.Rows {
             this.session = session;
             this.state = state ? new StateRows(session) : null;
             this.schedule = facts(session);
+            for (ActivationRow row : session.activations()) {
+                activationByOccurrence.putIfAbsent(row.occurrence().id(),
+                        row);
+            }
+            for (DecisionRow row : session.decisions()) {
+                add(decisions, row.occurrence().id(), row);
+            }
+            for (AttachRow row : session.attaches()) {
+                attachBySymbol.put(row.symbol(), row);
+            }
+            for (RootMintRow row : session.roots()) {
+                rootBySymbol.put(row.symbol(), row);
+            }
+            if (session.forced()) {
+                // Its forced world's first event: what is before it is its
+                // own path's.
+                long world = Long.MAX_VALUE;
+                for (TargetRow row : session.targets()) {
+                    if (row.isForced()) world = Math.min(world, row.seq());
+                }
+                for (ExportRow row : session.exports()) {
+                    if (row.seq() < world) {
+                        add(ownExports, row.endpoint().id(), row);
+                    }
+                }
+                for (AttachRow row : session.attaches()) {
+                    if (row.interaction() != null && row.seq() < world) {
+                        add(ownAttaches, row.interaction().id(), row);
+                    }
+                }
+            }
             Set<Long> seen = new HashSet<Long>();
             Set<Long> shared = new HashSet<Long>();
             for (ReadRow read : session.reads()) {
@@ -420,20 +461,17 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * WHAT ONE SESSION'S READS AND WRITES GIVE, by key -- its state join,
-     * its writes by version and by location, its reads by symbol, its rows
-     * by occurrence, and the answers that hold its rows -- built from them
+     * WHAT ONE SESSION'S READS AND WRITES GIVE, by key -- its state join
+     * (its writes by location and version among it), its reads by symbol,
+     * its rows by occurrence, and the answers that hold its rows -- built
+     * from them
      * alone, so a hold that let them go ({@link RowHold}) has these built
      * again as they are read again.
      */
     private static final class StateRows {
+        /** Its state join, which also answers its writes by location and
+         *  version ({@link SmtLowering#joinOf}). */
         final SmtLowering.SessionJoin join;
-        /** location|version -> the write that produced it. */
-        final Map<String, WriteRow> writeByVersion =
-                new HashMap<String, WriteRow>();
-        /** locationKey -> every write of it, in recorded order. */
-        final Map<String, List<WriteRow>> writesByLocation =
-                new HashMap<String, List<WriteRow>>();
         final Map<String, ReadRow> readBySymbol =
                 new HashMap<String, ReadRow>();
         /** occurrence id -> its reads / writes there, in recorded order. */
@@ -458,9 +496,6 @@ public final class Corpus implements Arms.Rows {
         StateRows(SessionReader session) {
             this.join = SmtLowering.joinOf(session);
             for (WriteRow row : session.writes()) {
-                String location = SmtLowering.locationKey(row.location());
-                writeByVersion.put(location + "|" + row.version(), row);
-                add(writesByLocation, location, row);
                 add(writesOn, row.endpoint().occurrence().id(), row);
             }
             for (ReadRow row : session.reads()) {
@@ -2165,8 +2200,6 @@ public final class Corpus implements Arms.Rows {
         }
         sessionById.put(session.sessionId(), session);
         for (ActivationRow row : session.activations()) {
-            activationByOccurrence.putIfAbsent(session.sessionId() + "|"
-                    + row.occurrence().id(), row);
             if (apart) continue;
             remember(session.sessionId(), row.occurrence());
             // The sender an anchor names: a causal chain goes on through it.
@@ -2180,7 +2213,6 @@ public final class Corpus implements Arms.Rows {
         }
         for (DecisionRow row : session.decisions()) {
             if (!apart) remember(session.sessionId(), row.occurrence());
-            add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
             // A decision's clock cells are corpus symbols at Int.
             for (String cell : row.clockReadings().keySet()) {
                 declaredSymbols.put(cell, Sort.INT);
@@ -2189,19 +2221,13 @@ public final class Corpus implements Arms.Rows {
         for (ExportRow row : session.exports()) {
             // A forced world's export is no message any arm delivers; one
             // before it is its own path's alone (Arms#armsAt's scope).
-            if (row.seq() >= world) continue;
-            if (apart) {
-                add(ownExports, session.sessionId() + "|"
-                        + row.endpoint().id(), row);
-                continue;
-            }
+            if (row.seq() >= world || apart) continue;
             add(exports, row.endpoint().id(), row);
             remember(session.sessionId(), row.endpoint().occurrence());
             occurrenceByEndpoint.put(row.endpoint().id(),
                     row.endpoint().occurrence());
         }
         for (AttachRow row : session.attaches()) {
-            attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             handoffSymbols.add(row.symbol());
             attachesOn.add(row.endpoint().occurrence().id(), row.sessionId(),
                     row, apart);
@@ -2210,10 +2236,7 @@ public final class Corpus implements Arms.Rows {
             declaredSymbols.put(row.symbol(),
                     JavaSmtSorts.sortOfJava(row.javaType()));
             Interaction interaction = row.interaction();
-            if (interaction != null && apart && row.seq() < world) {
-                add(ownAttaches, session.sessionId() + "|"
-                        + interaction.id(), row);
-            } else if (interaction != null && !apart) {
+            if (interaction != null && !apart) {
                 interactions.put(interaction.id(), interaction);
                 add(attachesByInteraction, interaction.id(), row);
             }
@@ -2229,7 +2252,6 @@ public final class Corpus implements Arms.Rows {
         }
         for (RootMintRow row : session.roots()) {
             if (!apart) remember(session.sessionId(), row.occurrence());
-            rootBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             rootsById.computeIfAbsent(row.rootId(),
                     key -> new LinkedHashMap<String, RootMintRow>())
                     .put(session.sessionId(), row);
@@ -2493,8 +2515,9 @@ public final class Corpus implements Arms.Rows {
     /** One session's path at one occurrence, or null when it never ran it. */
     public RecordedPath path(String sessionId, OccurrenceAddress occurrence) {
         ActivationRow activation = activation(sessionId, occurrence);
-        List<DecisionRow> taken = decisions.get(
-                sessionId + "|" + occurrence.id());
+        Derived of = bySession.get(sessionId);
+        List<DecisionRow> taken = of == null ? null
+                : of.decisions.get(occurrence.id());
         if (activation == null && taken == null
                 && target(sessionId, occurrence) == null) {
             return null;
@@ -2525,8 +2548,10 @@ public final class Corpus implements Arms.Rows {
 
     public List<DecisionRow> decisionsOf(String sessionId,
                                          OccurrenceAddress occurrence) {
-        return decisions.getOrDefault(sessionId + "|" + occurrence.id(),
-                Collections.<DecisionRow>emptyList());
+        Derived of = bySession.get(sessionId);
+        List<DecisionRow> taken = of == null ? null
+                : of.decisions.get(occurrence.id());
+        return taken == null ? Collections.<DecisionRow>emptyList() : taken;
     }
 
     public List<AttachRow> attachesOn(OccurrenceAddress occurrence) {
@@ -2737,8 +2762,8 @@ public final class Corpus implements Arms.Rows {
         if (of == null || expressionRef == null) {
             return new LinkedHashSet<String>();
         }
-        Set<String> held = of.symbolsByExpression.get(expressionRef);
-        if (held != null) return held;
+        Set<String> found = of.symbolsByExpression.get(expressionRef);
+        if (found != null) return found;
         Set<String> symbols = new LinkedHashSet<String>();
         SmtLowering.SessionJoin join = join(sessionId);
         Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
@@ -2784,8 +2809,9 @@ public final class Corpus implements Arms.Rows {
                 roots.add(written);
             }
         }
-        of.symbolsByExpression.put(expressionRef, symbols);
-        return symbols;
+        Set<String> held = FrozenSet.of(symbols);
+        of.symbolsByExpression.put(expressionRef, held);
+        return held;
     }
 
     /** The sites of every fault decision any session took at one occurrence. */
@@ -3088,7 +3114,7 @@ public final class Corpus implements Arms.Rows {
         while (refs.find()) {
             readNodes(expression(sessionId, refs.group()), read, walked);
         }
-        return Collections.unmodifiableSet(read.keySet());
+        return FrozenSet.of(read.keySet());
     }
 
     /** The read events a term's expressions name, by their structure
@@ -3121,7 +3147,7 @@ public final class Corpus implements Arms.Rows {
                 }
             }
         }
-        return Collections.unmodifiableSet(events);
+        return FrozenSet.of(events);
     }
 
     private static final java.util.regex.Pattern EXPRESSION_REF =
@@ -3191,21 +3217,23 @@ public final class Corpus implements Arms.Rows {
     @Override
     public List<AttachRow> ownAttachesOf(String sessionId,
                                          Interaction interaction) {
-        return ownAttaches.getOrDefault(sessionId + "|" + interaction.id(),
-                Collections.<AttachRow>emptyList());
+        Derived of = bySession.get(sessionId);
+        List<AttachRow> own = of == null ? null
+                : of.ownAttaches.get(interaction.id());
+        return own == null ? Collections.<AttachRow>emptyList() : own;
     }
 
     @Override
     public List<ExportRow> ownExportsOf(String sessionId, Endpoint producer) {
-        if (producer == null) return Collections.emptyList();
-        return ownExports.getOrDefault(sessionId + "|" + producer.id(),
-                Collections.<ExportRow>emptyList());
+        Derived of = producer == null ? null : bySession.get(sessionId);
+        List<ExportRow> own = of == null ? null
+                : of.ownExports.get(producer.id());
+        return own == null ? Collections.<ExportRow>emptyList() : own;
     }
 
     @Override
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
-        return state(sessionId).writesByLocation.getOrDefault(locationKey,
-                Collections.<WriteRow>emptyList());
+        return join(sessionId).writes(locationKey);
     }
 
     @Override
@@ -3350,7 +3378,8 @@ public final class Corpus implements Arms.Rows {
     @Override
     public ActivationRow activationOf(String sessionId,
                                       String occurrenceId) {
-        return activationByOccurrence.get(sessionId + "|" + occurrenceId);
+        Derived of = bySession.get(sessionId);
+        return of == null ? null : of.activationByOccurrence.get(occurrenceId);
     }
 
     public Arms arms() {
@@ -3364,8 +3393,8 @@ public final class Corpus implements Arms.Rows {
 
     public WriteRow writeOf(String sessionId, String locationKey,
                             long version) {
-        return version < 0 ? null : state(sessionId).writeByVersion.get(
-                locationKey + "|" + version);
+        return version < 0 ? null : join(sessionId).write(locationKey,
+                version);
     }
 
     /** Every occurrence of the node that writes or reads one location. */
@@ -3377,7 +3406,8 @@ public final class Corpus implements Arms.Rows {
     }
 
     public AttachRow attach(String sessionId, String symbol) {
-        return attachBySymbol.get(sessionId + "|" + symbol);
+        Derived of = bySession.get(sessionId);
+        return of == null ? null : of.attachBySymbol.get(symbol);
     }
 
     /** Whether some session's attach minted this symbol: a handoff
@@ -3388,7 +3418,8 @@ public final class Corpus implements Arms.Rows {
 
     /** The root one session minted under one symbol, or null. */
     public RootMintRow rootBySymbol(String sessionId, String symbol) {
-        return rootBySymbol.get(sessionId + "|" + symbol);
+        Derived of = bySession.get(sessionId);
+        return of == null ? null : of.rootBySymbol.get(symbol);
     }
 
     public ReadRow read(String sessionId, String symbol) {
@@ -3396,9 +3427,10 @@ public final class Corpus implements Arms.Rows {
     }
 
     public SymbolKind symbolKind(String sessionId, String symbol) {
-        String key = sessionId + "|" + symbol;
-        if (rootBySymbol.containsKey(key)) return SymbolKind.ROOT;
-        if (attachBySymbol.containsKey(key)) return SymbolKind.HANDOFF;
+        Derived of = bySession.get(sessionId);
+        if (of == null) return SymbolKind.UNKNOWN;
+        if (of.rootBySymbol.containsKey(symbol)) return SymbolKind.ROOT;
+        if (of.attachBySymbol.containsKey(symbol)) return SymbolKind.HANDOFF;
         if (state(sessionId).readBySymbol.containsKey(symbol)) {
             return SymbolKind.READ;
         }
@@ -3492,11 +3524,13 @@ public final class Corpus implements Arms.Rows {
         // symbol, as a key finds them (#rootBySymbol), so no key asks one
         // first (a root minted under two symbols keeps one in rootsById).
         Map<String, Pattern> roots = new LinkedHashMap<String, Pattern>();
-        for (RootMintRow mint : rootBySymbol.values()) {
-            if (mint.kind() == RootKind.INTEGRAL
-                    && mint.category() == RootCategory.CONFIG
-                    && !compared.containsKey(mint.symbol())) {
-                roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
+        for (Derived of : bySession.values()) {
+            for (RootMintRow mint : of.rootBySymbol.values()) {
+                if (mint.kind() == RootKind.INTEGRAL
+                        && mint.category() == RootCategory.CONFIG
+                        && !compared.containsKey(mint.symbol())) {
+                    roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
+                }
             }
         }
         List<Map.Entry<String, Map.Entry<String, DecisionRow>>> asked =
@@ -3550,20 +3584,22 @@ public final class Corpus implements Arms.Rows {
             }
             deciding = new HashMap<String,
                     List<Map.Entry<String, DecisionRow>>>();
-            for (Map.Entry<String, List<DecisionRow>> path
-                    : decisions.entrySet()) {
-                String sessionId = path.getKey().substring(0,
-                        path.getKey().indexOf('|'));
-                for (DecisionRow decision : path.getValue()) {
-                    if (!Arms.predicate(decision.term())) continue;
-                    for (String reached
-                            : termSymbols(sessionId, decision.term())) {
-                        if (!wanted.contains(reached)) continue;
-                        deciding.computeIfAbsent(reached, k -> new ArrayList<
-                                Map.Entry<String, DecisionRow>>()).add(
-                                new java.util.AbstractMap.SimpleImmutableEntry<
-                                        String, DecisionRow>(sessionId,
-                                        decision));
+            for (Derived of : bySession.values()) {
+                String sessionId = of.session.sessionId();
+                for (List<DecisionRow> path : of.decisions.values()) {
+                    for (DecisionRow decision : path) {
+                        if (!Arms.predicate(decision.term())) continue;
+                        for (String reached
+                                : termSymbols(sessionId, decision.term())) {
+                            if (!wanted.contains(reached)) continue;
+                            deciding.computeIfAbsent(reached, k ->
+                                    new ArrayList<Map.Entry<String,
+                                            DecisionRow>>()).add(
+                                    new java.util.AbstractMap
+                                            .SimpleImmutableEntry<String,
+                                            DecisionRow>(sessionId,
+                                            decision));
+                        }
                     }
                 }
             }

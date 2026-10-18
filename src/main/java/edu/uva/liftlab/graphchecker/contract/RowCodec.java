@@ -169,10 +169,15 @@ public final class RowCodec {
         return readEndpoint(json, new RowPool());
     }
 
-    private static Endpoint readEndpoint(JsonObject json, RowPool pool) {
-        return Endpoint.of(readOccurrence(object(json, OCCURRENCE), pool),
-                string(json, "site"), readIndex(array(json, SITE_INDEX), pool),
-                integer(json, "attempt"));
+    /** An endpoint, held once per pool, its id with it: a session's rows
+     *  name each a few times (SGF8-adhoc-05 round 5: 4.6 M endpoints and
+     *  4.3 M ids held, 0.36 M distinct), and a slot table's pairings the
+     *  same frames (19.9 M frames, 15 K distinct). */
+    public static Endpoint readEndpoint(JsonObject json, RowPool pool) {
+        return pool.shared(Endpoint.of(readOccurrence(object(json,
+                OCCURRENCE), pool), string(json, "site"),
+                readIndex(array(json, SITE_INDEX), pool),
+                integer(json, "attempt")));
     }
 
     private static JsonObject writeLocation(LocationId location) {
@@ -183,10 +188,12 @@ public final class RowCodec {
         return json;
     }
 
-    private static LocationId readLocation(JsonObject json) {
-        return LocationId.of(
+    /** A location, held once per pool, its key with it ({@link
+     *  LocationId#key}). */
+    private static LocationId readLocation(JsonObject json, RowPool pool) {
+        return pool.shared(LocationId.of(
                 LocationKind.valueOf(string(json, "kind")),
-                string(json, "owner"), string(json, "slot"));
+                string(json, "owner"), string(json, "slot")));
     }
 
     // ---- one pair per row kind ----------------------------------------
@@ -341,7 +348,7 @@ public final class RowCodec {
 
     static WriteRow readWrite(JsonObject json, RowPool pool) {
         Endpoint endpoint = readEndpoint(object(json, ENDPOINT), pool);
-        LocationId location = readLocation(object(json, LOCATION));
+        LocationId location = readLocation(object(json, LOCATION), pool);
         if (json.has(INITIAL) && json.get(INITIAL).getAsBoolean()) {
             return WriteRow.initial(string(json, SESSION_ID),
                     number(json, SEQ), endpoint, location,
@@ -353,7 +360,7 @@ public final class RowCodec {
                 endpoint, location, number(json, "version"),
                 string(json, "expressionRef"), string(json, JAVA_TYPE),
                 referent == null ? null : WriteRow.Referent.of(
-                        readLocation(object(referent, LOCATION)),
+                        readLocation(object(referent, LOCATION), pool),
                         number(referent, "version")),
                 optionalString(json, REFERENT_STATE_REFUSED))
                 .withTie(tie(json));
@@ -396,7 +403,7 @@ public final class RowCodec {
     static ReadRow readRead(JsonObject json, RowPool pool) {
         return ReadRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT), pool),
-                readLocation(object(json, LOCATION)),
+                readLocation(object(json, LOCATION), pool),
                 number(json, "observedVersion"), string(json, "symbol"),
                 string(json, JAVA_TYPE),
                 optionalString(json, "concreteValue"),
@@ -785,9 +792,12 @@ public final class RowCodec {
         readEach(file, new RowPool(), reader, each);
     }
 
-    private static <T> void readEach(Path file, RowPool pool,
-                                     Function<JsonObject, T> reader,
-                                     Consumer<T> each) throws IOException {
+    /** {@link #readEach(Path, Function, Consumer)}, its strings from
+     *  {@code pool}: a read of several files, or rows built of parts the
+     *  pool holds once ({@link #readEndpoint(JsonObject, RowPool)}). */
+    public static <T> void readEach(Path file, RowPool pool,
+                                    Function<JsonObject, T> reader,
+                                    Consumer<T> each) throws IOException {
         if (file == null || !Files.isRegularFile(file)) return;
         try (InputStream in = ArtifactIO.input(file)) {
             Parallel.stream(new Lines(in), block -> {
@@ -922,11 +932,21 @@ public final class RowCodec {
 
     /** The role this session states; none is refused, never defaulted. */
     public static SessionManifest readManifest(Path file) throws IOException {
+        return readManifest(file, new RowPool());
+    }
+
+    /** The same read, its strings from {@code pool}: the manifests of a
+     *  corpus spell the same occurrences (SGF8-adhoc-05 round 5's 342: 40 K
+     *  rendered occurrences, 765 distinct, 111 MB held). */
+    static SessionManifest readManifest(Path file, RowPool pool)
+            throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException(
                     "the session states no role: no " + SessionDir.MANIFEST);
         }
-        return SessionManifest.fromJson(readObject(file));
+        return SessionManifest.fromJson(parse(pool.reader(new String(
+                Files.readAllBytes(file), StandardCharsets.UTF_8)),
+                file.toString()));
     }
 
     /**
@@ -947,12 +967,6 @@ public final class RowCodec {
         }
         Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
                 StandardCopyOption.ATOMIC_MOVE);
-    }
-
-    private static JsonObject readObject(Path file) throws IOException {
-        return parse(new JsonReader(new StringReader(new String(
-                Files.readAllBytes(file), StandardCharsets.UTF_8))),
-                file.toString());
     }
 
     /** One row as one line: compact, and never containing a newline. */

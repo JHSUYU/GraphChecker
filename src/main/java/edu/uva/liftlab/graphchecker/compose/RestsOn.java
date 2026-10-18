@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -64,7 +65,9 @@ public final class RestsOn {
     /** kind|session|start|cutoff|seed terms -> the symbols it rests on
      *  ({@link #named}): EXPLORE asks once per walk of a demand, from any
      *  core its supersteps run on; a function of the corpus, the map and
-     *  the key alone, so whichever core computes it first holds it. */
+     *  the key alone, so whichever core computes it first holds it, each
+     *  answer a {@link FrozenSet} (SGF8-adhoc-05 round 5: 18 M symbols in
+     *  53 K answers). */
     private final Map<String, Set<String>> cache =
             new ConcurrentHashMap<String, Set<String>>();
 
@@ -463,12 +466,13 @@ public final class RestsOn {
                 }
             }
         }
+        Set<String> answer = FrozenSet.of(symbols);
         if (claims != null && claims.over(around)) {
-            claims.held.put(key, symbols);
-            return symbols;
+            claims.held.put(key, answer);
+            return answer;
         }
-        Set<String> first = cache.putIfAbsent(key, symbols);
-        return first != null ? first : symbols;
+        Set<String> first = cache.putIfAbsent(key, answer);
+        return first != null ? first : answer;
     }
 
     /** Takes, in the order, what one computation of {@code claims} claimed
