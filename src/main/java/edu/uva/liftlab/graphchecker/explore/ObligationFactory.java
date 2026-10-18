@@ -32,7 +32,6 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigInteger;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -578,28 +577,27 @@ public final class ObligationFactory {
     }
 
     /**
-     * THE QUESTION one flip asks, as {@code <flip>:<content>}: the flip
-     * ({@link #flip}), then a digest of everything its answer rests on --
-     * the query as its solver is asked it (or the refusal that leaves
-     * none), and all its replay is given: the world it plants (its path's,
-     * inherited whole), the focused occurrence, the factor (a set) and the
-     * seed session (the focus row, whose factor grows as sessions land and
-     * no query reads), and {@code given} (the declared occurrence and the plan
-     * generation its class tree is woven from, which GROW moves); the
-     * schedule cut is the path's session cut at the focus and factor.  An
-     * obligation's id drifts as sessions land; its question does not while
-     * all of this reads the same (SOLR-18413 r5: 185 questions asked 717
-     * times; 118 of the 166 re-asked with byte-identical queries).  Its
-     * solver reuses the answer of one a worker settled ({@code
-     * ObligationDir#answered}).
+     * THE QUESTION one flip asks, its REPLAY KEY, as {@code
+     * <flip>:<content>}: the flip ({@link #flip}), then a digest of
+     * everything its answer rests on -- its SOLVER KEY, the query's sha256 as
+     * its solver is asked it (or the refusal that leaves none: {@code
+     * solverKey}), and all its replay is given: the world it plants (its
+     * path's, inherited whole), the focused occurrence, the factor (a set)
+     * and the seed session (the focus row, whose factor grows as sessions
+     * land and no query reads), and {@code given} (the declared occurrence
+     * and the plan generation its class tree is woven from, which GROW
+     * moves); the schedule cut is the path's session cut at the focus and
+     * factor.  An obligation's id drifts as sessions land; its question does
+     * not while all of this reads the same (SOLR-18413 r5: 185 questions
+     * asked 717 times; 118 of the 166 re-asked with byte-identical queries).
+     * Its solver reuses the answer of one a worker settled ({@code
+     * ObligationDir#answered}); z3's answer to its query alone is reused by
+     * the solver key, whatever else the question names ({@link Solved}).
      */
     static String question(Candidate candidate, Corpus.World world,
-                           FlipQuery.Built built, String given) {
+                           String solverKey, String given) {
         StringBuilder text = new StringBuilder();
-        text.append(built.ok()
-                        ? Z3.modelQuery(built.smt2, built.modelSymbols)
-                        : "refused: " + built.refusal).append('\n')
-                .append(worldText(world));
+        text.append(solverKey).append('\n').append(worldText(world));
         text.append("\nfocused ").append(candidate.task.focused().id())
                 .append("\nseed ").append(candidate.task.seedSessionId());
         // A set: the order the corpus lists it in moves as sessions land.
@@ -1168,15 +1166,16 @@ public final class ObligationFactory {
      * Solves one candidate: its query, its verdict and its model; or reuses
      * the answer of the same question a worker settled.
      *
+     * @param solved   z3's answers by query text, which every ask reads
+     *                 first and keeps a decided answer in
      * @param given    what the replay is given besides the corpus, as
      *                 {@link #question} keys it
      * @param answered the questions this iteration's workers settled
      */
-    public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
-                                long timeoutMillis, int z3RoomMb,
-                                String given,
+    public static Outcome solve(Corpus corpus, Candidate candidate,
+                                Z3 solver, Solved solved, String given,
                                 Map<String, ObligationDir.Answer> answered,
-                                HardAsk.Model decided) {
+                                HardAsk.Model decided) throws IOException {
         if (candidate.pairing()) {
             return PairingFlip.solve(corpus, candidate, given, answered);
         }
@@ -1200,7 +1199,13 @@ public final class ObligationFactory {
                     refuted));
         }
         Corpus.World inherited = corpus.world(candidate.path.sessionId);
-        String question = question(candidate, inherited, built, given);
+        // The query as asked (body plus the driver's question), for the
+        // artifact; its sha256 is the solver key.
+        String query = built.ok()
+                ? Z3.modelQuery(built.smt2, built.modelSymbols) : "";
+        String querySha256 = ArtifactIO.sha256(query);
+        String question = question(candidate, inherited, built.ok()
+                ? "query " + querySha256 : "refused: " + built.refusal, given);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
         // The named valve: an open arm's flip is not asked again past
         // MAX_REFUTED_WORLDS refuted worlds (a clock or a wide integral may
@@ -1252,12 +1257,7 @@ public final class ObligationFactory {
                             : "") + "the query was refused: "
                             + built.refusal, "", gaps, question);
         }
-        long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
-                : timeoutMillis;
-        Z3 solver = new Z3(z3, budget, z3RoomMb);
-        // The query as asked (body plus the driver's question), for the
-        // artifact.
-        String query = Z3.modelQuery(built.smt2, built.modelSymbols);
+        long budget = solver.timeoutMillis();
         List<String> rests = new ArrayList<String>();
         for (Corpus.Refuted world : refuted) rests.add(world.digest);
         HardAsk ask = new HardAsk(id, candidate.path.sessionId, question,
@@ -1270,13 +1270,15 @@ public final class ObligationFactory {
                         + rests.size() + " world(s) its replays refuted "
                         + "(WORLD_REFUTED), on which this rests: "
                         + String.join(", ", rests)),
-                gaps, built.modelSymbols, ArtifactIO.sha256(query));
+                gaps, built.modelSymbols, querySha256, solved.dir());
+        FlipQuery.Built asked = built;
         Z3.Answer answer;
         if (decided == null) {
-            answer = solver.ask(built.smt2, built.modelSymbols, false);
+            answer = solved.answer(querySha256, asked.modelSymbols,
+                    () -> solver.ask(asked.smt2, asked.modelSymbols, false));
         } else if (decided.querySha256.equals(ask.querySha256)) {
             // The hard lane's model, over this very query.
-            answer = Z3.Answer.sat(decided.values);
+            answer = Z3.Answer.decided("sat", decided.values);
         } else {
             // The corpus moved under the model: refused by name, no replay
             // and no re-ask (a world-only answer, as any refusal of its world).
@@ -1300,11 +1302,14 @@ public final class ObligationFactory {
         // the run's own pairings, which no order has to realize.
         if (!planted.pairings.isEmpty()) {
             String held = heldToRecording(built);
+            String heldQuery = Z3.modelQuery(held, built.modelSymbols);
             // A hard lane's flip asks it at the hard lane's budget and room.
             Z3 asker = decided == null ? solver
-                    : new Z3(z3, decided.budgetMillis, decided.roomMb);
+                    : solver.alone(decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
-                    : asker.ask(held, built.modelSymbols, false);
+                    : solved.answer(ArtifactIO.sha256(heldQuery),
+                    asked.modelSymbols,
+                    () -> asker.ask(held, asked.modelSymbols, false));
             if (again != null && again.decided() && again.sat()) {
                 Planted recorded = planted(corpus, candidate, built,
                         again.values(), gaps);
@@ -1312,7 +1317,7 @@ public final class ObligationFactory {
                         candidate, built, again.values(), recorded)
                         .isEmpty()) {
                     planted = recorded;
-                    query = Z3.modelQuery(held, built.modelSymbols);
+                    query = heldQuery;
                 }
             }
         }
@@ -1372,7 +1377,7 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED,
                     unheld.getMessage(), query, gaps, question);
         }
-        Obligation solved = Obligation.of(id, candidate.task.taskId(),
+        Obligation issued = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
                 candidate.flippedOutcome(), roots, answers,
                 planted.unproducible);
@@ -1404,7 +1409,7 @@ public final class ObligationFactory {
                             + "replay can be focused to plant it", query,
                     gaps, question);
         }
-        return new Outcome(solved, ObligationResult.of(id,
+        return new Outcome(issued, ObligationResult.of(id,
                 Verdict.SAT_MODEL_READY, "", "the flip at "
                         + decision.siteId() + "#" + decision.ordinal()
                         + " is reachable under " + roots.size()

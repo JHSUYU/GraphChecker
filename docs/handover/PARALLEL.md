@@ -145,7 +145,8 @@ every tool call starts a shell there.
   `LIFTS` (below).
 
 **2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
-`LIFTS`:
+`LIFTS`, each start to the host with the most room (a replay ended for memory queued again at its full need, never a
+verdict; OPTIMIZATIONS 1.32):
 ```bash
 cd ~/gc-run/<snap> && env -u BASH_ENV \
   LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
@@ -156,6 +157,11 @@ cd ~/gc-run/<snap> && env -u BASH_ENV \
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
+The head's own chain is short (OPTIMIZATIONS 1.33): an answer lands as it is collected, a session is gated where its
+worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
+GROW's planner and weave build their generation beside the loop -- the pool is never left idle while the head gates,
+grows or waits for a step.
+
 A hard question no longer holds its host: every obligation is first asked at 60 s, and an undecided one waits in the
 hard lane for z3 alone at the full budget over the query its first ask built, in a JVM that reads no corpus (about
 5 GB charged, four to a free lift; PIPELINE §7.5; SP4-10: 12 z3 races of up to 30 min had held every solve slot of
@@ -164,9 +170,11 @@ only hard-lane asks run, their obligations in flight, their verdicts landing in 
 the 13 lifts 12 min behind two; PIPELINE §7.9).  The head starts a round's burst at tens of starts a second, each
 host's memory read beside the loop rather than over ssh per start (PIPELINE §7.7; it started one a second, a round 0
 of 600 solves and ~500 replays ~18 min of starts).  No question is answered in a corpus
-JVM of its own: a cold host's question hands its charge to the solver it starts. A question starts a new corpus
-solver only when none serves or starts yet, or when the queued questions at this campaign's measured seat time
-outlast a solver's measured corpus read (`campaign_stream_solver_due`): a big corpus keeps one warm solver and
+JVM of its own: a cold host's question hands its charge to the solver it starts. A host's solver answers eight questions
+at once over its one corpus read (OPTIMIZATIONS 1.34). A question starts a new corpus solver only when none serves
+or starts yet, when the queued questions at this campaign's measured seat time would outlast a solver's measured
+corpus read on the serving solvers' seats, or when the oldest of them has already waited that long
+(`campaign_stream_solver_due`): a big corpus keeps one warm solver and
 leaves the other lifts to replays (SGF7-39: 13 to about 121 replays at once). A flip query states only the flipped
 condition's independence cone (`FlipQuery#cone`, KLEE constraint independence; PIPELINE §7.5): smaller queries,
 and an unrelated undecidable conjunct no longer makes the flip unknown.

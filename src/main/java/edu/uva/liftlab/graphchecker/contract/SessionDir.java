@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -8,7 +9,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -54,6 +57,45 @@ public final class SessionDir extends Value {
         String session = Fields.text(sessionId, "sessionId");
         return new SessionDir(Fields.required(iteration, "iteration")
                 .resolve(SESSIONS).resolve(session), session);
+    }
+
+    /** A session directory wherever it stands: in an iteration's corpus,
+     *  or staged in the worker that replayed it, before it lands; its name
+     *  is its session id. */
+    public static SessionDir at(Path dir) {
+        Path name = Fields.required(dir, "dir").getFileName();
+        return new SessionDir(dir, Fields.text(name == null ? ""
+                : name.toString(), "sessionId"));
+    }
+
+    /**
+     * The sessions GROW's swaps withdrew from an iteration's corpus, one per
+     * line, beside it: made empty as the exploration starts, before any
+     * solver serves, and each appended by the head before its directory
+     * leaves ({@code run_engine.sh campaign_explore},
+     * {@code campaign_stream_swap}).
+     */
+    public static final String WITHDRAWN = "withdrawn.txt";
+
+    /**
+     * The sessions {@link #WITHDRAWN} names.  Opened, never looked up first:
+     * an open reads the file as the head closed it (NFS close-to-open), where
+     * a stat may answer from a lookup cached as absent for up to a minute.
+     * Absent, it is a corpus whose exploration has not started: none left.
+     */
+    public static Set<String> withdrawn(Path iteration) throws IOException {
+        Set<String> named = new HashSet<String>();
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(iteration.resolve(WITHDRAWN),
+                    StandardCharsets.UTF_8);
+        } catch (NoSuchFileException absent) {
+            return named;
+        }
+        for (String line : lines) {
+            if (!line.trim().isEmpty()) named.add(line.trim());
+        }
+        return named;
     }
 
     /** The sessions an iteration directory holds, in name order. */

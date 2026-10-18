@@ -38,6 +38,12 @@ public final class ObligationDir {
     /** The question a SAT solver asked, until its replay decides it. */
     public static final String QUESTION_ASKED = "question.asked";
 
+    /** One worker's answer and focus rows, wherever it stands: an
+     *  obligation's, or a GROW re-run's beside it. */
+    public static ObligationDir of(Path dir) throws IOException {
+        return new ObligationDir(dir);
+    }
+
     /** The wave directories an iteration publishes, by name. */
     private static final String WAVES = "obligations-*";
 

@@ -46,10 +46,13 @@ final class HardAsk {
     final List<String> modelSymbols;
     /** sha256 of the query as published (body, check-sat, get-value). */
     final String querySha256;
+    /** The store z3's answer to that text is read from and kept in, its
+     *  iteration's ({@link Solved}); null: none. */
+    final Path solved;
 
     HardAsk(String obligationId, String gapSession, String question,
             String unsatDetail, List<GapRow> gaps, List<String> modelSymbols,
-            String querySha256) {
+            String querySha256, Path solved) {
         this.obligationId = obligationId;
         this.gapSession = gapSession;
         this.question = question;
@@ -58,6 +61,7 @@ final class HardAsk {
         this.modelSymbols = Collections.unmodifiableList(
                 new ArrayList<String>(modelSymbols));
         this.querySha256 = querySha256;
+        this.solved = solved;
     }
 
     void write(Path file) throws IOException {
@@ -73,6 +77,7 @@ final class HardAsk {
         for (String symbol : modelSymbols) symbols.add(symbol);
         json.add("modelSymbols", symbols);
         json.addProperty("querySha256", querySha256);
+        json.addProperty("solved", solved == null ? "" : solved.toString());
         Path part = file.resolveSibling(file.getFileName() + ".part");
         Files.write(part, (json + "\n").getBytes(StandardCharsets.UTF_8));
         Files.move(part, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
@@ -147,10 +152,12 @@ final class HardAsk {
         for (JsonElement symbol : JsonFields.array(json, "modelSymbols")) {
             symbols.add(symbol.getAsString());
         }
+        String solved = JsonFields.primitiveString(json, "solved");
         return new HardAsk(JsonFields.primitiveString(json, "obligationId"),
                 JsonFields.primitiveString(json, "gapSession"),
                 JsonFields.primitiveString(json, "question"),
                 JsonFields.primitiveString(json, "unsatDetail"), gaps,
-                symbols, JsonFields.primitiveString(json, "querySha256"));
+                symbols, JsonFields.primitiveString(json, "querySha256"),
+                solved.isEmpty() ? null : java.nio.file.Paths.get(solved));
     }
 }

@@ -292,12 +292,13 @@ public final class Arms {
      *  row states ({@link #eligible}); the rows never change. */
     private final Map<String, NavigableSet<Long>> unrowed =
             new ConcurrentHashMap<String, NavigableSet<Long>>();
-    /** {@code slotId|sessionId|rootId}, in the order the arms were refused;
-     *  guarded by itself (keys are computed side by side, {@code
-     *  explore.ObligationFactory#dependences}). */
-    private final Set<String> refusals = new LinkedHashSet<String>();
-    /** Whether {@link #refusals} holds any. */
-    private volatile boolean refused;
+    /** {@code slotId|sessionId|rootId}, in the order the arms were refused,
+     *  each thread's own: every caller drains on the thread that asked for
+     *  the arms (keys are computed side by side, {@code
+     *  explore.ObligationFactory#dependences}; a host's solver answers
+     *  several questions at once, each filing its own refusals). */
+    private final ThreadLocal<Set<String>> refusals =
+            ThreadLocal.withInitial(LinkedHashSet::new);
     /**
      * {@code sessionId expressionRef} -> every symbol that expression names
      * ({@link #symbolsIn}): an export is walked once, however many paths
@@ -324,20 +325,17 @@ public final class Arms {
     }
 
     /**
-     * The arms refused since the last drain, and clears them:
+     * The arms this thread's asks refused since its last drain, and clears
+     * them:
      * those whose expression names a root the delivering session states no
      * mint row for.  Drained, not read, so a caller's gap list never counts
      * one twice.
      */
     public Set<String> drainRefusals() {
-        // Most drains find none: asked on every core, they take no lock.
-        if (!refused) return new LinkedHashSet<String>();
-        synchronized (refusals) {
-            Set<String> drained = new LinkedHashSet<String>(refusals);
-            refusals.clear();
-            refused = false;
-            return drained;
-        }
+        Set<String> held = refusals.get();
+        Set<String> drained = new LinkedHashSet<String>(held);
+        held.clear();
+        return drained;
     }
 
     // ------------------------------------------------------------------
@@ -807,11 +805,8 @@ public final class Arms {
                 // Refuse, never emit unguarded -- an empty guard would
                 // admit the arm under every valuation of this root.
                 if (!Collections.disjoint(symbols, root.minted)) {
-                    synchronized (refusals) {
-                        refusals.add(slotId + "|" + session + "|"
-                                + root.rootId);
-                        refused = true;
-                    }
+                    refusals.get().add(slotId + "|" + session + "|"
+                            + root.rootId);
                     return null;
                 }
                 continue;
