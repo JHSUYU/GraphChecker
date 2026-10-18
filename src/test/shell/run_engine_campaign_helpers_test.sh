@@ -2523,7 +2523,7 @@ while IFS='|' read -r sw_lane sw_returns sw_before sw_end sw_asks; do
     sw_answer() {
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$1/obligation_result.jsonl"
-      printf '(assert false)\n' >"$1/obligation_query.smt2"
+      printf '(assert false)\n' | gzip -c >"$1/obligation_query.smt2.gz"
     }
     campaign_solve_obligation() {
       printf 'service %s,' "$5" >>"$4/asked"
@@ -2718,7 +2718,7 @@ bound_solved() {
     obligationId: $id, verdict: "SAT_MODEL_READY", sessionId: "",
     detail: ""}' >"$1/obligation_result.jsonl"
   printf '{"taskId":"TASK.1"}\n' >"$1/focused_task.jsonl"
-  printf '(assert true)\n' >"$1/obligation_query.smt2"
+  printf '(assert true)\n' | gzip -c >"$1/obligation_query.smt2.gz"
 }
 worker_dir="${bound_dir}/obligation"
 mkdir -p "${worker_dir}" "${bound_dir}/sessions" "${bound_dir}/classes"
@@ -5017,7 +5017,7 @@ EOF
 # or starts yet, or the questions queued would take the seats of the solvers
 # serving or starting (eight each) longer to answer (the campaign's measured
 # mean seat, 2 s before four returned) than a new one's corpus read (its
-# measured rate, 20 MB/s before one), or the oldest of them has waited longer
+# measured rate, 160 MB/s before one), or the oldest of them has waited longer
 # than that read already (a solver restarting or reading again holds them
 # all: SGF8-adhoc-07 round 12, 19 solves ~1100 s): a 21 GB corpus's solver is
 # most of its lift (SGF7-adhoc-39), and its first lane's 60 s timeouts held a
@@ -5066,21 +5066,21 @@ while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
     || fail "STREAM-SOLVER-DUE: ${sd_warm} warm, ${sd_starting} starting, \
 ${sd_queued} queued over ${sd_mb} MB: ${sd_said}, not ${sd_due}"
 done <<'EOF'
-0|0|5|21140|-|-|0|due
-1|0|100|21140|-|-|0|wait
-1|0|600|21140|-|-|0|wait
-1|0|5000|21140|-|-|0|due
-2|1|5000|21140|-|-|0|wait
-1|0|5|100|-|-|0|wait
-1|0|5|100|-|-|10|due
-1|0|5|100|-|-|3|wait
-0|1|2|100|-|-|0|wait
-1|0|250|21140|-|-|0|wait
-1|0|1000|21140|12000x10|-|0|due
-1|0|1000|21140|12000x3|-|0|wait
+0|0|5|169120|-|-|0|due
+1|0|100|169120|-|-|0|wait
+1|0|600|169120|-|-|0|wait
+1|0|5000|169120|-|-|0|due
+2|1|5000|169120|-|-|0|wait
+1|0|5|800|-|-|0|wait
+1|0|5|800|-|-|10|due
+1|0|5|800|-|-|3|wait
+0|1|2|800|-|-|0|wait
+1|0|250|169120|-|-|0|wait
+1|0|1000|169120|12000x10|-|0|due
+1|0|1000|169120|12000x3|-|0|wait
 1|0|600|21140|-|2000|0|wait
-1|0|19|28391|-|-|1500|due
-1|0|19|28391|-|-|600|wait
+1|0|19|227128|-|-|1500|due
+1|0|19|227128|-|-|600|wait
 EOF
 
 # STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed

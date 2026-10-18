@@ -264,10 +264,10 @@ field=<f> <subject>`.
   named (PIPELINE §7.6). Any other settles only its own flip, once a second one of it lands.
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
-  `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
+  `focused_task.jsonl`, plus `obligation_query.smt2.gz`, `question.txt` (the question its answer
   settles, `explore.ObligationFactory#question`) or `question.asked` (a SAT model's, until its
-  replay decides it), `gaps.jsonl`, `schedule_prefix.jsonl`,
-  `schedule_suffix.jsonl`, `expected_edges.jsonl` where its world plants pairings (CONFIRM's rows
+  replay decides it), `gaps.jsonl.gz`, `schedule_prefix.jsonl.gz`,
+  `schedule_suffix.jsonl.gz`, `expected_edges.jsonl` where its world plants pairings (CONFIRM's rows
   below, `STATE` and `ORDER` only), the replay's `replay_verdict.jsonl` (what it stated) and its
   logs.
   `ObligationDir.workersIn` lists the workers whose result row names a session.

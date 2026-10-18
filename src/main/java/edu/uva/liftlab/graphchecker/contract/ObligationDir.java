@@ -26,6 +26,7 @@ public final class ObligationDir {
      *  replay's process group is gone. */
     public static final String REPLAY_VERDICT = "replay_verdict.jsonl";
     public static final String FOCUSED_TASK = "focused_task.jsonl";
+    public static final String GAPS = SessionDir.GAPS;
     /**
      * The question this worker's answer settles
      * ({@code explore.ObligationFactory#question}): written by the solver

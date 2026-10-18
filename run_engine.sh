@@ -4145,7 +4145,7 @@ answer (${why:-it said nothing})"
       return 0 ;;
   esac
   require_nonempty "obligation solver result" "${result_row}"
-  require_nonempty "obligation query" "${worker}/obligation_query.smt2"
+  require_nonempty "obligation query" "${worker}/obligation_query.smt2.gz"
   outcome=$(jq -er '.verdict' "${result_row}")
   # The solver owns what a finished obligation is.  UNSAT and NOT_ADMITTED
   # are recorded terminal verdicts, not process failures, and the next round
@@ -7395,10 +7395,10 @@ campaign_stream_solver_due() {
 # mean near 12 s where most took 1-2 s), and the corpus's MB over the
 # seconds the first question a solver started for took.  Until then these
 # seeds: PV7-adhoc-39's questions took a median under 1 s on a warm solver;
-# SGF7-adhoc-39's cold solvers read 21140 MB of sessions in 14-21 min with 13
-# lifts reading at once (17-25 MB/s).
+# gzip sessions read at ~160 MB of rows a second with four lifts reading at
+# once (05 r5's 19101 MB in 115-121 s, analysis/solr-2026-10-17/nfs/).
 campaign_solver_seat_seed_ms=2000
-campaign_solver_read_seed_mb_s=20
+campaign_solver_read_seed_mb_s=160
 campaign_solver_seat_least=4
 
 # campaign_stream_seated_returned <pid>: a seated question of job <pid>
@@ -8481,8 +8481,8 @@ before, so it is not re-run again"
       "obligation ${obligation_id} was already re-run for this round"
     # What a replay reads of its worker: the focus row, the schedule cut and
     # the edges its world's pairings hold it to.
-    for file in focused_task.jsonl schedule_prefix.jsonl \
-        schedule_suffix.jsonl expected_edges.jsonl; do
+    for file in focused_task.jsonl schedule_prefix.jsonl.gz \
+        schedule_suffix.jsonl.gz expected_edges.jsonl; do
       [[ ! -e "${worker}/${file}" ]] || ln "${worker}/${file}" "${rerun}/"
     done
     campaign_stream_enqueue "RERUN $(basename "${round_dir}") \

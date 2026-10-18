@@ -1459,7 +1459,7 @@ the writer of a version a read in the cone, or a read of the anchor's own occurr
 read counting as the read of each occurrence it is the role prefix of, the rule the pairing flip was
 offered by, `Corpus#rolePrefix`).
 The worker writes `obligation_result.jsonl`
-(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
+(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2.gz`, `gaps.jsonl.gz`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
 schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
@@ -1469,7 +1469,7 @@ at or after a decode a `VIEW_HOLD` reorders (`Holding#cutBefore`; each schedule 
 was made among the VM's events, `ScheduleEvent#vmEvent`, on the scale a decode's view write states
 its seq on, after every VM event so far (`Identity#afterLastEvent`): a decode in a
 watcher's or the Overseer's role work, which runs on, is cut before itself and not before its
-occurrence's first event) goes to `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
+occurrence's first event) goes to `schedule_prefix.jsonl.gz`, the rest to `schedule_suffix.jsonl.gz` (gzip).
 
 ### 7.6 The obligation replay
 
@@ -1654,7 +1654,7 @@ ALREADY WAITED LONGER THAN THAT READ -- a solver restarting or reading again hol
 queued for it: SGF8-adhoc-07 round 12, 19 solves ~1100 s behind a 575 s restart and a 170 s read,
 while the mean seat said none was due -- `campaign_corpus_mb` at the rate the first
 question a solver started for measured, its MB over its seconds -- both measured as questions return,
-`campaign_stream_seated_returned`, the seat from four on, 2 s and 20 MB/s until then, SGF7-adhoc-39's
+`campaign_stream_seated_returned`, the seat from four on, 2 s and 160 MB/s until then (gzip rows), SGF7-adhoc-39's
 first lane holding a seat 12 s per question on average, 102 of about 570 the whole 60 s) -- else it
 waits for a serving solver's seat and the other hosts keep their room for replays (SGF7-adhoc-39: a
 solver of its 21 GB corpus held 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
@@ -3675,7 +3675,7 @@ recording's own is not kept apart.
 2. `final/gaps.json` (`campaign_write_gaps`: `contract.GapLedgerMain`), one row per distinct
    (stage, source, code, subject, detail), the first raised kept, class as the row states it (none
    stated = BLOCKING): static communication gaps and the runtime plan's `gaps` as PLAN; every
-   `gaps.jsonl.gz` (a session's, a round's) and `gaps.jsonl` (a worker's) under the iteration
+   `gaps.jsonl.gz` (a session's, a round's, a worker's) under the iteration
    directory, in their paths' byte order, read once each through `smt.ArtifactIO#input`, side by
    side on the host's cores — a path matching
    `*/sessions/*/gaps.jsonl.gz` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
@@ -3838,7 +3838,7 @@ comparison.
   admissions by basis (and the basis of each occurrence that minted a root the claim moved), the
   "decided concretely" refusals and the boundaries the fatal guards' operands stop at.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
-  `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
+  `detail`, `obligation_query.smt2.gz` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
   An obligation id holds no session id (§7.3), so it repeats across runs whose replays reproduce
   the same addresses and input shapes: an earlier run's directory is a baseline.
@@ -3849,7 +3849,7 @@ comparison.
 - `final/claim.json` (valuations with status, unsat core, selected path, session and arms),
   `candidate_composition_manifest.json`, `compose.log`, `confirm.json`, `confirm/confirm.log`.
 - A schedule divergence is read by aligning: take the rows with a `kind` of the prefix the replay
-  was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl`) and of the
+  was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl.gz`) and of the
   session's `schedule.jsonl.gz`, compare `(kind, context, site)` position by position to the first
   mismatch, then count how many events of the expected key the replay made at all (none: an event
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
