@@ -2157,7 +2157,7 @@ done <<'EOF'
 16384|-|-|0|0|hold 3910 ask
 -|2000|S1|0|0|start 16384 3910 hold 3910 ask
 16384|2000|S1|0|0|hold 6521 ask
-16384|2000|-|3|3|hold 6564 ask
+16384|2000|-|3|3|hold 6566 ask
 EOF
 
 # PLANNER-NEED: what the planner's host holds for a round
@@ -2202,48 +2202,57 @@ EOF
 # PLANNER-HOLD: a round is asked once the planner's host holds its need
 # (campaign_planner_hold): the reserve is asked of the planner's watcher,
 # and while the watcher holds less the shortfall is held among the head
-# reservations of the planner's host, given up once it holds enough.  Per
-# row: what the watcher holds, what it holds a moment later, the need,
-# whether the round waited.
+# reservations of the planner's host, given up once it holds enough; a host
+# still short past campaign_planner_hold_max_s (here 2 s) fails the round
+# by name, its hold given up -- never a wait without end.  Per row: what the
+# watcher holds, what it holds a moment later, the need, whether the round
+# waited (failed: past the bound).
 hold_dir="${test_tmp}/planner-hold"
 while IFS='|' read -r hold_first hold_later hold_need hold_waited; do
   rm -rf -- "${hold_dir}"
   mkdir -p "${hold_dir}/planner" "${hold_dir}/hosts/lift12/heads"
   echo lift12 >"${hold_dir}/planner/host"
   echo "${hold_first}" >"${hold_dir}/planner/reserve_mb.held"
+  hold_status=0
   (
     iteration_dir=${hold_dir}
     campaign_host_gate_root=${hold_dir}/hosts
     campaign_host_poll_s=0.1
+    campaign_planner_hold_max_s() { echo 2; }
     campaign_planner_alive() { true; }
     ( sleep 0.5; echo "${hold_later}" >"${hold_dir}/planner/reserve_mb.held"
     ) &
     hold_seen=""
     campaign_head_heartbeat() {
       [[ -n "${hold_seen}" ]] || hold_seen=$(cat \
-        "${hold_dir}"/hosts/lift12/heads/*.hold 2>/dev/null)
-      echo "${hold_seen}" >"${hold_dir}/seen"
+        "${hold_dir}"/hosts/lift12/heads/*.hold 2>/dev/null || true)
+      [[ -z "${hold_seen}" ]] || echo "${hold_seen}" >"${hold_dir}/seen"
     }
-    campaign_planner_hold "${hold_need}" 2>"${hold_dir}/said"
+    held_status=0
+    campaign_planner_hold "${hold_need}" 2>"${hold_dir}/said" \
+      || held_status=$?
     wait
-  ) || fail "PLANNER-HOLD: the hold failed"
+    exit "${held_status}"
+  ) || hold_status=$?
+  [[ "${hold_status}" == "$([[ "${hold_waited}" == failed ]] && echo 1 \
+      || echo 0)" ]] \
+    || fail "PLANNER-HOLD: a hold of ${hold_need} MB (${hold_first} then \
+${hold_later} held) ended ${hold_status}: $(cat "${hold_dir}/said")"
   [[ "$(cat "${hold_dir}/planner/reserve_mb")" == "${hold_need}" ]] \
     || fail "PLANNER-HOLD: the watcher was not asked ${hold_need} MB"
   [[ -z "$(ls "${hold_dir}/hosts/lift12/heads")" ]] \
     || fail "PLANNER-HOLD: the shortfall's hold outlived the wait"
-  if [[ "${hold_waited}" == yes ]]; then
-    [[ "$(cat "${hold_dir}/seen")" == "$(( hold_need - hold_first ))" ]] \
-      && grep -q "waits for its host to hold ${hold_need} MB" \
-        "${hold_dir}/said" \
-      || fail "PLANNER-HOLD: a short host did not hold the shortfall: \
-$(cat "${hold_dir}/seen" "${hold_dir}/said" 2>/dev/null)"
-  else
-    [[ ! -s "${hold_dir}/said" ]] \
-      || fail "PLANNER-HOLD: a host holding enough waited"
-  fi
+  # A short host holds the shortfall while the round waits; one holding
+  # enough holds none.
+  [[ "$(cat "${hold_dir}/seen" 2>/dev/null || echo 0)" == "$( \
+      [[ "${hold_waited}" == no ]] && echo 0 \
+      || echo "$(( hold_need - hold_first ))")" ]] \
+    || fail "PLANNER-HOLD: a hold of ${hold_need} MB with ${hold_first} \
+held held $(cat "${hold_dir}/seen" 2>/dev/null) of the shortfall"
 done <<'EOF'
 6000|6000|5000|no
 2000|6000|5000|yes
+2000|3000|5000|failed
 EOF
 # PLANNER-LIVE: a served planner's answer that it cannot hold the round (its
 # live set and the round's new sessions past its old generation's room,
@@ -2416,11 +2425,11 @@ EOF
 # ceiling.  Per row: its MemAvailable, the charge, the reserve asked, the
 # JVM's resident memory at each read, whether it was ended, what it held.
 reserve_dir="${test_tmp}/watch-reserve"
-while IFS='|' read -r reserve_available reserve_charged reserve_asked     reserve_rss reserve_ended reserve_held; do
+while IFS='|' read -r reserve_available reserve_charged reserve_asked \
+    reserve_rss reserve_ended reserve_held; do
   rm -rf -- "${reserve_dir}"
   mkdir -p "${reserve_dir}/trace" "${reserve_dir}/hosts/gate-head/charges"
-  printf '%s
-' ${reserve_rss//,/ } >"${reserve_dir}/rss"
+  tr ',' '\n' <<<"${reserve_rss}" >"${reserve_dir}/rss"
   echo "${reserve_asked}" >"${reserve_dir}/reserve"
   (
     campaign_host_gate_root="${reserve_dir}/hosts"
@@ -2439,15 +2448,24 @@ while IFS='|' read -r reserve_available reserve_charged reserve_asked     reserv
     }
     sleep 60 &
     reserve_jvm=$!
-    campaign_watch_workload "${reserve_jvm}" "${reserve_charged}"       "${reserve_dir}/trace" "" "${reserve_dir}/reserve"       2>"${reserve_dir}/said" &
+    campaign_watch_workload "${reserve_jvm}" "${reserve_charged}" \
+      "${reserve_dir}/trace" "" "${reserve_dir}/reserve" \
+      2>"${reserve_dir}/said" &
     reserve_pid=$!
     reserve_exit=0
     wait "${reserve_jvm}" 2>/dev/null || reserve_exit=$?
     wait "${reserve_pid}"
     echo "${reserve_exit}" >"${reserve_dir}/exit"
   ) || fail "WATCH-RESERVE: a watch failed"
-  [[ "$( (( $(cat "${reserve_dir}/exit") == 137 )) && echo ended       || echo ran)|$(cat "${reserve_dir}/reserve.held")"       == "${reserve_ended}|${reserve_held}" ]]     || fail "WATCH-RESERVE: a JVM charged ${reserve_charged} MB, reserve ${reserve_asked}, at ${reserve_rss} MB on a host with ${reserve_available} MB was not ${reserve_ended} holding ${reserve_held}: exit $(cat "${reserve_dir}/exit"), held $(cat "${reserve_dir}/reserve.held"); $(cat "${reserve_dir}/said")"
-  [[ -z "$(ls "${reserve_dir}/hosts/gate-head/charges")" ]]     || fail "WATCH-RESERVE: what the JVM was granted outlived it"
+  reserve_got="$( (( $(cat "${reserve_dir}/exit") == 137 )) && echo ended \
+    || echo ran)|$(cat "${reserve_dir}/reserve.held")"
+  [[ "${reserve_got}" == "${reserve_ended}|${reserve_held}" ]] \
+    || fail "WATCH-RESERVE: a JVM charged ${reserve_charged} MB, reserve \
+${reserve_asked}, at ${reserve_rss} MB on a host with ${reserve_available} MB \
+was ${reserve_got}, not ${reserve_ended}|${reserve_held}: $(cat \
+"${reserve_dir}/said")"
+  [[ -z "$(ls "${reserve_dir}/hosts/gate-head/charges")" ]] \
+    || fail "WATCH-RESERVE: what the JVM was granted outlived it"
 done <<'EOF'
 28000|2000|5000|1000,1000,1000|ran|5000
 5000|2000|5000|1000,1000,1000|ran|2000
@@ -3348,16 +3366,17 @@ stream_fixture() {
   TMPDIR=${test_tmp}
 }
 # Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
-# <id> <peak> <log> <jvm_file> <args...>): it names itself where its rounds
-# are asked and answers each with stream_planner, over the corpus and the
-# answers the question names, until it is ended -- or until
-# stream_planner_dies <round> <heap> says it ends there with that status
-# (3: out of heap, its JVM's last words in its log).
+# <id> <peak> <log> <jvm_file> <charged> <reserve> <args...>): it names
+# itself where its rounds are asked and answers each with stream_planner,
+# over the corpus and the answers the question names, until it is ended --
+# or until stream_planner_dies <round> <heap> says it ends there with that
+# status (3: out of heap, its JVM's last words in its log).  Its watcher
+# holds what its reserve asks (campaign_watch_workload), on a host with room.
 stream_planner_serve() {
-  local heap=$1 id=$2 log=$4 sessions="" dir request name round status
-  local refused
+  local heap=$1 id=$2 log=$4 reserve=$7 sessions="" dir request name round
+  local status refused
   printf '%s\n' "${BASHPID}" >"$5"
-  shift 5
+  shift 7
   while [[ $# -gt 0 ]]; do
     [[ "$1" != --sessions ]] || sessions=$2
     shift
@@ -3367,6 +3386,7 @@ stream_planner_serve() {
   printf '%s\n' "${heap}" >>"${stream_dir}/planner-heaps.txt"
   printf '%s\n' "${BASHPID}" >"${dir}/server"
   while true; do
+    [[ ! -s "${reserve}" ]] || cp -f -- "${reserve}" "${reserve}.held"
     for request in "${dir}"/requests/*.json; do
       [[ -e "${request}" ]] || continue
       name=$(basename "${request}" .json)
@@ -3455,10 +3475,13 @@ stream_planner() {
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
   stream_wave=0
   stream_round_plan "${round}" "${out}"
+  # Every round states the world depth its paths were cut by: unbounded
+  # (ObligationFactory.Bounds), unless a case sets the owner's cap.
   jq -n --argjson wave "${stream_wave}" \
     --argjson truncated "${stream_truncated:-0}" \
+    --argjson depth "${stream_test_world_depth:-2147483647}" \
     '{wave: $wave, witnesses: [], branchesStopped: 0, truncated: $truncated,
-      anchorOccurrences: [{node: "anchor"}]}' \
+      anchorOccurrences: [{node: "anchor"}], maxWorldDepth: $depth}' \
     >"${out}/explore_manifest.json"
 }
 # What ComposeMain publishes beside <manifest>: the claim <claim>
@@ -3552,7 +3575,10 @@ stream_stubs() {
 stream_loop_state() {
   declare -gA stream_reruns=() stream_growing=() stream_withdrawn=() \
     stream_rests=() stream_queued_at=() stream_flying=() stream_chain=() \
-    stream_confirming=() stream_entry_need=()
+    stream_confirming=() stream_entry_need=() stream_rerun_offpath=() \
+    stream_rerun_composed=()
+  stream_uncaptured=()
+  stream_world_depth=2147483647
   stream_queue=()
   stream_pending=()
   stream_gate_owed=()
@@ -4961,6 +4987,185 @@ done <<'EOF'
 0|0|0|0||||1||on
 0|0|0|0||||0|b|on
 0|0|0|0||||0|t|on
+EOF
+
+# STREAM-OFFPATH: a GROW re-run is off EXPLORE's critical path exactly when
+# its world -- its focus row's own flip and the flips it inherited, counted
+# as explore.ExploreCodec#readWorld counts them -- holds more flips than the
+# rounds' maxWorldDepth (campaign_stream_offpath): no path of its session is
+# ever cut.  At the unbounded depth (Integer.MAX_VALUE) none is.  Per row:
+# whether the row flips (- a pairing flip: none), the flips it inherited,
+# the depth, whether it is off the path.
+offpath_focus="${test_tmp}/offpath-focus.jsonl"
+while IFS='|' read -r op_flip op_inherited op_depth op_want; do
+  jq -n -c --arg flip "${op_flip}" --argjson inherited "${op_inherited}" \
+    '{taskId: "TASK.seed",
+      flip: (if $flip == "yes" then {siteId: "S#u1", ordinal: 0,
+        outcome: true} else null end),
+      inheritedFlips: [range($inherited) | {siteId: "S#u\(.)", ordinal: 0,
+        outcome: false}]}' >"${offpath_focus}"
+  op_said=$(
+    stream_world_depth=${op_depth}
+    if campaign_stream_offpath "${offpath_focus}"; then echo off; else
+      echo on; fi
+  )
+  [[ "${op_said}" == "${op_want}" ]] \
+    || fail "STREAM-OFFPATH: flip ${op_flip}, ${op_inherited} inherited, \
+depth ${op_depth}: ${op_said}, not ${op_want}"
+done <<'EOF'
+yes|0|0|off
+-|0|0|on
+yes|0|1|on
+yes|1|1|off
+-|2|1|off
+yes|2|3|on
+yes|0|2147483647|on
+yes|40|2147483647|on
+EOF
+
+# STREAM-IDLE-BESIDE: the exploration's idleness but for GROW's re-runs
+# (campaign_stream_idle offpath|composed): under offpath, a re-run no
+# obligation can come from (stream_rerun_offpath) -- running, queued,
+# returned unswapped or owed its gate -- is no work; under composed, only
+# such a re-run COMPOSE does not wait for (stream_rerun_composed) is none.
+# Any other work is work under both.  Per row: where the re-run is, whether
+# it is off the path, whether COMPOSE waits for it, the filter, and the
+# answer.
+while IFS='|' read -r ib_where ib_off ib_composed ib_filter ib_want; do
+  ib_said=$(
+    declare -A stream_jobs=() stream_rerun_offpath=() \
+      stream_rerun_composed=()
+    stream_queue=()
+    stream_hard=()
+    stream_swaps=()
+    stream_gate_owed=()
+    stream_step_pid=""
+    stream_round_pid=""
+    stream_round_returned=""
+    stream_grow_pid=""
+    stream_grow_returned=""
+    case "${ib_where}" in
+      job) stream_jobs[4242]="RERUN obligations-0001 OB.r lift12 S.x" ;;
+      queue) stream_queue=("RERUN obligations-0001 OB.r S.x") ;;
+      swap) stream_swaps=("obligations-0001 OB.r S.x 0") ;;
+      gate) stream_gate_owed=("RERUN obligations-0001 OB.r lift12 0 S.x"$'\t'"s"$'\t'"w") ;;
+      solve) stream_queue=("OBLIGATION obligations-0001 OB.r") ;;
+    esac
+    [[ "${ib_off}" == no ]] || stream_rerun_offpath["OB.r S.x"]=1
+    [[ "${ib_composed}" == no ]] || stream_rerun_composed["OB.r S.x"]=1
+    if campaign_stream_idle ${ib_filter/-/}; then echo end; else echo on; fi
+  )
+  [[ "${ib_said}" == "${ib_want}" ]] \
+    || fail "STREAM-IDLE-BESIDE: a re-run (${ib_where}, off the path \
+${ib_off}, composed ${ib_composed}) under '${ib_filter}': ${ib_said}, not \
+${ib_want}"
+done <<'EOF'
+job|yes|no|-|on
+job|yes|no|offpath|end
+job|no|no|offpath|on
+job|yes|no|composed|end
+job|yes|yes|composed|on
+job|yes|yes|offpath|end
+queue|yes|no|offpath|end
+queue|no|no|offpath|on
+queue|yes|yes|composed|on
+swap|yes|no|composed|end
+swap|no|no|offpath|on
+swap|yes|yes|composed|on
+gate|yes|no|offpath|end
+gate|yes|yes|composed|on
+solve|no|no|offpath|on
+EOF
+
+# FIXED-BESIDE: nothing owed but re-runs no obligation can come from is the
+# fixed point beside them (campaign_stream_fixed_beside): COMPOSE waits for
+# the re-runs of sessions whose paths it composes -- a target row at the
+# declared occurrence (campaign_stream_composes) -- running, queued or
+# returned; a queued one of any other session is dropped now, its session
+# uncaptured, and one running is left to the end.  S.a (running) and S.c
+# (queued) compose; S.b (queued) and S.d (running) do not.
+(
+  beside="${test_tmp}/fixed-beside"
+  iteration_dir="${beside}/iteration-0000"
+  sessions="${iteration_dir}/sessions"
+  campaign_root=${beside}
+  stream_loop_state
+  stream_anchors='[{"node":"anchor"}]'
+  stream_round=3
+  stream_reruns_dropped=()
+  declare -A stream_jobs=()
+  stream_stop=""
+  stream_stop_detail=""
+  for fb_session in S.a S.b S.c S.d; do
+    mkdir -p "${sessions}/${fb_session}" \
+      "${iteration_dir}/obligations-0001/OB.${fb_session#S.}/grow-obligations-0002/OB.${fb_session#S.}"
+    stream_reruns["OB.${fb_session#S.} ${fb_session}"]="${iteration_dir}/obligations-0001/OB.${fb_session#S.}/grow-obligations-0002/OB.${fb_session#S.}"
+    stream_rerun_offpath["OB.${fb_session#S.} ${fb_session}"]=1
+    jq -n -c --arg at "$([[ "${fb_session}" == S.[ac] ]] && echo anchor \
+        || echo elsewhere)" '{occurrence: {node: $at}}' \
+      | gzip -c >"${sessions}/${fb_session}/targets.jsonl.gz"
+  done
+  stream_hold=4
+  stream_jobs[4242]="RERUN obligations-0002 OB.a lift12 S.a"
+  stream_jobs[4243]="RERUN obligations-0002 OB.d lift12 S.d"
+  stream_queue=("RERUN obligations-0002 OB.b S.b" \
+    "RERUN obligations-0002 OB.c S.c")
+  campaign_stream_fixed_beside 2>"${beside}/said"
+  [[ "${stream_stop}" == FIXED_POINT \
+      && "${!stream_rerun_composed[*]}" == *"OB.a S.a"* \
+      && "${!stream_rerun_composed[*]}" == *"OB.c S.c"* \
+      && ${#stream_rerun_composed[@]} -eq 2 \
+      && "${stream_queue[*]}" == "RERUN obligations-0002 OB.c S.c" \
+      && "${stream_reruns_dropped[*]}" == OB.b \
+      && "${stream_uncaptured[*]}" == S.b \
+      && -d "${beside}/explore-reaped/obligations-0002/OB.b" \
+      && ${#stream_jobs[@]} -eq 2 && "${stream_hold}" == 3 ]] \
+    || fail "FIXED-BESIDE: stop ${stream_stop}, composed \
+[${!stream_rerun_composed[*]}], queue [${stream_queue[*]}], dropped \
+[${stream_reruns_dropped[*]}], uncaptured [${stream_uncaptured[*]}], hold \
+${stream_hold}"
+  # Nothing owed but those COMPOSE does not wait for is the end; the two it
+  # waits for hold it.
+  ! campaign_stream_idle composed \
+    || fail "FIXED-BESIDE: the end came with COMPOSE's re-runs owed"
+  unset 'stream_jobs[4242]'
+  stream_queue=()
+  campaign_stream_idle composed \
+    || fail "FIXED-BESIDE: a re-run COMPOSE does not wait for held the end"
+) || fail "FIXED-BESIDE failed"
+
+# STREAM-UNCAPTURED: at the exploration's end, the exposing sessions still
+# in the corpus whose re-runs did not land are named in
+# uncaptured_sessions.txt (campaign_stream_uncaptured, SessionDir#UNCAPTURED:
+# COMPOSE frees what their reads saw that no write states), once each,
+# sorted; a session swapped out since is none, and none are named after a
+# witness (its claim is the accepted attempt's).  Per row: the stop, the
+# sessions named uncaptured (in order), those in the corpus, the file.
+while IFS='|' read -r un_stop un_named un_corpus un_want; do
+  un_dir="${test_tmp}/stream-uncaptured"
+  rm -rf -- "${un_dir}"
+  mkdir -p "${un_dir}/sessions"
+  for un_session in ${un_corpus}; do
+    mkdir -p "${un_dir}/sessions/${un_session}"
+  done
+  (
+    iteration_dir=${un_dir}
+    sessions=${un_dir}/sessions
+    stream_stop=${un_stop}
+    read -r -a stream_uncaptured <<<"${un_named}"
+    campaign_stream_uncaptured 2>/dev/null
+  )
+  un_got=$(paste -sd ' ' "${un_dir}/uncaptured_sessions.txt" 2>/dev/null \
+    || echo -)
+  [[ "${un_got:--}" == "${un_want}" ]] \
+    || fail "STREAM-UNCAPTURED: ${un_stop} with [${un_named}] uncaptured \
+over [${un_corpus}]: ${un_got}, not ${un_want}"
+done <<'EOF'
+FIXED_POINT|S.b S.a S.b|S.a S.b S.c|S.a S.b
+FIXED_POINT|S.gone S.a|S.a|S.a
+FIXED_POINT||S.a|-
+CAMPAIGN_BUDGET_REACHED|S.c|S.c|S.c
+WITNESSED|S.a|S.a|-
 EOF
 
 # STREAM-PLAN-DUE: a round is owed once an answer came since the last one
@@ -6879,6 +7084,104 @@ $(cat "${stream_dir}/exploration.json")"
   fi
 done
 
+# GROW-BESIDE: a GROW re-run no obligation can come from (its world past the
+# owner's cap, campaign_stream_offpath) holds no fixed point: once nothing
+# else is owed the exploration is at its fixed point beside it, and COMPOSE
+# waits for it only where it composes the exposing session's path (a target
+# row at the declared occurrence): composed, the re-run swaps in before the
+# end; free, it is reaped at the end and its session named uncaptured
+# (uncaptured_sessions.txt: COMPOSE frees what its reads saw that no write
+# states).  Uncapped (Integer.MAX_VALUE) no re-run is off the path: it holds
+# the fixed point and swaps in, as before.  OB.x flips once and exposes a
+# region; its re-run runs <sleep> seconds (the free one past any end, so it
+# can only be reaped).  Per row: the case, the depth (- unbounded), where the
+# exposing session's target stands, the re-run's sleep, the session the
+# corpus ends with, the sessions named uncaptured, the obligations reaped.
+while IFS='|' read -r gb_case gb_depth gb_target gb_sleep gb_session \
+    gb_free_want gb_reaped_want; do
+  gb_named="${gb_free_want}|${gb_reaped_want}"
+  stream_fixture "grow-beside-${gb_case}"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  {
+    printf '#!/usr/bin/env bash\nset -euo pipefail\nsleep %s\n' "${gb_sleep}"
+    cat <<'EOF'
+mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the grown region refused the flip"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+  } >"${stream_dir}/replay.sh"
+  chmod +x "${stream_dir}/replay.sh"
+  (
+    stream_stubs
+    [[ "${gb_depth}" == - ]] || stream_test_world_depth=${gb_depth}
+    concolic_replay_command="${stream_dir}/replay.sh"
+    replay_timeout_s=900
+    schedule_max_jobs=1
+    trace_test=T
+    custom_jdk_home=""
+    workload_work_dir="${stream_dir}"
+    stream_round_plan() {
+      case "$1" in
+        0) stream_propose "$2" OB.x ;;
+        1) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+             >>"$2/growth.jsonl" ;;
+      esac
+    }
+    do_compose() { fail "GROW-BESIDE ${gb_case}: a witness was attempted"; }
+    run_java_main() {
+      local args=" $* " output plan
+      plan=${args##* --plan }
+      plan=${plan%% *}
+      output=${args##* --output }
+      output=${output%% *}
+      { cat "${plan}"
+        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+      } >"${output}"
+    }
+    campaign_instrument() {
+      mkdir -p "$2"
+      : >"$2/woven"
+      printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
+    }
+    campaign_obligation_worker() {
+      local worker=$4
+      printf '%s\n' '{"taskId":"TASK.seed","flip":{"siteId":"S#u1","ordinal":0,"outcome":true},"inheritedFlips":[]}' \
+        >"${worker}/focused_task.jsonl"
+      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+      jq -n -c --arg at "${gb_target}" \
+        '{occurrence: {node: $at}, observedFatal: false}' | gzip -c \
+        >"${worker}/sessions/SESSION.exposing/targets.jsonl.gz"
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "GROW-BESIDE ${gb_case} did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  gb_ended=$(jq -r '.stop' "${stream_dir}/exploration.json")
+  gb_landed=$(ls "${stream_dir}/sessions" | paste -sd ' ' -)
+  gb_free=$(cat "${stream_dir}/uncaptured_sessions.txt" 2>/dev/null \
+    || echo -)
+  [[ "${gb_ended}|${gb_landed}" == "FIXED_POINT|${gb_session}" ]] \
+    || fail "GROW-BESIDE ${gb_case}: ended ${gb_ended} with [${gb_landed}], \
+not FIXED_POINT with ${gb_session}: $(cat "${stream_dir}/explore.log")"
+  # Free: the re-run, which never returns by itself, is reaped at the end
+  # beside it, and its session is named; otherwise it lands before the end.
+  gb_reaped=$(jq -r '.reaped | join(" ")' "${stream_dir}/exploration.json")
+  [[ "${gb_free}|${gb_reaped}" == "${gb_named}" ]] \
+    || fail "GROW-BESIDE ${gb_case}: uncaptured ${gb_free}, reaped \
+[${gb_reaped}], not ${gb_named}: $(cat "${stream_dir}/exploration.json")"
+done <<'EOF_BESIDE'
+composed|0|anchor|2|SESSION.regrown|-|
+free|0|elsewhere|600|SESSION.exposing|SESSION.exposing|OB.x
+uncapped|-|anchor|2|SESSION.regrown|-|
+EOF_BESIDE
+
 # GROW-REASK: an obligation asked again under its id has a worker in each
 # round that asked it; GROW re-runs, and swaps, the one whose replay landed
 # the exposing session, whichever round it is in (SGF3-adhoc-21: the first
@@ -7301,8 +7604,8 @@ while IFS='|' read -r inflight_case inflight_corpus inflight_grown; do
     } >"${round_dir}/growth.jsonl"
     printf '{"obligationId":"P1"}\n' >"${round_dir}/obligations.jsonl"
     : >"${round_dir}/in_flight.jsonl"
-    jq -n '{wave: 0, branchesStopped: 0, anchorOccurrences: []}' \
-      >"${round_dir}/explore_manifest.json"
+    jq -n '{wave: 0, branchesStopped: 0, anchorOccurrences: [],
+      maxWorldDepth: 2147483647}' >"${round_dir}/explore_manifest.json"
     campaign_stream_take_round "${round_dir}"
     [[ "$(cat "${inflight_dir}/grown.txt" 2>/dev/null || echo -)" \
         == "${inflight_grown}" ]] \

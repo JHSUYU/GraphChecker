@@ -5762,6 +5762,22 @@ campaign_stream_waived() {
   [[ "$1" == offpath || -z "${stream_rerun_composed[$3]:-}" ]]
 }
 
+# campaign_stream_offpath <focus>: whether a GROW re-run of the obligation
+# whose focus row is <focus> is OFF EXPLORE'S CRITICAL PATH: no obligation
+# can come from it, since its world -- the row's own flip and the flips it
+# inherited, as explore.ExploreCodec#readWorld counts them -- holds more
+# flips than any round cuts a path from (ObligationFactory#candidates, the
+# rounds' maxWorldDepth, stream_world_depth), so no path of its session is
+# ever cut.  Never at the unbounded depth (Integer.MAX_VALUE): only the
+# owner's cap makes a re-run off the path (campaign_stream_fixed_beside).
+campaign_stream_offpath() {
+  local flips
+  flips=$(jq -r '(if (.flip | type) == "object" and (.flip | has("siteId"))
+      then 1 else 0 end) + ([.inheritedFlips[]? | objects] | length)' \
+    "$1") || return 1
+  (( flips > stream_world_depth ))
+}
+
 # THE FIXED POINT BESIDE GROW'S RE-RUNS (campaign_explore): nothing is owed
 # but re-runs no obligation can come from -- each world holds more flips
 # than any round cuts a path from (stream_rerun_offpath) -- so the
@@ -6085,8 +6101,8 @@ $(campaign_corpus_mb "${sessions}") MB ($(campaign_thrown \
 "${dir}")/stderr.log)" >"${dir}/heap-exceeded"
   elif (( status != 0 )); then
     campaign_fail EXPLORE ExploreMain "${dir}/stderr.log" \
-      "the planner of ${name} failed with exit ${status}: $(campaign_thrown \
-"${dir}/stderr.log")"
+      "the planner of ${name} failed with exit ${status}: \
+$(campaign_failure_said "${dir}/stderr.log")"
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
 }
@@ -6205,7 +6221,8 @@ campaign_planner_start_wait_s=300
 # engine heap, and asked again when it ended without answering.  Its status: 0
 # planned; 3 the planner ran out of the engine heap, or answered that it
 # would (<round_dir>/heap-predicted says why); anything else failed, the
-# deepest throwable said on stderr.
+# deepest throwable said on stderr, or why the planner's host could not hold
+# the round (campaign_planner_hold).
 campaign_stream_plan() {
   local round_dir=$1 state="${iteration_dir}/planner" status since
   local engine=${engine_memory_mb:-8192}
@@ -6234,7 +6251,7 @@ campaign_stream_plan() {
         "$(campaign_planner_need_mb "${round_dir}" "${engine}")"
     fi
     campaign_planner_hold "$(campaign_planner_need_mb "${round_dir}" \
-      "${engine}")"
+      "${engine}")" || return 1
     status=0
     campaign_planner_round "${round_dir}" || status=$?
     if (( status == 0 )); then
@@ -6293,16 +6310,31 @@ campaign_planner_need_mb() {
 # holds; while it is short, the shortfall is held among the head
 # reservations of the planner's host (campaign_head_hold) so the starts there
 # leave it, as a waiting head step's need is (campaign_head_place).  A
-# planner that ended is the round's ask to find.
+# planner that ended is the round's ask to find.  THE WAIT ENDS: a host still
+# short after campaign_planner_hold_max_s -- every replay that ran there
+# when the wait began has ended by then (replay_timeout_s) and none started
+# there since -- holds memory no start of the campaign holds, and the round
+# fails by name (status 1).
+campaign_planner_hold_max_s() {
+  printf '%s\n' "$(( replay_timeout_s + campaign_remote_bound_margin_s ))"
+}
 campaign_planner_hold() {
   local need=$1 state="${iteration_dir}/planner" held=0 said=false dir
-  local since=${SECONDS}
+  local since=${SECONDS} bound status=0
+  bound=$(campaign_planner_hold_max_s)
   printf '%s\n' "${need}" >"${state}/reserve_mb.part"
   mv -f -- "${state}/reserve_mb.part" "${state}/reserve_mb"
   while campaign_planner_alive; do
     read -r held 2>/dev/null <"${state}/reserve_mb.held" || held=0
     [[ "${held}" =~ ^[0-9]+$ ]] || held=0
     (( held < need )) || break
+    if (( SECONDS - since >= bound )); then
+      echo "the planner's host $(cat "${state}/host") held ${held} MB of \
+the ${need} MB its round needs after $(( SECONDS - since )) s \
+(campaign_planner_hold_max_s)" >&2
+      status=1
+      break
+    fi
     if [[ "${said}" == false ]]; then
       dir="${campaign_host_gate_root}/$(campaign_host_key \
 "$(cat "${state}/host")")/heads"
@@ -6316,11 +6348,12 @@ MB for it (${held} held)" >&2
     campaign_head_heartbeat
     sleep "${campaign_host_poll_s}"
   done
-  [[ "${said}" == true ]] || return 0
+  [[ "${said}" == true ]] || return "${status}"
   rm -f -- "${campaign_head_hold}"
   campaign_head_hold=""
-  campaign_log "the planner's host holds ${held} MB for its round after \
-waiting $(( SECONDS - since )) s" >&2
+  (( status != 0 )) || campaign_log "the planner's host holds ${held} MB \
+for its round after waiting $(( SECONDS - since )) s" >&2
+  return "${status}"
 }
 
 # The exploration's planner ended (it runs at the engine heap,
@@ -7161,6 +7194,12 @@ campaign_stream_end() {
   # A GROW building, or built and not taken, is dropped: its generation
   # never current, its exposures owed (a round due).
   if [[ -n "${stream_grow_round}" ]]; then
+    # Its exposing sessions ran what it grows uninstrumented, and are never
+    # re-run.
+    mapfile -t -O "${#stream_uncaptured[@]}" stream_uncaptured < <(
+      { campaign_exposures "${stream_grow_growth}"
+        campaign_unpauses "${stream_grow_growth}"; } \
+        | awk -F'\t' '$3 != "" {print $3}')
     mkdir -p "${campaign_root}/explore-reaped"
     mv -- "${iteration_dir}/generations/g${stream_generation}" \
       "${campaign_root}/explore-reaped/g${stream_generation}"
@@ -7188,8 +7227,10 @@ campaign_stream_end() {
     fi
     stream_reaped+=("${id}")
     dir="${iteration_dir}/${round}/${id}"
-    [[ "${kind}" != RERUN ]] \
-      || dir=${stream_reruns["${id} ${session}"]}
+    if [[ "${kind}" == RERUN ]]; then
+      dir=${stream_reruns["${id} ${session}"]}
+      stream_uncaptured+=("${session}")
+    fi
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
   done
@@ -8718,13 +8759,7 @@ before, so it is not re-run again"
     campaign_stream_enqueue "RERUN $(basename "${round_dir}") \
 ${obligation_id} ${session}"
     stream_reruns["${obligation_id} ${session}"]=${rerun}
-    # OFF EXPLORE'S CRITICAL PATH exactly when no obligation can come from
-    # it: its world -- its obligation's, the flip and the flips it inherited
-    # -- holds more flips than any round cuts a path from
-    # (ObligationFactory#candidates, the round's maxWorldDepth), so no path
-    # of its session is ever cut (campaign_stream_fixed_beside).
-    (( $(jq -r '(.inheritedFlips // [] | length) + (if .flip then 1 else 0 end)' \
-        "${worker}/focused_task.jsonl") <= stream_world_depth )) \
+    ! campaign_stream_offpath "${worker}/focused_task.jsonl" \
       || stream_rerun_offpath["${obligation_id} ${session}"]=1
     stream_hold=$((stream_hold + 1))
     rerun_count=$((rerun_count + 1))

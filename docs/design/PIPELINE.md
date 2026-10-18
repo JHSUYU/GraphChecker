@@ -1922,6 +1922,27 @@ bound) is dropped: not swapped in, the exposing session stays (what it would hav
 in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
 failed the campaign).
 
+A RE-RUN NO OBLIGATION CAN COME FROM HOLDS NO FIXED POINT (`campaign_stream_offpath`,
+`campaign_stream_fixed_beside`): every round's manifest states the world depth its paths were cut by
+(`maxWorldDepth`, `ObligationFactory.Bounds`; Integer.MAX_VALUE unbounded), and a re-run whose world
+-- its focus row's own flip and the flips it inherited, as `ExploreCodec#readWorld` counts them -- holds
+more flips than that is off EXPLORE's critical path: no round ever cuts a path of its session
+(`ObligationFactory#candidates`). Unbounded, none is; only the owner's cap makes one. Once nothing is
+owed but such re-runs (`campaign_stream_idle offpath`), the exploration is at its FIXED_POINT beside
+them (SGF8-adhoc-07 at depth 0: 121 re-runs, 36 % of its replay-seconds, its last ~26 of 81 minutes
+re-runs alone), and COMPOSE waits only for the re-runs of the exposing sessions whose paths it composes
+(a target row at the declared occurrence, `campaign_stream_composes`; `stream_rerun_composed`), each
+landing as any re-run does, until none is owed (`campaign_stream_idle composed`) or the campaign's
+reserve is reached; a queued re-run of any other session is dropped at once, one running at the end.
+No round starts and no witness is attempted from then on (a stop is stated). A SESSION WHOSE RE-RUN
+DID NOT LAND -- dropped there, at a stop, never run (a GROW dropped at the end), or not finished -- and
+that is still in the corpus is named in `uncaptured_sessions.txt` (`campaign_stream_uncaptured`,
+`contract.SessionDir#UNCAPTURED`; none after a witness, whose claim is the accepted attempt's): it ran
+the grown regions uninstrumented, so COMPOSE frees what its reads saw that no write states
+(`Composer#statedReads`, `SmtLowering#freedUncaptured`, FREE and named) rather than holding it
+(over-approximated: an UNSAT stays sound, a false SAT is CONFIRM's), and `CompositionInputs` digests
+the file.
+
 One swap: the exposing session (that session alone: another ask's session of the obligation stays),
 named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
 files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
@@ -2068,7 +2089,10 @@ round (`planner_live_mb`, `HeapWatch#peakSwept`) and 0.35 of the text of the rou
 (a planner started anew: none measured, every session) -- is asked of its watcher, which holds it ahead of
 the JVM's growth (its reserve: a refusal ends nothing, the JVM's own growth is granted or ends it as any
 watched JVM's), and the round is asked once its host holds it, the shortfall meanwhile held among the
-head reservations of the planner's host (`campaign_planner_hold`). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+head reservations of the planner's host (`campaign_planner_hold`); a host still short past
+`replay_timeout_s` and a margin (`campaign_planner_hold_max_s`: every replay running there when the wait
+began has ended, none started since) holds memory no start of the campaign holds, and the round fails
+EXPLORE by name. A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
 its own measure (`contract.HeapWatch#outgrown`)
 -- its old generation's live set at its highest since the last round (what it held after a full collection, as
 `HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the
@@ -2181,7 +2205,10 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no head step running, no round planning,
-  untaken or owed, and the last round, over every answer, proposed and exposed nothing.
+  untaken or owed, and the last round, over every answer, proposed and exposed nothing -- but GROW
+  re-runs no obligation can come from (their worlds past the rounds' `maxWorldDepth`, §7.8), which
+  hold no fixed point: the exploration then ends once the re-runs of the paths COMPOSE composes have
+  landed, or at the campaign's reserve, the rest dropped and their sessions composed uncaptured.
 - **PLANNER_HEAP_EXCEEDED.** The planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
