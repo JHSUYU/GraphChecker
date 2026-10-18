@@ -1216,7 +1216,7 @@ public class ExploreTest {
         assertEquals("one path cut from, the first that offers an owed arm",
                 1, cut.size());
         String named = "";
-        for (GapRow gap : RowCodec.readAll(one.resolve("gaps.jsonl"),
+        for (GapRow gap : RowCodec.readAll(one.resolve(ExploreMain.GAPS_FILE),
                 RowCodec::readGap)) {
             if (gap.subject().equals(ClosurePlanner.taskId(target)
                     + " max-paths-per-region=1")) {
@@ -3781,7 +3781,7 @@ public class ExploreTest {
         assertEquals(1, truncated.get("truncated").getAsInt());
         assertEquals(0, truncated.get("ceilingCut").getAsInt());
         boolean recorded = false;
-        for (GapRow gap : RowCodec.readAll(cutWave.resolve("gaps.jsonl"),
+        for (GapRow gap : RowCodec.readAll(cutWave.resolve(ExploreMain.GAPS_FILE),
                 RowCodec::readGap)) {
             if (!gap.detail().startsWith("REGION_PATH_CLOSURE_TRUNCATED")) {
                 continue;
@@ -6849,7 +6849,7 @@ public class ExploreTest {
         assertEquals(Collections.singletonList(
                 "UNPLANNED_INPUT TASK.t SYM.m#2 s-flip OBL.s-flip"), grown);
         boolean bounded = false;
-        for (JsonObject gap : RowCodec.readJsonl(wave.resolve("gaps.jsonl"))) {
+        for (JsonObject gap : RowCodec.readJsonl(wave.resolve(ExploreMain.GAPS_FILE))) {
             bounded |= gap.get("subject").getAsString().equals(
                     "TASK.t SYM.m#5 unplanned-input-max="
                             + UnplannedInput.MAX);
@@ -7251,10 +7251,13 @@ public class ExploreTest {
         record(worker.resolve(ObligationDir.RESULT), answer);
     }
 
-    /** Whether a directory's gap rows hold one {@code named} matches. */
+    /** Whether a directory's gap rows hold one {@code named} matches: a
+     *  round's ({@link ExploreMain#GAPS_FILE}) or a worker's. */
     private static boolean anyGap(Path dir,
             java.util.function.Predicate<GapRow> named) throws IOException {
-        return RowCodec.readAll(dir.resolve("gaps.jsonl"), RowCodec::readGap)
+        Path round = dir.resolve(ExploreMain.GAPS_FILE);
+        return RowCodec.readAll(Files.isRegularFile(round) ? round
+                        : dir.resolve("gaps.jsonl"), RowCodec::readGap)
                 .stream().anyMatch(named);
     }
 
@@ -7780,8 +7783,8 @@ public class ExploreTest {
             assertEquals("case " + at + ": the Runner's own turn", null,
                     named(obligations(wave), "Sib#u5"));
             // Each narrowing names what it cut (review M4).
-            String gaps = new String(Files.readAllBytes(
-                    wave.resolve("gaps.jsonl")), StandardCharsets.UTF_8);
+            String gaps = RowCodec.readJsonl(wave.resolve(
+                    ExploreMain.GAPS_FILE)).toString();
             assertTrue("case " + at + ": the own turn's cut is named",
                     gaps.contains("own turn hold no door of message e-task"));
         }

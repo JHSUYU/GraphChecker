@@ -10,7 +10,6 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
-import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -107,6 +106,9 @@ public final class ScheduleLog {
     public static final String PREFIX_FILE = "schedule_prefix.jsonl";
     /** The rest, beside the prefix in the worker directory. */
     public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
+    /** The recording's schedule beside its trace ({@link #installFile}),
+     *  plain JSONL: SEED copies it to the iteration's recorded schedule. */
+    public static final String RECORDING_FILE = "schedule.jsonl";
 
     /** Below the workload's own window waits (60 s). */
     static final long DEFAULT_TIMEOUT_MS = 15000L;
@@ -1539,7 +1541,7 @@ public final class ScheduleLog {
     /** The recording's sink: {@code schedule.jsonl} beside its trace. */
     static void installFile(final File directory) {
         if (directory == null) return;
-        final File file = new File(directory, SessionDir.SCHEDULE);
+        final File file = new File(directory, RECORDING_FILE);
         install(new Sink() {
             private BufferedWriter writer;
             private boolean failed;

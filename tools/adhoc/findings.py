@@ -18,7 +18,7 @@ mechanism when they share a signature:
 
 A moved root's site and callee are its plan input action's (portId, or
 sourceId for a declared source, = the root; execution_task_plan.jsonl); its
-kind, recorded value, node and context are its roots.jsonl row in the
+kind, recorded value, node and context are its roots.jsonl.gz row in the
 witness's selected session.  Everything read is kept by PRUNE.
 
 Weight, per witness (a signature takes its best):
@@ -52,6 +52,7 @@ import argparse
 import collections
 import datetime
 import glob
+import gzip
 import hashlib
 import json
 import os
@@ -67,10 +68,15 @@ BUCKETS = ((1e9, "<=1s"), (60e9, "<=1min"), (3600e9, "<=1h"))
 
 
 def lines(path):
-    with open(path) as source:
-        for line in source:
-            if line.strip():
-                yield line
+    """A file's non-blank lines as the engine reads them (smt.ArtifactIO#input):
+    a .gz file's decoded, as far as its stream was written."""
+    with (gzip.open(path, "rt") if path.endswith(".gz") else open(path)) as source:
+        try:
+            for line in source:
+                if line.strip():
+                    yield line
+        except EOFError:
+            return
 
 
 def target_site(case_dir):
@@ -149,7 +155,7 @@ def witness(final):
                    if v["ordinal"] == result["valuationOrdinal"])
     rows = {}
     for path in glob.glob(os.path.join(schedule, "iteration-*", "sessions",
-                                       session, "roots.jsonl")):
+                                       session, "roots.jsonl.gz")):
         for line in lines(path):
             row = json.loads(line)
             for key in (row["rootId"], row.get("symbol")):

@@ -5,11 +5,19 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -19,10 +27,14 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.stream.Stream;
+import java.util.zip.Deflater;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipException;
 
 /**
  * Schema-free file operations shared by concolic command boundaries.
@@ -72,16 +84,192 @@ public final class ArtifactIO {
     }
 
     private static BufferedReader jsonlReader(Path path) throws IOException {
-        InputStream input = Files.newInputStream(path);
+        return new BufferedReader(new InputStreamReader(input(path),
+                StandardCharsets.UTF_8));
+    }
+
+    // ---- gzip: the one opener -------------------------------------------
+
+    /** A file whose name ends so is one gzip stream (or several members of
+     *  one, RFC 1952 §2.2): every reader and writer here takes its bytes as
+     *  they decode (CONTRACT-SPEC §2.1-2.2). */
+    public static final String GZIP = ".gz";
+    /**
+     * The level every gzip stream here is written at: zlib's default.  In the
+     * replay's interpreted VM the level costs nothing beside the stream's own
+     * interpreted plumbing -- SGF7-adhoc-40's 172 MB session written a row a
+     * flush: 45.8 s of CPU plain, 51.6 at level 1, 52.1 at 6 -- and level 6
+     * writes 26 % fewer bytes (12.8x -> 17.3x; a planner round's files 20x
+     * -> 39x, deflated on every core).
+     */
+    private static final int GZIP_LEVEL = Deflater.DEFAULT_COMPRESSION;
+    /** How many bytes a gzip stream here buffers, either way. */
+    private static final int GZIP_BUFFER = 1 << 16;
+    /** The four bytes a sync flush ends with ({@link #appending}). */
+    private static final byte[] SYNC_TAIL = {0, 0, (byte) 0xff, (byte) 0xff};
+
+    /** Whether {@code file} is named a gzip stream ({@link #GZIP}). */
+    public static boolean gzipped(Path file) {
+        Path name = file == null ? null : file.getFileName();
+        return name != null && name.toString().endsWith(GZIP);
+    }
+
+    /**
+     * THE ONE OPENER: the bytes a file holds as its readers take them -- a
+     * gzip file's decoded ({@link #GZIP}).  A gzip stream its writer never
+     * finished reads as far as it was written, as a plain file cut there
+     * reads: a replay killed before its close leaves each row stream ending
+     * at its last flush ({@link #appending}), a whole row, and one killed
+     * inside a write leaves a cut line for its reader to refuse, as a cut
+     * plain file's.  A file that holds no gzip stream, or a damaged one,
+     * fails its read ({@link UncheckedIOException}, as a malformed row does).
+     */
+    public static InputStream input(Path file) throws IOException {
+        InputStream bytes = new BufferedInputStream(Files.newInputStream(file),
+                GZIP_BUFFER);
+        return gzipped(file) ? new Decoded(bytes, file) : bytes;
+    }
+
+    /**
+     * The UTF-8 lines of {@link #input}, malformed text refused as {@code
+     * Files#newBufferedReader} refuses it.
+     */
+    public static BufferedReader lines(Path file) throws IOException {
+        return new BufferedReader(new InputStreamReader(input(file),
+                StandardCharsets.UTF_8.newDecoder()), GZIP_BUFFER);
+    }
+
+    /**
+     * One gzip member of {@code text}, whole: members written one after
+     * another are one gzip file, so a file's runs are deflated side by side
+     * and written in order ({@code contract.RowCodec#writeAll}).
+     */
+    public static byte[] gzip(byte[] text) throws IOException {
+        ByteArrayOutputStream member = new ByteArrayOutputStream(
+                text.length / 8 + 64);
+        try (OutputStream out = new Encoder(member, false)) {
+            out.write(text);
+        }
+        return member.toByteArray();
+    }
+
+    /**
+     * A file one writer appends to as its rows come ({@code
+     * runtime.SessionPublisher}), each {@code flush} on disk whole: a gzip
+     * file's stream ends every flush at a sync point, its dictionary kept,
+     * so what was flushed decodes whether or not the stream is ever finished
+     * ({@code close} finishes it).  java.io, never a channel: the runtime
+     * writes from workload threads, and a channel on a thread the program
+     * interrupts closes truncating ({@code RowCodec#writeObject}).
+     */
+    public static OutputStream appending(Path file) throws IOException {
+        OutputStream bytes = new FileOutputStream(file.toFile(), true);
+        if (!gzipped(file)) return bytes;
         try {
-            if (path.getFileName().toString().endsWith(".gz")) {
-                input = new GZIPInputStream(input);
+            return new Encoder(bytes, true);
+        } catch (IOException | RuntimeException refused) {
+            bytes.close();
+            throw refused;
+        }
+    }
+
+    /**
+     * The bytes a reader of {@code file} meets ({@link #input}): a plain
+     * file's size; a gzip file of one stream the count its trailer states
+     * (mod 2^32), or, never finished (it ends at a sync point, or before a
+     * whole member), the bytes it decodes to.  What a session's rows weigh
+     * in a heap is their decoded text ({@code
+     * explore.ObligationSolverMain#bytes}).
+     */
+    public static long decodedSize(Path file) throws IOException {
+        long size = Files.size(file);
+        if (!gzipped(file)) return size;
+        byte[] tail = new byte[4];
+        if (size >= 20) {
+            try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                channel.position(size - tail.length);
+                ByteBuffer read = ByteBuffer.wrap(tail);
+                while (read.hasRemaining() && channel.read(read) >= 0) {
+                    // Fills the trailer's count.
+                }
             }
-            return new BufferedReader(new InputStreamReader(input,
-                    StandardCharsets.UTF_8));
-        } catch (IOException failure) {
-            input.close();
-            throw failure;
+        }
+        if (size < 20 || Arrays.equals(tail, SYNC_TAIL)) {
+            long decoded = 0L;
+            byte[] buffer = new byte[GZIP_BUFFER];
+            try (InputStream in = input(file)) {
+                int read;
+                while ((read = in.read(buffer)) >= 0) decoded += read;
+            }
+            return decoded;
+        }
+        return (tail[0] & 0xffL) | (tail[1] & 0xffL) << 8
+                | (tail[2] & 0xffL) << 16 | (tail[3] & 0xffL) << 24;
+    }
+
+    /** A gzip stream at {@link #GZIP_LEVEL}. */
+    private static final class Encoder extends GZIPOutputStream {
+        Encoder(OutputStream out, boolean syncFlush) throws IOException {
+            super(out, GZIP_BUFFER, syncFlush);
+            def.setLevel(GZIP_LEVEL);
+        }
+    }
+
+    /**
+     * A gzip file's bytes decoded ({@link #input}), ending where its stream
+     * ends or where its writer stopped: the decoder's end of input (an
+     * {@link EOFException}, which it raises only once every byte that
+     * decodes was handed out) is the file's end, and so is an empty file or
+     * one cut inside its header.  Opened at the first read.
+     */
+    private static final class Decoded extends InputStream {
+        private final InputStream bytes;
+        private final Path file;
+        private GZIPInputStream decoder;
+        private boolean ended;
+
+        Decoded(InputStream bytes, Path file) {
+            this.bytes = bytes;
+            this.file = file;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] one = new byte[1];
+            int read;
+            while ((read = read(one, 0, 1)) == 0) {
+                // A decoder hands out at least one byte or ends.
+            }
+            return read < 0 ? -1 : one[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] into, int offset, int length)
+                throws IOException {
+            if (ended) return -1;
+            try {
+                if (decoder == null) {
+                    decoder = new GZIPInputStream(bytes, GZIP_BUFFER);
+                }
+                int read = decoder.read(into, offset, length);
+                if (read < 0) ended = true;
+                return read;
+            } catch (EOFException cut) {
+                ended = true;
+                return -1;
+            } catch (ZipException damaged) {
+                throw new UncheckedIOException("malformed gzip stream in "
+                        + file + ": " + damaged.getMessage(), damaged);
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (decoder != null) {
+                decoder.close();
+            } else {
+                bytes.close();
+            }
         }
     }
 

@@ -15,8 +15,8 @@ import edu.uva.liftlab.graphchecker.contract.SessionExpressionLog;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.BufferedWriter;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
@@ -35,8 +35,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * Writes one replay session's rows, one file per kind, through the
- * contract's codec.  Every row is flushed at once: the JVM is halted with no
- * shutdown hook, and a lost row reads as a site that never ran.
+ * contract's codec, each file one gzip stream ({@link ArtifactIO#appending}).
+ * Every row is flushed at once, to a sync point of its stream: the JVM is
+ * halted with no shutdown hook, and a lost row reads as a site that never
+ * ran; {@link #close} finishes the streams, and one never finished reads up
+ * to its last flush.
  */
 public final class SessionPublisher {
     private static final Object LOCK = new Object();
@@ -273,8 +276,7 @@ public final class SessionPublisher {
         if (writer != null) return writer;
         if (withdrawn()) return null;
         BufferedWriter fresh = new BufferedWriter(new OutputStreamWriter(
-                new FileOutputStream(file.toFile(), true),
-                StandardCharsets.UTF_8));
+                ArtifactIO.appending(file), StandardCharsets.UTF_8));
         writers.put(key, fresh);
         return fresh;
     }
@@ -310,14 +312,17 @@ public final class SessionPublisher {
     public void close() {
         synchronized (LOCK) {
             closed = true;
-            for (BufferedWriter writer : writers.values()) {
-                try {
-                    writer.flush();
-                    writer.close();
-                } catch (IOException ignored) {
-                    // Rows are already flushed.
+            // Each stream finished (its trailer), as engine work too.
+            ConcolicVmBroker.asEngineWork(() -> {
+                for (BufferedWriter writer : writers.values()) {
+                    try {
+                        writer.flush();
+                        writer.close();
+                    } catch (IOException ignored) {
+                        // Rows are already flushed.
+                    }
                 }
-            }
+            });
             writers.clear();
         }
     }

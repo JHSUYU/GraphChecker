@@ -77,9 +77,10 @@ import java.util.TreeSet;
  *                              answered query is never proposed again
  *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
  *                              or running; none is proposed again
- *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
- *                              graph.jsonl, growth.jsonl, slots.jsonl,
- *                              explore_manifest.json
+ *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl.gz,
+ *                              gaps.jsonl.gz, graph.jsonl.gz, growth.jsonl,
+ *                              slots.jsonl.gz, explore_manifest.json (the
+ *                              large ones gzip, {@code ArtifactIO#GZIP})
  *   or every round of the exploration ({@link Service}):
  *   --serve &lt;dir&gt;             answer the rounds asked there, each
  *                              question naming its round, inFlight,
@@ -107,6 +108,11 @@ import java.util.TreeSet;
 public final class ExploreMain {
     /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
+    /** One round's tasks, gzip (SGF8-adhoc-05 round 5: 90 MB as text). */
+    static final String TASKS_FILE = "tasks.jsonl.gz";
+    /** One round's gaps, gzip (SGF8-adhoc-05 round 5: 602 MB as text, read
+     *  again by EMIT and the bounds, run_engine.sh). */
+    public static final String GAPS_FILE = "gaps.jsonl.gz";
 
     private final Path iteration;
     private final String declaredAnchor;
@@ -479,7 +485,7 @@ public final class ExploreMain {
                             : "the first admitted focused replay that runs "
                             + "it exposes it")));
         }
-        RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
+        RowCodec.writeAll(out.resolve(TASKS_FILE), tasks,
                 ExploreCodec::writeTask);
         // An empty file IS the frontier closing.
         RowCodec.writeAll(out.resolve("obligations.jsonl"), open.obligations,
@@ -491,7 +497,7 @@ public final class ExploreMain {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, "arm keys",
                     namingCut));
         }
-        RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
+        RowCodec.writeAll(out.resolve(GAPS_FILE), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,

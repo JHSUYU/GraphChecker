@@ -39,9 +39,10 @@ WITNESS_CHAIN_OPEN):
                 (concrete[] kinds CONSTANT, EXPORTED, BOUNDED, UNPAIRED).
 
 A root is named by its rootId in result.json and by its symbol in the
-formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
+formula; the session rows (roots.jsonl.gz) state both.  Writes <work>/cone.json.
 """
 import glob
+import gzip
 import json
 import os
 import re
@@ -53,6 +54,17 @@ sys.setrecursionlimit(100000)
 def load(path):
     with open(path) as handle:
         return json.load(handle)
+
+
+def gzip_lines(path):
+    """A session row file's lines (CONTRACT-SPEC §2.1: gzip), as far as its
+    stream was written, as the engine reads it (smt.ArtifactIO#input)."""
+    with gzip.open(path, 'rt') as handle:
+        try:
+            for line in handle:
+                yield line
+        except EOFError:
+            return
 
 
 def forms(text):
@@ -232,9 +244,9 @@ def main():
 
     symbols = {}
     rows = glob.glob(os.path.join(case_dir, 'schedule', '**', 'sessions',
-                                  '*', 'roots.jsonl'), recursive=True)
+                                  '*', 'roots.jsonl.gz'), recursive=True)
     for rows_path in rows:
-        for line in open(rows_path):
+        for line in gzip_lines(rows_path):
             if line.strip():
                 row = json.loads(line)
                 symbols.setdefault(row.get('rootId', ''), set()).add(

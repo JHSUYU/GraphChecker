@@ -216,12 +216,16 @@ public final class ObligationSolverMain {
         return standing;
     }
 
-    /** The bytes of one session's files. */
+    /** The bytes of one session's files as read: its rows' decoded text
+     *  ({@link ArtifactIO#decodedSize}), what a heap holds of them, as the
+     *  shell sizes a solver ({@code run_engine.sh campaign_rows_mb}). */
     private static long bytes(Path session) throws IOException {
         long bytes = 0L;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(session)) {
             for (Path file : files) {
-                if (Files.isRegularFile(file)) bytes += Files.size(file);
+                if (Files.isRegularFile(file)) {
+                    bytes += ArtifactIO.decodedSize(file);
+                }
             }
         }
         return bytes;

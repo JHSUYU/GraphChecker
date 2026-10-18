@@ -238,9 +238,19 @@ Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
 → how EXPLORE ended `iteration-0000/exploration.json` → per planner round
 `iteration-0000/obligations-<NNNN>/<id>/` (`obligation_query.smt2`, `obligation_result.jsonl`,
 `replay.log`) → sessions `iteration-0000/sessions/<id>/`
-(`targets.jsonl` has `reachedAnchor` and `observedFatal`). `experiments/accept/cone.py` and
+(`targets.jsonl.gz` has `reachedAnchor` and `observedFatal`). `experiments/accept/cone.py` and
 `probe.sh` re-check a published formula. `tools/analysis/timeline.py`
 breaks a campaign's time down by stage.
+
+**Session and round files are gzip** (CONTRACT-SPEC §2.1-2.2): a session's `<kind>.jsonl.gz`, a planner
+round's `slots`, `graph`, `gaps` and `tasks` `.jsonl.gz` (a round's `obligations.jsonl`, a worker's
+files and the manifests stay plain). Read them with `zcat`/`gzip -cd` (`zgrep`, `gzip -cd x | jq`); a
+session its replay never closed prints every row, then "unexpected end of file". A run recorded before
+the change (plain `*.jsonl`, through `system/solr` 4c79223f2 and `solr-parkeys`) is evidence only: no
+reader of this engine opens it. To read one with this engine (an offline gate over an old corpus), make a
+compressed copy first -- `GzCopy <src> <dst>` in `/bigtemp/vnr3ne/analysis/solr-2026-10-17/nfs/tool/`
+writes the session files as the publisher does and the round files as the planner does, hard-linking
+everything else, never writing under `<src>`.
 
 **Debugging a case** (the method the leads used):
 - **Start with the summary.** Its row gives the claim, the verdict and the reason. Then the log's
@@ -253,7 +263,7 @@ breaks a campaign's time down by stage.
     not happen and why (which thread, which slot).
   - Take a `jstack` of the replay JVM on its host (`ps -g $(cat <dir>/pgid)` on the head host finds
     the run).
-  - Read `schedule.jsonl` and the recording's `ScheduleLog` events around the slot.
+  - Read the session's `schedule.jsonl.gz` and the recording's `ScheduleLog` events around the slot.
 - **Time.** `tools/analysis/timeline.py <case dir>` splits a campaign's time by stage and job. Compare
   it with the same case in the previous round. A stage far over its history is a bug until shown
   otherwise.

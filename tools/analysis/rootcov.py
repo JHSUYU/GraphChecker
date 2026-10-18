@@ -4,8 +4,8 @@
 Offline, over what a round retained: no replay, no Java.  A check is one
 campaign directory <round>/out/<case>/.  Per check it reads
 
-  schedule/iteration-*/sessions/*/        manifest.json, targets.jsonl,
-                                          roots.jsonl, reads.jsonl (mint rows)
+  schedule/iteration-*/sessions/*/        manifest.json, targets.jsonl.gz,
+                                          roots.jsonl.gz, reads.jsonl.gz (mint rows)
   schedule/iteration-*/obligation_results.jsonl       which sessions ADMITTED
   schedule/iteration-*/{,seed-replay/,obligations-*/*/}execution_task_plan.jsonl
                                           a root's port -> the input it declares
@@ -196,16 +196,27 @@ def package(signature):
     return '.'.join(signature[1:signature.find(':')].split('.')[:3])
 
 
+def lines(path, mode='rt'):
+    """A file's lines as the engine reads them (smt.ArtifactIO#input): a .gz
+    file's decoded, as far as its stream was written (a replay killed before
+    its close leaves it ending at its last flush)."""
+    with (gzip.open(path, mode) if path.endswith('.gz') else open(path, mode)) as f:
+        try:
+            for line in f:
+                yield line
+        except EOFError:
+            return
+
+
 def rows(path):
     """A JSONL file's rows, streamed; a torn line (a killed round) is counted."""
-    with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                yield json.loads(line)
-            except ValueError:
-                MALFORMED[os.path.basename(path)] += 1
+    for line in lines(path):
+        if not line.strip():
+            continue
+        try:
+            yield json.loads(line)
+        except ValueError:
+            MALFORMED[os.path.basename(path)] += 1
 
 
 def load(path):
@@ -370,7 +381,7 @@ def anchor_rows(found):
     """M-a: reached / phi / fatal anchor rows per scope (seed, admitted, disk)."""
     scopes = {s: collections.Counter() for s in ('seed', 'admitted', 'disk')}
     for d, seed, admitted in found:
-        path = os.path.join(d, 'targets.jsonl')
+        path = os.path.join(d, 'targets.jsonl.gz')
         if not os.path.exists(path):
             continue
         for r in rows(path):
@@ -408,7 +419,7 @@ def moved_admissions(camp, found, bases):
     moved = set(((load(path).get('claim') or {}).get('movedRoots') or {}))
     minted = set()
     for d, _, _ in found if moved else ():
-        roots = os.path.join(d, 'roots.jsonl')
+        roots = os.path.join(d, 'roots.jsonl.gz')
         for r in rows(roots) if os.path.exists(roots) else ():
             if r.get('rootId') in moved or r.get('symbol') in moved:
                 minted.add(address(r['occurrence']))
@@ -445,7 +456,7 @@ def root_categories(found):
         if not admitted:
             continue
         symbols = set()
-        path = os.path.join(d, 'roots.jsonl')
+        path = os.path.join(d, 'roots.jsonl.gz')
         for r in rows(path) if os.path.exists(path) else ():
             symbols.add(r.get('symbol'))
             if 'category' not in r:
@@ -453,18 +464,17 @@ def root_categories(found):
                          'the root-category contract' % path)
             roots[r['category']].add(r.get('rootId', ''))
             mints[r['category']] += 1
-        path = os.path.join(d, 'reads.jsonl')
+        path = os.path.join(d, 'reads.jsonl.gz')
         if not os.path.exists(path):
             continue
-        with open(path, 'rb') as f:  # only mint rows are parsed
-            for line in f:
-                if b'"mintVersion"' not in line:
-                    continue
-                symbol = json.loads(line).get('symbol', '')
-                if symbol not in symbols:
-                    port = PORT.search(symbol)
-                    roots['READ'].add(port.group(0) if port else symbol)
-                    mints['READ'] += 1
+        for line in lines(path, 'rb'):  # only mint rows are parsed
+            if b'"mintVersion"' not in line:
+                continue
+            symbol = json.loads(line).get('symbol', '')
+            if symbol not in symbols:
+                port = PORT.search(symbol)
+                roots['READ'].add(port.group(0) if port else symbol)
+                mints['READ'] += 1
     return {c: [len(roots[c]), mints[c]] for c in CATEGORIES if mints[c]}
 
 

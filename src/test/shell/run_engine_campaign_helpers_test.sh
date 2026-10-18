@@ -134,7 +134,7 @@ emit_fixture() {
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
       roots targets gaps; do
-    : >"${emit_iteration}/sessions/SESSION.seed/${session_kind}.jsonl"
+    : >"${emit_iteration}/sessions/SESSION.seed/${session_kind}.jsonl.gz"
   done
   # Two rows the runtime classed DIAGNOSTIC itself: an arm whose producer ran
   # concretely, and an obligation the solver could not decide in its budget.
@@ -143,7 +143,7 @@ emit_fixture() {
   printf '%s\n' \
     '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNATTESTED_ARM","cls":"DIAGNOSTIC","subject":"IXN.7","detail":"the producer ran concretely"}' \
     '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNPRODUCIBLE_ANSWER","cls":"DIAGNOSTIC","subject":"OBL.slow","detail":"SOLVER_TIMEOUT"}' \
-    >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+    | gzip -c >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
   printf '{}\n' >"${emit_iteration}/sessions/SESSION.seed/expressions.json"
   jq -n -c '{schemaVersion: 1, kind: "SESSION_CENSUS",
     topologyEpoch: "iteration-0000", sessionId: "SESSION.seed",
@@ -282,28 +282,28 @@ for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
   jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
-done >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+done | gzip -c >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 jq -n -c '{schemaVersion: 1, sessionId: "SESSION.seed",
   kind: "BOUND_INSUFFICIENT", cls: "DIAGNOSTIC",
   subject: "REGION.P#2 daemon-tick-bound=5", detail: "an arm refused"}' \
-  >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+  | gzip -c >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 for round in 0000:U 0001:T; do
   jq -n -c --arg subject "${round#*:} max-paths-per-region=32" \
     '{schemaVersion: 1, sessionId: "exploration", kind: "ADMISSION_GAP",
       cls: "DIAGNOSTIC", subject: $subject, detail: "deferred"}' \
-    >"${emit_iteration}/obligations-${round%:*}/gaps.jsonl"
+    | gzip -c >"${emit_iteration}/obligations-${round%:*}/gaps.jsonl.gz"
 done
 # A pairing hold that gave way in a CONFIRM replay of the final stages.
 mkdir -p "${campaign_final}/confirm/sessions/worker-1"
 jq -n -c '{schemaVersion: 1, sessionId: "worker-1",
   kind: "BOUND_INSUFFICIENT", cls: "DIAGNOSTIC",
   subject: "VIEW/SOLR_ZK@n0#/a.json view-hold-max=3000", detail: "gave way"}' \
-  >"${campaign_final}/confirm/sessions/worker-1/gaps.jsonl"
+  | gzip -c >"${campaign_final}/confirm/sessions/worker-1/gaps.jsonl.gz"
 # A marker invocation past the ones GROW plans inputs for, in the last round.
 jq -n -c '{schemaVersion: 1, sessionId: "exploration",
   kind: "UNPLANNED_INPUT", cls: "DIAGNOSTIC",
   subject: "TASK.T SYM.marker#5 unplanned-input-max=4", detail: "concrete"}' \
-  >>"${emit_iteration}/obligations-0001/gaps.jsonl"
+  | gzip -c >>"${emit_iteration}/obligations-0001/gaps.jsonl.gz"
 run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
@@ -491,9 +491,9 @@ $(jq -c '[(.gaps+.telemetryGaps)[]|{stage,code,class}]' \
 # long" on a 134,436-byte generated index, publishing nothing.  The session
 # gap file below is larger than that on its own.
 emit_fixture
-python3 - "${emit_iteration}/sessions/SESSION.seed/gaps.jsonl" <<'OVERSIZED'
-import json, sys
-with open(sys.argv[1], "w") as handle:
+python3 - "${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz" <<'OVERSIZED'
+import gzip, json, sys
+with gzip.open(sys.argv[1], "wt") as handle:
     for n in range(1600):
         handle.write(json.dumps({
             "schemaVersion": 1, 
@@ -501,7 +501,8 @@ with open(sys.argv[1], "w") as handle:
             "cls": "DIAGNOSTIC", "subject": "IXN.%048d" % n,
             "detail": "the producer ran concretely at %048d" % n}) + "\n")
 OVERSIZED
-oversized=$(wc -c <"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl")
+oversized=$(gzip -cd "${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz" \
+  | wc -c)
 [[ "${oversized}" -gt 131072 ]] \
   || fail "the oversized fixture is only ${oversized} bytes; it must exceed \
 one argument (131072) for this check to mean anything"
@@ -543,7 +544,7 @@ emit_fixture
 printf '%s\n' \
   '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.kept","detail":"anchor never observed"}' \
   '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.pruned","detail":"anchor never observed"}' \
-  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+  | gzip -c >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
   || fail "a session gap row did not block \
@@ -562,7 +563,7 @@ $(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class}]' \
 emit_fixture
 printf '%s\n' \
   '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNATTESTED_ARM","cls":"DIAGNOSTIC","subject":"IXN.9","detail":"the producer ran concretely"}' \
-  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+  | gzip -c >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 : >"${emit_iteration}/campaign_gaps.jsonl"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
@@ -636,7 +637,7 @@ emit_unsat_fixture
 jq -n -c '{schemaVersion: 1, sessionId: "SESSION.seed",
   kind: "ADMISSION_GAP", cls: "BLOCKING", subject: "REGION.T#1",
   detail: "only the seed replay ran this occurrence"}' \
-  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+  | gzip -c >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
   || fail "an UNSAT formula beside a defect exited ${emit_status}: \
@@ -988,7 +989,7 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 # goes on to publish what it did establish.  An unexplored sibling path blocks a
 # closed UNSAT and says nothing about a SAT candidate.
 emit_fixture
-: >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+: >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl.gz"
 printf '%s\n' \
   '{"schemaVersion":1,"sessionId":"","kind":"ADMISSION_GAP","cls":"DIAGNOSTIC","subject":"REGION_PATH_WAVE_BUDGET_REACHED","detail":"round 7 is of wave 12 with 2 obligation(s) still open"}' \
   >"${emit_iteration}/campaign_gaps.jsonl"
@@ -1584,9 +1585,9 @@ jq -n -c '{role: "TARGET_SITE", siteId: "<A: void m()>#u20"},
 while IFS='|' read -r reached_anchor reached_expected; do
   if [[ -n "${reached_anchor}" ]]; then
     jq -n -c --arg site "${reached_anchor}" '{anchorSiteId: $site}' \
-      >"${reached_dir}/sessions/s1/targets.jsonl"
+      | gzip -c >"${reached_dir}/sessions/s1/targets.jsonl.gz"
   else
-    rm -f -- "${reached_dir}/sessions/s1/targets.jsonl"
+    rm -f -- "${reached_dir}/sessions/s1/targets.jsonl.gz"
   fi
   [[ "$(campaign_target_reached "${reached_dir}/sessions" \
       "${reached_dir}/map.jsonl")" == "${reached_expected}" ]] \
@@ -2599,14 +2600,30 @@ done <<'EOF_HEAP'
 10969 16384
 EOF_HEAP
 # The corpus's size is read again once its statement is past
-# campaign_corpus_mb_fresh_s, from the session files.
+# campaign_corpus_mb_fresh_s, from the session files as read
+# (campaign_rows_mb): a plain file's size (3 MB), a finished gzip stream's
+# text (2 MB, by its trailer), one its replay never finished (1 MB, ending
+# at a sync point, by what it decodes to), an empty one.
 mkdir -p "${solver_heap_dir}/sessions/s1"
-head -c 3145728 /dev/zero >"${solver_heap_dir}/sessions/s1/rows.jsonl"
+head -c 3145728 /dev/zero >"${solver_heap_dir}/sessions/s1/manifest.json"
+head -c 2097152 /dev/zero | gzip -c \
+  >"${solver_heap_dir}/sessions/s1/reads.jsonl.gz"
+python3 - "${solver_heap_dir}/sessions/s1/writes.jsonl.gz" <<'UNFINISHED'
+import sys, zlib
+stream = zlib.compressobj(6, zlib.DEFLATED, 31)
+with open(sys.argv[1], "wb") as out:
+    out.write(stream.compress(b"\0" * 1048576)
+              + stream.flush(zlib.Z_SYNC_FLUSH))
+UNFINISHED
+: >"${solver_heap_dir}/sessions/s1/gaps.jsonl.gz"
+[[ "$(campaign_rows "${solver_heap_dir}/sessions/s1/writes.jsonl.gz" \
+    | wc -c)" == 1048576 ]] \
+  || fail "an unfinished gzip stream did not read to its last flush"
 printf '%s 999\n' "$(( $(date +%s) - 61 ))" >"${solver_heap_dir}/corpus_mb"
 sh_read=$(campaign_corpus_mb "${solver_heap_dir}/sessions")
-[[ "${sh_read}" -ge 3 && "${sh_read}" -le 4 \
+[[ "${sh_read}" == 6 \
    && "$(cut -d' ' -f2 "${solver_heap_dir}/corpus_mb")" == "${sh_read}" ]] \
-  || fail "a stale corpus size was not read again: ${sh_read}, \
+  || fail "a stale corpus size was not read again as its text: ${sh_read}, \
 $(cat "${solver_heap_dir}/corpus_mb")"
 
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
@@ -2711,7 +2728,7 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   sessionId: "SESSION.other", role: "FOCUSED",
   obligationIds: ["OB.OTHER"]}' \
   >"${withdraw_sessions}/SESSION.other/manifest.json"
-: >"${withdraw_sessions}/SESSION.other/activations.jsonl"
+: >"${withdraw_sessions}/SESSION.other/activations.jsonl.gz"
 # The replay opens its session -- manifest first, as SessionPublisher does --
 # and then hangs, exactly like the JVM that deadlocked on two class monitors.
 cat >"${withdraw_dir}/replay.sh" <<EOF
@@ -2750,7 +2767,7 @@ $(find "${withdraw_worker}" -maxdepth 3 | LC_ALL=C sort)"
 # The other worker's session, and every row in it, exactly where it was.
 [[ -f "${withdraw_sessions}/SESSION.other/manifest.json" ]] \
   || fail "another worker's session was withdrawn with ours"
-[[ -f "${withdraw_sessions}/SESSION.other/activations.jsonl" ]] \
+[[ -f "${withdraw_sessions}/SESSION.other/activations.jsonl.gz" ]] \
   || fail "another worker's session lost rows"
 [[ ! -e "${withdraw_worker}/timed-out-sessions/SESSION.other" ]] \
   || fail "another worker's session was moved under our worker"
@@ -2826,7 +2843,8 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done/manifest.json"
 jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.D",
   verdict: "ADMITTED", sessionId: "SESSION.done", detail: "flip taken"}' \\
-  | tee "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done/obligations.jsonl" \\
+  | tee >(gzip -c \\
+    >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.done/obligations.jsonl.gz") \\
   >"\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl.part"
 [[ ${shape} == unrenamed ]] \\
   || mv "\${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl.part" \\
@@ -2854,7 +2872,7 @@ stated_worker="${stated_dir}/renamed"
   || fail "REPLAY-BOUND-6: a replay that stated its verdict before the bound \
 killed it is not answered by its statement: \
 $(cat "${stated_worker}/obligation_result.jsonl")"
-[[ -f "${stated_dir}/sessions-renamed/SESSION.done/obligations.jsonl" \
+[[ -f "${stated_dir}/sessions-renamed/SESSION.done/obligations.jsonl.gz" \
     && ! -e "${stated_worker}/timed-out-sessions" ]] \
   || fail "REPLAY-BOUND-6: the session a stated verdict names was withdrawn: \
 $(find "${stated_dir}" | LC_ALL=C sort)"
@@ -3215,7 +3233,7 @@ stream_answer() {
     jq -n -c --argjson fatal "$([[ -n "${fatal}" ]] && echo true \
         || echo false)" '{occurrence: {node: "anchor"}, observedFatal: $fatal},
         {occurrence: {node: "elsewhere"}, observedFatal: false}' \
-      >"${worker}/sessions/${session}/targets.jsonl"
+      | gzip -c >"${worker}/sessions/${session}/targets.jsonl.gz"
   fi
   jq -n -c --arg id "${id}" --arg verdict "${verdict}" \
     --arg session "${session}" \
@@ -6473,7 +6491,8 @@ confirm_stub_replay() {
     sessionId: "CONFIRM-1", detail: "stub"}' \
     >"${worker}/obligation_result.jsonl"
   [[ -z "${confirm_stub_gaps+set}" ]] \
-    || printf '%s' "${confirm_stub_gaps}" >"${sessions}/CONFIRM-1/gaps.jsonl"
+    || printf '%s' "${confirm_stub_gaps}" \
+      | gzip -c >"${sessions}/CONFIRM-1/gaps.jsonl.gz"
   # The occurrence as its four parts, exactly as RowCodec writes a target.
   jq -n -c --argjson fatal "${confirm_stub_fatal}" \
     --argjson iteration "${confirm_stub_target_iteration}" \
@@ -6483,7 +6502,7 @@ confirm_stub_replay() {
         index: [{callSite: "<a.Handler: void handle()>",
           iteration: $iteration}]},
       anchorSiteId: "T#u1#1", phiTerm: "EXPR.phi", observedFatal: $fatal,
-      reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
+      reachedAnchor: true}' | gzip -c >"${sessions}/CONFIRM-1/targets.jsonl.gz"
   # The moved root as the run minted it: the model's plant, or not.
   [[ -z "${confirm_stub_planted}" ]] \
     || jq -n -c --arg v "${confirm_stub_planted}" '{sessionId: "CONFIRM-1",
@@ -6491,7 +6510,7 @@ confirm_stub_replay() {
         context: {form: "ROOT", role: "XCEIVER", windowIndex: 1}, index: []},
       rootId: "ROOT.M", symbol: "M_Z_m", kind: "MARKER", category: "FAULT",
       recordedValue: $v, declared: true}' \
-      >"${sessions}/CONFIRM-1/roots.jsonl"
+      | gzip -c >"${sessions}/CONFIRM-1/roots.jsonl.gz"
 }
 run_confirm() {
   local claim=$1

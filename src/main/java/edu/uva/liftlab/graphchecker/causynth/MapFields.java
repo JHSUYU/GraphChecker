@@ -4,15 +4,14 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -20,7 +19,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.zip.GZIPInputStream;
 
 /**
  * The one JSONL-row coercion family: null, JSON {@code null} and a wrong-typed
@@ -37,19 +35,11 @@ public final class MapFields {
     private MapFields() {
     }
 
-    /** The one JSONL byte source: UTF-8 lines, gzip by file name. */
+    /** The map's JSONL lines, UTF-8, through the one opener ({@link
+     *  ArtifactIO#input}: gzip by file name). */
     public static BufferedReader rowReader(File file) throws IOException {
-        InputStream bytes = Files.newInputStream(file.toPath());
-        try {
-            if (file.getName().endsWith(".gz")) {
-                bytes = new GZIPInputStream(bytes);
-            }
-            return new BufferedReader(new InputStreamReader(bytes,
-                    StandardCharsets.UTF_8));
-        } catch (IOException refused) {
-            bytes.close();
-            throw refused;
-        }
+        return new BufferedReader(new InputStreamReader(
+                ArtifactIO.input(file.toPath()), StandardCharsets.UTF_8));
     }
 
     /** The one JSONL reader: one row per non-blank line; null refused. */

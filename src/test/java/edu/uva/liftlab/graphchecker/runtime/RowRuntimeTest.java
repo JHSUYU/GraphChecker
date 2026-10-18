@@ -48,6 +48,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -355,10 +356,13 @@ public class RowRuntimeTest {
             assertEquals(0L, Files.size(layout.gaps()));
         }
         stating.join();
+        // Read as its stream stands, flushed and not finished.
+        StringBuilder written = new StringBuilder();
+        try (java.io.BufferedReader in = ArtifactIO.lines(layout.gaps())) {
+            for (int c; (c = in.read()) >= 0; ) written.append((char) c);
+        }
         assertEquals(RowCodec.toLine(RowCodec.writeGap(row))
-                        + System.lineSeparator(),
-                new String(Files.readAllBytes(layout.gaps()),
-                        StandardCharsets.UTF_8));
+                + System.lineSeparator(), written.toString());
     }
 
     /**

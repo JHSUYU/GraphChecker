@@ -54,7 +54,7 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
   file:line in the system's code; for each UNSAT one line saying why no world of the corpus reaches the fatal.
 - For a SAT, three more questions (11741, 2026-09-22): is each moved root necessary (pin it to its recorded value in
   the file: the query must go unsat); do other mechanism roots sit at z3's default only because nothing constrains
-  them; did the replay of the witness actually observe the fatal (`targets.jsonl` `observedFatal`).
+  them; did the replay of the witness actually observe the fatal (`targets.jsonl.gz` `observedFatal`).
 
 ## 3. The traps (each fooled a lead; how to see it now)
 

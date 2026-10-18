@@ -6,12 +6,14 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.internal.LazilyParsedNumber;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -193,6 +195,91 @@ public class ContractTest {
         }
         assertTrue(SessionReader.read(bare).incomplete()
                 .startsWith(SessionDir.EXPRESSIONS + " could not be read"));
+    }
+
+    /**
+     * A session's row files are gzip streams (CONTRACT-SPEC §2.1) every
+     * reader opens through one opener ({@code ArtifactIO#input}): a stream
+     * flushed at each row and never finished -- a replay killed before its
+     * close -- reads to its last row, as a plain file cut there; one cut
+     * inside a row's flush ends where the cut is, as a cut plain file; an
+     * empty file is no rows; a file of members ({@link RowCodec#writeAll})
+     * reads whole; a damaged stream is refused as a malformed row; and what
+     * a session's file weighs is its text ({@code ArtifactIO#decodedSize}).
+     */
+    @Test
+    public void aGzipRowFileReadsAsFarAsItWasWritten() throws IOException {
+        Path dir = iteration.getRoot().toPath();
+        List<GapRow> rows = new ArrayList<GapRow>();
+        StringBuilder text = new StringBuilder();
+        for (int at = 0; at < 3; at++) {
+            rows.add(GapRow.of("s", GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, "row " + at, "the " + at + "th"));
+            text.append(RowCodec.toLine(RowCodec.writeGap(rows.get(at))))
+                    .append('\n');
+        }
+        Path open = dir.resolve("open" + SessionDir.GAPS);
+        java.io.Writer out = new java.io.OutputStreamWriter(
+                ArtifactIO.appending(open), StandardCharsets.UTF_8);
+        long[] flushedAt = new long[rows.size()];
+        for (int at = 0; at < rows.size(); at++) {
+            out.write(RowCodec.toLine(RowCodec.writeGap(rows.get(at))));
+            out.write('\n');
+            out.flush();
+            flushedAt[at] = Files.size(open);
+        }
+        assertEquals("unfinished: every flushed row", rows,
+                RowCodec.readAll(open, RowCodec::readGap));
+        assertEquals(text.length(), ArtifactIO.decodedSize(open));
+        byte[] unfinished = Files.readAllBytes(open);
+        out.close();
+        assertTrue(Files.size(open) > unfinished.length);
+        assertEquals("finished", rows,
+                RowCodec.readAll(open, RowCodec::readGap));
+        assertEquals("its trailer's count", text.length(),
+                ArtifactIO.decodedSize(open));
+
+        // Cut inside the last row's flush: the rows before it, then a cut
+        // line or nothing, as a plain file cut there.
+        Path cut = dir.resolve("cut" + SessionDir.GAPS);
+        Files.write(cut, Arrays.copyOf(unfinished,
+                (int) (flushedAt[1] + flushedAt[2]) / 2));
+        List<String> lines = new ArrayList<String>();
+        RowCodec.eachLine(cut, lines::add);
+        assertTrue(lines.toString(), lines.size() >= 2);
+        assertEquals(text.substring(0, text.indexOf("\n",
+                text.indexOf("\n") + 1)), String.join("\n",
+                lines.subList(0, 2)));
+        assertTrue(text.toString().startsWith(String.join("\n", lines)));
+
+        Path empty = dir.resolve("empty" + SessionDir.GAPS);
+        Files.write(empty, new byte[0]);
+        assertTrue(RowCodec.readAll(empty, RowCodec::readGap).isEmpty());
+        assertEquals(0L, ArtifactIO.decodedSize(empty));
+
+        List<GapRow> many = new ArrayList<GapRow>();
+        for (int at = 0; at < 2500; at++) {
+            many.add(GapRow.of("s", GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, "row " + at, "many"));
+        }
+        Path members = dir.resolve("members.jsonl.gz");
+        RowCodec.writeAll(members, many, RowCodec::writeGap);
+        assertEquals(many, RowCodec.readAll(members, RowCodec::readGap));
+        RowCodec.writeAll(members, Collections.<GapRow>emptyList(),
+                RowCodec::writeGap);
+        assertTrue(RowCodec.readAll(members, RowCodec::readGap).isEmpty());
+        assertTrue("an empty member, whole", Files.size(members) >= 20);
+
+        Path damaged = dir.resolve("damaged" + SessionDir.GAPS);
+        Files.write(damaged, "{\"no\": \"gzip\"}\n".getBytes(
+                StandardCharsets.UTF_8));
+        try {
+            RowCodec.readAll(damaged, RowCodec::readGap);
+            fail("read a file that holds no gzip stream");
+        } catch (java.io.UncheckedIOException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains(damaged.toString()));
+        }
     }
 
     /**

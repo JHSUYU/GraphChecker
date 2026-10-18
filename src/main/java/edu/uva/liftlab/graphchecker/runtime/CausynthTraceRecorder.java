@@ -16,7 +16,6 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
-import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -1760,7 +1759,7 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test);
             trace.schedule.addAll(SessionReader.readSchedule(new File(
-                    directory, SessionDir.SCHEDULE).toPath()));
+                    directory, ScheduleLog.RECORDING_FILE).toPath()));
             trace.sort();
             // No offline reattribution: runtime.Attribution stamped every
             // METHOD_ENTER live, as the replay does.

@@ -25,14 +25,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** G_k and its growth (PIPELINE §7.1, §7.8). {@code graph.jsonl}: NODE
+/** G_k and its growth (PIPELINE §7.1, §7.8). {@code graph.jsonl.gz}: NODE
  *  per activated occurrence, EDGE per WIRE pairing or STATE join, with worlds
  *  ({@link ObligationFactory#worldDigest}), plus a FRONTIER diff; no THREAD
  *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: the
  *  occurrences the closure demands and no session captured ({@link
  *  ClosurePlanner.Plan#exposed}). */
 final class WaveGraph {
-    static final String GRAPH = "graph.jsonl";
+    /** gzip: SGF8-adhoc-05 round 4's, 368 MB as text, is 10 MB. */
+    static final String GRAPH = "graph.jsonl.gz";
     static final String GROWTH = "growth.jsonl";
 
     private final Map<String, JsonObject> nodes =
@@ -147,7 +148,7 @@ final class WaveGraph {
         edgeWorlds.get(edge.id).add(world);
     }
 
-    /** Writes {@code graph.jsonl} with its FRONTIER against the previous
+    /** Writes {@code graph.jsonl.gz} with its FRONTIER against the previous
      *  round's. */
     void write(Path roundDir, int round) throws IOException {
         Set<String> before = new LinkedHashSet<String>();

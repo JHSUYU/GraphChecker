@@ -2809,12 +2809,16 @@ a truncated run and its log is in ${worker}/replay.log"
   fi
   # A workload whose target branch throws exits nonzero by design, so the gate
   # is the evidence it published and not its exit code.  That evidence is the
-  # session: one JSONL file per row kind (CONTRACT-SPEC §2.1), and a session
-  # with no activation row replayed nothing whatever the exit code said.
+  # session: one gzip JSONL file per row kind (CONTRACT-SPEC §2.1), and a
+  # session with no activation row replayed nothing whatever the exit code
+  # said.
   if [[ "${region_results}" == required ]]; then
-    local live
-    live=$(find "${sessions}" -mindepth 2 -maxdepth 2 \
-      -name activations.jsonl -size +0c -print -quit 2>/dev/null) || live=""
+    local live="" activations
+    while IFS= read -r -d '' activations; do
+      live=$(campaign_rows "${activations}" | head -c 1) || live=""
+      [[ -z "${live}" ]] || break
+    done < <(find "${sessions}" -mindepth 2 -maxdepth 2 \
+      -name activations.jsonl.gz -print0 2>/dev/null)
     [[ -n "${live}" ]] || campaign_fail REPLAY WORKLOAD "${sessions}" \
       "the concolic replay published no activation row (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
     # Some region ran, but not the failure target's occurrence.  EXPLORE
@@ -2846,8 +2850,10 @@ campaign_target_unanswered() {
   task=$(awk -F'\t' '$1 == "TARGET" {print $6; exit}' \
     <<<"${campaign_member_rows}")
   [[ -n "${task}" ]] || return 0
-  find "${sessions}" -mindepth 2 -maxdepth 2 -name gaps.jsonl -print0 \
-    | xargs -0 -r jq -r --arg task "${task}" \
+  local -a gaps=()
+  mapfile -d '' gaps < <(find "${sessions}" -mindepth 2 -maxdepth 2 \
+    -name gaps.jsonl.gz -print0)
+  campaign_rows "${gaps[@]}" | jq -r --arg task "${task}" \
       'select(.kind == "TASK_UNANSWERED" and .subject == $task) | .detail' \
     | head -n 1 | cut -c1-600
 }
@@ -2858,15 +2864,15 @@ campaign_target_reached() {
   local sessions=$1 map=$2
   local -a rows=()
   mapfile -d '' rows < <(find "${sessions}" -mindepth 2 -maxdepth 2 \
-    -name targets.jsonl -print0)
+    -name targets.jsonl.gz -print0)
   (( ${#rows[@]} > 0 )) || return 0
-  jq -r -n --slurpfile map "${map}" '
+  campaign_rows "${rows[@]}" | jq -r -n --slurpfile map "${map}" '
     [$map[] | select(.role == "TARGET_SITE") | .siteId
      | sub("#u[0-9]+$"; "")] as $methods
     | [inputs | .anchorSiteId
        | select(. as $site | any($methods[] + "#"; . as $method
            | $site | startswith($method)))]
-    | first // ""' "${rows[@]}"
+    | first // ""'
 }
 
 # REPLAY: the seed replay, placed where there is room (campaign_head_charged:
@@ -3210,7 +3216,7 @@ campaign_seed_replay() {
 
 # IMPORT: the replay's per-kind session files, checked and counted.
 #
-# A replay session writes one JSONL file per row kind under
+# A replay session writes one gzip JSONL file per row kind under
 # <iteration>/sessions/<sessionId>/ (CONTRACT-SPEC §2.1).  There is nothing to
 # fold here: a reader of exports never parses attaches, the kinds are joined
 # by Endpoint and Interaction id, and no stage has to re-parse a whole result
@@ -3228,22 +3234,23 @@ campaign_import_session() {
     name=$(basename "${session}")
     count=$((count + 1))
     # schedule is censused with the rows and read by IMPORT, but no row
-    # invariant is stated over it (contract.SessionDir#SCHEDULE).
+    # invariant is stated over it (contract.SessionDir#SCHEDULE).  Each a
+    # gzip stream (CONTRACT-SPEC §2.1).
     for kind in activations decisions exports attaches writes reads roots \
         targets gaps schedule; do
-      path="${session}${kind}.jsonl"
+      path="${session}${kind}.jsonl.gz"
       if [[ ! -e "${path}" ]]; then
-        missing="${missing} ${name}/${kind}.jsonl"
+        missing="${missing} ${name}/${kind}.jsonl.gz"
         continue
       fi
-      rows=$(wc -l <"${path}")
+      rows=$(campaign_rows "${path}" | wc -l)
       jq -n -c --arg session "${name}" --arg kind "${kind}" \
         --arg epoch "${iteration_id}" --argjson rows "${rows}" \
         '{schemaVersion: 1, kind: "SESSION_CENSUS", topologyEpoch: $epoch,
           sessionId: $session, rowKind: $kind, rows: $rows}' >>"${census}"
     done
-    [[ -s "${session}expressions.jsonl" ]] \
-      || missing="${missing} ${name}/expressions.jsonl"
+    [[ -s "${session}expressions.jsonl.gz" ]] \
+      || missing="${missing} ${name}/expressions.jsonl.gz"
   done
   [[ "${count}" -gt 0 ]] || campaign_fail IMPORT SessionDir "${sessions}" \
     "the replay published no session directory"
@@ -3351,15 +3358,16 @@ ${blocking} blocking"
 # The import gate's heap, in MB, over the session directories under ${1}: it
 # holds one session at a time, read whole (the gate reads again a session it
 # gated before when a new one brings a root), so 512 MB plus four times the
-# largest session's size on disk.  Measured: SOLR-18406's 41 MB focused
-# session gates in 64 MB of heap and not in 48 (accept-i1-solr-18406), and
-# hdfs-11741's 175 sessions of up to 21 MB in 512.
+# largest session's text (campaign_rows_mb).  Measured: SOLR-18406's 41 MB
+# focused session gates in 64 MB of heap and not in 48
+# (accept-i1-solr-18406), and hdfs-11741's 175 sessions of up to 21 MB in
+# 512.
 campaign_import_gate_heap_mb() {
   local sessions=$1 entry size largest=0
   for entry in "${sessions}"/*/; do
     # A session withdrawn while it is measured is not one the gate reads.
-    size=$(du -s -m -- "${entry}" 2>/dev/null) || continue
-    size=${size%%[[:space:]]*}
+    [[ -d "${entry}" ]] || continue
+    size=$(campaign_rows_mb "${entry}")
     (( size <= largest )) || largest=${size}
   done
   printf '%s\n' "$(( 512 + 4 * largest ))"
@@ -3489,8 +3497,59 @@ campaign_solver_gc_pct=150
 # The least heap a solver starts at, in MB: a corpus of a few sessions.
 campaign_solver_least_heap_mb=2048
 
-# campaign_corpus_mb <sessions>: the size of the corpus's session files, in
-# MB, as du reads it (0.5-0.7 s over NFS for 200-250 sessions), stated
+# THE SHELL'S ONE OPENER (smt.ArtifactIO#input): campaign_rows <file>...
+# prints each file's lines as every reader takes them, in order -- a gzip
+# file's (*.gz: a session's row files, a planner round's large ones;
+# CONTRACT-SPEC §2.1) decoded, as far as its stream was written: a replay
+# killed before its close leaves each row stream ending at its last flush,
+# and gzip's complaint about the missing end is no row -- any other file as
+# it is.  A file that is not there has no lines.
+campaign_rows() {
+  local file
+  for file in "$@"; do
+    [[ -f "${file}" ]] || continue
+    if [[ "${file}" == *.gz ]]; then
+      gzip -cdq -- "${file}" 2>/dev/null || true
+    else
+      cat -- "${file}"
+    fi
+  done
+}
+
+# A gzip stream that ends at a sync point -- a session's row file its
+# replay never finished (smt.ArtifactIO#appending) -- states no count:
+# gzip -l reads its last four bytes, the flush's 00 00 ff ff, as this.
+campaign_rows_unfinished=4294901760
+
+# campaign_rows_mb <dir>: what the files under <dir> hold as their readers
+# take them (campaign_rows), in MB (smt.ArtifactIO#decodedSize): a plain
+# file its size, a gzip file of one stream -- a session's row file -- the
+# count its trailer states (gzip -l), and one its writer never finished, or
+# shorter than a whole empty stream (20 bytes: a row file with no rows is
+# empty, and gzip -l lists no file past one too short to hold a trailer),
+# what it decodes to.  A heap holds a session's text, not its gzip, so a JVM
+# that reads sessions is sized by this.
+campaign_rows_mb() {
+  local dir=$1 listed="" file
+  [[ -n "${dir}" && -d "${dir}" ]] || { printf '0\n'; return 0; }
+  listed=$(find "${dir}" -type f -name '*.gz' -size +19c -print0 2>/dev/null \
+    | xargs -0 -r gzip -lq -- 2>/dev/null) || true
+  {
+    find "${dir}" -type f ! -name '*.gz' -printf '%s\n' 2>/dev/null
+    awk -v unfinished="${campaign_rows_unfinished}" \
+      '$2 != unfinished {print $2}' <<<"${listed}"
+    # gzip -l names each file without its .gz.
+    while IFS= read -r file; do
+      [[ -n "${file}" ]] || continue
+      campaign_rows "${file}" | wc -c
+    done < <(awk -v unfinished="${campaign_rows_unfinished}" \
+        '$2 == unfinished {print $4 ".gz"}' <<<"${listed}"
+      find "${dir}" -type f -name '*.gz' -size -20c 2>/dev/null)
+  } | awk '{bytes += $1} END {printf "%d\n", bytes / 1048576}'
+}
+
+# campaign_corpus_mb <sessions>: the corpus's session files as read, in MB
+# (campaign_rows_mb: their text, ~1-2 s over NFS for 342 sessions), stated
 # beside the corpus with the time it was read and read again past
 # campaign_corpus_mb_fresh_s: the pool asks it at every admission.
 campaign_corpus_mb_fresh_s=60
@@ -3504,7 +3563,7 @@ campaign_corpus_mb() {
     printf '%s\n' "${mb}"
     return 0
   fi
-  mb=$(du -s --apparent-size -m -- "${sessions}" 2>/dev/null | cut -f1)
+  mb=$(campaign_rows_mb "${sessions}")
   [[ "${mb}" =~ ^[0-9]+$ ]] || mb=0
   printf '%s %s\n' "$(date +%s)" "${mb}" >"${stated}.$$" \
     && mv -f -- "${stated}.$$" "${stated}"
@@ -5632,7 +5691,7 @@ campaign_stream_round() {
   elif (( status == campaign_jvm_out_of_heap_status )); then
     printf '%s\n' "the planner of ${name} ran out of the most heap a head \
 JVM is given (engine_memory_mb=${engine_memory_mb:-8192}) over a corpus of \
-$(du -s -m -- "${sessions}" | cut -f1) MB ($(campaign_thrown \
+$(campaign_corpus_mb "${sessions}") MB ($(campaign_thrown \
 "${dir}/stderr.log"), ${campaign_root}/explore-reaped/$(basename \
 "${dir}")/stderr.log)" >"${dir}/heap-exceeded"
   elif (( status != 0 )); then
@@ -7598,10 +7657,11 @@ did not stage"
        && "$(jq -r '.verdict // ""' "${worker}/obligation_result.jsonl")" \
           == ADMITTED ]] || continue
     # One answer over every row: jq -e reads the last input's output alone.
-    jq -e -s --argjson anchors "${stream_anchors}" \
+    campaign_rows "${sessions}/${session}/targets.jsonl.gz" \
+      | jq -e -s --argjson anchors "${stream_anchors}" \
       'any(.[]; .observedFatal == true
               and (.occurrence as $at | any($anchors[]; . == $at)))' \
-      "${sessions}/${session}/targets.jsonl" >/dev/null 2>&1 || continue
+      >/dev/null 2>&1 || continue
     stream_witnesses+=("${session}")
   done
   stream_staged=()
@@ -8042,13 +8102,14 @@ campaign_bounds() {
     --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
 explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
-    --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
-      | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
-    --slurpfile inputs <(cat "${iteration_dir}"/obligations-*/gaps.jsonl \
-      2>/dev/null | grep -F 'unplanned-input-max=' || true) \
-    --slurpfile confirmHolds <(cat \
-      "$(dirname "${iteration_dir}")"/witness-confirm/*/sessions/*/gaps.jsonl \
-      "${campaign_final}"/confirm/sessions/*/gaps.jsonl 2>/dev/null \
+    --slurpfile last <(campaign_rows "$(printf '%s\n' \
+      "${iteration_dir}"/obligations-* | LC_ALL=C sort | tail -n 1)/\
+gaps.jsonl.gz") \
+    --slurpfile inputs <(campaign_rows "${iteration_dir}"/obligations-*/\
+gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
+    --slurpfile confirmHolds <(campaign_rows \
+      "$(dirname "${iteration_dir}")"/witness-confirm/*/sessions/*/gaps.jsonl.gz \
+      "${campaign_final}"/confirm/sessions/*/gaps.jsonl.gz \
       | grep -F ' view-hold-max=' || true) \
     --argjson decided "${decided}" --argjson unconfirmed "${unconfirmed}" \
     --argjson maxClaims "${campaign_max_claims}" '
@@ -9113,20 +9174,24 @@ campaign_write_gaps() {
   # stage that raised it: a replay session's rows are REPLAY, an obligation
   # worker's or a round's are EXPLORE, and a campaign row states its own stage
   # (IMPORT's gate is the one writer that states none).
+  # A session's and a round's gaps are gzip (gaps.jsonl.gz), a worker's
+  # plain (gaps.jsonl), each read through the one opener (campaign_rows).
   local gapfile gapstage
   : >"${scratch}/session-gaps.jsonl"
   while IFS= read -r -d '' gapfile; do
     case "${gapfile}" in
-      */sessions/*/gaps.jsonl) gapstage=REPLAY ;;
-      */obligations-*/gaps.jsonl) gapstage=EXPLORE ;;
+      */sessions/*/gaps.jsonl.gz) gapstage=REPLAY ;;
+      */obligations-*/gaps.jsonl.gz|*/obligations-*/gaps.jsonl)
+        gapstage=EXPLORE ;;
       *) rm -rf -- "${scratch}"
          campaign_fail EMIT campaign_write_gaps "${gapfile}" \
-           "a gaps.jsonl at a path no stage of this campaign writes" ;;
+           "a gaps file at a path no stage of this campaign writes" ;;
     esac
-    jq -c --arg stage "${gapstage}" '. + {stage: (.stage // $stage)}' \
-      "${gapfile}" >>"${scratch}/session-gaps.jsonl"
-  done < <(find "${iteration_dir}" -type f -name 'gaps.jsonl' -print0 \
-    | LC_ALL=C sort -z)
+    campaign_rows "${gapfile}" \
+      | jq -c --arg stage "${gapstage}" '. + {stage: (.stage // $stage)}' \
+      >>"${scratch}/session-gaps.jsonl"
+  done < <(find "${iteration_dir}" -type f \( -name 'gaps.jsonl' \
+    -o -name 'gaps.jsonl.gz' \) -print0 | LC_ALL=C sort -z)
   [[ ! -s "${iteration_dir}/campaign_gaps.jsonl" ]] \
     || jq -c '. + {stage: (.stage // "IMPORT")}' \
       "${iteration_dir}/campaign_gaps.jsonl" \
@@ -9515,7 +9580,7 @@ campaign_emit() {
     "${iteration_dir}/session_census.jsonl") || campaign_fail EMIT CAMPAIGN \
     "${iteration_dir}/session_census.jsonl" "the session census is malformed"
   session_bytes=$(find "${iteration_dir}/sessions" -type f \
-    -name '*.jsonl' -printf '%s\n' \
+    -name '*.jsonl.gz' -printf '%s\n' \
     | awk '{n += $1} END {print n + 0}')
   if ! artifacts_json=$(campaign_artifact_digests); then
     campaign_fail EMIT CAMPAIGN "${campaign_final}" \

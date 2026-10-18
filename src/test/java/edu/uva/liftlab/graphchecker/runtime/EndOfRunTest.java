@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -80,8 +81,8 @@ public class EndOfRunTest {
                 ? only(worker.resolve("refused-sessions"))
                 : worker.resolve("sessions").resolve(session);
         assertTrue("the session's verdict rows precede the statement: "
-                        + closed, new String(Files.readAllBytes(closed.resolve(
-                "obligations.jsonl")), StandardCharsets.UTF_8)
+                        + closed, RowCodec.readJsonl(closed.resolve(
+                SessionDir.OBLIGATIONS)).toString()
                 .contains("\"obligationId\":\"OB\""));
     }
 

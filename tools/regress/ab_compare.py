@@ -52,7 +52,7 @@ NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log",
 # EXPLORE stages are compared by the table they leave, folded; where both
 # sides are one jar (EXPLORE.serve) by each round's own file as well, while
 # two jars may write it differently.
-SLOTS = "slots.jsonl"
+SLOTS = "slots.jsonl.gz"
 FOLDED = "slots.folded"
 EXPLORE_STAGES = ("EXPLORE.0", "EXPLORE.N", "EXPLORE.drift", "EXPLORE.serve")
 # SEED.static's class output is the input scope copied in (classes/), the
@@ -312,8 +312,8 @@ def headline(stage, d, status):
         inputs = [r for r in growth if r.get("kind") == "UNPLANNED_INPUT"]
         return "%s obl=%s grow=%d inputs=%d gaps=%s tasks=%s" % (
             os.path.basename(w)[-4:], rows(j(w, "obligations.jsonl")),
-            len(grown), len(inputs), rows(j(w, "gaps.jsonl")),
-            rows(j(w, "tasks.jsonl")))
+            len(grown), len(inputs), rows(j(w, "gaps.jsonl.gz")),
+            rows(j(w, "tasks.jsonl.gz")))
     if stage == "SOLVE.0":
         verdicts = collections.Counter()
         for name in sorted(os.listdir(d)):
@@ -395,8 +395,8 @@ def accepted_pairs(stage, d, acc):
         pairs.append((os.path.join(d, name), os.path.join(it, name)))
     elif stage in ("EXPLORE.0", "EXPLORE.N"):
         w = wave_dir(d)
-        for name in ("obligations.jsonl", "tasks.jsonl", "gaps.jsonl",
-                     "graph.jsonl", "growth.jsonl", "explore_manifest.json"):
+        for name in ("obligations.jsonl", "tasks.jsonl.gz", "gaps.jsonl.gz",
+                     "graph.jsonl.gz", "growth.jsonl", "explore_manifest.json"):
             pairs.append((os.path.join(w, name),
                           os.path.join(it, os.path.basename(w), name)))
         if stage == "EXPLORE.N":

@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -643,7 +644,10 @@ public final class RowCodec {
      * own ({@link Parallel#stream}; {@code writer} is asked side by side)
      * and written in order: what is left is the disk's (SGF8-adhoc-05 round
      * 5's slot table, 6.6 GB of rows: 52 -> 17-23 s to a local disk; to NFS
-     * ~74 s either way, its link's).
+     * ~74 s either way, its link's).  A gzip file's ({@link
+     * ArtifactIO#GZIP}) runs are each deflated on the core that rendered
+     * it, one member each, and a file of no rows is one empty member: the
+     * link carries SGF8-adhoc-05 round 4's 6.6 GB slot table as 152 MB.
      */
     public static <T> void writeAll(Path file, List<T> rows,
                                     Function<T, JsonObject> writer)
@@ -656,6 +660,7 @@ public final class RowCodec {
         Files.createDirectories(parent);
         Path partial = Files.createTempFile(parent,
                 file.getFileName().toString(), ".partial");
+        boolean gzip = ArtifactIO.gzipped(file);
         try {
             try (OutputStream out = new BufferedOutputStream(
                     Files.newOutputStream(partial), 1 << 16)) {
@@ -670,8 +675,13 @@ public final class RowCodec {
                     for (T row : run) {
                         text.append(toLine(writer.apply(row))).append('\n');
                     }
-                    return text.toString().getBytes(StandardCharsets.UTF_8);
+                    byte[] bytes = text.toString()
+                            .getBytes(StandardCharsets.UTF_8);
+                    return gzip ? ArtifactIO.gzip(bytes) : bytes;
                 }, out::write);
+                if (gzip && rows.isEmpty()) {
+                    out.write(ArtifactIO.gzip(new byte[0]));
+                }
             }
             Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
@@ -717,7 +727,7 @@ public final class RowCodec {
                                      Function<JsonObject, T> reader,
                                      Consumer<T> each) throws IOException {
         if (file == null || !Files.isRegularFile(file)) return;
-        try (InputStream in = Files.newInputStream(file)) {
+        try (InputStream in = ArtifactIO.input(file)) {
             Parallel.stream(new Lines(in), block -> {
                 List<T> parsed = new ArrayList<T>();
                 String text = block.text();
@@ -813,13 +823,14 @@ public final class RowCodec {
 
     /**
      * Hands each non-blank line of a JSONL file to {@code each} in order,
-     * until it returns false; a file that is not there has no lines.
+     * until it returns false; a file that is not there has no lines.  Read
+     * through the one opener ({@link ArtifactIO#lines}: gzip by name, a
+     * stream its writer never finished read as far as it was written).
      */
     static void eachLine(Path file, Predicate<String> each)
             throws IOException {
         if (file == null || !Files.isRegularFile(file)) return;
-        try (BufferedReader in = Files.newBufferedReader(file,
-                StandardCharsets.UTF_8)) {
+        try (BufferedReader in = ArtifactIO.lines(file)) {
             String line;
             while ((line = in.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;

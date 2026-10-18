@@ -59,12 +59,12 @@ import java.util.TreeMap;
  * and every later session of its world would read as replacing them.</p>
  *
  * <p>THE TABLE ON DISK IS ITS ROUNDS' CHANGES: each round writes what it
- * changed, in order, as {@code obligations-NNNN/slots.jsonl} beside its
+ * changed, in order, as {@code obligations-NNNN/slots.jsonl.gz} beside its
  * other outputs -- a slot opened or replaced ({@code SLOT}, the row the slot
  * holds now) and a slot whose opening session left the corpus ({@code
  * SLOT_DROPPED}) -- and the table is those rounds folded in round order
  * ({@link #read}), after the table an iteration recorded before the rounds
- * wrote theirs ({@code slots.jsonl} beside the sessions) when it has one.
+ * wrote theirs ({@code slots.jsonl.gz} beside the sessions) when it has one.
  * Rewritten whole every round, the table was a quarter of a late round's
  * planner (hdfs-adhoc-07 EX1: 1.9 GB, read 38-51 s, written 194-208 s of
  * ~900).  A round's planner folds the rounds before its own, so a round
@@ -82,7 +82,9 @@ import java.util.TreeMap;
  * consumer with that chain's producer replaces the planned pairing.</p>
  */
 public final class SlotTable {
-    public static final String FILE = "slots.jsonl";
+    /** gzip: SGF8-adhoc-05 round 4's changes, 6.6 GB as text, are 152 MB,
+     *  and every COMPOSE reads them all. */
+    public static final String FILE = "slots.jsonl.gz";
     /** A slot opened, or replaced by the row it holds now. */
     static final String OPENED = "SLOT";
     /** A slot whose opening session left the corpus ({@link #standing}). */

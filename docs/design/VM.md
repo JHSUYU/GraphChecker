@@ -616,7 +616,7 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
 (`ConcolicVmBroker#statusName`).
 
 - Expressions are published as a DAG envelope (`VM/concolic/exp/expression.cpp`, iterative
-  serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).
+  serializer); the engine keeps them in each session's `expressions.jsonl.gz` (CONTRACT-SPEC.md).
 - `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
   resume neither repeats nor skips a location (`SFV`). A page is cut only between locations, once

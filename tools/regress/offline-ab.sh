@@ -46,7 +46,9 @@
 # hdfs->, as tools/rounds writes them; a DIR is an accept.sh output
 # (DIR/out/<case>).  AB_STAGES=SEED.static reads no recording, so a case no
 # round recorded runs too.  A round is read as the current engine reads it, so name
-# rounds recorded by a build whose row contract HEAD still reads.
+# rounds recorded by a build whose row contract HEAD still reads (sessions and a
+# round's large files gzip, CONTRACT-SPEC §2.1-2.2: a round recorded before is
+# read through a compressed copy of it, OPERATIONS §7).
 #
 # A stage that reads an iteration reads a private one: the recorded sessions
 # and obligation rounds linked (a round's slot-table changes with it, so the
@@ -255,7 +257,7 @@ ab_iteration() {
     [[ -d "${wave}" && "$(basename "${wave}")" != "${extra}" ]] || continue
     ln -s "${wave}" "${dst}/$(basename "${wave}")"
   done
-  for file in execution_task_plan.jsonl slots.jsonl obligation_results.jsonl; do
+  for file in execution_task_plan.jsonl slots.jsonl.gz obligation_results.jsonl; do
     [[ -f "${ab_acc_it}/${file}" ]] && cp "${ab_acc_it}/${file}" "${dst}/"
   done
   # The models CONFIRM refuted, which the last COMPOSE excluded: all but the

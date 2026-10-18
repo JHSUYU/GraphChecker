@@ -314,7 +314,7 @@ focus row its `manifest.json` states role `SEED`. The seed replay runs under a w
 `seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than
 `replay_timeout_s`. It is `required`: a replay killed on that bound or otherwise (the failure
 names what killed it; for the bound, the rule and its numbers, `campaign_adapter_timeout_rule`), a
-session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose `anchorSiteId`
+session set with no `activations.jsonl.gz` that decodes to a row, or no `targets.jsonl.gz` row whose `anchorSiteId`
 is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY; the last names why
 the declared task went unanswered, its `TASK_UNANSWERED` row (`campaign_target_unanswered`: the
 nearest activations and how each differed -- another node, an anchor the run never minted -- or that
@@ -478,8 +478,9 @@ VM event id is a BLOCKING `UNSTATED_VALUE` (no position to cut the prefix at).
 ## 6. IMPORT
 
 `campaign_import_session` requires every session to hold `activations, decisions, exports, attaches,
-writes, reads, roots, targets, gaps, schedule` `.jsonl` and a non-empty `expressions.jsonl`, and writes
-one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl`. `campaign_import_gate` then runs
+writes, reads, roots, targets, gaps, schedule` `.jsonl.gz` and a non-empty `expressions.jsonl.gz`, and
+writes one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl` (its rows counted as they
+decode, `campaign_rows`). `campaign_import_gate` then runs
 `contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
 violation fails IMPORT naming the first subject. The same gate runs on every session EXPLORE lands (§7.9).
@@ -492,7 +493,8 @@ one SEED (1), and the epoch's roots (11) -- a new session against every root of 
 one again only for a root (id, symbol) a new session brings. So gating the corpus a wave, or a
 session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
 time (the head). The gate holds one session at a time, so its heap and its charge on the host it is
-placed on (§7.7) are 512 MB plus four times the largest session's size on disk (`campaign_import_gate_heap_mb`), not
+placed on (§7.7) are 512 MB plus four times the largest session's text (`campaign_import_gate_heap_mb`,
+`campaign_rows_mb`: a session's rows as they decode, not their gzip), not
 `engine_memory_mb`, which is sized for a JVM holding the whole corpus (SOLR-18406 i1: charged
 16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
 seconds).
@@ -608,9 +610,9 @@ corpus names, each worker's focus row as that session's world, the verdicts, the
    planned occurrence's and replace none, whichever session lands first, since each slot is
    indexed by whether its opening session answered its consumer's occurrence; only another
    answered pairing fills such a slot. On disk the table is its rounds' changes: each round writes,
-   beside the rest of its work once reconciled, `obligations-NNNN/slots.jsonl`, the slots it opened or replaced (`SLOT`,
+   beside the rest of its work once reconciled, `obligations-NNNN/slots.jsonl.gz`, the slots it opened or replaced (`SLOT`,
    the row the slot holds now) and those it dropped (`SLOT_DROPPED`), in order; the table is those
-   files folded in round order, after an iteration's whole `slots.jsonl` where a run recorded before
+   files folded in round order, after an iteration's whole `slots.jsonl.gz` where a run recorded before
    the per-round files has one (`SlotTable#read`). A round's planner folds the rounds before its own
    (the served one keeps the table it changed), so a round planned again starts from the same table
    and a round directory that goes takes its changes with it; COMPOSE folds them all.
@@ -623,9 +625,11 @@ corpus names, each worker's focus row as that session's world, the verdicts, the
    (`anchorOccurrences`), by which the campaign tells a witness as it lands (§7.9).
 7. States the round's WAVE, a generation of worlds: one past the deepest wave whose obligation
    published a landed session, 0 over the seed alone. It deepens only as sessions land.
-8. Writes `graph.jsonl` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
+8. Writes `graph.jsonl.gz` (`WaveGraph`: NODE per activated occurrence of admitted sessions, EDGE per
    WIRE pairing and STATE join, each with the world digests it was seen in, and a FRONTIER row with
-   the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl`, `gaps.jsonl` and
+   the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl.gz`, `gaps.jsonl.gz`
+   (the round's large files, and `slots.jsonl.gz`, gzip: `RowCodec#writeAll` deflates each run of
+   1024 rows on the core that rendered it, one gzip member each, CONTRACT-SPEC §2.2) and
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, `force` (§7.10), state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
@@ -992,8 +996,9 @@ footprint of the heap it needs now (`campaign_solver_need_mb`, `campaign_jvm_foo
 holds the charge itself, `campaign_host_keep`, past the obligation that started it) and what its
 resident memory grows past that as it grows, by a running JVM's rule (`campaign_watch_workload`:
 refused only when the host's real use would pass the ceiling, and then the JVM is ended). Its heap,
-and that of a question's own JVM, is its corpus's (`campaign_solver_heap_mb`): the corpus's session files
-(`campaign_corpus_mb`, du's reading stated beside the corpus for 60 s) times `campaign_solver_live_pct`
+and that of a question's own JVM, is its corpus's (`campaign_solver_heap_mb`): the corpus's session files as
+they decode (`campaign_corpus_mb`: `campaign_rows_mb`, each gzip stream's trailer count, stated beside the
+corpus for 60 s; the solver's own retire check, `ObligationSolverMain#bytes`, counts the same) times `campaign_solver_live_pct`
 (50 %: with the expression tables compact, the live set after a full collection was 35 % of them on
 solr-adhoc-39 PV7, 3493 MB over 9974 MB, 46 % on solr-18413, 32 % on snapshot-no-active; 65-84 % as gson
 trees) at `campaign_solver_gc_pct` (150 %) for the collector, at least 2 GB (`campaign_solver_now_mb`), and room for the corpus to double, up to the engine heap; it is charged the
@@ -1959,7 +1964,7 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
   what runs lands, and the stop is a
-  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error, or that the
+  DIAGNOSTIC row naming the round, the corpus's size as it decodes and the planner's error, or that the
   corpus was past what a planner holds, unasked -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
@@ -3130,8 +3135,8 @@ with it is a `RUN_DEFECT`.
   runtime, compare nothing.
 - Decision (`ConfirmMain --claim --output <worker> --sessions <dir>`, `ConfirmMain#decide`, which
   prints `final/confirm.json`), conditions in order, the first that fails named as the reason: the
-  replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl` and
-  `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
+  replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl.gz` and
+  `targets.jsonl.gz` are readable (a session that did not publish them answers nothing); no gap is a
   `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
   the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
   occurrence of the target site does not confirm. A replay that fails any of them -- not ADMITTED,
@@ -3417,8 +3422,9 @@ recording's own is not kept apart.
 1. `campaign_verify_frozen_inputs` (§1).
 2. `final/gaps.json` (`campaign_write_gaps`), one row per distinct (stage, source, code, subject,
    detail), class as the row states it (none stated = BLOCKING): static communication gaps and the
-   runtime plan's `gaps` as PLAN; every `gaps.jsonl` under the iteration directory — a path matching
-   `*/sessions/*/gaps.jsonl` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
+   runtime plan's `gaps` as PLAN; every `gaps.jsonl.gz` (a session's, a round's) and `gaps.jsonl` (a
+   worker's) under the iteration directory, read through `campaign_rows` — a path matching
+   `*/sessions/*/gaps.jsonl.gz` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
    included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
    `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
@@ -3547,7 +3553,7 @@ comparison.
 
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
-  `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
+  `gaps.jsonl.gz`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
   memory for a head step of <mb> MB on any host: …`; a replay ended past its charge says why in its `replay.log`; the host ledger is
   `$CAUSYNTH_HOST_LEDGER/<host>/{available,charges/,cores}`.
 - How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
@@ -3574,13 +3580,15 @@ comparison.
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
   An obligation id holds no session id (§7.3), so it repeats across runs whose replays reproduce
   the same addresses and input shapes: an earlier run's directory is a baseline.
-- `sessions/<id>/`: `targets.jsonl` (`observedFatal`, `reachedAnchor`), `decisions.jsonl`,
-  `roots.jsonl`, `schedule.jsonl`.
+- `sessions/<id>/`: `targets.jsonl.gz` (`observedFatal`, `reachedAnchor`), `decisions.jsonl.gz`,
+  `roots.jsonl.gz`, `schedule.jsonl.gz`: gzip (CONTRACT-SPEC §2.1), read with `zcat`/`gzip -cd` (a
+  session its replay never closed ends at its last row: gzip says "unexpected end of file" after
+  printing every row).
 - `final/claim.json` (valuations with status, unsat core, selected path, session and arms),
   `candidate_composition_manifest.json`, `compose.log`, `confirm.json`, `confirm/confirm.log`.
 - A schedule divergence is read by aligning: take the rows with a `kind` of the prefix the replay
   was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl`) and of the
-  session's `schedule.jsonl`, compare `(kind, context, site)` position by position to the first
+  session's `schedule.jsonl.gz`, compare `(kind, context, site)` position by position to the first
   mismatch, then count how many events of the expected key the replay made at all (none: an event
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
   say where each occurrence opened; a SEND's `endpoint` joins the recording's `EXCHANGE_SEND` rows

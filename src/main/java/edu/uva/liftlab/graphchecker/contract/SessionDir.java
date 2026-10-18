@@ -13,27 +13,32 @@ import java.util.TreeSet;
 
 /**
  * CONTRACT-SPEC §2.1: the file layout of one replay session,
- * {@code <iteration>/sessions/<sessionId>/}, one JSONL file per row kind.
+ * {@code <iteration>/sessions/<sessionId>/}, one gzip-compressed JSONL file
+ * per row kind ({@code smt.ArtifactIO#GZIP}: every reader opens it through
+ * {@code ArtifactIO#input}) and the manifest, plain JSON.  The rows were the
+ * bytes every stage moved over NFS: SGF8-adhoc-05 round 5's corpus, 342
+ * sessions, 19.1 GB as text, each host solver and the planner reading it
+ * whole.
  */
 public final class SessionDir extends Value {
     public static final String SESSIONS = "sessions";
-    public static final String ACTIVATIONS = "activations.jsonl";
-    public static final String DECISIONS = "decisions.jsonl";
-    public static final String EXPORTS = "exports.jsonl";
-    public static final String ATTACHES = "attaches.jsonl";
-    public static final String WRITES = "writes.jsonl";
-    public static final String READS = "reads.jsonl";
-    public static final String ROOTS = "roots.jsonl";
-    public static final String TARGETS = "targets.jsonl";
-    public static final String GAPS = "gaps.jsonl";
+    public static final String ACTIVATIONS = "activations.jsonl.gz";
+    public static final String DECISIONS = "decisions.jsonl.gz";
+    public static final String EXPORTS = "exports.jsonl.gz";
+    public static final String ATTACHES = "attaches.jsonl.gz";
+    public static final String WRITES = "writes.jsonl.gz";
+    public static final String READS = "reads.jsonl.gz";
+    public static final String ROOTS = "roots.jsonl.gz";
+    public static final String TARGETS = "targets.jsonl.gz";
+    public static final String GAPS = "gaps.jsonl.gz";
     /**
      * The replay's verdict per obligation run; the authority, never the
      * wave's aggregate copy.  A SEED states none.
      */
-    public static final String OBLIGATIONS = "obligations.jsonl";
+    public static final String OBLIGATIONS = "obligations.jsonl.gz";
     /** The run's {@link ScheduleEvent}s in order; not a row kind. */
-    public static final String SCHEDULE = "schedule.jsonl";
-    public static final String EXPRESSIONS = "expressions.jsonl";
+    public static final String SCHEDULE = "schedule.jsonl.gz";
+    public static final String EXPRESSIONS = "expressions.jsonl.gz";
     /** The role this session STATES it ran as ({@link SessionManifest}). */
     public static final String MANIFEST = "manifest.json";
 

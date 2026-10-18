@@ -36,31 +36,46 @@ Soot run names it by content (`GraphCheckerMain`'s `LambdaClassNames`).
 ### 2.1 Layout (`SessionDir`)
 
 One replay session is `<iteration>/sessions/<sessionId>/` (`SessionDir.sessionsIn` lists them in
-name order). `runtime.SessionPublisher` creates every row file empty, the expression log's header
-and `manifest.json` when the session opens, and appends and flushes each row as it is published.
+name order). Every row file is gzip-compressed JSONL, `<kind>.jsonl.gz`; `manifest.json` is plain JSON.
+`runtime.SessionPublisher` creates every row file empty, the expression log's header and `manifest.json`
+when the session opens, and appends each row as it is published to its file's one gzip stream
+(`smt.ArtifactIO#appending`, level 6), flushed at once to a sync point of the stream; the close finishes
+every stream (its trailer). A session its replay never closed (killed, or told to end) reads up to its
+last flushed row. Every reader opens these files through one opener, `smt.ArtifactIO#input` (shell:
+`run_engine.sh campaign_rows`; §2.2). The rows were the bytes every stage moved over NFS (SGF8-adhoc-05
+round 5's corpus: 342 sessions, 19.1 GB as text).
 
 | file | holds |
 | --- | --- |
-| `activations.jsonl` | `ActivationRow` |
-| `decisions.jsonl` | `DecisionRow` |
-| `exports.jsonl`, `attaches.jsonl` | `ExportRow`, `AttachRow` |
-| `writes.jsonl`, `reads.jsonl` | `WriteRow`, `ReadRow` |
-| `roots.jsonl` | `RootMintRow` |
-| `targets.jsonl` | `TargetRow` |
-| `gaps.jsonl` | `GapRow` |
-| `obligations.jsonl` | the replay's `ObligationResult` per obligation it ran, written at close (`RowRuntime.closeSession`); the authority on its verdict; a SEED has none |
-| `schedule.jsonl` | the run's `ScheduleEvent`s in order (each with `vmEvent`, a position after every VM event made before it (`Identity#afterLastEvent`, the scale a store's or a view's write row states its seq on), where the run states one), with `{mark, at}` rows; not a row kind, no invariant is stated over it |
-| `expressions.jsonl` | the session's expression log (§2.3) |
+| `activations.jsonl.gz` | `ActivationRow` |
+| `decisions.jsonl.gz` | `DecisionRow` |
+| `exports.jsonl.gz`, `attaches.jsonl.gz` | `ExportRow`, `AttachRow` |
+| `writes.jsonl.gz`, `reads.jsonl.gz` | `WriteRow`, `ReadRow` |
+| `roots.jsonl.gz` | `RootMintRow` |
+| `targets.jsonl.gz` | `TargetRow` |
+| `gaps.jsonl.gz` | `GapRow` |
+| `obligations.jsonl.gz` | the replay's `ObligationResult` per obligation it ran, written at close (`RowRuntime.closeSession`); the authority on its verdict; a SEED has none |
+| `schedule.jsonl.gz` | the run's `ScheduleEvent`s in order (each with `vmEvent`, a position after every VM event made before it (`Identity#afterLastEvent`, the scale a store's or a view's write row states its seq on), where the run states one), with `{mark, at}` rows; not a row kind, no invariant is stated over it |
+| `expressions.jsonl.gz` | the session's expression log (§2.3) |
 | `manifest.json` | `SessionManifest`: `{schemaVersion 2, kind SESSION_MANIFEST, sessionId, role SEED\|FOCUSED\|FORCED, obligationIds, unnamedEntries, concreteReadings, derivedRoots, runSpellings, doorsOnly, servingTasks}` — FOCUSED when the replay was handed a focus row, its obligation ids from it; FORCED when that row asks a FORCE run (PIPELINE §7.10), a session never `admitted()` and read only as its forced path (`explore.Corpus#forcedPaths`). The only answer to "which session is the recording"; another schema, or an absent or unknown role, is refused. `unnamedEntries` (`{"<node>/region/<regionId>": n}`, restated at the run's end) counts the region entries unnamed work made, which opened no occurrence (IDENTITY §1). Restated at the run's end too: `concreteReadings` (`{"<rootId>": {"<occurrence>": value}}`), per declared root, the value it held when this replay first read it at an occurrence and minted none -- an occurrence run concretely, a mint refused or failed (`RootMint#readConcretely`; a read no admitted activation owns stands at no occurrence and is named by its `MINT_UNATTRIBUTED` gap) -- so `Corpus#rootValue` answers a session that minted none with its reading at the occurrence of the corpus's mint (`Corpus#ranRoot`); and `derivedRoots`, the declared roots whose source already carried another input's expression where it read them (a reused mint), whose readings no session's arm or path is held to (`Corpus#derived`); and `runSpellings` (`{"<spelling>": "<node>"}`), the names its nodes had only in this run, as the adapter stated them (`RunSpellings`, IDENTITY §7.2), by which an arm's key names a written term's constants and observed values (`explore.Corpus#programNames`); a session that did not close states none, and its spellings stay (another world, never a fold); and `doorsOnly`, the rendered occurrences this replay ran for their doors alone (`RuntimeSelectedRegionFinalizer#DOORS_ONLY`, `runtime.RowRuntime#ranDoorsOnly`), whose guards and roots ran paused: EXPLORE takes no value of one from this session (`explore.ClosurePlanner#ranWhole`); and `servingTasks`, the `threadKey`s of the `HANDOFF_TASK`s that took work another thread started on their thread while they ran (a queue item -- one no named start filed too: offered under no hop, or put by unwoven code -- or a task run there: `Identity#servingTasks`) -- a ConcurrentUpdate client's Runner polling its update queue -- stated at the close because a task's rows are written at its activations' entries, before the loop's takes; CONFIRM holds such a task at its send (`ActivationRow#heldWhereItRuns`); absent (a manifest from before the field, a session that did not close): none. |
 
-IMPORT requires the ten files `activations` … `gaps` and `schedule` to exist and `expressions.jsonl`
+IMPORT requires the ten files `activations` … `gaps` and `schedule` to exist and `expressions.jsonl.gz`
 to be non-empty (`campaign_import_session`). The publisher writes a root once per (occurrence, root
 id, symbol, value) and an unreached target once per (occurrence, anchor site); a restatement that
 differs is written, for invariants 4 and 8 to name.
 
 ### 2.2 Encoding (`RowCodec`)
 
-JSONL, one object per line, one kind per file; reading a missing file gives no rows. A nullable
+JSONL, one object per line, one kind per file; reading a missing file gives no rows. A file whose name
+ends `.gz` (a session's row files, §2.1; a planner round's `slots`, `graph`, `gaps` and `tasks`) is that
+JSONL gzip-compressed, one stream or several members of one (`RowCodec#writeAll` deflates each run of
+1024 rows on its own core, a file of no rows one empty member), and every reader takes it through the one
+opener (`smt.ArtifactIO#input`, `#lines`): a stream its writer never finished reads as far as it was
+written, as a plain file cut there -- every whole row, then a cut line the reader refuses as a cut plain
+file's -- an empty file is no rows, and a file that holds no gzip stream, or a damaged one, is refused as a
+malformed row (`UncheckedIOException`, which `SessionReader` records as the session's `incomplete`). What
+such a file weighs in a heap is its text (`ArtifactIO#decodedSize`: a stream's trailer count, or what an
+unfinished one decodes to). A nullable
 field is omitted when null and every other field is always written, so absence never means false
 or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `ActivationRow`, a
 `GapRow` and an `ObligationResult` carries `seq` (the event order). A `WriteRow` or `ReadRow` the
@@ -103,7 +118,7 @@ murmur3's 64-bit finalizer); each node, by identity, is hashed once. Equal expre
 refs in every session. Expression objects are the VM's nodes (`_type` names the kind;
 [VM.md](VM.md)).
 
-`expressions.jsonl` (`SessionExpressionLog`) is append-only: line 1 is `{kind:
+`expressions.jsonl.gz` (`SessionExpressionLog`) is append-only: line 1 is `{kind:
 SESSION_EXPRESSION_LOG, schemaVersion: 1}`; then `{node: n, expression: {...}}` lines, children
 first, each child expression inside replaced by `{_type: SessionExpressionNode, node: m}` for a
 node an earlier line defined; and `{ref: EXPR.…, node: n}` lines naming a node. Each node is
@@ -133,7 +148,7 @@ index and frame a row is built of, is held once across every session `readAll` r
 their occurrence and call sites out in full, so held apiece they took most of the heap
 (solr-18413's 2.2 GB corpus: 52M strings, 5.5 GB). A JSON node is never shared: the expression
 walks go by node identity. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
-own `obligations.jsonl` row and every one `ADMITTED`; only an admitted session states a topology.
+own `obligations.jsonl.gz` row and every one `ADMITTED`; only an admitted session states a topology.
 The schedule is read on demand.
 
 ### 2.5 Gaps
@@ -211,7 +226,7 @@ field=<f> <subject>`.
 
 - `Task(taskId, focused, factor, seedSessionId)`: one focused occurrence and its state-connected
   co-occurrences (`factor`, may be empty), planned from `seedSessionId`'s recording. `taskId` =
-  sha16(`task|` + focused id) (`explore.ClosurePlanner.taskId`). `tasks.jsonl`: `{taskId, focused,
+  sha16(`task|` + focused id) (`explore.ClosurePlanner.taskId`). `tasks.jsonl.gz` (gzip, §2.2): `{taskId, focused,
   factor, seedSessionId}` with occurrences as parts.
 - `Obligation(obligationId, taskId, pathId, siteId, ordinal, flippedOutcome, rootAssignments,
   answers, unproducible)`: one path prefix and one decision to take the other way.
@@ -225,7 +240,7 @@ field=<f> <subject>`.
   replay took the flipped arm and published its rows; never "validated"), `NOT_ADMITTED`.
   `ObligationResult(obligationId, verdict, sessionId, detail, refutation?)`, `sessionId` "" when no replay ran
   or its replay published no session (killed on its bound, or decided by a refusal: the worker's
-  row names none, while the withdrawn session's own `obligations.jsonl` keeps its id;
+  row names none, while the withdrawn session's own `obligations.jsonl.gz` keeps its id;
   [PIPELINE.md §7.6](PIPELINE.md)). `refutation` (`WorldRefutation {conditions, exception, thrownAt,
   testFrame}`) only on a NOT_ADMITTED open decider arm's flip whose replay refuted its world
   (`WORLD_REFUTED`, §7.6): the four faithfulness conditions as they held, the workload's terminating

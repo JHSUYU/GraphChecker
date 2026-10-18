@@ -3,10 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -175,8 +175,7 @@ public final class SessionExpressionLog {
                     "the session published no expression log: no " + file);
         }
         ExpressionTable.Builder table = new ExpressionTable.Builder();
-        try (BufferedReader in = Files.newBufferedReader(file,
-                StandardCharsets.UTF_8)) {
+        try (BufferedReader in = ArtifactIO.lines(file)) {
             String line;
             boolean headed = false;
             while ((line = in.readLine()) != null) {
