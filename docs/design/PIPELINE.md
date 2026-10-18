@@ -536,7 +536,9 @@ eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). A member
 per walk, and a group reads its members' indexes in group order (`ClosurePlanner.GroupReads`): the groups
 of a closure overlap, and indexed per group, solr-adhoc-39 PV7 round 6's walk held each member's reads once
 per group it is in, past 14 GB. Outside the closure walk a round's independent work takes every core of
-its host (`contract.Parallel`; a planner is a head step, one JVM alone on its host): the dependences of
+its host (`contract.Parallel`; a planner is a head step, one JVM alone on its host, and its main says so,
+`Parallel#width`; every other engine JVM -- a host solver, a composition, a confirmation -- computes on one
+core beside the work the ledger booked the rest for): the dependences of
 the arms the frontier keys (`ObligationFactory#dependences`: one session's arms in their order on one
 thread -- a key asks its session's lowering, leaf sets and names, which remember the order they were
 asked in -- the sessions side by side, after the literals every integral configuration is compared
@@ -551,8 +553,8 @@ blocks of whole lines and written in runs of rows, each parsed or rendered on a 
 (`RowCodec#readAll`, `#readEach`, `#writeAll`, `Parallel#stream`; the slot table folds a round's
 changes as they are parsed, `SlotTable#read`), and the round's two largest files, its slot changes
 (whole once the skeleton is reconciled) and its graph, are written beside the rest of the round,
-which answers once they are (`Parallel#beside`; a round that failed leaves none written over the
-next one's). Every result is taken in its items' order, so a round's files are byte for byte a
+and its manifest, the round's end (`campaign_last_round_millis`), once they are (`Parallel#beside`; a
+round that failed leaves none written over the next one's). Every result is taken in its items' order, so a round's files are byte for byte a
 one-thread round's. Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --results ... --output-dir ...`, the offline stages' entry over the

@@ -3067,14 +3067,15 @@ public final class Corpus implements Arms.Rows {
      * decisions'.
      */
     void configurationLiterals() {
+        // Every symbol a key may ask the domain of: each session's mints by
+        // symbol, as a key finds them (#rootBySymbol), so no key asks one
+        // first (a root minted under two symbols keeps one in rootsById).
         Map<String, Pattern> roots = new LinkedHashMap<String, Pattern>();
-        for (Map<String, RootMintRow> mints : rootsById.values()) {
-            for (RootMintRow mint : mints.values()) {
-                if (mint.kind() == RootKind.INTEGRAL
-                        && mint.category() == RootCategory.CONFIG
-                        && !compared.containsKey(mint.symbol())) {
-                    roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
-                }
+        for (RootMintRow mint : rootBySymbol.values()) {
+            if (mint.kind() == RootKind.INTEGRAL
+                    && mint.category() == RootCategory.CONFIG
+                    && !compared.containsKey(mint.symbol())) {
+                roots.computeIfAbsent(mint.symbol(), Corpus::comparing);
             }
         }
         List<Map.Entry<String, Map.Entry<String, DecisionRow>>> asked =

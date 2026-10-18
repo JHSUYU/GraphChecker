@@ -159,6 +159,9 @@ public final class ExploreMain {
 
     public static void main(String[] argv) throws Exception {
         HeapWatch.start();
+        // A planner is a head step, one JVM alone on its host (PIPELINE
+        // §7.9): it computes on every core (contract.Parallel).
+        Parallel.width(Parallel.HOST_CORES);
         LongOptions options = LongOptions.parse(argv);
         // The iteration is the parent of --sessions.
         Path sessions = options.path("sessions");
@@ -502,13 +505,15 @@ public final class ExploreMain {
         manifest.add("boundedFlips", boundedFlips(iteration,
                 frontier.boundedFlips()));
         manifest.add("force", forced.manifest);
+        // The files written beside the round, then its manifest, last: its
+        // time is the round's end (run_engine's campaign_last_round_millis).
+        for (Parallel.Beside file : writing) file.join();
+        writing.clear();
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         // A round planned again starts from the table the rounds before it
         // left, folded from their files.
-        for (Parallel.Beside file : writing) file.join();
-        writing.clear();
         slotsRound = round;
         return manifest;
     }
@@ -755,7 +760,7 @@ public final class ExploreMain {
         // its latency (SGF8-adhoc-05 round 5: 917 workers, 20-30 s one at
         // a time).
         for (Answered worker : Parallel.map(ObligationDir.workerDirs(
-                iteration), Answered::new)) {
+                iteration), Answered::new, Parallel.directoriesAtOnce())) {
             if (worker.flip.isEmpty()) continue;
             byFlip.computeIfAbsent(worker.flip,
                     key -> new ArrayList<ObligationResult>())
