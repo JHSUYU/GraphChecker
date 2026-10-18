@@ -3726,8 +3726,10 @@ campaign_solver_measured_pct() {
   cat -- "$(dirname "${1:-.}")/solver_live"/* 2>/dev/null \
     | awk -v least="${campaign_solver_live_pct}" '
         $2 > corpus || ($2 == corpus && $1 > live) {live = $1; corpus = $2}
-        END {print corpus > 0 ? int((100 * live + corpus - 1) / corpus) \
-          : least}'
+        END {
+          if (corpus > 0) print int((100 * live + corpus - 1) / corpus)
+          else print least
+        }'
 }
 
 # campaign_solver_outgrown <sessions> <heap_mb>: a solver of the corpus ran
