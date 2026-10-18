@@ -251,15 +251,15 @@ public final class SlotTable {
         return stated;
     }
 
-    /** Whether this consumer endpoint has a WIRE slot in any world. */
-    public boolean opened(String consumerEndpointId) {
+    /** The consumer endpoints that have a WIRE slot in any world. */
+    public Set<String> wireConsumers() {
+        Set<String> consumers = new HashSet<String>();
         for (Slot slot : byInteraction.values()) {
-            if (slot.kind == InteractionKind.WIRE
-                    && slot.consumer.id().equals(consumerEndpointId)) {
-                return true;
+            if (slot.kind == InteractionKind.WIRE) {
+                consumers.add(slot.consumer.id());
             }
         }
-        return false;
+        return consumers;
     }
 
     /** Writes what this table changed as one round's rows into that

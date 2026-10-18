@@ -1998,6 +1998,69 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (ComposeMain
+     * #HELD_ROWS, Corpus#holding): a corpus holding none of its sessions'
+     * reads, writes and gaps -- each read again from its files as asked --
+     * composes the formula, gaps, families and concrete rows of a corpus
+     * holding them all.  Three runs each deliver the anchor's handoff and
+     * write the location its fatal reads.
+     */
+    @Test
+    public void aComposerHoldingNoRowsComposesTheFormulaOfOneHoldingAll()
+            throws Exception {
+        Path iteration = folder.newFolder("held").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Endpoint writer = Endpoint.of(PRODUCER, "Keys#put#4:WRITE",
+                at("w#1", 0), 0);
+        Endpoint reader = Endpoint.of(ANCHOR, "Keys#get#5:READ",
+                at("r#1", 0), 0);
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        String[][] runs = {{"s0", "false"}, {"s1", "true"}, {"s2", "false"}};
+        for (String[] run : runs) {
+            Session session = new Session(iteration, run[0],
+                    !"s0".equals(run[0]));
+            session.activation(PRODUCER);
+            session.marker(run[1]);
+            session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.export(producer, "EXPR.v1.marker", 1L, run[1]);
+            session.write(writer, keys, 1L, "EXPR.v1.marker");
+            session.read(reader, keys, 1L, "read_k", run[1]);
+            session.attach(consumer, "vh", run[1], producer);
+            session.target("(and vh read_k)", false, true);
+            session.write();
+        }
+        Corpus whole = Corpus.read(iteration, null);
+        Corpus held = Corpus.holding(iteration, null, 0L);
+        Composer.Composition all = Composer.compose(whole, ANCHOR, 8,
+                StaticScopeMap.empty());
+        Composer.Composition some = Composer.compose(held, ANCHOR, 8,
+                StaticScopeMap.empty());
+        assertTrue("the rows were let go of and read again",
+                held.readAgain()[0] > 0);
+        assertEquals("three paths", 3, all.disjuncts().size());
+        assertEquals("the same formula", all.body(), some.body());
+        assertEquals("the same gaps", all.gaps(), some.gaps());
+        assertEquals("the same families", all.families().toString(),
+                some.families().toString());
+        assertEquals("the same concrete rows", concreteRows(all),
+                concreteRows(some));
+    }
+
+    private static List<String> concreteRows(Composer.Composition composed) {
+        List<String> rows = new ArrayList<String>();
+        for (Composer.Concrete row : composed.concrete()) {
+            rows.add(row.kind + " " + row.subject + " " + row.value + " "
+                    + row.reason + " " + row.movesWith);
+        }
+        return rows;
+    }
+
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {
         Path iteration = folder.newFolder("nested").toPath();
@@ -10802,8 +10865,11 @@ public class ComposerTest {
                                                 int maxValuations,
                                                 StaticScopeMap scope)
             throws IOException {
+        // COMPOSE's corpus, holding no session's reads, writes or gaps:
+        // each read again at every ask (ComposeMain#HELD_ROWS).
         Composer.Composition composition = Composer.compose(
-                Corpus.read(iteration, null), anchor, maxValuations, scope);
+                Corpus.holding(iteration, null, 0L), anchor, maxValuations,
+                scope);
         // Every composition: one name, one assertion (z3 answers a name
         // defined twice with an error, hdfs-11741 m1).
         java.util.regex.Matcher named = java.util.regex.Pattern.compile(

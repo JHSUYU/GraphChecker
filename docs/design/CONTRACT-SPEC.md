@@ -147,7 +147,9 @@ what its rows spell alike (`RowPool`): each string a line parses to, and each oc
 index and frame a row is built of, is held once across every session `readAll` reads. Rows spell
 their occurrence and call sites out in full, so held apiece they took most of the heap
 (solr-18413's 2.2 GB corpus: 52M strings, 5.5 GB). A JSON node is never shared: the expression
-walks go by node identity. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
+walks go by node identity. A session taken into a `RowHold` (COMPOSE's corpus, `explore.Corpus#holding`) has
+its reads and writes, and its gaps, let go of by the hold and read again from their files when next asked, value
+for value, its reads and writes with a pool of their own, its gaps with another. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
 own `obligations.jsonl.gz` row and every one `ADMITTED`; only an admitted session states a topology.
 The schedule is read on demand.
 

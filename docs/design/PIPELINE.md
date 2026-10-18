@@ -2366,6 +2366,32 @@ building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then c
 paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
 until one composition ends or one path is all it had.
 
+THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
+`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time and indexed as a corpus
+holding every row indexes it (each session in read order, the forced ones after), and of each session's rows its
+reads and writes -- with what the corpus builds of them alone: its state join, its writes by version and by
+location, its reads by symbol, its rows by occurrence, the answers that hold rows (`Corpus.StateRows`) -- and its
+gaps are held apart: at most 0.15 of the heap of their text as it decodes, the ones asked for least recently let
+go of and read again from their files when next asked, value for value (a landed session's files never change).
+Every other row of every session stays held -- decisions, activations, attaches, exports, roots, targets,
+expressions -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
+sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
+and 1-8 for their reads and writes (the path's own session and the producers whose arms it closes); the final
+phase asks every session once. Reads and writes are most of a held corpus: SGF8-adhoc-13's 201 sessions held
+1260 MB with them, 516 without; SGF8-adhoc-07's 358 (28.4 GB of rows, 14.6 GB of them reads and writes, 1.9 GB
+gaps) filled 85 % of its composer's old generation, and 1 of its 309 paths was composed. Nothing else the
+composer keeps holds a row it let go of: an index across sessions keeps an endpoint's occurrence, never the
+endpoint (`Corpus#occurrenceOf`); `Arms#constructs` remembers a write by its endpoint's id; the slot table is
+read for the sessions that replace a slot and the WIRE consumers it opened, then let go of (`Composer#unopened`;
+07's 1.58 M slots held their own endpoints and frames); and a root's domain asks for the literals recorded
+decisions compare it with only where they widen it (`RootDomain#widened`: an integral configuration the case
+declares nothing for), each root's a walk of every session's decisions reaching it, lowered with that session's
+reads and writes (07's 367 fault markers were each asked). The formula, its manifest rows and gaps are byte for
+byte a whole corpus's (13, 39, 21, 10 at the composer's hold and at none; every composer test composes over a
+corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 3.4 GB live after the read, the old generation
+57 % after the last path; 1700 s (read 215, admission 125, paths 1220 -- the last 9 of them 600 --, the rest
+136), 2761 session parts read again (70.8 GB of text).
+
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message whose world's flip set contains or is

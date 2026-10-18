@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
+import edu.uva.liftlab.graphchecker.contract.RowHold;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import com.google.gson.JsonElement;
@@ -40,6 +41,7 @@ import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -77,7 +79,9 @@ import java.util.regex.Pattern;
  *  Identity is the contract's: an interaction by both endpoints, a location by
  *  {@link LocationId}, a symbol by its minting session (raw symbols, versions
  *  and expression refs are session-local). One path id spelling: {@link
- *  #pathId}. */
+ *  #pathId}.  COMPOSE's holds only some of its sessions' reads, writes and
+ *  gaps at a time, every answer the one a corpus holding them all gives
+ *  ({@link #holding}). */
 public final class Corpus implements Arms.Rows {
     /** One occurrence's decisions in one session: a path, as it ran. */
     public static final class RecordedPath {
@@ -170,10 +174,13 @@ public final class Corpus implements Arms.Rows {
     private final List<SessionReader> sessions;
     private final Map<String, SessionReader> sessionById =
             new LinkedHashMap<String, SessionReader>();
-    /** One lowering per session; concurrent, as a session's keys renew
-     *  its own ({@link #keysDone}). */
+    /** One lowering per session, made as first asked ({@link #lowering});
+     *  concurrent, as a session's keys renew its own ({@link #keysDone}). */
     private final Map<String, SmtLowering> loweringById =
             new ConcurrentHashMap<String, SmtLowering>();
+    /** What holds the sessions' reads, writes and gaps ({@link #holding});
+     *  null: every one held as read. */
+    private final RowHold hold;
     /** session id -> what this corpus derives from that session's rows
      *  alone ({@link Derived}). */
     private final Map<String, Derived> bySession =
@@ -194,27 +201,23 @@ public final class Corpus implements Arms.Rows {
     private final Set<String> handoffSymbols = new LinkedHashSet<String>();
     private final Map<String, RootMintRow> rootBySymbol =
             new LinkedHashMap<String, RootMintRow>();
-    private final Map<String, ReadRow> readBySymbol =
-            new LinkedHashMap<String, ReadRow>();
-    /** occurrence id -> session id -> its attaches, reads, writes, targets. */
+    /** occurrence id -> session id -> its attaches, targets. */
     private final ByOccurrence<AttachRow> attachesOn =
             new ByOccurrence<AttachRow>();
-    private final ByOccurrence<ReadRow> readsOn = new ByOccurrence<ReadRow>();
-    private final ByOccurrence<WriteRow> writesOn =
-            new ByOccurrence<WriteRow>();
     private final ByOccurrence<TargetRow> targetsOn =
             new ByOccurrence<TargetRow>();
+    /** occurrence id -> the sessions, forced ones aside, that read / wrote
+     *  at it, in the order they were read: their rows there are each
+     *  session's ({@link StateRows#readsOn}). */
+    private final Map<String, Set<String>> readersOn =
+            new LinkedHashMap<String, Set<String>>();
+    private final Map<String, Set<String>> writersOn =
+            new LinkedHashMap<String, Set<String>>();
     /** occurrence id -> the locations it reads / writes, in any session. */
     private final Map<String, Set<String>> readLocations =
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Set<String>> writtenLocations =
             new LinkedHashMap<String, Set<String>>();
-    /** session|location|version -> the write that produced it. */
-    private final Map<String, WriteRow> writeByVersion =
-            new LinkedHashMap<String, WriteRow>();
-    /** session|locationKey -> every write of it, in that session. */
-    private final Map<String, List<WriteRow>> writesByLocation =
-            new LinkedHashMap<String, List<WriteRow>>();
     /** locationKey -> site|java type -> its first write, in any session. */
     private final Map<String, Map<String, WriteRow>> writeSitesByLocation =
             new LinkedHashMap<String, Map<String, WriteRow>>();
@@ -251,9 +254,11 @@ public final class Corpus implements Arms.Rows {
     /** session|occurrence -> that session's first activation of it. */
     private final Map<String, ActivationRow> activationByOccurrence =
             new LinkedHashMap<String, ActivationRow>();
-    /** endpoint id -> the endpoint, so an anchor's producer can be found. */
-    private final Map<String, Endpoint> endpointById =
-            new LinkedHashMap<String, Endpoint>();
+    /** endpoint id -> its occurrence, so an anchor's producer can be found:
+     *  its occurrence alone, the endpoint (its execution index) held by the
+     *  rows a hold may let go of. */
+    private final Map<String, OccurrenceAddress> occurrenceByEndpoint =
+            new HashMap<String, OccurrenceAddress>();
     /** node|location -> every occurrence of that node touching it. */
     private final Map<String, Set<String>> locationTouches =
             new LinkedHashMap<String, Set<String>>();
@@ -356,16 +361,19 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, Long> forcedFrom = new HashMap<String, Long>();
 
     /**
-     * WHAT ONE SESSION'S ROWS ALONE GIVE: its state join, the schedule facts
-     * the corpus indexes ({@link #indexSchedule}), and what a walk of its
-     * expressions found -- functions of those rows only, so a read of the
+     * WHAT ONE SESSION'S ROWS ALONE GIVE: what its reads and writes give by
+     * key ({@link StateRows}), the schedule facts the corpus indexes ({@link
+     * #indexSchedule}), and what a walk of its expressions found --
+     * functions of those rows only, so a read of the
      * same iteration takes them with the session it keeps ({@link
      * #read(Path, Path, Corpus)}): a landed session's rows never change.
      * Every index across sessions, and every lowering, is built anew.
      */
     private static final class Derived {
         final SessionReader session;
-        final SmtLowering.SessionJoin join;
+        /** What its reads and writes give, by key; null while its hold has
+         *  let them go ({@link #state}). */
+        volatile StateRows state;
         /** Its schedule, as the corpus indexes it: {@link Fact}s in
          *  order. */
         final List<Fact> schedule;
@@ -387,8 +395,6 @@ public final class Corpus implements Arms.Rows {
                 new ConcurrentHashMap<String, Set<String>>();
         final Map<String, Set<Long>> readEvents =
                 new ConcurrentHashMap<String, Set<Long>>();
-        final Map<String, List<StateRead>> stateReads =
-                new ConcurrentHashMap<String, List<StateRead>>();
         /** The seqs more than one of its read rows stand at (a store read
          *  and its view's): {@link #readLeaves}' key holds one. */
         final Set<Long> sharedSeqs;
@@ -396,9 +402,11 @@ public final class Corpus implements Arms.Rows {
         final Map<String, ReadRow> sharedBy =
                 new ConcurrentHashMap<String, ReadRow>();
 
-        Derived(SessionReader session) {
+        /** {@code state}: its {@link StateRows} built now, as a corpus that
+         *  holds every session's rows reads them; else as first asked. */
+        Derived(SessionReader session, boolean state) {
             this.session = session;
-            this.join = SmtLowering.joinOf(session);
+            this.state = state ? new StateRows(session) : null;
             this.schedule = facts(session);
             Set<Long> seen = new HashSet<Long>();
             Set<Long> shared = new HashSet<Long>();
@@ -409,6 +417,81 @@ public final class Corpus implements Arms.Rows {
             }
             this.sharedSeqs = shared;
         }
+    }
+
+    /**
+     * WHAT ONE SESSION'S READS AND WRITES GIVE, by key -- its state join,
+     * its writes by version and by location, its reads by symbol, its rows
+     * by occurrence, and the answers that hold its rows -- built from them
+     * alone, so a hold that let them go ({@link RowHold}) has these built
+     * again as they are read again.
+     */
+    private static final class StateRows {
+        final SmtLowering.SessionJoin join;
+        /** location|version -> the write that produced it. */
+        final Map<String, WriteRow> writeByVersion =
+                new HashMap<String, WriteRow>();
+        /** locationKey -> every write of it, in recorded order. */
+        final Map<String, List<WriteRow>> writesByLocation =
+                new HashMap<String, List<WriteRow>>();
+        final Map<String, ReadRow> readBySymbol =
+                new HashMap<String, ReadRow>();
+        /** occurrence id -> its reads / writes there, in recorded order. */
+        final Map<String, List<ReadRow>> readsOn =
+                new HashMap<String, List<ReadRow>>();
+        final Map<String, List<WriteRow>> writesOn =
+                new HashMap<String, List<WriteRow>>();
+        /** location|version|reader -> {@link #eligibleWrites}: the closure
+         *  asks every demanded read again each time a demand grows, and once
+         *  per walk of its group. */
+        final Map<String, List<WriteRow>> eligible =
+                new ConcurrentHashMap<String, List<WriteRow>>();
+        /** expression ref -> {@link #expressionStateReads}. */
+        final Map<String, List<StateRead>> stateReads =
+                new ConcurrentHashMap<String, List<StateRead>>();
+
+        /** A session this corpus lacks: no rows. */
+        private StateRows() {
+            this.join = SmtLowering.NO_JOIN;
+        }
+
+        StateRows(SessionReader session) {
+            this.join = SmtLowering.joinOf(session);
+            for (WriteRow row : session.writes()) {
+                String location = SmtLowering.locationKey(row.location());
+                writeByVersion.put(location + "|" + row.version(), row);
+                add(writesByLocation, location, row);
+                add(writesOn, row.endpoint().occurrence().id(), row);
+            }
+            for (ReadRow row : session.reads()) {
+                if (!row.symbol().isEmpty()) {
+                    readBySymbol.put(row.symbol(), row);
+                }
+                add(readsOn, row.endpoint().occurrence().id(), row);
+            }
+        }
+    }
+
+    private static final StateRows NO_STATE = new StateRows();
+
+    /** What one session's reads and writes give, built again where its hold
+     *  let them go; none for a session this corpus lacks. */
+    private StateRows state(String sessionId) {
+        Derived of = bySession.get(sessionId);
+        if (of == null) return NO_STATE;
+        StateRows held = of.state;
+        if (held != null) {
+            if (hold != null) hold.used(of.session, RowHold.Kind.STATE);
+            return held;
+        }
+        synchronized (of) {
+            held = of.state;
+            if (held == null) {
+                held = new StateRows(of.session);
+                of.state = held;
+            }
+        }
+        return held;
     }
 
     /** One schedule fact of a session: where a message was taken in,
@@ -434,6 +517,7 @@ public final class Corpus implements Arms.Rows {
     private Corpus(Path iteration, List<SessionReader> read,
                    Corpus previous) {
         this.iteration = iteration;
+        this.hold = null;
         List<SessionReader> real = new ArrayList<SessionReader>();
         List<SessionReader> forced = new ArrayList<SessionReader>();
         for (SessionReader session : read) {
@@ -458,6 +542,94 @@ public final class Corpus implements Arms.Rows {
         this.arms = new Arms(this);
     }
 
+    /**
+     * COMPOSE'S CORPUS (PIPELINE §8): every index built from every session's
+     * rows, the sessions read {@link Parallel#READS} at a time, and their
+     * reads, writes and gaps held by {@code hold} -- at most its bytes,
+     * read again as asked for -- so the corpus never holds them all.  The
+     * sessions are indexed in the order {@link #Corpus(Path, List, Corpus)}
+     * indexes them (each read one in read order, the forced ones after),
+     * and each answer is the one that corpus gives.
+     */
+    private Corpus(Path iteration, List<SessionDir> dirs, long bytes)
+            throws IOException {
+        this.iteration = iteration;
+        this.hold = new RowHold(bytes, this::released);
+        List<SessionReader> real = new ArrayList<SessionReader>();
+        List<SessionReader> forced = new ArrayList<SessionReader>();
+        SessionReader.Pooled reader = new SessionReader.Pooled();
+        for (int from = 0; from < dirs.size(); from += Parallel.READS) {
+            List<SessionReader> read = Parallel.map(dirs.subList(from,
+                    Math.min(dirs.size(), from + Parallel.READS)), dir -> {
+                SessionReader session = reader.read(dir);
+                digestIds(session);
+                return session;
+            }, Parallel.READS);
+            for (SessionReader session : read) {
+                // As the corpus that holds every session reads them.
+                if (session.forced()) {
+                    if (forcedTarget(session)) forced.add(session);
+                    continue;
+                }
+                real.add(session);
+                indexHeld(session, false);
+            }
+        }
+        for (SessionReader session : forced) indexHeld(session, true);
+        this.sessions = Collections.unmodifiableList(real);
+        this.forcedSessions = Collections.unmodifiableList(forced);
+        this.arms = new Arms(this);
+    }
+
+    /** One session read, indexed, and taken into the hold. */
+    private void indexHeld(SessionReader session, boolean apart) {
+        Derived of = new Derived(session, false);
+        bySession.put(session.sessionId(), of);
+        index(of, apart);
+        hold.take(session);
+    }
+
+    /**
+     * COMPOSE's read of an iteration ({@link #Corpus(Path, List, long)}),
+     * its sessions' reads, writes and gaps held to {@code bytes} of their
+     * text, and its case-declared root domains.
+     */
+    public static Corpus holding(Path iteration, Path rootDomains, long bytes)
+            throws IOException {
+        Corpus corpus = new Corpus(iteration,
+                SessionDir.sessionsIn(iteration), bytes);
+        corpus.domains(rootDomains);
+        corpus.indexWorlds(iteration);
+        corpus.indexRecordedTicks(iteration);
+        return corpus;
+    }
+
+    /** What was built of one session's rows its hold let go of goes with
+     *  them ({@link RowHold}): built again as they are read again. */
+    private void released(SessionReader session, RowHold.Kind kind) {
+        if (kind != RowHold.Kind.STATE) return;
+        Derived of = bySession.get(session.sessionId());
+        if (of != null && of.session == session) of.state = null;
+        loweringById.remove(session.sessionId());
+    }
+
+    /** The text of the sessions' reads, writes and gaps it holds now, in
+     *  decoded bytes ({@link #holding}); 0 for a corpus holding them all. */
+    public long held() {
+        return hold == null ? 0L : hold.holding();
+    }
+
+    /** The most of it it holds; 0 for a corpus holding them all. */
+    public long holdable() {
+        return hold == null ? 0L : hold.bytes();
+    }
+
+    /** How many sessions' parts it let go of were read again, and their
+     *  text in decoded bytes ({@link RowHold#readAgain}). */
+    public long[] readAgain() {
+        return hold == null ? new long[2] : hold.readAgain();
+    }
+
     /** What {@code previous} derived from each session's rows alone, else
      *  derived anew -- each a function of its session's rows (its schedule
      *  read from its file), so a few sessions at a time ({@link
@@ -473,7 +645,7 @@ public final class Corpus implements Arms.Rows {
                         : previous.bySession.get(session.sessionId());
                 if (kept != null && kept.session == session) return kept;
                 digestIds(session);
-                return new Derived(session);
+                return new Derived(session, true);
             }, Parallel.READS);
         } catch (IOException unreadable) {
             throw new UncheckedIOException(unreadable);
@@ -530,13 +702,17 @@ public final class Corpus implements Arms.Rows {
                 iteration, previous == null
                         ? Collections.<SessionReader>emptyList()
                         : previous.everySession(), named), previous);
-        if (rootDomains != null && Files.isRegularFile(rootDomains)) {
-            corpus.declaredDomains.putAll(
-                    RootDomain.declared(rootDomains));
-        }
+        corpus.domains(rootDomains);
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
         return corpus;
+    }
+
+    /** What the case declares each root may be. */
+    private void domains(Path rootDomains) throws IOException {
+        if (rootDomains != null && Files.isRegularFile(rootDomains)) {
+            declaredDomains.putAll(RootDomain.declared(rootDomains));
+        }
     }
 
     /** The recording's schedule, which run_engine sets beside the sessions. */
@@ -632,11 +808,10 @@ public final class Corpus implements Arms.Rows {
      */
     public List<String> contextShape(CausalContext context) {
         return ContextShape.of(context, producer -> {
-            Endpoint sender = endpointById.get(producer);
+            OccurrenceAddress sender = occurrenceByEndpoint.get(producer);
             return sender == null ? senderStanceByEndpoint.get(producer)
-                    : new ContextShape.Stance(
-                            sender.occurrence().node().render(),
-                            sender.occurrence().context());
+                    : new ContextShape.Stance(sender.node().render(),
+                            sender.context());
         });
     }
 
@@ -1018,7 +1193,7 @@ public final class Corpus implements Arms.Rows {
                                    OccurrenceAddress task,
                                    Set<String> locations) {
         Set<String> sites = new TreeSet<String>(BY_SHAPE);
-        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
+        for (WriteRow write : writesOn(sessionId, member)) {
             if (write.initial() || !locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
@@ -1046,7 +1221,7 @@ public final class Corpus implements Arms.Rows {
         if (term != null && !UNSUPPORTED.equals(term)) return term;
         String location = SmtLowering.locationKey(write.location());
         Set<String> values = new TreeSet<String>(BY_SHAPE);
-        for (ReadRow read : readsOn.of(task.id(), sessionId)) {
+        for (ReadRow read : readsOn(sessionId, task)) {
             if (read.observedVersion() == write.version() && location.equals(
                     SmtLowering.locationKey(read.location()))) {
                 values.add(observed(sessionId, read.concreteValue()));
@@ -1688,9 +1863,7 @@ public final class Corpus implements Arms.Rows {
      */
     void keysDone(String sessionId) {
         names.remove(sessionId);
-        SessionReader session = sessionById.get(sessionId);
-        loweringById.put(sessionId, SmtLowering.forSession(session,
-                bySession.get(sessionId).join));
+        loweringById.remove(sessionId);
     }
 
     /** The verdict the WAVE's file states for one obligation in the session
@@ -1968,8 +2141,6 @@ public final class Corpus implements Arms.Rows {
             indexSchedule(session.sessionId(), of.schedule);
         }
         sessionById.put(session.sessionId(), session);
-        loweringById.put(session.sessionId(),
-                SmtLowering.forSession(session, of.join));
         for (ActivationRow row : session.activations()) {
             activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
@@ -1977,8 +2148,8 @@ public final class Corpus implements Arms.Rows {
             remember(session.sessionId(), row.occurrence());
             // The sender an anchor names: a causal chain goes on through it.
             if (row.anchorProducer() != null) {
-                endpointById.put(row.anchorProducer().id(),
-                        row.anchorProducer());
+                occurrenceByEndpoint.put(row.anchorProducer().id(),
+                        row.anchorProducer().occurrence());
                 remember(session.sessionId(),
                         row.anchorProducer().occurrence());
             }
@@ -2003,7 +2174,8 @@ public final class Corpus implements Arms.Rows {
             }
             add(exports, row.endpoint().id(), row);
             remember(session.sessionId(), row.endpoint().occurrence());
-            endpointById.put(row.endpoint().id(), row.endpoint());
+            occurrenceByEndpoint.put(row.endpoint().id(),
+                    row.endpoint().occurrence());
         }
         for (AttachRow row : session.attaches()) {
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
@@ -2024,9 +2196,11 @@ public final class Corpus implements Arms.Rows {
             }
             if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
-            endpointById.put(row.endpoint().id(), row.endpoint());
+            occurrenceByEndpoint.put(row.endpoint().id(),
+                    row.endpoint().occurrence());
             if (row.producer() != null) {
-                endpointById.put(row.producer().id(), row.producer());
+                occurrenceByEndpoint.put(row.producer().id(),
+                        row.producer().occurrence());
                 remember(session.sessionId(), row.producer().occurrence());
             }
         }
@@ -2042,13 +2216,10 @@ public final class Corpus implements Arms.Rows {
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
         }
         for (WriteRow row : session.writes()) {
-            String location = SmtLowering.locationKey(row.location());
-            writeByVersion.put(versionKey(session.sessionId(), location,
-                    row.version()), row);
-            writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row,
-                    apart);
-            add(writesByLocation, session.sessionId() + "|" + location, row);
             if (apart) continue;
+            String location = SmtLowering.locationKey(row.location());
+            located(writersOn, row.endpoint().occurrence(),
+                    session.sessionId());
             remember(session.sessionId(), row.endpoint().occurrence());
             // An INITIAL's endpoint observed the location; it wrote nothing.
             if (!row.initial()) {
@@ -2059,7 +2230,8 @@ public final class Corpus implements Arms.Rows {
                         .putIfAbsent(row.endpoint().site() + "|"
                                 + row.javaType(), row);
             }
-            endpointById.put(row.endpoint().id(), row.endpoint());
+            occurrenceByEndpoint.put(row.endpoint().id(),
+                    row.endpoint().occurrence());
             touch(row.endpoint().occurrence(), row.location());
         }
         for (TargetRow row : session.targets()) {
@@ -2074,16 +2246,14 @@ public final class Corpus implements Arms.Rows {
             remember(session.sessionId(), row.occurrence());
         }
         for (ReadRow row : session.reads()) {
-            if (!row.symbol().isEmpty()) {
-                readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
-            }
-            readsOn.add(row.endpoint().occurrence().id(), row.sessionId(), row,
-                    apart);
             if (apart) continue;
+            located(readersOn, row.endpoint().occurrence(),
+                    session.sessionId());
             remember(session.sessionId(), row.endpoint().occurrence());
             located(readLocations, row.endpoint().occurrence(),
                     SmtLowering.locationKey(row.location()));
-            endpointById.put(row.endpoint().id(), row.endpoint());
+            occurrenceByEndpoint.put(row.endpoint().id(),
+                    row.endpoint().occurrence());
             touch(row.endpoint().occurrence(), row.location());
         }
     }
@@ -2164,13 +2334,6 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    /** One version of one location in one session; {@link
-     *  SmtLowering#locationKey} is the one location spelling. */
-    private static String versionKey(String sessionId, String locationKey,
-                                     long version) {
-        return sessionId + "|" + locationKey + "|" + version;
-    }
-
     /** One path's id: the session it ran in and the occurrence it ran. */
     public static String pathId(String sessionId,
                                 OccurrenceAddress occurrence) {
@@ -2189,31 +2352,38 @@ public final class Corpus implements Arms.Rows {
         return SessionReader.seedSessionIds(sessions);
     }
 
-    /** One session's lowering: the one the composer lowers with. */
+    /** One session's lowering, made as first asked ({@link
+     *  SmtLowering#forSession}) and kept until its keys are done ({@link
+     *  #keysDone}) or its hold lets its rows go; null for a session this
+     *  corpus lacks. */
     public SmtLowering lowering(String sessionId) {
-        return loweringById.get(sessionId);
+        SmtLowering held = loweringById.get(sessionId);
+        if (held != null) return held;
+        SessionReader session = sessionById.get(sessionId);
+        if (session == null) return null;
+        // Its join first: reading its rows again may let others go, whose
+        // lowerings leave this map.
+        SmtLowering made = SmtLowering.forSession(session, join(sessionId));
+        SmtLowering first = loweringById.putIfAbsent(sessionId, made);
+        return first != null ? first : made;
     }
 
     /**
-     * Every session's lowering as {@link #read} built it.  A lowering keeps
-     * what it lowered -- its memo, the names it minted, the count its refused
-     * constructs are named by -- so a query built after another would name
-     * them differently.  A question asked of a corpus read once for many
-     * ({@code ObligationSolverMain --serve}) starts from here: what a JVM of
-     * its own would have had.  Every other memo of a corpus is a function of
+     * Every session's lowering made afresh as next asked ({@link
+     * #lowering}).  A lowering keeps what it lowered -- its memo, the names
+     * it minted, the count its refused constructs are named by -- so a query
+     * built after another would name them differently.  A question asked of
+     * a corpus read once for many ({@code ObligationSolverMain --serve})
+     * starts from here: what a JVM of its own would have had.  Every other memo of a corpus is a function of
      * its rows alone.
      */
     void freshLowerings() {
-        for (SessionReader session : everySession()) {
-            loweringById.put(session.sessionId(), SmtLowering.forSession(
-                    session, bySession.get(session.sessionId()).join));
-        }
+        loweringById.clear();
     }
 
     /** One session's state join; a session this corpus lacks joins nothing. */
     public SmtLowering.SessionJoin join(String sessionId) {
-        Derived of = bySession.get(sessionId);
-        return of == null ? SmtLowering.NO_JOIN : of.join;
+        return state(sessionId).join;
     }
 
     public List<SessionReader> sessions() {
@@ -2352,7 +2522,12 @@ public final class Corpus implements Arms.Rows {
     }
 
     public List<ReadRow> readsOn(OccurrenceAddress occurrence) {
-        return readsOn.all(occurrence.id());
+        List<ReadRow> all = new ArrayList<ReadRow>();
+        for (String session : readersOn.getOrDefault(occurrence.id(),
+                Collections.<String>emptySet())) {
+            all.addAll(readsOn(session, occurrence));
+        }
+        return all;
     }
 
     /** Every attach of ONE session whose consumer sits at this occurrence. */
@@ -2364,17 +2539,26 @@ public final class Corpus implements Arms.Rows {
     /** Every read ONE session made at this occurrence, in recorded order. */
     public List<ReadRow> readsOn(String sessionId,
                                  OccurrenceAddress occurrence) {
-        return readsOn.of(occurrence.id(), sessionId);
+        List<ReadRow> own = state(sessionId).readsOn.get(occurrence.id());
+        return own == null ? Collections.<ReadRow>emptyList()
+                : Collections.unmodifiableList(own);
     }
 
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
-        return writesOn.all(occurrence.id());
+        List<WriteRow> all = new ArrayList<WriteRow>();
+        for (String session : writersOn.getOrDefault(occurrence.id(),
+                Collections.<String>emptySet())) {
+            all.addAll(writesOn(session, occurrence));
+        }
+        return all;
     }
 
     /** Every write ONE session made at this occurrence, in recorded order. */
     public List<WriteRow> writesOn(String sessionId,
                                    OccurrenceAddress occurrence) {
-        return writesOn.of(occurrence.id(), sessionId);
+        List<WriteRow> own = state(sessionId).writesOn.get(occurrence.id());
+        return own == null ? Collections.<WriteRow>emptyList()
+                : Collections.unmodifiableList(own);
     }
 
     /**
@@ -2430,21 +2614,16 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> eligibleWrites(String sessionId, String locationKey,
                                          long observedVersion,
                                          OccurrenceAddress reader) {
-        String key = sessionId + "|" + locationKey + "|" + observedVersion
-                + "|" + (reader == null ? "" : reader.id());
-        List<WriteRow> held = eligible.get(key);
+        String key = locationKey + "|" + observedVersion + "|"
+                + (reader == null ? "" : reader.id());
+        StateRows state = state(sessionId);
+        List<WriteRow> held = state.eligible.get(key);
         if (held != null) return held;
         List<WriteRow> found = Collections.unmodifiableList(eligibleOf(
                 sessionId, locationKey, observedVersion, reader));
-        eligible.put(key, found);
+        if (state != NO_STATE) state.eligible.put(key, found);
         return found;
     }
-
-    /** session|location|version|reader -> {@link #eligibleWrites}: the
-     *  closure asks every demanded read again each time a demand grows,
-     *  and once per walk of its group. */
-    private final Map<String, List<WriteRow>> eligible =
-            new ConcurrentHashMap<String, List<WriteRow>>();
 
     private List<WriteRow> eligibleOf(String sessionId, String locationKey,
                                       long observedVersion,
@@ -2833,13 +3012,12 @@ public final class Corpus implements Arms.Rows {
      *  Locations the session never wrote are skipped (no version to guess). */
     public List<StateRead> expressionStateReads(String sessionId,
                                                 String expressionRef) {
-        Derived of = bySession.get(sessionId);
         if (expressionRef == null) return Collections.emptyList();
-        List<StateRead> held = of == null ? null
-                : of.stateReads.get(expressionRef);
+        StateRows state = state(sessionId);
+        List<StateRead> held = state.stateReads.get(expressionRef);
         if (held != null) return held;
         List<StateRead> found = stateReadsOf(sessionId, expressionRef);
-        if (of != null) of.stateReads.put(expressionRef, found);
+        if (state != NO_STATE) state.stateReads.put(expressionRef, found);
         return found;
     }
 
@@ -3003,7 +3181,7 @@ public final class Corpus implements Arms.Rows {
 
     @Override
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
-        return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
+        return state(sessionId).writesByLocation.getOrDefault(locationKey,
                 Collections.<WriteRow>emptyList());
     }
 
@@ -3143,8 +3321,7 @@ public final class Corpus implements Arms.Rows {
 
     @Override
     public OccurrenceAddress occurrenceOf(String endpointId) {
-        Endpoint endpoint = endpointById.get(endpointId);
-        return endpoint == null ? null : endpoint.occurrence();
+        return occurrenceByEndpoint.get(endpointId);
     }
 
     @Override
@@ -3164,8 +3341,8 @@ public final class Corpus implements Arms.Rows {
 
     public WriteRow writeOf(String sessionId, String locationKey,
                             long version) {
-        return version < 0 ? null : writeByVersion.get(
-                versionKey(sessionId, locationKey, version));
+        return version < 0 ? null : state(sessionId).writeByVersion.get(
+                locationKey + "|" + version);
     }
 
     /** Every occurrence of the node that writes or reads one location. */
@@ -3192,14 +3369,16 @@ public final class Corpus implements Arms.Rows {
     }
 
     public ReadRow read(String sessionId, String symbol) {
-        return readBySymbol.get(sessionId + "|" + symbol);
+        return state(sessionId).readBySymbol.get(symbol);
     }
 
     public SymbolKind symbolKind(String sessionId, String symbol) {
         String key = sessionId + "|" + symbol;
         if (rootBySymbol.containsKey(key)) return SymbolKind.ROOT;
         if (attachBySymbol.containsKey(key)) return SymbolKind.HANDOFF;
-        if (readBySymbol.containsKey(key)) return SymbolKind.READ;
+        if (state(sessionId).readBySymbol.containsKey(symbol)) {
+            return SymbolKind.READ;
+        }
         return SymbolKind.UNKNOWN;
     }
 
