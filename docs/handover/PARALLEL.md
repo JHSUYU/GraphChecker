@@ -11,7 +11,7 @@ the way there is that no work waits in series for anything but a real dependency
 | --- | --- | --- |
 | inside one case | its obligations (each a SOLVE, then a REPLAY when SAT), GROW's re-runs, CONFIRM, REPRODUCE's native runs | `run_engine.sh` streams them over every lift of `CAUSYNTH_CAMPAIGN_WORKER_HOSTS` (= `LIFTS`), each start charged on the host ledger; a head's engine JVMs go wherever there is room ([../design/PERFORMANCE.md](../design/PERFORMANCE.md) §2) |
 | across cases | many campaigns, several rounds at once | `tools/adhoc/sweep.sh` (`heads-per-host`, a shared pool: each exploration takes its share of the slots and grows as others end); several sweeps side by side (one per purpose: a rerun group, the named-bug baseline, deep closures with a longer `CASE_TIMEOUT_SECONDS`); no case needs the cluster alone |
-| across development | up to 4 coding agents, read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
+| across development | up to 5 coding agents (owner 2026-10-18; 4 before), read-only diagnosis and review agents, the lead's rounds | each agent on its own branch, worktree, snapshot and `GC_OUT`, up to four live runs at once; offline gates and builds via `onlift.sh` on the least loaded lift ([AGENTS.md](AGENTS.md)) |
 
 The only limit is memory: no lift above 70 % (the ledger refuses a start past it, a running JVM past it is ended).
 Cores and load are not limits: 48 per lift.
@@ -185,7 +185,7 @@ and an unrelated undecidable conjunct no longer makes the flip unknown.
   After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
 - Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.
 
-**4. Agents and trees.** At most four coding agents, each with its own branch, worktree (`tools/lib/worktree-add.sh`,
+**4. Agents and trees.** At most five coding agents (owner 2026-10-18; four before), each with its own branch, worktree (`tools/lib/worktree-add.sh`,
 a sha), frozen snapshots `~/gc-run/<prefix><n>`, `GC_OUT` and at most two live runs; read-only reviewers beside the
 runs, not after them. Each Solr tree has ONE owner who builds it; anyone else only reads it. Before any build: `pgrep
 -fc '[l]ucene-solr-<name>'` on every lift. When a tree is read by others' runs and needs a change, build a second
@@ -201,3 +201,12 @@ ssh lift06 env -u BASH_ENV bash /bigtemp/vnr3ne/analysis/solr-2026-10-12/watch-r
 branch head that moved; as a Monitor's command it notifies the session per event, re-armed every 30 min). Agents report at their
 gates; at every check-in compare each agent's last commit time and newest run (AGENTS.md: an agent listed as running
 may be idle).
+
+## 7. 2026-10-18: what changed
+
+- The head's memory is no longer the limit: compaction (OPTIMIZATIONS 1.26, 1.28-1.30) and the holding composer (1.27)
+  keep the planner at ~3.5 GB and the composer at ~1.9 GB on 05 r5 / 07, so session sharding of the planner is shelved
+  (branches solr-parplan 3df494a3a, solr-shard d3b663462 kept, not merged).
+- Measured on 07 (idle-pool/): the pool idles because of the head's serial chain (landing, the import gate, GROW in
+  the head's hands, one solver at a time) and a dispatch cursor that piles replays on one host -- not capacity; the
+  scheduler rewrite (branch solr-stream2) addresses each. During a final round, agents keep off the pool.

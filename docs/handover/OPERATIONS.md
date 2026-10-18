@@ -345,3 +345,21 @@ everything else, never writing under `<src>`.
 - **A Hadoop tree hook calls a shim method the jar must have**: a tree with A4's door calls throws NoSuchMethodError at
   the first IPC under any jar without `received`/`outboundResponse`; the shim entry goes into `system/hdfs` before the
   tree is built.
+
+## 9. Added 2026-10-18
+
+- **Rows are gzip.** Session row files and a round's slots/graph/gaps/tasks are `.jsonl.gz`, read through
+  `smt.ArtifactIO#input` (shell `campaign_rows`). Runs recorded before 2026-10-18 are plain and unreadable by the new
+  code: copy them with `/bigtemp/vnr3ne/analysis/solr-2026-10-17/nfs/tool/GzCopy <src> <dst>` (never into the source;
+  two copies into one destination collide). Compressed planner references: `analysis/solr-2026-10-17/nfs/snap05r5gz`,
+  `nfs/ref/{13,21,19,05r2}`.
+- **Watchdog during a round:** `bash /bigtemp/vnr3ne/analysis/solr-2026-10-18/watchdog.sh` (probe
+  `watch-remote.sh`): exits at the first D-state pid seen twice, ssh refused twice, a case log unchanged > 15 min, a host
+  > 90 % memory, a JVM/z3 of a case other than the running one, a z3 orphaned > 60 min. Re-arm after each alarm.
+- **Heap attribution:** `analysis/solr-2026-10-18/redundancy/tool/HeapOwners.java` over a `jmap -dump:live` file:
+  bytes by owner (first claim, rows first), by class and by string kind. Delete dumps after use (tens of GB).
+- **Hosts:** lift15 refused ssh public keys for ~2 h on 2026-10-18 (its /u autofs); the watchdog's ssh check catches
+  it. Many parallel ssh sessions can fail with `kex_exchange_identification` (sshd MaxStartups).
+- **The final-round driver** is `analysis/solr-2026-10-16/final-seq5.sh <snapshot> <trees> <head> <case:budget>...`
+  (start scripts `start-sgf8*.sh` beside it; round log `gc-out/solr/SGF8-seq.log`); rename a stopped case's dir to an
+  evidence name (`accept-SGF8STOP-...`) before a rerun, since the driver skips a dir that has a summary.

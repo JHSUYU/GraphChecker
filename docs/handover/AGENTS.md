@@ -2,7 +2,7 @@
 
 This file is part of every agent's long-term memory ([RULES.md](RULES.md)). The binding numbers, from
 the owner on 2026-10-04 ("具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"):
-- **At most 4 coding agents at once.**
+- **At most 5 coding agents at once** (owner 2026-10-18: "我们给5个agent并行"; 4 before).
 - Read-only investigators and reviewers may be a few more.
 - A review agent is used only at key, complex places: VM, schedule and identity, soundness of
   COMPOSE and CONFIRM. One per batch, before the merge.
@@ -28,7 +28,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
   reviewing a short diff.
 
 **How many and how**
-- **At most 4 coding agents at once** (owner 2026-10-04: "具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"; read-only investigators and reviewers may be a few more, reviews only at key, complex places; refill a slot only with the current round's critical path) (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
+- **At most 5 coding agents at once** (owner 2026-10-18, raised from 4; owner 2026-10-04: "具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"; read-only investigators and reviewers may be a few more, reviews only at key, complex places; refill a slot only with the current round's critical path) (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
   usage limit in two hours on 2026-10-02) plus short read-only reviewers; no agent spawns sub-agents; ask for short reports (≤ 15–20 lines);
   no idle polling loops (use a background command that exits on the condition, or a monitor).
 - Every coding agent gets its **own git worktree** (`isolation: worktree`) and branch, a disjoint
@@ -321,3 +321,18 @@ rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and 
 - **Reviews keep paying:** every batch of the night (force2, Z1, Z2, EX, READ doors) had real blockers the gates passed --
   silent drops in COMPOSE, CONFIRM checking nothing for store reads, keys merging different worlds. Launch the review beside
   the live gate, not after it, to keep the wall time.
+
+## Lessons from the 2026-10-17/18 rewrite
+
+- Give each coding agent its own hosts (e.g. lift02-07, lift08, lift09/10/12/13, lift14/15; lift11 for gates) and
+  tell it which classes/methods the other agents change; relay one agent's member list to the other before either
+  commits (compaction vs exploration in ClosurePlanner).
+- Merge order follows dependencies: a branch that rewrote shared structures (the holding composer's Corpus) merges
+  first, the next rebases on it; an integration merge is gated before system/solr moves.
+- Read-only analysts are cheap and decisive: the idle-pool, replay-tail, redundancy, obligation-redundancy,
+  world-dedup and capability studies each changed the plan; have them write results to files (the harness may refuse
+  .md writes from subagents: then they send the text and the lead saves it).
+- A subagent can hang inside one tool call (3 h on 2026-10-18): no file activity for > 30 min = TaskStop and resume
+  it with SendMessage (context kept). Stop stale background waiters (until-loops on files that never appear).
+- At a stop, every agent commits gated work, commits the rest as 'WIP (not gated): <what>' on its branch (not a
+  stash), kills its JVMs by pid and reports branch, head, done, WIP, next step and traps in <= 8 lines.

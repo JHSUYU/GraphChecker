@@ -177,6 +177,30 @@ recommendation.
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.
 
+**The 2026-10-17/18 rulings** (owner, quoted; long-term unless marked)
+
+- **Each final case runs alone on the whole pool** ("我们还是要让case独占"): no cross-case concurrency in a final round;
+  development and agents' offline runs stay off the pool while a final case runs (lift11 only), or the round is stopped.
+- **A large rewrite is allowed, old code is gone for good** ("由于现在代码太过于臃肿，我已经允许你大改动了", "你可以大规模
+  重写了，最后20个case重跑一遍debug就行", "旧的代码就要全部删除了。再也不用了"): one implementation per concept, no
+  flag or fallback, nothing kept for comparison (references are old run outputs and old jars); acceptance of the rewrite =
+  all 20 Solr cases rerun and debugged. The plan is REFACTOR-PLAN.md.
+- **Read what exists before building** ("总之你好好读读现在已有的代码机制和细节吧，不要重复造轮子了 ... 包括system/hdfs
+  上的上一个版本的代码，包括vm"): an inventory of the engine, both branches and the VM precedes a new mechanism
+  (analysis/solr-2026-10-18/capabilities/INVENTORY.md).
+- **Explore everything in principle, collapse duplicates soundly; the depth parameter stays** ("理论上我们当然想探索所有
+  ... 你已经发现大多是重复的。那就把他们都处理好啊，正常探索", "成熟的concolic engine都有解决方案了", "不过深度参数还是
+  要保留我要控制分支探索数量"): use focused replay's enforced prefix and the closure loop (not new machinery) with the
+  generational bound; the owner sets the world depth.
+- **Redundancy before distribution** ("优先排查planner的冗余能压缩多少。如果确实冗余太多能大量压缩，那我们就不用做分片了",
+  "分片就先不做了"): session sharding is shelved; compaction gave the headroom.
+- **Watch processes and NFS, never wait blindly** ("有太多zombie process以及nfs卡死的问题，你要监视着，尽早处理好，不要一直
+  死等"): the watchdog (LESSONS.md §3) runs during rounds.
+- **Handover by documents** ("如果我们token到了95%。就请你停下所有任务，把todo更新到文档里 ... 总结我们踩过的很多坑，性能
+  优化看什么，debug我们的各种经验"): keep STATE/TODO/LESSONS current at every milestone; at a stop, agents checkpoint as
+  gated commits + 'WIP (not gated)' commits on their branches.
+- **Stay on the liftlab servers** (2026-10-18: "算了算了还是用liftlab的server吧"), Solr only for now ("hbase的当前不用做").
+
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
   dead code, no fallback paths, no flags to keep an old path. Per-system code is allowed only as a

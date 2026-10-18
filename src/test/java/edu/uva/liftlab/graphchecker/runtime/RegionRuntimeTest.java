@@ -454,6 +454,63 @@ public class RegionRuntimeTest {
                 ConcolicRegionRuntime.STRANDED.containsKey(STRANDED));
     }
 
+    /**
+     * An early end strands the live before its settle waits, so the settle
+     * waits only for the publications the session owes; a read-out still
+     * reading then hands no page on, and a page of a read-out the session
+     * withholds (unsubmitted by the end, or submitted after) is not decoded.
+     */
+    @Test(timeout = 60000L)
+    public void anEarlyEndStrandsTheLiveAndDecodesNothingWithheld() {
+        JsonObject run = taskRow("hdfs/nn0#epoch0",
+                "hdfs/nn0#epoch0/region/REGION.1#1", "<a.B: void run()>", true,
+                "");
+        ActiveRegion live = Fixtures.live(region(STRANDED, run));
+        set(ConcolicResultPublisher.class, "liveSelectedRegions", 1);
+        set(ConcolicResultPublisher.class, "concluded",
+                ConcolicResultPublisher.Conclusion.STALLED_AFTER_FLIP);
+        set(ConcolicResultPublisher.class, "submittedAtEnd", 2L);
+        try {
+            assertFalse("no page handed on after the end",
+                    ConcolicResultPublisher.decodeBeforePublication(1L,
+                            () -> fail("decoded after the end")));
+            long[][] table = {
+                // ordinal, withheld (1 = yes)
+                {0L, 1L}, {1L, 0L}, {2L, 0L}, {3L, 1L}};
+            for (long[] row : table) {
+                SharedStateCapture.SharedStateReadOut readOut =
+                        new SharedStateCapture.SharedStateReadOut();
+                readOut.ordinal = row[0];
+                assertEquals("ordinal " + row[0], row[1] == 1L,
+                        ConcolicResultPublisher.withholds(readOut));
+            }
+            ConcolicResultPublisher.awaitSelectedResultPublications();
+            assertSame("stranded before any wait", live,
+                    ConcolicRegionRuntime.STRANDED.get(STRANDED));
+            assertEquals(0, get(ConcolicResultPublisher.class,
+                    "liveSelectedRegions"));
+            // A withdrawn session (a stall before any flip) waits for none,
+            // not even a publication still running.
+            set(ConcolicResultPublisher.class, "strandedAtEnd", false);
+            set(ConcolicResultPublisher.class, "concluded",
+                    ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS);
+            set(ConcolicResultPublisher.class, "resultPublicationsInFlight",
+                    1);
+            long started = System.nanoTime();
+            ConcolicResultPublisher.awaitSelectedResultPublications();
+            assertTrue("no wait", System.nanoTime() - started
+                    < java.util.concurrent.TimeUnit.SECONDS.toNanos(10L));
+        } finally {
+            set(ConcolicResultPublisher.class, "resultPublicationsInFlight",
+                    0);
+            set(ConcolicResultPublisher.class, "concluded", null);
+            set(ConcolicResultPublisher.class, "submittedAtEnd",
+                    Long.MAX_VALUE);
+            set(ConcolicResultPublisher.class, "strandedAtEnd", false);
+            set(ConcolicResultPublisher.class, "liveSelectedRegions", 0);
+        }
+    }
+
     /** The pause calls and container observations the "VM" was asked. */
     public static final class Vm {
         static int pauses;

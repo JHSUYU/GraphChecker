@@ -373,8 +373,9 @@ on, before any hook runs (`#shutdownBegun`) -- states nothing and halts: a verdi
 decided end's. The settle
 (`ConcolicResultPublisher#awaitSelectedResultPublications`) is bounded by progress: it gives up once
 nothing has moved for 30 s (`#Grace`: no loop body charged, no activation settled, no publication
-finished, no CPU on the publication or the decoding thread and no garbage collection), so a publication that
-computes is never cut and one blocked is: every activation still live is then stranded, and the
+finished, no CPU on the publication or the decoding thread, and no garbage collection while one of
+them computes -- a collection while both wait is the cluster's, which runs on through the settle), so
+a publication that computes is never cut and one blocked is: every activation still live is then stranded, and the
 publication left running and every one queued behind it (the one publication thread reaches none)
 are each a `TASK_UNANSWERED` `RESULT_PUBLICATION_UNSETTLED`, a seed's or a confirmation's session
 included, which holds every obligation of the replay `NOT_ADMITTED`
@@ -409,14 +410,22 @@ A focused replay ends early, once, for one of seven reasons (`ConcolicResultPubl
 - `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
   workload's own end, nothing decided, every verdict settled as there (§7.6).
 
-Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
-publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
-with the reason; after the workload's own end, one live while nothing progressed for the grace is
-`TERMINAL_NEVER_REACHED`), and a publication
-not yet started is withheld (the reason again): at the witness, a forced target or a stall after a
-flip, one submitted after it (the session is read whole up to there, and its schedule states the run
-cut there); at a refusal or a stall before any flip, every one (the session is withdrawn, and
-draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
+Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log,
+every activation still live is stranded at once, before the settle waits for anything
+(`TASK_UNANSWERED` with the reason; after the workload's own end, one live while nothing progressed
+for the grace is `TERMINAL_NEVER_REACHED`), and a publication not yet started is withheld (the
+reason again): at the witness, a forced target or a stall after a flip, one submitted after it (the
+session is read whole up to there, and its schedule states the run cut there); at a refusal or a
+stall before any flip, every one (the session is withdrawn, and draining the queue into it cost a
+Solr replay two to five minutes past the test's end). So the settle waits only for the publications
+the session owes and the mints of the ones after the end: a stranded activation's terminal reads
+nothing out (`ConcolicRegionRuntime#closeStranded`); a read-out still reading at the end reads no
+more pages and hands none on (`ConcolicResultPublisher#endedEarly`, `#decodeBeforePublication`), and
+a page of a read-out the session withholds -- not submitted by the end, or submitted after -- is not
+decoded (`#withholds`). Waited for as live, the activations kept closing behind the end, each reading
+out pages the one decoding thread decoded for no publication, and each reset the grace: SGF8-adhoc-07,
+43 of 72 replays that stalled ran on, 38 to the test's own end (+209 s p50, +572 s p90) and 5 into
+`replay_timeout_s`, which lost their verdicts and sessions. A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose halt
 ends the in-process cluster (its threads and ports) with the JVM.
@@ -548,8 +557,12 @@ and only read is a `contract.FrozenSet` (one array, its order kept: what a deliv
 `#readLocations`, `#readEvents`; the join's read symbols; a member's reads by location and object,
 `ClosurePlanner.MemberReads`), indexed for `contains` only the first time it is asked, a set the walk only
 adds to and asks is a `contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is
-read of) or, of rows, a `contract.IdentitySet` (a demand's expanded reads, a walk's decisions), and a handoff
-the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string. A list an
+read of) or, of rows, a `contract.IdentitySet` (a walk's decisions); a demand's expanded reads are bits over its
+group's reads, by each read's place there (`ClosurePlanner.GroupReads#readAt`: a demand's walks have the one group
+of its occurrence); a handoff the walk paired is a pair of references in a `contract.PairSet`, never a
+`session|symbol` string, and every other key of several names is their list, never one string spelled of them
+(the walk's once-said gaps, a member's reads by session and location or object, a location's write sites by site
+and Java type, `Corpus#writeSitesOf`). A list an
 index holds for good is cut to its size (`contract.Held`); every location key in a JVM is one string
 (`LocationId#key`, interned), and so is every name a corpus derives from a session's schedule and leaf sets
 (`Corpus#NAMES`: its facts' ids, stances and renders, `HeldLeaves`); the slot table is keyed by its
