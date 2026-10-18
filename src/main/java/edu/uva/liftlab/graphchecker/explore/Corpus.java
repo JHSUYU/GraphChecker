@@ -307,6 +307,11 @@ public final class Corpus implements Arms.Rows {
      *  the session states in its own file. */
     private final Map<String, Map<String, ObligationResult>> waveVerdicts =
             new LinkedHashMap<String, Map<String, ObligationResult>>();
+    /** Session id -> the round directory of the worker that landed it, as
+     *  the read found the workers: a round reads it after its corpus read,
+     *  while GROW may swap a worker's files (ExploreMain#wave). */
+    private final Map<String, Path> landedIn =
+            new LinkedHashMap<String, Path>();
     /** Producer endpoint id of a SEND -> the stance its SEND stood in. */
     private final Map<String, ContextShape.Stance> senderStanceByEndpoint =
             new HashMap<String, ContextShape.Stance>();
@@ -626,13 +631,14 @@ public final class Corpus implements Arms.Rows {
      *  from it drops skews). A planted assignment is stated by the ask alone
      *  ({@code ConcolicRegionRuntime#applyFocusedRootAssignment}). */
     private void indexWorlds(Path iteration) throws IOException {
-        workers = ObligationDir.workersIn(iteration);
+        List<ObligationDir> workers = ObligationDir.workersIn(iteration);
         for (Map.Entry<String, JsonObject> world
                 : ObligationDir.worlds(workers).entrySet()) {
             worlds.put(world.getKey(), ExploreCodec.readWorld(
                     world.getValue()));
         }
         for (ObligationDir worker : workers) {
+            landedIn.put(worker.sessionId(), worker.dir().getParent());
             for (ObligationResult result : worker.results()) {
                 waveVerdicts.computeIfAbsent(worker.sessionId(),
                         key -> new LinkedHashMap<String, ObligationResult>())
@@ -656,14 +662,10 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    /** Every obligation worker of the iteration that published a session,
-     *  as this corpus read them ({@link ObligationDir#workersIn}). */
-    private List<ObligationDir> workers =
-            Collections.<ObligationDir>emptyList();
-
-    /** {@link #workers}: a round's wave reads them again from these. */
-    List<ObligationDir> workers() {
-        return Collections.unmodifiableList(workers);
+    /** Each session of the workers' answers -> the round directory of the
+     *  worker that landed it, as this corpus's read found them. */
+    public Map<String, Path> landedIn() {
+        return Collections.unmodifiableMap(landedIn);
     }
 
     /** How many distinct worlds (by digest) replays refuted for one flip:

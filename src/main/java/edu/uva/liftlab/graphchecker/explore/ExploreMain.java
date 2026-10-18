@@ -107,6 +107,11 @@ import java.util.TreeSet;
 public final class ExploreMain {
     /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
+    /** Stated once the round has read its corpus: after it, a round reads
+     *  no session file (the corpus's rows and schedules are read whole by
+     *  {@link Corpus#read(Path, Path, Corpus, Collection)}), only the
+     *  workers' files and the iteration's. */
+    static final String CORPUS_READ = "corpus_read";
 
     private final Path iteration;
     private final String declaredAnchor;
@@ -275,6 +280,10 @@ public final class ExploreMain {
         for (Parallel.Beside file : writing) file.await();
         writing.clear();
         corpus = Corpus.read(iteration, rootDomains, corpus, named);
+        // Every session file this round reads is read: GROW may withdraw a
+        // session of its corpus now (run_engine.sh campaign_stream_swap_due).
+        Files.createDirectories(out);
+        Files.write(out.resolve(CORPUS_READ), new byte[0]);
         // The map is read again only when its file changed.
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
@@ -750,7 +759,12 @@ public final class ExploreMain {
      * Every answer this iteration's obligation workers wrote, by the flip
      * each asked ({@link ObligationFactory#flip}), in wave and name order:
      * its question names the flip ({@code <flip>:<content>},
-     * {@link ObligationFactory#question}), else its ask's row does.
+     * {@link ObligationFactory#question}), else its ask's row does.  Read as
+     * the workers stand, while a GROW swap may set one's files to its
+     * re-run's (run_engine.sh campaign_stream_swap_worker): each file is
+     * renamed over whole, and a worker's flip is the same before and after,
+     * so the flip has the exposing replay's answer or the re-run's, as a
+     * round after the swap reads it.
      */
     static Map<String, List<ObligationResult>> answersByFlip(Path iteration)
             throws IOException {
@@ -789,7 +803,8 @@ public final class ExploreMain {
      * path, site, ordinal, the outcome asked; {@code force} for the FORCE
      * run, which asks none, {@link ForcedFlip#flip}) and the obligations whose
      * replays were killed with what killed them: what run_engine's {@code
-     * campaign_bounds} names, the last round's being every one.
+     * campaign_bounds} names, the last round's being every one.  Read as the
+     * workers stand, as {@link #answersByFlip} is.
      */
     static JsonArray boundedFlips(Path iteration, Set<String> flips)
             throws IOException {
@@ -925,14 +940,17 @@ public final class ExploreMain {
      * over the seed alone (a round's wave is its manifest's; one that states
      * none planned from the seed).  It deepens only as sessions land, never
      * with the rounds a streaming campaign plans between them, and
-     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).
+     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).  The workers
+     * are taken as the corpus's read found them ({@link Corpus#landedIn}):
+     * a GROW swap may rename a worker's answer to its re-run's, a session
+     * this round does not read, while the round plans.
      */
     private static int wave(Corpus corpus) throws IOException {
         Map<Path, Integer> waves = new LinkedHashMap<Path, Integer>();
         int deepest = 0;
-        for (ObligationDir worker : corpus.workers()) {
-            if (corpus.session(worker.sessionId()) == null) continue;
-            Path round = worker.dir().getParent();
+        for (Map.Entry<String, Path> landed : corpus.landedIn().entrySet()) {
+            if (corpus.session(landed.getKey()) == null) continue;
+            Path round = landed.getValue();
             Integer of = waves.get(round);
             if (of == null) {
                 Path manifest = round.resolve(MANIFEST_FILE);

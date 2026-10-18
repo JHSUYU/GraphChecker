@@ -222,6 +222,90 @@ public class ServiceTest {
         }
     }
 
+    /**
+     * A solver's corpus stands without what GROW's swaps withdrew: the
+     * journal beside the corpus names each before its directory leaves, so a
+     * listing that still shows one (a peer's NFS client's, up to a minute
+     * old) is read without it.
+     */
+    @Test
+    public void aSolversCorpusStandsWithoutWhatGrowWithdrew()
+            throws Exception {
+        Path sessions = folder.newFolder("standing", "sessions").toPath();
+        for (String name : new String[] {"c", "a", "b"}) {
+            Files.createDirectories(sessions.resolve(name));
+        }
+        assertEquals(java.util.Arrays.asList("a", "b", "c"),
+                ObligationSolverMain.standing(sessions));
+        Files.write(sessions.resolveSibling(ObligationSolverMain.WITHDRAWN),
+                "b\nx\n".getBytes(StandardCharsets.UTF_8));
+        assertEquals(java.util.Arrays.asList("a", "c"),
+                ObligationSolverMain.standing(sessions));
+    }
+
+    /**
+     * A solver's read is of whole sessions while GROW swaps: a session the
+     * journal names once the read is done, or one gone under a read that
+     * failed, is read again without it, and the solver says so; a failure
+     * no withdrawal explains is thrown, and a journal naming only sessions
+     * the read did not hold asks nothing again.
+     */
+    @Test
+    public void aSolversReadUnderAWithdrawalIsReadAgainWithoutIt()
+            throws Exception {
+        // case | what the first read does | what was read last | again
+        String[][] rows = {
+                {"named-after", "withdraw b", "a c", "1"},
+                {"gone-under", "withdraw c, fail", "a b", "1"},
+                {"unexplained", "fail", "thrown", "0"},
+                {"elsewhere", "journal x", "a b c", "0"},
+        };
+        for (String[] row : rows) {
+            Path sessions = folder.newFolder(row[0], "sessions").toPath();
+            Path journal = sessions.resolveSibling(
+                    ObligationSolverMain.WITHDRAWN);
+            Files.write(journal, new byte[0]);
+            for (String name : new String[] {"a", "b", "c"}) {
+                Files.createDirectories(sessions.resolve(name));
+            }
+            int[] reads = {0};
+            String said;
+            int again = 0;
+            try {
+                ObligationSolverMain.Whole<List<String>> whole =
+                        ObligationSolverMain.readWhole(sessions,
+                                ObligationSolverMain.standing(sessions),
+                                standing -> {
+                    if (reads[0]++ == 0) {
+                        String[] act = row[1].split(" ");
+                        String gone = act.length > 1
+                                ? act[1].replace(",", "") : "";
+                        if (act[0].equals("withdraw")) {
+                            Files.write(journal, (gone + "\n").getBytes(
+                                    StandardCharsets.UTF_8),
+                                    java.nio.file.StandardOpenOption.APPEND);
+                            Files.delete(sessions.resolve(gone));
+                        } else if (act[0].equals("journal")) {
+                            Files.write(journal, (gone + "\n").getBytes(
+                                    StandardCharsets.UTF_8),
+                                    java.nio.file.StandardOpenOption.APPEND);
+                        }
+                        if (row[1].endsWith("fail")) {
+                            throw new java.io.IOException("unreadable");
+                        }
+                    }
+                    return new ArrayList<String>(standing);
+                });
+                said = String.join(" ", whole.read);
+                again = whole.again;
+            } catch (java.io.IOException thrown) {
+                said = "thrown";
+            }
+            assertEquals(row[0], row[2], said);
+            assertEquals(row[0], Integer.parseInt(row[3]), again);
+        }
+    }
+
     private static List<String> names(List<Path> files) {
         List<String> names = new ArrayList<String>();
         for (Path file : files) names.add(file.getFileName().toString());
