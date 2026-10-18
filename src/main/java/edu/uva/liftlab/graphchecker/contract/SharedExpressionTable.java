@@ -65,7 +65,8 @@ public final class SharedExpressionTable {
             if (artifact == null) return new JsonObject();
             requirePortableArtifact(artifact);
             resolver.collectTables(artifact);
-            JsonElement expanded = resolver.expand(artifact);
+            JsonElement expanded = resolver.expand(artifact,
+                    resolver.definitions::get);
             if (!expanded.isJsonObject()) {
                 throw new IllegalArgumentException(
                         "artifact root must be object");
@@ -269,10 +270,16 @@ public final class SharedExpressionTable {
      * once, so the copy shares what the table shares.  On a stack: a
      * reference chain is as deep as the VM's expression chain, and the
      * recursion along it needed the publication thread's 512 MB stack.
+     *
+     * <p>Threads may expand at once, with no lock: a walk keeps its state to
+     * itself, and of two walks that expand one node at the same time the
+     * first to hold it wins and the other takes the winner's expansion, so
+     * every walk shares one expansion per node.</p>
      */
     abstract static class Expansion<K> {
         private final String noun;
-        /** Concurrent: {@link #expanded(Object)} is asked unlocked. */
+        /** Concurrent: walks run at once, and {@link #expanded(Object)} is
+         *  asked by any thread. */
         private final Map<K, JsonElement> expanded =
                 new ConcurrentHashMap<>();
 
@@ -281,7 +288,7 @@ public final class SharedExpressionTable {
         }
 
         /** Whether {@code key}'s definition has been expanded, which then
-         *  answers for it; safe without the expanding thread's lock. */
+         *  answers for it. */
         final boolean expanded(K key) {
             return expanded.containsKey(key);
         }
@@ -290,30 +297,44 @@ public final class SharedExpressionTable {
          *  {@code root}: it is the artifact itself. */
         abstract K reference(JsonObject object, boolean root);
 
-        /** The definition one key names, or null. */
-        abstract JsonObject definition(K key);
-
         /** What the copy of a plain object holds for one member, still to
          *  expand; null drops the member. */
         abstract JsonElement member(String name, JsonElement value);
 
-        final JsonElement expand(JsonElement root) {
+        /** {@code key} is expanded now, by the walk that held it first:
+         *  its definition is no longer read. */
+        void expandedNow(K key) {
+        }
+
+        /**
+         * {@code root} expanded, each key not expanded yet defined by
+         * {@code definitions} (null: none).  A key it does not define is
+         * looked up expanded once more before the walk refuses it: another
+         * walk may have expanded it and let its definition go meanwhile.
+         */
+        final JsonElement expand(JsonElement root,
+                                 Function<K, JsonObject> definitions) {
             Deque<Copy<K>> copies = new ArrayDeque<>();
             Set<K> active = new HashSet<>();
-            JsonElement done = enter(root, true, copies, active);
+            JsonElement done = enter(root, true, copies, active, definitions);
             while (!copies.isEmpty()) {
                 Copy<K> copy = copies.peek();
                 if (done != null) copy.add(done);
                 JsonElement next = copy.next(this);
                 if (next != null) {
-                    done = enter(next, false, copies, active);
+                    done = enter(next, false, copies, active, definitions);
                     continue;
                 }
                 copies.pop();
                 done = copy.result;
                 if (copy.key != null) {
                     active.remove(copy.key);
-                    expanded.put(copy.key, done);
+                    JsonElement first = expanded.putIfAbsent(copy.key, done);
+                    if (first != null) {
+                        done = first;
+                    } else {
+                        expandedNow(copy.key);
+                    }
                 }
             }
             return done;
@@ -322,7 +343,8 @@ public final class SharedExpressionTable {
         /** A value's copy when it is whole already, else null with the copy
          *  it needs pushed. */
         private JsonElement enter(JsonElement value, boolean root,
-                                  Deque<Copy<K>> copies, Set<K> active) {
+                                  Deque<Copy<K>> copies, Set<K> active,
+                                  Function<K, JsonObject> definitions) {
             if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
             if (value.isJsonPrimitive()) return value.deepCopy();
             K key = value.isJsonObject()
@@ -333,8 +355,10 @@ public final class SharedExpressionTable {
             }
             JsonElement held = expanded.get(key);
             if (held != null) return held;
-            JsonObject definition = definition(key);
+            JsonObject definition = definitions.apply(key);
             if (definition == null) {
+                held = expanded.get(key);
+                if (held != null) return held;
                 throw new IllegalArgumentException(
                         "missing " + noun + " definition: " + key);
             }
@@ -456,11 +480,6 @@ public final class SharedExpressionTable {
             if (!declaresReference(object)) return null;
             requireReference(object, root && object.has(FIELD));
             return textString(object, ANCHOR);
-        }
-
-        @Override
-        JsonObject definition(String anchor) {
-            return definitions.get(anchor);
         }
 
         @Override

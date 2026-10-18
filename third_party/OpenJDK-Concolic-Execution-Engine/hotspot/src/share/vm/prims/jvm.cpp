@@ -890,27 +890,27 @@ JVM_ENTRY(jlong, JVM_ConfirmSharedPrimitiveFieldRead(
   return -7;
 JVM_END
 
-JVM_ENTRY(jstring, JVM_GetTrackedLocationVersions(
+JVM_ENTRY(jstring, JVM_ReadOutTrackedLocations(
     JNIEnv *env, jclass ignored, jlong after_event_id, jint max_bytes))
-  JVMWrapper("JVM_GetTrackedLocationVersions");
+  JVMWrapper("JVM_ReadOutTrackedLocations");
 #ifdef ENABLE_CONCOLIC
   HandleMark hm;
   ResourceMark rm(THREAD);
   std::string serialized =
-      ConcolicMngr::getTrackedLocationVersions(after_event_id, max_bytes);
+      ConcolicMngr::readOutTrackedLocations(after_event_id, max_bytes);
   Handle str = java_lang_String::create_from_str(serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
   // Concolic is compiled out.  The same members the live writer emits with
   // nothing tracked, so a reader never has to special-case this build.
   Handle str = java_lang_String::create_from_str(
-      "{\"schemaVersion\":1,\"kind\":\"SHARED_TRACKED_LOCATIONS\","
-      "\"sessionId\":0,\"authority\":\"VM_TRACKED_LOCATION_VERSIONS_V1\","
+      "{\"schemaVersion\":2,\"kind\":\"SHARED_TRACKED_LOCATIONS\","
+      "\"sessionId\":0,\"authority\":\"VM_TRACKED_LOCATION_VERSIONS_V2\","
       "\"locations\":[],\"locationCount\":0,\"complete\":true,"
       "\"nextAfterEventId\":0,\"vmExpressionTable\":{\"schemaVersion\":1,"
       "\"kind\":\"VM_EXPRESSION_TABLE\","
-      "\"authority\":\"VM_SESSION_EXPRESSION_ID_V1\",\"sessionId\":0,"
-      "\"definitionCount\":0,\"definitions\":[]}}", THREAD);
+      "\"authority\":\"VM_READ_OUT_EXPRESSION_DELTA_V1\",\"sessionId\":0,"
+      "\"sequence\":1,\"definitionCount\":0,\"definitions\":[]}}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
