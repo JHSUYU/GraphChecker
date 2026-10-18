@@ -132,13 +132,4 @@ public final class StartupOrder {
         }
         return marked;
     }
-
-    /** Test seam: a fresh run. */
-    static void resetForTests() {
-        synchronized (LOCK) {
-            marked = null;
-            PASSED.clear();
-            BEGUN.clear();
-        }
-    }
 }

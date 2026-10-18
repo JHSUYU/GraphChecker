@@ -84,8 +84,4 @@ public final class Sessions {
             ConcolicRegionRuntime.resumeObservation();
         }
     }
-
-    static void resetForTests() {
-        expirer = null;
-    }
 }

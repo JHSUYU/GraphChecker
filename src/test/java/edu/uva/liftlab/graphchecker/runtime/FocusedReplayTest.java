@@ -19,6 +19,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
@@ -30,6 +31,7 @@ import org.junit.rules.TemporaryFolder;
  * world; the forced target on its fatal arm is ADMITTED, one that closed
  * first or took its healthy arm FORCE_DIVERGED.
  */
+@RunWith(FreshStatics.class)
 public class FocusedReplayTest {
     private static final String FOCUS =
             "hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:"
@@ -57,7 +59,7 @@ public class FocusedReplayTest {
     @After
     public void reset() {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
-        RowRuntime.resetForTests();
+        FocusedReplay.resetForTests();
         RecordingWindow.reset();
     }
 

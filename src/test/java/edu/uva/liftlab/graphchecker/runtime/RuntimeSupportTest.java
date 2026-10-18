@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * The runtime's support pieces, each held to the run's determinism or its
@@ -30,14 +31,12 @@ import org.junit.Test;
  * weak identity tables, replay key pairs, run-only names, ambient handoff
  * keys, and the WIRE stores' lock order.
  */
+@RunWith(FreshStatics.class)
 public class RuntimeSupportTest {
     @Before
     @After
     public void reset() {
         Security.removeProvider("CausynthReplayKeys");
-        RunNames.resetForTests();
-        HandoffMint.resetForTests();
-        Interactions.resetForTests();
     }
 
     /**

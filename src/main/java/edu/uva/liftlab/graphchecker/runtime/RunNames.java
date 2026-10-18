@@ -63,9 +63,4 @@ final class RunNames {
     static synchronized boolean firstUnstated(String unnamed) {
         return UNSTATED.add(unnamed);
     }
-
-    static synchronized void resetForTests() {
-        spellings = RunSpellings.NONE;
-        UNSTATED.clear();
-    }
 }

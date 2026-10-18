@@ -26,12 +26,14 @@ import java.util.Set;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * An occurrence is (node, epoch, region, k-th activation) -- not a request.
  * The difference a request makes is still described; it does not withhold
  * the address.
  */
+@RunWith(FreshStatics.class)
 public class OccurrenceAddressIsNotARequestTest {
     private static final String PLAN_ROW =
             "plans/hdfs-17899-bug3-loop-body-producer.json";
@@ -51,7 +53,6 @@ public class OccurrenceAddressIsNotARequestTest {
      *  lineage: another test's must not leak into it. */
     @Before
     public void startFromNoIdentity() {
-        Identity.resetForTests();
         Lineage.resetForTests();
         RuntimeTraceContext.resetForTests();
     }
@@ -60,8 +61,6 @@ public class OccurrenceAddressIsNotARequestTest {
     public void clearRuntimeState() {
         SymbolicMessageEnvelope.clear();
         RuntimeTraceContext.resetForTests();
-        Interactions.resetForTests();
-        ScheduleLog.resetForTests();
     }
 
     /**
@@ -78,6 +77,7 @@ public class OccurrenceAddressIsNotARequestTest {
      * task keeping the one invocation it was admitted for.
      */
     @Test
+    @FreshStatics.Rows(2)
     public void theAddressIsTheOnlyAdmission() throws Exception {
         ConcolicTaskPlan.RuntimeTask task = handoffTask(3);
         assertTrue("the planned occurrence has an IN handoff",
@@ -106,15 +106,17 @@ public class OccurrenceAddressIsNotARequestTest {
                 + "planned "));
         Endpoint sender = producerAt(1);
         Endpoint resent = producerAt(2);
-        Interactions.sent("IPC", "corr-1", "REQUEST", sender);
-        Interactions.sent("IPC", "corr-2", "REQUEST", resent);
-        String onTheAnchor = anchoredTask(sender).addressDifference(
-                anchoredAddress(resent));
-        assertTrue(onTheAnchor, onTheAnchor.startsWith("differs in its "
-                + "anchor's producer site index (planned "
-                + sender.siteIndex().render() + ", ran "
-                + resent.siteIndex().render() + "); planned "));
-        Interactions.resetForTests();
+        if (FreshStatics.row() == 0) {
+            Interactions.sent("IPC", "corr-1", "REQUEST", sender);
+            Interactions.sent("IPC", "corr-2", "REQUEST", resent);
+            String onTheAnchor = anchoredTask(sender).addressDifference(
+                    anchoredAddress(resent));
+            assertTrue(onTheAnchor, onTheAnchor.startsWith("differs in its "
+                    + "anchor's producer site index (planned "
+                    + sender.siteIndex().render() + ", ran "
+                    + resent.siteIndex().render() + "); planned "));
+            return;
+        }
         String neverMinted = anchoredTask(sender).addressDifference(
                 anchoredAddress(resent));
         assertTrue(neverMinted, neverMinted.startsWith("differs in its "

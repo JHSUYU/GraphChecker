@@ -433,20 +433,6 @@ final class Provenance {
         return DECODES.get() > 0L;
     }
 
-    static void resetForTests() {
-        DECODED.clear();
-        DECODES.set(0L);
-        OBJECTS.set(0L);
-        NANOS.set(0L);
-        MAX_NANOS.set(0L);
-        BOUNDED.set(0L);
-        SHARED.set(0L);
-        STATED.clear();
-        UNREGISTERED.set(0L);
-        UNREGISTERED_SITES.clear();
-        SKIPPED.set(0L);
-    }
-
     /** Objects a decode reached that another version holds, holders built
      *  from two decodes, members it could not read (tests). */
     static long shared() {

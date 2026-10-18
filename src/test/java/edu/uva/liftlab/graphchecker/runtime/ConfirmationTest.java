@@ -21,6 +21,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
@@ -28,6 +29,7 @@ import org.junit.rules.TemporaryFolder;
  * are compared -- never enforced -- against what the run pairs and joins;
  * the views a world holds, and the order it is held to.
  */
+@RunWith(FreshStatics.class)
 public class ConfirmationTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -58,8 +60,6 @@ public class ConfirmationTest {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
         System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
         System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
-        RowRuntime.resetForTests();
-        RunNames.resetForTests();
     }
 
     /** Hands the replay a worker directory holding its focus row and these
@@ -111,16 +111,19 @@ public class ConfirmationTest {
     }
 
     @Test
+    @FreshStatics.Rows(2)
     public void theEdgesAreComparedAndNeverEnforced() throws Exception {
-        // A replay handed no edges compares nothing.
-        Path plain = folder.newFolder("plain").toPath()
-                .resolve("execution_task_plan.jsonl");
-        Files.write(plain, new byte[0]);
-        System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
-        assertEquals("", Confirmation.attached(endpoint(ANCHOR, "x"),
-                endpoint(MINT, "y"), null).mismatch);
-        assertTrue(Confirmation.close().isEmpty());
-        reset();
+        if (FreshStatics.row() == 0) {
+            // A replay handed no edges compares nothing.
+            Path plain = folder.newFolder("plain").toPath()
+                    .resolve("execution_task_plan.jsonl");
+            Files.write(plain, new byte[0]);
+            System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
+            assertEquals("", Confirmation.attached(endpoint(ANCHOR, "x"),
+                    endpoint(MINT, "y"), null).mismatch);
+            assertTrue(Confirmation.close().isEmpty());
+            return;
+        }
 
         Endpoint consumer = endpoint(ANCHOR, "XCH.1.resp.key-id");
         Endpoint chosen = endpoint(PRODUCER, "XCH.1.resp.key-id");
@@ -186,6 +189,7 @@ public class ConfirmationTest {
      * writers for one read are no model: neither is admitted.
      */
     @Test
+    @FreshStatics.Rows(5)
     public void anObligationReplayIsAdmittedOnlyOverItsPairing()
             throws Exception {
         Frame loop = Frame.of("<a.Detector: void run()>", 0);
@@ -209,32 +213,30 @@ public class ConfirmationTest {
             {null, 4L, 0L, false, "EDGES"},
             {Arrays.asList(initial, anyTurnState(guard, WRITER.id())), 4L,
                 0L, false, "STATE_CONFLICT"}};
-        for (Object[] row : table) {
-            @SuppressWarnings("unchecked")
-            List<String> edges = (List<String>) row[0];
-            handed(Fixtures.focusRow(ANCHOR, "'obligationId':'OBL.1',"
-                    + "'pathId':'p1','flip':{'siteId':'" + flipped + "',"
-                    + "'ordinal':1,'outcome':true},'pairings':{'"
-                    + Confirmation.id(guard) + "':'" + Confirmation.INITIAL
-                    + "'}") + "\n", edges);
-            FocusedReplay.observeDecision(READER, flipped, 1, true);
-            Confirmation.wrote(cell, 4L, first, true);
-            Confirmation.wrote(cell, 5L, WRITER, false);
-            Confirmation.read(guard, cell, (Long) row[1],
+        Object[] row = table[FreshStatics.row()];
+        @SuppressWarnings("unchecked")
+        List<String> edges = (List<String>) row[0];
+        handed(Fixtures.focusRow(ANCHOR, "'obligationId':'OBL.1',"
+                + "'pathId':'p1','flip':{'siteId':'" + flipped + "',"
+                + "'ordinal':1,'outcome':true},'pairings':{'"
+                + Confirmation.id(guard) + "':'" + Confirmation.INITIAL
+                + "'}") + "\n", edges);
+        FocusedReplay.observeDecision(READER, flipped, 1, true);
+        Confirmation.wrote(cell, 4L, first, true);
+        Confirmation.wrote(cell, 5L, WRITER, false);
+        Confirmation.read(guard, cell, (Long) row[1],
+                ReadRow.UNKNOWN_VERSION);
+        if ((Long) row[2] > 0L) {
+            Confirmation.read(limit, cell, (Long) row[2],
                     ReadRow.UNKNOWN_VERSION);
-            if ((Long) row[2] > 0L) {
-                Confirmation.read(limit, cell, (Long) row[2],
-                        ReadRow.UNKNOWN_VERSION);
-            }
-            ObligationResult result = FocusedReplay.results("s").get(0);
-            boolean admitted = (Boolean) row[3];
-            assertEquals(result.detail(), admitted ? Verdict.ADMITTED
-                    : Verdict.NOT_ADMITTED, result.verdict());
-            assertEquals(result.detail(), !admitted, result.detail()
-                    .startsWith("PAIRING_UNTAKEN: ")
-                    && result.detail().contains((String) row[4]));
-            reset();
         }
+        ObligationResult result = FocusedReplay.results("s").get(0);
+        boolean admitted = (Boolean) row[3];
+        assertEquals(result.detail(), admitted ? Verdict.ADMITTED
+                : Verdict.NOT_ADMITTED, result.verdict());
+        assertEquals(result.detail(), !admitted, result.detail()
+                .startsWith("PAIRING_UNTAKEN: ")
+                && result.detail().contains((String) row[4]));
     }
 
     private static String anyTurnState(Endpoint reader, String writer) {
@@ -246,21 +248,21 @@ public class ConfirmationTest {
      *  none, so its close says so -- a half-written file or a missing one --
      *  and the fatal alone confirms nothing (it used to, silently). */
     @Test
+    @FreshStatics.Rows(2)
     public void aConfirmationWithoutItsEdgesIsAMismatch() throws Exception {
         String confirming = "{\"taskId\":\"CONFIRM\",\"obligationId\":"
                 + "\"CONFIRM\",\"pathId\":\"p1\",\"flip\":null}\n";
-        for (List<String> edges : Arrays.asList(Arrays.asList(
-                "{'kind':'WIRE','consumer'"), (List<String>) null)) {
-            reset();
-            handed(confirming, edges);
-            List<String> close = Confirmation.close();
-            assertEquals(close.toString(), 1, close.size());
-            assertTrue(close.get(0), edges != null
-                    ? close.get(0).startsWith("EDGES: ")
-                    && close.get(0).contains("could not be read")
-                    : close.get(0).startsWith("EDGES: this CONFIRM run found"
-                    + " no readable " + Confirmation.FILE));
-        }
+        List<String> edges = Arrays.asList(Arrays.asList(
+                "{'kind':'WIRE','consumer'"), (List<String>) null)
+                .get(FreshStatics.row());
+        handed(confirming, edges);
+        List<String> close = Confirmation.close();
+        assertEquals(close.toString(), 1, close.size());
+        assertTrue(close.get(0), edges != null
+                ? close.get(0).startsWith("EDGES: ")
+                && close.get(0).contains("could not be read")
+                : close.get(0).startsWith("EDGES: this CONFIRM run found"
+                + " no readable " + Confirmation.FILE));
     }
 
     /** The ORDER a CONFIRM run is held to: the reader's activation enters

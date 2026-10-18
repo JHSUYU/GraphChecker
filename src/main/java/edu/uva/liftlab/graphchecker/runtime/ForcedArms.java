@@ -315,17 +315,4 @@ final class ForcedArms {
                     sessionId, verdictDetail());
         }
     }
-
-    static void resetForTests() {
-        synchronized (LOCK) {
-            armed = 0L;
-            disarmed = 0L;
-            entered = false;
-            forcedFrom = 0L;
-            target = "";
-            ended = "";
-            unwound = "";
-            diverged = "";
-        }
-    }
 }

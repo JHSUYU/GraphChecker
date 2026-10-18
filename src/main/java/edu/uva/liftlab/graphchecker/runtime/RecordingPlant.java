@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
@@ -188,15 +187,6 @@ public final class RecordingPlant {
             new ThreadLocal<Object[]>();
 
     private RecordingPlant() {
-    }
-
-    static void resetForTests() {
-        PLACES.set(0L);
-        CLOCKED.clear();
-        STATED.clear();
-        INVOCATIONS.clear();
-        NodeClocks.reset();
-        gaveWay = false;
     }
 
     /**

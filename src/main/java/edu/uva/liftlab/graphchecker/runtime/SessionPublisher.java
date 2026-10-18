@@ -349,13 +349,4 @@ public final class SessionPublisher {
             }
         }
     }
-
-    public static void resetForTests() {
-        synchronized (LOCK) {
-            for (SessionPublisher publisher : SESSIONS.values()) {
-                publisher.close();
-            }
-            SESSIONS.clear();
-        }
-    }
 }

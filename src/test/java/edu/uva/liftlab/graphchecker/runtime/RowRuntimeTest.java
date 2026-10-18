@@ -35,12 +35,14 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
  * The runtime half of the contract: the lineage an activation is addressed by,
  * and the rows one session publishes.
  */
+@RunWith(FreshStatics.class)
 public class RowRuntimeTest {
     @Rule
     public final TemporaryFolder iteration = new TemporaryFolder();
@@ -51,7 +53,6 @@ public class RowRuntimeTest {
     @Before
     public void reset() {
         RuntimeTraceContext.resetForTests();
-        RowRuntime.resetForTests();
     }
 
     @After
@@ -59,9 +60,7 @@ public class RowRuntimeTest {
         // A test's exchange and levels are its own: left standing, the
         // thread's next test sent in them.
         MessageDoors.endInbound();
-        Identity.resetForTests();
         RuntimeTraceContext.resetForTests();
-        RowRuntime.resetForTests();
         Fixtures.set(ConcolicTaskPlan.class, "plan", null);
         Fixtures.set(MessageDoors.class, "chain", null);
     }
@@ -265,7 +264,6 @@ public class RowRuntimeTest {
         Fixtures.set(ConcolicTaskPlan.class, "plan", new ConcolicTaskPlan(
                 null, Collections.<ConcolicTaskPlan.RuntimeTask>emptyList()));
         openSession();
-        Identity.resetForTests();
         Lineage.resetForTests();
         Object nameNode = new Object();
         RuntimeTraceContext.registerSource(nameNode, NN);

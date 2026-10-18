@@ -13,12 +13,14 @@ import java.util.Set;
 import java.util.function.Function;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Where work stands ({@link Identity}): a claimed start, the frames a task
  * runs on, a hop's scope root, the window's counts, and the occurrence
  * unnamed work opens.
  */
+@RunWith(FreshStatics.class)
 public class IdentityTest {
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "SOLR_NODE", "t/node0", 0L);
@@ -31,9 +33,7 @@ public class IdentityTest {
     @Before
     public void reset() {
         RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
         Lineage.resetForTests();
-        ScheduleLog.resetForTests();
         RecordingWindow.reset();
     }
 

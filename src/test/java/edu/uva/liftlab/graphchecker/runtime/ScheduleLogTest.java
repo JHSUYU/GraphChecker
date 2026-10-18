@@ -31,12 +31,14 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * The schedule: what the recorder writes, and how the turnstile holds a
  * replay to a prefix -- order, timeout, release, and an interrupt that is the
  * workload's and not a divergence.
  */
+@RunWith(FreshStatics.class)
 public class ScheduleLogTest {
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
@@ -60,8 +62,6 @@ public class ScheduleLogTest {
     @Before
     public void reset() {
         RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        ScheduleLog.resetForTests();
         openRequest();
         RecordingWindow.open();
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
@@ -78,23 +78,13 @@ public class ScheduleLogTest {
     /** A fresh schedule, written into {@link #written} again. */
     private void restart() {
         written.clear();
-        ScheduleLog.resetForTests();
         ScheduleLog.install(writer);
-    }
-
-    /** A fresh schedule and publication account. */
-    private void fresh() {
-        restart();
-        Confirmation.resetForTests();
     }
 
     @After
     public void tearDown() {
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
-        Confirmation.resetForTests();
-        ScheduleLog.resetForTests();
-        StartupOrder.resetForTests();
         if (request != 0L) RuntimeTraceContext.endRequest(request);
     }
 
@@ -148,16 +138,24 @@ public class ScheduleLogTest {
      * gives way after it.
      */
     @Test
+    @FreshStatics.Rows(2)
     public void aPlantedRunHoldsTheRealizedOrder() throws Exception {
         Object other = new Object();
         RuntimeTraceContext.registerSource(other, new SourceRef(
                 "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
-        runBoth(other, 0L);
-        List<ScheduleEvent> free = events();
-        assertEquals(SEND, free.get(0).kind());
-        String ours = free.get(0).context();
-        String theirs = free.get(1).context();
-        restart();
+        String contexts = "graphchecker.test.schedule.contexts";
+        if (FreshStatics.row() == 0) {
+            runBoth(other, 0L);
+            List<ScheduleEvent> free = events();
+            assertEquals(SEND, free.get(0).kind());
+            System.setProperty(contexts, free.get(0).context() + "\n"
+                    + free.get(1).context());
+            return;
+        }
+        String[] free = System.getProperty(contexts).split("\n");
+        System.clearProperty(contexts);
+        String ours = free[0];
+        String theirs = free[1];
         // Ours waits for theirs; a second of ours for an event never made.
         Path plant = Files.createTempFile("plant", ".jsonl");
         Files.write(plant, Arrays.asList(
@@ -178,7 +176,6 @@ public class ScheduleLogTest {
             assertTrue(RecordingPlant.orderGaveWay());
         } finally {
             System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
-            RecordingPlant.resetForTests();
             Files.delete(plant);
         }
     }
@@ -243,7 +240,6 @@ public class ScheduleLogTest {
                 SessionReader.readSchedule(file));
         Files.delete(file);
 
-        ScheduleLog.resetForTests();
         written.clear();
         ScheduleLog.observe(START, "<A: void a()>#u1");
         send("HADOOP_IPC#REQUEST");
@@ -317,7 +313,6 @@ public class ScheduleLogTest {
     @Test
     public void aViewsPublicationIsHeldAtItsPlaceByTheNodesPublisher()
             throws Exception {
-        Confirmation.resetForTests();
         String path = "/collections/c/state.json";
         String site = ScheduleEvent.published("SOLR_ZK", path, 8L);
         enforce(Arrays.asList(event(SEND, "before"), publish(VIEW_NODE, site),
@@ -349,7 +344,7 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList("before", site, "after"), sites());
         progress(" 0 given up");
 
-        fresh();
+        restart();
         String next = ScheduleEvent.published("SOLR_ZK", path, 9L);
         assertFalse("no order: in force at once", door(view, 9L,
                 () -> send("inside"), next));
@@ -367,7 +362,6 @@ public class ScheduleLogTest {
      */
     @Test(timeout = 30000L)
     public void aNewerVersionsDoorKeepsAnOlderOneInFlight() throws Exception {
-        Confirmation.resetForTests();
         enforce(Arrays.asList(publish(VIEW_NODE, V8), publish(VIEW_NODE, V9),
                 event(SEND, "after")));
         List<String> applied = applied();

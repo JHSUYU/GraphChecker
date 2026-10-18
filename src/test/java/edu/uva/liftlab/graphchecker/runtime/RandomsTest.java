@@ -5,12 +5,12 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Random;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * What a draw is keyed by (SYMBOL-SCOPE §4.5): inside the window its schedule
@@ -18,6 +18,7 @@ import org.junit.Test;
  * counts restart at each window, and a region woven around a draw moves
  * nothing.
  */
+@RunWith(FreshStatics.class)
 public class RandomsTest {
     private static final String SITE =
             "<o.a.h.hdfs.server.datanode.DataNode: java.lang.String"
@@ -26,10 +27,8 @@ public class RandomsTest {
     @Before
     @After
     public void freshRun() {
-        Identity.resetForTests();
         RuntimeTraceContext.resetForTests();
         RecordingWindow.reset();
-        Randoms.resetForTests();
     }
 
     @Test
@@ -54,14 +53,20 @@ public class RandomsTest {
      * bound), and a bad bound refused.
      */
     @Test
+    @FreshStatics.Rows(2)
     public void aSiteKeyedDrawRepeatsInEveryPassWithinItsBounds() {
-        List<Long> passes = new java.util.ArrayList<>();
-        for (int pass = 0; pass < 2; pass++) {
-            freshRun();
-            Random drawn = Randoms.at(SITE);
-            passes.add(Randoms.nextLong(drawn, 1L << 40));
+        String firstRun = "graphchecker.test.randoms.first";
+        long draw = Randoms.nextLong(Randoms.at(SITE), 1L << 40);
+        if (FreshStatics.row() == 0) {
+            System.setProperty(firstRun, Long.toString(draw));
+        } else {
+            try {
+                assertEquals(Long.parseLong(System.getProperty(firstRun)),
+                        draw);
+            } finally {
+                System.clearProperty(firstRun);
+            }
         }
-        assertEquals(passes.get(0), passes.get(1));
         Random drawn = Randoms.at(SITE);
         for (int i = 0; i < 100; i++) {
             int one = Randoms.nextInt(drawn, -3, 4);

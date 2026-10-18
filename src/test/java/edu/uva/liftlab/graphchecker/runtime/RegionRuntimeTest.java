@@ -13,7 +13,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -31,6 +30,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
@@ -39,6 +39,7 @@ import org.junit.rules.TemporaryFolder;
  * writes, the target reach, loop budgets, folds, abandonment, the end of a
  * run, a doors-only occurrence's pause, and an expression read as a DAG.
  */
+@RunWith(FreshStatics.class)
 public class RegionRuntimeTest {
     private static final String METHOD = "<a.B: void run(int)>";
     private static final String DECLARED = METHOD + "#u4";
@@ -56,9 +57,7 @@ public class RegionRuntimeTest {
 
     @Before
     public void reset() {
-        Identity.resetForTests();
         Lineage.resetForTests();
-        RowRuntime.resetForTests();
         RuntimeTraceContext.resetForTests();
         set(ConcolicVmBroker.class, "engineApi", null);
     }
@@ -73,9 +72,7 @@ public class RegionRuntimeTest {
         threadLocal("OBSERVATION_PAUSE_DEPTH").remove();
         set(ConcolicVmBroker.class, "engineApi", null);
         set(ConcolicTaskPlan.class, "plan", null);
-        Identity.resetForTests();
         Lineage.resetForTests();
-        RowRuntime.resetForTests();
     }
 
     /** REGION.1 on dn0 rooted at {@link #METHOD}, its branches woven. */
@@ -119,18 +116,17 @@ public class RegionRuntimeTest {
      * field only its construction stores is no guarded store.
      */
     @Test
+    @FreshStatics.Rows(2)
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
-        for (Object decision : new Object[] {binary(true),
-                multiway("0,1,2", 1)}) {
-            assertEquals("rows=[{\"method\":\"" + METHOD + "\",\"occurrence\""
-                    + ":1,\"outcome\":true,\"rawPathConditionBaseline\":0,"
-                    + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
-                    + "\",\"unitIndex\":4}]\ntargetReach={\"kind\":"
-                    + "\"TARGET_REACH_EVENT\",\"occurrence\":1,\"outcome\":"
-                    + "true,\"siteId\":\"" + DECLARED + "\"}\n"
-                    + "returned=observation\n", publishes(decision));
-            releaseRegions();
-        }
+        Object decision = new Object[] {binary(true),
+                multiway("0,1,2", 1)}[FreshStatics.row()];
+        assertEquals("rows=[{\"method\":\"" + METHOD + "\",\"occurrence\""
+                + ":1,\"outcome\":true,\"rawPathConditionBaseline\":0,"
+                + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
+                + "\",\"unitIndex\":4}]\ntargetReach={\"kind\":"
+                + "\"TARGET_REACH_EVENT\",\"occurrence\":1,\"outcome\":"
+                + "true,\"siteId\":\"" + DECLARED + "\"}\n"
+                + "returned=observation\n", publishes(decision));
         JsonObject construction = writeSite("a.B#<init>()V", "", DECLARED);
         construction.addProperty("constructionOnly", true);
         GuardedStoreSites table = GuardedStoreSites.of(Arrays.asList(
@@ -198,9 +194,17 @@ public class RegionRuntimeTest {
             assertNull(ConcolicRegionRuntime.activeRegion());
             assertNull("admission was never asked: the fold never reached "
                     + "the engine", get(ConcolicVmBroker.class, "engineApi"));
+        } finally {
             ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
+        }
+    }
 
-            Identity.resetForTests();
+    /** The same region entered at a scope root: an occurrence of its own,
+     *  whose entry reaches admission. */
+    @Test
+    public void anUnfoldedEntryReachesAdmission() throws Exception {
+        installPlan();
+        try {
             Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
             Identity.enterFrame(METHOD + "#u0", null);
             Identity.occurrence(NODE, "REGION.2", true);

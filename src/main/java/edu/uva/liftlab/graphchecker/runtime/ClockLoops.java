@@ -79,8 +79,4 @@ final class ClockLoops {
         if (owner <= 0 || descriptor <= owner + 1) return "";
         return site.substring(0, descriptor);
     }
-
-    static void resetForTests() {
-        methods = Collections.emptySet();
-    }
 }

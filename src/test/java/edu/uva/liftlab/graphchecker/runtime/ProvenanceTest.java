@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import org.example.decoded.Decoded;
 import org.junit.After;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import java.util.List;
 
@@ -18,6 +19,7 @@ import static org.junit.Assert.assertSame;
  * leaves it its own; values, lambdas and an inner object's outer one are
  * none.
  */
+@RunWith(FreshStatics.class)
 public class ProvenanceTest {
     private static final String PATH = "/collections/t/state.json";
     private static final LocationId STATE = LocationId.of(LocationKind.STORE,
@@ -25,7 +27,6 @@ public class ProvenanceTest {
 
     @After
     public void reset() {
-        Provenance.resetForTests();
     }
 
     @Test

@@ -32,6 +32,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
@@ -40,6 +41,7 @@ import org.junit.rules.TemporaryFolder;
  * values calls return in the planted world, the agent that rewrites those
  * calls, and the plants a run cannot make real -- refused by name.
  */
+@RunWith(FreshStatics.class)
 public class RecordingPlantTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -56,9 +58,6 @@ public class RecordingPlantTest {
     @Before
     @After
     public void reset() {
-        RecordingPlant.resetForTests();
-        RowRuntime.resetForTests();
-        Sessions.resetForTests();
         Thread.interrupted();
     }
 

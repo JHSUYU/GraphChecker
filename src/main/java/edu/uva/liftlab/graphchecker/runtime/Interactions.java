@@ -268,13 +268,4 @@ public final class Interactions {
     private static final Bounded<Endpoint> MESSAGES = bounded();
     /** The same producers, by endpoint id: what an anchor names. */
     private static final Map<String, Endpoint> SENDERS = bounded();
-
-    /** Clears every store, taking the monitors in the declared order. */
-    public static synchronized void resetForTests() {
-        MESSAGES.clear();
-        SENDERS.clear();
-        InteractionRefusals.resetForTests();
-        DELIVERY.remove();
-        PRODUCERS.clear();
-    }
 }

@@ -44,6 +44,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
 /**
@@ -54,6 +55,7 @@ import org.junit.rules.TemporaryFolder;
  * only where this run can place the mint; a clock reading runs on from its
  * node's jumps.
  */
+@RunWith(FreshStatics.class)
 public class MintTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -98,8 +100,6 @@ public class MintTest {
     @Before
     public void clearRegistry() {
         RuntimeTraceContext.resetForTests();
-        RowRuntime.resetForTests();
-        NodeClocks.reset();
     }
 
     @After
@@ -107,7 +107,6 @@ public class MintTest {
         Fixtures.release();
         RuntimeTraceContext.resetForTests();
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
-        RowRuntime.resetForTests();
     }
 
     private Path root() {

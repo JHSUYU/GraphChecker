@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * THE attribution rule, one case per rule: an explicit scope, then the
@@ -24,6 +25,7 @@ import org.junit.Test;
  * when all fail; what a node's startup starts or creates is the node's; the
  * scope and window index a thread inherits.
  */
+@RunWith(FreshStatics.class)
 public class AttributionTest {
     private static final SourceRef NN =
             new SourceRef("CLUSTER_NODE", "NAMENODE", "t/nn0", 0L);
@@ -34,8 +36,6 @@ public class AttributionTest {
     @After
     public void reset() {
         RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        ScheduleLog.resetForTests();
         Lineage.resetForTests();
         RecordingWindow.reset();
     }

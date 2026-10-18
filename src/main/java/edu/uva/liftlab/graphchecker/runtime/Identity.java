@@ -1937,16 +1937,4 @@ public final class Identity {
             namedBy = 0L;
         }
     }
-
-    public static void resetForTests() {
-        CURRENT.remove();
-        STARTS.clear();
-        SERVING.clear();
-        CLOCK = UNAVAILABLE;
-        synchronized (ENGINE_TIES) {
-            ENGINE_TIES[0] = 0L;
-            ENGINE_TIES[1] = 0L;
-        }
-        FrameJournal.resetForTests();
-    }
 }

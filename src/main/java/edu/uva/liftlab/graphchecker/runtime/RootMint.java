@@ -74,12 +74,6 @@ final class RootMint {
     private RootMint() {
     }
 
-    static void resetForTests() {
-        CLOCK_READINGS.clear();
-        CONFIGURATIONS.clear();
-        NodeClocks.reset();
-    }
-
     /**
      * Whether a mint of configuration {@code rootId} that runs at {@code
      * value} may carry the root's symbol: the first mint of the root in this

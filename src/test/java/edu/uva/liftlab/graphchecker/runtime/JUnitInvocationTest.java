@@ -17,6 +17,7 @@ import java.util.stream.Stream;
 
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.params.Parameter;
@@ -35,6 +36,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * what is refused by name before anything of the test runs; and which
  * method the adapter may run as the named test ({@link JUnitLifecycle}).
  */
+@RunWith(FreshStatics.class)
 public class JUnitInvocationTest {
     private static final List<String> LOG = new ArrayList<>();
 
@@ -120,7 +122,6 @@ public class JUnitInvocationTest {
                 System.setProperty(ScheduleLog.PREFIX_PROPERTY, before);
             }
             Files.delete(order);
-            ScheduleLog.resetForTests();
         }
     }
 

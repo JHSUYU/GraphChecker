@@ -1750,38 +1750,4 @@ public final class Confirmation {
             ordering = BEFORE.isEmpty() && VIEW_HOLDS.isEmpty() ? 1 : 2;
         }
     }
-
-    public static void resetForTests() {
-        synchronized (LOCK) {
-            loaded = false;
-            ordering = 0;
-            BEFORE.clear();
-            VIEW_HOLDS.clear();
-            PLANTED.clear();
-            EXITED.clear();
-            OVERDUE.clear();
-            UNREALIZED.clear();
-            DEFERRED.clear();
-            PUBLISHERS.clear();
-            OWED.remove();
-            APPLYING.clear();
-            BLOCKED_NAMED.clear();
-            WAITING.clear();
-            ENDED_WAITING.clear();
-            RAN_ON.clear();
-            unread = "";
-            WIRE.clear();
-            STATE.clear();
-            VERSION.clear();
-            VIEW_AT.clear();
-            TURNS.clear();
-            TURNED.clear();
-            READ_TURNS.clear();
-            MINT.clear();
-            MINTED.clear();
-            ATTACHED.clear();
-            READ.clear();
-            WROTE.clear();
-        }
-    }
 }
