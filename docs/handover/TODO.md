@@ -149,18 +149,25 @@ GROW pipeline, the superstep/window walk, the parallel round, the live-set hold 
 last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (mvn with tests + the shell test,
 `analysis/solr-2026-10-18/int-gate3/`); system/solr = solr-int holds it and these docs.
 
-**C scheduler -- branch solr-stream2, worktree /bigtemp/vnr3ne/wt/gc-stream2, head dd0a1ce64.**
+**C scheduler -- branch solr-stream2, worktree /bigtemp/vnr3ne/wt/gc-stream2.**
 - Gated: 5acb7c73c (replays spread by most room per kind; a killed replay re-queued, never a verdict), 55dd258ab (the
   head chain: land at collection, gate over new sessions, GROW plan/weave beside the loop), bbe5940fd + c360f9608
   (multi-question solvers, start-another by the oldest queued wait), 489e7ec42 (z3 answers reused by query text in
-  `<iteration>/solved/`). 598 Java tests pass.
-- WIP dd0a1ce64 (compiles only): goal 4 (planner/solvers charged their measured need, the head host runs replays) and
-  goal 6 (a GROW re-run whose world is past max-world-depth no longer holds the fixed point; COMPOSE waits for its
-  paths' re-runs and havocs grown regions otherwise) -- no tests/docs yet.
-- Next: a clean full shell-suite run (from a /localtmp copy), fix goal 4, tests + docs for goal 6, then a canary of
-  solr-adhoc-13 alone. Goal 5's A/B timing (11.5 vs 62.6 s on a loaded lift11) needs a rerun on an idle host.
-- Traps: fixture manifests must state maxWorldDepth; STREAM-CAP is timing-sensitive; a fixture that never finds room
-  waits forever instead of failing.
+  `<iteration>/solved/`); solr-stream2-gated = 489e7ec42 + solr-int 5396683d6 (07e95b15c) + the review's fixes
+  (2adb77b2e: a remote replay set aside for memory is asked again; only whole z3 answers kept; a solver's memory end
+  fails none of its seat-mates; a re-run's session gated without the one it replaces, never swapped in ungated).
+  On solr-stream2 beyond it: goal 4 (the planner's host holds its measured need per round, the hold bounded,
+  OPTIMIZATIONS 1.36), goal 6 (a GROW re-run past the rounds' maxWorldDepth holds no fixed point, COMPOSE waits for
+  its paths' re-runs and frees the unstated reads of sessions whose re-run did not land, 1.37; a no-op while the
+  depth is unbounded), the fd keeper (1.38: a head step charged inside $(...) 10.0 -> 0.2 s), the control-plane
+  events (`stream_events.tsv`, read by `analysis/solr-2026-10-18/stream2/ctlplane.py <run dir>`), a reap that
+  freezes whole trees. Goal 5's A/B on idle lift05: no slowdown (1.35).
+- Next: run ctlplane.py on the integrated canary (the full pool). Solvers are still charged their corpus's estimate
+  at start (`campaign_solver_live_pct` 50 %, measured before compaction; the composer's heap reads the same
+  estimate, do_compose) and grown as measured -- re-measure a solver's live set after compaction before lowering it.
+- Traps: fixture manifests state maxWorldDepth (the planner stub's `stream_test_world_depth`); the planner stub
+  holds its reserve as the watcher would; the stream fixtures' gate stub keeps the gate's ledger (`test_gated`);
+  STREAM-CAP is timing-sensitive; never edit a script a running gate executes (NFS: "Stale file handle").
 
 **D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore, head ee0edfcb1.**
 - 32140c8bb merges compaction step 3 (built, tests not run); merge b4518df43 (step 4) next.
@@ -204,7 +211,7 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
 - Goal 2 (branch solr-replay-end, agent 4): DONE -- the need from the 90th percentile of the stream's peaks
   (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
   `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
-  there, at most half a host's ceiling; OPTIMIZATIONS 1.37, PIPELINE §7.7); the exit-3 path checked live on vm-force10.
+  there, at most half a host's ceiling; OPTIMIZATIONS 1.41, PIPELINE §7.7); the exit-3 path checked live on vm-force10.
 - Done (goal 3, branch solr-replay, VM commit 96214b520 + the decoder commit after it; image
   `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, smoke 73 OK): a session's read-out pages are one channel, each expression
   definition sent once, the tables numbered under the channel's lock (VM `VmExpressionChannel`,
@@ -217,7 +224,7 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
   closure before choosing what to send (about 0.2 s per 20 MB, natively); the decoding thread imports the tables in
   order, alone.
 - Goal 4 (branch solr-replay-end, agent 4): DONE -- a concolic replay ends at its window's close
-  (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.36); evidence
+  (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.40); evidence
   `analysis/solr-2026-10-18/replay-end/` (postclose2.py, cutclose.py + plan13.sh, closehalt.py, runs/).
 - Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
   offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full

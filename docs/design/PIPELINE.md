@@ -1720,7 +1720,11 @@ seed's REPLAY and bounds the CONFIRM by name (`campaign_replay_bounded`: its con
 `REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). Checked live on vm-force10 with
 the replay's heap overridden to 256 MB (`CAUSYNTH_WORKLOAD_JAVA_OPTS`): `Terminating due to
 java.lang.OutOfMemoryError`, exit 3, the run set aside under `ended-1`, `replay_again` naming the heap. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
-A host is taken for a start of a
+THE CONTROL PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
+time in it (the ledger's lock, the hosts' readings, the choice), each kind no host admitted in a pass,
+and each job's end as the head takes it; a peer states its start time (`campaign_peer_enter`'s "peer <host>
+at <epoch>" line, in the job's logs); `analysis/solr-2026-10-18/stream2/ctlplane.py` reads them with the
+workers' files (a replay's JVM exit, `workload_cores_x100`). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,
@@ -1985,6 +1989,27 @@ bound) is dropped: not swapped in, the exposing session stays (what it would hav
 in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
 failed the campaign).
 
+A RE-RUN NO OBLIGATION CAN COME FROM HOLDS NO FIXED POINT (`campaign_stream_offpath`,
+`campaign_stream_fixed_beside`): every round's manifest states the world depth its paths were cut by
+(`maxWorldDepth`, `ObligationFactory.Bounds`; Integer.MAX_VALUE unbounded), and a re-run whose world
+-- its focus row's own flip and the flips it inherited, as `ExploreCodec#readWorld` counts them -- holds
+more flips than that is off EXPLORE's critical path: no round ever cuts a path of its session
+(`ObligationFactory#candidates`). Unbounded, none is; only the owner's cap makes one. Once nothing is
+owed but such re-runs (`campaign_stream_idle offpath`), the exploration is at its FIXED_POINT beside
+them (SGF8-adhoc-07 at depth 0: 121 re-runs, 36 % of its replay-seconds, its last ~26 of 81 minutes
+re-runs alone), and COMPOSE waits only for the re-runs of the exposing sessions whose paths it composes
+(a target row at the declared occurrence, `campaign_stream_composes`; `stream_rerun_composed`), each
+landing as any re-run does, until none is owed (`campaign_stream_idle composed`) or the campaign's
+reserve is reached; a queued re-run of any other session is dropped at once, one running at the end.
+No round starts and no witness is attempted from then on (a stop is stated). A SESSION WHOSE RE-RUN
+DID NOT LAND -- dropped there, at a stop, never run (a GROW dropped at the end), or not finished -- and
+that is still in the corpus is named in `uncaptured_sessions.txt` (`campaign_stream_uncaptured`,
+`contract.SessionDir#UNCAPTURED`; none after a witness, whose claim is the accepted attempt's): it ran
+the grown regions uninstrumented, so COMPOSE frees what its reads saw that no write states
+(`Composer#statedReads`, `SmtLowering#freedUncaptured`, FREE and named) rather than holding it
+(over-approximated: an UNSAT stays sound, a false SAT is CONFIRM's), and `CompositionInputs` digests
+the file.
+
 One swap: the exposing session (that session alone: another ask's session of the obligation stays),
 named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
 files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
@@ -2115,16 +2140,27 @@ every round taken by then -- rounds taken between the attempt and its confirmati
 them -- so its claim may differ from the attempt's: `campaign_confirm` reuses the attempt's
 confirmation for the same model only, and replays CONFIRM for any other. THE PLANNER SERVICE (`campaign_stream_plan`): the
 round's lane starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
-what the planner starts at (`campaign_engine_start_mb`), its charge held for its life by the shell
-that holds it (`campaign_host_keep`, as a host solver's), grown as a watched JVM
-(`campaign_watch_workload`), the head's room marked busy while it runs on the head's host -- and asks
+its need for the round, its charge held for its life by the shell that holds it (`campaign_host_keep`, as a
+host solver's), grown as a watched JVM (`campaign_watch_workload`), the head's room marked busy while it runs
+on the head's host -- and asks
 the round of it on its host (`campaign_planner_ask`, through the remote worker script when it runs on
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
 PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): one started lower outgrew its
 heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
-collecting to its end (~17 min each). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+collecting to its end (~17 min each). ITS HOST HOLDS WHAT IT NEEDS, not the engine heap's footprint (at the
+Solr checks' 24576 MB a planner's 26.5 GB charge was its host's whole head ceiling, and its host ran no
+replay): before each round its need (`campaign_planner_need_mb`) -- its young generation whole (a fifth of the
+heap) and 1.25 times its old generation's need by its own rule below, the live set it stated beside its last
+round (`planner_live_mb`, `HeapWatch#peakSwept`) and 0.35 of the text of the round's sessions it has not read
+(a planner started anew: none measured, every session) -- is asked of its watcher, which holds it ahead of
+the JVM's growth (its reserve: a refusal ends nothing, the JVM's own growth is granted or ends it as any
+watched JVM's), and the round is asked once its host holds it, the shortfall meanwhile held among the
+head reservations of the planner's host (`campaign_planner_hold`); a host still short past
+`replay_timeout_s` and a margin (`campaign_planner_hold_max_s`: every replay running there when the wait
+began has ended, none started since) holds memory no start of the campaign holds, and the round fails
+EXPLORE by name. A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
 its own measure (`contract.HeapWatch#outgrown`)
 -- its old generation's live set at its highest since the last round (what it held after a full collection, as
 `HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the
@@ -2230,14 +2266,21 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped, a round planning or untaken dropped), and the stop is a DIAGNOSTIC row stating
-  what it left owed.
+  what it left owed. A REAP ENDS WHOLE TREES (`campaign_stream_reap`, `campaign_frozen_tree`): each
+  process is stopped as it is listed and the tree listed again until no new one appears, before
+  TERM, the kill grace and KILL, so nothing a job starts while it is listed outlives the end
+  reparented to init (a job forking every 10 ms: 19 of 47 of its processes outlived the old reap, 0
+  now).
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
   declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no head step running, no round planning,
-  untaken or owed, and the last round, over every answer, proposed and exposed nothing.
+  untaken or owed, and the last round, over every answer, proposed and exposed nothing -- but GROW
+  re-runs no obligation can come from (their worlds past the rounds' `maxWorldDepth`, §7.8), which
+  hold no fixed point: the exploration then ends once the re-runs of the paths COMPOSE composes have
+  landed, or at the campaign's reserve, the rest dropped and their sessions composed uncaptured.
 - **PLANNER_HEAP_EXCEEDED.** The planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),

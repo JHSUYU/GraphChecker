@@ -84,10 +84,33 @@ public final class SessionDir extends Value {
      * Absent, it is a corpus whose exploration has not started: none left.
      */
     public static Set<String> withdrawn(Path iteration) throws IOException {
+        return listed(iteration, WITHDRAWN);
+    }
+
+    /**
+     * The exposing sessions of an iteration's corpus whose GROW re-run did
+     * not land -- dropped, never run, or not finished -- one per line, beside
+     * it: written as the exploration ends, unless a witness ended it ({@code
+     * run_engine.sh campaign_stream_uncaptured}).  The regions GROW grew ran
+     * uninstrumented in each, so a version a read of it saw that no write row
+     * states may be such a region's write ({@code compose.Composer}: free,
+     * never held).
+     */
+    public static final String UNCAPTURED = "uncaptured_sessions.txt";
+
+    /** The sessions {@link #UNCAPTURED} names; absent, none. */
+    public static Set<String> uncaptured(Path iteration) throws IOException {
+        return listed(iteration, UNCAPTURED);
+    }
+
+    /** The sessions an iteration's list {@code file} names, one per line;
+     *  absent, none. */
+    private static Set<String> listed(Path iteration, String file)
+            throws IOException {
         Set<String> named = new HashSet<String>();
         List<String> lines;
         try {
-            lines = Files.readAllLines(iteration.resolve(WITHDRAWN),
+            lines = Files.readAllLines(iteration.resolve(file),
                     StandardCharsets.UTF_8);
         } catch (NoSuchFileException absent) {
             return named;
