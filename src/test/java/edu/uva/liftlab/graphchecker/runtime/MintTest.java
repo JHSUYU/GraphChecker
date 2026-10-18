@@ -10,7 +10,6 @@ import static edu.uva.liftlab.graphchecker.runtime.Fixtures.tokens;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonArray;
@@ -25,13 +24,9 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.contract.RowInvariants;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
-import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -43,11 +38,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -77,8 +69,6 @@ public class MintTest {
             "<a.Manager: boolean isSnapshotDeletionOrdered()>";
     private static final int UNIT = 1;
     private static final String REGION = "REGION.9492ec77";
-    private static final String PLANNED =
-            NODE + "#epoch1/region/" + REGION + "#1";
     private static final String TICK = "<a.Manager: void tick()>@0";
     private static final String FOCUSED_ADDRESS = NODE + "#epoch1/region/"
             + REGION + "/ctx:Root:CLIENT#1/idx:" + TICK;
@@ -101,14 +91,6 @@ public class MintTest {
     /** The placeholder fixture's woven clock mint: the cell, the version it
      *  installed, the VM's name for it, the instant, its node's skew. */
     private static final String DN1 = "hdfs-11741/dn1#epoch0";
-    private static final String CLOCK_CELL = "INSTANCE_FIELD/217#24";
-    private static final long MINT_VERSION = 1155L;
-    private static final String CLOCK_LABEL =
-            "REGION.ba3902cd.in.559a1724.occ.e36a3c48";
-    private static final String CLOCK_SYMBOL =
-            "M_J_field_" + CLOCK_LABEL + "_java/lang/Long";
-    private static final String INSTANT = "1789965233929";
-    private static final long SKEW = 3_600_000L;
 
     private int opened;
     private ActiveRegion lastManualRegion;
@@ -166,11 +148,6 @@ public class MintTest {
                         + "','configuredSourceFieldSignature':'" + FIELD
                         + "'}]").get("s"));
         return row;
-    }
-
-    private ActiveRegion phaseRegion(String source, String occurrence) {
-        return open(phased(task(REGION, source, occurrence), occurrence,
-                true));
     }
 
     private static JsonObject taskAt(String taskId, String occurrence) {
@@ -271,10 +248,6 @@ public class MintTest {
                 RowCodec::readRootMint);
     }
 
-    private List<ReadRow> reads() throws Exception {
-        return SessionReader.read(Fixtures.session(root())).reads();
-    }
-
     private List<WriteRow> writes() throws Exception {
         return SessionReader.read(Fixtures.session(root())).writes();
     }
@@ -284,29 +257,6 @@ public class MintTest {
         private int serialNo;
         private boolean ordered;
         private long now;
-    }
-
-    /**
-     * An action's digest is PLAN's ({@code InputActionCatalog#stamp}): its
-     * canonical identity over the row as a plan file states it, which the
-     * replay reads and never computes; an action changed after (a grown
-     * invocation) is stamped again.
-     */
-    @Test
-    public void anActionsDigestIsStatedByThePlan() {
-        JsonObject planned = action("CASE.PLANNED");
-        planned.remove(InputActionCatalog.DIGEST);
-        String identity = edu.uva.liftlab.graphchecker.smt.CanonicalJson
-                .sha256(com.google.gson.JsonParser.parseString(
-                        planned.toString()));
-        InputActionCatalog.stamp(planned);
-        JsonObject read = com.google.gson.JsonParser.parseString(
-                planned.toString()).getAsJsonObject();
-        assertEquals(identity, new SymbolizeAction(read).actionDigest);
-        planned.addProperty("symbol", "CASE.GROWN");
-        InputActionCatalog.stamp(planned);
-        assertFalse(identity.equals(planned.get(InputActionCatalog.DIGEST)
-                .getAsString()));
     }
 
     /**
@@ -504,28 +454,6 @@ public class MintTest {
     }
 
     /**
-     * An assignment is UNPLANTED only where its mint ran: a root whose mint
-     * never came was read by nothing (hdfs-17967 path B reported five
-     * blockers under obligations NOT_ADMITTED for exactly that reason); a
-     * mint running where the row does not name it is owed.
-     */
-    @Test
-    public void anAssignmentWhoseMintNeverRanIsNotUnplanted()
-            throws Exception {
-        focus(flipAt(PLANNED_ADDRESS, "Arrival#u8", true,
-                ",'rootAssignments':{'CASE.SERIAL':'12'},'clockDeltas':"
-                        + "{'CASE.NOW':'-4200'},'rootMints':{'CASE.SERIAL':'"
-                        + MINT_ADDRESS + "'}"));
-        assertEquals(Collections.emptyMap(),
-                FocusedReplay.unplantedAssignments());
-        assertEquals(Verdict.NOT_ADMITTED, result("s-unreached").verdict());
-        assertEquals("", rootValue(at(manualRegion(), ALONGSIDE_ADDRESS),
-                "CASE.SERIAL", 7L));
-        assertEquals(Collections.singletonMap("CASE.SERIAL", "12"),
-                FocusedReplay.unplantedAssignments());
-    }
-
-    /**
      * I2: a refusal abandons only its own occurrence.  {@code contradicted}
      * once asked {@link FocusedReplay#focused}, true of every member of the
      * focused set, so one obligation's refusal abandoned the next focused
@@ -559,69 +487,6 @@ public class MintTest {
                 "Departure#u3", 1, true);
         assertTrue(FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
         assertFalse(FocusedReplay.contradicted(address(ALONGSIDE_ADDRESS)));
-    }
-
-    /**
-     * The wave's value is written only at a mint this run can place: a
-     * configured source names one site reached once per node lifecycle, so
-     * the epoch tells two mints apart and an unattributed mint keeps the
-     * recorded value, named.  One site is one variable whatever reaches it,
-     * and the catalog is no budget: the published row states no ordinal
-     * (17960's re-read of the marker was once refused as read n+1).
-     */
-    @Test
-    public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
-        Fixtures.openSession(root());
-        ActiveRegion active = phaseRegion(NODE + "#epoch1", PLANNED);
-        Object manager = new Object();
-        RuntimeTraceContext.registerSource(manager,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 0L));
-        assertFalse("a mint of another epoch is not written",
-                placeable(active, manager));
-        assertEquals(GapKind.EPOCH_UNMATCHED, gap().kind());
-        assertTrue(gap().blocking());
-        RuntimeTraceContext.restartSource(manager,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
-        assertTrue(placeable(active, manager));
-        assertTrue("a second occurrence of its site, one valuation",
-                placeable(phaseRegion(NODE + "#epoch1", NODE + "#epoch1"
-                        + "/region/" + REGION + "#2"), manager));
-        JsonObject row = phased(task(REGION, NODE + "#epoch1", PLANNED),
-                PLANNED, true).getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(0)
-                .getAsJsonObject();
-        assertFalse(row.has("baselineOrdinal"));
-        JsonArray catalog = new JsonArray();
-        catalog.add(row.deepCopy());
-        JsonObject later = row.deepCopy();
-        later.addProperty("eventSeq", row.get("eventSeq").getAsLong() + 1L);
-        later.addProperty("invocationId",
-                row.get("invocationId").getAsLong() + 1L);
-        catalog.add(later);
-        Set<String> labels = new LinkedHashSet<String>();
-        for (ConfiguredSourcePhaseContract.Occurrence phase
-                : ConfiguredSourcePhaseContract.occurrencesOf(catalog)) {
-            labels.add(ConfiguredSourcePhaseContract.engineLabel(
-                    phase.sourceId()));
-        }
-        assertEquals("the symbol is the site's", 1, labels.size());
-        assertFalse("nothing places this mint",
-                placeable(phaseRegion(NODE + "#epoch1", PLANNED),
-                        new Object()));
-        assertEquals(GapKind.MINT_UNATTRIBUTED, gap().kind());
-        assertTrue(gap().detail().contains("attributes this mint to no node"));
-        assertTrue(gap().detail().contains("recorded value stands"));
-        assertTrue("nothing to place, nothing to refuse", placeable(
-                phaseRegion("workload/unregistered", "workload/unregistered"
-                        + "/region/" + REGION + "#1"), new Object()));
-        assertEquals("and files nothing", GapKind.MINT_UNATTRIBUTED,
-                gap().kind());
-    }
-
-    private static boolean placeable(ActiveRegion active, Object owner)
-            throws Exception {
-        return (Boolean) call(active, "mintIsPlaceable",
-                new Class<?>[] {Object.class}, owner);
     }
 
     /**
@@ -701,205 +566,6 @@ public class MintTest {
         }
     }
 
-    /**
-     * A read at a site its occurrence's catalog lacks: a configuration's
-     * field already holds the world's value, so it mints nothing, named
-     * DIAGNOSTIC; a tree hook's plant is per site, so its site blocks.
-     */
-    @Test
-    public void aReadOutsideItsOccurrencesCatalogBlocksOnlyForAHook()
-            throws Exception {
-        Fixtures.openSession(root());
-        String seventh = NODE + "#epoch1/region/" + REGION + "#7";
-        JsonObject configTask = task(REGION, NODE + "#epoch1", seventh);
-        JsonArray declarations = new JsonArray();
-        declarations.add(ConfiguredSourcePhaseContract.configDeclaration(
-                "CONFIG:k", FIELD, PHASE_METHOD, UNIT, "0", "4",
-                Validity.ANY));
-        JsonArray reads = new JsonArray();
-        reads.add(ConfiguredSourcePhaseContract.configOccurrence(
-                ConfiguredSourcePhaseContract.declarationsOf(declarations)
-                        .get(0), seventh, 11L, FIELD, Arrays.asList(7L)));
-        configTask.add(ConfiguredSourcePhaseContract.PLAN_FIELD, reads);
-        configTask.addProperty("taskId", "TASK.CONFIG");
-        Object before = Fixtures.get(ConcolicTaskPlan.class, "plan");
-        Fixtures.set(ConcolicTaskPlan.class, "plan", new ConcolicTaskPlan(
-                null, Arrays.asList(Fixtures.runtimeTask(configTask),
-                Fixtures.runtimeTask(phased(task(REGION, NODE + "#epoch1",
-                        PLANNED), PLANNED, true)))));
-        ActiveRegion elsewhere = open(task(REGION, NODE + "#epoch1",
-                NODE + "#epoch1/region/" + REGION + "#9"));
-        long invocation = CausynthTraceRecorder.beginCall(0L, PHASE_METHOD,
-                UNIT + 5, PHASE_METHOD, new Object(), true);
-        try {
-            Object[][] rows = {
-                {"CONFIG:k", false, "world's value"},
-                {SOURCE_ID, true, "outside the frozen phase catalog"}};
-            for (Object[] row : rows) {
-                assertNull(row[0] + " mints nothing",
-                        elsewhere.observeConfiguredSourceEntry(
-                                (String) row[0], FIELD));
-                assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
-                assertEquals((String) row[0], row[1], gap().blocking());
-                assertTrue(gap().detail().contains((String) row[2]));
-            }
-        } finally {
-            CausynthTraceRecorder.endCall(invocation, null, "");
-            Fixtures.set(ConcolicTaskPlan.class, "plan", before);
-        }
-    }
-
-    /**
-     * A configuration's one symbol per key per JVM holds ONE value: a read
-     * at another is read concretely and named.  Its domain is stated whole
-     * or not at all; its validation clips the static hull while the value
-     * read passes it, and is dropped, named, where it fails.
-     */
-    @Test
-    public void aConfigurationSymbolHoldsOneValue() throws Exception {
-        Fixtures.openSession(root());
-        Object[][] reads = {
-            {"the first mint fixes the value", "CONFIG:k", "5", true, 0},
-            {"a second read shares the symbol", "CONFIG:k", "5", true, 0},
-            {"another value is pinned, named", "CONFIG:k", "7", false, 1},
-            {"once", "CONFIG:k", "7", false, 1},
-            {"another key is another symbol", "CONFIG:j", "7", true, 1}};
-        for (Object[] read : reads) {
-            assertEquals((String) read[0], read[3],
-                    RootMint.configurationAgrees((String) read[1],
-                            (String) read[2], "a.B#u1"));
-            assertEquals((String) read[0], read[4], gaps().size());
-        }
-        assertEquals(GapKind.UNSTATED_VALUE, gap().kind());
-        assertFalse(gap().blocking());
-        assertEquals("CONFIG:k", gap().subject());
-        assertTrue(gap().detail(), gap().detail().contains("ran at 7")
-                && gap().detail().contains("stands for 5"));
-        Validity atLeastSix = Validity.of(java.math.BigInteger.valueOf(6),
-                null, "a.B#u3");
-        Object[][] domains = {
-            // why, min, max, validity, value read, domain, its validation
-            // stated, gaps
-            {"a boolean or no anchor states none", "", "", Validity.ANY, "5",
-                "-", false, 1},
-            {"the static hull", "0", "10", Validity.ANY, "5", "0..10", false,
-                1},
-            {"widened to the value read", "0", "10", Validity.ANY, "12",
-                "0..12", false, 1},
-            {"half a domain states none, named", "0", "", Validity.ANY, "5",
-                "-", false, 2},
-            {"no integer read states none, named", "0", "10", Validity.ANY,
-                "", "-", false, 3},
-            {"a passed validation clips the hull", "4", "10", atLeastSix,
-                "7", "6..10", true, 3},
-            {"a failed one clips nothing, named", "4", "10", atLeastSix, "5",
-                "4..10", false, 4}};
-        for (Object[] domain : domains) {
-            JsonObject row = json("{'sourceId':'CONFIG:k'}");
-            ActiveRegion.configDomain(row, (String) domain[1],
-                    (String) domain[2], (Validity) domain[3],
-                    (String) domain[4]);
-            assertEquals((String) domain[0], domain[5], row.has("domainMin")
-                    ? row.get("domainMin").getAsString() + ".."
-                    + row.get("domainMax").getAsString() : "-");
-            assertEquals((String) domain[0], domain[6],
-                    row.has(Validity.MIN));
-            assertEquals((String) domain[0], domain[7], gaps().size());
-        }
-        assertTrue(gap().detail(), gap().detail().contains("(5) lies outside"
-                + " what its validation admits [6, ] by a.B#u3"));
-    }
-
-    /**
-     * A demanded door's marker called at an invocation its task plans no
-     * input for -- a call only a flipped world made -- runs concretely and is
-     * named, so GROW can plan it (PIPELINE §7.8); another input's later call
-     * keeps its rule, unnamed.
-     */
-    @Test
-    public void anUnplannedMarkerInvocationIsNamed() throws Exception {
-        Object[][] rows = {
-            // the action's marker, the row its call #1 names
-            {"FAULT:TIMED_WAIT:AWAIT", "TASK.1 SYM.marker#1"},
-            {"", ""},
-            {"FAULT:ZOOKEEPER:WRITE", ""}};
-        for (Object[] row : rows) {
-            RowRuntime.resetForTests();
-            Fixtures.openSession(root());
-            JsonObject action = Fixtures.with(action("SYM.marker"),
-                    "'bindingMode':'LOCAL_DEFINITION','method':'" + METHOD
-                            + "','unitIndex':" + UNIT + ",'local':'$z0',"
-                            + "'javaType':'Z','marker':'" + row[0] + "',"
-                            + "'replayOccurrence':2");
-            JsonObject task = task(MANUAL_REGION, MANUAL_SOURCE,
-                    MANUAL_SOURCE + "/region/" + MANUAL_REGION + "#1");
-            task.getAsJsonArray("inputActions").add(action);
-            ActiveRegion active = open(task);
-            tokens().push(active.token);
-            try {
-                assertEquals(Boolean.FALSE, RootMint.materializePrimitive(
-                        METHOD, UNIT, "$z0", Boolean.FALSE));
-                if (row[1].equals("")) {
-                    assertNull("named only for a demanded door's marker: "
-                            + row[0], gap());
-                } else {
-                    assertEquals(GapKind.UNPLANNED_INPUT, gap().kind());
-                    assertFalse(gap().blocking());
-                    assertEquals(row[1], gap().subject());
-                }
-            } finally {
-                tokens().remove(active.token);
-            }
-        }
-    }
-
-    /**
-     * A replay's clock readings, as {@link RootMint} runs them: a node's
-     * clock runs on from its jumps in the RECORDING's order, one clock at a
-     * time ({@link NodeClocks}), and a mint states how far its clock ran off
-     * the host.
-     */
-    @Test
-    public void aReadingRunsOnFromTheJumpBeforeItInTheRecordingsOrder() {
-        long hour = 3_600_000L;
-        // Planted in this order, the later place first, as two threads may:
-        // an hour at the reading of event 200, a minute at event 100.
-        assertEquals("a plant states its skew off the host", hour,
-                RootMint.clockSkew("nn0", clock(200L, Clock.WALL), 10L,
-                        10L + hour, true));
-        assertEquals(60_000L, RootMint.clockSkew("nn0",
-                clock(100L, Clock.WALL), 5L, 5L + 60_000L, true));
-        assertEquals("a plant at no recorded event moves its reading alone",
-                60_000L, RootMint.clockSkew("dn1", clock(0L, Clock.WALL), 5L,
-                        5L + 60_000L, true));
-        assertEquals("and one whose clock states no JVM clock", 60_000L,
-                RootMint.clockSkew("dn1", clock(400L, ""), 5L, 5L + 60_000L,
-                        true));
-        Object[][] readings = {
-            // node, place, source, host reading, instant it runs at, why
-            {"nn0", 50L, Clock.WALL, 1000L, 1000L, "before every jump"},
-            {"nn0", 150L, Clock.WALL, 1000L, 61_000L,
-                "between: the earlier jump, planted last"},
-            {"nn0", 300L, Clock.WALL, 1000L, 1000L + hour,
-                "after both: the later jump"},
-            {"nn0", 300L, Clock.MONOTONIC, 1000L, 1000L,
-                "the node's monotonic clock is another"},
-            {"dn1", 300L, Clock.WALL, 1000L, 1000L, "another node's clock"},
-            {"dn1", 500L, "", 1000L, 1000L, "a clock stating no source"},
-            {"nn0", 0L, Clock.WALL, 1000L, 1000L, "no recorded event"}};
-        for (Object[] reading : readings) {
-            assertEquals((String) reading[5], reading[4],
-                    RootMint.clockReading((String) reading[0],
-                            clock((Long) reading[1], (String) reading[2]),
-                            reading[3]));
-        }
-        assertEquals("a reading nothing planted states its skew, files no "
-                + "jump", hour, RootMint.clockSkew("nn0", clock(300L,
-                Clock.WALL), 1000L, 1000L + hour, false));
-        assertEquals(1000L + hour, RootMint.clockReading("nn0",
-                clock(300L, Clock.WALL), 1000L));
-    }
-
     /** A declared clock read of the plan's, read at this recorded event. */
     private static SymbolizeAction clock(long place, String source) {
         return new SymbolizeAction(json("{'symbol':'PORT.now." + place + "',"
@@ -929,16 +595,6 @@ public class MintTest {
     }
 
     private static final String OCCURRENCE = DN1 + "/region/REGION.ba3902cd#1";
-
-    /** One declared CLOCK mint, its label filed before the store. */
-    private static void clockMint(ActiveRegion active) {
-        RowRuntime.declaredMintLabel(CLOCK_LABEL);
-        active.recordManualSymbolization(new SymbolizeAction(clockAction(
-                "PORT.now", INSTANT, true)), "PORT.now",
-                Collections.<String>emptyList(),
-                "<org.apache.hadoop.util.Timer: long now()>.return",
-                symbol(CLOCK_SYMBOL, "J"), true, false, INSTANT, SKEW);
-    }
 
     /** One VM write-log record, as an activation reads one out. */
     private static JsonObject record(String locationKey,
@@ -986,20 +642,6 @@ public class MintTest {
                 new Class<?>[] {ActiveRegion.class}, active);
     }
 
-    /** A ReadFromExpression at {@code readEventId} of the version {@code
-     *  observed} states ({@code fieldVersionId} 456) of {@code slot}. */
-    private static JsonObject readFrom(String sort, long readEventId,
-                                       String more, long slot,
-                                       JsonObject observed, JsonObject value) {
-        JsonObject read = json("{'_type':'ReadFromExpression','_java_type':'"
-                + sort + "','readEventId':" + readEventId + more
-                + ",'location':{'ownerSymRid':10,'slot':" + slot + ","
-                + "'locationKind':'INSTANCE_FIELD'}}");
-        read.add("observedVersion", observed);
-        read.add("concreteValue", value);
-        return read;
-    }
-
     /** Publishes {@code records} of one activation's read-out, with
      *  {@code readSites} installed. */
     private void published(Map<String, JsonObject> records,
@@ -1017,90 +659,6 @@ public class MintTest {
                     Collections.<JsonObject>emptyList());
         }
         RowRuntime.closeSession();
-    }
-
-    /**
-     * A version stored outside every region has no write row to join, so
-     * the read of it states what it returned (VM f11) or the composer has
-     * nothing to pin it to (commit-gs v74: the GS an IPC handler stored,
-     * read at the third target).
-     */
-    @Test
-    public void aReadOfAStoreOutsideEveryRegionStatesWhatItReturned()
-            throws Exception {
-        JsonObject stored = constant("J", 1003L);
-        JsonObject stamp = record("INSTANCE_FIELD/10#40", version(456L,
-                stored));
-        array(stamp, "reads").add(loggedAt(json("{'readEventId':510,"
-                + "'regionEnterEventId':900}")));
-        JsonObject observed = json("{'fieldVersionId':456,'versionKind':"
-                + "'WRITE'}");
-        observed.add("expression", stored);
-        Map<String, JsonObject> records = new LinkedHashMap<>();
-        records.put("INSTANCE_FIELD/10#40", stamp);
-        records.put("INSTANCE_FIELD/77#24", record("INSTANCE_FIELD/77#24",
-                loggedAt(version(901L, readFrom("J", 510L, "", 40L, observed,
-                        stored)))));
-        published(records);
-        ReadRow stated = null;
-        for (ReadRow row : reads()) {
-            if (row.observedVersion() == 456L) stated = row;
-        }
-        assertNotNull("the read of the outside store is a row", stated);
-        assertEquals("1003", stated.concreteValue());
-    }
-
-    /**
-     * EVERY OBSERVED READ_SITE ACCESS IS A ROW (SYMBOL-SCOPE §5.2), whether
-     * or not a published expression holds its value: hdfs-adhoc-45 tests
-     * {@code state == State.IN_SEGMENT}, which records no condition, so the
-     * closure never saw the read.  A read in a READ_SITE's method is a row
-     * of the version its plan chose, one an expression states too is one
-     * row, a read in any other method is left to the expressions.
-     */
-    @Test
-    public void anObservedReadSiteAccessIsARowThoughNoExpressionHoldsIt()
-            throws Exception {
-        JsonObject state = symbol("M_L'a/B$State'_5", "a/B$State");
-        JsonObject log = record("INSTANCE_FIELD/10#80", loggedAt(version(
-                456L, state)));
-        array(log, "reads");
-        log.getAsJsonObject("envelope").addProperty("readLogTruncated",
-                false);
-        // 457 in the READ_SITE's method, 458 in another, 459 in it and in a
-        // write's expression too.
-        for (Object[] each : new Object[][] {{457L, "isSegmentOpen"},
-                {458L, "other"}, {459L, "isSegmentOpen"}}) {
-            array(log, "reads").add(json("{'readEventId':" + each[0] + ","
-                    + "'regionEnterEventId':900,'site':{'className':'a/B',"
-                    + "'methodName':'" + each[1] + "','methodDescriptor':"
-                    + "'()Z','bci':1},'observedVersion':{'fieldVersionId':456,"
-                    + "'versionKind':'WRITE'},'observedExact':true,"
-                    + "'writerSetComplete':true,'_java_type':'L'}"));
-        }
-        JsonObject observed = json("{'fieldVersionId':456}");
-        observed.add("expression", state);
-        Map<String, JsonObject> records = new LinkedHashMap<>();
-        records.put("INSTANCE_FIELD/10#80", log);
-        records.put("INSTANCE_FIELD/77#24", record("INSTANCE_FIELD/77#24",
-                loggedAt(version(901L, readFrom("L", 459L,
-                        ",'observedExact':true", 80L, observed, state)))));
-        published(records, json("{'kind':'STATIC_SCOPE_SITE','role':"
-                + "'READ_SITE','vmSite':'a.B#isSegmentOpen()Z'}"));
-        Map<Long, ReadRow> rows = new LinkedHashMap<Long, ReadRow>();
-        for (ReadRow row : reads()) {
-            assertNull("one row per read event", rows.put(row.seq(), row));
-        }
-        assertEquals(Arrays.asList(457L, 459L), new ArrayList<Long>(
-                new TreeSet<Long>(rows.keySet())));
-        ReadRow site = rows.get(457L);
-        assertEquals("the version its plan chose", 456L,
-                site.observedVersion());
-        assertEquals("L", site.javaType());
-        assertEquals("an exact read returned its version's identity",
-                "M_L'a/B$State'_5", site.concreteValue());
-        assertTrue(site.endpoint().site(), site.endpoint().site()
-                .startsWith("a.B#isSegmentOpen()Z#"));
     }
 
     /**

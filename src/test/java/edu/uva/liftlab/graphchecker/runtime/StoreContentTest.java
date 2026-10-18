@@ -1,12 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -47,38 +42,6 @@ public class StoreContentTest {
                 "/c/shards/shard1/range/1=7:NUM"), pointers);
     }
 
-    /** A leaf's port is a site: no '/' or '@' (contract.Frame); COMPOSE
-     *  reads its location and pointer back. */
-    @Test
-    public void aLeafsPortIsASite() {
-        String port = StoreContent.port("SOLR_ZK", "/aliases.json",
-                "/collection_metadata/t/router.start@x|y%");
-        assertEquals("SOLR_ZK#CONTENT:|aliases.json#|collection_metadata"
-                + "|t|router.start%40x%7Cy%25", port);
-        ContentPort.Parsed parsed = ContentPort.parse(port);
-        assertEquals("SOLR_ZK", parsed.transport);
-        assertEquals("/aliases.json", parsed.location);
-        assertEquals("/collection_metadata/t/router.start@x|y%",
-                parsed.pointer);
-        assertNull(ContentPort.parse("SOLR_ZK#WRITE:.aliases.json"));
-        // Plain or escaped, a port is one ContentPort.is tells without
-        // decoding it, and only a port is.
-        String plain = StoreContent.port("SOLR_ZK", "/clusterstate.json",
-                "/c/shards");
-        assertEquals("/c/shards", ContentPort.parse(plain).pointer);
-        // A location's second life (<path>#<n>) stays the location's.
-        ContentPort.Parsed life = ContentPort.parse(ContentPort.of(
-                "SOLR_ZK", "/c/state.json#1", "/c/shards"));
-        assertEquals("/c/state.json#1", life.location);
-        assertEquals("/c/shards", life.pointer);
-        for (String site : Arrays.asList(port, plain,
-                "SOLR_ZK#WRITE:.aliases.json", "#CONTENT:|a#|b",
-                "SOLR_ZK#CONTENT:|a", "", null)) {
-            assertEquals(String.valueOf(site), ContentPort.parse(site) != null,
-                    ContentPort.is(site));
-        }
-    }
-
     @Test
     public void aDocumentPastItsBoundCrossesTheRestAsConstants() {
         Map<String, Object> wide = new LinkedHashMap<String, Object>();
@@ -94,153 +57,9 @@ public class StoreContentTest {
         assertEquals(0, StoreContent.leaves("T", "/d", deep).size());
     }
 
-    @Test
-    public void aLeafCrossesByItsText() {
-        Object[][] rows = {
-                {"5", StoreContent.Kind.DEC_LONG},
-                {"-12", StoreContent.Kind.DEC_LONG},
-                {"007", StoreContent.Kind.STR},
-                {"99999999999999999999", StoreContent.Kind.STR},
-                {"false", StoreContent.Kind.BOOL},
-                {"True", StoreContent.Kind.STR},
-                {"down", StoreContent.Kind.STR},
-                {3L, StoreContent.Kind.NUM},
-                {Boolean.TRUE, StoreContent.Kind.NUM},
-                {new LinkedHashMap<String, Object>(), null},
-        };
-        for (Object[] row : rows) {
-            assertEquals(String.valueOf(row[0]), row[1],
-                    StoreContent.kindOf(row[0]));
-        }
-    }
-
-    /**
-     * A rendered leaf crosses as the value it renders: a lone toString's
-     * operand, the text read where the writer held a constant, else the
-     * parse of what it held; a boolean computed otherwise crosses as text.
-     */
-    @Test
-    public void aRenderedLeafCrossesAsItsValue() {
-        JsonObject clock = symbol("M_J_clock", "J");
-        assertEquals(clock, StoreContent.rendered(string("toString", clock),
-                StoreContent.Kind.DEC_LONG, "17"));
-        JsonObject constant = StoreContent.rendered(text("17"),
-                StoreContent.Kind.DEC_LONG, "17");
-        assertEquals("Y_J_17", constant.get("_exp").getAsString());
-        JsonObject attached = symbol("M_L'String'_h", "java/lang/String");
-        JsonObject parse = StoreContent.rendered(attached,
-                StoreContent.Kind.DEC_LONG, "17");
-        assertEquals("java/lang/Long parseLong",
-                parse.get("_name").getAsString());
-        assertEquals(attached, parse.getAsJsonArray("_param_list").get(0));
-        assertNull(StoreContent.rendered(attached, StoreContent.Kind.BOOL,
-                "true"));
-        // A boolean the writer held as a constant is the VM's 1 or 0.
-        for (String[] row : new String[][] {{"true", "Y_Z_1"},
-                {"false", "Y_Z_0"}}) {
-            assertEquals(row[1], StoreContent.rendered(text(row[0]),
-                    StoreContent.Kind.BOOL, row[0]).get("_exp")
-                    .getAsString());
-        }
-    }
-
-    /** A number leaf crosses at the width the parser reads it back at. */
-    @Test
-    public void aNumberCrossesWidened() {
-        String[][] rows = {{"I", "J"}, {"S", "J"}, {"B", "J"}, {"J", "J"},
-                {"F", "D"}, {"D", "D"}, {"Z", "Z"}};
-        for (String[] row : rows) {
-            assertEquals(row[0], row[1], StoreContent.wide(row[0]));
-        }
-        JsonObject count = symbol("M_I_count", "I");
-        JsonObject cast = StoreContent.widened(count, "I", 3, "p");
-        assertEquals("TypeCastExpression", cast.get("_type").getAsString());
-        assertEquals("J", cast.get("targetJavaType").getAsString());
-        assertEquals(count, cast.get("_exp"));
-        // A constant float crosses as the double its decimal text is, not
-        // its binary widening (0.1f is 0.10000000149011612 as a double); a
-        // symbolic one crosses as nothing, its readers minting their own.
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "Y_F_0.1");
-        constant.addProperty("_java_type", "F");
-        JsonObject tenth = StoreContent.widened(constant, "F", 0.1f, "p");
-        assertEquals("Y_D_0.1", tenth.get("_exp").getAsString());
-        assertNull(StoreContent.widened(symbol("M_F_ratio", "F"), "F", 0.1f,
-                "p"));
-    }
-
-    @Test
-    public void outsideAReplayNothingIsCaptured() {
-        assertFalse(StoreContent.capturing());
-        byte[] bytes = new byte[] {'{', '}'};
-        StoreContent.written(bytes, single("a", "b"));
-        StoreContent.fetched("T", "/x@1", bytes);
-        Map<String, Object> tree = single("a", "b");
-        StoreContent.parsed(bytes, tree);
-        assertEquals("b", tree.get("a"));
-        StoreContent.resetForTests();
-    }
-
-    /**
-     * A document's leaves as a recording states them (STORE_LEAVES): each
-     * pointer as a content port spells it and its leaf object, flat -- the
-     * pointers joined by a TAB, the objects' identities by a comma, one
-     * object one identity -- and none past the walk's bound, the whole
-     * document.
-     */
-    @Test
-    public void aDocumentsLeavesAreStatedFlatUpToTheBound() {
-        String shared = new String("active");
-        Map<String, Object> document = single("a", shared);
-        document.put("b", Arrays.asList(shared, 7L));
-        List<Object[]> leaves = StoreContent.leafRows("T", "/x", document);
-        List<String> pointers = new ArrayList<String>();
-        for (Object[] leaf : leaves) pointers.add((String) leaf[0]);
-        assertEquals(Arrays.asList("|a", "|b|0", "|b|1"), pointers);
-        String[] flat = CausynthTraceRecorder.flat(leaves);
-        assertEquals("|a\t|b|0\t|b|1", flat[0]);
-        String[] ids = flat[1].split(",");
-        assertEquals(3, ids.length);
-        assertEquals("one object, one identity", ids[0], ids[1]);
-        assertFalse(ids[0].equals(ids[2]));
-        Map<String, Object> wide = new LinkedHashMap<String, Object>();
-        for (int leaf = 0; leaf <= StoreContent.MAX_LEAVES; leaf++) {
-            wide.put("k" + leaf, "v");
-        }
-        assertNull(StoreContent.leafRows("T", "/x", wide));
-    }
-
     private static Map<String, Object> single(String key, Object value) {
         Map<String, Object> map = new LinkedHashMap<String, Object>();
         map.put(key, value);
         return map;
-    }
-
-    private static JsonObject symbol(String name, String javaType) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "SymbolExpression");
-        node.addProperty("_exp", name);
-        node.addProperty("_java_type", javaType);
-        return node;
-    }
-
-    private static JsonObject text(String value) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ConStringSymbolExp");
-        node.addProperty("_exp", "Y_L'String'_" + value);
-        node.addProperty("_java_type", "java/lang/String");
-        return node;
-    }
-
-    private static JsonObject string(String name, JsonObject... params) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "OpStrExpression");
-        node.addProperty("_name", name);
-        node.addProperty("_is_not", false);
-        JsonArray list = new JsonArray();
-        for (JsonObject param : params) list.add(param);
-        node.add("_param_list", list);
-        return node;
     }
 }

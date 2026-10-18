@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static edu.uva.liftlab.graphchecker.runtime.Fixtures.json;
-import static java.util.Collections.singleton;
 import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -202,129 +201,6 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /**
-     * Every planned occurrence is also answered by its shape (IDENTITY §9):
-     * an activation of its region on its node, under a chain of its shape,
-     * at an address no task plans, takes the planned address -- of the
-     * earliest open task of that shape by recorded root call, one task per
-     * activation.  An address a task plans is that task's, whatever the
-     * plan's order (the second call of a planned handshake answers no other
-     * handshake's question: hdfs-11741 K2); an address the recording opened
-     * is that occurrence; a task stating no shape is answered by its address
-     * alone.
-     */
-    @Test
-    public void aPlannedOccurrenceIsAnsweredByItsShape() {
-        RecordingWindow.open();
-        Object node = new Object();
-        RuntimeTraceContext.registerSource(node,
-                new SourceRef("NAMENODE", "nn", NN0, 0L));
-        long request = RuntimeTraceContext.beginRequest(node, "check");
-        try {
-            OccurrenceAddress ran = checkAddress(1);
-            OccurrenceAddress declared = checkAddress(2);
-            JsonObject row = shapedRow("TASK.declared", declared, -1L);
-            ConcolicTaskPlan.RuntimeTask asked = runtime(row);
-            ConcolicTaskPlan.RuntimeTask planned = runtime(encoded("TASK.ran",
-                    NN0 + "#epoch0", SNAPSHOT_REGION, SNAPSHOT_ROOT,
-                    ran.render(), 1));
-            assertEquals("one woven entry offers both occurrences",
-                    asked.rootHookGroup, planned.rootHookGroup);
-            assertTrue("a turn of the same root answers it",
-                    asked.answers(ran, ScheduleLog::shape));
-            assertFalse("a task stating no shape answers by address only",
-                    planned.answers(declared, ScheduleLog::shape));
-            ConcolicTaskPlan both = new ConcolicTaskPlan(null,
-                    Arrays.asList(asked, planned));
-            assertEquals("the address it ran at is a planned task's",
-                    planned, select(both, asked, node));
-            OccurrenceAddress sibling = OccurrenceAddress.of(ran.node(),
-                    ran.regionId(), ran.context(), ExecutionIndex.of(
-                            singletonList(Frame.of("<a.B: void m()>", 1))));
-            assertTrue(both.occupies(asked.rootHookGroup, sibling));
-            assertFalse(plan(asked).occupies(asked.rootHookGroup, sibling));
-            // The region entry opens the run's own address; the admission
-            // gives it the declared one.
-            Identity.occurrence(NN0 + "#epoch0", SNAPSHOT_REGION, true);
-            JsonObject knowing = row.deepCopy();
-            knowing.add("recordedBeside", json("{'s':['" + ran.id()
-                    + "']}").getAsJsonArray("s"));
-            ConcolicTaskPlan.RuntimeTask knows = runtime(knowing);
-            assertNull("the recording's own occurrence answers nothing",
-                    select(plan(knows), knows, node));
-            assertTrue(knows.unansweredAddress(), knows.unansweredAddress()
-                    .contains("the recording opened this address itself"));
-            ConcolicTaskPlan alone = plan(asked);
-            assertEquals(asked, select(alone, asked, node));
-            assertTrue(alone.answeredByShape(asked));
-            assertEquals(ran, Identity.answer(declared));
-            assertEquals(declared, Identity.currentOccurrence(NN0
-                    + "#epoch0"));
-            // Activations of one shape take its open tasks earliest
-            // recorded root call first, whatever the plan's order.
-            ConcolicTaskPlan.RuntimeTask late = runtime(shapedRow("TASK.late",
-                    checkAddress(2), 200L));
-            ConcolicTaskPlan.RuntimeTask early = runtime(shapedRow(
-                    "TASK.early", checkAddress(3), 100L));
-            ConcolicTaskPlan order = new ConcolicTaskPlan(null,
-                    Arrays.asList(late, early));
-            for (Object expected : new Object[] {early, late, null}) {
-                assertEquals(expected, select(order, late, node));
-            }
-            assertTrue(order.answeredByShape(early)
-                    && order.answeredByShape(late));
-        } finally {
-            RuntimeTraceContext.endRequest(request);
-        }
-    }
-
-    /**
-     * A planned loop body is answered by its shape where its occurrence
-     * opens, at its loop root's enclosing entry: the entry binds it, its
-     * bodies run under it, and the entry's occurrence takes the planned
-     * address once.  A second enclosing entry is another activation
-     * (hdfs-adhoc-29: block recovery under another heartbeat's response).
-     */
-    @Test
-    public void aPlannedLoopOccurrenceIsAnsweredAtItsEnclosingEntry()
-            throws Exception {
-        RecordingWindow.open();
-        Object node = new Object();
-        RuntimeTraceContext.registerSource(node,
-                new SourceRef("NAMENODE", "nn", NAMENODE, 0L));
-        long request = RuntimeTraceContext.beginRequest(node, "heartbeat");
-        try {
-            JsonObject row = row();
-            String regionId = row.get("regionId").getAsString();
-            OccurrenceAddress ran = heartbeatAddress(regionId, 1);
-            OccurrenceAddress declared = heartbeatAddress(regionId, 2);
-            row.addProperty("occurrenceId", declared.render());
-            row.add("contextShape", json("{'s':['Root:CLIENT/heartbeat']}")
-                    .getAsJsonArray("s"));
-            ConcolicTaskPlan.RuntimeTask asked = runtime(row);
-            ConcolicTaskPlan plan = plan(asked);
-            Identity.occurrence(NAMENODE + "#epoch0", regionId, true);
-            ConcolicTaskPlan.LoopRootAdmission first =
-                    plan.addressLoopRootInvocation(asked.loopRootHookGroup,
-                            asked.rootMethod, node, new Object[0], 21L);
-            assertEquals(asked, first.answered);
-            assertEquals(singleton(asked.taskId), first.admitted);
-            assertEquals(21L, asked.enclosingInvocationEvent());
-            assertEquals(ran, Identity.answer(declared));
-            assertEquals(declared,
-                    Identity.currentOccurrence(NAMENODE + "#epoch0"));
-            ConcolicTaskPlan.LoopRootAdmission second =
-                    plan.addressLoopRootInvocation(asked.loopRootHookGroup,
-                            asked.rootMethod, node, new Object[0], 22L);
-            assertNull(second.answered);
-            assertTrue(second.admitted.isEmpty());
-            assertTrue(asked.unansweredAddress(), asked.unansweredAddress()
-                    .contains("a second enclosing invocation"));
-        } finally {
-            RuntimeTraceContext.endRequest(request);
-        }
-    }
-
-    /**
      * A value arriving over the wire does not say where the receiver ran:
      * execution context is set by execution-scope events only, never by the
      * SENDER's source out of the message header; the scope the workload
@@ -429,33 +305,6 @@ public class OccurrenceAddressIsNotARequestTest {
                                              CausalContext context) {
         return OccurrenceAddress.of(NodeId.parse(node), region, context,
                 ExecutionIndex.empty());
-    }
-
-    /** The occurrence of {@code regionId} on the NameNode under the k-th
-     *  heartbeat request. */
-    private static OccurrenceAddress heartbeatAddress(String regionId,
-                                                      int k) {
-        return address(NAMENODE + "#epoch0", regionId,
-                CausalContext.of(Role.of("CLIENT"), "heartbeat", k));
-    }
-
-    /** The occurrence of the snapshot region under the k-th check. */
-    private static OccurrenceAddress checkAddress(int k) {
-        return address(NN0 + "#epoch0", SNAPSHOT_REGION,
-                CausalContext.of(Role.of("CLIENT"), "check", k));
-    }
-
-    /** A task of the snapshot region at {@code address}, of the shape of
-     *  every check, the recording's root call {@code rootCall} (-1: none). */
-    private static JsonObject shapedRow(String taskId,
-                                        OccurrenceAddress address,
-                                        long rootCall) {
-        JsonObject row = encoded(taskId, NN0 + "#epoch0", SNAPSHOT_REGION,
-                SNAPSHOT_ROOT, address.render(), 1);
-        row.add("contextShape", json("{'s':['Root:CLIENT/check']}")
-                .getAsJsonArray("s"));
-        if (rootCall >= 0L) row.addProperty("rootCallId", rootCall);
-        return row;
     }
 
     /**

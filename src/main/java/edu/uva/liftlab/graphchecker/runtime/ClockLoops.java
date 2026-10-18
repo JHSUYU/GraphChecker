@@ -80,10 +80,6 @@ final class ClockLoops {
         return site.substring(0, descriptor);
     }
 
-    static void useForTests(Set<String> declared) {
-        methods = declared;
-    }
-
     static void resetForTests() {
         methods = Collections.emptySet();
     }

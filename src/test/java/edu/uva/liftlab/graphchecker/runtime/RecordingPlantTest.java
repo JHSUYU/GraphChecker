@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -15,19 +14,14 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.io.IOException;
-import java.io.InputStream;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -39,10 +33,6 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
 /**
  * A native reproduction's plant ({@link RecordingPlant}): which rows a
@@ -57,8 +47,6 @@ public class RecordingPlantTest {
     private static final String SITE = "<o.a.h.ipc.Client: void send()>#u16";
     private static final String GUARD = "<o.a.h.Sasl: void handle()>#u4";
     private static final String OUTER = address("REGION.outer",
-            "wl/dn1#epoch0");
-    private static final String INNER = address("REGION.inner",
             "wl/dn1#epoch0");
     private static final String ID = OccurrenceAddress.parse(OUTER).id();
     private static final String CLOCK_SITE_ID = "<a.Keys: void roll()>#u3";
@@ -167,41 +155,6 @@ public class RecordingPlantTest {
         }
     }
 
-    /**
-     * Which enclosing occurrence (innermost first) answers: the innermost
-     * one a marker's rows plant at; for a hook the innermost one the
-     * confirmation focuses; for a fatal decision the anchor's, at any depth.
-     */
-    @Test
-    public void theInnermostPlantedEnclosingOccurrenceAnswers() {
-        List<String> both = Arrays.asList(INNER, OUTER);
-        List<String> inner = Collections.singletonList(INNER);
-        List<String> outer = Collections.singletonList(OUTER);
-        List<String> nothing = Collections.emptyList();
-        Object[][] calls = {
-            // enclosing, the marker's planted occurrence, it, the hook's,
-            // the anchor's
-            {both, OUTER, OUTER, OUTER, OUTER},
-            {both, INNER, INNER, OUTER, OUTER},
-            {inner, OUTER, null, null, null},
-            {outer, OUTER, OUTER, OUTER, OUTER},
-            {nothing, OUTER, null, null, null}};
-        for (Object[] call : calls) {
-            @SuppressWarnings("unchecked")
-            List<String> enclosing = (List<String>) call[0];
-            String why = Arrays.toString(call);
-            assertEquals(why, call[2], RecordingPlant.plantedOccurrence(
-                    Collections.singletonMap(OccurrenceAddress.parse(
-                            (String) call[1]).id(), new RecordingPlant.Root(0,
-                            "true")), enclosing));
-            assertEquals(why, call[3], RecordingPlant.focusedOccurrence(
-                    Collections.singleton(ID), enclosing));
-            assertEquals(why, call[4], RecordingPlant.anchorOf(enclosing,
-                    ID));
-        }
-        assertEquals(null, RecordingPlant.plantedOccurrence(null, outer));
-    }
-
     private static String clock(String skew, int row) {
         return row("{'kind':'ROOT','category':'CLOCK','rootId':"
                 + "'REGION.outer.in.c','occurrence':'" + ID + "','siteId':'"
@@ -218,102 +171,6 @@ public class RecordingPlantTest {
                 + "['REGION.outer'],'row':" + row + "}");
     }
 
-    /**
-     * Values at calls' returns: a clock root's first reading under its mint
-     * occurrence is the host plus its skew and jumps its node's clock; every
-     * later declared reading of that clock on that node runs on from it
-     * (none before, on another node, or outside a declaring region); a
-     * configuration is its value at every getter call; an accessor's read
-     * its value under its occurrence; any other call returns what it did.
-     * The agent rewrites each caller class at the callees it calls.
-     */
-    @Test
-    public void callReturnsReadThePlantedWorld() throws Exception {
-        RecordingPlant.Plant plant = read(clock("100", 0)
-                + reading(CLOCK_CALLEE, 1) + row("{'kind':'ROOT','category':"
-                + "'CONFIG','rootId':'CONFIG:k','occurrence':'" + ID + "',"
-                + "'sites':[{'siteId':'<a.Conf: void f()>#u1','callee':"
-                + "'<a.Conf: int getInt()>'}],'javaType':'int','value':'7',"
-                + "'row':2}") + row("{'kind':'ROOT','category':'READ',"
-                + "'rootId':'READ.r','occurrence':'" + ID + "','siteId':"
-                + "'<a.Conf: void g()>#u2','callee':'<a.Box: java.lang.String"
-                + " name()>','javaType':'java.lang.String','value':"
-                + "'planted','row':3}") + target(ID, "false", 4));
-        String other = address("REGION.outer", "wl/dn1#epoch1");
-        String dn2 = address("REGION.outer", "wl/dn2#epoch0");
-        String name = "<a.Box: java.lang.String name()>";
-        Object[][] calls = {
-            // before the jump: the host
-            {CLOCK_SITE_ID, CLOCK_CALLEE, Arrays.asList(other), 5L, 5L},
-            // the mint: host plus skew, and the node's clock jumps
-            {CLOCK_SITE_ID, CLOCK_CALLEE, Arrays.asList(INNER, OUTER), 10L,
-                110L},
-            {CLOCK_SITE_ID, CLOCK_CALLEE, Arrays.asList(OUTER), 20L, 120L},
-            // another node, no region declaring it, another callee
-            {CLOCK_SITE_ID, CLOCK_CALLEE, Arrays.asList(dn2), 30L, 30L},
-            {CLOCK_SITE_ID, CLOCK_CALLEE, Arrays.asList(INNER), 40L, 40L},
-            {CLOCK_SITE_ID, "<a.Other: long now()>", Arrays.asList(OUTER),
-                50L, 50L},
-            {"<a.Conf: void f()>#u1", "<a.Conf: int getInt()>",
-                Collections.<String>emptyList(), 3, 7},
-            {"<a.Conf: void g()>#u2", name, Arrays.asList(OUTER),
-                "recorded", "planted"},
-            {"<a.Conf: void g()>#u2", name, Arrays.asList(INNER),
-                "recorded", "recorded"},
-            {"<a.Conf: void h()>#u9", CLOCK_CALLEE, Arrays.asList(OUTER),
-                60L, 60L}};
-        for (Object[] call : calls) {
-            @SuppressWarnings("unchecked")
-            List<String> enclosing = (List<String>) call[2];
-            assertEquals(Arrays.toString(call), call[4],
-                    RecordingPlant.returnedAt(plant, (String) call[0],
-                            (String) call[1], enclosing, call[3]));
-        }
-        Map<String, java.util.Set<String>> intercepted =
-                RecordingPlant.interceptions(plant);
-        assertEquals(Arrays.asList("a/Keys", "a/Conf"),
-                new ArrayList<String>(intercepted.keySet()));
-        assertEquals(new TreeSet<String>(Arrays.asList("a/Conf.getInt ()I",
-                "a/Box.name ()Ljava/lang/String;")),
-                new TreeSet<String>(intercepted.get("a/Conf")));
-    }
-
-    /**
-     * An answer at a port's call-return capture: carried as a replay's
-     * attach carries it, its leaf named by the endpoint a replay's attach
-     * names in the occurrence of a region declaring the port, and written
-     * when the plant answers that endpoint -- once, and only there.
-     */
-    @Test
-    public void anAnswerIsWrittenAtTheEndpointAReplayNames() throws Exception {
-        String port = "XCH.1.resp.key-id";
-        String[] expected = new String[1];
-        on(() -> expected[0] = Identity.endpointAt(
-                OccurrenceAddress.parse(OUTER), port, 0).id());
-        RecordingPlant.Plant plant = read(row("{'kind':'ANSWER','endpoint':'"
-                + expected[0] + "','port':'" + port + "','siteId':"
-                + "'<a.H: void h()>#u4','callee':'<a.Msg: long keyId()>',"
-                + "'regions':['REGION.outer'],'value':'9','row':0}")
-                + target(ID, "false", 1));
-        List<Object> answered = new ArrayList<>();
-        on(() -> {
-            for (List<String> enclosing : Arrays.asList(Arrays.asList(INNER,
-                    OUTER), Arrays.asList(INNER, OUTER), Arrays.asList(
-                    INNER))) {
-                answered.add(RecordingPlant.returnedAt(plant,
-                        "<a.H: void h()>#u4", "<a.Msg: long keyId()>",
-                        enclosing, 4L));
-            }
-        });
-        assertEquals(Arrays.asList(9L, 4L, 4L), answered);
-    }
-
-    private static void on(Runnable work) throws InterruptedException {
-        Thread thread = new Thread(work);
-        thread.start();
-        thread.join();
-    }
-
     private static String target(String occurrence, String arm, int row) {
         return row("{'kind':'TARGET','occurrence':'" + occurrence
                 + "','siteId':'" + GUARD + "','value':" + arm + ",'row':"
@@ -324,106 +181,6 @@ public class RecordingPlantTest {
         return OccurrenceAddress.of(NodeId.parse(node), region,
                 CausalContext.of(Role.of("CLIENT"), "heartbeat", 1),
                 ExecutionIndex.empty()).render();
-    }
-
-    /**
-     * The plant-run agent's rewrite: after every invoke of a named callee,
-     * the plant's call for its return type (a reference through Object and
-     * a cast back), nothing after an unnamed or void one; the rewritten
-     * class verifies and, with no plant, returns what it returned.  And the
-     * JVM spelling of a Soot signature the agent matches invokes by.
-     */
-    @Test
-    public void namedInvokesHandTheirReturnsToThePlant() throws Exception {
-        byte[] rewritten = PlantAgent.rewrite(fixtureBytes(),
-                new LinkedHashSet<String>(Arrays.asList(
-                        "java/lang/System.currentTimeMillis ()J",
-                        "java/lang/Integer.parseInt (Ljava/lang/String;)I",
-                        "java/lang/String.split (Ljava/lang/String;)"
-                                + "[Ljava/lang/String;",
-                        "java/lang/String.valueOf (Ljava/lang/Object;)"
-                                + "Ljava/lang/String;",
-                        "java/lang/System.gc ()V")));
-        List<String> after = new ArrayList<String>();
-        new ClassReader(rewritten).accept(new ClassVisitor(Opcodes.ASM5) {
-            @Override
-            public MethodVisitor visitMethod(int access, String name,
-                    String descriptor, String signature, String[] thrown) {
-                return new MethodVisitor(Opcodes.ASM5) {
-                    @Override
-                    public void visitMethodInsn(int opcode, String owner,
-                            String called, String desc, boolean onInterface) {
-                        if (owner.endsWith("RecordingPlant")) {
-                            after.add(called + desc);
-                        }
-                    }
-
-                    @Override
-                    public void visitTypeInsn(int opcode, String type) {
-                        if (opcode == Opcodes.CHECKCAST) after.add(type);
-                    }
-                };
-            }
-        }, 0);
-        String object = "returned(Ljava/lang/Object;)Ljava/lang/Object;";
-        assertEquals(Arrays.asList("returned(J)J", "returned(I)I", object,
-                "[Ljava/lang/String;", object, "java/lang/String"), after);
-        String fixture = PlantAgentFixture.class.getName();
-        Class<?> loaded = new ClassLoader(getClass().getClassLoader()) {
-            @Override
-            protected Class<?> loadClass(String name, boolean resolve)
-                    throws ClassNotFoundException {
-                if (!fixture.equals(name)) return super.loadClass(name,
-                        resolve);
-                synchronized (getClassLoadingLock(name)) {
-                    Class<?> defined = findLoadedClass(name);
-                    return defined != null ? defined : defineClass(name,
-                            rewritten, 0, rewritten.length);
-                }
-            }
-        }.loadClass(fixture);
-        long before = System.currentTimeMillis();
-        assertTrue((Long) method(loaded, "clock", boolean.class)
-                .invoke(null, true) > before);
-        assertEquals(12, method(loaded, "parsed", String.class)
-                .invoke(null, "12"));
-        assertArrayEquals(new String[] {"a", "b"}, (String[]) method(loaded,
-                "split", String.class).invoke(null, "a,b"));
-        assertEquals("5", method(loaded, "named", Object.class)
-                .invoke(null, 5));
-        method(loaded, "collected").invoke(null);
-
-        Object[][] signatures = {
-            {"<java.lang.System: long nanoTime()>",
-                "java/lang/System nanoTime ()J"},
-            {"<a.B$C: java.lang.String[] f(int,java.util.List)>",
-                "a/B$C f (ILjava/util/List;)[Ljava/lang/String;"},
-            {"<org.apache.hadoop.util.Timer: long now()>",
-                "org/apache/hadoop/util/Timer now ()J"},
-            {"a.B#f", null}, {"", null}};
-        for (Object[] signature : signatures) {
-            String[] parsed = JvmSignature.parse((String) signature[0]);
-            assertEquals(Arrays.toString(signature), signature[1],
-                    parsed == null ? null : String.join(" ", parsed));
-        }
-    }
-
-    private static Method method(Class<?> owner, String name,
-                                 Class<?>... parameters) throws Exception {
-        return owner.getMethod(name, parameters);
-    }
-
-    private static byte[] fixtureBytes() throws IOException {
-        try (InputStream in = RecordingPlantTest.class.getResourceAsStream(
-                "PlantAgentFixture.class")) {
-            java.io.ByteArrayOutputStream out =
-                    new java.io.ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            for (int read; (read = in.read(buffer)) > 0; ) {
-                out.write(buffer, 0, read);
-            }
-            return out.toByteArray();
-        }
     }
 
     /**

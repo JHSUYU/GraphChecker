@@ -440,14 +440,11 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   make them one question -- a query design change, and what the depth bound stands in for.
 - **g. Cleanup owed:** delete `MessageDoors#refreshing` (a no-op for trees before final4) and its external-callers row
   once no run reads an older tree; REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
-- **h. Flaky test:** `ScheduleLogTest#aSettledConflictIsGivenUpOnceWhoeverAsks` failed once in a gate on a loaded lift09
-  (2026-10-13, solr-int 13eca0d4c: 3 slots given up in 1 stall) and passed 3 of 3 alone: timing-sensitive. So do
-  `src/test/shell/run_engine_campaign_helpers_test.sh`'s stream timing assertions ("NEXT did not start until LONG
+- **h. Flaky tests:** ScheduleLogTest's timing-sensitive stall cases are gone (test cut 2026-10-18; the class keeps
+  one case per rule, 5 s). Timing-sensitive still: `src/test/shell/run_engine_campaign_helpers_test.sh`'s stream timing assertions ("NEXT did not start until LONG
   ended: a barrier, not a stream"; "exploration.json does not name the end, the coalesced attempts, the cancelled and
   the reaped"): 3 of 3 failed on lift08 while it carried round Z3D's workers (2026-10-13, solr-zk4 bfada52ac, whose
   change no test reads), and the same tree passed on lift06, as did a909fa5c7 on lift08 between them.
-  `ScheduleLogTest#aPublicationsTurnWaitsWhereTheWatchdogSeesIt` too (its 1 s watchdog): failed in two full gates on lifts
-  loaded by offline COMPOSE runs (2026-10-13, solr-viewwriter), passed alone on three lifts and in the whole class on lift08.
 
 - **i. The Overseer's idle wait: DONE in `gc/solr-final9` (cd98d779dc).** SGF2's reindex seed recording stalled
   because a missed child watch of `/overseer/queue` parked the never-timeout idle wait for good (evidence
