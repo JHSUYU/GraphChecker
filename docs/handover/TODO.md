@@ -201,12 +201,32 @@ check gate.txt; if green, fast-forward system/solr to it.
   order); expression refs differ across sessions for 45 % of pre-cut decisions (compare structure, not refs); two
   GzCopy runs into one destination collide.
 
-**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, head fc70638e2.**
-- fc70638e2: a replay's early end strands the live activations at once and waits only for what is published (the
-  stall-end run-on: 43 of 72 stall-ended replays in 07 ran on, 5 to the 2400 s timeout). See its commit message and
-  `analysis/solr-2026-10-18/replay-tail/`; gate status and the remaining goals (heap basis by percentile instead of the
-  largest peak 2048 -> 9728 MB; read-out decoding off the VM's single thread, busy 77-87 %; stop at the window close
-  if no reader needs the ~330 post-close rows) as its last report says (STATE §S / the lead's session log).
+**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, head fc70638e2 (on b07793ee9), GATED
+(mvn with tests + the shell test); merge it into solr-int next.**
+- Done (goal 1): the stall-end run-on (07: 43 of 72 stall-ended replays ran on, 5 to the 2400 s timeout). Cause
+  confirmed by thread dumps of an old-jar reproduction (07's 70f7d6878c96ed36): the settle thread waited in
+  ConcolicResultPublisher#awaitSelectedResultPublications while an activation that closed after the end read out page
+  after page, each waiting for decode room; in-flight counted from finish() before the read-out; the live were stranded
+  only after the wait; the decoder's CPU reset the grace. Fix: strand the live at once, stop withheld read-outs and
+  their decoding, wait only for publications submitted by the end; GC counts as progress only while a publication or
+  decode computes. An AT_NO_PROGRESS replay halted 44 s after its end; a STALLED_AFTER_FLIP one 190 s (decoding its
+  session still needs: goal 3).
+- Goal 2 next: the replay need from the 90th percentile of measured peaks plus an out-of-heap guard
+  (-XX:+ExitOnOutOfMemoryError + HeapWatch in replays; a replay exiting 3 reruns once at twice its heap; later replays
+  start there); the replay VM's GC is Serial, so -Xmx caps the heap without growing RSS; update the MEASURED-NEED rows
+  of the shell test.
+- Goal 3: decoding (measured on pages captured from 07's 615997597e3c4202, `analysis/solr-2026-10-18/replay-e/`): the
+  Zero VM decodes 0.65 s per million chars (HotSpot ~95x faster); 82 % of page text is the expression table and 92 % of
+  its definitions are re-sent from earlier pages; profile: table reading 40 %, truncation scan 16.5 % (read-out pages
+  never hold a truncation marker), expansion 17 % (under a lock), parsing 17 %; whole-page parallel decode was 2.25x
+  faster for 53 % more CPU. So: the VM sends each expression definition once per session (VM serializer
+  exp/expression.cpp + the Java decoder, emission and table registration under one lock), skip the truncation scan when
+  nothing is marked, decode records within a page in parallel.
+- Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
+  rows first.
+- Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
+  offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
+  checkout with third_party/ and gcc-6 on lift15.
 
 **F serial fixed cost -- branch solr-serial (= a28597a8f, nothing committed).** Measured: 07 SEED 540 s, of which the
 static pass is only 91 s (seedAnalysis 32, skeletonPlanning 32); ~450 s of SEED is unattributed (likely the recording);
