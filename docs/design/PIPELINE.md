@@ -2395,9 +2395,9 @@ decisions compare it with only where they widen it (`RootDomain#widened`: an int
 declares nothing for), each root's a walk of every session's decisions reaching it, lowered with that session's
 reads and writes (07's 367 fault markers were each asked). The formula, its manifest rows and gaps are byte for
 byte a whole corpus's (13, 39, 21, 10 at the composer's hold and at none; every composer test composes over a
-corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 3.4 GB live after the read, the old generation
-57 % after the last path; 1700 s (read 215, admission 125, paths 1220 -- the last 9 of them 600 --, the rest
-136), 2761 session parts read again (70.8 GB of text).
+corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 2.9 GB live after the read, the old generation
+54 % after the last path; 1322 s (read 173, admission 134 -- the slot table's read --, paths 1000 -- the last 9
+of them 336 --, the rest 148), 1359 sessions read again (61.9 GB of text).
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the
