@@ -21,7 +21,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmRecords;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.members;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
@@ -54,11 +53,20 @@ final class SharedStateCapture {
      * its pages ({@link SharedStateReadOut#awaitDecoded}); no page waits for the rest of
      * the read-out, and none outlives its decoding (SB12's obligation
      * replay held 8 pages, 220 MB, a fifth of its live heap at its peak,
-     * awaiting decoding once the region closed).  The next page is read
-     * once this one is handed on, which waits for room among those still
-     * undecoded ({@code ConcolicResultPublisher#decodeBeforePublication}).
-     * A short page that names no resume point is a gap: a short write log
-     * reads as "never written".
+     * awaiting decoding once the region closed).  A page is read once
+     * there is room for it among those still undecoded ({@code
+     * ConcolicResultPublisher#awaitDecodeRoom}), which it then takes.
+     *
+     * <p>The session's pages are one channel: each states the definitions
+     * no earlier page stated (VM.md §8), so the decoding thread must import
+     * every page's table in the order the VM numbered them.  A page is read
+     * and handed on under {@link #READ_OUT_ORDER}, with nothing between that
+     * waits: no thread reads a page between another's reading and its
+     * hand-on, and none that is read stays behind (the read-outs of the
+     * session's threads take turns, page by page: the VM renders a page in
+     * about 30 ms).  A short page that names
+     * no resume point is a gap: a short write log reads as "never
+     * written".</p>
      */
     static SharedStateReadOut captureRecordedSharedState(
             ActiveRegion active, ConcolicVmBroker api) {
@@ -66,28 +74,33 @@ final class SharedStateCapture {
         String fault = "";
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
-            if (ConcolicResultPublisher.endedEarly()) {
-                // Withheld: this activation submits after the end.
-                fault = "the replay ended before this read-out completed";
-                break;
-            }
             final String serialized;
-            long asked = System.nanoTime();
-            try {
-                serialized = api.trackedLocationVersions(after,
-                        READ_OUT_PAGE_BYTES);
-                READ_OUT_NANOS.addAndGet(System.nanoTime() - asked);
-                READ_OUT_PAGES.incrementAndGet();
-                READ_OUT_CHARS.addAndGet(serialized.length());
-            } catch (Throwable throwable) {
-                fault = "tracked-location read-out failed: "
-                        + rootCause(throwable);
-                break;
-            }
-            if (!readOut.decodeLater(serialized, active)) {
-                fault = "a tracked-location read-out page could not be"
-                        + " handed to the decoding thread";
-                break;
+            synchronized (READ_OUT_ORDER) {
+                // Room is taken by the page handed on below, under the same
+                // lock: no other reader takes it meanwhile.
+                if (!ConcolicResultPublisher.awaitDecodeRoom(
+                        READ_OUT_PAGE_BYTES)) {
+                    // Withheld: this activation submits after the end.
+                    fault = "the replay ended before this read-out completed";
+                    break;
+                }
+                long asked = System.nanoTime();
+                try {
+                    serialized = api.readOutTrackedLocations(after,
+                            READ_OUT_PAGE_BYTES);
+                    READ_OUT_NANOS.addAndGet(System.nanoTime() - asked);
+                    READ_OUT_PAGES.incrementAndGet();
+                    READ_OUT_CHARS.addAndGet(serialized.length());
+                } catch (Throwable throwable) {
+                    fault = "tracked-location read-out failed: "
+                            + rootCause(throwable);
+                    break;
+                }
+                if (!readOut.decodeLater(serialized, active)) {
+                    fault = "a tracked-location read-out page could not be"
+                            + " handed to the decoding thread";
+                    break;
+                }
             }
             JsonObject header = pageHeader(serialized);
             if (header == null) {
@@ -112,6 +125,13 @@ final class SharedStateCapture {
         readOut.fault = fault;
         return readOut;
     }
+
+    /**
+     * Held while a page is read out and handed to the decoding thread
+     * ({@link #captureRecordedSharedState}): the pages reach the decoding
+     * thread in the order the VM numbered their tables.
+     */
+    private static final Object READ_OUT_ORDER = new Object();
 
     /** What the region closes' read-outs cost this session ({@link
      *  #readOutSummary}): the pages, their text, the VM's time serializing
@@ -207,13 +227,13 @@ final class SharedStateCapture {
     }
 
     /**
-     * One page of the read-out: location envelopes over the page's one
+     * One page of the read-out: location envelopes over the page's
      * expression table, read one location at a time
-     * ({@link ConcolicRegionRuntime#decodeVmRecords}), each filed as its
+     * ({@link VmExpressionTable.Store#importReadOutPage}), each filed as its
      * write log record; the page is never parsed or copied whole (a Solr
      * region's 52 MB page was its replay's largest tree).  A page that
-     * states another kind or another location count than it carries files
-     * nothing.
+     * states another schema, kind or location count than this decoder
+     * reads files nothing; its table is imported all the same.
      */
     private static void decodeTrackedLocations(String serialized,
                                                ActiveRegion active,
@@ -231,22 +251,36 @@ final class SharedStateCapture {
      * read-out states again unchanged -- every activation's close reads out
      * every location touched since its entry, so the enclosing ones state
      * an inner one's again -- is filed as the decoding of its first reading
-     * ({@link VmExpressionTable.Store#importRepeatedRecords}), not decoded
-     * again.  A page the session withholds meanwhile ({@code
-     * ConcolicResultPublisher#withholds}: the replay ended early) stops at
-     * its next record ({@link Withheld}).
+     * ({@link VmExpressionTable.Store#importReadOutPage}), not decoded
+     * again; the others are decoded at once by the record decoders ({@code
+     * ConcolicResultPublisher#recordDecoders}) and filed in page order.  A
+     * page the session withholds ({@code ConcolicResultPublisher#withholds}:
+     * the replay ended early) imports its table and files nothing; one
+     * withheld while it decodes stops at its next record ({@link Withheld}).
+     * A version's expressions are scanned for the VM serializer's truncation
+     * marker only once the session's store holds one ({@link
+     * VmExpressionTable.Store#truncationMarked}): read-out pages never do,
+     * and the scan was a sixth of their decoding (07, replay-e).
      */
     private static void decodePage(String serialized, ActiveRegion active,
                                    SharedStateReadOut readOut) {
-        // One page's versions share their subexpressions (one import): a
-        // node scanned clean once is not scanned again.
-        Set<JsonElement> clean = Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>());
-        decodeVmRecords(serialized, LOCATIONS, active, header -> {
+        VmExpressionTable.Store store =
+                ConcolicRegionRuntime.expressionStore(active);
+        store.importReadOutPage(serialized, LOCATIONS, header -> {
+            if (readOut != null
+                    && ConcolicResultPublisher.withholds(readOut)) {
+                return false;
+            }
             if (!TRACKED_LOCATIONS_KIND.equals(
-                    optionalString(header, "kind"))) {
-                refuse(MALFORMED_ENVELOPE, "",
-                        "unsupported tracked-location read-out schema");
+                    optionalString(header, "kind"))
+                    || optionalInteger(header, "schemaVersion", -1)
+                    != PAGE_SCHEMA_VERSION) {
+                refuse(MALFORMED_ENVELOPE, "", "tracked-location read-out"
+                        + " page of kind " + optionalString(header, "kind")
+                        + " and schema " + optionalInteger(header,
+                        "schemaVersion", -1) + ", and this jar reads "
+                        + TRACKED_LOCATIONS_KIND + " schema "
+                        + PAGE_SCHEMA_VERSION);
                 return false;
             }
             int stated = optionalInteger(header, "locationCount", -1);
@@ -259,12 +293,14 @@ final class SharedStateCapture {
                 return false;
             }
             return true;
-        }, element -> {
+        }, Filed.class, element -> {
             if (readOut != null && ConcolicResultPublisher.withholds(readOut)) {
                 throw Withheld.INSTANCE;
             }
-            return decoded(element, clean);
-        }, filed -> file(filed, active));
+            return decoded(element, store.truncationMarked());
+        }, filed -> file(filed, active),
+                ConcolicResultPublisher.recordDecoders(),
+                ConcolicResultPublisher.RECORD_DECODERS);
     }
 
     /** A page's decoding stopped: no publication reads it any more. */
@@ -313,10 +349,11 @@ final class SharedStateCapture {
 
     /**
      * One location envelope's decoding ({@link Filed}): its versions
-     * checked, then reduced to its write log record.  Counted as decoded.
+     * checked -- their expressions scanned for the truncation marker when
+     * {@code marked} -- then reduced to its write log record.  Counted as
+     * decoded.  Any thread: it reads only the envelope.
      */
-    private static Filed decoded(JsonElement element,
-                                 Set<JsonElement> clean) {
+    private static Filed decoded(JsonElement element, boolean marked) {
         DECODED.incrementAndGet();
         if (!element.isJsonObject()) {
             return new Filed("", null, "tracked location is not an object",
@@ -324,7 +361,12 @@ final class SharedStateCapture {
         }
         JsonObject envelope = element.getAsJsonObject();
         int versions = array(envelope, "versions").size();
-        String fault = versionsFault(envelope, clean);
+        // An envelope's versions share their subexpressions: a node scanned
+        // clean once is not scanned again.
+        String fault = versionsFault(envelope, marked
+                ? Collections.newSetFromMap(
+                        new IdentityHashMap<JsonElement, Boolean>())
+                : null);
         String locationKey = locationKey(envelope);
         return fault.isEmpty()
                 ? new Filed(locationKey, writeLogRecord(locationKey,
@@ -362,6 +404,10 @@ final class SharedStateCapture {
 
     private static final String TRACKED_LOCATIONS_KIND =
             "SHARED_TRACKED_LOCATIONS";
+    /** The page this decoder reads: 2, whose table is the read-out
+     *  channel's next (VM.md §8); a page of another schema is refused by
+     *  name. */
+    private static final int PAGE_SCHEMA_VERSION = 2;
 
     /**
      * One admitted location's write log, reduced to what the rows read:
@@ -476,25 +522,21 @@ final class SharedStateCapture {
         long ordinal;
 
         /**
-         * Queues one page's decoding on the decoding thread, once the pages
-         * queued before it leave room ({@code ConcolicResultPublisher
-         * #decodeBeforePublication}); a page the session withholds by the
-         * time its turn comes is not decoded ({@code ConcolicResultPublisher
+         * Queues one page's decoding on the decoding thread, behind every
+         * page read before it, without a wait ({@code
+         * ConcolicResultPublisher#decodeInOrder}): its table is imported
+         * there whatever happens to its records, which a page the session
+         * withholds by then does not file ({@code ConcolicResultPublisher
          * #withholds}).
          *
-         * @return false when the decoding thread refused the work, or the
-         *         replay ended early
+         * @return false when the decoding thread refused the work
          */
         private boolean decodeLater(String page, ActiveRegion active) {
             synchronized (this) {
                 pending++;
             }
-            boolean handed = ConcolicResultPublisher.decodeBeforePublication(
+            boolean handed = ConcolicResultPublisher.decodeInOrder(
                     page.length(), () -> {
-                        if (ConcolicResultPublisher.withholds(this)) {
-                            decoded();
-                            return;
-                        }
                         DECODING.set(refusals);
                         try {
                             decodeTrackedLocations(page, active, this);
@@ -732,7 +774,9 @@ final class SharedStateCapture {
                 || versionKind.startsWith("STATE_"));
     }
 
-    /** Admits one version-store envelope: {@code ""} or the refusal reason. */
+    /** Admits one version-store envelope: {@code ""} or the refusal
+     *  reason; {@code clean} null: no expression holds the truncation
+     *  marker, so none is scanned for it. */
     private static String versionsFault(JsonObject envelope,
                                         Set<JsonElement> clean) {
         if (envelope == null || envelope.size() == 0) {
@@ -897,6 +941,7 @@ final class SharedStateCapture {
         if (expression == null || expression.isJsonNull()) {
             return "version " + id + " carries no value expression";
         }
+        if (clean == null) return "";
         if (containsVmSerializationTruncation(expression, clean)) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version " + id + " value expression";

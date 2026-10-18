@@ -609,7 +609,7 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
 `observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
-`getTrackedLocationVersions`, `installGuardedStoreSites`, `forceNextConcolicBranch`. `markConcolicBranch` and the pause
+`readOutTrackedLocations`, `installGuardedStoreSites`, `forceNextConcolicBranch`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
 `MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
@@ -617,47 +617,77 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
 
 - Expressions are published as a DAG envelope (`VM/concolic/exp/expression.cpp`, iterative
   serializer); the engine keeps them in each session's `expressions.jsonl.gz` (CONTRACT-SPEC.md).
-- `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
+- `readOutTrackedLocations(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
   resume neither repeats nor skips a location (`SFV`). A page is cut only between locations, once
-  its text and table reach `maxBytes` (its first location goes whatever its size), and carries the
-  expression table of what its locations name, last: every page repeats the closure its locations
-  share. The engine hands each page to its decoding thread as it is read, once fewer than four
-  pages' text wait there undecoded, and decodes it there one location at a time, beside the
-  publications (an activation's publication waits for its own pages,
-  `SharedStateCapture.SharedStateReadOut#awaitDecoded`)
-  (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
-  (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
-  its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`).
+  its text and its closure's definitions reach `maxBytes` (its first location goes whatever its
+  size; the budget counts the whole closure, so where a page is cut does not depend on what other
+  threads' read-outs sent). A session's pages are **one channel** (`VmExpressionChannel`, page
+  `schemaVersion` 2, authority `VM_TRACKED_LOCATION_VERSIONS_V2`): a page's table (authority
+  `VM_READ_OUT_EXPRESSION_DELTA_V1`) states only the definitions of its closure that no earlier
+  page stated, and its `sequence` in the channel; choosing those definitions, registering them as
+  sent and numbering the table are one step under the channel's lock, after every definition was
+  rendered outside it, so the tables are numbered in the order their definitions were registered,
+  across threads. The channel resets with the session (`SharedFieldVersions::open_session`,
+  `close_session`). Restating each page's closure, 82 % of a Solr replay's read-out text was
+  the table and 92 % of its rows had been sent before (07's obligation 615997597e3c4202); on its
+  353 captured pages the channel sends 198,206 rows instead of 1,564,644 and 206 M chars instead
+  of 612 M. Other envelopes (`describe`, a branch window, `exportLeaf`, `getSymbolicExpression`)
+  still state their whole closure (`write_table` without a channel).
+  The engine reads a page and hands it to its decoding thread under one lock
+  (`SharedStateCapture#READ_OUT_ORDER`), with no wait between: the reader waits for room among
+  the undecoded pages before it reads (`ConcolicResultPublisher#awaitDecodeRoom`, fewer than four
+  pages' budget of text), and the hand-on never waits (`#decodeInOrder`). So the one decoding
+  thread takes the pages in the channel's order, and every page read is decoded there -- after an
+  early end and for a withheld read-out too: its table is imported first, whatever becomes of its
+  records (`VmExpressionTable.Store#importReadOutPage`), since a later page's records may name a
+  node only it defined; a withheld page then files nothing. The importer refuses a table older
+  than the last one it imported, of another session, or of another authority (an image whose
+  read-out restates every definition: `vm-force8` and older, which the broker refuses first,
+  `ConcolicVmBroker#requireCurrentCapabilities`: `readOutTrackedLocations`), and a page of
+  another schema files nothing (`SharedStateCapture#decodePage`); a gap in the sequence (a page
+  lost between the VM and the decoder) is no refusal by itself: a record naming a node only the
+  lost table defined is refused where it expands ("missing VM expression definition"). A
+  definition the channel sent stays in the store until a record expands it.
+  An activation's publication waits for its own pages (`SharedStateCapture.SharedStateReadOut
+  #awaitDecoded`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`, its
+  conditions then the closure's table) is read as a self-contained envelope
+  (`Store#importRecords`, `runtime/PathConditionWindow`).
   An envelope's top level is read off its text once: the members but the records parsed as its
   header, each record's extent found by its brackets, up to the table.
   Every close reads out every location touched since its entry, so an enclosing activation's
   read-out states an inner one's locations again, mostly unchanged (SGF3-adhoc-31's seed replay listed
   394,232 versions for 51,043 write rows). A record a page states with exactly the text the session's
   store decoded before is filed as that decoding, not parsed, expanded or checked again
-  (`Store#importRepeatedRecords`): the store holds, per record's text up to its first `}` (a location
+  (`Store#importReadOutPage`): the store holds, per record's text up to its first `}` (a location
   envelope's location), the latest exact text and its decoding (`SharedStateCapture.Filed`, the write
   log record or the refusal), softly, so a collection under memory pressure only costs a decoding again.
   A JSON object ends where its text does, so a page whose text at a record's start begins with a held
   text holds that record; and the decoding is a function of the text and the store alone (the store
   expands each node once and keeps it), so the held one is the one a decoding would give. One memo per
   decoding type; the session's read-out line states what it holds (records, chars of their text, entries
-  the collector cleared). A page every record of which is held reads no table, so it no longer makes the
-  table's checks: its well-formedness (schema, count, closing), its rows' shape, and the fingerprint
-  registration and closure check of rows not yet expanded -- safe because there are none: every row that
-  table would define is a node the records' first decoding expanded (a page's table is the closure of
-  what its records name). A held record is not checked for a node the page's table lacks ("missing VM
-  expression definition"): its first decoding was, against its own page's table. A run that checked all
-  of this on SGF3-31's whole seed (RO1, PERFORMANCE §3) found every held record decoding alike and every
-  row of the all-held pages' tables a node already expanded.
+  the collector cleared). A page's table rows are parsed, and its records not held decoded, at
+  once, on the decoding thread and `ConcolicResultPublisher#RECORD_DECODERS` (3) record decoders
+  (`causynth-read-out-record-*`): the rows are kept, the records handed on, in page order up to the
+  first that failed, whose failure is then raised -- as one thread working in order would
+  (`VmExpressionTable.RawResolver#inParallel`). The store takes
+  no lock: a walk keeps its state to itself, and of two walks expanding one node the first to
+  hold it wins and the other takes its expansion (`SharedExpressionTable.Expansion#expand`). A
+  version's expressions are scanned for the serializer's truncation marker only once the store is
+  marked (`Store#truncationMarked`: a definition holding a `TruncatedExpression`, found as the
+  definition is copied, or a record whose text names one): under a channel the serializer renders
+  each node's own text with its children as references, so no read-out page holds one, and the
+  scan was a sixth of their decoding. On 07's captured pages (re-encoded as the channel would send
+  them, `analysis/solr-2026-10-18/vm-decode/`) every one of 33,309 location records decodes as
+  before (Merkle digests of the write log records), 30 refusals alike, and the Zero VM decodes them
+  in 197.9 s (527.6 s CPU) instead of 659.6 s (one thread, the channel and no scan alone: 454.4 s).
   The table is the envelope's last member, compact, spelled `,"vmExpressionTable":{<schema,
-  session, definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
+  kind, authority, session, [sequence,] definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
   "sessionId":<s>,"expressionId":<n>,"expression":{...}}` in ascending id (`write_table`); a
   definition is one shallow object whose strings are escaped, so no row start occurs inside one.
   The importer reads the table off the text: a row of a node the store has expanded is skipped by
   its id, never scanned; a row whose ids do not read so is parsed whole; a table that does not close
-  the envelope, a row holding more than one row, or a count the rows do not meet is refused. The
-  store is locked only while a node expands. Each envelope is bounded by its own bytes
+  the envelope, a row holding more than one row, or a count the rows do not meet is refused. Each envelope is bounded by its own bytes
   (32 MB, `serializationTruncated` when cut), never by the page's. An envelope (`schemaVersion` 2:
   its read log states each read's version, §5.2) states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is

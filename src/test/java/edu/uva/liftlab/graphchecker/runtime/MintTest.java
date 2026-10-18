@@ -1145,7 +1145,7 @@ public class MintTest {
                 new VmExpressionTable.Store(owner -> false);
         SharedStateCapture.resetForTests();
         try {
-            String page = ("{'schemaVersion':1,'kind':"
+            String page = ("{'schemaVersion':2,'kind':"
                     + "'SHARED_TRACKED_LOCATIONS','sessionId':1,'locations':["
                     + "{'schemaVersion':2,'kind':'SHARED_FIELD_VERSIONS',"
                     + "'sessionId':1,'selected':false,'location':{"
@@ -1156,14 +1156,16 @@ public class MintTest {
                     + "'complete':true,'nextAfterEventId':0,"
                     + "'vmExpressionTable':{'schemaVersion':1,'kind':'"
                     + VmExpressionTable.KIND + "','authority':'"
-                    + VmExpressionTable.AUTHORITY + "','sessionId':1,"
-                    + "'definitionCount':0,'definitions':[]}}")
-                    .replace('\'', '"');
+                    + VmExpressionTable.READ_OUT_AUTHORITY + "','sessionId':1,"
+                    + "'sequence':SEQUENCE,'definitionCount':0,"
+                    + "'definitions':[]}}").replace('\'', '"');
             @SuppressWarnings("unchecked")
             ThreadLocal<List<Runnable>> filing = (ThreadLocal<List<Runnable>>)
                     Fixtures.get(SharedStateCapture.class, "DECODING");
+            int sequence = 0;
             for (String occurrence : new String[] {OCCURRENCE,
                     DN1 + "/region/REGION.16ba41cf#1"}) {
+                sequence++;
                 ActiveRegion active = placeholderRegion(occurrence);
                 List<Runnable> deferred = new ArrayList<Runnable>();
                 filing.set(deferred);
@@ -1171,7 +1173,8 @@ public class MintTest {
                     call(SharedStateCapture.class, "decodeTrackedLocations",
                             new Class<?>[] {String.class, ActiveRegion.class,
                                     SharedStateCapture.SharedStateReadOut.class},
-                            page, active, null);
+                            page.replace("SEQUENCE",
+                                    String.valueOf(sequence)), active, null);
                 } finally {
                     filing.remove();
                 }
