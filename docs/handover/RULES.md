@@ -205,6 +205,9 @@ recommendation.
   development; the work is dead code first, then the cheapest merges of duplicated concepts and line-reducing splits,
   ranked by lines saved per effort (the audit: analysis/solr-2026-10-18/loc-audit/AUDIT.txt); a deep redesign (e.g.
   run_engine.sh's scheduler in Java, a new SmtLowering) is not done.
+- **A replay's end may pass the 70 % line, up to 85 %** (2026-10-18 evening, the owner's choice): a replay already
+  reading out its results may grow by the host's real MemAvailable up to 85 % instead of being killed at the 70 %
+  ledger line; new starts are still admitted at 70 %. Measured: 14 lost 34-44 end-peak kills, 07 18, with ~9 GB free.
 - **No comments in the code** (2026-10-18 evening: "注释我觉得可以彻底删了。31k太夸张了"): the code carries no comments
   (Java, run_engine.sh, tools/, experiments/); what the code does and why is in docs/design. They are stripped once
   every branch of the rewrite is merged, proved by identical bytecode (`javap -c -p`) and identical `declare -f`;
