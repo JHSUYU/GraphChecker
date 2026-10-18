@@ -2215,7 +2215,11 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped, a round planning or untaken dropped), and the stop is a DIAGNOSTIC row stating
-  what it left owed.
+  what it left owed. A REAP ENDS WHOLE TREES (`campaign_stream_reap`, `campaign_frozen_tree`): each
+  process is stopped as it is listed and the tree listed again until no new one appears, before
+  TERM, the kill grace and KILL, so nothing a job starts while it is listed outlives the end
+  reparented to init (a job forking every 10 ms: 19 of 47 of its processes outlived the old reap, 0
+  now).
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is

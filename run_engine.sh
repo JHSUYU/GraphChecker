@@ -7327,24 +7327,55 @@ ${stream_stop}" 0 false
   stream_pending=()
 }
 
+# campaign_frozen_tree <pid>...: the caller's `tree`, every live process of
+# the trees under <pid>..., each STOPPED as it is listed and listed again
+# until no new one appears: nothing forks between the listing and the
+# signal that follows (a job listed while it started its replay left the
+# replay, its JVM and its `timeout` running, reparented to init, past the
+# exploration's end -- GROW-BESIDE's re-run, 2026-10-18).
+campaign_frozen_tree() {
+  local pid grown=1
+  local -A seen=()
+  tree=()
+  while (( grown )); do
+    grown=0
+    while IFS= read -r pid; do
+      [[ -n "${pid}" && -z "${seen[${pid}]:-}" ]] || continue
+      kill -STOP "${pid}" 2>/dev/null || continue
+      seen[${pid}]=1
+      tree+=("${pid}")
+      grown=1
+    done < <(for pid in "$@" "${tree[@]}"; do
+        campaign_process_tree "${pid}"
+      done)
+  done
+}
+
 # Everything this campaign still runs, ended: each job's process tree here,
 # the head step's, the round's, GROW's build's and the ticker's (TERM, the
-# kill grace, KILL),
+# kill grace, KILL, each to the tree frozen whole: campaign_frozen_tree),
 # its workers on every peer, and each waited for; the room an ended process
 # held while it waited to be placed (campaign_head_hold_room, named by its
 # pid) is the hosts' again.  The EXIT trap of a head that fails
 # mid-exploration, and the witness's end.
 campaign_stream_reap() {
   local pid hold
-  local -a tree=()
+  local -a tree=() roots=()
   local -A ended=()
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
       ${stream_grow_pid} ${stream_ticker}; do
-    mapfile -t -O "${#tree[@]}" tree < <(campaign_process_tree "${pid}")
+    roots+=("${pid}")
   done
+  campaign_frozen_tree "${roots[@]}"
   (( ${#tree[@]} > 0 )) || return 0
+  for pid in "${tree[@]}"; do
+    ended[${pid}]=1
+  done
   kill -TERM "${tree[@]}" 2>/dev/null || true
+  kill -CONT "${tree[@]}" 2>/dev/null || true
   sleep "${campaign_adapter_kill_grace_s}"
+  # What its TERM made it start meanwhile, too.
+  campaign_frozen_tree "${roots[@]}" "${tree[@]}"
   kill -KILL "${tree[@]}" 2>/dev/null || true
   campaign_reap_remote_workers
   for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \

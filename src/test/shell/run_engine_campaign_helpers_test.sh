@@ -6042,6 +6042,37 @@ OBLIGATION|solve_again|0
 RERUN||1
 EOF
 
+# STREAM-REAP: nothing a job started outlives the exploration's end
+# (campaign_stream_reap): its tree is frozen as it is listed (each process
+# stopped, listed again until no new one appears), so a process it starts
+# while the reap lists it is ended with it, never left reparented to init.
+# The job here starts a process every 10 ms.
+(
+  reap_dir=${test_tmp}/stream-reap
+  mkdir -p "${reap_dir}"
+  campaign_adapter_kill_grace_s=1
+  campaign_reap_remote_workers() { :; }
+  campaign_stream_release() { :; }
+  declare -A stream_jobs=()
+  stream_step_pid="" stream_round_pid="" stream_grow_pid="" stream_ticker=""
+  ( set +e
+    while :; do
+      command sleep 600 &
+      echo "$!" >>"${reap_dir}/started"
+      command sleep 0.01
+    done ) &
+  stream_jobs[$!]="RERUN obligations-0001 OB.r lift12 S.r"
+  command sleep 0.3
+  campaign_stream_reap
+  reap_left=""
+  while read -r reap_pid; do
+    ! kill -0 "${reap_pid}" 2>/dev/null || reap_left+=" ${reap_pid}"
+  done <"${reap_dir}/started"
+  [[ -z "${reap_left}" ]] \
+    || { kill ${reap_left} 2>/dev/null
+         fail "STREAM-REAP: what the job started outlived the end:${reap_left}"; }
+) || fail "STREAM-REAP failed"
+
 # KILL-REQUEUE: a replay of the pool its watcher ended for memory returns
 # with its run set aside (replay_again: what it reached, what it was
 # charged, where it went; campaign_replay_set_aside) and is no answer:
