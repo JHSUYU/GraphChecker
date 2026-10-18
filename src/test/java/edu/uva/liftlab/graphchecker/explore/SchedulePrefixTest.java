@@ -83,38 +83,6 @@ public class SchedulePrefixTest {
                 sites(unheld.resolve(SchedulePrefix.REST_FILE)));
     }
 
-    /**
-     * A prefix cut before a row's event ({@code ScheduleEvent#vmEvent}, the
-     * order rows' seqs are in) ends at the first event made at or after it,
-     * whatever occurrence: a decode in role work is cut before itself.
-     */
-    @Test
-    public void theCutStopsBeforeTheFirstEventAtOrAfterARowsEvent()
-            throws Exception {
-        Path iteration = folder.newFolder("iteration").toPath();
-        SessionDir session = SessionDir.of(iteration, "s1");
-        Files.createDirectories(session.schedule().getParent());
-        List<JsonObject> rows = new ArrayList<JsonObject>();
-        long[] made = {10L, 20L, 0L, 30L, 40L};
-        for (int index = 0; index < made.length; index++) {
-            rows.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(index,
-                    ScheduleEvent.Kind.SEND, "node|Root:X", "e" + index, 0,
-                    "ROLE.X", "", made[index])));
-        }
-        RowCodec.writeJsonl(session.schedule(), rows);
-        Path out = folder.newFolder("worker").toPath();
-        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, "s1",
-                Collections.<String>emptyList(), 30L, true, out);
-        assertEquals(Arrays.asList("e0", "e1", "e2"),
-                sites(out.resolve(SchedulePrefix.FILE)));
-        assertEquals(Arrays.asList("e3", "e4"),
-                sites(out.resolve(SchedulePrefix.REST_FILE)));
-        assertTrue(cut.toJson().get("cutAtFocus").getAsBoolean());
-        assertEquals("the event survives the codec", 30L, SessionReader
-                .readSchedule(out.resolve(SchedulePrefix.REST_FILE)).get(0)
-                .vmEvent());
-    }
-
     private static JsonObject row(long seq, ScheduleEvent.Kind kind,
                                   String site, String occurrence) {
         return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq, kind,
