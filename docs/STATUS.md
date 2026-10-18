@@ -674,7 +674,8 @@ Scale and robustness:
     text per query, each arm body up to twice.
 37. The planner and the composer hold the whole corpus, every session's rows and indexes
     (`gc/contract/SessionReader#read`, `gc/explore/Corpus`); the expression tables compact
-    (`gc/contract/ExpressionTable`: a node built when asked, held weakly). solr-adhoc-39 PV7's 208
+    (`gc/contract/ExpressionTable`: a node built when asked, held weakly, its reference dropped once the
+    collector let it go). solr-adhoc-39 PV7's 208
     sessions (9.8 GB on disk) held 6.45 GB as a loaded corpus with Gson expression trees, 3.49 GB
     compact; its round 6 planned in 806 s at a 16 GB heap, peaking near 9.4 GB live (most of it
     strings: index keys, lowered and canonical texts), where solr-int ran out of 21 GB in the closure
@@ -693,12 +694,13 @@ Scale and robustness:
     frame's copies of the side conditions it committed (451 of adhoc-10's 1626 MB; held by reference,
     `gc/compose/SmtLowering.Conditions`) and `Independence`'s leaf sets (478 of adhoc-40's 1582 MB;
     arrays over one instance of each name, `gc/explore/Corpus.HeldLeaves`). Then (2026-10-18, the
-    redundancy study, OPTIMIZATIONS 1.26-1.28) the gap rows no corpus reader reads are not held, a round's
+    redundancy study, OPTIMIZATIONS 1.26-1.30) the gap rows no corpus reader reads are not held, a round's
     gaps go to their file as they are said, the session-keyed indexes are per session and keyed by
     name, the joins by (location, version), the walk's sets and the answers it keeps compact
     (`gc/contract/PairSet`, `OpenSet`, `FrozenSet`, `VersionMap`) and endpoints, locations and frames
-    held once per read: SGF8-adhoc-05 round 5's planner 5826 -> 2226 MB after its corpus read, 12671 ->
-    4985 at the walk's end, 10889 -> 4148 at the frontier, every output byte-identical.
+    held once per read: SGF8-adhoc-05 round 5's planner 5826 -> 1880 MB after its corpus read, 12671 ->
+    3515 at the walk's end, 10889 -> 3238 at the frontier, its round 549 -> ~400 s, every output
+    byte-identical.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
     at or after the activation's entry event, from any thread; each page goes to the publication
     thread as it is read, once fewer than four pages' text wait there undecoded

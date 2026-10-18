@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.AbstractSet;
-import java.util.Collection;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
@@ -22,14 +21,6 @@ public final class OpenSet<E> extends AbstractSet<E> {
 
     public OpenSet() {
         slots = new Object[8];
-    }
-
-    /** One holding {@code elements}. */
-    public OpenSet(Collection<? extends E> elements) {
-        int capacity = 8;
-        while (capacity < 2 * elements.size()) capacity <<= 1;
-        slots = new Object[capacity];
-        addAll(elements);
     }
 
     @Override

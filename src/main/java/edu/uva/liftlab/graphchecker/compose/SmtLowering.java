@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.compose;
 
-import com.google.common.collect.Interner;
-import com.google.common.collect.Interners;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -15,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.FrozenSet;
+import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -666,6 +665,8 @@ public final class SmtLowering {
         // Held as they were made, for good.
         minted.replaceAll((version, symbols) -> FrozenSet.of(symbols));
         observed.replaceAll(FrozenSet::of);
+        Held.trimmed(byLocation);
+        Held.trimmed(readsOf);
         // A content leaf's attach -> the view it came through, and back.
         final Map<String, ViewLeaf> viewLeaves =
                 new HashMap<String, ViewLeaf>();
@@ -4709,12 +4710,6 @@ public final class SmtLowering {
         return location == null ? "" : location.key();
     }
 
-    /** The keys of the VM location nodes expressions name, one string a
-     *  key while some index holds it: each node spells its key anew, and
-     *  a session's derived reads hold them ({@code explore.Corpus}). */
-    private static final Interner<String> NODE_KEYS =
-            Interners.newWeakInterner();
-
     /** The join key of one VM location node, in the same spelling. */
     public static String locationKey(JsonObject location) {
         if (location == null || location.size() == 0) return "";
@@ -4730,8 +4725,7 @@ public final class SmtLowering {
         if (slot.isEmpty()) {
             slot = Long.toString(optionalLongInteger(location, "slot", 0L));
         }
-        return NODE_KEYS.intern(LocationId.of(locationKind(kind), owner,
-                slot).key());
+        return LocationId.of(locationKind(kind), owner, slot).key();
     }
 
     private static LocationKind locationKind(String kind) {

@@ -15,8 +15,11 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.HeapWatch;
+import edu.uva.liftlab.graphchecker.contract.IdentitySet;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -37,6 +40,7 @@ import edu.uva.liftlab.graphchecker.plan.SystemView;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -981,9 +985,10 @@ public final class ClosurePlanner {
          *  two references a handoff ({@link PairSet}), never a key spelled
          *  of both (SGF8-adhoc-05 round 5: 5.8 M of them, 1.7 GB). */
         private final PairSet paired = new PairSet();
-        /** The demanded reads whose writers it expanded. */
-        private final Set<ReadRow> expandedReads = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<ReadRow, Boolean>(1));
+        /** The demanded reads whose writers it expanded, each by its place
+         *  among its group's reads ({@link GroupReads#readAt}): the group
+         *  of a demand's walks is one, the walk's of its occurrence. */
+        private final BitSet expandedReads = new BitSet();
         /** How many of its contributed values' stated reads it expanded, in
          *  {@link #contributed}'s order (which only appends). */
         private int expandedContributed;
@@ -1190,8 +1195,8 @@ public final class ClosurePlanner {
         boolean whole = true;
         /** The decisions at its flip sites whose symbols it holds (this
          *  walk's, beside {@link #before}'s). */
-        private final Set<DecisionRow> decisions = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<DecisionRow, Boolean>());
+        private final Set<DecisionRow> decisions =
+                new IdentitySet<DecisionRow>(8);
         /** How many of the demand's contributed values' symbols it holds,
          *  in {@link Demand#contributed}'s order (which only appends). */
         int contributed;
@@ -1274,7 +1279,7 @@ public final class ClosurePlanner {
         final Demand demand;
         final List<Said> said = new ArrayList<Said>();
         /** The keys of the gaps said here ({@link #gap}). */
-        private Set<String> gaps;
+        private Set<Object> gaps;
         /** The occurrences of the successors said here, null for none: the
          *  demands taking it may grow ({@link Walk#launch}). */
         Set<String> successors;
@@ -1305,10 +1310,10 @@ public final class ClosurePlanner {
         }
 
         /** A gap made as it is taken, one per {@code key}: what it states
-         *  ({@link Walk#gapKeys}). */
-        void gap(String key, Supplier<GapRow> row) {
+         *  ({@link Walk#gapKeys}), as its parts. */
+        void gap(List<Object> key, Supplier<GapRow> row) {
             if (walk.gapKeys.contains(key)) return;
-            if (gaps == null) gaps = new HashSet<String>();
+            if (gaps == null) gaps = new HashSet<Object>();
             if (!gaps.add(key)) return;
             said.add((at, next) -> {
                 if (at.gapKeys.add(key)) at.gaps.accept(row.get());
@@ -1407,8 +1412,7 @@ public final class ClosurePlanner {
         /** Its group's reads, indexed before it ran ({@link Walk#reads}). */
         private final GroupReads group;
         private final PairSet paired = new PairSet();
-        private final Set<ReadRow> expanded = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<ReadRow, Boolean>());
+        private final BitSet expanded = new BitSet();
         private int contributed;
         private Named named;
         /** What its walk claimed of the leaves its order alone makes
@@ -1463,10 +1467,15 @@ public final class ClosurePlanner {
                     && paired.add(sessionId, symbol);
         }
 
-        /** Whether this demanded read is expanded the first time. */
-        boolean expand(ReadRow read) {
-            return !demand.expandedReads.contains(read)
-                    && expanded.add(read);
+        /** Whether this demanded read, the {@code row}th of its group's
+         *  {@code member}th member, is expanded the first time. */
+        boolean expand(int member, int row) {
+            int read = group.readAt(member, row);
+            if (demand.expandedReads.get(read) || expanded.get(read)) {
+                return false;
+            }
+            expanded.set(read);
+            return true;
         }
 
         /** {@link #unread} of an undemanded row, into {@code into}. */
@@ -1487,7 +1496,7 @@ public final class ClosurePlanner {
          *  theirs. */
         List<Demand> apply(Walk walk) {
             demand.paired.addAll(paired);
-            demand.expandedReads.addAll(expanded);
+            demand.expandedReads.or(expanded);
             demand.expandedContributed = contributed;
             demand.named = named.taken();
             demand.version++;
@@ -1520,8 +1529,10 @@ public final class ClosurePlanner {
         /** Where each gap the walk says goes, on the walk's thread. */
         private final Consumer<GapRow> gaps;
         /** The keys of the gaps that state no holder of a static site
-         *  ({@link Says#gap}): the walk says each once. */
-        private final Set<String> gapKeys = ConcurrentHashMap.newKeySet();
+         *  ({@link Says#gap}): the walk says each once.  Each its parts,
+         *  never spelled into one string (SGF8-adhoc-05 round 5: 123 K keys
+         *  of ~380 characters, 103 MB). */
+        private final Set<Object> gapKeys = ConcurrentHashMap.newKeySet();
         /** occurrence id -> its demand: the walk's ({@link #plan}), in the
          *  order admitted. */
         private final Map<String, Demand> demands =
@@ -1573,17 +1584,17 @@ public final class ClosurePlanner {
          *  group it is a member of reads them there ({@link GroupReads}). */
         private final Map<String, MemberReads> memberReads =
                 new HashMap<String, MemberReads>();
-        /** symbol, session|location key, session|object -> the members
-         *  whose rows hold it ({@link MemberReads#at}, {@link
+        /** symbol, (session, location key), (session, object) -> the
+         *  members whose rows hold it ({@link MemberReads#at}, {@link
          *  MemberReads#symbolsAt}, {@link MemberReads#returning}), in the
          *  order indexed: a group asks only them, not each of its members
          *  ({@link GroupReads}). */
         private final Map<String, MemberReads[]> naming =
                 new ConcurrentHashMap<String, MemberReads[]>();
-        private final Map<String, MemberReads[]> locating =
-                new ConcurrentHashMap<String, MemberReads[]>();
-        private final Map<String, MemberReads[]> returning =
-                new ConcurrentHashMap<String, MemberReads[]>();
+        private final Map<List<String>, MemberReads[]> locating =
+                new ConcurrentHashMap<List<String>, MemberReads[]>();
+        private final Map<List<String>, MemberReads[]> returning =
+                new ConcurrentHashMap<List<String>, MemberReads[]>();
         /** producer endpoint id -> {@link #contribution}. */
         private final Map<String, Contribution> contributions =
                 new ConcurrentHashMap<String, Contribution>();
@@ -2061,10 +2072,10 @@ public final class ClosurePlanner {
 
         /** Each key's members, a new array each time one is added: a
          *  step on the cores reads the one it got whole. */
-        private static void index(Map<String, MemberReads[]> into,
-                                  Set<String> keys, MemberReads member) {
+        private static <K> void index(Map<K, MemberReads[]> into,
+                                      Set<K> keys, MemberReads member) {
             MemberReads[] one = {member};
-            for (String key : keys) {
+            for (K key : keys) {
                 into.merge(key, one, (held, added) -> {
                     MemberReads[] grown = Arrays.copyOf(held, held.length + 1);
                     grown[held.length] = member;
@@ -2178,7 +2189,8 @@ public final class ClosurePlanner {
         // Walk#each}) and said in place.
         List<Object> expanding = new ArrayList<Object>();
         if (named.whole) {
-            for (MemberReads member : group.members) {
+            for (int place = 0; place < group.members.size(); place++) {
+                MemberReads member = group.members.get(place);
                 for (AttachRow attach : member.attaches) {
                     if (!demanded.holds(attach.symbol())) {
                         step.unread(expanding, attach.sessionId(),
@@ -2188,18 +2200,20 @@ public final class ClosurePlanner {
                         expanding.add(attach);
                     }
                 }
-                for (ReadRow row : member.rows) {
+                for (int at = 0; at < member.rows.size(); at++) {
+                    ReadRow row = member.rows.get(at);
                     if (!demanded.holds(row.symbol())) {
                         step.unread(expanding, row.sessionId(),
                                 row.endpoint(), "state read");
-                    } else if (step.expand(row)) {
+                    } else if (step.expand(place, at)) {
                         expanding.add(row);
                     }
                 }
             }
         } else {
             for (long at : group.placesOf(named.fresh)) {
-                MemberReads member = group.members.get((int) (at >>> 32));
+                int place = (int) (at >>> 32);
+                MemberReads member = group.members.get(place);
                 int item = (int) at;
                 if (item < member.attaches.size()) {
                     AttachRow attach = member.attaches.get(item);
@@ -2207,9 +2221,10 @@ public final class ClosurePlanner {
                         expanding.add(attach);
                     }
                 } else {
-                    ReadRow row = member.rows.get(item
-                            - member.attaches.size());
-                    if (step.expand(row)) expanding.add(row);
+                    int read = item - member.attaches.size();
+                    if (step.expand(place, read)) {
+                        expanding.add(member.rows.get(read));
+                    }
                 }
             }
         }
@@ -2540,13 +2555,14 @@ public final class ClosurePlanner {
         /** symbol -> the places, ascending, of the attaches and reads that
          *  name it: an attach's index, or a read's past every attach. */
         private final Map<String, int[]> at = new HashMap<String, int[]>();
-        /** session|location key -> the symbols its reads stated. */
-        private final Map<String, Set<String>> symbolsAt =
-                new HashMap<String, Set<String>>();
-        /** session|object -> the symbols of the reference reads that
+        /** (session, location key) -> the symbols its reads stated: the
+         *  pair as its two strings, never spelled into one. */
+        private final Map<List<String>, Set<String>> symbolsAt =
+                new HashMap<List<String>, Set<String>>();
+        /** (session, object) -> the symbols of the reference reads that
          *  returned that object. */
-        private final Map<String, Set<String>> returning =
-                new HashMap<String, Set<String>>();
+        private final Map<List<String>, Set<String>> returning =
+                new HashMap<List<String>, Set<String>>();
 
         private MemberReads(Corpus corpus, OccurrenceAddress member) {
             attaches = corpus.attachesOn(member);
@@ -2565,15 +2581,15 @@ public final class ClosurePlanner {
                 bySymbol.computeIfAbsent(row.symbol(),
                         symbol -> new ArrayList<ReadRow>()).add(row);
                 if (row.symbol().isEmpty()) continue;
-                symbolsAt.computeIfAbsent(row.sessionId() + "|"
-                                + SmtLowering.locationKey(row.location()),
+                symbolsAt.computeIfAbsent(Arrays.asList(row.sessionId(),
+                                SmtLowering.locationKey(row.location())),
                         key -> new LinkedHashSet<String>())
                         .add(row.symbol());
                 long object = VmRows.referencedObjectRid(
                         row.concreteValue());
                 if (object > 0L) {
-                    returning.computeIfAbsent(row.sessionId() + "|"
-                                    + object,
+                    returning.computeIfAbsent(Arrays.asList(row.sessionId(),
+                                    Long.toString(object)),
                             key -> new LinkedHashSet<String>())
                             .add(row.symbol());
                 }
@@ -2585,6 +2601,10 @@ public final class ClosurePlanner {
                 }
                 at.put(each.getKey(), held);
             }
+            // Held as they were made, for good: most hold one symbol.
+            symbolsAt.replaceAll((key, symbols) -> FrozenSet.of(symbols));
+            returning.replaceAll((key, symbols) -> FrozenSet.of(symbols));
+            Held.trimmed(bySymbol);
         }
     }
 
@@ -2608,20 +2628,33 @@ public final class ClosurePlanner {
         private final Map<MemberReads, Integer> place =
                 new java.util.IdentityHashMap<MemberReads, Integer>();
         private final Map<String, MemberReads[]> naming;
-        private final Map<String, MemberReads[]> locating;
-        private final Map<String, MemberReads[]> returning;
+        private final Map<List<String>, MemberReads[]> locating;
+        private final Map<List<String>, MemberReads[]> returning;
+
+        /** member place -> where its reads start among the group's. */
+        private final int[] readBase;
 
         private GroupReads(List<MemberReads> members,
                            Map<String, MemberReads[]> naming,
-                           Map<String, MemberReads[]> locating,
-                           Map<String, MemberReads[]> returning) {
+                           Map<List<String>, MemberReads[]> locating,
+                           Map<List<String>, MemberReads[]> returning) {
             this.members = members;
+            this.readBase = new int[members.size()];
+            int reads = 0;
             for (int index = 0; index < members.size(); index++) {
                 place.put(members.get(index), index);
+                readBase[index] = reads;
+                reads += members.get(index).rows.size();
             }
             this.naming = naming;
             this.locating = locating;
             this.returning = returning;
+        }
+
+        /** The place of the {@code row}th read of the {@code member}th
+         *  member among the group's reads, members in group order. */
+        int readAt(int member, int row) {
+            return readBase[member] + row;
         }
 
         /** Those of {@code indexed} in this group, in group order. */
@@ -2653,7 +2686,8 @@ public final class ClosurePlanner {
          */
         private void holding(ReadRow row, List<Collection<String>> into) {
             if (row.location().kind() != LocationKind.MAP) return;
-            String key = row.sessionId() + "|" + row.location().owner();
+            List<String> key = Arrays.asList(row.sessionId(),
+                    row.location().owner());
             for (MemberReads member : in(returning.get(key))) {
                 into.add(member.returning.get(key));
             }
@@ -2718,7 +2752,7 @@ public final class ClosurePlanner {
         private void under(Corpus corpus, String sessionId, String term,
                            List<Collection<String>> into) {
             for (String location : corpus.readLocations(sessionId, term)) {
-                String key = sessionId + "|" + location;
+                List<String> key = Arrays.asList(sessionId, location);
                 for (MemberReads member : in(locating.get(key))) {
                     into.add(member.symbolsAt.get(key));
                 }
@@ -3024,8 +3058,8 @@ public final class ClosurePlanner {
         step.offer(Arrays.<Object>asList(why, site, guards, node),
                 holders, why, guards, sessionId, location);
         if (!holders.isEmpty()) return;
-        step.gap(why + "|" + sessionId + "|" + site.regionId + "|"
-                + site.siteId + "|" + what + "|" + node,
+        step.gap(Arrays.<Object>asList(why, sessionId, site.regionId,
+                site.siteId, what, String.valueOf(node)),
                 () -> GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, site.regionId,
                 "a static " + (STATIC_CANDIDATE_WRITER.equals(why)
