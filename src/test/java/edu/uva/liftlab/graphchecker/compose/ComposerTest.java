@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ContentPort;
+import edu.uva.liftlab.graphchecker.contract.ExpressionLogs;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -1035,7 +1036,7 @@ public class ComposerTest {
             recorded.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                     ScheduleEvent.Kind.WAKE, PRODUCER.node().render() + "|"
                             + CausalContext.of(Role.of(role), "", 1)
-                            .render(), "tick." + role, 0, "")));
+                            .render(), "tick." + role, 0, "", "")));
         }
         RowCodec.writeJsonl(iteration.resolve("recorded_schedule.jsonl"),
                 recorded);
@@ -3129,7 +3130,7 @@ public class ComposerTest {
                         boolean focused, boolean instrumented) {
             activations.add(ActivationRow.of(id, at,
                     explored ? "task-flip" : "task-seed", focused,
-                    instrumented, threadKey));
+                    instrumented, threadKey, ActivationRow.ClaimKind.NONE, null));
         }
 
         /** One more activation, placing the sender its anchor names. */
@@ -3298,7 +3299,7 @@ public class ComposerTest {
 
         void target(String phi, boolean observedFatal, boolean reached) {
             targets.add(TargetRow.of(id, ++seq, occurrence, anchorLabel, phi,
-                    observedFatal, reached));
+                    observedFatal, reached, null));
         }
 
         /** The label its target rows state ({@link #target}). */
@@ -3317,7 +3318,7 @@ public class ComposerTest {
         void forcedTarget(long at, String phi) {
             forced = true;
             targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
-                    false, true).forced());
+                    false, true, null).forced());
         }
 
         /** Whether this session states it ran forced. */
@@ -3337,8 +3338,7 @@ public class ComposerTest {
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
-            RowCodec.writeExpressions(dir.expressions(),
-                    ExpressionTable.of(expressions));
+            ExpressionLogs.write(dir.expressions(), expressions);
             // The fixture STATES the role, as a campaign's own session
             // manifest does: an exploration replay is FOCUSED under the
             // obligation it ran, the recording is SEED.

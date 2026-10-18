@@ -165,10 +165,6 @@ public final class RowCodec {
         return json;
     }
 
-    public static Endpoint readEndpoint(JsonObject json) {
-        return readEndpoint(json, new RowPool());
-    }
-
     /** An endpoint, held once per pool, its id with it: a session's rows
      *  name each a few times (SGF8-adhoc-05 round 5: 4.6 M endpoints and
      *  4.3 M ids held, 0.36 M distinct), and a slot table's pairings the
@@ -909,19 +905,6 @@ public final class RowCodec {
                 if (!each.test(line)) return;
             }
         }
-    }
-
-    /** A whole table as one session's expression log. */
-    public static void writeExpressions(Path file, ExpressionTable table)
-            throws IOException {
-        SessionExpressionLog.Writer log = new SessionExpressionLog.Writer();
-        List<JsonObject> lines = new ArrayList<>();
-        lines.add(SessionExpressionLog.header());
-        for (Map.Entry<String, JsonObject> entry
-                : table.expressions().entrySet()) {
-            lines.addAll(log.lines(entry.getKey(), entry.getValue()));
-        }
-        writeJsonl(file, lines);
     }
 
     /** The role this session states, as one JSON object. */

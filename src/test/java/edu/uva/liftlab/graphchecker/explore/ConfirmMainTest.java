@@ -13,6 +13,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ExpressionLogs;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
@@ -126,7 +127,7 @@ public class ConfirmMainTest {
                         "2000")), RowCodec::writeRootMint);
         RowCodec.writeAll(sel.targets(), Collections.singletonList(
                 TargetRow.of("sel", 40L, anchor, "<a.Handler: void handle()>"
-                        + "#u8#1", "EXPR.phi", true, true)),
+                        + "#u8#1", "EXPR.phi", true, true, null)),
                 RowCodec::writeTarget);
         RowCodec.writeAll(sel.writes(), Collections.singletonList(
                 WriteRow.of("sel", 10L, writer, CELL, 5L, "EXPR.w", "I")),
@@ -196,7 +197,8 @@ public class ConfirmMainTest {
 
     private static void manifest(SessionDir dir, SessionManifest.Role role)
             throws Exception {
-        RowCodec.writeExpressions(dir.expressions(), ExpressionTable.empty());
+        ExpressionLogs.write(dir.expressions(),
+                Collections.<String, JsonObject>emptyMap());
         RowCodec.writeManifest(dir.manifest(), SessionManifest.of(
                 dir.sessionId(), role, role == SessionManifest.Role.SEED
                         ? Collections.<String>emptyList()
@@ -206,7 +208,7 @@ public class ConfirmMainTest {
     private static JsonObject event(long seq, String site,
                                     String occurrence) {
         return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq,
-                ScheduleEvent.Kind.SEND, "node|Root:X", site, 0, occurrence));
+                ScheduleEvent.Kind.SEND, "node|Root:X", site, 0, occurrence, ""));
     }
 
     private Path claim(String movedCell) throws Exception {
@@ -368,7 +370,7 @@ public class ConfirmMainTest {
         SessionDir sel = SessionDir.of(iteration, "sel");
         RowCodec.writeAll(sel.targets(), Collections.singletonList(
                 TargetRow.of("sel", 40L, anchor, "<a.Handler: void handle()>"
-                        + "#u8#1", "EXPR.phi", false, true).forced()),
+                        + "#u8#1", "EXPR.phi", false, true, null).forced()),
                 RowCodec::writeTarget);
         manifest(sel, SessionManifest.Role.FORCED);
         RowCodec.writeJsonl(SessionDir.of(iteration, "seed").schedule(),

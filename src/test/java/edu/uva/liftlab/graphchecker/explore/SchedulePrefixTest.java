@@ -86,7 +86,7 @@ public class SchedulePrefixTest {
     private static JsonObject row(long seq, ScheduleEvent.Kind kind,
                                   String site, String occurrence) {
         return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq, kind,
-                "node|Root:X", site, 0, occurrence));
+                "node|Root:X", site, 0, occurrence, ""));
     }
 
     private static List<String> sites(Path file) throws Exception {

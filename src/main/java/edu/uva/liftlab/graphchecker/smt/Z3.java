@@ -316,10 +316,6 @@ public final class Z3 {
             notifyAll();
         }
 
-        synchronized int held() {
-            return held;
-        }
-
         /** Whether a run waits for its turn: one holding slots gives them
          *  back between questions ({@code Z3Incremental}). */
         synchronized boolean contended() {
@@ -492,11 +488,6 @@ public final class Z3 {
     /** The memory cap, in MB, each z3 of this solver starts under. */
     public int capMb() {
         return slotMb - MISSED_MB;
-    }
-
-    /** What the slots of this solver's room's running z3s hold, in MB. */
-    int roomHeldMb() {
-        return room.held();
     }
 
     /** The room this solver's z3s hold their slots in. */

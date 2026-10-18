@@ -138,11 +138,6 @@ public final class ScheduleEvent extends Value {
     }
 
     public static ScheduleEvent of(long seq, Kind kind, String context,
-                                   String site, int k, String occurrence) {
-        return of(seq, kind, context, site, k, occurrence, "");
-    }
-
-    public static ScheduleEvent of(long seq, Kind kind, String context,
                                    String site, int k, String occurrence,
                                    String endpoint) {
         return of(seq, kind, context, site, k, occurrence, endpoint, 0L);

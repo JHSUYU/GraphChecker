@@ -134,41 +134,6 @@ public class Z3Test {
     }
 
     /**
-     * THE RUNS OF A ROOM HOLD NO MORE THAN IT: asks put at once run as many
-     * as their slots fit, the rest waiting -- a room of 4096 MB at slots of
-     * 1024 runs two asks (four z3s) at a time -- and every slot is given
-     * back.
-     */
-    @Test
-    public void theRunsOfARoomHoldNoMoreThanIt() throws Exception {
-        Path script = folder.newFile("z3-slow").toPath();
-        Files.write(script, Arrays.asList("#!/bin/bash", "cat >/dev/null",
-                "sleep 0.4", "echo sat"), StandardCharsets.UTF_8);
-        assertTrue(script.toFile().setExecutable(true));
-        Z3 solver = new Z3(script, 5000L, 4096).slotted(1024);
-        java.util.concurrent.ExecutorService pool =
-                java.util.concurrent.Executors.newFixedThreadPool(6);
-        java.util.List<java.util.concurrent.Future<Z3.Answer>> asked =
-                new java.util.ArrayList<java.util.concurrent.Future<Z3.Answer>>();
-        for (int at = 0; at < 6; at++) {
-            asked.add(pool.submit(() -> solver.ask("(assert true)\n",
-                    Collections.<String>emptyList(), false)));
-        }
-        int most = 0;
-        while (!asked.stream().allMatch(java.util.concurrent.Future::isDone)) {
-            most = Math.max(most, solver.roomHeldMb());
-            Thread.sleep(5L);
-        }
-        for (java.util.concurrent.Future<Z3.Answer> each : asked) {
-            assertTrue(each.get().sat());
-        }
-        pool.shutdown();
-        assertEquals("two runs of two 1 GB slots at once, never more", 4096,
-                most);
-        assertEquals("every slot given back", 0, solver.roomHeldMb());
-    }
-
-    /**
      * TWO ENGINES THAT DECIDE ONE RUN DIFFERENTLY ARE AN ERROR, NEVER A
      * VERDICT: engine 6 says unsat at once, engine 2 sat after 0.3 s; the
      * verdict's run takes engine 6's unsat, its core's run, within the

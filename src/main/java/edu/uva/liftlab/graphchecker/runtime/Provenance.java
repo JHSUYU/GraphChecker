@@ -447,16 +447,6 @@ final class Provenance {
         SKIPPED.set(0L);
     }
 
-    /** Objects decodes skipped as no product of theirs (tests). */
-    static long skipped() {
-        return SKIPPED.get();
-    }
-
-    /** Provenance reads of an object no decode registered (tests). */
-    static long unregistered() {
-        return UNREGISTERED.get();
-    }
-
     /** Objects a decode reached that another version holds, holders built
      *  from two decodes, members it could not read (tests). */
     static long shared() {

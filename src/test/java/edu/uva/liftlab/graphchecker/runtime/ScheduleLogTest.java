@@ -231,9 +231,9 @@ public class ScheduleLogTest {
             throws Exception {
         ScheduleEvent event = ScheduleEvent.of(7L, RECV,
                 "hdfs/nn0#epoch0|Anchor:ab12@HADOOP_IPC/heartbeat",
-                "HADOOP_IPC#REQUEST", 3, "occ-1");
+                "HADOOP_IPC#REQUEST", 3, "occ-1", "");
         ScheduleEvent bare = ScheduleEvent.of(0L, WAKE, "",
-                "tick.KEY_MANAGER_TICK", 0, "");
+                "tick.KEY_MANAGER_TICK", 0, "", "");
         String last = RowCodec.toLine(RowCodec.writeScheduleEvent(bare));
         Path file = Files.createTempFile("schedule", ".jsonl");
         Files.write(file, (RowCodec.toLine(RowCodec.writeScheduleEvent(event))
@@ -438,7 +438,7 @@ public class ScheduleLogTest {
     }
 
     private static ScheduleEvent publish(String node, String site) {
-        return ScheduleEvent.of(0L, PUBLISH, node + "|VIEW", site, 0, "");
+        return ScheduleEvent.of(0L, PUBLISH, node + "|VIEW", site, 0, "", "");
     }
 
     private static LocationId view(String node, String path) {
@@ -825,7 +825,7 @@ public class ScheduleLogTest {
                                               String occurrence) {
         return ScheduleEvent.of(0L, kind,
                 ScheduleLog.contextOf(Identity.contextHere()), site, 0,
-                occurrence);
+                occurrence, "");
     }
 
     /** A thread that makes one event, blocking for its turn; started. */

@@ -54,11 +54,6 @@ public final class Parallel {
     private Parallel() {
     }
 
-    /** The cores this JVM computes on: one unless its main said more. */
-    public static int width() {
-        return width;
-    }
-
     /** How many small files' directories are read at once: {@link
      *  #READS}, or {@link #width} where that is more. */
     public static int directoriesAtOnce() {

@@ -531,7 +531,7 @@ public class ContractTest {
                 RootCategory.HOOK, "3", "3", "6", true, null, 0L);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
-                true);
+                true, null);
         GapRow gap = GapRow.of("s-17897-1", GapKind.LINEAGE_LOST,
                 GapClass.DIAGNOSTIC, export.id(),
                 "the exporter ran outside any attributable scope");
@@ -569,7 +569,7 @@ public class ContractTest {
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.
         ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
-                false, false, "KeyManager-1#13");
+                false, false, "KeyManager-1#13", ActivationRow.ClaimKind.NONE, null);
         ActivationRow ambientBack = RowCodec.readActivation(
                 reline(RowCodec.writeActivation(ambient)), new RowPool());
         assertEquals(ambient, ambientBack);
@@ -692,11 +692,9 @@ public class ContractTest {
         expression.addProperty("name", "root_serial_no");
         Map<String, JsonObject> expressions = new LinkedHashMap<>();
         expressions.put("EXPR.v1.9f2c", expression);
-        RowCodec.writeExpressions(session.expressions(),
-                ExpressionTable.of(expressions));
-        assertEquals(ExpressionTable.of(expressions),
-                SessionExpressionLog.read(session.expressions(),
-                        new RowPool()));
+        ExpressionLogs.write(session.expressions(), expressions);
+        assertEquals(expressions, SessionExpressionLog.read(
+                session.expressions(), new RowPool()).expressions());
         assertEquals(Collections.singletonList(session),
                 SessionDir.sessionsIn(root));
 
@@ -774,21 +772,21 @@ public class ContractTest {
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 index(frame(RUN, 0)));
         unreached.activations.add(ActivationRow.of("s-gate", other, "t",
-                false, true, "DataXceiver-8#42"));
+                false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
         unreached.targets.add(TargetRow.of("s-gate", 0L, unreached.anchor,
-                "Guard#u8", "", false, false));
+                "Guard#u8", "", false, false, null));
         unreached.targets.add(TargetRow.of("s-gate", 0L, other, "Guard#u8",
-                "", false, false));
+                "", false, false, null));
         assertTrue("an unreached anchor is one row per occurrence: "
                 + names(gate(unreached)), noViolation(gate(unreached), 4));
         // Nor does a concrete decision: it stands after the last VM event,
         // which two occurrences can share.
         Rows decided = clean();
         decided.activations.add(ActivationRow.of("s-gate", other, "t",
-                false, true, "DataXceiver-8#42"));
+                false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
         decided.targets.add(TargetRow.of("s-gate",
                 decided.targets.get(0).seq(), other, "Guard#u8", "", false,
-                true));
+                true, null));
         assertTrue("two occurrences deciding concretely after one event: "
                 + names(gate(decided)), noViolation(gate(decided), 4));
         // A store read is one reader's read of one version: two nodes'
@@ -801,7 +799,7 @@ public class ContractTest {
                 {"the same read", null, 4L, false}}) {
             Rows stored = clean();
             stored.activations.add(ActivationRow.of("s-gate", other, "t",
-                    false, true, "DataXceiver-8#42"));
+                    false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
             Endpoint first = Endpoint.of(stored.anchor, "Guard#u3:READ",
                     stored.readAt.siteIndex(), 0);
             Endpoint reader = each[1] == null ? first
@@ -931,7 +929,7 @@ public class ContractTest {
         for (Object[] row : nine) {
             Rows stated = clean();
             stated.targets.set(0, TargetRow.of("s-gate", 15L, stated.anchor,
-                    "Guard#u8", (String) row[0], (Boolean) row[1], true));
+                    "Guard#u8", (String) row[0], (Boolean) row[1], true, null));
             if (row[2] == null) {
                 assertTrue("phi " + row[0] + " on the " + (Boolean.TRUE.equals(
                                 row[1]) ? "fatal" : "healthy") + " arm: "
@@ -1112,8 +1110,7 @@ public class ContractTest {
             RowCodec.writeAll(dir.exports(), exports, RowCodec::writeExport);
             RowCodec.writeAll(dir.attaches(), attaches,
                     RowCodec::writeAttach);
-            RowCodec.writeExpressions(dir.expressions(),
-                    ExpressionTable.of(expressions));
+            ExpressionLogs.write(dir.expressions(), expressions);
             // The fixture STATES the role, as a campaign's own session
             // manifest does.
             boolean focused = false;
@@ -1147,7 +1144,7 @@ public class ContractTest {
                 "INSTANCE_FIELD/2#24" + RowInvariants.PLACEHOLDER + "0:READ",
                 site, 0);
         rows.activations.add(ActivationRow.of("s-gate", rows.anchor, "t", false,
-                true, "DataXceiver-7#41"));
+                true, "DataXceiver-7#41", ActivationRow.ClaimKind.NONE, null));
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, RootCategory.FAULT,
@@ -1175,7 +1172,7 @@ public class ContractTest {
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
                 7L, "M_I_field_" + REGION + ".in.a1", "I", "2", 8L));
         rows.targets.add(TargetRow.of("s-gate", 15L, rows.anchor, "Guard#u8",
-                "EXPR.0000000000000001", true, true));
+                "EXPR.0000000000000001", true, true, null));
         return rows;
     }
 

@@ -102,21 +102,6 @@ public final class ExpressionTable extends Value {
         }
     }
 
-    /** A table of these objects, each ref's DAG as identity shares it: the
-     *  table a log of them states ({@link SessionExpressionLog.Writer}). */
-    public static ExpressionTable of(Map<String, JsonObject> expressions) {
-        Builder table = new Builder();
-        SessionExpressionLog.Writer log = new SessionExpressionLog.Writer();
-        for (Map.Entry<String, JsonObject> entry : Fields.copy(expressions)
-                .entrySet()) {
-            for (JsonObject line : log.lines(entry.getKey(),
-                    entry.getValue())) {
-                SessionExpressionLog.take(table, line);
-            }
-        }
-        return table.build();
-    }
-
     /** The empty table: a session that propagated nothing. */
     public static ExpressionTable empty() {
         return EMPTY;

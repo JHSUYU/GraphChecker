@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.ExpressionLogs;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -937,14 +938,14 @@ public class ExploreTest {
                 ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                         ScheduleEvent.Kind.PUBLISH, producer.node().render()
                                 + "|VIEW", ScheduleEvent.published("SOLR_ZK",
-                                "/collections/c/state.json", 3L), 0, "")));
+                                "/collections/c/state.json", 3L), 0, "", "")));
                 if (recorded > 0) {
                     ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                             ScheduleEvent.Kind.WAKE, producer.node().render()
                                     + "|" + CausalContext.of(Role.of(
                                     "KEY_MANAGER_TICK"), "", recorded)
                                     .render(), "tick.KEY_MANAGER_TICK", 0,
-                            "")));
+                            "", "")));
                 }
                 RowCodec.writeJsonl(iteration.resolve(
                         "recorded_schedule.jsonl"), ticks);
@@ -2354,7 +2355,7 @@ public class ExploreTest {
                     ScheduleEvent.Kind.PUBLISH, restore.node().render()
                             + "|" + ContextShape.Stance.VIEW_STANCE,
                     ScheduleEvent.published("SOLR_ZK",
-                            "/collections/t/state.json", 2L), 0, "")));
+                            "/collections/t/state.json", 2L), 0, "", "")));
             if (taken) {
                 schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
                         ScheduleEvent.Kind.RECV, ContextShape.Stance.of(
@@ -2438,7 +2439,7 @@ public class ExploreTest {
                                 boolean instrumented, String thread) {
             activations.add(ActivationRow.of(sessionId, occurrence,
                     "task-" + occurrence.regionId(), focused, instrumented,
-                    thread));
+                    thread, ActivationRow.ClaimKind.NONE, null));
         }
 
         /** Several occurrences, each its own activation. */
@@ -2470,7 +2471,7 @@ public class ExploreTest {
         private void target(OccurrenceAddress occurrence, String site,
                             String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
-                    false, true));
+                    false, true, null));
         }
 
         /** The key lookup's anchor: fatal where the key read was 0. */
@@ -2483,7 +2484,7 @@ public class ExploreTest {
         private void fatal(OccurrenceAddress occurrence, String site,
                            String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
-                    true, true));
+                    true, true, null));
         }
 
         private void root(OccurrenceAddress occurrence, String rootId,
@@ -2618,8 +2619,7 @@ public class ExploreTest {
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
-            RowCodec.writeExpressions(dir.expressions(),
-                    ExpressionTable.of(expressions));
+            ExpressionLogs.write(dir.expressions(), expressions);
             // The fixture STATES the role, as a campaign's own session
             // manifest does.
             boolean focused = false;

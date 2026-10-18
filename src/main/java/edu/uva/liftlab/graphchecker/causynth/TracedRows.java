@@ -76,12 +76,6 @@ public final class TracedRows {
      *  "" for rows built from no files. */
     final String digest;
 
-    TracedRows(Collection<StaticProgram.RegionRow> skeletons,
-               StaticScopeMap scopeMap,
-               Collection<Map<String, Object>> graph) {
-        this(skeletons, scopeMap, graph, "");
-    }
-
     private TracedRows(Collection<StaticProgram.RegionRow> skeletons,
                        StaticScopeMap scopeMap,
                        Collection<Map<String, Object>> graph,

@@ -69,14 +69,6 @@ public final class ActivationRow extends Value {
         this.anchorProducer = anchorProducer;
     }
 
-    public static ActivationRow of(String sessionId,
-                                   OccurrenceAddress occurrence, String taskId,
-                                   boolean focused, boolean instrumented,
-                                   String threadKey) {
-        return of(sessionId, occurrence, taskId, focused, instrumented,
-                threadKey, ClaimKind.NONE, null);
-    }
-
     /** The same, stating the kind of the claim it runs in and the endpoint
      *  that sent the message whose receipt the occurrence's anchor names,
      *  when this run sent it. */

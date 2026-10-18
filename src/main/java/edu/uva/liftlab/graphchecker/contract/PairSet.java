@@ -47,10 +47,6 @@ public final class PairSet {
         }
     }
 
-    public int size() {
-        return size;
-    }
-
     private static boolean put(Object[] slots, Object first, Object second) {
         int mask = slots.length / 2 - 1;
         for (int at = hash(first, second) & mask; ; at = (at + 1) & mask) {

@@ -54,10 +54,6 @@ public final class VersionMap<V> {
         }
     }
 
-    public int size() {
-        return size;
-    }
-
     private void slot(String key, long version, Object value) {
         if (key == null || value == null) {
             throw new NullPointerException(key + "#" + version);

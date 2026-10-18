@@ -463,11 +463,6 @@ public final class SessionReader {
         return bytes;
     }
 
-    /** The directory it was read from. */
-    SessionDir directory() {
-        return directory;
-    }
-
     public List<RootMintRow> roots() {
         return roots;
     }

@@ -274,10 +274,6 @@ public final class SlotTable {
         changes.clear();
     }
 
-    public List<Slot> slots() {
-        return new ArrayList<Slot>(byInteraction.values());
-    }
-
     public int size() {
         return byInteraction.size();
     }
