@@ -86,11 +86,6 @@ public class EndOfRunTest {
                 .contains("\"obligationId\":\"OB\""));
     }
 
-    /**
-     * A replay ends at its window's close: the test's thread closing its
-     * window goes no further -- its teardown never runs -- and the run ends
-     * as at the workload's own end, its verdict stated, status 0.
-     */
     @Test
     public void aReplayEndsAtItsWindowsCloseAndRunsNoTeardown()
             throws Exception {

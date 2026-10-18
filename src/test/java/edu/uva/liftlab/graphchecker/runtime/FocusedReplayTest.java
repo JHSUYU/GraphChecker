@@ -300,12 +300,6 @@ public class FocusedReplayTest {
         }
     }
 
-    /**
-     * A WINDOW'S CLOSE ({@code JUnitMethodRunner#endAtWindowClose}) ends
-     * the run as at the workload's own end: no stall decides anything after
-     * it, and a faithful world never entered is still refuted.  Inside the window the same stand is the stall,
-     * which decides a replay no flip of which was taken.
-     */
     @Test
     public void aWindowsCloseEndsTheRunAsTheWorkloadsEnd() throws Exception {
         String still = "nothing new for 300 s";

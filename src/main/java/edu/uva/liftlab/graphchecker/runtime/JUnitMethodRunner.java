@@ -115,23 +115,6 @@ public final class JUnitMethodRunner {
         halt(code);
     }
 
-    /**
-     * A concolic replay's window closed ({@code CausynthTraceRecorder
-     * #stopRecording}): its test is over, and the run ends there, as at the
-     * workload's own end ({@link #exit}, on a thread of its own, as an
-     * early end runs): the activations still live settle on the settle's
-     * bound while the cluster stays up, and the calling thread -- the
-     * test's, closing its window before its teardown -- goes no further
-     * until the halt.  No occurrence is admitted after the close ({@code
-     * ConcolicTaskPlan#select}) and the recording states nothing after it,
-     * so the teardown answers nothing any stage asks (PIPELINE §5); run, it
-     * cost a Solr replay minutes past the close (07 reproductions: 142-354 s
-     * from the close to the statement), its shutdown's rows pairings no
-     * replay of the question can realize (versions written after the test
-     * ended).  The close settles the order ({@code ScheduleLog
-     * #windowClosed}), so a second window would find it settled already
-     * (every Solr recording opens one).
-     */
     static void endAtWindowClose() {
         FocusedReplay.windowClosed();
         EngineConsole.println("Causynth " + java.time.Instant.now()
@@ -145,8 +128,6 @@ public final class JUnitMethodRunner {
         }
     }
 
-    /** Waits for the end some thread runs to halt the JVM; holds
-     *  {@link #ENDING}'s monitor, which the wait gives up. */
     private static void standUntilHalt() {
         while (true) {
             try {

@@ -861,8 +861,6 @@ public final class FocusedReplay {
     /** Whether the workload ended by itself ({@link #workloadEnded}), or
      *  its test was over at its window's close ({@link #windowClosed}). */
     private static volatile boolean workloadEnded;
-    /** Whether the run ended at its window's close ({@link
-     *  #windowClosed}), not at its method's end. */
     private static volatile boolean endedAtClose;
     /** Its terminating throwable, its innermost frame and the test
      *  method's frame it passed; "" where none. */
@@ -894,16 +892,6 @@ public final class FocusedReplay {
         workloadEnded = true;
     }
 
-    /**
-     * The workload's test is over: its window closed, and a replay ends
-     * there ({@code JUnitMethodRunner#endAtWindowClose}) as at the
-     * workload's own end -- nothing decided, every verdict settled as there,
-     * a faithful world never entered refuted, its (d) naming the close.  No
-     * occurrence is admitted after the close ({@code ConcolicTaskPlan
-     * #select}), so the close is as final for the question as the method's
-     * end; the teardown the test would run next answers nothing it asked.
-     * Not after a refusal or a stall already ended the run.
-     */
     static void windowClosed() {
         synchronized (LOCK) {
             if (workloadEnded || !refusedAt.isEmpty()
