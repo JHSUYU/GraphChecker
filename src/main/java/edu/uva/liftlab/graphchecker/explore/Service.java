@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.HeapWatch;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.io.IOException;
@@ -54,7 +55,9 @@ import java.util.List;
  * service's.  An answerer that cannot hold what a question needs ({@link
  * Outgrown}: the corpus outgrew the heap it was started for) gives the
  * question back untaken and the service ends at once, naming itself
- * {@code retired}, so its askers start one sized anew.</p>
+ * {@code retired}, so its askers start one sized anew; one that no heap it
+ * could be given holds ({@link OutOfHeap}) answers it so, exit {@link
+ * HeapWatch#OUT_OF_HEAP}, and serves on.</p>
  */
 final class Service {
     static final String LOCK = "lock";
@@ -83,6 +86,18 @@ final class Service {
         private static final long serialVersionUID = 1L;
 
         Outgrown(String why) {
+            super(why);
+        }
+    }
+
+    /** An answerer's answer that the question needs more heap than any JVM
+     *  of it is given: answered {@link HeapWatch#OUT_OF_HEAP}, why its
+     *  error, the service serving on (a served planner already at the
+     *  engine heap, {@code ExploreMain}). */
+    static final class OutOfHeap extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        OutOfHeap(String why) {
             super(why);
         }
     }
@@ -145,18 +160,23 @@ final class Service {
             return;
         }
         String error = "";
+        int exit = 0;
         try {
             answerer.answer(asked, dir.resolve(OUT).resolve(name));
         } catch (Outgrown outgrown) {
             // Untaken: its asker sees it still waiting.
             Files.move(taken, question, StandardCopyOption.ATOMIC_MOVE);
             throw outgrown;
+        } catch (OutOfHeap past) {
+            error = past.getMessage();
+            exit = HeapWatch.OUT_OF_HEAP;
         } catch (Exception | Error failed) {
             failed.printStackTrace();
             error = deepest(failed).toString();
+            exit = 1;
         }
         JsonObject answer = new JsonObject();
-        answer.addProperty("exit", error.isEmpty() ? 0 : 1);
+        answer.addProperty("exit", exit);
         answer.addProperty("error", error);
         Path written = dir.resolve(ANSWERS).resolve("." + name + ".part");
         Files.write(written, (answer + "\n").getBytes(StandardCharsets.UTF_8));

@@ -2063,7 +2063,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** {@link #sessions} and the forced ones, as read. */
-    private List<SessionReader> everySession() {
+    List<SessionReader> everySession() {
         List<SessionReader> every = new ArrayList<SessionReader>(sessions);
         every.addAll(forcedSessions);
         return every;
