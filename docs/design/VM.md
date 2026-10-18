@@ -645,10 +645,16 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   than the last one it imported, of another session, or of another authority (an image whose
   read-out restates every definition: `vm-force8` and older, which the broker refuses first,
   `ConcolicVmBroker#requireCurrentCapabilities`: `readOutTrackedLocations`), and a page of
-  another schema files nothing (`SharedStateCapture#decodePage`); a gap in the sequence (a page
-  lost between the VM and the decoder) is no refusal by itself: a record naming a node only the
-  lost table defined is refused where it expands ("missing VM expression definition"). A
-  definition the channel sent stays in the store until a record expands it.
+  another schema files nothing (`SharedStateCapture#decodePage`). Every row of a table that reads
+  goes into the store first, whatever else of the table fails, and a node a row names is looked
+  for only when a record expands it, so one lost table costs only the records naming its nodes,
+  never the later tables. The store remembers every table never imported (`Store#readOutLosses`):
+  a gap in the sequence, a table that failed, a page whose native call threw after the VM may have
+  registered it (`Store#readOutLost`). A page that then fails to decode -- a record naming a node
+  only a lost table defined ("missing VM expression definition") -- files a BLOCKING
+  `ENGINE_FAULT` naming the lost tables (`SharedStateCapture#lostTable`), not a diagnostic: its
+  later records are missing writers. A definition the channel sent stays in the store until a
+  record expands it.
   An activation's publication waits for its own pages (`SharedStateCapture.SharedStateReadOut
   #awaitDecoded`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`, its
   conditions then the closure's table) is read as a self-contained envelope

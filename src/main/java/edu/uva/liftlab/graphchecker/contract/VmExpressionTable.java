@@ -201,6 +201,14 @@ public final class VmExpressionTable {
             return rawResolver.marked;
         }
 
+        public void readOutLost(String what) {
+            rawResolver.lost(what);
+        }
+
+        public String readOutLosses() {
+            return rawResolver.losses();
+        }
+
         /**
          * The records read-out pages decoded, one memo per decoding type
          * ({@link Repeats}): a memo holds the decodings of its own type
@@ -361,6 +369,7 @@ public final class VmExpressionTable {
          *  table imported from it; guarded by this. */
         private long readOutSession;
         private long readOutSequence;
+        private final List<String> lost = new ArrayList<>();
 
         private RawResolver(Predicate<String> plumbing) {
             super("VM expression");
@@ -473,17 +482,20 @@ public final class VmExpressionTable {
                 String page, String records, Predicate<JsonObject> admit,
                 Repeats<T> repeats, Function<JsonElement, T> decode,
                 Consumer<? super T> each, Executor helpers, int helping) {
-            JsonObject header = new JsonObject();
-            List<int[]> extents = new ArrayList<>();
-            List<Held<T>> held = new ArrayList<>();
-            int tabled = topLevel(page, records, header, extents, held,
-                    repeats);
-            if (tabled < 0) {
+            int table = page.lastIndexOf(TABLE_KEY);
+            if (table < 0) {
+                lost("a page with no expression table");
                 throw new IllegalArgumentException(
                         "a VM read-out page states no expression table");
             }
-            readChannelTable(page, Math.max(0, tabled - 1), helpers,
-                    helping);
+            readChannelTable(page, table, helpers, helping);
+            JsonObject header = new JsonObject();
+            List<int[]> extents = new ArrayList<>();
+            List<Held<T>> held = new ArrayList<>();
+            if (topLevel(page, records, header, extents, held, repeats) < 0) {
+                throw new IllegalArgumentException(
+                        "malformed VM read-out page");
+            }
             header.addProperty(RECORD_COUNT, extents.size());
             if (!admit.test(header)) return header;
             int fresh = 0;
@@ -768,7 +780,7 @@ public final class VmExpressionTable {
         private void readTable(String page, int from, Set<RawKey> supplied,
                                Map<RawKey, JsonObject> table) {
             JsonObject stated = readRows(page, from, AUTHORITY, supplied,
-                    table, null, 0);
+                    table, null, 0, null);
             if (stated == null) {
                 throw new IllegalArgumentException(
                         "unsupported VM expression table schema");
@@ -778,54 +790,99 @@ public final class VmExpressionTable {
         /**
          * A read-out page's table ({@link #READ_OUT_AUTHORITY}): the
          * channel's next, numbered after the last one imported -- an older
-         * one is refused, a gap is not (a record naming a node only a table
-         * never imported defined is refused when it expands) -- and of the
-         * session the channel's first table named.  Its rows are checked
-         * closed over this table, the definitions the channel sent before
-         * and the nodes expanded, then held until a record expands them.
+         * one, or one of another session, is refused -- its rows held until
+         * a record expands them.  Every row that reads is held, whatever
+         * else of the table fails, and a node a row names is looked for only
+         * when a record expands it.  A table never imported -- a gap in the
+         * numbering, a table that failed, a page lost on its way ({@link
+         * Store#readOutLost}) -- is remembered ({@link #losses}): a record
+         * naming a node only it defined fails where it expands.
          */
         private synchronized void readChannelTable(String page, int from,
                                                    Executor helpers,
                                                    int helping) {
+            long sequence = -1L;
+            try {
+                JsonObject stated = tableHeader(page, from);
+                if (!channelTable(stated)) {
+                    throw new IllegalArgumentException("a VM read-out page"
+                            + " whose table is no table of the read-out"
+                            + " channel (" + READ_OUT_AUTHORITY + "): an"
+                            + " image whose read-out restates every"
+                            + " definition?");
+                }
+                long session = exactNonNegativeLong(stated, "sessionId");
+                long numbered = exactNonNegativeLong(stated, "sequence");
+                if (readOutSession != 0L && session != readOutSession
+                        || numbered <= readOutSequence) {
+                    throw new IllegalStateException("VM read-out table "
+                            + numbered + " of session " + session
+                            + " after table " + readOutSequence
+                            + " of session " + readOutSession);
+                }
+                sequence = numbered;
+                if (sequence > readOutSequence + 1L) {
+                    lost("table(s) " + (readOutSequence + 1L)
+                            + (sequence > readOutSequence + 2L
+                            ? "-" + (sequence - 1L) : "")
+                            + " never reached the decoder");
+                }
+                readOutSession = session;
+                readOutSequence = sequence;
+            } catch (IllegalStateException older) {
+                throw new IllegalArgumentException(older.getMessage());
+            } catch (RuntimeException | Error unread) {
+                lost("a table: " + unread);
+                throw unread;
+            }
             Map<RawKey, JsonObject> table = new HashMap<>();
-            JsonObject stated = readRows(page, from, READ_OUT_AUTHORITY,
-                    new HashSet<RawKey>(), table, helpers, helping);
-            if (stated == null) {
-                throw new IllegalArgumentException("a VM read-out page"
-                        + " whose table is no table of the read-out"
-                        + " channel (" + READ_OUT_AUTHORITY + "): an image"
-                        + " whose read-out restates every definition?");
+            List<Throwable> failed = new ArrayList<>();
+            try {
+                readRows(page, from, READ_OUT_AUTHORITY, new HashSet<RawKey>(),
+                        table, helpers, helping, failed);
+            } catch (RuntimeException | Error unread) {
+                failed.add(unread);
             }
-            long session = exactNonNegativeLong(stated, "sessionId");
-            long sequence = exactNonNegativeLong(stated, "sequence");
-            if (readOutSession != 0L && session != readOutSession) {
-                throw new IllegalArgumentException("a VM read-out table of"
-                        + " session " + session + " in the store of session "
-                        + readOutSession);
-            }
-            if (sequence <= readOutSequence) {
-                throw new IllegalArgumentException("VM read-out table "
-                        + sequence + " after table " + readOutSequence
-                        + ": tables are imported in the order the VM"
-                        + " numbered them");
-            }
-            SharedExpressionTable.Dag<RawKey> dag =
-                    new SharedExpressionTable.Dag<>("VM expression",
-                            key -> table.containsKey(key) ? table.get(key)
-                                    // Pending before expanded: a node is
-                                    // expanded before its pending definition
-                                    // is let go.
-                                    : pending.containsKey(key)
-                                            || expanded(key) ? CLOSED : null,
-                            RawResolver::references);
-            for (RawKey key : table.keySet()) dag.require(key);
             for (Map.Entry<RawKey, JsonObject> row : table.entrySet()) {
                 if (!expanded(row.getKey())) {
                     pending.putIfAbsent(row.getKey(), row.getValue());
                 }
             }
-            readOutSession = session;
-            readOutSequence = sequence;
+            if (!failed.isEmpty()) {
+                lost("table " + sequence + ": " + failed.get(0));
+                throw rethrown(failed.get(0));
+            }
+        }
+
+        private synchronized void lost(String what) {
+            lost.add(what);
+        }
+
+        private synchronized String losses() {
+            int shown = Math.min(lost.size(), 4);
+            return lost.isEmpty() ? "" : String.join("; ",
+                    lost.subList(0, shown)) + (lost.size() > shown
+                    ? "; and " + (lost.size() - shown) + " more" : "");
+        }
+
+        private static boolean channelTable(JsonObject stated) {
+            return optionalInteger(stated, "schemaVersion", -1) == 1
+                    && KIND.equals(optionalString(stated, "kind"))
+                    && READ_OUT_AUTHORITY.equals(optionalString(stated,
+                    "authority"));
+        }
+
+        private static JsonObject tableHeader(String page, int from) {
+            int start = page.indexOf(TABLE_KEY, from);
+            int rows = start < 0 ? -1 : page.indexOf(ROWS_KEY, start);
+            if (rows < 0 || !page.startsWith(TABLE_END,
+                    page.length() - TABLE_END.length())) {
+                throw new IllegalArgumentException(
+                        "VM expression table must close its envelope");
+            }
+            return JsonParser.parseString(page.substring(
+                    start + TABLE_KEY.length() - 1, rows) + "}")
+                    .getAsJsonObject();
         }
 
         /**
@@ -842,7 +899,9 @@ public final class VmExpressionTable {
          * row count.  It is looked for from {@code from}, where the
          * envelope's members end.  The rows are parsed at once, on the
          * calling thread and up to {@code helping} parts on {@code helpers}
-         * ({@link #inParallel}), then checked and kept in table order.
+         * ({@link #inParallel}), then checked and kept in table order.  With
+         * {@code failed}, a row that fails is skipped and its failure, as
+         * the table's own, goes there: every row that reads is kept.
          *
          * @return the table's members but its rows, or null when it states
          *         another schema, kind or authority than {@code authority}
@@ -850,17 +909,11 @@ public final class VmExpressionTable {
         private JsonObject readRows(String page, int from, String authority,
                                     Set<RawKey> supplied,
                                     Map<RawKey, JsonObject> table,
-                                    Executor helpers, int helping) {
-            int start = page.indexOf(TABLE_KEY, from);
-            int rows = start < 0 ? -1 : page.indexOf(ROWS_KEY, start);
+                                    Executor helpers, int helping,
+                                    List<Throwable> failed) {
+            JsonObject stated = tableHeader(page, from);
+            int rows = page.indexOf(ROWS_KEY, page.indexOf(TABLE_KEY, from));
             int end = page.length() - TABLE_END.length();
-            if (rows < 0 || !page.startsWith(TABLE_END, end)) {
-                throw new IllegalArgumentException(
-                        "VM expression table must close its envelope");
-            }
-            JsonObject stated = JsonParser.parseString(page.substring(
-                    start + TABLE_KEY.length() - 1, rows) + "}")
-                    .getAsJsonObject();
             if (optionalInteger(stated, "schemaVersion", -1) != 1
                     || !KIND.equals(optionalString(stated, "kind"))
                     || !authority.equals(optionalString(stated,
@@ -886,47 +939,60 @@ public final class VmExpressionTable {
             int[] every = new int[count];
             for (int index = 0; index < count; index++) every[index] = index;
             inParallel(every, index -> {
-                int[] span = spans.get(index);
-                RawKey held = heldRow(page, span[0]);
-                if (held != null) {
-                    keys[index] = held;
-                    return;
-                }
-                JsonObject[] definition = new JsonObject[1];
                 try {
-                    keys[index] = readDefinition(
-                            page.substring(span[0], span[1]), definition);
-                } catch (IOException malformed) {
-                    throw new IllegalArgumentException(
-                            "malformed VM read-out page", malformed);
-                }
-                if (definition[0] != null) {
-                    definitions[index] = definition[0];
-                    hashes[index] = fingerprint(definition[0]);
+                    int[] span = spans.get(index);
+                    RawKey held = heldRow(page, span[0]);
+                    if (held != null) {
+                        keys[index] = held;
+                        return;
+                    }
+                    JsonObject[] definition = new JsonObject[1];
+                    try {
+                        keys[index] = readDefinition(
+                                page.substring(span[0], span[1]), definition);
+                    } catch (IOException malformed) {
+                        throw new IllegalArgumentException(
+                                "malformed VM read-out page", malformed);
+                    }
+                    if (definition[0] != null) {
+                        definitions[index] = definition[0];
+                        hashes[index] = fingerprint(definition[0]);
+                    }
+                } catch (RuntimeException | Error unread) {
+                    if (failed == null) throw unread;
+                    failures[index] = unread;
                 }
             }, failures, helpers, helping);
-            for (int index = 0; index < count; index++) {
-                if (failures[index] != null) throw rethrown(failures[index]);
-                if (definitions[index] != null) {
-                    remember(keys[index], definitions[index], hashes[index],
-                            table);
-                }
-            }
             long session = exactNonNegativeLong(stated, "sessionId");
+            List<Throwable> faults = new ArrayList<>();
+            for (int index = 0; index < count; index++) {
+                if (failures[index] != null) {
+                    if (failed == null) throw rethrown(failures[index]);
+                    faults.add(failures[index]);
+                } else if (keys[index].session != session) {
+                    faults.add(new IllegalArgumentException(
+                            "VM expression definition disagrees with table"));
+                } else if (definitions[index] != null
+                        && !remember(keys[index], definitions[index],
+                        hashes[index], table) && failed == null) {
+                    throw new IllegalArgumentException(
+                            "conflicting VM expression definition: "
+                                    + keys[index]);
+                }
+                if (failures[index] == null) supplied.add(keys[index]);
+            }
             if (session == 0L && count > 0) {
-                throw new IllegalArgumentException(
-                        "unsupported VM expression table schema");
+                faults.add(new IllegalArgumentException(
+                        "unsupported VM expression table schema"));
             }
             if (optionalInteger(stated, "definitionCount", -1) != count) {
-                throw new IllegalArgumentException("the VM expression table"
-                        + " states another count than the rows it holds");
+                faults.add(new IllegalArgumentException("the VM expression"
+                        + " table states another count than the rows it"
+                        + " holds"));
             }
-            for (RawKey key : keys) {
-                if (key.session != session) {
-                    throw new IllegalArgumentException(
-                            "VM expression definition disagrees with table");
-                }
-                supplied.add(key);
+            if (!faults.isEmpty()) {
+                if (failed == null) throw rethrown(faults.get(0));
+                failed.addAll(faults);
             }
             return stated;
         }
@@ -1038,17 +1104,14 @@ public final class VmExpressionTable {
         }
 
         /** One stated definition, of {@link #fingerprint} {@code hash},
-         *  into {@code table}, checked against what this store and the table
-         *  defined the node as before. */
-        private void remember(RawKey key, JsonObject definition, int hash,
-                              Map<RawKey, JsonObject> table) {
+         *  into {@code table}; false when this store or the table defined
+         *  the node otherwise before. */
+        private boolean remember(RawKey key, JsonObject definition, int hash,
+                                 Map<RawKey, JsonObject> table) {
             Integer before = defined.putIfAbsent(key, hash);
             JsonObject here = table.putIfAbsent(key, definition);
-            if (before != null && before != hash
-                    || here != null && !here.equals(definition)) {
-                throw new IllegalArgumentException(
-                        "conflicting VM expression definition: " + key);
-            }
+            return !(before != null && before != hash
+                    || here != null && !here.equals(definition));
         }
 
         @Override
@@ -1221,8 +1284,11 @@ public final class VmExpressionTable {
                             "VM expression definition disagrees with table");
                 }
                 JsonObject definition = expression.getAsJsonObject();
-                remember(key, definition, fingerprint(definition),
-                        definitions);
+                if (!remember(key, definition, fingerprint(definition),
+                        definitions)) {
+                    throw new IllegalArgumentException(
+                            "conflicting VM expression definition: " + key);
+                }
             }
         }
     }

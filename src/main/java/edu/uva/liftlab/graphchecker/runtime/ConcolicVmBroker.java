@@ -394,7 +394,8 @@ final class ConcolicVmBroker {
      * ({@code complete: false} then says where to resume); 0 means no
      * bound.  The session's pages are one channel: each table states only
      * the definitions no earlier page stated, numbered in the channel
-     * (VM.md §8), so every page must be decoded, in that order.  An image
+     * (VM.md §8), so every page must be decoded, in that order: call it
+     * only under {@code SharedStateCapture#READ_OUT_ORDER}.  An image
      * whose read-out restates every definition lacks this native, and a
      * replay plan is refused on it by name ({@link
      * #requireCurrentCapabilities}: {@code readOutTrackedLocations}).

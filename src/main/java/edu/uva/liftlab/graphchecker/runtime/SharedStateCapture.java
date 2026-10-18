@@ -94,6 +94,9 @@ final class SharedStateCapture {
                 } catch (Throwable throwable) {
                     fault = "tracked-location read-out failed: "
                             + rootCause(throwable);
+                    ConcolicRegionRuntime.expressionStore(active)
+                            .readOutLost("a page after " + after + ": "
+                                    + rootCause(throwable));
                     break;
                 }
                 if (!readOut.decodeLater(serialized, active)) {
@@ -494,6 +497,18 @@ final class SharedStateCapture {
                 reason(status) + ": " + nonNull(detail));
     }
 
+    private static void lostTable(String detail) {
+        List<Runnable> deferred = DECODING.get();
+        if (deferred != null) {
+            deferred.add(() -> lostTable(detail));
+            return;
+        }
+        RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING, READ_OUT,
+                detail);
+    }
+
+    private static final String READ_OUT = "READ_OUT";
+
     /**
      * The refusals of the page the decoding thread is decoding, held for
      * its activation's publication ({@link #assembleRecordedSharedState}),
@@ -543,8 +558,15 @@ final class SharedStateCapture {
                         } catch (Withheld withheld) {
                             // Its publication is withheld: nothing to file.
                         } catch (Throwable throwable) {
-                            refuse(MALFORMED_ENVELOPE, "",
-                                    rootCause(throwable));
+                            String lost = ConcolicRegionRuntime
+                                    .expressionStore(active).readOutLosses();
+                            if (lost.isEmpty()) {
+                                refuse(MALFORMED_ENVELOPE, "",
+                                        rootCause(throwable));
+                            } else {
+                                lostTable(rootCause(throwable) + "; read-out"
+                                        + " tables never imported: " + lost);
+                            }
                         } finally {
                             DECODING.remove();
                             decoded();

@@ -579,8 +579,10 @@ public class ContractTest {
      * becomes of its records -- a page withheld (unadmitted) still defines
      * what a later page names; a record a page states again unchanged is
      * decoded once; the records are decoded at once and handed on in page
-     * order, up to the first that fails, whose failure is thrown; the
-     * truncation marker in a definition or a record marks the store.
+     * order, up to the first that fails, whose failure is thrown; a table
+     * whose row names a node only a lost table defined is still imported and
+     * the loss remembered; the truncation marker in a definition or a record
+     * marks the store.
      * Refused by name: an older table, another session, a self-contained
      * table, no table, a short count, a node no table defined.
      */
@@ -644,39 +646,52 @@ public class ContractTest {
                     decode, read::add, helpers, 3);
             assertEquals("held: decoded no more", before, decodes[0]);
             assertEquals(2, read.size());
-            // A gap is no refusal: a node only the lost table defined is
-            // refused where a record names it.
+            // Tables 6-8 lost: table 9 is imported whole though a row of
+            // it names node 7, which only a lost table defined; a record
+            // naming that row fails, the records before it are handed on in
+            // page order, and the table's other row serves the next page.
             JsonObject[] many = new JsonObject[40];
             for (int index = 0; index < many.length; index++) {
                 many[index] = record("many" + index, vmReference(
-                        index == 17 ? 99 : 1 + index % 4));
+                        index == 17 ? 20 : 1 + index % 4));
             }
             read.clear();
+            assertTrue(store.readOutLosses().isEmpty());
             try {
-                store.importReadOutPage(channelPage(9L, many), "records",
+                store.importReadOutPage(channelPage(9L, many, vmDefinition(
+                        20, binary("+", vmReference(7), vmReference(1))),
+                        vmDefinition(21, symbol("M_I_kept"))), "records",
                         stated -> true, JsonObject.class, decode, read::add,
                         helpers, 3);
-                fail("a node no table defined");
+                fail("a node only a lost table defined");
             } catch (IllegalArgumentException missing) {
                 // a record is never read against a node no table defined
             }
+            assertFalse(store.readOutLosses().isEmpty());
             assertEquals("handed on in page order up to the failure", 17,
                     read.size());
             for (int index = 0; index < read.size(); index++) {
                 assertEquals("many" + index,
                         read.get(index).get("name").getAsString());
             }
+            read.clear();
+            store.importReadOutPage(channelPage(10L, new JsonObject[] {
+                    record("kept", vmReference(21))}), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals("M_I_kept", read.get(0).getAsJsonObject("value")
+                    .get("_exp").getAsString());
             String[] refusals = {
                 // an older table, another session, a self-contained table
                 // (an image whose read-out restates every definition), no
                 // table, a short count
-                channelPage(9L, new JsonObject[0]),
-                channelPage(10L, new JsonObject[0]).replace(
+                channelPage(10L, new JsonObject[0]),
+                channelPage(11L, new JsonObject[0]).replace(
                         "\"sessionId\":1,\"sequence\"",
                         "\"sessionId\":2,\"sequence\""),
                 vmPage(new JsonObject[0]).toString(),
                 "{\"records\":[]}",
-                channelPage(10L, new JsonObject[0], vmDefinition(5,
+                channelPage(11L, new JsonObject[0], vmDefinition(5,
                         symbol("M_I_x"))).replace("\"definitionCount\":1",
                         "\"definitionCount\":2"),
             };
@@ -696,7 +711,7 @@ public class ContractTest {
             truncated.addProperty("expressionAuthority",
                     "VM_SERIALIZATION_TRUNCATION_V1");
             JsonObject wrapped = binary("==", vmReference(1), truncated);
-            store.importReadOutPage(channelPage(10L, new JsonObject[] {
+            store.importReadOutPage(channelPage(12L, new JsonObject[] {
                     record("cut", vmReference(6))}, vmDefinition(6,
                     wrapped)), "records", stated -> true, JsonObject.class,
                     decode, record -> { }, helpers, 3);
