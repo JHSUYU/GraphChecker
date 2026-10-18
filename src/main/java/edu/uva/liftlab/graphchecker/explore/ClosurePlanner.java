@@ -1416,7 +1416,10 @@ public final class ClosurePlanner {
          * The demand as it stood when the step was made, on the planner's
          * thread: the walk changes a demand while steps of others run, and
          * what it changes of a running step's demand it copies first
-         * ({@link Demand#launched}).
+         * ({@link Demand#launched}).  What only the demand's own take
+         * changes -- its naming, the handoffs it paired, the reads it
+         * expanded -- the step reads in place: the walk takes a demand only
+         * once its running step ended ({@link Walk#take}).
          */
         private final Set<String> values;
         private final Map<String, Long> cutoffs;
@@ -1609,13 +1612,14 @@ public final class ClosurePlanner {
          * the order gives, a read's leaves by seq, it claims ({@code
          * Corpus#readLeaves}) -- its demand as it stood when the step was
          * made ({@link Step}: what the walk changes of it, it copies first,
-         * {@link Demand#launched}), and its group's reads, indexed on the
-         * planner's thread ({@link #reads}: each key's members an array the
-         * walk replaces whole).  What the walk decides in its order (the
-         * gaps, the keys said once, the occurrences offered, the store
-         * versions expanded, the demands and the writes they absorbed) a
-         * step writes none of: it reads them, concurrent, only to leave out
-         * what was said already ({@link Says}).
+         * {@link Demand#launched}; what only the demand's take changes, in
+         * place, as the walk waits for its step), and its group's reads,
+         * indexed on the planner's thread ({@link #reads}: each key's
+         * members an array the walk replaces whole).  What the walk decides
+         * in its order (the gaps, the keys said once, the occurrences
+         * offered, the store versions expanded, the demands and the writes
+         * they absorbed) a step writes none of: it reads them, concurrent,
+         * only to leave out what was said already ({@link Says}).
          */
 
         /** Whether a session recorded a fault decision of {@code
@@ -1749,16 +1753,21 @@ public final class ClosurePlanner {
             for (int at = 0; at < order.size(); at++) {
                 Demand demand = order.get(at);
                 Object held = steps.get(demand);
-                if (held == RUNNING || held instanceof Throwable) continue;
+                if (held == RUNNING) continue;
                 if (held != null) {
-                    Step step = current(demand);
-                    if (step != null) {
+                    Object current = current(demand);
+                    if (current instanceof Step) {
+                        Step step = (Step) current;
                         if (step.successors != null) {
                             named.addAll(step.successors);
                         }
                         continue;
                     }
-                    weight -= ((Step) held).weight();
+                    // What a step of its state threw: walked in the order.
+                    if (current != null) continue;
+                    if (held instanceof Step) {
+                        weight -= ((Step) held).weight();
+                    }
                 }
                 if (at == 0 && headTaken
                         || named.contains(demand.occurrence.id())) {
@@ -1769,21 +1778,37 @@ public final class ClosurePlanner {
                 }
                 Step step = new Step(this, demand, reads(demand.occurrence));
                 demand.launched();
-                steps.put(demand, RUNNING);
-                running++;
+                // Counted once it runs: a pool that cannot run it throws.
                 cores.execute(() -> done.add(new Object[] {demand,
                         stepAhead(step)}));
+                steps.put(demand, RUNNING);
+                running++;
             }
         }
 
-        /** {@code demand}'s step held, where it is the walk of its state
-         *  now ({@link Demand#version}); else none, and none is held. */
-        private Step current(Demand demand) {
+        /** {@code demand}'s step held -- or what it threw -- where it is of
+         *  its state now ({@link Demand#version}); else none, and none is
+         *  held. */
+        private Object current(Demand demand) {
             Object held = steps.get(demand);
-            if (!(held instanceof Step)) return null;
-            if (((Step) held).version == demand.version) return (Step) held;
+            int version = held instanceof Step ? ((Step) held).version
+                    : held instanceof Thrown ? ((Thrown) held).version : -1;
+            if (version < 0) return null;
+            if (version == demand.version) return held;
             steps.remove(demand);
             return null;
+        }
+
+        /** What a step computed ahead threw, and the demand's version it
+         *  was of. */
+        private static final class Thrown {
+            final int version;
+            final Throwable thrown;
+
+            Thrown(int version, Throwable thrown) {
+                this.version = version;
+                this.thrown = thrown;
+            }
         }
 
         /** {@code step}, computed on a core, or what it threw ({@link
@@ -1792,7 +1817,7 @@ public final class ClosurePlanner {
             try {
                 return step(this, step);
             } catch (RuntimeException | Error thrown) {
-                return thrown;
+                return new Thrown(step.version, thrown);
             }
         }
 
@@ -1870,22 +1895,28 @@ public final class ClosurePlanner {
          * row's ({@code RestsOn#take}), else one computed here; here too
          * where one computed ahead threw: what the walk throws is what the
          * walk in its order throws, never what a step threw at another
-         * moment.  An Error ends the walk wherever it is thrown (a group
-         * indexed off the planner's thread, {@link #reads}).  Its memos and
-         * its events are applied in the order the step said them, and its
-         * successors returned in theirs.
+         * moment.  An Error a step of the demand's state now threw ends the
+         * walk (a group indexed off the planner's thread, {@link #reads});
+         * one of an earlier state's is walked again.  Waiting for the
+         * demand's own step is what lets a step read in place what only its
+         * demand's take changes ({@link Step}).  Its memos and its events
+         * are applied in the order the step said them, and its successors
+         * returned in theirs.
          */
         List<Demand> take(Demand demand) {
             while (steps.get(demand) == RUNNING) {
                 received(true);
                 launch(false);
             }
-            if (steps.get(demand) instanceof Error) {
-                throw (Error) steps.remove(demand);
-            }
-            Step step = current(demand);
+            Object held = current(demand);
             steps.remove(demand);
-            if (step != null && !restsOn.take(step.claims)) step = null;
+            if (held instanceof Thrown
+                    && ((Thrown) held).thrown instanceof Error) {
+                throw (Error) ((Thrown) held).thrown;
+            }
+            Step step = held instanceof Step
+                    && restsOn.take(((Step) held).claims) ? (Step) held
+                    : null;
             if (step == null) {
                 // Its walk now, here, in the order: what it claims no one
                 // has taken.

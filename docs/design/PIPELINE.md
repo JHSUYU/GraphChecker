@@ -685,7 +685,9 @@ queue, two a core, start in queue order as cores free -- while the steps held we
 the heap the old generation left free (`Walk#budget`, `Step#weight`), never one that a step before it
 names as a successor (`Says#successors`: taking that one grows it) -- each against its demand's state as
 it starts (`Step` holds that state: what the walk changes of a running step's demand it copies first,
-`Demand#launched`), each a walk that mutates nothing it shares and says, in its order, what the
+`Demand#launched`; what only the demand's own take changes -- its naming, the handoffs it paired, the
+reads it expanded -- the step reads in place, as the walk takes a demand only once its running step
+ended), each a walk that mutates nothing it shares and says, in its order, what the
 one-at-a-time walk changes there (a successor, a gap, a gap or fault-less door said once per key, the
 occurrences offered once per key, a store version's earlier versions); the walk waits only for the step
 it takes, starting others as steps end, and takes it while it is the walk of its demand's state then
@@ -695,7 +697,8 @@ order and a running step reads to leave out what was said already (the gaps and 
 occurrences offered, the store versions expanded, the demands and the writes they absorbed) is held in
 concurrent sets that only grow; a step reads its group's index, built on the planner's thread
 (`Walk#reads`, each key's members an array replaced whole); one that threw ahead is walked again in
-the order, so what the walk throws is what the one-at-a-time walk throws. Inside one step, what
+the order, so what the walk throws is what the one-at-a-time walk throws (an Error a step of the
+demand's state now threw ends the walk). Inside one step, what
 COMPOSE keeps of each path and delivery, the folds of its decisions, contributed values and fixed
 point, and its expansions run in parts on the cores too, taken in order (`Walk#asked`, `#each`); once
 the row-connected demand runs dry, the steps of the static candidates the bound still plans start
