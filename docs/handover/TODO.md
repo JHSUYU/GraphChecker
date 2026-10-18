@@ -554,9 +554,8 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   by its occurrence id, which digests the turn number, and a native plant's ORDER rows keep `#k` in their
   `StableEventNames` contexts: an expected edge inside a timed-wait turn can wait out its timeout and refute a true
   witness, and natively that row never holds. The replay's rule (§3c) is the model.
-- **cc. 31's test-client polls (2026-10-16, not done):** `READ /clusterstate.json#n @ client0`, n the event's k in its
-  key (117 recorded, 118 replayed), 16 s a stall (CEILING x grace while a write waits behind them). A rule: a write
-  waiting only behind READ slots stands a grace without that deferral.
+- **cc. 31's test-client polls: done 2026-10-18** (solr-stream2, OPTIMIZATIONS 2.3): a write waiting only behind READ
+  slots stands a grace, not the CEILING deferral (16 s -> 2 s a read).
 - **dd. The planner's heap after 64178b266:** spread over rows and expression tables, the per-session joins' keys, the
   shared-body texts, memo keys holding expression nodes the tables meant to hold weakly, the slot table (162 MB on
   adhoc-09) and the index keys (6-10 %). Sharding the corpus over hosts was parked by the owner (too large a change).

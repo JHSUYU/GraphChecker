@@ -2036,6 +2036,36 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A WRITE WAITING ONLY BEHIND READ SLOTS stands a grace, not the
+     * ceiling, while the reader's thread computes elsewhere: solr-adhoc-31's
+     * test client polled past its recorded read, and the write behind it
+     * waited CEILING graces (16 s) at each such read.
+     */
+    @Test(timeout = 60000L)
+    public void aWriteWaitingOnlyBehindReadsStandsNoCeiling()
+            throws Exception {
+        enforceRecorded("o:R c:W", 300L, kind -> turn(kind));
+        CountDownLatch written = new CountDownLatch(1);
+        long before = System.nanoTime();
+        Thread poller = started(() -> request("o", () -> {
+            long spun = 0L;
+            while (written.getCount() > 0L) spun++;
+            assertTrue(spun > 0L);
+        }));
+        Thread write = started(() -> request("c", () -> {
+            turn("W");
+            written.countDown();
+        }));
+        write.join(30000L);
+        long took = since(before);
+        written.countDown();
+        poller.join(30000L);
+        assertFalse(write.isAlive() || poller.isAlive());
+        assertTrue("a grace, not the ceiling: " + took,
+                took < 3 * 300L);
+    }
+
+    /**
      * The 18413 cycle with its poll: the Overseer's write stands first at
      * the queue's location, and the Overseer makes it only once its poll
      * sees the core-admin CREATE complete, whose write waits behind it.  The

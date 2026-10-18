@@ -2352,6 +2352,20 @@ public final class ScheduleLog {
      * #inFlightLocked}): no wait held behind it is let go meanwhile, to read
      * the version before it.
      */
+    private static boolean behindReadsOnlyLocked(int first, int waiter) {
+        if (waiter >= order.size()
+                || order.get(waiter).kind() != ScheduleEvent.Kind.WRITE) {
+            return false;
+        }
+        for (int at = first; at < waiter; at++) {
+            if (state[at] == OPEN
+                    && order.get(at).kind() != ScheduleEvent.Kind.READ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
         long now = System.currentTimeMillis();
@@ -2423,7 +2437,10 @@ public final class ScheduleLog {
                 || FAILED.contains(familyOf(order.get(first).context())))
                 ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
         if (stood < bound) return false;
-        if (stood < CEILING * bound && computingLocked(now)) return false;
+        if (stood < CEILING * bound && computingLocked(now)
+                && !behindReadsOnlyLocked(first, earliest)) {
+            return false;
+        }
         if (!HELD.isEmpty() && !letGoSinceProgress) {
             letGoHeldLocked(stood, now);
             return true;
