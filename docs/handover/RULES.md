@@ -200,6 +200,11 @@ recommendation.
   优化看什么，debug我们的各种经验"): keep STATE/TODO/LESSONS current at every milestone; at a stop, agents checkpoint as
   gated commits + 'WIP (not gated)' commits on their branches.
 - **Stay on the liftlab servers** (2026-10-18: "算了算了还是用liftlab的server吧"), Solr only for now ("hbase的当前不用做").
+- **Refactor = delete dead code, easiest first; no deep rewrites** (2026-10-18 evening: "事实上降低代码行数也有利于我们之后开发
+  不是吗。这样，我给你一个rule，重构主要就是删除死代码，以及优先做最顺手的重构。特别深的重构，重写可以不做"): fewer lines help later
+  development; the work is dead code first, then the cheapest merges of duplicated concepts and line-reducing splits,
+  ranked by lines saved per effort (the audit: analysis/solr-2026-10-18/loc-audit/AUDIT.txt); a deep redesign (e.g.
+  run_engine.sh's scheduler in Java, a new SmtLowering) is not done.
 - **No comments in the code** (2026-10-18 evening: "注释我觉得可以彻底删了。31k太夸张了"): the code carries no comments
   (Java, run_engine.sh, tools/, experiments/); what the code does and why is in docs/design. They are stripped once
   every branch of the rewrite is merged, proved by identical bytecode (`javap -c -p`) and identical `declare -f`;
