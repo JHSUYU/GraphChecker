@@ -548,8 +548,12 @@ and only read is a `contract.FrozenSet` (one array, its order kept: what a deliv
 `#readLocations`, `#readEvents`; the join's read symbols; a member's reads by location and object,
 `ClosurePlanner.MemberReads`), indexed for `contains` only the first time it is asked, a set the walk only
 adds to and asks is a `contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is
-read of) or, of rows, a `contract.IdentitySet` (a demand's expanded reads, a walk's decisions), and a handoff
-the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string. A list an
+read of) or, of rows, a `contract.IdentitySet` (a walk's decisions); a demand's expanded reads are bits over its
+group's reads, by each read's place there (`ClosurePlanner.GroupReads#readAt`: a demand's walks have the one group
+of its occurrence); a handoff the walk paired is a pair of references in a `contract.PairSet`, never a
+`session|symbol` string, and every other key of several names is their list, never one string spelled of them
+(the walk's once-said gaps, a member's reads by session and location or object, a location's write sites by site
+and Java type, `Corpus#writeSitesOf`). A list an
 index holds for good is cut to its size (`contract.Held`); every location key in a JVM is one string
 (`LocationId#key`, interned), and so is every name a corpus derives from a session's schedule and leaf sets
 (`Corpus#NAMES`: its facts' ids, stances and renders, `HeldLeaves`); the slot table is keyed by its

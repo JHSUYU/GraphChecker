@@ -214,9 +214,11 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Set<String>> writtenLocations =
             new LinkedHashMap<String, Set<String>>();
-    /** locationKey -> site|java type -> its first write, in any session. */
-    private final Map<String, Map<String, WriteRow>> writeSitesByLocation =
-            new LinkedHashMap<String, Map<String, WriteRow>>();
+    /** locationKey -> (site, java type) -> its first write, in any
+     *  session: the pair as its two strings, never spelled into one. */
+    private final Map<String, Map<List<String>, WriteRow>>
+            writeSitesByLocation =
+            new LinkedHashMap<String, Map<List<String>, WriteRow>>();
     /** interaction id -> the attaches whose own pairing names it. */
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
@@ -2296,9 +2298,10 @@ public final class Corpus implements Arms.Rows {
                 located(writtenLocations, row.endpoint().occurrence(),
                         location);
                 writeSitesByLocation.computeIfAbsent(location,
-                        ignored -> new LinkedHashMap<String, WriteRow>())
-                        .putIfAbsent(row.endpoint().site() + "|"
-                                + row.javaType(), row);
+                        ignored -> new LinkedHashMap<List<String>,
+                                WriteRow>())
+                        .putIfAbsent(Arrays.asList(row.endpoint().site(),
+                                row.javaType()), row);
             }
             occurrenceByEndpoint.put(row.endpoint().id(),
                     row.endpoint().occurrence());
@@ -3268,7 +3271,8 @@ public final class Corpus implements Arms.Rows {
     /** One write per (site, java type) that wrote a location, in any session,
      *  first seen first: what writes it, not how often. */
     public Collection<WriteRow> writeSitesOf(String locationKey) {
-        Map<String, WriteRow> sites = writeSitesByLocation.get(locationKey);
+        Map<List<String>, WriteRow> sites =
+                writeSitesByLocation.get(locationKey);
         return sites == null ? Collections.<WriteRow>emptyList()
                 : Collections.unmodifiableCollection(sites.values());
     }
