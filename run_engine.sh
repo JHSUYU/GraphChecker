@@ -3976,7 +3976,8 @@ campaign_start_solver() {
   fi
   {
     # The solver outlives the obligation that started it: it holds its
-    # charge itself.
+    # charge itself, and none of the asker's descriptors.
+    campaign_close_inherited_fds
     campaign_host_keep localhost "${charge}"
     status=0
     campaign_solver_jvm "${heap}" "${need}" "$(campaign_solver_first_ms)" \
@@ -4750,14 +4751,34 @@ campaign_host_keep() {
 "$1")/charges/$2"
 }
 
+# campaign_close_inherited_fds: this process -- one that outlives the call
+# that started it (a charge's keeper, a host's reader, a host's solver) --
+# closes every descriptor above 2 it inherited.  Bash keeps a saved copy of a
+# redirected descriptor (fd >= 10) while a function or command runs with
+# `>file`; a process forked meanwhile inherits it, and where the copy is the
+# write end of a $(...) or a `> >(tee ...)` pipe, the caller reads on until
+# that process ends: every engine JVM charged inside one waited up to a
+# renewal (campaign_host_renew_s, 10 s) after its JVM exited (agent 5's
+# xtrace of 13's SEED: ~55 s; a repro 5.0 s -> 0.004 s).
+campaign_close_inherited_fds() {
+  local fd
+  for fd in /proc/"${BASHPID}"/fd/*; do
+    fd=${fd##*/}
+    [[ "${fd}" =~ ^[0-9]+$ ]] && (( fd > 2 )) || continue
+    eval "exec ${fd}>&-" 2>/dev/null || true
+  done
+}
+
 # The charge <file> renewed every campaign_host_renew_s while this shell
 # lives and the charge stands: by a process of its own, no child of this
-# shell (a head's `wait` never waits for it), which ends within a renewal
+# shell (a head's `wait` never waits for it), holding none of its
+# descriptors (campaign_close_inherited_fds), which ends within a renewal
 # of either.  Its programs are the commands, never a function of this shell's
 # by their name (the shell test's `sleep`).
 campaign_host_hold() {
   local file=$1 owner=${BASHPID}
-  ( ( while kill -0 "${owner}" 2>/dev/null && [[ -e "${file}" ]]; do
+  ( ( campaign_close_inherited_fds
+      while kill -0 "${owner}" 2>/dev/null && [[ -e "${file}" ]]; do
         command touch -c -- "${file}" 2>/dev/null || true
         command sleep "${campaign_host_renew_s}"
       done ) </dev/null >/dev/null 2>&1 & )
@@ -7411,6 +7432,7 @@ campaign_process_tree() {
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
   local entry kind at first started now refused oldest="" kinds need=""
+  local admit_at
   # What the pass reads once (campaign_stream_memo).
   local -A stream_pass_memo=()
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
@@ -7419,7 +7441,9 @@ campaign_stream_dispatch() {
     # The hard lane once no other start waits (campaign_solver_first_tier_ms):
     # its asks in order, each charged alike (campaign_decide_need_mb).
     if (( ${#stream_queue[@]} == 0 )); then
+      admit_at=${EPOCHREALTIME/./}
       campaign_stream_admit_host HARD || return 0
+      stream_admit_us=$(( ${EPOCHREALTIME/./} - admit_at ))
       entry=${stream_hard[0]}
       stream_hard=("${stream_hard[@]:1}")
       campaign_stream_start "${entry}" "${stream_admitted_host}"
@@ -7461,10 +7485,14 @@ campaign_stream_dispatch() {
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
       [[ "${refused}" != *" ${kind}${need:+:${need}} "* ]] || continue
+      admit_at=${EPOCHREALTIME/./}
       if campaign_stream_admit_host "${kind}" "${need}"; then
+        stream_admit_us=$(( ${EPOCHREALTIME/./} - admit_at ))
         started=${at}
         break
       fi
+      campaign_stream_event refuse "${kind}" \
+        "$(( ${EPOCHREALTIME/./} - admit_at ))"
       refused+="${kind}${need:+:${need}} "
       # Every kind a queue holds refused at its kind's charge: no entry
       # behind starts either (one asked again at its own, larger need says
@@ -7982,7 +8010,8 @@ campaign_stream_read_hosts() {
   for host in "${stream_hosts[@]}"; do
     dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
     mkdir -p "${dir}"
-    ( ( while kill -0 "${owner}" 2>/dev/null \
+    ( ( campaign_close_inherited_fds
+        while kill -0 "${owner}" 2>/dev/null \
           && [[ -e "${stream_reading}" ]]; do
           campaign_host_memory_reading "${host}" "${dir}" "${EPOCHSECONDS}" \
             || true
@@ -8009,6 +8038,21 @@ campaign_stream_unreadable() {
     && return 0
   campaign_fail EXPLORE CAMPAIGN "${host}" "the memory of host ${host} \
 could not be read for ${campaign_ssh_patience_s}s"
+}
+
+# campaign_stream_event <word>...: one line of the head's control plane, its
+# time first (epoch seconds, microseconds), to stream_events.tsv beside the
+# iteration: `admit <kind> <id> <host> <us> <logs>` as a start is admitted
+# (<us>: the head's time in that admission -- the ledger's lock, the hosts'
+# readings, the choice), `refuse <kind> <us>` for a kind no host admitted in
+# a pass, `collect <kind> <id> <host> <status>` as a job's end is taken.
+# What the control plane costs is read from it with the workers' own
+# times (analysis/solr-2026-10-18/stream2/ctlplane.py).
+campaign_stream_event() {
+  local IFS=$'\t'
+  [[ -n "${iteration_dir:-}" ]] || return 0
+  { printf '%s\t%s\n' "${EPOCHREALTIME}" "$*" \
+      >>"${iteration_dir}/stream_events.tsv"; } 2>/dev/null || true
 }
 
 # Starts one queue entry on <host>, in the background (campaign_stream_job),
@@ -8065,6 +8109,8 @@ campaign_stream_start() {
       work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
   esac
+  campaign_stream_event admit "${kind}" "${id}" "${host}" \
+    "${stream_admit_us:-0}" "$(campaign_stream_logs "${kind}" "${worker}")"
   { printf '%s\n' "${host}" >"${worker}/${started}"
     campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
       "${id}" "${worker}" "${work[@]}"; } &
@@ -8176,6 +8222,7 @@ campaign_stream_ended() {
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     worker=${stream_job_worker[${pid}]}
+    campaign_stream_event collect "${kind}" "${id}" "${host}" "${status}"
     campaign_stream_release "${pid}"
     campaign_replay_measured "${worker}"
     campaign_stream_host_count "${host}" "${kind}" -1 \
@@ -10779,8 +10826,8 @@ ${actual_sha}, the campaign says ${jar_sha}"
   # worker's scratch lands on THIS machine's local disk under the same
   # per-run root every other worker of the run uses.
   campaign_init_local_scratch_root
-  campaign_log "peer $(hostname): jar ${graphchecker_jar} (${actual_sha}), \
-scratch ${campaign_local_scratch_root}"
+  campaign_log "peer $(hostname) at ${EPOCHREALTIME}: jar \
+${graphchecker_jar} (${actual_sha}), scratch ${campaign_local_scratch_root}"
   campaign_peer_args=("$@")
 }
 

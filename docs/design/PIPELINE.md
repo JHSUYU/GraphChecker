@@ -1671,7 +1671,12 @@ in flight, owed or under confirmation as it was) at ITS FULL NEED, charged whole
 beside it (`campaign_stream_replay_again`, the entry's `stream_entry_need`); only one whose full need,
 at most half a host's ceiling, is no more than it reached would end again, and is answered
 `REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`). SGF8-adhoc-07: 33 replays
-ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. A host is taken for a start of a
+ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. THE CONTROL
+PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
+time in it (the ledger's lock, the hosts' readings, the choice), each kind no host admitted in a pass,
+and each job's end as the head takes it; a peer states its start time (`campaign_peer_enter`'s "peer <host>
+at <epoch>" line, in the job's logs); `analysis/solr-2026-10-18/stream2/ctlplane.py` reads them with the
+workers' files (a replay's JVM exit, `workload_cores_x100`). A host is taken for a start of a
 kind (`campaign_stream_try_host`) while the cores the campaign's starts keep busy there leave the
 start's own (read once, `campaign_host_cores`; `campaign_stream_kind_cores`: a solve or a `HARD` two,
 its z3 race's two engines, a REPLAY, a re-run or a confirmation the cores replays measurably keep busy,

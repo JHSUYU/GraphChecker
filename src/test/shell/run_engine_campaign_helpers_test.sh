@@ -2335,6 +2335,30 @@ grep -qx 'CAUSYNTH_CHARGED_MB=3000' "${need_dir}/adapter.args" \
   || fail "the replay JVM is not handed what its host was charged: \
 $(cat "${need_dir}/adapter.args")"
 
+# KEEPER-FDS: a process that outlives the call that started it -- a
+# charge's keeper (campaign_host_hold), and as it a host's reader and a host's
+# solver (campaign_close_inherited_fds) -- holds none of the call's
+# descriptors: a charged call inside $(...), its output redirected as an
+# engine JVM's is, returns as its work does, not when its charge's keeper
+# ends (the charge stands 3 s here, renewed every 30).
+(
+  kf_dir=${test_tmp}/keeper-fds
+  mkdir -p "${kf_dir}"
+  campaign_host_renew_s=30
+  : >"${kf_dir}/charge"
+  ( command sleep 3; rm -f -- "${kf_dir}/charge" ) &
+  kf_call() {
+    campaign_host_hold "${kf_dir}/charge" >"${kf_dir}/out"
+    echo returned
+  }
+  kf_start=${SECONDS}
+  kf_said=$(kf_call)
+  [[ "${kf_said}" == returned ]] && (( SECONDS - kf_start < 2 )) \
+    || fail "KEEPER-FDS: a charged call inside \$(...) returned \
+'${kf_said}' after $(( SECONDS - kf_start )) s"
+  wait
+) || fail "KEEPER-FDS failed"
+
 # WATCH-1: a workload JVM that grows past its charge asks its host for the
 # excess and holds what it was granted, charged on the ledger; it is ended
 # only when the host's real use -- MemTotal less MemAvailable, 10000 MB and
