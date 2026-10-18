@@ -161,6 +161,8 @@ public abstract class CausalContext extends Value {
         }
     }
 
+    public static final int ANY_TURN = -1;
+
     /** A workload action or a daemon tick started this occurrence. */
     public static final class Root extends CausalContext {
         private final Role role;
@@ -185,6 +187,11 @@ public abstract class CausalContext extends Value {
         /** The k-th root of this role and api in the recording window. */
         public int windowIndex() {
             return windowIndex;
+        }
+
+        public Root anyTurn() {
+            return Role.WAKE.equals(role) && windowIndex != ANY_TURN
+                    ? new Root(role, api, ANY_TURN) : this;
         }
 
         @Override

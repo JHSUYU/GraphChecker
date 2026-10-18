@@ -1606,6 +1606,32 @@ public class ContractTest {
                 nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
         assertEquals("plain|context", confirmed.context("plain|context@7"));
     }
+
+    /**
+     * A TIMED-WAIT LOOP'S TURN IS NAMED BY ITS FAMILY, its number left out
+     * (the schedule's turn family): a stable name and CONFIRM's activation
+     * key hold whatever wake the loop is at; any other root keeps its
+     * count.
+     */
+    @Test
+    public void aTimedWaitTurnIsNamedByItsFamily() {
+        StableEventNames names = new StableEventNames();
+        assertEquals(names.context("n0|Root:WAKE/peek#3|<A: void a()>@2"),
+                names.context("n0|Root:WAKE/peek#7|<A: void a()>@5"));
+        assertEquals("n0|Root:WAKE/peek#*|<A: void a()>",
+                names.context("n0|Root:WAKE/peek#3|<A: void a()>@2"));
+        assertEquals("n0|Root:TASK#3|<A: void a()>",
+                names.context("n0|Root:TASK#3|<A: void a()>@2"));
+        OccurrenceAddress third = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(Role.WAKE, "peek", 3), ExecutionIndex.empty());
+        OccurrenceAddress seventh = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(Role.WAKE, "peek", 7), ExecutionIndex.empty());
+        OccurrenceAddress task = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(Role.of("TASK"), "", 3),
+                ExecutionIndex.empty());
+        assertEquals(third.anyTurn().id(), seventh.anyTurn().id());
+        assertEquals(task.id(), task.anyTurn().id());
+    }
     /** How many rows of one kind and class a gate stated. */
     private static int stating(List<GapRow> gaps, GapKind kind,
                                GapClass cls) {

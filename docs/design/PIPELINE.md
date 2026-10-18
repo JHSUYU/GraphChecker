@@ -3406,7 +3406,9 @@ with it is a `RUN_DEFECT`.
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
-  the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
+  the recording took two still takes the model's edges), and an activation as every turn of its
+  timed-wait loop is (`Confirmation#activation`, `OccurrenceAddress#anyTurn`: `Root:WAKE/<wait>#k`
+  counts the loop's wakes, the schedule's turn family). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`, the three halves of
@@ -3586,7 +3588,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   the cone none is held and Y8 reproduces 10/10, IB1 10/10).
 
   Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
-  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
+  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`) and a timed-wait
+  turn's number (`StableEventNames#turnFamily`, the schedule's rule), and each message
   hop is named by its sender's stable context and the send's site when that send was the sender's
   first of its site; a hop of a later send (a loop's) has no stable name and an edge naming one is
   not held. A producer endpoint id hashes the sender's counts, so a poll before a send renames all

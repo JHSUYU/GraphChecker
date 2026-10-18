@@ -134,6 +134,13 @@ public final class OccurrenceAddress extends Value {
                 : new OccurrenceAddress(node, regionId, delivered, index);
     }
 
+    public OccurrenceAddress anyTurn() {
+        if (!(context instanceof CausalContext.Root)) return this;
+        CausalContext.Root turned = ((CausalContext.Root) context).anyTurn();
+        return turned == context ? this
+                : new OccurrenceAddress(node, regionId, turned, index);
+    }
+
     /** Whether the context is {@link CausalContext.Lost} (derived). */
     public boolean lineageLost() {
         return context.isLost();

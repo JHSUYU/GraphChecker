@@ -16,6 +16,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -1522,7 +1523,7 @@ public class ScheduleLogTest {
             Runnable y = () -> turnOrRequest(turn, () -> send("y"));
             y.run();
             order.add(events().get(1));
-            assertEquals(turn, ScheduleLog.timedWaitTurn(order.get(1)
+            assertEquals(turn, StableEventNames.timedWaitTurn(order.get(1)
                     .context()));
             noRequest();
             timeout(4000L);
@@ -1551,7 +1552,7 @@ public class ScheduleLogTest {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
         turnOrRequest(true, () -> written("L"));
         order.add(events().get(1));
-        assertTrue(ScheduleLog.timedWaitTurn(order.get(1).context()));
+        assertTrue(StableEventNames.timedWaitTurn(order.get(1).context()));
         noRequest();
         timeout(3000L);
         enforce(order);
