@@ -526,7 +526,10 @@ the campaign lands sessions while a round plans, and the round reads none of the
 workers' own files it reads as they stand, §7.9). What it read
 for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus, Collection)`:
 a landed session's rows never change, so only the sessions new to the round's corpus are parsed, and
-one that left -- a GROW swap, after-witness trimming -- is dropped) with what was derived from each
+one that left -- a GROW swap, after-witness trimming -- is dropped; of a session's gap rows, every one
+read and only the kinds a corpus reads held, `SessionReader#gaps(GapKind)`: ADDRESS_UNSTABLE,
+BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE -- EMIT reads the gap files themselves, §11 -- in every
+JVM that reads a corpus) with what was derived from each
 session's rows
 alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
 expressions: symbols, leaves, read locations and events, state reads), the static map while its
@@ -631,7 +634,11 @@ corpus names, each worker's focus row as that session's world, the verdicts, the
    WIRE pairing and STATE join, each with the world digests it was seen in, and a FRONTIER row with
    the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl.gz`, `gaps.jsonl.gz`
    (the round's large files, and `slots.jsonl.gz`, gzip: `RowCodec#writeAll` deflates each run of
-   1024 rows on the core that rendered it, one gzip member each, CONTRACT-SPEC §2.2) and
+   1024 rows on the core that rendered it, one gzip member each, CONTRACT-SPEC §2.2; the gaps are
+   written as the round says them, the closure walk's among them: `explore.RoundGaps` renders,
+   deduplicates (by the line's 128-bit murmur3 digest) and deflates each run of 1024 distinct rows on a
+   thread of its own and holds no row, `RowCodec.Runs`, the file written whole at the round's end, byte
+   for byte the one `writeAll` wrote of their distinct list) and
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, `force` (§7.10), state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
@@ -2371,11 +2378,10 @@ THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contra
 these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
 and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join, its
 writes by version and by location, its reads by symbol, its rows by occurrence, the answers that hold rows
-(`Corpus.StateRows`) -- and its gaps are held apart: at most 0.15 of the heap of their text as it decodes, the ones asked for least recently let
-go of and read again from their files when next asked, value for value (a landed session's files never change;
-its reads and writes side by side).
-Every other row of every session stays held -- decisions, activations, attaches, exports, roots, targets,
-expressions -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
+(`Corpus.StateRows`) -- are held apart: at most 0.15 of the heap of their text as it decodes, the sessions asked
+for least recently let go of and read again from their files when next asked, value for value (a landed
+session's files never change; reads and writes side by side). Every other row of every session stays held --
+decisions, activations, attaches, exports, roots, targets, expressions, the gap kinds a corpus reads -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
 sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
 and 1-8 for their reads and writes (the path's own session and the producers whose arms it closes); the final
 phase asks every session once. Reads and writes are most of a held corpus: SGF8-adhoc-13's 201 sessions held

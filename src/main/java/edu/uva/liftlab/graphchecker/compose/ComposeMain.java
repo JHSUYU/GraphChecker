@@ -108,7 +108,7 @@ public final class ComposeMain {
                 + " session(s) in " + seconds(System.nanoTime() - started)
                 + " s, holding " + corpus.held() / (1024 * 1024) + " of at"
                 + " most " + corpus.holdable() / (1024 * 1024) + " MB of"
-                + " their reads', writes' and gaps' text");
+                + " their reads' and writes' text");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         StaticScopeMap scope = StaticScopeMap.read(arguments.scopeMap);
         Composer.Composition composition = Composer.compose(corpus, anchor,
@@ -120,7 +120,7 @@ public final class ComposeMain {
                 + " path(s) composed, a " + composition.body().length()
                 / (1024 * 1024) + " MB body and " + composition.valuations()
                 .size() + " valuation(s), in " + seconds(lowered - started)
-                + " s, " + again[0] + " session part(s) let go of read again ("
+                + " s, " + again[0] + " session(s) let go of read again ("
                 + again[1] / (1024 * 1024) + " MB); deciding");
         Z3 solver = solver(arguments);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
@@ -175,7 +175,7 @@ public final class ComposeMain {
 
     /**
      * THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR: of its sessions'
-     * reads, writes and gaps -- most of a corpus's heap, and asked of a few
+     * reads and writes -- most of a corpus's heap, and asked of a few
      * sessions a path (its own, and the producers whose arms its families
      * close) -- at most their text's share of the engine heap this is, the
      * ones asked for least recently let go of and read again when asked

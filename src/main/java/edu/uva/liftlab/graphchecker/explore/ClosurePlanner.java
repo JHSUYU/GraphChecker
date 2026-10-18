@@ -49,6 +49,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -118,10 +119,10 @@ public final class ClosurePlanner {
     private ClosurePlanner() {
     }
 
-    /** The closure of one anchor, and what could not be named in it. */
+    /** The closure of one anchor (what could not be named in it goes to
+     *  the gaps its walk is given, as it says them). */
     public static final class Plan {
         public final List<Task> tasks;
-        public final List<GapRow> gaps;
         /** task id -> why it is in the closure. */
         public final Map<String, String> why;
         /** task id -> site ids this round may flip. */
@@ -156,8 +157,7 @@ public final class ClosurePlanner {
          *  anchor. */
         public final Concrete concrete;
 
-        private Plan(List<Task> tasks, List<GapRow> gaps,
-                     Map<String, String> why,
+        private Plan(List<Task> tasks, Map<String, String> why,
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
@@ -167,7 +167,6 @@ public final class ClosurePlanner {
             this.unpaused = Collections.unmodifiableMap(unpaused);
             this.runWhole = Collections.unmodifiableSet(runWhole);
             this.tasks = Collections.unmodifiableList(tasks);
-            this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
             this.flipSites = Collections.unmodifiableMap(flipSites);
             this.exposed = Collections.unmodifiableMap(exposed);
@@ -208,31 +207,35 @@ public final class ClosurePlanner {
      *  heldDoorsOnly} which of them the system declares so for good ({@code
      *  plan.DoorsOnlyRoots}), {@code faults} where a fault door fails,
      *  {@code view} the system's view classes, whose guards are no flip
-     *  sites. */
+     *  sites; each gap the walk says goes to {@code gaps} as it is said
+     *  (the same gap may be said twice: {@link RoundGaps} writes it once).
+     */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches, Set<String> doorsOnly,
                             Set<String> heldDoorsOnly, ClientFaults faults,
-                            SystemView view) {
+                            SystemView view, Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly, heldDoorsOnly, faults, view);
+                branches, doorsOnly, heldDoorsOnly, faults, view, gaps);
     }
 
     /** {@link #plan} under another closure ceiling (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
-                     ClientFaults faults, SystemView view) {
+                     ClientFaults faults, SystemView view,
+                     Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, ceiling, scope, branches,
-                doorsOnly, heldDoorsOnly, faults, view, CORES);
+                doorsOnly, heldDoorsOnly, faults, view, CORES, gaps);
     }
 
     /** {@link #plan}, its steps on {@code cores} (a test's). */
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
-                     ClientFaults faults, SystemView view, ForkJoinPool cores) {
-        Walk walk = new Walk(corpus, scope, anchor, cores);
+                     ClientFaults faults, SystemView view, ForkJoinPool cores,
+                     Consumer<GapRow> gaps) {
+        Walk walk = new Walk(corpus, scope, anchor, cores, gaps);
         Map<String, Demand> demands = walk.demands;
         Deque<String> pending = walk.pending;
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
@@ -371,7 +374,7 @@ public final class ClosurePlanner {
             // values it writes are the recording's, named.
             if (demand.value
                     && heldDoorsOnly.contains(demand.occurrence.render())) {
-                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                walk.gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         demand.occurrence.render(), "demanded as a value ("
                                 + demand.why + "), it runs for its doors"
@@ -387,7 +390,7 @@ public final class ClosurePlanner {
                     unpaused.put(demand.occurrence, rerun);
                 }
                 if (rerun.isEmpty()) runWhole.add(demand.occurrence);
-                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                walk.gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         demand.occurrence.render(), "run for its doors"
                                 + " alone (a control producer or a store"
@@ -427,7 +430,7 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         if (viewed > 0) {
-            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            walk.gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     "VIEW_GUARDS_UNFLIPPED", viewed + " demanded guard(s) of"
                             + " the system's view classes are no flip sites:"
@@ -436,13 +439,13 @@ public final class ClosurePlanner {
                             + " it could hold"));
         }
         if (unfailed > 0) {
-            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            walk.gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     "CLIENT_FAULTS_UNFLIPPED", unfailed + " fault door(s)"
                             + " of the closure are no flip sites: "
                             + faults.why()));
         }
-        return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
+        return new Plan(tasks, why, flips,
                 exposed, waiting, truncated, ceilingCut, unpaused, runWhole,
                 concrete);
     }
@@ -722,8 +725,7 @@ public final class ClosurePlanner {
                     || !branches.parents(session.sessionId())) {
                 continue;
             }
-            for (GapRow gap : session.gaps()) {
-                if (gap.kind() != GapKind.UNPLANNED_INPUT) continue;
+            for (GapRow gap : session.gaps(GapKind.UNPLANNED_INPUT)) {
                 exposed.putIfAbsent(UnplannedInput.parse(gap.subject()),
                         session.sessionId());
             }
@@ -764,11 +766,11 @@ public final class ClosurePlanner {
                                    Demand demand, StaticScopeMap scope,
                                    Map<OccurrenceAddress, String> exposed,
                                    Set<OccurrenceAddress> waiting,
-                                   Set<GapRow> gaps) {
+                                   Consumer<GapRow> gaps) {
         OccurrenceAddress occurrence = demand.occurrence;
         if (occurrence.role()) {
             if (occurrence.lineageLost()) {
-                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                         occurrence.render(), "the closure reached a scope "
                                 + "the recording lost (" + demand.why
@@ -781,7 +783,7 @@ public final class ClosurePlanner {
         }
         Corpus.TickPast tick = corpus.tickPastRecording(occurrence);
         if (tick != null) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     occurrence.render(), "begun by the daemon tick " + tick
                             + ": a replay slower than the recording ran it, "
@@ -803,14 +805,14 @@ public final class ClosurePlanner {
             return;
         }
         if (!stopped.isEmpty()) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     occurrence.render(), "only sessions whose branch "
                             + "stopped ran this occurrence (" + stopped
                             + " among them), so it is not grown"));
             return;
         }
-        gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
+        gaps.accept(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
                 GapClass.BLOCKING, occurrence.render(),
                 "no session of this corpus ran this occurrence, so no replay "
                         + "can be focused on it and it is not a task"));
@@ -1303,7 +1305,7 @@ public final class ClosurePlanner {
             if (gaps == null) gaps = new HashSet<String>();
             if (!gaps.add(key)) return;
             said.add((at, next) -> {
-                if (at.gapKeys.add(key)) at.gaps.add(row.get());
+                if (at.gapKeys.add(key)) at.gaps.accept(row.get());
             });
         }
 
@@ -1311,7 +1313,7 @@ public final class ClosurePlanner {
         void once(String key, Supplier<GapRow> row) {
             if (walk.cut.contains(key)) return;
             said.add((at, next) -> {
-                if (at.cut.add(key)) at.gaps.add(row.get());
+                if (at.cut.add(key)) at.gaps.accept(row.get());
             });
         }
 
@@ -1320,7 +1322,7 @@ public final class ClosurePlanner {
         void faultless(String doorId, Supplier<GapRow> row) {
             if (walk.faultless.contains(doorId)) return;
             said.add((at, next) -> {
-                if (at.faultless.add(doorId)) at.gaps.add(row.get());
+                if (at.faultless.add(doorId)) at.gaps.accept(row.get());
             });
         }
 
@@ -1493,8 +1495,9 @@ public final class ClosurePlanner {
     }
 
     /**
-     * One anchor's walk over the corpus: the gaps it says (the same gap said
-     * twice is one gap, as {@link ExploreMain} publishes them), the unread
+     * One anchor's walk over the corpus: the gaps it says, as it says them
+     * ({@link #gaps}: the same gap said twice is one gap, as {@link
+     * RoundGaps} writes them), the unread
      * deliveries it said ({@link #unread}), the static candidates it
      * offered ({@link #candidates}), and what the static map answered it:
      * each answer scans every site of the map, and the walk asks again for
@@ -1506,7 +1509,8 @@ public final class ClosurePlanner {
         /** What a delivery rests on, as COMPOSE keeps it ({@link
          *  #demanded}). */
         private final RestsOn restsOn;
-        private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
+        /** Where each gap the walk says goes, on the walk's thread. */
+        private final Consumer<GapRow> gaps;
         /** The keys of the gaps that state no holder of a static site
          *  ({@link Says#gap}): the walk says each once. */
         private final Set<String> gapKeys = ConcurrentHashMap.newKeySet();
@@ -1594,8 +1598,9 @@ public final class ClosurePlanner {
         private int running;
 
         Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor,
-             ForkJoinPool cores) {
+             ForkJoinPool cores, Consumer<GapRow> gaps) {
             this.planner = Thread.currentThread();
+            this.gaps = gaps;
             this.corpus = corpus;
             this.map = map;
             this.restsOn = new RestsOn(corpus, map, anchor);
@@ -2726,7 +2731,7 @@ public final class ClosurePlanner {
                 unused -> ConcurrentHashMap.newKeySet()).add(endpoint.id())) {
             return;
         }
-        walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
+        walk.gaps.accept(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, endpoint.toString(),
                 "no demanded value of this occurrence rests on this " + what
                         + ", so its producer is not a task"));

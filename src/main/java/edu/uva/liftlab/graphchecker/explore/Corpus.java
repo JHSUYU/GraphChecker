@@ -79,9 +79,9 @@ import java.util.regex.Pattern;
  *  Identity is the contract's: an interaction by both endpoints, a location by
  *  {@link LocationId}, a symbol by its minting session (raw symbols, versions
  *  and expression refs are session-local). One path id spelling: {@link
- *  #pathId}.  COMPOSE's holds only some of its sessions' reads, writes and
- *  gaps at a time, every answer the one a corpus holding them all gives
- *  ({@link #holding}). */
+ *  #pathId}.  COMPOSE's holds only some of its sessions' reads and writes
+ *  at a time, every answer the one a corpus holding them all gives ({@link
+ *  #holding}). */
 public final class Corpus implements Arms.Rows {
     /** One occurrence's decisions in one session: a path, as it ran. */
     public static final class RecordedPath {
@@ -178,8 +178,8 @@ public final class Corpus implements Arms.Rows {
      *  concurrent, as a session's keys renew its own ({@link #keysDone}). */
     private final Map<String, SmtLowering> loweringById =
             new ConcurrentHashMap<String, SmtLowering>();
-    /** What holds the sessions' reads, writes and gaps ({@link #holding});
-     *  null: every one held as read. */
+    /** What holds the sessions' reads and writes ({@link #holding}); null:
+     *  every one held as read. */
     private final RowHold hold;
     /** session id -> what this corpus derives from that session's rows
      *  alone ({@link Derived}). */
@@ -481,7 +481,7 @@ public final class Corpus implements Arms.Rows {
         if (of == null) return NO_STATE;
         StateRows held = of.state;
         if (held != null) {
-            if (hold != null) hold.used(of.session, RowHold.Kind.STATE);
+            if (hold != null) hold.used(of.session);
             return held;
         }
         synchronized (of) {
@@ -545,9 +545,9 @@ public final class Corpus implements Arms.Rows {
     /**
      * COMPOSE'S CORPUS (PIPELINE §8): every index built from every session's
      * rows, the sessions read {@link Parallel#READS} at a time -- the next
-     * ones read while these are indexed -- and their reads, writes and gaps
-     * held by {@code hold}, at most its bytes, read again as asked for, so
-     * the corpus never holds them all.  The sessions are indexed in the
+     * ones read while these are indexed -- and their reads and writes held
+     * by {@code hold}, at most its bytes, read again as asked for, so the
+     * corpus never holds them all.  The sessions are indexed in the
      * order {@link #Corpus(Path, List, Corpus)} indexes them (each read one
      * in read order, the forced ones after), and each answer is the one
      * that corpus gives.
@@ -615,8 +615,8 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * COMPOSE's read of an iteration ({@link #Corpus(Path, List, long)}),
-     * its sessions' reads, writes and gaps held to {@code bytes} of their
-     * text, and its case-declared root domains.
+     * its sessions' reads and writes held to {@code bytes} of their text,
+     * and its case-declared root domains.
      */
     public static Corpus holding(Path iteration, Path rootDomains, long bytes)
             throws IOException {
@@ -630,15 +630,14 @@ public final class Corpus implements Arms.Rows {
 
     /** What was built of one session's rows its hold let go of goes with
      *  them ({@link RowHold}): built again as they are read again. */
-    private void released(SessionReader session, RowHold.Kind kind) {
-        if (kind != RowHold.Kind.STATE) return;
+    private void released(SessionReader session) {
         Derived of = bySession.get(session.sessionId());
         if (of != null && of.session == session) of.state = null;
         loweringById.remove(session.sessionId());
     }
 
-    /** The text of the sessions' reads, writes and gaps it holds now, in
-     *  decoded bytes ({@link #holding}); 0 for a corpus holding them all. */
+    /** The text of the sessions' reads and writes it holds now, in decoded
+     *  bytes ({@link #holding}); 0 for a corpus holding them all. */
     public long held() {
         return hold == null ? 0L : hold.holding();
     }
@@ -648,8 +647,8 @@ public final class Corpus implements Arms.Rows {
         return hold == null ? 0L : hold.bytes();
     }
 
-    /** How many sessions' parts it let go of were read again, and their
-     *  text in decoded bytes ({@link RowHold#readAgain}). */
+    /** How many sessions it let go of were read again, and their text in
+     *  decoded bytes ({@link RowHold#readAgain}). */
     public long[] readAgain() {
         return hold == null ? new long[2] : hold.readAgain();
     }

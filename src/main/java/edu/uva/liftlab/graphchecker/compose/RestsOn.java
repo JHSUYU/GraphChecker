@@ -356,8 +356,7 @@ public final class RestsOn {
     String cutOf(String session) {
         SessionReader reader = corpus.session(session);
         if (reader == null) return "";
-        for (GapRow gap : reader.gaps()) {
-            if (gap.kind() != GapKind.BOUND_INSUFFICIENT) continue;
+        for (GapRow gap : reader.gaps(GapKind.BOUND_INSUFFICIENT)) {
             try {
                 if (OccurrenceAddress.parse(gap.subject()).id()
                         .equals(anchor.id())) {

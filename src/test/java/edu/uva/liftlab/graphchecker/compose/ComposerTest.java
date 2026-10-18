@@ -2001,7 +2001,7 @@ public class ComposerTest {
     /**
      * THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (ComposeMain
      * #HELD_ROWS, Corpus#holding): a corpus holding none of its sessions'
-     * reads, writes and gaps -- each read again from its files as asked --
+     * reads and writes -- each read again from its files as asked --
      * composes the formula, gaps, families and concrete rows of a corpus
      * holding them all.  Three runs each deliver the anchor's handoff and
      * write the location its fatal reads.

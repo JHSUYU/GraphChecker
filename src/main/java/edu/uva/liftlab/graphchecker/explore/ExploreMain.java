@@ -325,6 +325,16 @@ public final class ExploreMain {
      */
     JsonObject round(int round, Path inFlight, Path results,
                      Collection<String> named, Path out) throws IOException {
+        // The round's gaps go to their file as they are said, on a thread
+        // of their own, which ends with the round whatever it came to.
+        try (RoundGaps gaps = new RoundGaps(out.resolve(GAPS_FILE))) {
+            return round(round, inFlight, results, named, out, gaps);
+        }
+    }
+
+    private JsonObject round(int round, Path inFlight, Path results,
+                             Collection<String> named, Path out,
+                             RoundGaps gaps) throws IOException {
         // A round that failed may have left its files being written: none
         // is written over another's.
         for (Parallel.Beside file : writing) file.await();
@@ -345,10 +355,10 @@ public final class ExploreMain {
                     iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
         }
-        List<GapRow> gaps = new ArrayList<GapRow>();
-        gaps.addAll(unstableAddresses(corpus));
-        List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
-        Branches branches = Branches.of(corpus, roots, gaps);
+        List<GapRow> said = unstableAddresses(corpus);
+        List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, said);
+        Branches branches = Branches.of(corpus, roots, said);
+        gaps.addAll(said);
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipSites =
@@ -375,8 +385,7 @@ public final class ExploreMain {
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches, doorsOnly, heldDoorsOnly,
-                    faults, view);
-            gaps.addAll(plan.gaps);
+                    faults, view, gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
                 // A truncated closure misses arms, but whether that blocks a
@@ -386,7 +395,7 @@ public final class ExploreMain {
                 // own is its record.
                 truncated += plan.truncated.size();
                 ceilingCut += plan.ceilingCut.size();
-                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         root.render(), "REGION_PATH_CLOSURE_TRUNCATED: closure "
                                 + "truncated: static candidates past "
@@ -449,9 +458,11 @@ public final class ExploreMain {
         }
         ZkChain chain = ZkChain.read(iteration.resolve(ZkChain.FILE));
         ZkKeys keys = ZkKeys.of(chain);
+        List<GapRow> offering = new ArrayList<GapRow>();
         List<ObligationFactory.Candidate> candidates =
                 ObligationFactory.candidates(corpus, tasks, flipSites, bounds,
-                        branches, frontier, gaps, keys);
+                        branches, frontier, offering, keys);
+        gaps.addAll(offering);
         // The forced replay of the anchor first (PIPELINE §7.10).
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
@@ -478,7 +489,7 @@ public final class ExploreMain {
             if (!planned.contains(occurrence.render())) continue;
             grown.remove(occurrence);
             waiting.remove(occurrence);
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     occurrence.render(), "planned at this address and no "
                             + "replay since ran it: whether it runs depends "
@@ -498,7 +509,7 @@ public final class ExploreMain {
                 unplanned.remove();
             } else if (input.k() > UnplannedInput.MAX) {
                 unplanned.remove();
-                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
                         input.subject() + " unplanned-input-max="
                                 + UnplannedInput.MAX,
@@ -521,7 +532,7 @@ public final class ExploreMain {
         // point no replay ever will.
         if (fixpoint) {
             for (OccurrenceAddress paused : runWhole) {
-                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                         paused.render(), "demanded as a value and run for"
                                 + " its doors alone by every session that"
@@ -531,7 +542,7 @@ public final class ExploreMain {
             }
         }
         for (OccurrenceAddress unexposed : waiting) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING
                             : GapClass.DIAGNOSTIC, unexposed.render(),
                     "only the seed replay ran this occurrence, under no "
@@ -549,15 +560,14 @@ public final class ExploreMain {
         // A cycle past the naming budget keys its arms by reference: named.
         String namingCut = corpus.namingCut();
         if (namingCut != null) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, "arm keys",
                     namingCut));
         }
-        RowCodec.writeAll(out.resolve(GAPS_FILE), distinct(gaps),
-                RowCodec::writeGap);
+        gaps.write();
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton, exposed, truncated,
-                ceilingCut, witnesses, wave(corpus), branches,
+                topologyEpoch, gaps.byKind(), slots, skeleton, exposed,
+                truncated, ceilingCut, witnesses, wave(corpus), branches,
                 concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
@@ -1230,7 +1240,8 @@ public final class ExploreMain {
                                        Frontier frontier,
                                        Frontier.Round open,
                                        String topologyEpoch,
-                                       List<GapRow> gaps, SlotTable slots,
+                                       Map<String, Integer> gaps,
+                                       SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
                                        int exposed, int truncated,
                                        int ceilingCut,
@@ -1301,11 +1312,7 @@ public final class ExploreMain {
         }
         manifest.add("verdicts", verdicts);
         JsonObject kinds = new JsonObject();
-        Map<String, Integer> byKind = new LinkedHashMap<String, Integer>();
-        for (GapRow gap : distinct(gaps)) {
-            byKind.merge(gap.kind().name(), 1, Integer::sum);
-        }
-        for (Map.Entry<String, Integer> entry : byKind.entrySet()) {
+        for (Map.Entry<String, Integer> entry : gaps.entrySet()) {
             kinds.addProperty(entry.getKey(), entry.getValue());
         }
         manifest.add("gaps", kinds);
