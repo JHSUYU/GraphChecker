@@ -8,8 +8,8 @@ cost us time at least once; the date or the case it came from is named so it can
 - A small workaround beats a huge engine change ("如果一个workaroud能解决一个巨大的工程改动，就是可以的"), but
   the design stays general; every workaround is named in STATUS (RULES.md "Workarounds, with measure").
 - One implementation per concept; what a change replaces is deleted -- no flags, no fallbacks, no old path kept
-  "for comparison" (owner 2026-10-18: "旧的代码就要全部删除了。再也不用了"). References for byte-identity are
-  old run OUTPUTS and old snapshot jars, never old code in the tree.
+  "for comparison" (owner 2026-10-18: "旧的代码就要全部删除了。再也不用了"). Comparisons use old run
+  OUTPUTS and old snapshot jars, never old code in the tree.
 - Read the existing mechanism before adding one (owner 2026-10-18: "不要重复造轮子"). Example: the arm key
   (ObligationFactory#dependence) already was a KLEE-style independence slice; the depth-1 explosion came from
   Corpus#inputShape naming handoffs by every varying root (Arms rootGuards), and a fix was parked on branch
@@ -98,9 +98,9 @@ cost us time at least once; the date or the case it came from is named so it can
 ## 7. Measuring performance
 
 - Measure first, prove the mechanism, then fix (two GC-flag "fixes" failed on 2026-10-16). Every fix lands with
-  before/after numbers on the same inputs, and outputs byte-identical where semantics do not change: planner
-  references 05 r5, 05 r2, 13 r10, 19 r10, 21 r13 (compressed in analysis/solr-2026-10-17/nfs/), composer
-  13, 39, 21, 10.
+  before/after numbers on the same inputs. Byte-identity is no longer a gate (owner 2026-10-18 evening): the bar
+  is a `.smt` with the right causal chain and a SAT that replays; the old references (planner 05 r5, 05 r2, 13 r10,
+  19 r10, 21 r13 in analysis/solr-2026-10-17/nfs/; composer 13, 39, 21, 10) remain a diagnostic.
 - Reconstruct timelines from file mtimes (worker dirs: host.txt dispatched, replay_verdict end; planning-NNNN
   dirs; logs), per minute, and attribute idle time to causes in obligation-minutes
   (analysis/solr-2026-10-18/idle-pool/). An idle pool is usually a serial chain on the head (landing, gate,
