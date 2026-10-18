@@ -143,11 +143,15 @@ copies of the same site strings).
 `SessionReader.read` reads every file of a session whole, each line into its row as it is parsed.
 A file the codec refuses leaves that kind empty and sets `incomplete()` (IMPORT:
 `SESSION_INCOMPLETE`, BLOCKING); `readHeader` reads only the manifest and the roots. A read shares
-what its rows spell alike (`RowPool`): each string a line parses to, and each occurrence, execution
-index and frame a row is built of, is held once across every session `readAll` reads. Rows spell
+what its rows spell alike (`RowPool`): each string a line parses to (the manifests' too), and each
+endpoint, location, occurrence, execution index and frame a row is built of, is held once across every
+session `readAll` reads. Of a session's gap rows every one is read and only the kinds a corpus reads are
+held (`gaps(GapKind)`: ADDRESS_UNSTABLE, BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE). Rows spell
 their occurrence and call sites out in full, so held apiece they took most of the heap
 (solr-18413's 2.2 GB corpus: 52M strings, 5.5 GB). A JSON node is never shared: the expression
-walks go by node identity. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
+walks go by node identity. A session taken into a `RowHold` (COMPOSE's corpus, `explore.Corpus#holding`) has
+its reads and writes let go of by the hold and read again from their files when next asked, value for value, side
+by side, with a pool of their own. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
 own `obligations.jsonl.gz` row and every one `ADMITTED`; only an admitted session states a topology.
 The schedule is read on demand.
 

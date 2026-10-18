@@ -692,7 +692,13 @@ Scale and robustness:
     composed keys (about 100 MB), the slot table (adhoc-09: 162 MB). The two largest were a lowering
     frame's copies of the side conditions it committed (451 of adhoc-10's 1626 MB; held by reference,
     `gc/compose/SmtLowering.Conditions`) and `Independence`'s leaf sets (478 of adhoc-40's 1582 MB;
-    arrays over one instance of each name, `gc/explore/Corpus.HeldLeaves`).
+    arrays over one instance of each name, `gc/explore/Corpus.HeldLeaves`). Then (2026-10-18, the
+    redundancy study, OPTIMIZATIONS 1.26-1.28) the gap rows no corpus reader reads are not held, a round's
+    gaps go to their file as they are said, the session-keyed indexes are per session and keyed by
+    name, the joins by (location, version), the walk's sets and the answers it keeps compact
+    (`gc/contract/PairSet`, `OpenSet`, `FrozenSet`, `VersionMap`) and endpoints, locations and frames
+    held once per read: SGF8-adhoc-05 round 5's planner 5826 -> 2226 MB after its corpus read, 12671 ->
+    4985 at the walk's end, 10889 -> 4148 at the frontier, every output byte-identical.
 38. An activation's tracked-location read-out asks the VM for every location the session tracked
     at or after the activation's entry event, from any thread; each page goes to the publication
     thread as it is read, once fewer than four pages' text wait there undecoded

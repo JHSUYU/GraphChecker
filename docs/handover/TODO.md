@@ -123,13 +123,12 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   per member and the expression tables compact, 39's PV7 round 6 (208 sessions, 9.8 GB) plans in 806 s at 16 GB,
   peaking near 9.4 GB live; a lowering frame's side conditions are held by reference and `Independence`'s leaf sets as
   arrays (SGF7-adhoc-10's subset: 1626 -> 1008 MB after the round, adhoc-40's 1649 -> 1163). What is left grows with the
-  corpus and the rounds, spread wide (STATUS 37 has the measured shares): (1) strings -- the
-  corpus indexes' composed keys (`session|symbol`, `session|location|version`, a location key per row, an id per
-  `Endpoint` instance: rows read in one pool share no `Endpoint` or `LocationId`), the per-session joins'
-  (`SmtLowering#joinOf`), the lowered and shared bodies' texts the memos keep for the round, and the expression nodes the
-  memo's keys hold strongly; (2) the slot table, whose
-  rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5) and whose round 6 change file was
-  2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same
+  corpus and the rounds, spread wide (STATUS 37 has the measured shares): (1) strings -- the corpus indexes' composed
+  keys, the joins', the endpoints' and locations' (done 2026-10-18, OPTIMIZATIONS 1.26-1.28: 05 r5's planner 12.7 ->
+  5.0 GB at its walk's end); left: the lowered and shared bodies' texts the memos keep for the round, and the
+  expression nodes the memo's keys hold strongly; (2) the slot table, whose
+  rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5; its endpoints and frames held once
+  per read since 1.28) and whose round 6 change file was 2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same
   static candidates again; `Walk#holders` dominates its CPU: about half of round 6's 13 minutes).
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).

@@ -21,6 +21,8 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.OpenSet;
+import edu.uva.liftlab.graphchecker.contract.PairSet;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -975,8 +977,10 @@ public final class ClosurePlanner {
          * round 2: 40 min in this walk, single-threaded, hashing the keys of
          * the static candidates it offered again).
          */
-        /** session|symbol of each handoff whose producers it expanded. */
-        private final Set<String> paired = new HashSet<String>();
+        /** (session, symbol) of each handoff whose producers it expanded:
+         *  two references a handoff ({@link PairSet}), never a key spelled
+         *  of both (SGF8-adhoc-05 round 5: 5.8 M of them, 1.7 GB). */
+        private final PairSet paired = new PairSet();
         /** The demanded reads whose writers it expanded. */
         private final Set<ReadRow> expandedReads = Collections.newSetFromMap(
                 new java.util.IdentityHashMap<ReadRow, Boolean>(1));
@@ -1175,8 +1179,10 @@ public final class ClosurePlanner {
         /** What the demand's last walk named, which this walk adds to
          *  ({@link #taken}), or null: this walk names them all. */
         private final Named before;
-        /** The symbols (this walk's, beside {@link #before}'s). */
-        private final Set<String> symbols = new HashSet<String>();
+        /** The symbols (this walk's, beside {@link #before}'s), one
+         *  reference each ({@link OpenSet}: SGF8-adhoc-05 round 5's walk
+         *  held 8.9 M of them, and as many kept). */
+        private final Set<String> symbols = new OpenSet<String>();
         /** Those this walk added, in the order added. */
         List<String> fresh = new ArrayList<String>();
         /** Whether this walk named them all: the demand's first walk, or
@@ -1400,7 +1406,7 @@ public final class ClosurePlanner {
         private final int version;
         /** Its group's reads, indexed before it ran ({@link Walk#reads}). */
         private final GroupReads group;
-        private final Set<String> paired = new HashSet<String>();
+        private final PairSet paired = new PairSet();
         private final Set<ReadRow> expanded = Collections.newSetFromMap(
                 new java.util.IdentityHashMap<ReadRow, Boolean>());
         private int contributed;
@@ -1450,9 +1456,11 @@ public final class ClosurePlanner {
             return said.size() + claims.size();
         }
 
-        /** Whether this handoff (session|symbol) is paired the first time. */
-        boolean pair(String key) {
-            return !demand.paired.contains(key) && paired.add(key);
+        /** Whether this handoff (its session's symbol) is paired the first
+         *  time. */
+        boolean pair(String sessionId, String symbol) {
+            return !demand.paired.contains(sessionId, symbol)
+                    && paired.add(sessionId, symbol);
         }
 
         /** Whether this demanded read is expanded the first time. */
@@ -2175,8 +2183,8 @@ public final class ClosurePlanner {
                     if (!demanded.holds(attach.symbol())) {
                         step.unread(expanding, attach.sessionId(),
                                 attach.endpoint(), "handoff");
-                    } else if (step.pair(attach.sessionId() + "|"
-                            + attach.symbol())) {
+                    } else if (step.pair(attach.sessionId(),
+                            attach.symbol())) {
                         expanding.add(attach);
                     }
                 }
@@ -2195,8 +2203,7 @@ public final class ClosurePlanner {
                 int item = (int) at;
                 if (item < member.attaches.size()) {
                     AttachRow attach = member.attaches.get(item);
-                    if (step.pair(attach.sessionId() + "|"
-                            + attach.symbol())) {
+                    if (step.pair(attach.sessionId(), attach.symbol())) {
                         expanding.add(attach);
                     }
                 } else {
@@ -2232,7 +2239,7 @@ public final class ClosurePlanner {
                 // A forced world's arrival came from no run's world.
                 if (attach != null && attach.seq()
                         < corpus.forcedFrom(session.getKey())
-                        && step.pair(session.getKey() + "|" + symbol)) {
+                        && step.pair(session.getKey(), symbol)) {
                     producers(walk, attach, step);
                 }
             }
@@ -2419,7 +2426,7 @@ public final class ClosurePlanner {
         for (int at = 0; at < answers.size(); at++) {
             keep(kept, sessions.get(at), answers.get(at));
         }
-        Set<String> keeps = new HashSet<String>();
+        Set<String> keeps = new OpenSet<String>();
         for (Set<String> symbols : kept.values()) keeps.addAll(symbols);
         Named named = demand.named;
         named = named == null || !keeps.containsAll(named.kept)

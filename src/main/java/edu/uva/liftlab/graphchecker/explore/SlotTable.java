@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.RowPool;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -184,14 +185,17 @@ public final class SlotTable {
             throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
+        // The rounds' slots spell the same endpoints again and again: each
+        // held once ({@link RowPool}).
+        RowPool pool = new RowPool();
         // Indexed by standing(), which knows the sessions they stand on.
         for (Path file : files(iteration, round)) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
             // Each line read into its slot and key on the core that parses
             // it (RowCodec#readEach), folded in the file's order.
-            RowCodec.readEach(file, row -> new ChangeRead(
-                    ExploreCodec.readSlot(row),
+            RowCodec.readEach(file, pool, row -> new ChangeRead(
+                    ExploreCodec.readSlot(row, pool),
                     JsonFields.optionalString(row, "kind")), change -> {
                 if (DROPPED.equals(change.kind)) {
                     table.byInteraction.remove(change.key);
@@ -251,15 +255,15 @@ public final class SlotTable {
         return stated;
     }
 
-    /** Whether this consumer endpoint has a WIRE slot in any world. */
-    public boolean opened(String consumerEndpointId) {
+    /** The consumer endpoints that have a WIRE slot in any world. */
+    public Set<String> wireConsumers() {
+        Set<String> consumers = new HashSet<String>();
         for (Slot slot : byInteraction.values()) {
-            if (slot.kind == InteractionKind.WIRE
-                    && slot.consumer.id().equals(consumerEndpointId)) {
-                return true;
+            if (slot.kind == InteractionKind.WIRE) {
+                consumers.add(slot.consumer.id());
             }
         }
-        return false;
+        return consumers;
     }
 
     /** Writes what this table changed as one round's rows into that

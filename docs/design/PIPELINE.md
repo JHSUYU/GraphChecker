@@ -531,9 +531,24 @@ read and only the kinds a corpus reads held, `SessionReader#gaps(GapKind)`: ADDR
 BOUND_INSUFFICIENT, UNPLANNED_INPUT, UNSTATED_VALUE -- EMIT reads the gap files themselves, §11 -- in every
 JVM that reads a corpus) with what was derived from each
 session's rows
-alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
-expressions: symbols, leaves, read locations and events, state reads), the static map while its
-file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
+alone (`Corpus.Derived`: its state join, its schedule's facts, read once, its rows by what they name --
+the first activation and the decisions of each occurrence, the attach, root and read minting each symbol, a
+forced session's own messages by interaction and producer -- and the walks of its expressions: symbols,
+leaves, read locations and events, state reads), the static map while its
+file reads the same (by digest), and the slot table it changed (step 4). WHAT A CORPUS HOLDS IS HELD
+COMPACT, in every JVM that reads one, with no change to what any stage computes or writes: a session's
+rows are keyed by what they name inside its `Derived`, never by a key spelled of the session and the name,
+and its state join by a location's key and a version (`contract.VersionMap`, `SmtLowering#joinOf`, which also
+answers a write by its version, `SessionJoin#write`: the corpus keeps no index of its own of writes); a
+read's endpoints, locations, occurrences, index frames and strings are held once per read of a corpus
+(`contract.RowPool`; the slot table's once per its read, `SlotTable#read`), a location's key spelled once
+(`LocationId#key`) and an expression node's interned (`SmtLowering#locationKey(JsonObject)`); a set made once
+and only read is a `contract.FrozenSet` (one array, its order kept: what a delivery rests on,
+`RestsOn#named`; an expression's symbols, read locations and events, `Corpus#expressionSymbols`,
+`#readLocations`, `#readEvents`; the join's read symbols), a set the walk only adds to and asks is a
+`contract.OpenSet` (`ClosurePlanner.Named`'s symbols and kept symbols, which no order is read of), and a
+handoff the walk paired is a pair of references in a `contract.PairSet`, never a `session|symbol` string.
+Within a round, what a
 round asks again of the same corpus is answered once: an arm's dependence per task and decision
 (`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
 the closure's walks of a demand that grew reuse its group, its members' reads and each read's
@@ -2372,6 +2387,32 @@ minute says how full the old generation is. A composition whose paths all fit th
 building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then composes again with half the
 paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
 until one composition ends or one path is all it had.
+
+THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
+`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time, the next ones read while
+these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
+and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join (its
+writes by version and by location among what it answers), its reads by symbol, its rows by occurrence, the answers that hold rows
+(`Corpus.StateRows`) -- are held apart: at most 0.15 of the heap of their text as it decodes, the sessions asked
+for least recently let go of and read again from their files when next asked, value for value (a landed
+session's files never change; reads and writes side by side). Every other row of every session stays held --
+decisions, activations, attaches, exports, roots, targets, expressions, the gap kinds a corpus reads -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
+sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
+and 1-8 for their reads and writes (the path's own session and the producers whose arms it closes); the final
+phase asks every session once. Reads and writes are most of a held corpus: SGF8-adhoc-13's 201 sessions held
+1260 MB with them, 516 without; SGF8-adhoc-07's 358 (28.4 GB of rows, 14.6 GB of them reads and writes, 1.9 GB
+gaps) filled 85 % of its composer's old generation, and 1 of its 309 paths was composed. Nothing else the
+composer keeps holds a row it let go of: an index across sessions keeps an endpoint's occurrence, never the
+endpoint (`Corpus#occurrenceOf`); `Arms#constructs` remembers a write by its endpoint's id; the slot table is
+read for the sessions that replace a slot and the WIRE consumers it opened, then let go of (`Composer#unopened`;
+07's 1.58 M slots held their own endpoints and frames); and a root's domain asks for the literals recorded
+decisions compare it with only where they widen it (`RootDomain#widened`: an integral configuration the case
+declares nothing for), each root's a walk of every session's decisions reaching it, lowered with that session's
+reads and writes (07's 367 fault markers were each asked). The formula, its manifest rows and gaps are byte for
+byte a whole corpus's (13, 39, 21, 10 at the composer's hold and at none; every composer test composes over a
+corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 2.9 GB live after the read, the old generation
+54 % after the last path; 1322 s (read 173, admission 134 -- the slot table's read --, paths 1000 -- the last 9
+of them 336 --, the rest 148), 1359 sessions read again (61.9 GB of text).
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the

@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -12,15 +14,18 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.OpenSet;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.VersionMap;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -108,6 +113,11 @@ public final class SmtLowering {
     public interface SessionJoin {
         /** The write expression at this location and version, or null. */
         JsonElement writeExpression(String locationKey, long version);
+
+        /** The write row of this location at this version, or null. */
+        default WriteRow write(String locationKey, long version) {
+            return null;
+        }
 
         /** This session's writes of one location, in the order it wrote. */
         List<WriteRow> writes(String locationKey);
@@ -317,6 +327,11 @@ public final class SmtLowering {
             public JsonElement writeExpression(String locationKey,
                                                long version) {
                 return join.writeExpression(locationKey, version);
+            }
+
+            @Override
+            public WriteRow write(String locationKey, long version) {
+                return join.write(locationKey, version);
             }
 
             @Override
@@ -605,26 +620,28 @@ public final class SmtLowering {
      * the only implementation, built once per session ({@code Corpus#join}).
      */
     public static SessionJoin joinOf(final SessionReader session) {
-        final Map<String, String> writes = new LinkedHashMap<String, String>();
+        // By location and version: the location's key and the version's
+        // long, never a key spelled of both ({@link VersionMap}).
+        final VersionMap<WriteRow> writes = new VersionMap<WriteRow>();
         final Map<String, List<WriteRow>> byLocation =
-                new LinkedHashMap<String, List<WriteRow>>();
+                new HashMap<String, List<WriteRow>>();
         for (WriteRow write : session.writes()) {
             String key = locationKey(write.location());
-            writes.put(key + "#" + write.version(), write.expressionRef());
+            writes.put(key, write.version(), write);
             byLocation.computeIfAbsent(key, held -> new ArrayList<WriteRow>())
                     .add(write);
         }
         final Map<String, List<ReadRow>> readsOf =
-                new LinkedHashMap<String, List<ReadRow>>();
+                new HashMap<String, List<ReadRow>>();
         // A row's symbol counts when it states one (its JOIN or PIN binds
         // it): by mint version, else by the location and version it saw.
         final Map<Long, Set<String>> minted =
-                new LinkedHashMap<Long, Set<String>>();
-        final Map<String, Set<String>> observed =
-                new LinkedHashMap<String, Set<String>>();
+                new HashMap<Long, Set<String>>();
+        final VersionMap<Set<String>> observed =
+                new VersionMap<Set<String>>();
         // What a witness may move: the roots and clock cells this session
         // minted or read, and the values it received.
-        final Set<String> moving = new LinkedHashSet<String>();
+        final Set<String> moving = new OpenSet<String>();
         for (RootMintRow root : session.roots()) moving.add(root.symbol());
         for (AttachRow attach : session.attaches()) {
             moving.add(attach.symbol());
@@ -640,10 +657,15 @@ public final class SmtLowering {
             if (read.mintVersion() >= 0L) {
                 add(minted, read.mintVersion(), read.symbol());
             } else if (read.observedVersion() >= 0L) {
-                add(observed, locationKey(read.location()) + "#"
-                        + read.observedVersion(), read.symbol());
+                observed.computeIfAbsent(locationKey(read.location()),
+                        read.observedVersion(),
+                        key -> new LinkedHashSet<String>())
+                        .add(read.symbol());
             }
         }
+        // Held as they were made, for good.
+        minted.replaceAll((version, symbols) -> FrozenSet.of(symbols));
+        observed.replaceAll(FrozenSet::of);
         // A content leaf's attach -> the view it came through, and back.
         final Map<String, ViewLeaf> viewLeaves =
                 new HashMap<String, ViewLeaf>();
@@ -656,24 +678,29 @@ public final class SmtLowering {
                     + leaf.port, attach.symbol());
         }
         final Map<String, RefusalFrame> frames = frames(session);
-        // Location#version -> the frame whose occurrence wrote it.
-        final Map<String, RefusalFrame> framedWrites =
-                new HashMap<String, RefusalFrame>();
+        // Location, version -> the frame whose occurrence wrote it.
+        final VersionMap<RefusalFrame> framedWrites =
+                new VersionMap<RefusalFrame>();
         for (WriteRow write : session.writes()) {
             RefusalFrame frame = write.initial() ? null
                     : frames.get(write.endpoint().occurrence().id());
             if (frame != null) {
-                framedWrites.put(locationKey(write.location()) + "#"
-                        + write.version(), frame);
+                framedWrites.put(locationKey(write.location()),
+                        write.version(), frame);
             }
         }
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
                                                long version) {
-                String ref = writes.get(locationKey + "#" + version);
-                return ref == null ? null
-                        : session.expressions().expression(ref);
+                WriteRow write = writes.get(locationKey, version);
+                return write == null ? null : session.expressions()
+                        .expression(write.expressionRef());
+            }
+
+            @Override
+            public WriteRow write(String locationKey, long version) {
+                return writes.get(locationKey, version);
             }
 
             @Override
@@ -700,8 +727,7 @@ public final class SmtLowering {
 
             @Override
             public Set<String> readSymbols(String locationKey, long version) {
-                Set<String> symbols =
-                        observed.get(locationKey + "#" + version);
+                Set<String> symbols = observed.get(locationKey, version);
                 return symbols == null
                         ? Collections.<String>emptySet() : symbols;
             }
@@ -730,7 +756,7 @@ public final class SmtLowering {
             @Override
             public RefusalFrame frameOfWrite(String locationKey,
                                              long version) {
-                return framedWrites.get(locationKey + "#" + version);
+                return framedWrites.get(locationKey, version);
             }
 
             @Override
@@ -4680,9 +4706,14 @@ public final class SmtLowering {
      * {@link #locationKey(JsonObject)} does, or every state join misses.
      */
     public static String locationKey(LocationId location) {
-        return location == null ? "" : location.kind() + "/"
-                + location.owner() + "#" + location.slot();
+        return location == null ? "" : location.key();
     }
+
+    /** The keys of the VM location nodes expressions name, one string a
+     *  key while some index holds it: each node spells its key anew, and
+     *  a session's derived reads hold them ({@code explore.Corpus}). */
+    private static final Interner<String> NODE_KEYS =
+            Interners.newWeakInterner();
 
     /** The join key of one VM location node, in the same spelling. */
     public static String locationKey(JsonObject location) {
@@ -4699,7 +4730,8 @@ public final class SmtLowering {
         if (slot.isEmpty()) {
             slot = Long.toString(optionalLongInteger(location, "slot", 0L));
         }
-        return locationKey(LocationId.of(locationKind(kind), owner, slot));
+        return NODE_KEYS.intern(LocationId.of(locationKind(kind), owner,
+                slot).key());
     }
 
     private static LocationKind locationKind(String kind) {
