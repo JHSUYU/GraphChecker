@@ -679,7 +679,9 @@ Scale and robustness:
     strings: index keys, lowered and canonical texts), where solr-int ran out of 21 GB in the closure
     walk. Each round also writes the slot table's changes whole (`slots.jsonl`: 2.9 GB in that round
     6), which every later planner folds. Past `engine_memory_mb` the exploration ends
-    (`PLANNER_HEAP_EXCEEDED`); a composer past it fails COMPOSE. What a planner holds after a round,
+    (`PLANNER_HEAP_EXCEEDED`), and so it does at a round whose new sessions the planner's live set at
+    its highest would not hold beside them (`gc/contract/HeapWatch#outgrown`, answered unread); a
+    composer past it fails COMPOSE. What a planner holds after a round,
     by the field that first reaches each object, rows first (offline EXPLORE.N over SGF7 corpora,
     2026-10-16): solr-adhoc-10's 23 sessions (1192 MB) 1008 MB, solr-adhoc-40's 12 (1289 MB) 1163 MB,
     spread wide -- the rows and expression tables (adhoc-40: 160 and 79 MB), the per-session joins'

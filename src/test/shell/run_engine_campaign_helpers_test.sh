@@ -2096,13 +2096,13 @@ done <<'EOF'
 1000|900 950 1000 1100 1200 1300 1400 3000|4608|3072|0
 2234|1557/718 1497/696 1478/834 1304/705 1081/413 955/576 940/664 859/587|3456|896|661
 EOF
-# PLANNER-CORPUS: the planner runs at the engine heap (campaign_stream_plan):
-# one is started there when none lives, a living one is asked as it is, and a
-# corpus past 90 % of the engine heap is PLANNER_HEAP_EXCEEDED before any
-# planner is asked, named as predicted.  Per row: the corpus, whether a
-# planner lives (and its heap), the status, what was done.
-plan_dir="${test_tmp}/planner-corpus"
-while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
+# PLANNER-START: the planner runs at the engine heap (campaign_stream_plan):
+# one is started there when none lives, a living one is asked as it is, and
+# a round it answers it cannot hold (exit 3) is PLANNER_HEAP_EXCEEDED.  Per
+# row: whether a planner lives (its heap), what the ask returns, the status,
+# what was done.
+plan_dir="${test_tmp}/planner-start"
+while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
   rm -rf -- "${plan_dir}"
   mkdir -p "${plan_dir}/planning-0003" "${plan_dir}/planner"
   plan_got=$(
@@ -2116,30 +2116,57 @@ while IFS='|' read -r plan_corpus plan_heap plan_status plan_done; do
       echo "${plan_heap}" >"${plan_dir}/planner/heap"
       echo 1 >"${plan_dir}/planner/id"
     fi
-    campaign_corpus_mb() { printf '%s\n' "${plan_corpus}"; }
     campaign_planner_alive() { (( plan_alive )); }
     campaign_planner_start() { plan_alive=1; echo "start $1" >>"${plan_dir}/done"; }
-    campaign_planner_round() { echo ask >>"${plan_dir}/done"; return 0; }
+    campaign_planner_round() { echo ask >>"${plan_dir}/done"; return "${plan_asked}"; }
     status=0
     campaign_stream_plan "${plan_dir}/planning-0003" 2>/dev/null || status=$?
     printf '%s|%s' "${status}" "$(paste -sd ' ' "${plan_dir}/done" \
       2>/dev/null)"
   )
   [[ "${plan_got}" == "${plan_status}|${plan_done}" ]] \
-    || fail "a corpus of ${plan_corpus} MB beside a planner of ${plan_heap} \
+    || fail "PLANNER-START: a planner of ${plan_heap} asked ${plan_asked} \
 gave ${plan_got}, not ${plan_status}|${plan_done}"
-  if (( plan_status == campaign_jvm_out_of_heap_status )); then
-    grep -q "more than a planner holds" \
-      "${plan_dir}/planning-0003/heap-predicted" \
-      || fail "a predicted PLANNER_HEAP_EXCEEDED is not named so"
-  fi
 done <<'EOF'
-15000|16384|3|
-15000|-|3|
-7000|16384|0|ask
-3000|-|0|start 16384 ask
-14000|-|0|start 16384 ask
+16384|0|0|ask
+-|0|0|start 16384 ask
+16384|3|3|ask
 EOF
+# PLANNER-LIVE: a served planner's answer that it cannot hold the round (its
+# live set and the round's new sessions past its old generation's room,
+# explore.ExploreMain --serve, exit 3) is the ask's 3, the planner's words
+# in the round's heap-predicted, which names the stop.
+(
+  plan_dir="${test_tmp}/planner-live"
+  mkdir -p "${plan_dir}/planning-0006"
+  live_dir=$(campaign_planner_dir "${plan_dir}/sessions" 7)
+  mkdir -p "${live_dir}/requests" "${live_dir}/answers"
+  printf '%s\n' "${BASHPID}" >"${live_dir}/server"
+  (
+    for (( waited = 0; waited < 100; waited++ )); do
+      for request in "${live_dir}"/requests/*.json; do
+        [[ -e "${request}" ]] || continue
+        name=$(basename "${request}" .json)
+        jq -n -c '{exit: 3, error: "the planner needs ~16900 MB of its 17203 MB old generation: 14500 MB live at its highest last round and 0.35 of the 6857 MB of session files it reads now, past 90 % of it"}' \
+          >"${live_dir}/answers/${name}.json"
+        exit 0
+      done
+      sleep 0.1
+    done
+  ) &
+  status=0
+  campaign_planner_ask "${plan_dir}/sessions" 7 6 \
+    "${plan_dir}/planning-0006/in_flight.jsonl" "${plan_dir}/planning-0006" \
+    "${plan_dir}/answers.jsonl" "${plan_dir}/corpus.txt" 2>/dev/null \
+    || status=$?
+  wait
+  (( status == campaign_jvm_out_of_heap_status )) \
+    || fail "PLANNER-LIVE: a planner's out-of-heap answer asked ${status}"
+  grep -q "14500 MB live at its highest last round" \
+    "${plan_dir}/planning-0006/heap-predicted" \
+    || fail "PLANNER-LIVE: the predicted stop does not carry the planner's \
+measure"
+)
 
 # MEASURED-CORES: a replay is counted the cores the seed replay kept busy
 # alone (workload_cores_x100, rounded up), then at least the 90th percentile
@@ -3068,9 +3095,6 @@ stream_fixture() {
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
   engine_memory_mb=1
-  # A 1 MB engine heap holds no corpus: the planner's corpus bound
-  # (campaign_stream_plan, PLANNER-CORPUS) is not this fixture's question.
-  campaign_planner_hold_pct=1000000000
   causynth_static_scope_map=""
   causynth_root_domains=""
   declared_target_occurrence=""
@@ -3087,6 +3111,7 @@ stream_fixture() {
 # (3: out of heap, its JVM's last words in its log).
 stream_planner_serve() {
   local heap=$1 id=$2 log=$4 sessions="" dir request name round status
+  local refused
   printf '%s\n' "${BASHPID}" >"$5"
   shift 5
   while [[ $# -gt 0 ]]; do
@@ -3110,6 +3135,14 @@ space" >>"${log}"
         rm -rf -- "${dir}/requests" "${dir}/answers"
         return "${status}"
       fi
+      refused=$(stream_planner_refuses "${round}")
+      if [[ -n "${refused}" ]]; then
+        jq -n -c --arg why "${refused}" '{exit: 3, error: $why}' \
+          >"${dir}/answers/${name}.part"
+        mv -- "${dir}/answers/${name}.part" "${dir}/answers/${name}.json"
+        rm -f -- "${dir}/requests/${name}.taken"
+        continue
+      fi
       stream_planner --round "${round}" --output-dir "$(jq -r '.outputDir' \
         "${dir}/requests/${name}.taken")" --in-flight "$(jq -r '.inFlight' \
         "${dir}/requests/${name}.taken")" --corpus "$(jq -r '.corpus // ""' \
@@ -3123,6 +3156,10 @@ space" >>"${log}"
   done
 }
 stream_planner_dies() { :; }
+# stream_planner_refuses <round> says why the served planner answers that it
+# cannot hold that round (ExploreMain --serve's out-of-heap answer), or
+# nothing.
+stream_planner_refuses() { :; }
 
 # The planner's JVM is stopped by the pid it stated, on its host, whatever
 # still holds it (SG2: peers' planners outlived their campaigns by 75-105
@@ -3907,6 +3944,37 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   && [[ ! -e "${stream_dir}/obligations-0001" ]] \
   || fail "a planner out of heap did not end the exploration by name: \
 $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
+
+# STREAM-3f: A ROUND THE PLANNER CANNOT HOLD.  A served planner that answers a
+# round out of heap unread -- its live set at its highest last round and the
+# round's new sessions past its old generation's room -- ends the exploration
+# PLANNER_HEAP_EXCEEDED on the rounds before it, the stop naming the
+# planner's measure, as a planner that ran out of heap does.
+stream_fixture stream-3f
+(
+  stream_stubs
+  stream_planner_refuses() {
+    [[ "$1" != 1 ]] || echo "the planner needs ~16900 MB of its 17203 MB \
+old generation: 14500 MB live at its highest last round"
+  }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
+  campaign_obligation_worker() {
+    stream_answer "$4" A ADMITTED SESSION.A
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a round the planner cannot hold failed the exploration: \
+$(cat "${stream_dir}/explore.log")"
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
+  | .detail | test("obligations-0001: the planner needs")
+    and test("14500 MB live at its highest")' \
+  "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1
+    and .roundDropped == "planning-0001"' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  || fail "a round the planner cannot hold did not end the exploration by \
+name: $(cat "${stream_dir}/campaign_gaps.jsonl" \
+"${stream_dir}/exploration.json")"
 
 # STREAM-SERVE: ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1, §7.9).  It is
 # started once, at the engine heap, every round asked of it, and it is ended

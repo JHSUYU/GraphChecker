@@ -49,6 +49,7 @@ public class ServiceTest {
                 {"3.b", live, "ok"},
                 {"1.a", live, "fail"},
                 {"2.gone", "2147483646", "ok"},
+                {"4.c", live, "past"},
         };
         for (String[] question : questions) {
             JsonObject asked = new JsonObject();
@@ -67,13 +68,22 @@ public class ServiceTest {
                 throw new IllegalStateException("round",
                         new java.io.IOException("no path " + id));
             }
+            if ("past".equals(question.get("does").getAsString())) {
+                throw new Service.OutOfHeap("the planner needs ~9 MB of "
+                        + "its 8 MB old generation");
+            }
             Files.createDirectories(out);
             Files.write(out.resolve("obligation_result.jsonl"),
                     id.getBytes(StandardCharsets.UTF_8));
         });
 
         assertEquals("oldest first, the gone worker's dropped",
-                java.util.Arrays.asList("1.a", "3.b"), order);
+                java.util.Arrays.asList("1.a", "3.b", "4.c"), order);
+        assertEquals("a round no heap holds is answered so, and the "
+                + "service serves on", 3, answer(dir, "4.c").get("exit")
+                .getAsInt());
+        assertEquals("the planner needs ~9 MB of its 8 MB old generation",
+                answer(dir, "4.c").get("error").getAsString());
         assertEquals(1, answer(dir, "1.a").get("exit").getAsInt());
         assertEquals("the deepest throwable",
                 "java.io.IOException: no path 1.a",

@@ -1283,6 +1283,7 @@ public class ExploreTest {
         String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
                 {"land", "s-b"}, {"unlisted", "s-c"}};
         Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
+        Set<String> held = new LinkedHashSet<String>();
         for (int round = 0; round < landings.length; round++) {
             String[] landing = landings[round];
             if (landing.length > 0 && landing[0].equals("land")) {
@@ -1306,7 +1307,22 @@ public class ExploreTest {
                 landed(iteration, landing[1]);
             }
             Path mine = iteration.resolve(name);
+            // What the round reads, by which its room is judged: the files
+            // of the sessions the planner does not hold yet.
+            long reads = 0L;
+            for (String sessionId : corpus) {
+                if (held.contains(sessionId)) continue;
+                try (java.util.stream.Stream<Path> files = Files.list(
+                        iteration.resolve("sessions").resolve(sessionId))) {
+                    for (Path file : (Iterable<Path>) files::iterator) {
+                        reads += Files.size(file);
+                    }
+                }
+            }
+            assertEquals("round " + round + " reads its new sessions' files",
+                    reads, served.toRead(corpus));
             served.round(round, null, results, corpus, mine);
+            held = new LinkedHashSet<String>(corpus);
             List<String> files = new ArrayList<String>();
             try (java.util.stream.Stream<Path> listed = Files.list(own)) {
                 listed.forEach(file -> files.add(file.getFileName()

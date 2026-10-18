@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.SystemView;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
@@ -86,7 +87,10 @@ import java.util.TreeSet;
  *                              results (the answers then landed), corpus
  *                              (a file naming the sessions it reads, one
  *                              per line) and outputDir, until the process
- *                              is ended
+ *                              is ended; a round whose sessions to read its
+ *                              live set does not hold beside them is
+ *                              answered out of heap, unread ({@link
+ *                              HeapWatch#outgrown})
  * </pre>
  *
  * <p>A round rebuilds the frontier from every session, recorded verdict and
@@ -212,12 +216,25 @@ public final class ExploreMain {
             Service.serve(serve, 0L, (question, out) -> {
                 String flying = JsonFields.optionalString(question,
                         "inFlight");
+                List<String> named = corpus(Paths.get(
+                        JsonFields.primitiveString(question, "corpus")));
+                // A round it cannot hold is not asked: it runs at the most
+                // heap a head JVM is given (run_engine.sh
+                // campaign_stream_plan), so none would hold it.
+                long[] live = HeapWatch.takePeakSwept();
+                long toRead = planner.toRead(named);
+                System.err.printf("round %d: the planner's live set %d MB at "
+                                + "its highest of its %d MB old generation, "
+                                + "%d MB of session files to read%n",
+                        question.get("round").getAsInt(), live[0] >> 20,
+                        live[1] >> 20, toRead >> 20);
+                String past = HeapWatch.outgrown("the planner", live[0],
+                        live[1], toRead);
+                if (past != null) throw new Service.OutOfHeap(past);
                 planner.round(question.get("round").getAsInt(),
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
-                                "results")),
-                        corpus(Paths.get(JsonFields.primitiveString(
-                                question, "corpus"))),
+                                "results")), named,
                         Paths.get(JsonFields.primitiveString(question,
                                 "outputDir")));
             });
@@ -231,6 +248,31 @@ public final class ExploreMain {
         System.out.println(pretty(planner.round(
                 (int) options.number("round", 0), options.path("in-flight"),
                 options.path("results"), null, out)));
+    }
+
+    /**
+     * The bytes of the session files a round over {@code named} reads: of
+     * the sessions it names that the corpus this planner kept does not hold
+     * ({@link Corpus#read(Path, Path, Corpus, Collection)} reads only
+     * those).
+     */
+    long toRead(Collection<String> named) throws IOException {
+        Set<String> held = new LinkedHashSet<String>();
+        if (corpus != null) {
+            for (SessionReader session : corpus.everySession()) {
+                held.add(session.sessionId());
+            }
+        }
+        long bytes = 0L;
+        for (String sessionId : named) {
+            if (held.contains(sessionId)) continue;
+            try (java.nio.file.DirectoryStream<Path> files = Files
+                    .newDirectoryStream(SessionDir.of(iteration, sessionId)
+                            .dir())) {
+                for (Path file : files) bytes += Files.size(file);
+            }
+        }
+        return bytes;
     }
 
     /** The sessions a served round's question names, one per line. */

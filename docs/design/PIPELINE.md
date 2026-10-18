@@ -1888,11 +1888,19 @@ the round of it on its host (`campaign_planner_ask`, through the remote worker s
 a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
 `iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
-PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): a planner holds about its
-session files (SGF8 10, 40, 14 ran out of 16384-18432 MB over 16058-21867 MB), and one started lower outgrew its
+PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): one started lower outgrew its
 heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
-collecting to its end (~17 min each); a corpus past `campaign_planner_hold_pct` (90) of the engine heap is
-PLANNER_HEAP_EXCEEDED before any planner is asked (`heap-predicted`, named so). A planner or a composer is a HEAD
+collecting to its end (~17 min each). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+its own measure (`contract.HeapWatch#outgrown`)
+-- its old generation's live set at its highest since the last round (what it held after a full collection, as
+`HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the
+sessions new to it (`ExploreMain#toRead`), past `HeapWatch#FULL` (90 %) of its old generation -- and a round past
+it is answered out of heap unread (`Service.OutOfHeap`, exit 3), the planner serving on; the round is
+PLANNER_HEAP_EXCEEDED, its `heap-predicted` the planner's words (`campaign_planner_ask`). The rows are a steady
+third of their files (0.32-0.37 over six SGF8 rounds of 05, 07, 10, 14, 40), what a round adds to them comes and
+goes (peaks of 0.57 to over 1.09 times the files, in `Frontier.<init>` in three of the six), so no rule over the
+files alone tells a corpus a planner holds from one it does not: 40 ran out over 16.2 GB of files, 05 lived at
+~14.5 GB live of its 21.5 GB heap over 20.4 GB (shard-study FINDINGS §3, §7). A planner or a composer is a HEAD
 STEP, one JVM alone on its host: placed, grown and given its z3 room under the head steps' ceiling
 (`campaign_head_max_used_pct`, 88 %; the replays' and solvers' stays `CAUSYNTH_HOST_MAX_USED_PCT`, 70 %), so the
 Solr study checks' engine heap is 24576 MB, a solver's at most 16384 (`campaign_solver_max_heap_mb`); every engine
@@ -2003,8 +2011,8 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
   what runs lands, and the stop is a
-  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error, or that the
-  corpus was past what a planner holds, unasked -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error, or the
+  planner's measure of the round it could not hold, unread (§7.9) -- rounds were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations

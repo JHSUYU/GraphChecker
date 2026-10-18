@@ -5766,10 +5766,6 @@ campaign_planner_dir() {
     "$(id -un)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)" "$2"
 }
 
-# The planner's corpus bound (campaign_stream_plan), in % of the engine
-# heap: past it no planner is asked.
-campaign_planner_hold_pct=90
-
 # How long a question waits for a planner just started to name itself, in
 # seconds: its JVM names itself before it reads anything.
 campaign_planner_start_wait_s=300
@@ -5777,29 +5773,24 @@ campaign_planner_start_wait_s=300
 # The round <round_dir> (planning-NNNN, its frozen inputs in it), planned
 # by the exploration's planner: started first when none lives, at the
 # engine heap, and asked again when it ended without answering.  Its status: 0
-# planned; 3 the planner ran out of the engine heap; anything else failed,
-# the deepest throwable said on stderr.
+# planned; 3 the planner ran out of the engine heap, or answered that it
+# would (<round_dir>/heap-predicted says why); anything else failed, the
+# deepest throwable said on stderr.
 campaign_stream_plan() {
   local round_dir=$1 state="${iteration_dir}/planner" status since
-  local corpus engine=${engine_memory_mb:-8192}
+  local engine=${engine_memory_mb:-8192}
   mkdir -p "${state}"
   while true; do
-    # THE PLANNER RUNS AT THE ENGINE HEAP, and is never asked past it.  It
-    # holds about its session files (SGF8: 10, 40 and 14 ran out of
-    # 16384-18432 MB over 16058-21867 MB, 0.88-1.33 of the heap); started
-    # lower, it outgrew its heap mid-exploration and read the whole corpus
-    # again at the next (SGF8-adhoc-05: 11.6 GB, ~10 min of an idle pool),
-    # after collecting to its end (~17 min each, 2-3 a case).  A corpus past
-    # campaign_planner_hold_pct of the engine heap is more than any planner of
-    # this case holds: the round is PLANNER_HEAP_EXCEEDED now.
-    corpus=$(campaign_corpus_mb "${sessions}")
-    if (( corpus * 100 > engine * campaign_planner_hold_pct )); then
-      printf '%s\n' "the corpus of ${corpus} MB is past \
-${campaign_planner_hold_pct} % of the most heap a head JVM is given \
-(engine_memory_mb=${engine}), more than a planner holds (one holds about its \
-session files): the round is not asked" >"${round_dir}/heap-predicted"
-      return "${campaign_jvm_out_of_heap_status}"
-    fi
+    # THE PLANNER RUNS AT THE ENGINE HEAP: started lower, it outgrew its
+    # heap mid-exploration and read the whole corpus again at the next
+    # (SGF8-adhoc-05: 11.6 GB, ~10 min of an idle pool), after collecting to
+    # its end (~17 min each, 2-3 a case).  A round it cannot hold it does not
+    # read: its live set at its highest last round with 0.35 of the files of
+    # the sessions new to it, past 90 % of its old generation, is answered
+    # out of heap (explore.ExploreMain --serve, contract.HeapWatch#outgrown)
+    # and the round is PLANNER_HEAP_EXCEEDED, named as predicted.  The files
+    # alone tell no such round: 40 ran out over 16.2 GB of files, 05 lived
+    # at ~14.5 GB live over 20.4 GB (shard-study, FINDINGS §3, §7).
     if ! campaign_planner_alive; then
       if [[ -s "${state}/id" ]]; then
         campaign_planner_ended "${round_dir}" || return
@@ -5963,13 +5954,15 @@ campaign_planner_round() {
 # campaign_planner_ask <sessions> <id> <round> <in_flight> <round_dir>
 # <answers> <corpus>, on the planner's host: the round put to the planner
 # instance <id> -- over the sessions <corpus> names, one per line, and the
-# answers <answers> holds -- and its answer waited for.  0 planned; 1
-# failed, its error on stderr; 5 no planner answers there (none named itself
+# answers <answers> holds -- and its answer waited for.  0 planned; 3 the
+# planner answered that it cannot hold the round, why in
+# <round_dir>/heap-predicted; 1 failed, its error on stderr; 5 no planner
+# answers there (none named itself
 # within campaign_planner_start_wait_s, or the one named is gone): the
 # question is taken back.
 campaign_planner_ask() {
   local sessions=$1 id=$2 round=$3 in_flight=$4 round_dir=$5 answers=$6
-  local corpus=$7 dir name answer pid gone="" since=${SECONDS}
+  local corpus=$7 dir name answer pid gone="" since=${SECONDS} said=""
   dir=$(campaign_planner_dir "${sessions}" "${id}")
   mkdir -p "${dir}/requests"
   name="$(date +%s%N).${BASHPID}"
@@ -5994,7 +5987,12 @@ campaign_planner_ask() {
     fi
     sleep 0.2
   done
-  if [[ "$(jq -r '.exit' "${answer}")" != 0 ]]; then
+  said=$(jq -r '.exit' "${answer}")
+  if [[ "${said}" == "${campaign_jvm_out_of_heap_status}" ]]; then
+    jq -r '.error' "${answer}" | tee "${round_dir}/heap-predicted" >&2
+    rm -f -- "${answer}"
+    return "${campaign_jvm_out_of_heap_status}"
+  elif [[ "${said}" != 0 ]]; then
     printf '%s\n' "$(jq -r '.error' "${answer}")" >&2
     rm -f -- "${answer}"
     return 1
