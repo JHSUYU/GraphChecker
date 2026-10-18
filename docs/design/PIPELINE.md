@@ -409,7 +409,11 @@ a version made after the test ended, or names work no replay of the question run
 and the replay now stops there): none needs them. CONFIRM's and REPRODUCE's questions are the window's.
 A workload's second window would find its order already settled at the first close (every Solr recording opens
 one). Run, the teardown cost a replay minutes after its close (07 reproductions, close to statement: the SGF8 jar
-259-354 s, solr-int 142 s; ended at the close, 62 and 156 s, both the settle of a stall's end 3-4 s before it).
+259-354 s, solr-int 142 s for 0298); ended at the close, 0298 105 s, and 18-156 s in four replays whose stall ended 3-4 s
+before it -- what is left is the settle's publications decoding their pages. Their sessions import (no BLOCKING row)
+and plan as before (07's seed plus 0298's session: 740 obligations against 741). While the end settles the cluster
+runs on, so a door still states rows of ambient occurrences (07: the followers' replication polls, ~8 rows a second)
+until the session closes, as it did after an early end's cut before.
 
 A focused replay ends early, once, for one of six reasons (`ConcolicResultPublisher#conclude`):
 
