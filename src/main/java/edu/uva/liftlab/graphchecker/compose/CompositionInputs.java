@@ -26,7 +26,8 @@ import java.util.stream.Stream;
  * JVM's {@code causynth.*} properties (and the file one names), each
  * session (its id, its files' names and sizes -- a published session is
  * only ever appended to -- and its manifest), the iteration's recorded
- * schedule, refuted claims and slot tables ({@link SlotTable#files}), and
+ * schedule, refuted claims, uncaptured sessions ({@link
+ * SessionDir#UNCAPTURED}) and slot tables ({@link SlotTable#files}), and
  * the result and focus rows of each obligation worker whose session is one
  * of them: the worker data a corpus reads of a session ({@code
  * Corpus#world}, {@code #waveVerdict}).  Not the z3 room: a resource, not
@@ -86,6 +87,8 @@ final class CompositionInputs {
         file(lines, Corpus.RECORDED_SCHEDULE,
                 iteration.resolve(Corpus.RECORDED_SCHEDULE));
         file(lines, Refutations.FILE, iteration.resolve(Refutations.FILE));
+        file(lines, SessionDir.UNCAPTURED,
+                iteration.resolve(SessionDir.UNCAPTURED));
         for (Path slots : SlotTable.files(iteration)) {
             file(lines, "slots " + iteration.relativize(slots), slots);
         }

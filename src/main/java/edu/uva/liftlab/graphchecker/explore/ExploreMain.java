@@ -237,12 +237,17 @@ public final class ExploreMain {
                 String past = HeapWatch.outgrown("the planner", live[0],
                         live[1], toRead);
                 if (past != null) throw new Service.OutOfHeap(past);
+                Path planned = Paths.get(JsonFields.primitiveString(question,
+                        "outputDir"));
                 planner.round(question.get("round").getAsInt(),
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
-                                "results")), named,
-                        Paths.get(JsonFields.primitiveString(question,
-                                "outputDir")));
+                                "results")), named, planned);
+                // Its live set at its highest this round, beside the round:
+                // what its host is charged for the next (run_engine.sh
+                // campaign_planner_need_mb).
+                ArtifactIO.replace(planned.resolve(LIVE_MB),
+                        (HeapWatch.peakSwept() >> 20) + "\n");
             });
             return;
         }
@@ -255,6 +260,10 @@ public final class ExploreMain {
                 (int) options.number("round", 0), options.path("in-flight"),
                 options.path("results"), null, out)));
     }
+
+    /** The served planner's live set at its highest over a round, in MB,
+     *  in the round's directory ({@link HeapWatch#peakSwept}). */
+    static final String LIVE_MB = "planner_live_mb";
 
     /**
      * The bytes of the session files a round over {@code named} reads, as
@@ -569,8 +578,8 @@ public final class ExploreMain {
         gaps.write();
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps.byKind(), skeleton, exposed,
-                truncated, ceilingCut, witnesses, wave(corpus), branches,
-                concrete);
+                truncated, ceilingCut, witnesses, wave(corpus),
+                bounds.maxWorldDepth, branches, concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
         manifest.add("boundedFlips", boundedFlips(iteration,
@@ -1247,7 +1256,8 @@ public final class ExploreMain {
                                        int exposed, int truncated,
                                        int ceilingCut,
                                        List<String> witnesses,
-                                       int wave, Branches branches,
+                                       int wave, int maxWorldDepth,
+                                       Branches branches,
                                        Map<OccurrenceAddress,
                                                ClosurePlanner.Concrete>
                                                concrete) {
@@ -1265,6 +1275,10 @@ public final class ExploreMain {
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("round", open.index);
         manifest.addProperty("wave", wave);
+        // The world depth its paths were cut by (ObligationFactory
+        // #candidates): a GROW re-run of a deeper world offers no round an
+        // obligation (run_engine.sh campaign_stream_grow_take).
+        manifest.addProperty("maxWorldDepth", maxWorldDepth);
         // FIXED_POINT: nothing proposed, exposed or in flight; AWAITING:
         // nothing new while arms are still in flight.
         manifest.addProperty("state", !open.empty() || exposed > 0
