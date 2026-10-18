@@ -2656,7 +2656,10 @@ $(cat "${solver_test}/e.err")"
 # solver's to take over); one whose host had no room to start its solver (3)
 # is asked again of a host's solver, uncharged in the pool's queue
 # (solve_again); one its solver ended on or failed (1) is asked again once,
-# then fails the worker by name.  A HARD ask is z3 alone over its first ask's
+# then fails the worker by name -- but a solver that ended for memory (4)
+# fails none of its questions: asked again uncounted, at most
+# campaign_solver_memory_asks times (memory: those spent), then counted.
+# A HARD ask is z3 alone over its first ask's
 # query (campaign_obligation_decide: ObligationSolverMain --decide, its
 # charge, the full budget, the hard lane's z3 room); its answer is the
 # obligation's, a model is asked again of a host's solver to finish the flip,
@@ -2668,7 +2671,10 @@ worker_test=${test_tmp}/solve-worker
 while IFS='|' read -r sw_lane sw_returns sw_before sw_end sw_asks; do
   sw_dir="${worker_test}/${sw_lane}${sw_returns}${sw_before}"
   mkdir -p "${sw_dir}"
-  [[ -z "${sw_before}" ]] || : >"${sw_dir}/asked_again"
+  [[ "${sw_before}" != before ]] || : >"${sw_dir}/asked_again"
+  [[ "${sw_before}" != memory ]] \
+    || printf '\n%.0s' $(seq "${campaign_solver_memory_asks}") \
+      >"${sw_dir}/asked_again_memory"
   sw_log="$(campaign_stream_logs "${sw_lane}" "${sw_dir}")stderr.log"
   sw_status=0
   (
@@ -2734,10 +2740,38 @@ OBLIGATION|0|before|UNSAT|service charge.1,
 OBLIGATION|3|before|again:no room on |service charge.1,
 OBLIGATION|1||again:its host's solver did not answer (ObligationSolverMain: the solver of lift12 ended)|service charge.1,
 OBLIGATION|1|before|its host's solver did not answer it, asked twice: ObligationSolverMain: the solver of lift12 ended|service charge.1,
+OBLIGATION|4|before|again:its host's solver ended for memory|service charge.1,
+OBLIGATION|4|memory|again:its host's solver did not answer|service charge.1,
 HARD|0||UNSAT|decide 5024 at 1800000 in 4096,
 HARD|model||again:the hard lane found a model|decide 5024 at 1800000 in 4096,
 HARD|1||its hard-lane ask failed (exit 1): java.lang.IllegalStateException: the record|decide 5024 at 1800000 in 4096,
 EOF_WORKER
+
+# SOLVER-MEMORY-END: a host solver's end is one for memory -- none of its
+# questions' failure (campaign_solver_ended_for_memory) -- when it ran out
+# of heap below the most heap a solver is given (a larger one follows), or
+# its watcher ended it for its host's room (137); not at the most heap, nor
+# for any other end, nor when it stated none.  Per row: its status and heap
+# (- none stated), whether it is a memory end (engine heap 16384).
+sme_dir=${test_tmp}/solver-memory-end
+mkdir -p "${sme_dir}"
+while IFS='|' read -r sme_status sme_heap sme_want; do
+  rm -f -- "${sme_dir}/ended.77"
+  [[ "${sme_status}" == - ]] \
+    || echo "${sme_status} ${sme_heap}" >"${sme_dir}/ended.77"
+  sme_said=$(
+    engine_memory_mb=16384
+    campaign_solver_ended_for_memory "${sme_dir}" 77 && echo yes || echo no
+  )
+  [[ "${sme_said}" == "${sme_want}" ]] \
+    || fail "SOLVER-MEMORY-END: ${sme_status} at ${sme_heap}: ${sme_said}"
+done <<'EOF'
+3|8192|yes
+3|16384|no
+137|16384|yes
+1|8192|no
+-|-|no
+EOF
 
 # SOLVER-HEAP: a corpus's solver is sized by its session files
 # (campaign_corpus_mb, stated beside the corpus): the heap its live set needs
@@ -3567,7 +3601,18 @@ stream_stubs() {
   campaign_import_gate() {
     cut -f1 "$4" | xargs -r -n1 basename | paste -sd ' ' - \
       >>"${stream_dir}/gated.txt"
+    test_gated "$1" $(cut -f1 "$4" | xargs -r -n1 basename)
   }
+}
+# test_gated <iteration> <session>...: the import gate's ledger holds each
+# (ImportGateMain's record), as the gate leaves it.
+test_gated() {
+  local iteration=$1 session
+  shift
+  mkdir -p "${iteration}/import_gated"
+  for session in "$@"; do
+    printf '{}\n' >"${iteration}/import_gated/${session}.json"
+  done
 }
 
 # The exploration loop's state, as campaign_explore declares it, for a case
@@ -5933,6 +5978,46 @@ REPLAY,REPLAY,REPLAY,REPLAY|-|-|a:3000,b:4500,c:4000|b c b a
 CONFIRM,REPLAY,REPLAY|-|-|a:1000,b:9000,c:7500|b b c
 EOF
 
+# REMOTE-AWAIT: what a job on another host left is collected only once it
+# is an answer or an ask again (campaign_await_remote_result): a replay set
+# aside for memory (replay_again) of any kind -- RERUN and CONFIRM have no
+# other row -- or a solve's ask again (solve_again) is handed on (0), never
+# waited out as unseen and dropped; a REPLAY's worker holding only its
+# solve's SAT_MODEL_READY has no answer of the replay yet (1 past the
+# visibility bound, here 1 s).  Per row: the kind, the files its worker shows
+# (result:<verdict>, replay_again, solve_again), the status.
+ra_dir=${test_tmp}/remote-await
+while IFS='|' read -r ra_kind ra_files ra_want; do
+  rm -rf -- "${ra_dir}"
+  mkdir -p "${ra_dir}/worker"
+  for ra_file in ${ra_files}; do
+    case "${ra_file}" in
+      result:*) printf '{"verdict":"%s","sessionId":""}\n' \
+        "${ra_file#result:}" >"${ra_dir}/worker/obligation_result.jsonl" ;;
+      *) echo "1024 512 ${ra_dir}/aside" >"${ra_dir}/worker/${ra_file}" ;;
+    esac
+  done
+  ra_status=0
+  (
+    campaign_remote_visibility_wait_s=1
+    campaign_log() { :; }
+    campaign_await_remote_result "${ra_dir}/worker" lift12 OB.1 \
+      "${ra_dir}/staged" "${ra_kind}"
+  ) || ra_status=$?
+  [[ "${ra_status}" == "${ra_want}" ]] \
+    || fail "REMOTE-AWAIT: a ${ra_kind} showing [${ra_files}] ended \
+${ra_status}, not ${ra_want}"
+done <<'EOF'
+RERUN|replay_again|0
+CONFIRM|replay_again|0
+REPLAY|result:SAT_MODEL_READY replay_again|0
+REPLAY|result:SAT_MODEL_READY|1
+REPLAY|result:NOT_ADMITTED|0
+OBLIGATION|result:SAT_MODEL_READY|0
+OBLIGATION|solve_again|0
+RERUN||1
+EOF
+
 # KILL-REQUEUE: a replay of the pool its watcher ended for memory returns
 # with its run set aside (replay_again: what it reached, what it was
 # charged, where it went; campaign_replay_set_aside) and is no answer:
@@ -7240,6 +7325,7 @@ ask's"
     stream_loop_state
     stream_reruns["OB.r SESSION.exposing"]=${reask_rerun}
     stream_swaps=("obligations-0009 OB.r SESSION.exposing 0")
+    test_gated "${reask_iteration}" SESSION.regrown
     stream_hold=1
     # GROW-SWAP-DROP: two replays queued from solves that read the corpus
     # before the swap; the one whose path rests on the withdrawn session is
@@ -7463,6 +7549,7 @@ EOF
   stream_swaps=("obligations-0002 OB.a S.a 0" "obligations-0002 OB.b S.b 0"
     "obligations-0002 OB.c S.c 1" "obligations-0002 OB.d S.d 0"
     "obligations-0002 OB.e S.e 0")
+  test_gated "${iteration_dir}" R.a R.b R.d R.e
   stream_hold=5
   stream_queue=("REPLAY obligations-0003 OB.pa g0/c g0/p"
     "REPLAY obligations-0003 OB.pb g0/c g0/p"
@@ -7553,6 +7640,7 @@ reset_config
     | tee "${fail_worker}/obligation_result.jsonl" >"${results}"
   stream_reruns["OB.f S.f"]="${fail_worker}/grow-obligations-0002/OB.f"
   stream_swaps=("obligations-0002 OB.f S.f 0")
+  test_gated "${iteration_dir}" S.f
   stream_hold=1
   if (campaign_stream_swap) >"${fail_root}.log" 2>&1; then
     fail "GROW-SWAP-FAIL: a failed worker swap did not fail the campaign"

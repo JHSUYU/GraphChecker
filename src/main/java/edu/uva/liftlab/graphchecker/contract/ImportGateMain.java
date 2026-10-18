@@ -21,6 +21,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +43,10 @@ import java.util.Set;
  *                          wave and name order -- their focus rows are the
  *                          ask its session ran under and the flips it owes;
  *                          none for the seed
+ *   --replaced &lt;file&gt;     the sessions the ones gated now replace, one id
+ *                          per line: GROW's exposing sessions, each swapped
+ *                          out once its re-run's session is gated (and named
+ *                          in withdrawn.txt then); none: no session
  *   --gated &lt;dir&gt;          the ledger: what each session gated before left
  *                          the gate ({@link RowInvariants.Gated}), one
  *                          record per session, read, and written for the
@@ -85,7 +90,11 @@ public final class ImportGateMain {
         if (out == null) {
             throw new IllegalArgumentException("Missing --out");
         }
+        Path replaced = options.path("replaced");
         JsonObject summary = gate(iteration, gates(list),
+                replaced == null ? Collections.<String>emptySet()
+                        : new HashSet<String>(Files.readAllLines(replaced,
+                                StandardCharsets.UTF_8)),
                 options.path("gated"), out,
                 options.value("topology-epoch", ""));
         System.out.println(new GsonBuilder().disableHtmlEscaping()
@@ -122,11 +131,16 @@ public final class ImportGateMain {
     /**
      * Gates the sessions {@code gates} names of one epoch (each one the
      * ledger does not hold yet), appends their violations, records them in
-     * the ledger, and reports the counts.
+     * the ledger, and reports the counts.  They are judged against the
+     * sessions the ledger holds that are still in the epoch: neither
+     * withdrawn nor {@code replaced} by one of them (a re-run's session is
+     * gated before its swap withdraws the session it replaces, and the two
+     * are never in the epoch together).
      */
     public static JsonObject gate(Path iteration, List<Gate> gates,
-                                  Path ledger, Path out,
-                                  String topologyEpoch) throws IOException {
+                                  Set<String> replaced, Path ledger,
+                                  Path out, String topologyEpoch)
+            throws IOException {
         Set<String> before = ledger == null ? Collections.<String>emptySet()
                 : recorded(ledger);
         List<SessionDir> gated = new ArrayList<SessionDir>();
@@ -163,7 +177,9 @@ public final class ImportGateMain {
         List<RowInvariants.Gated> admitted =
                 new ArrayList<RowInvariants.Gated>();
         for (String id : before) {
-            if (!withdrawn.contains(id)) admitted.add(record(ledger, id));
+            if (!withdrawn.contains(id) && !replaced.contains(id)) {
+                admitted.add(record(ledger, id));
+            }
         }
         RowInvariants.Checked checked = RowInvariants.check(admitted, gated,
                 focus);

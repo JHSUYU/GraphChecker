@@ -504,7 +504,8 @@ record per session (`<id>.json`: whether it states SEED and the roots it mints, 
 first symbol its rows mint it under; `<id>.named.json.gz`: every symbol it names with one citation;
 `ImportGateMain#record`); a session the ledger holds is not judged again. Every rule but two is one
 session's. The two over the set are judged against the sessions the ledger holds that are still in
-the epoch -- every one but those GROW's swaps withdrew (`withdrawn.txt`) -- BY THEIR RECORDS, never
+the epoch -- every one but those GROW's swaps withdrew (`withdrawn.txt`) and those the sessions gated now
+replace (`--replaced`: a re-run's exposing session, gated before its swap) -- BY THEIR RECORDS, never
 by reading them again (`RowInvariants.Gated`): exactly one SEED (1), and the epoch's roots (11) -- a
 new session against every root of the epoch, a gated one again only for a root (id, symbol) a new
 session brings, by what its record names and mints; the epoch in session id order, whichever
@@ -1015,9 +1016,13 @@ of 519 solver-decided asks asked a text asked before, 1417 s of solves). The ans
 each ask as z3's own is (`ObligationFactory#settled`, the model planted and checked for that
 candidate), so a kept answer writes what a z3 run deciding the same writes, and settles its
 question as that run would; the question stays its own replay key. A kept model is one model of
-the text, as a run gives one (each run races two engines). Only a decided answer is kept: a
+the text, as a run gives one (each run races two engines). ONLY A WHOLE ANSWER IS KEPT, OR ANSWERS AN
+ASK (`Solved#whole`): unsat, or sat with a value of every symbol the text asks the model of -- a sat whose
+separate model run timed out, hit its cap or said unknown (`Z3#ask` keeps the verdict) answers its own
+ask only, never later ones, which would read an empty model, plant nothing and be refused for good; a
 timeout, a memout, unknown, an error or disagreeing engines say nothing of the text, and the next
-ask runs z3 at its own budget and room. An entry is written whole (moved into place); an ask that
+ask runs z3 at its own budget and room. Keeping and reading are best effort: a store that cannot be
+written or read (NFS) leaves the ask to z3. An entry is written whole (moved into place); an ask that
 does not see it yet asks z3.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
@@ -1166,7 +1171,11 @@ answer: its worker asks it again (`campaign_obligation_again`: `solve_again`, wh
 returns, and the head queues it again as an OBLIGATION (`campaign_stream_solve_again`,
 `OBLIGATION <round> <id> again`), uncharged while it waits, its host cold, the obligation in flight. A
 question asked again whose solver ends on it or fails again fails the worker by name (`asked_again`,
-§7.7). Only a solver no host of the pool can ever hold -- its start's charge
+§7.7) -- but a SOLVER THAT ENDED FOR MEMORY (out of heap below the most heap a solver is given, the next
+starting at twice it; or ended by its watcher for its host's room, 137) fails none of the questions it
+held, eight at once (`campaign_solve_obligation` 4, `campaign_solver_ended_for_memory`, its end stated
+in `<solver dir>/ended.<pid>`): each is asked again uncounted, at most `campaign_solver_memory_asks` (4)
+times, then counted (`asked_again_memory`). Only a solver no host of the pool can ever hold -- its start's charge
 (`campaign_solver_need_mb`) past every host's ceiling less the largest head reservation standing there,
 idle or busy (`campaign_pool_can_hold`, `campaign_host_head_reserved`; a waiting step's hold, which comes
 back, is none) -- is an answer, the named bound: NOT_ADMITTED "no host of the pool can hold its solver
@@ -1654,7 +1663,9 @@ shared home). A REPLAY, a re-run or a confirmation THE WATCHER ENDED FOR MEMORY 
 take its growth, `campaign_watch_workload`: it states what it reached, `workload_refused_mb`) before
 it stated anything decided nothing and is no answer: its run -- log, measures, the session it opened
 -- goes aside under its worker (`<worker>/ended-<n>/`, `campaign_replay_set_aside`), its question
-stays asked, and the head, reading `<worker>/replay_again`, takes its peak into the measured need and
+stays asked, and the head, reading `<worker>/replay_again` -- on another host's job too, once its
+worker shows it (`campaign_await_remote_result`: a remote REPLAY's worker holding only its solve's
+SAT_MODEL_READY row has no answer of the replay yet) -- takes its peak into the measured need and
 queues its entry again unchanged (the REPLAY on the tree its solve started on, the RERUN, the CONFIRM;
 in flight, owed or under confirmation as it was) at ITS FULL NEED, charged whole with no end's room
 beside it (`campaign_stream_replay_again`, the entry's `stream_entry_need`); only one whose full need,
@@ -1946,7 +1957,8 @@ the file.
 One swap: the exposing session (that session alone: another ask's session of the obligation stays),
 named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
 files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
-opens an old inode through a name it cached), its session, gated where the re-run staged it, lands,
+opens an old inode through a name it cached), its session, gated where the re-run staged it (one the
+gate's ledger, `import_gated/`, does not hold fails EXPLORE by name: no session lands ungated), lands,
 and its verdict replaces the exposing ask's row in `obligation_results.jsonl` (another ask's row
 of the obligation stays). The swaps due at a step go in ONE PASS: the exposing session is the one the
 re-run's entry names, all their manifests read by one jq, each worker's files moved in a subshell of its

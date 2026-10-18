@@ -1274,8 +1274,8 @@ public final class ObligationFactory {
         FlipQuery.Built asked = built;
         Z3.Answer answer;
         if (decided == null) {
-            answer = solved.answer(querySha256, () -> solver.ask(asked.smt2,
-                    asked.modelSymbols, false));
+            answer = solved.answer(querySha256, asked.modelSymbols,
+                    () -> solver.ask(asked.smt2, asked.modelSymbols, false));
         } else if (decided.querySha256.equals(ask.querySha256)) {
             // The hard lane's model, over this very query.
             answer = Z3.Answer.decided("sat", decided.values);
@@ -1308,6 +1308,7 @@ public final class ObligationFactory {
                     : solver.alone(decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
                     : solved.answer(ArtifactIO.sha256(heldQuery),
+                    asked.modelSymbols,
                     () -> asker.ask(held, asked.modelSymbols, false));
             if (again != null && again.decided() && again.sat()) {
                 Planted recorded = planted(corpus, candidate, built,
