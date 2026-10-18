@@ -1058,15 +1058,33 @@ footprint of what it needs now (`campaign_solver_need_mb`) and grows as watched.
 heap anyway (`-XX:+ExitOnOutOfMemoryError`, exit 3) states it beside the corpus (`campaign_solver_outgrown`,
 `solver_outgrown_mb`), and every later one needs at least that. Started at a fixed 2 GB, 39's host solvers
 died 20 times of "GC overhead limit exceeded" at 2, 4 and 8 GB (45 solver JVMs on 13 hosts, each a 1-4 min
-corpus read), each death losing every question it held to a JVM of its own. A host holds no more of a campaign's solves at once than
-its solver answers at once (`campaign_stream_has_seat`: its seats, `campaign_solver_seats`, one), and a
-host where no solver of the campaign serves yet only one -- that solve starts its solver -- so no
-question is admitted to wait behind a busy or starting solver: more add no answer, only their question
+corpus read), each death losing every question it held to a JVM of its own. A host's solver ANSWERS
+SEVERAL QUESTIONS AT ONCE (`--seats`, `campaign_solver_seats`, eight; `explore.Service`: each on a seat
+of its own, oldest first, beside the others only while its old generation was under three quarters
+full after its last collection, `Service#BESIDE`, so a heap that fills answers one at a time; an
+`Outgrown` question is given back, the service takes no more and retires once its other seats are
+answered): one at a time, a solver answered about a question in 7 s (SGF8-adhoc-07: round 0's 400
+solves on 12 hosts' solvers, ~1060 obligation-minutes queued). Each question solves over the corpus
+it read or found read -- a read, one question at a time under the answerer's lock, builds a new
+corpus from the one before and changes nothing of it -- IN A STATE OF ITS OWN over it
+(`Corpus#asking`): each session's lowering fresh, as `Corpus#read` built it, made as the question first
+lowers through it, and the literals a root's domain compares found through them (`Corpus#comparedLiterals`;
+shared across questions, the first asker's lowerings took their side effects and the later ones'
+did not); the arms a query refused are its thread's (`Arms#drainRefusals`); every other memo of a
+corpus is a function of its rows and concurrent. So a question's files are the ones a JVM of its own,
+reading that corpus, writes, whichever questions ran before or beside it. Its z3s run in the room
+the solver holds for its seats (`smt.Z3.Rooms`, `campaign_solver_z3_mb`: `campaign_solver_races`, two,
+questions' rooms), each run in slots of half a question's room (`campaign_question_mb`) as alone --
+the cap and what a run at it answers are the question's -- waiting only for its turn at the room,
+its budget counted from its start. A host holds no more of a campaign's solves at once than its
+solver's seats (`campaign_stream_has_seat`), and a host where no solver of the campaign serves yet
+only one -- that solve starts its solver -- so no question is admitted to wait behind a starting
+solver: more add no answer, only their question
 charges while they wait in the solver's queue (EX1-adhoc-07c: 13-18 per lift, 512 MB each, held 7-9 GB
 of every lift's ledger), and past the solver's patience they became solver JVMs of their own
 (PV7-adhoc-39: 113, "busy past 30s", each reading the corpus again); the rest wait uncharged in the
 pool's queue (§7.7). Charged that at its start, a solver waited for room it did not use, and every question of
-its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
+its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It takes the
 questions in the order they came, each from the corpus as it read it: read again only when the
 question's round was planned over a session the read did not hold (the round's `corpus.txt`, of the
 sessions still standing; `ObligationSolverMain#round`, `#stale`), or a session it held has left (a
@@ -1081,7 +1099,7 @@ into its worker directory. A read past what its heap holds (`campaign_solver_ret
 ends (`Service.Outgrown`, `Service#retireOutgrown`, naming itself in `retired`), and the question's asker
 starts the next one, sized anew. It ends once none has
 come for `campaign_solver_idle_s` (300) and none waits; a question still `.taken` then was taken by a
-solver that died (it answers one at a time), its asker's to fail, and never keeps it (`Service#retire`: a
+solver that died (it retires only while none of its seats answers), its asker's to fail, and never keeps it (`Service#retire`: a
 run stopped mid-answer left one, and the next run of that corpus path kept its solver and charge 2 h past
 its end). Its log is `solver-<host>.log` beside the corpus. A
 question still waiting when its solver ended starts the next one. A question that waits for its
@@ -1271,8 +1289,9 @@ to the other engine's. A model or core run at its cap in a slot shared with othe
 that fit, is that run once more alone, in half of R an engine (`Z3#payload`: a verdict with no model
 selects no path); a verdict at its slot's cap is `memout` there (`Answer#memOut`): undecided by name,
 as a timeout is, never sat or unsat and no error of the query (an error voids a composition's claim),
-its reason the cap it hit. A solver's R is a question's (`campaign_question_mb`, 1152 MB: its two
-engines 512 MB each), in the hard lane `campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at
+its reason the cap it hit. A host's solver's R is the room its seats share (`campaign_solver_z3_mb`:
+two questions', each question's runs in slots of half a question's `campaign_question_mb`, 1152 MB --
+its two engines 512 MB each -- as alone, `smt.Z3.Rooms`), in the hard lane `campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at
 its cap is NOT_ADMITTED `SOLVER_MEMOUT` (a DIAGNOSTIC row of that kind) and asked again in the hard
 lane whatever the budgets, and one at the hard lane's cap is named as a hard-lane timeout is
 (`solver_timeouts.jsonl`, EMIT's `SOLVER_MEMOUT` row, `campaign_solver_timeouts`). Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
@@ -1569,9 +1588,12 @@ first on a host where one returned answered within the solver's idle time (`camp
 set when a solve returns answered there, cleared when one returns asking again: that host's
 solver of its corpus serves, so the question needs no solver started and no corpus read), and on
 a host whose solver it would start only when one more is due (`campaign_stream_solver_due`: none
-serves or starts yet, or the questions queued per solver serving or starting would take longer to
-answer, at the campaign's mean seat per question answered on a warm solver, first-lane timeouts
-included, than a new solver takes to read the corpus, `campaign_corpus_mb` at the rate the first
+serves or starts yet, or the questions queued would take the seats of the solvers serving or starting
+longer to answer, at the campaign's mean seat per question answered on a warm solver, first-lane
+timeouts included, than a new solver takes to read the corpus, or THE OLDEST QUESTION QUEUED HAS
+ALREADY WAITED LONGER THAN THAT READ -- a solver restarting or reading again holds every question
+queued for it: SGF8-adhoc-07 round 12, 19 solves ~1100 s behind a 575 s restart and a 170 s read,
+while the mean seat said none was due -- `campaign_corpus_mb` at the rate the first
 question a solver started for measured, its MB over its seconds -- both measured as questions return,
 `campaign_stream_seated_returned`, the seat from four on, 2 s and 20 MB/s until then, SGF7-adhoc-39's
 first lane holding a seat 12 s per question on average, 102 of about 570 the whole 60 s) -- else it
@@ -1636,11 +1658,11 @@ every `campaign_host_renew_s` (10 s) by a process of its own while the shell tha
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
 leases old is deleted. Every start states its measured need, with no default. A solve on a host
-where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
-(`campaign_question_mb`, 1152 MB, the room its two capped z3s run in: the serving solver's JVM is
-charged on its own, §7.5; HI1/HI2's z3 runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host
-what a solver JVM of its corpus needs (`campaign_solver_need_mb`, its footprint and a question's z3
-room: the solver its question starts takes that charge over, §7.5), a hard-lane ask its corpus-free
+where its campaign's solver serves (`campaign_stream_warm`) is charged nothing: its z3s run in the room
+that solver holds for its seats, charged with its JVM (§7.5; HI1/HI2's z3 runs: median 1 MB, p90 369 MB,
+at most 1.8 GB; charged a question's 1152 MB each, eight seats would hold 9 GB of a host's ledger), on a
+cold host what a solver JVM of its corpus needs (`campaign_solver_need_mb`, its footprint and the z3
+room its seats share: the solver its question starts takes that charge over, §7.5), a hard-lane ask its corpus-free
 JVM's footprint and the hard lane's z3 room (`campaign_decide_need_mb`, 5024 MB), each growing as its
 JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run

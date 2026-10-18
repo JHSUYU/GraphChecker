@@ -99,7 +99,8 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   beside its footprint (less where it would not fit under the host's 70 % ceiling; the head's held room counts it) and
   given, where its step lands, what that host's ledger admits beside it then, up to 18 GB (`campaign_z3_room_grant`):
   its scoped z3s run as many pairs as the room holds,
-  a solver question 1152 MB (`campaign_question_mb`), the hard
+  a host solver two questions' 1152 MB each (`campaign_solver_z3_mb`, `campaign_question_mb`: its eight seats' questions
+  take turns there, each run capped as alone, and are charged nothing beside it), the hard
   lane 4096 (`campaign_hard_z3_room_mb`). A z3 at its cap answers `memout` (`compose.log`: "z3 run N (...): memout"),
   undecided, never unsat; an obligation's is `SOLVER_MEMOUT`, asked again in the hard lane. `round-verify.sh` and the
   accept probe race z3 at 4096 MB an engine (`tools/lib/z3-race.sh`, `Z3_RACE_CAP_MB`), printing `memout`. Never run

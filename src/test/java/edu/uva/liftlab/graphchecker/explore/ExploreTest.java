@@ -711,6 +711,49 @@ public class ExploreTest {
                 ObligationFactory.HARD_MODEL_STALE + ":"));
         assertEquals(0L, Files.size(stale.resolve(
                 ObligationDir.FOCUSED_TASK)));
+        // SEATS: questions asked of one corpus at once, each in a state of
+        // its own (Corpus#asking), write the files a corpus read for each
+        // alone writes, whichever ran beside or before them.
+        Path alone = out.resolve("alone");
+        ObligationSolverMain.solve(Corpus.read(iteration, null), iteration,
+                wave0.resolve("obligations.jsonl"),
+                proposed.get(0).obligationId(), alone, Paths.get("z3"),
+                10_000L, 1152, null);
+        Corpus shared = Corpus.read(iteration, null);
+        List<Thread> seats = new ArrayList<>();
+        List<Throwable> failed = Collections.synchronizedList(
+                new ArrayList<>());
+        for (int seat = 0; seat < 4; seat++) {
+            Path beside = out.resolve("beside-" + seat);
+            Thread thread = new Thread(() -> {
+                try {
+                    ObligationSolverMain.solve(shared, iteration,
+                            wave0.resolve("obligations.jsonl"),
+                            proposed.get(0).obligationId(), beside,
+                            Paths.get("z3"), 10_000L, 1152, null);
+                } catch (Throwable thrown) {
+                    failed.add(thrown);
+                }
+            });
+            seats.add(thread);
+            thread.start();
+        }
+        for (Thread thread : seats) thread.join();
+        assertEquals("the seats' questions failed: " + failed, 0,
+                failed.size());
+        List<Path> written = new ArrayList<>();
+        try (java.util.stream.Stream<Path> files = Files.list(alone)) {
+            files.sorted().forEach(written::add);
+        }
+        assertFalse(written.isEmpty());
+        for (int seat = 0; seat < 4; seat++) {
+            for (Path file : written) {
+                assertTrue("seat " + seat + ": " + file.getFileName(),
+                        java.util.Arrays.equals(Files.readAllBytes(file),
+                                Files.readAllBytes(out.resolve("beside-"
+                                        + seat).resolve(file.getFileName()))));
+            }
+        }
         // The focus row is its own file.  execution_task_plan.jsonl is the
         // PLAN's name, and the workload session opener decodes whatever
         // stands under it, so a focus row written there killed every

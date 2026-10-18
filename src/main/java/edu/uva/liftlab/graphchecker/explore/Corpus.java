@@ -1680,8 +1680,8 @@ public final class Corpus implements Arms.Rows {
     /**
      * One session's arm keys are computed: what they named ({@link Names})
      * goes, and what its lowering lowered for them -- a fresh lowering, as
-     * a JVM of its own starts with ({@link #freshLowerings}), lowers what
-     * the round asks of the session after them.  Held for every session to
+     * a JVM of its own starts with, lowers what the round asks of the
+     * session after them.  Held for every session to
      * the round's end, the lowerings' memos were a planner's peak
      * (SGF8-adhoc-40 planning-7: 8.9 GB live before its keys, 2.2 M memo
      * entries and the 21504 MB heap full in them).
@@ -2189,24 +2189,69 @@ public final class Corpus implements Arms.Rows {
         return SessionReader.seedSessionIds(sessions);
     }
 
-    /** One session's lowering: the one the composer lowers with. */
+    /**
+     * One session's lowering: the one the composer lowers with; inside a
+     * question ({@link #asking}), the question's own.
+     */
     public SmtLowering lowering(String sessionId) {
-        return loweringById.get(sessionId);
+        Asking question = asking.get();
+        if (question == null) return loweringById.get(sessionId);
+        SmtLowering lowering = question.lowerings.get(sessionId);
+        if (lowering == null) {
+            Derived of = bySession.get(sessionId);
+            if (of == null) return null;
+            lowering = SmtLowering.forSession(of.session, of.join);
+            question.lowerings.put(sessionId, lowering);
+        }
+        return lowering;
     }
 
     /**
-     * Every session's lowering as {@link #read} built it.  A lowering keeps
-     * what it lowered -- its memo, the names it minted, the count its refused
-     * constructs are named by -- so a query built after another would name
-     * them differently.  A question asked of a corpus read once for many
-     * ({@code ObligationSolverMain --serve}) starts from here: what a JVM of
-     * its own would have had.  Every other memo of a corpus is a function of
-     * its rows alone.
+     * A question's own state over a corpus read once for many ({@code
+     * ObligationSolverMain --serve}, several questions at once): what a JVM
+     * of its own would start the question with.  A lowering keeps what it
+     * lowered -- its memo, the names it minted, the count its refused
+     * constructs are named by -- so a query built after another, or beside
+     * it, would name them differently; and the literals a root's domain
+     * compares ({@link #comparedLiterals}) are found through the lowerings
+     * of the question that first needs them.  So each question has its own:
+     * each session's lowering fresh, as {@link #read} built it, made as the
+     * question first lowers through it, and the literals found through them.
+     * Every other memo of a corpus is a function of its rows alone, and
+     * concurrent.
      */
-    void freshLowerings() {
-        for (SessionReader session : everySession()) {
-            loweringById.put(session.sessionId(), SmtLowering.forSession(
-                    session, bySession.get(session.sessionId()).join));
+    private static final class Asking {
+        final Map<String, SmtLowering> lowerings =
+                new HashMap<String, SmtLowering>();
+        final Map<String, Set<java.math.BigInteger>> compared =
+                new HashMap<String, Set<java.math.BigInteger>>();
+    }
+
+    /** The question this thread asks of the corpus, or none. */
+    private final ThreadLocal<Asking> asking = new ThreadLocal<Asking>();
+
+    /** One question's work over this corpus ({@link #asking}). */
+    public interface Question<T> {
+        T ask() throws IOException;
+    }
+
+    /**
+     * {@code question} asked in a state of its own over this corpus
+     * ({@link Asking}), on this thread, beside whatever other threads ask
+     * of it: its files are the ones a JVM of its own, reading this corpus,
+     * writes, whichever questions were asked before it or beside it.
+     */
+    public <T> T asking(Question<T> question) throws IOException {
+        Asking before = asking.get();
+        asking.set(new Asking());
+        try {
+            return question.ask();
+        } finally {
+            if (before == null) {
+                asking.remove();
+            } else {
+                asking.set(before);
+            }
         }
     }
 
@@ -3376,10 +3421,14 @@ public final class Corpus implements Arms.Rows {
      * Every integral literal a recorded decision of this corpus compares
      * {@code symbol}, a root's, with directly ({@code (op c symbol)} or
      * {@code (op symbol c)}, {@code op} an order or an equality), its term
-     * lowered by the one lowering; once per symbol.
+     * lowered by the one lowering; once per symbol, inside a question once
+     * per symbol and question ({@link #asking}).
      */
     Set<java.math.BigInteger> comparedLiterals(String symbol) {
-        Set<java.math.BigInteger> known = compared.get(symbol);
+        Asking question = asking.get();
+        Map<String, Set<java.math.BigInteger>> memo = question == null
+                ? compared : question.compared;
+        Set<java.math.BigInteger> known = memo.get(symbol);
         if (known != null) return known;
         Set<java.math.BigInteger> literals =
                 new java.util.TreeSet<java.math.BigInteger>();
@@ -3388,7 +3437,7 @@ public final class Corpus implements Arms.Rows {
             literals.addAll(literals(atom, decided.getKey(),
                     decided.getValue()));
         }
-        compared.put(symbol, literals);
+        memo.put(symbol, literals);
         return literals;
     }
 

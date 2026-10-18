@@ -32,7 +32,6 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigInteger;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -1172,9 +1171,8 @@ public final class ObligationFactory {
      *                 {@link #question} keys it
      * @param answered the questions this iteration's workers settled
      */
-    public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
-                                long timeoutMillis, int z3RoomMb,
-                                String given,
+    public static Outcome solve(Corpus corpus, Candidate candidate,
+                                Z3 solver, String given,
                                 Map<String, ObligationDir.Answer> answered,
                                 HardAsk.Model decided) {
         if (candidate.pairing()) {
@@ -1252,9 +1250,7 @@ public final class ObligationFactory {
                             : "") + "the query was refused: "
                             + built.refusal, "", gaps, question);
         }
-        long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
-                : timeoutMillis;
-        Z3 solver = new Z3(z3, budget, z3RoomMb);
+        long budget = solver.timeoutMillis();
         // The query as asked (body plus the driver's question), for the
         // artifact.
         String query = Z3.modelQuery(built.smt2, built.modelSymbols);
@@ -1302,7 +1298,7 @@ public final class ObligationFactory {
             String held = heldToRecording(built);
             // A hard lane's flip asks it at the hard lane's budget and room.
             Z3 asker = decided == null ? solver
-                    : new Z3(z3, decided.budgetMillis, decided.roomMb);
+                    : solver.alone(decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
                     : asker.ask(held, built.modelSymbols, false);
             if (again != null && again.decided() && again.sat()) {

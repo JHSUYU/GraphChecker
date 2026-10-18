@@ -333,6 +333,10 @@ public final class Z3 {
     private final Path visible;
     /** The slot each z3 of this solver's runs holds, in MB. */
     private final int slotMb;
+    /** The slot a run of this solver holds alone, in MB: half its own room
+     *  ({@link #Z3(Path, long, Rooms, int)}: a question's, in a room its JVM
+     *  shares among the questions it answers at once). */
+    private final int aloneMb;
     /** {@link System#nanoTime} past which no run starts and every run's
      *  budget ends ({@link #until}); 0: none. */
     private final long deadlineNanos;
@@ -346,6 +350,45 @@ public final class Z3 {
         this(executable, timeoutMillis, roomMb,
                 Collections.<Room>emptyList(), null);
     }
+
+    /**
+     * A JVM's z3 room shared by the questions it answers at once (a host's
+     * solver, {@code explore.ObligationSolverMain --serve}): what its charge
+     * holds for their z3s, {@code --z3-room-mb}.
+     */
+    public static final class Rooms {
+        private final Room room;
+
+        public Rooms(int mb) {
+            this.room = new Room(mb);
+        }
+    }
+
+    /**
+     * One question's solver in a room its JVM shares ({@link Rooms}): its
+     * runs hold slots of half {@code questionMb} each, as they would alone in
+     * a room of their own, so a run's memory cap, and what a run at its cap
+     * answers, are the question's however many questions share the room; a
+     * run waits only for its turn at the room, its budget counted from its
+     * start.
+     */
+    public Z3(Path executable, long timeoutMillis, Rooms shared,
+              int questionMb) {
+        this(executable == null ? Paths.get("z3") : executable,
+                timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
+                new AtomicInteger(), new TreeSet<String>(), shared.room,
+                Collections.<Room>emptyList(), null,
+                Math.min(questionMb, shared.room.mb) / 2, 0L,
+                Math.min(questionMb, shared.room.mb) / 2);
+    }
+
+    /** A solver of the same z3, at {@code timeoutMillis}, in a room of
+     *  {@code roomMb} its own (a hard lane's model finished in a solver,
+     *  {@code explore.ObligationFactory#solve}). */
+    public Z3 alone(long timeoutMillis, int roomMb) {
+        return new Z3(z3, timeoutMillis, roomMb);
+    }
+
 
     /**
      * The same with rooms on other hosts, host -&gt; MB, reached by
@@ -363,7 +406,7 @@ public final class Z3 {
                 timeoutMillis <= 0L ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis,
                 new AtomicInteger(), new TreeSet<String>(), new Room(roomMb),
                 Collections.unmodifiableList(new ArrayList<Room>(hosts)),
-                visible, roomMb / 2, 0L);
+                visible, roomMb / 2, 0L, roomMb / 2);
         if (!hosts.isEmpty() && visible == null) {
             throw new IllegalArgumentException("z3 rooms on " + hosts.size()
                     + " other host(s) and no directory they all see");
@@ -372,7 +415,7 @@ public final class Z3 {
 
     private Z3(Path z3, long timeoutMillis, AtomicInteger runs,
                Set<String> errors, Room room, List<Room> hosts, Path visible,
-               int slotMb, long deadlineNanos) {
+               int slotMb, long deadlineNanos, int aloneMb) {
         this.z3 = z3;
         this.timeoutMillis = timeoutMillis;
         this.runs = runs;
@@ -382,6 +425,7 @@ public final class Z3 {
         this.visible = visible;
         this.slotMb = slotMb;
         this.deadlineNanos = deadlineNanos;
+        this.aloneMb = aloneMb;
     }
 
     /**
@@ -411,7 +455,7 @@ public final class Z3 {
      */
     public Z3 until(long deadlineNanos) {
         return new Z3(z3, timeoutMillis, runs, errors, room, hosts, visible,
-                slotMb, deadlineNanos);
+                slotMb, deadlineNanos, aloneMb);
     }
 
     /** Whether this solver's deadline ({@link #until}) has passed. */
@@ -421,20 +465,20 @@ public final class Z3 {
 
     /**
      * The same solver -- its room, run counter and errors -- whose z3s hold
-     * slots of {@code slotMb} (at most half the room): a caller that asks
-     * many at once (a disjunction's paths) runs as many as their slots fit
-     * in the room, the rest waiting for one to end.
+     * slots of {@code slotMb} (at most half its own room, {@link #aloneMb}):
+     * a caller that asks many at once (a disjunction's paths) runs as many as
+     * their slots fit in the room, the rest waiting for one to end.
      */
     public Z3 slotted(int slotMb) {
         return new Z3(z3, timeoutMillis, runs, errors, room, hosts, visible,
-                Math.max(LEAST_SLOT_MB, Math.min(slotMb, room.mb / 2)),
-                deadlineNanos);
+                Math.max(LEAST_SLOT_MB, Math.min(slotMb, aloneMb)),
+                deadlineNanos, aloneMb);
     }
 
     /** The same solver as {@code asksAtOnce} callers ask it together: each
-     *  z3 a slot of its room shared that many ways. */
+     *  z3 a slot of its own room shared that many ways. */
     public Z3 shared(int asksAtOnce) {
-        return slotted(room.mb / (ARITHMETIC.length * Math.max(1,
+        return slotted(2 * aloneMb / (ARITHMETIC.length * Math.max(1,
                 asksAtOnce)));
     }
 
@@ -639,8 +683,8 @@ public final class Z3 {
     private String payload(String prefix, ArtifactIO.Body query,
                            String suffix) {
         String printed = run(prefix, query, suffix, timeoutMillis);
-        if (MEMOUT.equals(firstLine(printed)) && slotMb < room.mb / 2) {
-            printed = slotted(room.mb / 2).run(prefix, query, suffix,
+        if (MEMOUT.equals(firstLine(printed)) && slotMb < aloneMb) {
+            printed = slotted(aloneMb).run(prefix, query, suffix,
                     timeoutMillis);
         }
         return printed;

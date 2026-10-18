@@ -21,8 +21,8 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * One service of an exploration: the questions put in its directory are
- * answered oldest first, each into its own output directory and marked
- * answered last; one whose asker is gone is dropped; a failure is that
+ * answered oldest first, up to its seats at once, each into its own output
+ * directory and marked answered last; one whose asker is gone is dropped; a failure is that
  * question's answer, its deepest throwable, never the service's end; a
  * service given an idle time ends once idle with none waiting, naming no
  * service any more, and one given none goes on serving; one that outgrew its
@@ -63,7 +63,7 @@ public class ServiceTest {
                     asked.toString().getBytes(StandardCharsets.UTF_8));
         }
         List<String> order = new ArrayList<String>();
-        Service.serve(dir, 200L, (question, out) -> {
+        Service.serve(dir, 200L, 1, (question, out) -> {
             String id = question.get("obligationId").getAsString();
             order.add(id);
             if ("fail".equals(question.get("does").getAsString())) {
@@ -113,7 +113,7 @@ public class ServiceTest {
         List<String> answered = new ArrayList<String>();
         Thread service = new Thread(() -> {
             try {
-                Service.serve(dir, 0L, (question, out) ->
+                Service.serve(dir, 0L, 1, (question, out) ->
                         answered.add(question.get("round").getAsString()));
             } catch (InterruptedException ended) {
                 // Ended, as the head ends it.
@@ -174,7 +174,7 @@ public class ServiceTest {
                     asked.toString().getBytes(StandardCharsets.UTF_8));
         }
         List<String> order = new ArrayList<String>();
-        Service.serve(dir, 0L, (question, out) -> {
+        Service.serve(dir, 0L, 1, (question, out) -> {
             String id = question.get("obligationId").getAsString();
             order.add(id);
             if ("2.b".equals(id)) {
@@ -192,6 +192,82 @@ public class ServiceTest {
         assertEquals("4242\n", new String(Files.readAllBytes(
                 dir.resolve(Service.RETIRED)), StandardCharsets.UTF_8));
         assertFalse(Files.exists(dir.resolve(Service.LOCK)));
+    }
+
+    /**
+     * SEATS: a service answers as many questions at once as it has seats,
+     * oldest first -- {seats, questions, the most answered at once}: three
+     * questions that each wait for every other one asked to be in are all
+     * answered on three seats; on two, two at a time -- and one that outgrew
+     * its corpus beside another gives its question back, takes no more, and
+     * ends once the other is answered.
+     */
+    @Test(timeout = 60000L)
+    public void answersAsManyAtOnceAsItHasSeats() throws Exception {
+        String live = ManagementFactory.getRuntimeMXBean().getName()
+                .split("@")[0];
+        int[][] rows = {{3, 3, 3}, {2, 3, 2}, {1, 3, 1}};
+        for (int[] row : rows) {
+            Path dir = folder.newFolder("seats-" + row[0]).toPath();
+            Files.createDirectories(dir.resolve(Service.REQUESTS));
+            for (int at = 1; at <= row[1]; at++) {
+                JsonObject asked = new JsonObject();
+                asked.addProperty("obligationId", at + ".q");
+                asked.addProperty("waiter", live);
+                Files.write(dir.resolve(Service.REQUESTS)
+                        .resolve(at + ".q" + Service.ASKED),
+                        asked.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            java.util.concurrent.atomic.AtomicInteger in =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger most =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.CountDownLatch all =
+                    new java.util.concurrent.CountDownLatch(row[0]);
+            Service.serve(dir, 200L, row[0], (question, out) -> {
+                most.accumulateAndGet(in.incrementAndGet(), Math::max);
+                all.countDown();
+                // At most a second for the others the seats hold to come in.
+                all.await(1L, java.util.concurrent.TimeUnit.SECONDS);
+                Thread.sleep(200L);
+                in.decrementAndGet();
+            });
+            assertEquals("seats " + row[0], row[2], most.get());
+            for (int at = 1; at <= row[1]; at++) {
+                assertEquals(0, answer(dir, at + ".q").get("exit").getAsInt());
+            }
+        }
+        Path dir = folder.newFolder("seats-outgrown").toPath();
+        Files.createDirectories(dir.resolve(Service.REQUESTS));
+        Files.write(dir.resolve(Service.SERVER),
+                "4242\n".getBytes(StandardCharsets.UTF_8));
+        for (String name : new String[] {"1.a", "2.b", "3.c"}) {
+            JsonObject asked = new JsonObject();
+            asked.addProperty("obligationId", name);
+            asked.addProperty("waiter", live);
+            Files.write(dir.resolve(Service.REQUESTS)
+                    .resolve(name + Service.ASKED),
+                    asked.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        java.util.concurrent.CountDownLatch both =
+                new java.util.concurrent.CountDownLatch(2);
+        Service.serve(dir, 0L, 2, (question, out) -> {
+            String id = question.get("obligationId").getAsString();
+            both.countDown();
+            both.await();
+            if ("2.b".equals(id)) {
+                throw new Service.Outgrown("past its heap");
+            }
+            Thread.sleep(300L);
+        });
+        assertEquals("the one beside the outgrown question was answered", 0,
+                answer(dir, "1.a").get("exit").getAsInt());
+        assertEquals("the outgrown question and the one behind it wait",
+                java.util.Arrays.asList("2.b" + Service.ASKED,
+                        "3.c" + Service.ASKED),
+                names(Service.waiting(dir, Service.ASKED)));
+        assertEquals("4242\n", new String(Files.readAllBytes(
+                dir.resolve(Service.RETIRED)), StandardCharsets.UTF_8));
     }
 
     /**

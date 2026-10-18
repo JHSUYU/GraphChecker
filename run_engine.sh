@@ -3694,9 +3694,9 @@ campaign_solver_outgrown() {
 
 # What a host's solver of the corpus <sessions> is charged at its start with
 # its first question, in MB: the footprint (campaign_jvm_footprint_mb) of the
-# heap it needs now (campaign_solver_now_mb, at most its heap) and a
-# question's z3 room; what it grows past that is charged as it grows
-# (campaign_solver_jvm).  Charged its 8 GB
+# heap it needs now (campaign_solver_now_mb, at most its heap) and the z3
+# room its seats share (campaign_solver_z3_mb); what it grows past that is
+# charged as it grows (campaign_solver_jvm).  Charged its 8 GB
 # heap at its start, a solver waited minutes for room it did not use (e2:
 # "one needs 8192 MB and 9474 MB stay free"); charged 1 GB while its heap was
 # 16 GB, a host solver's growth filled the ledger and a question's own JVM
@@ -3708,33 +3708,44 @@ campaign_solver_need_mb() {
   heap=$(campaign_solver_heap_mb "${1:-}")
   (( now <= heap )) || now=${heap}
   printf '%s\n' "$(( $(campaign_jvm_footprint_mb "${now}") \
-    + campaign_question_mb ))"
+    + $(campaign_solver_z3_mb) ))"
 }
 
 # What a solver JVM holds for its z3 processes, in MB (smt/Z3's room,
-# --z3-room-mb; one question at a time, its two engines half each): a
-# question's (campaign_question_mb), charged per question, and in the hard
-# lane (<lane> HARD) campaign_hard_z3_room_mb, so a question undecided at a
-# 512 MB cap is asked again at 2 GB (campaign_obligation_decide).
+# --z3-room-mb): a host's solver the room its seats share
+# (campaign_solver_z3_mb), and in the hard lane (<lane> HARD)
+# campaign_hard_z3_room_mb, so a question undecided at a 512 MB cap is asked
+# again at 2 GB (campaign_obligation_decide).
 campaign_hard_z3_room_mb=4096
 campaign_solver_z3_room_mb() {
   if [[ "${1:-}" == HARD ]]; then
     printf '%s\n' "${campaign_hard_z3_room_mb}"
   else
-    printf '%s\n' "${campaign_question_mb}"
+    campaign_solver_z3_mb
   fi
 }
 
-# What a question its host's serving solver answers is charged, in MB: its z3
-# run, a child of that solver (the solver JVM's own charge is its JVM's) --
-# two engines, each capped at half of it less smt/Z3's MISSED_MB, 512 MB, so
-# no z3 outgrows what is charged (SGF3-adhoc-13: an uncapped z3 grew to 10.9
-# GB beside its JVM's charge); one at its cap is asked again in the hard
-# lane (campaign_hard_z3_room_mb).  Charged a solver's start, a sweep's
-# questions held 51 GB of the ten lifts' ledger over z3 runs of a median
-# 1 MB, p90 369 MB, at most 1.8 GB (118 z3 processes, HI1/HI2), and new
-# campaigns waited for room their lifts had.
+# One question's z3 room, in MB: its z3 race, two engines, each capped at
+# half of it less smt/Z3's MISSED_MB, 512 MB, so no z3 outgrows what is
+# charged (SGF3-adhoc-13: an uncapped z3 grew to 10.9 GB beside its JVM's
+# charge); one at its cap is asked again in the hard lane
+# (campaign_hard_z3_room_mb).  A host's solver answers several questions at
+# once (campaign_solver_seats) and holds campaign_solver_races such rooms
+# for them, charged with its JVM (campaign_solver_z3_mb): each question's
+# runs hold slots of half its own room, as alone, and take their turns at the
+# JVM's (smt.Z3.Rooms; a run's budget is counted from its start), so a
+# question it answers is charged nothing beside the solver (z3 runs a median
+# 1 MB, p90 369 MB, at most 1.8 GB: 118 z3 processes, HI1/HI2; charged a
+# room each, one per seat, eight seats a host would hold 9 GB of its ledger
+# for them).
 campaign_question_mb=1152
+campaign_solver_races=2
+
+# The z3 room a host's solver holds for the questions it answers at once, in
+# MB: campaign_solver_races questions' (campaign_question_mb).
+campaign_solver_z3_mb() {
+  printf '%s\n' "$(( campaign_solver_races * campaign_question_mb ))"
+}
 
 # THE SOLVE'S TWO LANES.  A question is first asked at campaign_solver_first_ms
 # (campaign_solver_first_tier_ms, never past solver_timeout_ms): a host's
@@ -3766,11 +3777,17 @@ campaign_solver_two_lanes() {
 }
 
 # How many questions the host's solver of the corpus <sessions> answers at
-# once, each at once (ObligationSolverMain --serve: one, in turn): the most
-# solves the pool admits on a host where it serves
-# (campaign_stream_has_seat).
+# once (ObligationSolverMain --serve --seats, explore.Service: each on a seat
+# of its own, beside the others while its old generation has room,
+# Service#BESIDE): the most solves the pool admits on a host where it serves
+# (campaign_stream_has_seat), each counted its cores there
+# (campaign_stream_kind_cores).  One at a time, a solver answered about one
+# question in 7 s (SGF8-adhoc-07: round 0's 400 solves, one question at a time
+# on each of 12 hosts' solvers, ~1060 obligation-minutes queued; late rounds
+# behind one solver, 409 more).
+campaign_solver_seats_most=8
 campaign_solver_seats() {
-  printf '1\n'
+  printf '%s\n' "${campaign_solver_seats_most}"
 }
 
 # The solver directory of the corpus ${1} (an iteration's sessions), on this
@@ -3914,8 +3931,9 @@ campaign_start_solver() {
   local dir=$1 sessions=$2 handed=${3:-} charge="" status=0 heap need
   local charges
   heap=$(campaign_solver_heap_mb "${sessions}")
-  # Its JVM's footprint: each question it answers is charged its z3 room.
-  need=$(( $(campaign_solver_need_mb "${sessions}") - campaign_question_mb ))
+  # Its JVM's footprint and the z3 room its seats share: the questions it
+  # answers are charged nothing beside it.
+  need=$(campaign_solver_need_mb "${sessions}")
   charges="${campaign_host_gate_root}/$(campaign_host_key localhost)/charges"
   if [[ -n "${handed}" ]] && (( ${handed%%.*} >= need )) \
       && mv -- "${charges}/${handed}" "${charges}/${handed}.solver" \
@@ -3934,8 +3952,10 @@ campaign_start_solver() {
     campaign_host_keep localhost "${charge}"
     status=0
     campaign_solver_jvm "${heap}" "${need}" "$(campaign_solver_first_ms)" \
-      "${campaign_question_mb}" \
+      "$(campaign_solver_z3_mb)" \
       --serve "${dir}" \
+      --seats "$(campaign_solver_seats "${sessions}")" \
+      --question-room-mb "${campaign_question_mb}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
       --retire-past-mb "$(campaign_solver_retire_mb "${heap}")" \
@@ -7267,18 +7287,22 @@ campaign_stream_memo() {
 }
 
 # Whether one more host's solver of this campaign is due: none serves or
-# starts yet, or the questions queued for one would take the solvers that
-# serve or start (campaign_stream_warm, or a question of theirs in flight)
-# longer to answer, at the campaign's measured seat per question, than a new
-# solver takes to read the corpus (campaign_corpus_mb at the campaign's
-# measured read rate; both campaign_stream_seated_returned, seeded until
-# measured).
-# Else a question waits for a seat of a serving solver, and the other hosts
-# keep their room for replays: a solver of a big corpus is most of its host
-# (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
-# round-robin warmed one on all 13 lifts for questions answered in 1 s).
+# starts yet; or a new solver would answer sooner than those that serve or
+# start (campaign_stream_warm, or a question of theirs in flight) -- their
+# seats (campaign_solver_seats) would take longer to answer the questions
+# queued, at the campaign's measured seat per question, than a new one takes
+# to read the corpus (campaign_corpus_mb at the campaign's measured read
+# rate; both campaign_stream_seated_returned, seeded until measured), or the
+# oldest question queued has already waited longer than that read: a solver
+# restarting, or reading again, holds every question queued for it
+# (SGF8-adhoc-07 round 12: 19 solves waited ~1100 s behind a 575 s solver
+# restart and a 170 s corpus read, while the mean seat said one more was not
+# due).  Else a question waits for a seat of a serving solver, and the other
+# hosts keep their room for replays: a solver of a big corpus is most of its
+# host (SGF7-adhoc-39: 18.4 GB of a lift's 22.1 GB, one replay beside it, and
+# the round-robin warmed one on all 13 lifts for questions answered in 1 s).
 campaign_stream_solver_due() {
-  local host solvers=0 queued=0 entry
+  local host solvers=0 queued=0 oldest=${EPOCHSECONDS} entry at read_ms
   local seat=${campaign_solver_seat_seed_ms}
   local rate=${campaign_solver_read_seed_mb_s}
   (( ${stream_seated_n:-0} < campaign_solver_seat_least )) \
@@ -7290,17 +7314,24 @@ campaign_stream_solver_due() {
     solvers=$((solvers + 1))
   done
   (( solvers > 0 )) || return 0
-  # The solves queued and the corpus's MB, read once a dispatch pass
-  # (campaign_stream_memo; the solves again once one starts).
+  # The solves queued, the oldest one's queueing and the corpus's MB, read
+  # once a dispatch pass (campaign_stream_memo; the solves again once one
+  # starts).
   if [[ -z "${stream_pass_memo[solves]:-}" ]]; then
     for entry in "${stream_queue[@]}"; do
-      [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
+      [[ "${entry}" == OBLIGATION\ * ]] || continue
+      queued=$((queued + 1))
+      at=${stream_queued_at[${entry}]:-${EPOCHSECONDS}}
+      (( at >= oldest )) || oldest=${at}
     done
-    stream_pass_memo[solves]=${queued}
+    stream_pass_memo[solves]="${queued} ${oldest}"
   fi
+  read -r queued oldest <<<"${stream_pass_memo[solves]}"
   campaign_stream_memo corpus campaign_corpus_mb "${sessions:-}"
-  (( stream_pass_memo[solves] * seat * rate > solvers \
-     * stream_pass_memo[corpus] * 1000 ))
+  campaign_stream_memo seats campaign_solver_seats "${sessions:-}"
+  read_ms=$(( stream_pass_memo[corpus] * 1000 / rate ))
+  (( queued * seat > solvers * stream_pass_memo[seats] * read_ms \
+     || (EPOCHSECONDS - oldest) * 1000 > read_ms ))
 }
 
 # What a seat of a host's solver is held per question and what a solver
@@ -7350,9 +7381,9 @@ campaign_stream_warm() {
 
 # What one start of <kind> of the pool is charged now, on a host of <warmth>
 # (warm: this campaign's solver likely still serves there, campaign_stream_warm;
-# else cold): an OBLIGATION's solve on a warm host what its question's z3 run
-# holds (campaign_question_mb; the host's solver JVM is charged on its own),
-# on a cold one what a solver JVM starts at (campaign_solver_need_mb: the
+# else cold): an OBLIGATION's solve on a warm host nothing (its question's z3
+# runs in the room its host's solver holds for its seats, charged with that
+# JVM, campaign_solver_z3_mb), on a cold one what a solver JVM starts at (campaign_solver_need_mb: the
 # solver its question starts takes this charge over, campaign_start_solver);
 # a HARD what its corpus-free JVM and the hard lane's z3 room hold
 # (campaign_decide_need_mb); each grows as its JVM does
@@ -7367,7 +7398,7 @@ campaign_stream_warm() {
 campaign_stream_charge_mb() {
   local need
   if [[ "${1:-}" == OBLIGATION && "${2:-cold}" == warm ]]; then
-    printf '%s\n' "${campaign_question_mb}"
+    printf '0\n'
   elif [[ "${1:-}" == OBLIGATION ]]; then
     campaign_solver_need_mb "${sessions:-}"
   elif [[ "${1:-}" == HARD ]]; then

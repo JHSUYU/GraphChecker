@@ -107,18 +107,6 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   whether a round should wait for more landings; (2) `Value#hashCode` recomputes deep part hashes, about half of
   a late served 07e round's samples: a cached hash needs an immutability audit of the 35 contract values; (3) the
   closure is still built whole each round.
-- **A host solver answers one question at a time** (`campaign_solver_seats` 1; parked by the lead 2026-10-14 for the
-  final round): with a flip query's build reading its texts once, a corpus-sized heap and round-keyed re-reads
-  (`solr-solver`, done), a question takes 0.4-8 s, so seats would mainly stop one 60 s first-lane z3 run from holding
-  its host. Seats = N threads in the one solver JVM over one corpus read. What it needs: (1) a question's own state
-  off the shared `Corpus` -- `freshLowerings` replaces `loweringById` and the one `Arms` (whose `refusals` a query
-  drains) for every question; make both per thread (a `ThreadLocal` the solver's threads set, the planner keeping the
-  constructor's); (2) race-free memos in `Corpus` (`varied`, `derived`, `roots`, `eligible`, `namingCuts`,
-  `tokenNames`, `canonicalNames`, `compared`, `ofTask`; `classes`/`handoffsOf` are concurrent already, `Derived`'s
-  maps too) and in `Arms` (`unrowed`, `symbolsByExpression`, `rootGuards`): get, compute outside, putIfAbsent -- never
-  a recursive `computeIfAbsent`; (3) the static lazies on the solve's path (`SmtNames.PREAMBLE_NAMES`,
-  `LibraryCatalog.doors`); (4) `Service` taking a question only onto a free seat and an `Outgrown` waiting for the
-  seats in flight; a review agent before merge (concurrency in `Corpus`).
 - **The planner's heap still grows with the rounds** (STATUS open defect 37). With the closure walk's reads indexed once
   per member and the expression tables compact, 39's PV7 round 6 (208 sessions, 9.8 GB) plans in 806 s at 16 GB,
   peaking near 9.4 GB live; a lowering frame's side conditions are held by reference and `Independence`'s leaf sets as

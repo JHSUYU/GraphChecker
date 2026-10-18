@@ -2573,8 +2573,8 @@ EOF_WORKER
 # (campaign_corpus_mb, stated beside the corpus): the heap its live set needs
 # now (50 % of them, at 150 % for the collector, at least 2048 MB, never less
 # than a heap a solver of it ran out of), room to grow to twice that, up to
-# the engine heap; charged that need's footprint and a question's z3 room
-# (1152 MB); and a host's solver gives its corpus up past what its heap holds
+# the engine heap; charged that need's footprint and the z3 room its seats
+# share (two questions' rooms, 2304 MB); and a host's solver gives its corpus up past what its heap holds
 # (0 at the engine heap).  Per row: the engine heap, the corpus's MB, the
 # heaps its solvers ran out of, in order, and the heap, charge and retire
 # point after.
@@ -2599,15 +2599,15 @@ while IFS='|' read -r sh_engine sh_corpus sh_outgrown sh_heap sh_need \
     || fail "engine ${sh_engine}, corpus ${sh_corpus} MB, outgrown \
 [${sh_outgrown}]: ${sh_said}, not ${sh_heap} ${sh_need} ${sh_retire}"
 done <<'EOF_HEAP'
-16384|0||4096|3712|5461
-16384|3000||4500|3926|6000
-16384|9974||14960|9483|19946
-16384|20000||16384|17473|0
-16384|0|2048|4096|3712|5461
-16384|0|2048 4096 8192|16384|10240|0
-6144|0|2048 4096|6144|5888|0
-1024|0||1024|2624|0
-16384|0|4096 2048|8192|5888|10922
+16384|0||4096|4864|5461
+16384|3000||4500|5078|6000
+16384|9974||14960|10635|19946
+16384|20000||16384|18625|0
+16384|0|2048|4096|4864|5461
+16384|0|2048 4096 8192|16384|11392|0
+6144|0|2048 4096|6144|7040|0
+1024|0||1024|3776|0
+16384|0|4096 2048|8192|7040|10922
 EOF_HEAP
 
 # COMPOSE-HEAP: a composer starts at its corpus's heap, as a solver's
@@ -4358,16 +4358,16 @@ $(cat "${stream_dir}/explore.log")"
   [[ "${cap_ran}" == "${cap_ran_most}" ]] \
     || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
 exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
-  # One host: its first solve is cold, charged what a solver starts at; the
-  # others find its solver serving and are charged a question's z3 run.
+  # One host: its first solve is cold, charged what a solver starts at --
+  # its JVM and the z3 room its seats share; the others find its solver
+  # serving, a seat each, and are charged nothing beside it.
   [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C,D}/charged | sort -n \
-      | paste -sd ' ' -)" == "$(printf '%s\n' "${campaign_question_mb}" \
-      "${campaign_question_mb}" "${campaign_question_mb}" \
+      | paste -sd ' ' -)" == "$(printf '%s\n' 0 0 0 \
       "$(campaign_solver_need_mb)" | sort -n | paste -sd ' ' -)" ]] \
     || fail "the pool's solves were charged $(cat \
       "${stream_dir}"/obligations-0000/{A,B,C,D}/charged | paste -sd ' ' -), \
 not a solver's start ($(campaign_solver_need_mb) MB) for the cold one and \
-a question's (${campaign_question_mb} MB) for the warm ones"
+nothing for the warm ones"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
@@ -4461,11 +4461,10 @@ stream_fixture stream-split
   || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
 split_round0="${stream_dir}/obligations-0000"
 [[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -n \
-    | paste -sd ' ' -)" == "$(printf '%s\n' "${campaign_question_mb}" \
-    "${campaign_question_mb}" "$(campaign_solver_need_mb)" | sort -n \
-    | paste -sd ' ' -)" ]] \
+    | paste -sd ' ' -)" == "$(printf '%s\n' 0 0 \
+    "$(campaign_solver_need_mb)" | sort -n | paste -sd ' ' -)" ]] \
   || fail "the solves were not charged a solver's start for the cold one and \
-a question's for the warm ones: $(cat \
+nothing for the warm ones: $(cat \
     "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
 split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
 [[ "$(cat "${split_round0}/A/replay-args")" \
@@ -4758,9 +4757,9 @@ charge: $(cat "${sa_worker}/obligation_result.jsonl")"
 done <<'EOF'
 OBLIGATION|2048|9088 0|OBLIGATION obligations-0000 A again,REPLAY obligations-0000 C g0/c g0/p|-
 HARD|2048|9088 0|OBLIGATION obligations-0000 A again,REPLAY obligations-0000 C g0/c g0/p|-
-OBLIGATION|16384|9088 9088|REPLAY obligations-0000 C g0/c g0/p|A:18944
+OBLIGATION|16384|9088 9088|REPLAY obligations-0000 C g0/c g0/p|A:20096
 OBLIGATION|16384|9088 0+15000|OBLIGATION obligations-0000 A again,REPLAY obligations-0000 C g0/c g0/p|-
-OBLIGATION|16384|9088 9088b|REPLAY obligations-0000 C g0/c g0/p|A:18944
+OBLIGATION|16384|9088 9088b|REPLAY obligations-0000 C g0/c g0/p|A:20096
 EOF
 
 # STREAM-IDLE: the exploration ends -- its fixed point, or a stop already
@@ -4959,21 +4958,25 @@ done <<'EOF'
 EOF
 
 # STREAM-SOLVER-DUE: a question starts a host's solver only when none serves
-# or starts yet, or the questions queued per solver serving or starting would
-# take longer to answer (the campaign's measured mean seat, 2 s before four
-# returned) than a new one's corpus read (its measured rate, 20 MB/s before
-# one): a 21 GB corpus's solver is most of its lift (SGF7-adhoc-39), and its
-# first lane's 60 s timeouts held a seat 12 s per question on average.  Per
-# row: the warm hosts, the hosts whose solver starts (a question in flight
-# there), the questions queued, the corpus's MB, the questions returned
-# answered by a warm solver (<ms each>x<count>, - none), the seconds the first
-# question a solver started for took (- none returned), and whether one more
-# solver is due (campaign_stream_seated_returned measures the two).
+# or starts yet, or the questions queued would take the seats of the solvers
+# serving or starting (eight each) longer to answer (the campaign's measured
+# mean seat, 2 s before four returned) than a new one's corpus read (its
+# measured rate, 20 MB/s before one), or the oldest of them has waited longer
+# than that read already (a solver restarting or reading again holds them
+# all: SGF8-adhoc-07 round 12, 19 solves ~1100 s): a 21 GB corpus's solver is
+# most of its lift (SGF7-adhoc-39), and its first lane's 60 s timeouts held a
+# seat 12 s per question on average.  Per row: the warm hosts, the hosts
+# whose solver starts (a question in flight there), the questions queued,
+# the corpus's MB, the questions returned answered by a warm solver (<ms
+# each>x<count>, - none), the seconds the first question a solver started for
+# took (- none returned), the seconds the oldest queued has waited, and
+# whether one more solver is due (campaign_stream_seated_returned measures
+# the two).
 while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
-    sd_due; do
+    sd_waited sd_due; do
   sd_said=$(
     declare -A stream_solver_seen=() stream_host_solves=() stream_job_since=() \
-      stream_pass_memo=()
+      stream_pass_memo=() stream_queued_at=()
     stream_hosts=(lift02 lift03 lift04 lift05)
     stream_queue=("REPLAY r X g0/c g0/p")
     for ((sd_at = 0; sd_at < sd_warm; sd_at++)); do
@@ -4984,6 +4987,8 @@ while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
     done
     for ((sd_at = 0; sd_at < sd_queued; sd_at++)); do
       stream_queue+=("OBLIGATION r q${sd_at}")
+      stream_queued_at["OBLIGATION r q${sd_at}"]=$(( EPOCHSECONDS \
+        - (sd_at == 0 ? sd_waited : 0) ))
     done
     campaign_corpus_mb() { echo "${sd_mb}"; }
     stream_seated_ms=0
@@ -5005,16 +5010,21 @@ while IFS='|' read -r sd_warm sd_starting sd_queued sd_mb sd_seat sd_read \
     || fail "STREAM-SOLVER-DUE: ${sd_warm} warm, ${sd_starting} starting, \
 ${sd_queued} queued over ${sd_mb} MB: ${sd_said}, not ${sd_due}"
 done <<'EOF'
-0|0|5|21140|-|-|due
-1|0|100|21140|-|-|wait
-1|0|600|21140|-|-|due
-2|1|600|21140|-|-|wait
-1|0|5|100|-|-|due
-0|1|2|100|-|-|wait
-1|0|250|21140|-|-|wait
-1|0|250|21140|12000x10|-|due
-1|0|250|21140|12000x3|-|wait
-1|0|600|21140|-|2000|wait
+0|0|5|21140|-|-|0|due
+1|0|100|21140|-|-|0|wait
+1|0|600|21140|-|-|0|wait
+1|0|5000|21140|-|-|0|due
+2|1|5000|21140|-|-|0|wait
+1|0|5|100|-|-|0|wait
+1|0|5|100|-|-|10|due
+1|0|5|100|-|-|3|wait
+0|1|2|100|-|-|0|wait
+1|0|250|21140|-|-|0|wait
+1|0|1000|21140|12000x10|-|0|due
+1|0|1000|21140|12000x3|-|0|wait
+1|0|600|21140|-|2000|0|wait
+1|0|19|28391|-|-|1500|due
+1|0|19|28391|-|-|600|wait
 EOF
 
 # STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed
@@ -5355,7 +5365,7 @@ stream_two_hosts stream-two
   || fail "four obligations did not become four remote invocations: \
 $(cat "${stream_dir}/ssh-calls.txt")"
 [[ "$(awk -F '\t' -v cold="$(campaign_solver_need_mb)" \
-      -v warm="${campaign_question_mb}" '
+      -v warm="$(campaign_stream_charge_mb OBLIGATION warm)" '
       { want = ($1 in seen) ? warm : cold; seen[$1] = 1
         if ($3 != want) bad = bad " " $1 ":" $3 }
       END { print bad == "" ? "ok" : bad }' "${stream_dir}/ssh-calls.txt")" \
@@ -5387,10 +5397,11 @@ reset_config
 # must find the model its solve left (the focus row), on the solve's tree,
 # charged the replay's need; the session it staged lands from there.  B's
 # solve answers UNSAT and replays nothing; it runs on lift12 too, a question
-# of A's solver there, since lift13's ledger has room for a replay's charge
-# but not for a cold solve's, a solver's start; and the REPLAY, queued
-# behind it, goes to the host with the most room, lift13 (1000 MB) while B's
-# question holds 1152 of lift12's 1600.  The stub stands where the network
+# of A's solver there, charged nothing (a warm question), since lift13's
+# ledger has room for a replay's charge but not for a cold solve's, a
+# solver's start; and the REPLAY, queued behind it, goes to the host with
+# the most room, lift13 (1000 MB) while A's solver holds all but 63 of
+# lift12's 2752.  The stub stands where the network
 # stands, as in HOSTS-4: it reads the generated script's arguments as a
 # peer's shell would.
 stream_fixture stream-split-remote
@@ -5407,9 +5418,9 @@ done
 (
   stream_stubs
   # 70 % of 30000 MB less 20000 in use: 1000 MB of room on lift13; less
-  # 19400, 1600 on lift12.
+  # 18248, 2752 on lift12: a solver's start (2689) and 63 more.
   campaign_host_available_mb() {
-    [[ "$1" == lift13 ]] && echo 10000 || echo 10600
+    [[ "$1" == lift13 ]] && echo 10000 || echo 11752
   }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B; }
   ssh() {
@@ -5462,7 +5473,7 @@ done
 $(cat "${stream_dir}/explore.log")"
 [[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
 $(campaign_solver_need_mb)
-lift12 SOLVE B ${campaign_question_mb}
+lift12 SOLVE B $(campaign_stream_charge_mb OBLIGATION warm)
 lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
 generations/g0/execution_task_plan.jsonl" ]] \
   || fail "the remote solves and REPLAY did not run where and as they \
