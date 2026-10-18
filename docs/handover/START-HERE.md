@@ -82,9 +82,10 @@ them tenfold, stop and report before the final round. Estimate for 14 unbounded:
 - Old code is deleted for good: one implementation per concept, no flags or fallbacks.
 - Read the existing mechanism (and system/hdfs, the VM) before building one; a small general workaround beats a huge
   engine change; every workaround is named in STATUS.
-- Measure first, prove the mechanism, then fix; byte-identical references where semantics do not change (planner 05
-  r5, 05 r2, 13 r10, 19 r10, 21 r13 in `analysis/solr-2026-10-17/nfs/`; composer 13, 39, 21, 10); dedup only what is
-  provably equivalent (completeness > precision); over-approximate in COMPOSE, confirm strictly.
+- Measure first, prove the mechanism, then fix. No byte-identity requirement any more (owner 2026-10-18 evening,
+  "由于我们改动很大。不再要求做语义一致逐字节比较。跑出.smt包含正确的因果链即可，小问题不用死磕"): a change is right when the cases' `.smt` hold the right causal chain and a SAT
+  replays (CONFIRM in the VM, REPRODUCE natively); small issues are not ground on. Dedup only what is provably
+  equivalent (completeness > precision); over-approximate in COMPOSE, confirm strictly.
 - Heaps sized with run_engine's own functions, never by hand; replays/solvers <= 70 % of a host, one head JVM <= 88 %.
 - Always `env -u BASH_ENV`; kill only by explicit pid; never `git add -A`; commit trailer
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; push GraphChecker only with the owner's OK (the fork
