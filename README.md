@@ -68,6 +68,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: the mission and completion condition, what to read in order, the five open workstreams, how to run the final round, the rules, where everything is |
 | 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: Solr at its handover (2026-10-13, §S: `system/solr`, the four branches to merge, the tree, each case's state); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |

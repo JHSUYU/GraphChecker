@@ -195,8 +195,10 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   its parent's path. WINDOW = an arm on another thread after the schedule cut (the first event of the flip's occurrence
   or a factor member) but before the flip: check prefix equality per arm. Estimates (estimate.py): 14 depth 1/2/3:
   ~137K/68K/34K obligations now -> ~26K/5.2K/1.0K; 39: ~11K/8.8K/6.9K -> ~5.7K/3.7K/2.4K.
-- Keep the world-depth PARAMETER (the owner controls the branch count); the study checks are at depth 0 in
-  experiments/solr/solr-adhoc/case.sh until the owner sets another.
+- World depth (owner 2026-10-18): unbounded in principle -- once the bound and the key are in and measured offline
+  on 14 and 39 (obligations falling with depth, near the estimates), make 'no cap' the default (delete the depth-0
+  lines in experiments/solr/solr-adhoc/case.sh; run_engine and the engine default mean unbounded); the parameter stays
+  the owner's manual cap. See START-HERE.md §4.
 - Traps: never lower another session's terms from a session's key thread (lowerings number refused constructs in ask
   order); expression refs differ across sessions for 45 % of pre-cut decisions (compare structure, not refs); two
   GzCopy runs into one destination collide.
