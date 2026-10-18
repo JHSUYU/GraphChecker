@@ -668,7 +668,10 @@ taken in queue order, each the walk of its demand's state as it is taken -- one 
 superstep grew (`Demand#version`) is walked again there -- so the plan is the one-at-a-time walk's,
 byte for byte, however many cores ran it. Inside one step, what COMPOSE keeps of each path and
 delivery, the folds of its decisions, contributed values and fixed point, and its expansions run in
-parts on the cores too, taken in order (`Walk#asked`, `#each`). Every memo a step reads holds a
+parts on the cores too, taken in order (`Walk#asked`, `#each`); once the row-connected demand runs dry,
+the walks of the static candidates the bound still plans are computed at once, in the turns
+`Candidates#next` would give them (`Candidates#upcoming`, `Walk#prepare`), each taken when its candidate
+is planned while it is still the walk of its state. Every memo a step reads holds a
 function of its key, but one: a read row's leaves are held by its seq, which read rows share (a store
 read and its view's), the first row asked giving the set (STATUS open defect 70); a step claims such a
 seq where no one asked it yet (`Corpus#readLeaves`, `Corpus.Claims`), and its claims are taken in the

@@ -324,7 +324,13 @@ public final class ClosurePlanner {
                 }
             }
             // Row-connected demand is exhausted: the next static candidate,
-            // while the bound has room.
+            // while the bound has room -- the walks of the next ones
+            // computed at once, each taken when its candidate is planned
+            // while it is the walk of its state then ({@link Walk#prepare}).
+            if (!ceilingReached && candidatesPlanned < maxTasks) {
+                walk.prepare(candidates.upcoming(maxTasks
+                        - candidatesPlanned));
+            }
             Demand candidate = candidates.next();
             if (candidate == null) break;
             if (ceilingReached || candidatesPlanned >= maxTasks) {
@@ -533,6 +539,25 @@ public final class ClosurePlanner {
                 return next;
             }
             return null;
+        }
+
+        /** The next {@code most} waiting candidates {@link #next} would
+         *  give, as they wait now. */
+        private List<Demand> upcoming(int most) {
+            List<Demand> upcoming = new ArrayList<Demand>();
+            Deque<String> keys = new ArrayDeque<String>(turn);
+            Map<String, java.util.Iterator<Demand>> rest =
+                    new HashMap<String, java.util.Iterator<Demand>>();
+            while (upcoming.size() < most && !keys.isEmpty()) {
+                String key = keys.remove();
+                java.util.Iterator<Demand> queue = rest.computeIfAbsent(key,
+                        unused -> new ArrayList<Demand>(byClass.getOrDefault(
+                                key, new ArrayDeque<Demand>())).iterator());
+                if (!queue.hasNext()) continue;
+                upcoming.add(queue.next());
+                if (queue.hasNext()) keys.add(key);
+            }
+            return upcoming;
         }
 
         private String classOf(OccurrenceAddress occurrence) {
@@ -1276,15 +1301,24 @@ public final class ClosurePlanner {
                    String why, Collection<String> guards, String sessionId,
                    LocationId location) {
             Set<String> offered = walk.offered.get(key);
+            List<OccurrenceAddress> asked = new ArrayList<OccurrenceAddress>();
+            for (OccurrenceAddress occurrence : holders) {
+                if (offered == null || !offered.contains(occurrence.id())) {
+                    asked.add(occurrence);
+                }
+            }
+            // Whether each holds others' objects only, asked on the cores:
+            // a session's first asks fill its owner sets, which made one
+            // part of SGF8-adhoc-05 round 5's walk 9-15 s.
+            List<Boolean> others = location == null ? null
+                    : walk.each(asked, occurrence -> walk.holdsOthersOnly(
+                    occurrence, sessionId, location));
             List<OccurrenceAddress> offering =
                     new ArrayList<OccurrenceAddress>();
-            for (OccurrenceAddress occurrence : holders) {
-                if (offered != null && offered.contains(occurrence.id())
-                        || location != null && walk.holdsOthersOnly(
-                        occurrence, sessionId, location)) {
-                    continue;
+            for (int at = 0; at < asked.size(); at++) {
+                if (others == null || !others.get(at)) {
+                    offering.add(asked.get(at));
                 }
-                offering.add(occurrence);
             }
             if (offering.isEmpty()) return;
             said.add((at, next) -> {
@@ -1557,12 +1591,40 @@ public final class ClosurePlanner {
                 Demand demand = demands.get(id);
                 if (demand != null && !steps.containsKey(demand)) {
                     if (queued.size() == most) break;
-                    steps.put(demand, null);
-                    queued.add(demand);
+                    steps.put(demand, prepared.remove(demand));
+                    if (steps.get(demand) == null) queued.add(demand);
                 }
                 span++;
             }
-            if (queued.size() < 2) return steps;
+            if (queued.size() < 2 && steps.size() < 2) return steps;
+            steps.putAll(computed(queued));
+            return steps;
+        }
+
+        /** The steps of {@code upcoming}'s demands, computed at once and
+         *  held until {@link #ahead} meets them: the static candidates
+         *  planned one at a time, each walked as its turn comes. */
+        void prepare(List<Demand> upcoming) {
+            List<Demand> missing = new ArrayList<Demand>();
+            for (Demand demand : upcoming) {
+                Step held = prepared.get(demand);
+                if (held == null || held.version != demand.version) {
+                    missing.add(demand);
+                }
+            }
+            if (missing.size() < 2) return;
+            for (Map.Entry<Demand, Object> step
+                    : computed(missing).entrySet()) {
+                prepared.put(step.getKey(), (Step) step.getValue());
+            }
+        }
+
+        /** The steps of {@code queued}, computed on the walk's cores
+         *  against each demand's state now, their groups indexed here
+         *  first, in their order. */
+        private Map<Demand, Object> computed(List<Demand> queued) {
+            Map<Demand, Object> steps =
+                    new java.util.IdentityHashMap<Demand, Object>();
             for (Demand demand : queued) reads(demand.occurrence);
             List<ForkJoinTask<Object>> asked =
                     new ArrayList<ForkJoinTask<Object>>(queued.size());
@@ -1581,6 +1643,10 @@ public final class ClosurePlanner {
             }
             return steps;
         }
+
+        /** Steps {@link #prepare} computed, by demand, until taken. */
+        private final Map<Demand, Step> prepared =
+                new java.util.IdentityHashMap<Demand, Step>();
 
         /** The fewest items a part of a fold holds: a fold of fewer than
          *  two parts' items is computed here. */
