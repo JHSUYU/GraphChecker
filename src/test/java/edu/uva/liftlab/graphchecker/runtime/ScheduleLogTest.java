@@ -16,6 +16,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -1518,7 +1519,7 @@ public class ScheduleLogTest {
             Runnable y = () -> turnOrRequest(turn, () -> send("y"));
             y.run();
             order.add(events().get(1));
-            assertEquals(turn, ScheduleLog.timedWaitTurn(order.get(1)
+            assertEquals(turn, StableEventNames.timedWaitTurn(order.get(1)
                     .context()));
             noRequest();
             timeout(4000L);
@@ -1547,7 +1548,7 @@ public class ScheduleLogTest {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
         turnOrRequest(true, () -> written("L"));
         order.add(events().get(1));
-        assertTrue(ScheduleLog.timedWaitTurn(order.get(1).context()));
+        assertTrue(StableEventNames.timedWaitTurn(order.get(1).context()));
         noRequest();
         timeout(3000L);
         enforce(order);
@@ -2029,6 +2030,36 @@ public class ScheduleLogTest {
                 recorded.get(1).context()), Arrays.asList(
                 events().get(0).context(), events().get(1).context()));
         progress(" 0 given up");
+    }
+
+    /**
+     * A WRITE WAITING ONLY BEHIND READ SLOTS stands a grace, not the
+     * ceiling, while the reader's thread computes elsewhere: solr-adhoc-31's
+     * test client polled past its recorded read, and the write behind it
+     * waited CEILING graces (16 s) at each such read.
+     */
+    @Test(timeout = 60000L)
+    public void aWriteWaitingOnlyBehindReadsStandsNoCeiling()
+            throws Exception {
+        enforceRecorded("o:R c:W", 300L, kind -> turn(kind));
+        CountDownLatch written = new CountDownLatch(1);
+        long before = System.nanoTime();
+        Thread poller = started(() -> request("o", () -> {
+            long spun = 0L;
+            while (written.getCount() > 0L) spun++;
+            assertTrue(spun > 0L);
+        }));
+        Thread write = started(() -> request("c", () -> {
+            turn("W");
+            written.countDown();
+        }));
+        write.join(30000L);
+        long took = since(before);
+        written.countDown();
+        poller.join(30000L);
+        assertFalse(write.isAlive() || poller.isAlive());
+        assertTrue("a grace, not the ceiling: " + took,
+                took < 3 * 300L);
     }
 
     /**

@@ -1196,7 +1196,11 @@ host's question is charged a solver's start (§7.7), and the solver it starts ta
 whole (`campaign_start_solver <dir> <sessions> <charge>`: the ledger row renamed, held by the solver,
 so the start's release drops nothing): the host is charged one solver, never two -- charged a second
 beside the first, no cold host of SGF7-adhoc-39 (21 GB of sessions) had room, and 24 questions read the
-corpus in JVMs of their own, 14-21 min each, their hosts never warm.
+corpus in JVMs of their own, 14-21 min each, their hosts never warm. A SOLVER IS SIZED BY WHAT SOLVERS MEASURED: after each corpus read a
+solver states its live set after a full collection beside the corpus (`<iteration>/solver_live/`,
+`ObligationSolverMain#stateLive`), and later solvers of the corpus take the share of its text the read of the
+largest corpus held (`campaign_solver_measured_pct`; 11-15 % after compaction, 50 % before any measure, and
+for a composer always).
 
 **NO QUESTION IS ANSWERED IN A CORPUS JVM OF ITS OWN.** A question whose host had no room to start its
 solver now (`campaign_solve_obligation` 3), or that its solver took and ended on or failed (1), is no
@@ -1833,7 +1837,10 @@ HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room 
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
 room is not held against it), else the pool's host with the most room under the ceiling
 (`campaign_host_room`), charged there while it runs and released when it returns; none having room,
-it waits, saying so once. A step on a peer runs through the remote worker script as
+it waits, saying so once -- but A STEP NO HOST CAN EVER HOLD never waits: past the most a pool host holds
+with no charge standing (its ceiling less what it uses beside the ledger, at most the system's own 2048 MB, `campaign_head_most_mb`), an
+engine JVM whose heap is only a bound (no measured need) runs at the largest heap that fits it, and any
+other step fails at once, named (`engine_java`, `campaign_head_place`). A step on a peer runs through the remote worker script as
 `run_engine.sh --run-placed` (`campaign_run_placed`) in the head's working directory, with the
 head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back as its own: a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
@@ -3147,7 +3154,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    shared part from one file written beside the query (the lifts' links are 1 Gb/s), and is signalled
    and ended over ssh; one that has not read the shared part within 120 s gives its questions back
    to the other pairs (SGF7-adhoc-10: one pair beside its 16 GB composer ran 315 z3 runs in the
-   30 min decide budget and left questions undecided). A
+   30 min decide budget and left questions undecided). Their ssh connections open IN WAVES: at most
+   `Z3Incremental#SSH_STARTS_PER_HOST` (4) a host until each shell prints its pid, so sshd's
+   MaxStartups refuses none (48 at once to one lift: 12 refused; 4 at a time: none); one refused
+   before its shell ran is started again, at most `SSH_ATTEMPTS` (3) times, a second apart more each
+   time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst). A
    pair holds its slots while it lives and gives them back to whoever waits for room once it has no
    question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
    take turns where the room holds no more. The valuations, asked up
@@ -3446,7 +3457,9 @@ with it is a `RUN_DEFECT`.
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
-  the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
+  the recording took two still takes the model's edges), and an activation as every turn of its
+  timed-wait loop is (`Confirmation#activation`, `OccurrenceAddress#anyTurn`: `Root:WAKE/<wait>#k`
+  counts the loop's wakes, the schedule's turn family). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`, the three halves of
@@ -3626,7 +3639,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   the cone none is held and Y8 reproduces 10/10, IB1 10/10).
 
   Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
-  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
+  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`) and a timed-wait
+  turn's number (`StableEventNames#turnFamily`, the schedule's rule), and each message
   hop is named by its sender's stable context and the send's site when that send was the sender's
   first of its site; a hop of a later send (a loop's) has no stable name and an edge naming one is
   not held. A producer endpoint id hashes the sender's counts, so a poll before a send renames all

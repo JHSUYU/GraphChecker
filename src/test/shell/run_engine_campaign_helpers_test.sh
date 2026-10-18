@@ -2851,6 +2851,43 @@ done <<'EOF_HEAP'
 16384|0|4096 2048|8192|7040|10922
 EOF_HEAP
 
+# SOLVER-MEASURED: once a corpus's solvers stated their live set after a read
+# (<iteration>/solver_live/: "<live MB> <corpus MB>", ObligationSolverMain),
+# a solver is sized by the share the read of the largest corpus measured,
+# rounded up, not campaign_solver_live_pct; a composer keeps that rule.  Per
+# row: the statements, the corpus's MB, the share, a solver's heap, charge
+# and retire point, and a composer's heap (engine heap 16384).
+while IFS='|' read -r sm_stated sm_corpus sm_pct sm_heap sm_need sm_retire \
+    sm_compose; do
+  rm -rf -- "${solver_heap_dir}"
+  mkdir -p "${solver_heap_dir}/sessions" "${solver_heap_dir}/solver_live"
+  printf '%s %s\n' "$(date +%s)" "${sm_corpus}" >"${solver_heap_dir}/corpus_mb"
+  sm_at=0
+  for sm_one in ${sm_stated}; do
+    sm_at=$((sm_at + 1))
+    echo "${sm_one/:/ }" >"${solver_heap_dir}/solver_live/host.${sm_at}"
+  done
+  sm_said=$(
+    engine_memory_mb=16384
+    sm_got=$(campaign_solver_measured_pct "${solver_heap_dir}/sessions")
+    sm_h=$(campaign_solver_heap_mb "${solver_heap_dir}/sessions")
+    printf '%s %s %s %s %s' "${sm_got}" "${sm_h}" \
+      "$(campaign_solver_need_mb "${solver_heap_dir}/sessions")" \
+      "$(campaign_solver_retire_mb "${sm_h}" "${sm_got}")" \
+      "$(campaign_solver_heap_mb "${solver_heap_dir}/sessions" \
+        "${campaign_solver_live_pct}")"
+  )
+  [[ "${sm_said}" == "${sm_pct} ${sm_heap} ${sm_need} ${sm_retire} \
+${sm_compose}" ]] \
+    || fail "SOLVER-MEASURED: [${sm_stated}] over ${sm_corpus} MB: \
+${sm_said}"
+done <<'EOF_MEASURED'
+|20000|50|16384|18625|0|16384
+3000:20000 900:300|20000|15|9000|7469|40000|16384
+3001:20000|20000|16|9600|7788|40000|16384
+600:300|3000|200|16384|12250|0|4500
+EOF_MEASURED
+
 # COMPOSE-HEAP: a composer starts at its corpus's heap, as a solver's
 # (do_compose: campaign_solver_heap_mb of the sessions it reads).  Per row:
 # the corpus's MB, the heap its composer starts at.
@@ -9054,6 +9091,53 @@ $(tail -n 1 "${engine_test}/log")"
 $(sort -u "${engine_test}/log.stack" | tr '\n' ' ')"
 )
 reset_config
+
+# HEAD-NEVER: a head step no host of the pool can ever hold -- its charge past
+# every host's ceiling less what the host uses beside the ledger's charges
+# (campaign_head_most_mb) -- never waits (SGF8-adhoc-40: 23 and 107 min): an
+# engine JVM whose heap is only a bound (its main has no measured need) runs
+# at the most a host can hold; one whose measured need no host can hold, and
+# any other step, fails at once, named.  Per row: the engine heap, the
+# main's need (- none), the most the pool's best host holds, and the heap it
+# ran at, or "fails".
+never_dir=${test_tmp}/head-never
+mkdir -p "${never_dir}"
+printf '#!/usr/bin/env bash\necho "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB}"\n' \
+  >"${never_dir}/java"
+chmod +x "${never_dir}/java"
+while IFS='|' read -r nv_engine nv_need nv_most nv_want; do
+  nv_got=$(
+    engine_memory_mb=${nv_engine}
+    campaign_head_charging=1
+    campaign_head_most_mb() { echo "${nv_most}"; }
+    campaign_engine_need_mb() { [[ "${nv_need}" == - ]] || echo "${nv_need}"; }
+    campaign_head_charged() { shift; "$@"; }
+    campaign_engine_jvm() { shift; "$@"; }
+    java_bin=${never_dir}/java
+    engine_java -cp jar x.Main 2>/dev/null | sed -n 's/^heap=//p' || true
+  )
+  [[ "${nv_got:-fails}" == "${nv_want}" ]] \
+    || fail "HEAD-NEVER: engine heap ${nv_engine}, need ${nv_need}, a host \
+holding ${nv_most} MB at most: ${nv_got:-fails}, not ${nv_want}"
+done <<'EOF'
+24576|-|30000|24576
+24576|-|26000|23552
+24576|4096|26000|4096
+24576|24000|20000|fails
+EOF
+(
+  campaign_host_gate_root=${never_dir}/hosts
+  campaign_worker_hosts="lift12"
+  campaign_head_most_mb() { echo 20000; }
+  campaign_host_try_charge() { status=1; }
+  campaign_host_room() { echo 100; }
+  sleep() { echo waited >"${never_dir}/waited"; exit 0; }
+  campaign_head_place 26496 2>/dev/null
+  echo placed >"${never_dir}/waited"
+) || true
+[[ ! -e "${never_dir}/waited" ]] \
+  || fail "HEAD-NEVER: a step no host can ever hold was $(cat \
+"${never_dir}/waited")"
 
 # ENGINE-HEAP-COMPOSE: a composer starts at 4096 MB, charged its footprint and
 # the z3 room it is placed with (one pair's 2048 MB on a 30000 MB host), and

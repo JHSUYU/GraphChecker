@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.FocusedReplay;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -230,6 +231,7 @@ public final class ObligationSolverMain {
                     });
                     read.clear();
                     read.putAll(whole.read);
+                    stateLive(iteration, read);
                     if (!whole.left.isEmpty()) {
                         System.err.println("ObligationSolverMain: question "
                                 + JsonFields.primitiveString(question,
@@ -242,6 +244,25 @@ public final class ObligationSolverMain {
                 return corpus;
             }
         };
+    }
+
+    static final String LIVE = "solver_live";
+
+    static void stateLive(Path iteration, Map<String, Long> read) {
+        long corpus = 0L;
+        for (long bytes : read.values()) corpus += bytes;
+        long live = HeapWatch.liveAfterCollection();
+        String self = ManagementFactory.getRuntimeMXBean().getName()
+                .replace('@', '.');
+        try {
+            Path dir = iteration.resolve(LIVE);
+            Files.createDirectories(dir);
+            ArtifactIO.replace(dir.resolve(self),
+                    (live >> 20) + " " + (corpus >> 20) + "\n");
+        } catch (IOException unstated) {
+            System.err.println("ObligationSolverMain: its live set not "
+                    + "stated: " + unstated);
+        }
     }
 
     /** One read of the corpus: the sessions {@code standing} in it. */

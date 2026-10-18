@@ -24,7 +24,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * MANY QUESTIONS OVER ONE SHARED PART, EACH A SCOPE OF ONE LONG-LIVED z3: a
@@ -146,6 +149,15 @@ public final class Z3Incremental implements AutoCloseable {
      * composed query, SGF7-adhoc-10's, read in 7 s).
      */
     static final long REMOTE_READ_MS = 120_000L;
+
+    static final int SSH_STARTS_PER_HOST = 4;
+
+    static final int SSH_ATTEMPTS = 3;
+
+    static final long SSH_RETRY_MS = 1_000L;
+
+    private static final Map<String, Semaphore> SSH_STARTS =
+            new ConcurrentHashMap<String, Semaphore>();
 
     /** What a remote z3's shell prints before its pid, first. */
     static final String PID = "@@graphchecker-pid ";
@@ -955,6 +967,8 @@ public final class Z3Incremental implements AutoCloseable {
          *  ({@link #CANCEL_GRACE_MILLIS}); 0: none. */
         private Turn signalTurn;
         private long signalDue;
+        private final AtomicBoolean handshaking = new AtomicBoolean();
+        private int refusals;
 
         Engine(Pair pair, int arithmetic) {
             this.pair = pair;
@@ -998,12 +1012,16 @@ public final class Z3Incremental implements AutoCloseable {
                 if (remote) {
                     command = remote(pair.room, command,
                             files.of(arithmetic));
+                    handshake();
                 }
                 ProcessBuilder builder = new ProcessBuilder(command);
                 builder.redirectErrorStream(true);
                 started = builder.start();
             } catch (IOException notLaunched) {
-                if (remote) lose(notLaunched.toString());
+                if (remote) {
+                    handshook();
+                    lose(notLaunched.toString());
+                }
                 return false;
             }
             Z3.track(started);
@@ -1113,6 +1131,7 @@ public final class Z3Incremental implements AutoCloseable {
             if (remote && pid <= 0L && text.startsWith(PID.trim())) {
                 // Its shell's first line, before anything z3 prints.
                 pid = pidOf(text.substring(PID.trim().length()));
+                handshook();
                 return;
             }
             Mark head = expected.peekFirst();
@@ -1285,10 +1304,18 @@ public final class Z3Incremental implements AutoCloseable {
             boolean stray = interruptOutstanding;
             boolean aged = answered > 0;
             boolean unread = head != null && head.role == Role.STARTUP;
+            boolean refused = remote && unread && pid <= 0L
+                    && ++refusals < SSH_ATTEMPTS;
             String said = String.join(" | ", collected);
             stop();
-            if (remote && unread) lose("ended first, saying: " + said);
+            if (remote && unread && !refused) {
+                lose("ended first, saying: " + said);
+            }
             if (of == null || of.done() || of.cancelled) return;
+            if (refused) {
+                again(of);
+                return;
+            }
             boolean before = head != null && head.turn != of
                     && head.role != Role.STARTUP;
             if ((before || stray || (memOut && aged)) && !of.retried) {
@@ -1302,6 +1329,26 @@ public final class Z3Incremental implements AutoCloseable {
             } else {
                 of.end(memOut ? memOut(pair.slotMb)
                         : bare("", "its scoped z3 ended"), false);
+            }
+        }
+
+        private void handshake() {
+            if (refusals > 0) {
+                try {
+                    Thread.sleep(SSH_RETRY_MS * refusals);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            SSH_STARTS.computeIfAbsent(pair.room.host,
+                    host -> new Semaphore(SSH_STARTS_PER_HOST))
+                    .acquireUninterruptibly();
+            handshaking.set(true);
+        }
+
+        private void handshook() {
+            if (handshaking.compareAndSet(true, false)) {
+                SSH_STARTS.get(pair.room.host).release();
             }
         }
 
@@ -1440,6 +1487,7 @@ public final class Z3Incremental implements AutoCloseable {
 
         /** Its z3 ended, if running, and what it printed dropped. */
         void stop() {
+            handshook();
             Process ending = process;
             if (ending == null) return;
             long ended = pid;
