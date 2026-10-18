@@ -891,7 +891,9 @@ the task, modulo the run's own names. The written term canonical and digested: o
 constants, roots by id, container subterms by their canonical bodies kept; an object handle's minted
 digest numbered (below) and a read's event, version and owner dropped; a handoff by what binds it in the query (its
 own run's wire arms the query states, `FlipQuery#arm`: each producer's class, export site, canonical
-term, the path-condition predicates it states and roots' guard; with none, pinned to its arrival); a
+term, the path-condition predicates it states and the guard's values of the roots that term and those
+predicates reach, by root id -- a derived root, computed from a clock's reading, by its id alone,
+`Corpus#rootName`; with none, pinned to its arrival); a
 read by its location's kind and slot and every writer the query offers it (`Arms#stateArms`: each
 writer's class, write site and what `FlipQuery#delivered` takes from it -- its canonical term, a
 free choice `?` (with the observed value where it is the observed writer) where the term states
@@ -900,7 +902,26 @@ its observed value). A term states nothing where it does not lower or names what
 declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
 a written term of either kind by the values the task's own reads of its version observed, the only
 reads the query pins to a value through it (`FlipQuery#stated`), `?` where none did (an alternative
-the query takes no value from; what another occurrence's read observed is no input of the query). A name a node has only in the
+the query takes no value from; what another occurrence's read observed is no input of the query).
+A root's VALUE is named only where the question reads it. `FlipQuery#arm` pins every root a producer
+arm's run ran (`Arms#rootGuards`: the arm exists only under the valuation its replay ran), but the
+rest of that guard is the run's valuation of roots the delivery does not rest on -- which door faults
+a world took, which roots a run that went further reached -- and keying by it asked one question per
+fault combination (Z3S-18413: one `Slice.<init>` arm's 46 paths, one id each, the client's and the
+Overseer's door faults; its round 1 replayed: 992 ids over 313 arms, 357 under this rule). So the key names,
+besides the arm's own roots above: where the stated terms (the guard, the kept conditions) state a
+handoff with a producer, whose arms pin, the value of each root those terms reach (`Corpus#inputShape`;
+with no such handoff a root the guard tests is free, and the world that took the other arm settles
+the flip); and where they reach a handoff of the task's OWN occurrence, which the query offers every
+run's arms of (`FlipQuery#handoff`), each pinned to its run's valuation, the run's valuation that
+decides which of them it admits (`Corpus#heldValuation`, STATUS 51): the values of the roots its
+earlier decisions on the path reach, and every root it ran where the query also states a family of
+this run alone (a handoff of another occurrence the stated terms reach, or one its own arms of the
+task's handoff name). Never a clock, never `Corpus#varied` (a corpus learning another world's value
+re-keys nothing). LIMIT: which other runs' arms the task's own handoff has is not in the key (a
+function of the session alone names its own run's arms; it never did), nor a root pinned through a
+family the query reaches only by a writer the read did not observe (`readName` names that writer's
+handoffs by their own roots) or by another run's arm's nested handoff. A name a node has only in the
 session's run (a host and port, a store session's id: the manifest's `runSpellings`) is named by the
 node wherever the program spelled it (an observed value, a term's constants; never an engine-built
 name), so a URL at another port names one node; a run's handle for an object -- an identity hash

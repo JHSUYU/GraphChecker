@@ -1026,3 +1026,6 @@ under that key (SYMBOL-SCOPE.md §4.5).
 - An unreadable schedule prefix lets the replay run free, stated on stderr only; a malformed
   timeout takes the default.
 - Only a restart the workload reports through `restartSource` starts a new epoch.
+- An arm's key (PIPELINE §7.3) names a run's own arms of the task's own handoffs, not which other
+  runs' arms the flip query also offers; a root pinned only through a family the query reaches by an
+  unobserved writer or another run's nested handoff is not named either (`Corpus#heldValuation`).

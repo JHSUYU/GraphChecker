@@ -1008,7 +1008,13 @@ public final class Corpus implements Arms.Rows {
      * STATES (a symbol of {@code stated}: the guard's term, then its kept
      * conditions') by what binds it there ({@link #handoffName}: its
      * producer's arms, or its pinned arrival), the guard's in the order it
-     * names them, its kept conditions' as a set -- and each factor member
+     * names them, its kept conditions' as a set; and, where one of those
+     * handoffs has a producer, the value its run ran each root the stated
+     * terms reach at ({@link #rootName}; never a clock): {@code
+     * FlipQuery#arm} pins a producer arm's guard roots, so a root the
+     * question tests is then held at its world's value (with no handoff it
+     * is free, and the world that took the other arm settles the flip) --
+     * and each factor member
      * that FEEDS it ({@link #feeders}) and was delivered something or wrote
      * where the query reads: its MESSAGE handoffs (whole, not only those
      * the guard names: the arm consumes them after the flip -- hdfs-11741's
@@ -1070,11 +1076,13 @@ public final class Corpus implements Arms.Rows {
         }
         List<String> guard = new ArrayList<String>();
         Set<String> kept = new TreeSet<String>(BY_SHAPE);
+        boolean pinned = false;
         for (int at = 0; at < stated.size(); at++) {
             for (String symbol : termSymbols(sessionId, stated.get(at))) {
                 if (symbolKind(sessionId, symbol) != SymbolKind.HANDOFF) {
                     continue;
                 }
+                pinned |= attach(sessionId, symbol).producer() != null;
                 String bound = tokenName(sessionId, "handoff|" + sessionId
                         + "|" + symbol, () -> handoffName(attach(sessionId,
                         symbol), new Naming()));
@@ -1089,11 +1097,117 @@ public final class Corpus implements Arms.Rows {
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
                 .append(handoffs(sessionId, occurrence, false)).append(guard)
-                .append(kept);
+                .append(kept).append(pinned ? rootValues(sessionId, stated)
+                        : Collections.<String>emptySet());
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(numbered(text.toString(),
                 new LinkedHashMap<String, String>()), 16);
     }
+
+    /**
+     * THE RUN'S VALUATION WHERE A QUESTION HOLDS IT AGAINST OTHER RUNS', as
+     * an arm's key names it: {@code FlipQuery#handoff} offers a handoff of
+     * the task's OWN occurrence every run's arms of it, each pinned to its
+     * run's valuation ({@code FlipQuery#arm}), so which of them the query
+     * admits turns on what this run's own conditions hold those roots at
+     * (STATUS 51, hdfs-adhoc-11: one key, an ADMITTED world and an UNSAT
+     * one, core {@code r_in_19=true}).  Where the stated terms reach such a
+     * handoff: the values of the roots the path's earlier decisions ({@code
+     * prefix}) reach; and, where the query also states a family of this
+     * run alone -- a handoff of another occurrence the stated terms reach,
+     * or one the task's own handoff's arms of this run name -- every root the
+     * run ran ({@link #ranRoot}), since that family pins them all.  Clocks
+     * never; a derived root by its id ({@link #rootName}).  "" where the
+     * stated terms reach no handoff of the task's own.
+     */
+    public String heldValuation(String sessionId, OccurrenceAddress occurrence,
+                                List<String> stated, List<String> prefix) {
+        boolean own = false;
+        boolean alone = false;
+        for (String term : stated) {
+            for (String symbol : termSymbols(sessionId, term)) {
+                if (symbolKind(sessionId, symbol) != SymbolKind.HANDOFF) {
+                    continue;
+                }
+                AttachRow attach = attach(sessionId, symbol);
+                if (attach.producer() == null) continue;
+                if (!attach.endpoint().occurrence().equals(occurrence)) {
+                    alone = true;
+                    continue;
+                }
+                own = true;
+                alone |= armsNameHandoffs(attach);
+            }
+        }
+        if (!own) return "";
+        return "held" + (alone ? valuation(sessionId)
+                : rootValues(sessionId, prefix));
+    }
+
+    /** The values of the roots {@code terms} reach ({@link #termSymbols}),
+     *  each by {@link #rootName}; never a clock. */
+    private Set<String> rootValues(String sessionId, List<String> terms) {
+        Set<String> values = new TreeSet<String>();
+        for (String term : terms) {
+            for (String symbol : termSymbols(sessionId, term)) {
+                RootMintRow root = rootBySymbol(sessionId, symbol);
+                if (root != null && root.kind() != RootKind.CLOCK) {
+                    values.add(rootName(root.rootId(),
+                            rootValue(sessionId, root.rootId())));
+                }
+            }
+        }
+        return values;
+    }
+
+    /** Every root one session ran ({@link #ranRoot}) but a clock, each by
+     *  {@link #rootName}; once per session. */
+    private Set<String> valuation(String sessionId) {
+        return valuations.computeIfAbsent(sessionId, id -> {
+            Set<String> values = new TreeSet<String>();
+            for (String rootId : roots().keySet()) {
+                RootMintRow ran = ranRoot(rootId, id);
+                if (ran != null && ran.kind() != RootKind.CLOCK) {
+                    values.add(rootName(rootId, rootValue(id, rootId)));
+                }
+            }
+            return Collections.unmodifiableSet(values);
+        });
+    }
+
+    /** {@link #valuation}'s memo: a corpus does not change once read. */
+    private final Map<String, Set<String>> valuations =
+            new ConcurrentHashMap<String, Set<String>>();
+
+    /** Whether one of the attach's own run's arms names another handoff
+     *  (its term or a predicate of its path condition); once per session
+     *  and symbol. */
+    private boolean armsNameHandoffs(AttachRow attach) {
+        String sessionId = attach.sessionId();
+        return nesting.computeIfAbsent(sessionId + "|" + attach.symbol(),
+                key -> {
+            boolean nests = false;
+            for (Arms.Arm arm : arms().ownArmsAt(Interaction.of(
+                    InteractionKind.WIRE, attach.producer(),
+                    attach.endpoint()), attach.symbol(), sessionId)) {
+                Set<String> named = new HashSet<String>(expressionSymbols(
+                        sessionId, arm.expressionRef()));
+                for (String conjunct : arm.pi()) {
+                    named.addAll(termSymbols(sessionId, conjunct));
+                }
+                for (String symbol : named) {
+                    nests |= !symbol.equals(attach.symbol()) && symbolKind(
+                            sessionId, symbol) == SymbolKind.HANDOFF;
+                }
+            }
+            arms().drainRefusals();
+            return nests;
+        });
+    }
+
+    /** {@link #armsNameHandoffs}'s memo. */
+    private final Map<String, Boolean> nesting =
+            new ConcurrentHashMap<String, Boolean>();
 
     /**
      * What this corpus answered about one task (the planner's, or the
@@ -1821,7 +1935,14 @@ public final class Corpus implements Arms.Rows {
      * is malformed is dropped), each by its producer's class, the export's
      * site, its canonical delivered term, its path condition's predicates
      * the query states (an unsupported subterm of one marks no term) and
-     * its roots' guard; with none it is pinned to its arrival.
+     * the guard's values of the roots that term and those predicates reach
+     * ({@link #rootName}): the delivery rests on them.  The rest of the
+     * guard -- every other root its run ran, which {@code FlipQuery#arm}
+     * pins too -- is that run's valuation of roots the delivery does not
+     * rest on, a world's fault flips (Z3S-18413: 46 paths of one arm, one id
+     * each, by which client and Overseer door faults their runs took), and
+     * is named only where the question reads them ({@link #inputShape}).
+     * With no arm it is pinned to its arrival.
      */
     private String handoffName(AttachRow attach, Naming naming) {
         String port = "handoff:" + sequences(attach.endpoint().site());
@@ -1843,6 +1964,10 @@ public final class Corpus implements Arms.Rows {
                 boolean unsupported = naming.unsupported;
                 Set<String> taints = new HashSet<String>(naming.taints);
                 List<String> conditions = new ArrayList<String>();
+                // What the delivery rests on: its term's symbols and its
+                // stated predicates'.
+                Set<String> rests = new HashSet<String>(expressionSymbols(
+                        sessionId, arm.expressionRef()));
                 for (String conjunct : arm.pi()) {
                     if (!Arms.predicate(conjunct)) continue;
                     String stated = FlipQuery.statedTerm(this, sessionId,
@@ -1852,13 +1977,21 @@ public final class Corpus implements Arms.Rows {
                         continue;
                     }
                     conditions.add(canonical(sessionId, stated, naming));
+                    rests.addAll(termSymbols(sessionId, conjunct));
                 }
                 naming.unsupported = unsupported;
                 naming.taints = taints;
+                Set<String> guard = new TreeSet<String>();
+                for (Map.Entry<String, RootMintRow> guarded
+                        : arm.guardMints().entrySet()) {
+                    if (rests.contains(guarded.getKey())) {
+                        guard.add(rootName(guarded.getValue().rootId(),
+                                arm.guard().get(guarded.getKey())));
+                    }
+                }
                 arms.add(classOf(arm.producer()) + "@"
                         + attach.producer().site() + "=" + term + "|"
-                        + conditions + "|" + new TreeMap<String, String>(
-                        arm.guard()));
+                        + conditions + "|" + guard);
             }
             arms().drainRefusals();
         }
@@ -1867,6 +2000,14 @@ public final class Corpus implements Arms.Rows {
         }
         arms.sort(BY_SHAPE);
         return port + "<-" + arms;
+    }
+
+    /** A root's value as an arm's key names it: by its id and the value its
+     *  run ran it at, but a root its run computed from another input
+     *  ({@link #derived}: a clock's reading, every run's own) by its id
+     *  alone. */
+    private String rootName(String rootId, String value) {
+        return "root:" + rootId + (derived(rootId) ? "" : "=" + value);
     }
 
     /** A handoff's or a read's name ({@link #handoffName}, {@link

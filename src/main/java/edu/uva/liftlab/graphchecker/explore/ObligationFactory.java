@@ -429,7 +429,9 @@ public final class ObligationFactory {
      *       delivered the query ({@link Corpus#inputShape}): the handoffs
      *       the guard and its kept conditions state, by what binds them, and
      *       the factor members that wrote at the locations they read, by
-     *       what they wrote and what fed them.</li>
+     *       what they wrote and what fed them; and its run's valuation of
+     *       roots only where the query holds it against other runs' ({@link
+     *       Corpus#heldValuation}).</li>
      * </ul>
      *
      * <p>Never the session, and never the inherited flips' prefixes, which
@@ -539,9 +541,13 @@ public final class ObligationFactory {
             text.append(decided.getKey()).append('x')
                     .append(decided.getValue().size()).append('/');
         }
+        List<String> prefix = new ArrayList<String>();
+        for (DecisionRow condition : predicates) prefix.add(condition.term());
         return ArtifactIO.digest(text + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
                 corpus.feeders(task), rests.locations(), stated)
+                + corpus.heldValuation(path.sessionId, task.focused(), stated,
+                prefix)
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 
