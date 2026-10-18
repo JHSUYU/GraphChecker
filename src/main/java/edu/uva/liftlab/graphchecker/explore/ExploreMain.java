@@ -106,6 +106,11 @@ import java.util.TreeSet;
 public final class ExploreMain {
     /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
+    /** Stated once the round has read its corpus: after it, a round reads
+     *  no session file (the corpus's rows and schedules are read whole by
+     *  {@link Corpus#read(Path, Path, Corpus, Collection)}), only the
+     *  workers' files and the iteration's. */
+    static final String CORPUS_READ = "corpus_read";
 
     private final Path iteration;
     private final String declaredAnchor;
@@ -263,6 +268,10 @@ public final class ExploreMain {
     JsonObject round(int round, Path inFlight, Path results,
                      Collection<String> named, Path out) throws IOException {
         corpus = Corpus.read(iteration, rootDomains, corpus, named);
+        // Every session file this round reads is read: GROW may withdraw a
+        // session of its corpus now (run_engine.sh campaign_stream_swap_due).
+        Files.createDirectories(out);
+        Files.write(out.resolve(CORPUS_READ), new byte[0]);
         // The map is read again only when its file changed.
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";

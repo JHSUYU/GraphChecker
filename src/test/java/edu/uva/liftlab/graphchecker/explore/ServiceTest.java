@@ -222,6 +222,27 @@ public class ServiceTest {
         }
     }
 
+    /**
+     * A solver's corpus stands without what GROW's swaps withdrew: the
+     * journal beside the corpus names each before its directory leaves, so a
+     * listing that still shows one (a peer's NFS client's, up to a minute
+     * old) is read without it.
+     */
+    @Test
+    public void aSolversCorpusStandsWithoutWhatGrowWithdrew()
+            throws Exception {
+        Path sessions = folder.newFolder("standing", "sessions").toPath();
+        for (String name : new String[] {"c", "a", "b"}) {
+            Files.createDirectories(sessions.resolve(name));
+        }
+        assertEquals(java.util.Arrays.asList("a", "b", "c"),
+                ObligationSolverMain.standing(sessions));
+        Files.write(sessions.resolveSibling(ObligationSolverMain.WITHDRAWN),
+                "b\nx\n".getBytes(StandardCharsets.UTF_8));
+        assertEquals(java.util.Arrays.asList("a", "c"),
+                ObligationSolverMain.standing(sessions));
+    }
+
     private static List<String> names(List<Path> files) {
         List<String> names = new ArrayList<String>();
         for (Path file : files) names.add(file.getFileName().toString());

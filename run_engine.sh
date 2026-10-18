@@ -5251,12 +5251,19 @@ campaign_obligation_unanswered() {
 #   stream_deferred   witnesses whose attempt claimed a model under
 #                     confirmation: attempted again once a verdict lands
 #   stream_swaps      re-runs that returned, whose sessions replace the
-#                     exposing ones once no obligation runs
+#                     exposing ones once no reader of those runs
+#                     (campaign_stream_swap_due)
 #   stream_landed     sessions landed since the last round started
-#   stream_hold       GROW's re-runs and swaps still owed: no round is
-#                     planned while any is, and no solve starts once all
-#                     have returned until they swap
-#                     (campaign_stream_swap_owed)
+#   stream_hold       GROW's re-runs owed: queued, running, or returned and
+#                     not swapped in (no round or solve waits for them)
+#   stream_reruns     "<obligation> <exposing session>" -> the directory its
+#                     owed re-run runs in; stream_growing a growth's subject
+#                     (an occurrence, a task's input #k) -> the re-run, owed
+#                     or swapped in, that captures it
+#                     (campaign_stream_growth_new)
+#   stream_withdrawn  sessions GROW's swaps withdrew (the iteration's
+#                     withdrawn.txt); stream_rests a queued REPLAY's id -> the
+#                     session its path ran in (campaign_stream_replay_drop)
 # ---------------------------------------------------------------------------
 
 # EXPLORE.  Rounds of explore.ExploreMain over the corpus, each obligation
@@ -5324,6 +5331,8 @@ campaign_explore() {
   local stream_admitted_cores="" stream_sharers="" stream_reading=""
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
+  local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
+    stream_rests=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
   # those already grown, and the witnesses attempted again once they are.
   local -A stream_chain=() stream_chain_grown=()
@@ -5419,10 +5428,11 @@ $(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
 # Whether an exploration has nothing left to start, run, plan or take
 # (campaign_explore's end): no job runs, nothing waits in the queue or the
 # hard lane -- an ask there is in flight until answered, so no fixed point
-# is declared before it, nor a stop ends with it unasked -- and no head
-# step, round, or round returned and not taken.
+# is declared before it, nor a stop ends with it unasked -- no re-run waits
+# to swap in, and no head step, round, or round returned and not taken.
 campaign_stream_idle() {
-  (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} == 0 )) \
+  (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} \
+     + ${#stream_swaps[@]} == 0 )) \
     && [[ -z "${stream_step_pid}${stream_round_pid}" \
           && -z "${stream_round_returned}" ]]
 }
@@ -5466,11 +5476,16 @@ campaign_stream_round_args() {
 # 6: the 13 lifts idle 03:44-03:56 behind two asks started at 03:25).  Their
 # obligations stay in flight (the round's in_flight.jsonl), and their
 # verdicts land in whichever round is open when they return, owing the next.
-# Never while GROW's re-runs or swaps are owed: the corpus is about to
-# change under the round.
+# GROW's re-runs hold no round: one plans over its frozen corpus, the
+# exposing sessions in it, while they run (a re-run is a question left to
+# wait for: it lands a session), and no swap withdraws a session of that
+# corpus before the round has read it (campaign_stream_swap_due).  A GROW
+# cycle held the next round for its slowest re-run, its serial swaps and
+# their gate: SGF8-adhoc-05 round 4 -> 5, 56 min, the pool at ~32 of ~200
+# replays.
 campaign_stream_plan_due() {
   local entry
-  (( stream_dirty == 1 && stream_hold == 0 )) || return 1
+  (( stream_dirty == 1 )) || return 1
   (( stream_landed > 0 )) && return 0
   for entry in "${stream_jobs[@]}"; do
     [[ "${entry}" == CONFIRM\ * || "${entry}" == HARD\ * ]] || return 1
@@ -5504,9 +5519,10 @@ campaign_stream_confirm_owed() {
 # stood, and whatever returns meanwhile, a witness too, waits for the step
 # after it -- at most one attempt at a time, the witnesses that come during
 # one coalesced into the next.  Else what returned lands
-# (campaign_stream_land), GROW's re-runs swap in once due, the staged
-# sessions move into the corpus (campaign_stream_move), and the step takes
-# them in when there is work: `gate`, the sessions that landed
+# (campaign_stream_land), GROW's returned re-runs swap in, each one due
+# (campaign_stream_swap), the staged sessions move into the corpus
+# (campaign_stream_move), and the step takes them in when there is work:
+# `gate`, the sessions that landed, the re-runs' among them as they swap
 # (stream_gating while it runs: no round starts over a session not gated);
 # `confirms`, the confirmation replays that returned, to decide.  A round
 # is no head step: it plans in its own lane (campaign_stream_round_start).
@@ -5523,10 +5539,7 @@ campaign_stream_step_start() {
     stream_witnesses=()
   else
     (( ${#stream_pending[@]} == 0 )) || campaign_stream_land
-    if campaign_stream_swap_due; then
-      campaign_stream_swap
-      (( ${#stream_chain[@]} == 0 )) || campaign_stream_chain_reattempt
-    fi
+    (( ${#stream_swaps[@]} == 0 )) || campaign_stream_swap
     (( ${#stream_staged[@]} == 0 )) || campaign_stream_move
     (( ${#gate[@]} + ${#confirms[@]} > 0 )) || return 0
     campaign_stream_step_dir
@@ -5586,9 +5599,10 @@ campaign_stream_step() {
 # (Corpus#indexWorlds, ExploreMain#answersByFlip, #boundedFlips) -- the round
 # reads as they stand when it reads them, as a round always did: a worker
 # writes its own answer as its replay ends, and a landing writes an
-# unfinished one's (campaign_obligation_unfinished).  No round starts while
-# GROW's re-runs or swaps are owed (campaign_stream_plan_due), so no swap
-# withdraws a session a round reads.
+# unfinished one's (campaign_obligation_unfinished), a swap the re-run's
+# (campaign_stream_swap).  A round may plan while GROW's re-runs run: no
+# swap withdraws a session its corpus names until its planner has read it
+# (<dir>/corpus_read, ExploreMain#CORPUS_READ; campaign_stream_swap_due).
 campaign_stream_round_start() {
   local dir row
   [[ -z "${stream_stop}" && -z "${stream_round_pid}" \
@@ -6118,18 +6132,25 @@ campaign_stream_chain_reattempt() {
 # GROW for its exposures, else its obligations into the queue.
 campaign_stream_take_round() {
   local round_dir=$1 name exposures exposed proposed wave index
+  local growth=$1/growth.jsonl
   local -a ids=() rows=()
   name=$(basename "${round_dir}")
   # The planner states both files every round; an empty obligations file is
   # nothing new to ask, and a growth file with no exposure (EXPOSED_REGION,
   # UNPLANNED_INPUT) nothing to grow.
-  require_file "round growth rows" "${round_dir}/growth.jsonl"
+  require_file "round growth rows" "${growth}"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
+  # A growth GROW's re-runs capture is in flight: not grown again
+  # (campaign_stream_growth_new).
+  if (( ${#stream_growing[@]} + ${#stream_withdrawn[@]} > 0 )); then
+    campaign_stream_growth_new "${round_dir}" "${growth}" \
+      "${round_dir}/growth-new.jsonl"
+    growth="${round_dir}/growth-new.jsonl"
+  fi
   # A doors-only occurrence a value demand reached, and a store edge a
   # replay ran past the ZooKeeper chain (ZK_EDGE), grow the plan as an
   # exposure does (campaign_stream_grow).
-  exposures=$(campaign_exposures "${round_dir}/growth.jsonl"; \
-    campaign_unpauses "${round_dir}/growth.jsonl")
+  exposures=$(campaign_exposures "${growth}"; campaign_unpauses "${growth}")
   exposed=$(printf '%s' "${exposures}" | grep -c '' || true)
   mapfile -t rows < "${round_dir}/obligations.jsonl"
   mapfile -t ids < <(jq -r '.obligationId' "${round_dir}/obligations.jsonl")
@@ -6159,18 +6180,18 @@ not yet woven"
   # chain's producers and nothing else, and queues none of its obligations
   # (PIPELINE §7.9).
   if (( ${#stream_chain[@]} > 0 )); then
-    campaign_stream_chain_round "${round_dir}" "${ids[@]}"
+    campaign_stream_chain_round "${round_dir}" "${growth}" "${ids[@]}"
     return 0
   fi
-  # A round that exposes regions grows the corpus first; what it proposes
-  # is queued behind GROW's re-runs, as what was queued before it is, and
-  # starts once they have swapped in (no solve starts before): in flight
-  # from now on, so no later round proposes it again.  Dropped and re-asked
-  # round after round, a backlog of consecutive growing rounds waited for
-  # the first round that grew nothing (solr-bugs-reindex-cleanup Z10: four
-  # growths in a row, 951 of round 5's 980 proposals asked before, Z9's
-  # witness flip asked in round 1 and queued in round 5, never answered).
-  (( exposed == 0 )) || campaign_stream_grow "${round_dir}"
+  # A round that exposes regions grows the corpus: its re-runs lead the
+  # queue, and what it proposes is queued behind them, as what was queued
+  # before it is, and starts at once: in flight from now on, so no later
+  # round proposes it again.  Dropped and re-asked round after round, a
+  # backlog of consecutive growing rounds waited for the first round that
+  # grew nothing (solr-bugs-reindex-cleanup Z10: four growths in a row, 951
+  # of round 5's 980 proposals asked before, Z9's witness flip asked in
+  # round 1 and queued in round 5, never answered).
+  (( exposed == 0 )) || campaign_stream_grow "${round_dir}" "${growth}"
   for ((index = 0; index < proposed; index++)); do
     mkdir -p "${round_dir}/${ids[${index}]}"
     stream_flying[${ids[${index}]}]=${rows[${index}]}
@@ -6178,14 +6199,69 @@ not yet woven"
   done
 }
 
+# campaign_stream_growth_new <round> <growth> <out>: the rows of a round's
+# growth not stale, into <out>.  A round planned while GROW's re-runs run,
+# or taken after one swapped in, was planned over the sessions they stand
+# in for, and the occurrences they capture uncaptured still
+# (ClosurePlanner#uncaptured names a demanded occurrence no session of its
+# corpus runs as a task, whatever the plan holds): it would grow them again,
+# re-run an obligation whose re-run is owed, or look for the worker of a
+# session a swap withdrew.  So a growth row -- an exposure, an unplanned
+# input, an unpaused occurrence, a store edge (campaign_growth_subject) --
+# is not grown when its exposing session has a re-run owed or was
+# withdrawn by one (that re-run stands in for it), or when its subject was
+# grown with the re-run of a session the round's corpus.txt names (the
+# round was planned before that re-run's session landed; stream_growing):
+# the re-run lands what it would, as the round after the swap always saw (a
+# round waited for every swap before 2026-10-17).  Every other row, of
+# every kind, is kept.
+campaign_stream_growth_new() {
+  local round_dir=$1 growth=$2 out=$3 lists="$3.in-flight" held=0 key=""
+  campaign_json_strings "${lists}.reruns" "${!stream_reruns[@]}"
+  campaign_json_strings "${lists}.withdrawn" "${!stream_withdrawn[@]}"
+  for key in "${!stream_growing[@]}"; do
+    printf '%s\t%s\n' "${key}" "${stream_growing[${key}]#* }"
+  done | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t")
+      | {key: .[0], value: .[1]}) | from_entries' >"${lists}.growing"
+  jq -c --slurpfile reruns "${lists}.reruns" \
+    --slurpfile withdrawn "${lists}.withdrawn" \
+    --slurpfile growing "${lists}.growing" \
+    --rawfile corpus "${round_dir}/corpus.txt" \
+    "${campaign_growth_subject}"'
+     def set: map({(.): true}) | add // {};
+     ($reruns[0] | set) as $owed | ($withdrawn[0] | set) as $gone
+     | ($corpus | split("\n") | map(select(length > 0)) | set) as $read
+     | select((subject as $s | $s != null
+               and ($owed["\(.obligationId // "") \(.sessionId // "")"]
+                    or $gone[.sessionId // ""]
+                    or ($growing[0][$s] as $by | $by != null and $read[$by])))
+              | not)' \
+    "${growth}" >"${out}"
+  rm -f -- "${lists}".*
+  held=$(( $(grep -c '' "${growth}" || true) - $(grep -c '' "${out}" \
+    || true) ))
+  (( held == 0 )) || campaign_log "$(basename "${round_dir}"): ${held} \
+growth row(s) in flight, captured by GROW's re-runs"
+}
+
+# What a growth row grows, as jq's `subject` (null: a row GROW does not
+# act on): an exposed region's occurrence, an unplanned input's task and
+# `<symbol>#<k>`, an unpaused occurrence, a store edge's occurrence.
+campaign_growth_subject='def subject:
+  if .kind == "EXPOSED_REGION" or .kind == "DOORS_ONLY_UNPAUSED"
+     or .kind == "ZK_EDGE" then .occurrence
+  elif .kind == "UNPLANNED_INPUT" then "\(.taskId) \(.symbol)#\(.k)"
+  else null end;'
+
 # A round planned while a witness's chain is open: its exposures of the
-# chain's producers (growth-chain.jsonl) grown, each producer once, and its
+# chain's producers (growth-chain.jsonl, of the round's growth rows not in
+# flight, <growth>) grown, each producer once, and its
 # obligations cancelled, named in exploration.json -- the exploration goes
 # on only to close that chain; its unplanned inputs wait, counted (a session
 # names them again, and a later round grows them).
 campaign_stream_chain_round() {
-  local round_dir=$1 occurrence grow=0
-  shift
+  local round_dir=$1 growth=$2 occurrence grow=0
+  shift 2
   stream_cancelled+=("$@")
   # A doors-only occurrence a value demand reached is run whole whatever
   # chain is open: dropping its mark asks no obligation.
@@ -6196,7 +6272,7 @@ campaign_stream_chain_round() {
      | select(.kind == "DOORS_ONLY_UNPAUSED"
        or (.kind == "EXPOSED_REGION" or .kind == "ZK_EDGE")
        and $held[.occurrence])' \
-    "${round_dir}/growth.jsonl" >"${round_dir}/growth-chain.jsonl"
+    "${growth}" >"${round_dir}/growth-chain.jsonl"
   while read -r occurrence; do
     stream_chain_grown[${occurrence}]=1
     grow=$((grow + 1))
@@ -6207,7 +6283,7 @@ campaign_stream_chain_round() {
   campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
 ${grow} of its producer(s) exposed here grow, and the round's $# \
 obligation(s) and $(jq -c 'select(.kind == "UNPLANNED_INPUT")' \
-"${round_dir}/growth.jsonl" | grep -c '' || true) unplanned input(s) wait"
+"${growth}" | grep -c '' || true) unplanned input(s) wait"
   (( grow == 0 )) || campaign_stream_grow "${round_dir}" \
     "${round_dir}/growth-chain.jsonl"
 }
@@ -6494,8 +6570,8 @@ campaign_stream_drop() {
 # solver or owed its hard-lane ask, still queued; a confirmation
 # queued, running or undecided is its attempt's row, reaped; a GROW re-run
 # queued, or returned and not swapped in, is dropped, its directory with
-# it (a witness's confirmation holds every swap, so the sessions its attempt
-# composed are all still in the corpus); a round still planning, or
+# it (a witness's confirmation holds the swap of every session its attempt
+# composed, so they are all still in the corpus); a round still planning, or
 # returned and not taken, is dropped (campaign_stream_round_drop).  At a
 # witness
 # the sessions that landed after its attempt composed (not in its
@@ -6530,7 +6606,7 @@ campaign_stream_end() {
   done
   stream_queue=()
   stream_queued_at=()
-  # So is one that returned and never swapped in (a confirmation held it,
+  # So is one that returned and never swapped in (a reader held it,
   # campaign_stream_swap_due): the exposing session stays in the corpus.
   # Either's directory, with what it staged, leaves its worker.
   for entry in "${stream_swaps[@]}"; do
@@ -6542,7 +6618,7 @@ campaign_stream_end() {
     read -r round id session <<<"${entry}"
     stream_reruns_dropped+=("${id}")
     mkdir -p "${campaign_root}/explore-reaped/${round}"
-    mv -- "$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")" \
+    mv -- "${stream_reruns["${id} ${session}"]}" \
       "${campaign_root}/explore-reaped/${round}/${id}"
   done
   campaign_stream_reap
@@ -6565,7 +6641,7 @@ campaign_stream_end() {
     stream_reaped+=("${id}")
     dir="${iteration_dir}/${round}/${id}"
     [[ "${kind}" != RERUN ]] \
-      || dir=$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")
+      || dir=${stream_reruns["${id} ${session}"]}
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
   done
@@ -6668,10 +6744,10 @@ campaign_process_tree() {
 # longer than campaign_stream_wait_bound_s goes first and alone: nothing
 # behind it starts until it does but a witness's confirmation or a GROW
 # re-run, so a stream of small solves never starves a large replay or
-# solver, and a witness never waits for one.  While GROW owes re-runs or swaps, no solve
-# starts (campaign_stream_solves; a replay and a confirmation read no
-# corpus).  The hard lane (campaign_solver_first_tier_ms) starts once the
-# queue is empty.
+# solver, and a witness never waits for one.  No start waits for GROW: a
+# solver reads the corpus as it stands without what GROW withdrew, whole
+# (ObligationSolverMain#standing), and a replay reads none.  The hard lane
+# (campaign_solver_first_tier_ms) starts once the queue is empty.
 #
 # A START TAKES MILLISECONDS, so a round's burst starts as fast as the hosts
 # admit it.  The head started about one job a second (parallel audit
@@ -6691,19 +6767,15 @@ campaign_process_tree() {
 # and 28 a second.
 campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry kind at first started now refused holds oldest="" kinds
+  local entry kind at first started now refused oldest="" kinds
   # What the pass reads once (campaign_stream_memo).
   local -A stream_pass_memo=()
   while (( ${#stream_queue[@]} + ${#stream_hard[@]} > 0 )); do
     campaign_stream_collect_jobs
     campaign_stream_has_slot || return 0
-    holds=0
-    ! campaign_stream_swap_owed || holds=1
-    # The hard lane once no other start waits (campaign_solver_first_tier_ms),
-    # and as any solve not while GROW holds the solves: its asks in order,
-    # each charged alike (campaign_decide_need_mb).
+    # The hard lane once no other start waits (campaign_solver_first_tier_ms):
+    # its asks in order, each charged alike (campaign_decide_need_mb).
     if (( ${#stream_queue[@]} == 0 )); then
-      (( holds == 0 )) || return 0
       campaign_stream_admit_host HARD || return 0
       entry=${stream_hard[0]}
       stream_hard=("${stream_hard[@]:1}")
@@ -6724,8 +6796,6 @@ campaign_stream_dispatch() {
     if (( now - oldest >= campaign_stream_wait_bound_s )); then
       for at in "${!stream_queue[@]}"; do
         entry=${stream_queue[at]}
-        (( holds == 0 )) || ! campaign_stream_solves "${entry%% *}" \
-          || continue
         if (( now - ${stream_queued_at[${entry}]:-${now}} \
             >= campaign_stream_wait_bound_s )); then
           first=${at}
@@ -6746,7 +6816,6 @@ campaign_stream_dispatch() {
       # neither waits behind a large solver or replay.
       (( first < 0 || at == first )) \
         || [[ "${kind}" == CONFIRM || "${kind}" == RERUN ]] || continue
-      (( holds == 0 )) || ! campaign_stream_solves "${kind}" || continue
       [[ "${refused}" != *" ${kind} "* ]] || continue
       if campaign_stream_admit_host "${kind}"; then
         started=${at}
@@ -7265,6 +7334,7 @@ campaign_stream_start() {
       worker="${iteration_dir}/${round}/${id}"
       read -r classes plan <<<"${session}"
       session=""
+      unset 'stream_rests[$id]'
       started=replay-host.txt
       work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
@@ -7276,7 +7346,7 @@ campaign_stream_start() {
       work=("$(dirname "${worker}")" "${classes}" "${plan}" \
         "${stream_admitted_mb}" "${need}") ;;
     RERUN)
-      worker=$(campaign_stream_rerun_dir "${round}" "${id}" "${session}")
+      worker=${stream_reruns["${id} ${session}"]}
       work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
         "${plan}" "${stream_admitted_mb}" "${need}") ;;
   esac
@@ -7361,7 +7431,8 @@ campaign_stream_wait() {
 # or a job, whose host has its slot and its charge back
 # (campaign_stream_release) and whose replay's peak joins the measured need
 # (campaign_replay_measured).  An obligation its solver
-# answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
+# answered SAT_MODEL_READY is owed its replay -- unless its path's session
+# was withdrawn by a swap since (campaign_stream_replay_drop): its REPLAY goes first in the
 # queue at once, never waiting for a step -- still in flight, still within
 # the exploration's share and its host's cores -- on the class tree and plan
 # its solve started on, charged then -- behind only a witness's confirmation
@@ -7375,6 +7446,7 @@ campaign_stream_wait() {
 # other return waits in stream_pending for the next head step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer again
+  local rests=""
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
@@ -7410,9 +7482,20 @@ campaign_stream_ended() {
       campaign_stream_solve_again "${kind}" "${round}" "${id}" "${host}" \
         "${worker}" "${again}"
     elif [[ "${answer}" == SAT_MODEL_READY\|* ]]; then
-      campaign_log "obligation ${id}: solved on ${host}, its replay queued"
-      campaign_stream_enqueue \
-        "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
+      # The session its path ran in (its focus row's pathSessionId): one a
+      # swap withdrew since its solver read it owes no replay
+      # (campaign_stream_replay_drop).
+      rests=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
+        2>/dev/null) || rests=""
+      if [[ -n "${rests}" && -n "${stream_withdrawn[${rests}]:-}" ]]; then
+        campaign_stream_replay_drop \
+          "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" "${rests}"
+      else
+        campaign_log "obligation ${id}: solved on ${host}, its replay queued"
+        [[ -z "${rests}" ]] || stream_rests[${id}]=${rests}
+        campaign_stream_enqueue \
+          "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
+      fi
     elif [[ "${kind}" != HARD && -s "${worker}/obligation_ask.json" \
         && ( "${answer}" == NOT_ADMITTED\|SOLVER_MEMOUT\ * \
              || "${answer}" == NOT_ADMITTED\|SOLVER_TIMEOUT\ * ) ]] \
@@ -7510,8 +7593,9 @@ campaign_stream_enqueue() {
 
 # What returned since the last head step began, landed: each obligation's
 # verdict into the ledger and the session it staged into stream_staged
-# (campaign_stream_move); each re-run's into stream_swaps, for once no
-# obligation runs; each confirmation into `confirms`, for the step to decide.
+# (campaign_stream_move); each re-run's into stream_swaps, to swap in once no
+# reader of its exposing session runs (campaign_stream_swap); each
+# confirmation into `confirms`, for the step to decide.
 campaign_stream_land() {
   local entry kind round id host status session worker verdict
   for entry in "${stream_pending[@]}"; do
@@ -7549,33 +7633,48 @@ campaign_stream_land() {
   stream_pending=()
 }
 
-# Whether GROW's swaps are due: every re-run it owes has returned, no
-# obligation's solve runs that started before them (a solver reads the
-# corpus; a REPLAY reads none), and no witness's confirmation is queued,
-# runs or waits for its verdict (stream_confirming): it confirms against the
-# corpus its attempt composed, and a swap would withdraw the session it
-# confirms (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the
-# exposing session, withdrawn a second after its confirmation was queued;
-# its re-run did not take the flip, and in Z2N the confirmed claim's final
-# COMPOSE lost it).  A confirmed one ends the exploration with
-# the swaps owed (campaign_stream_end); a refuted one lets them swap.
-# Whether GROW holds the solves: every re-run it owes has returned, and its
-# swaps wait only for the solves that run (campaign_stream_swap_due).  While
-# re-runs run, solves go on (SGF7-adhoc-09: 51 min of holds over six GROWs
-# with the queue full, 15 and 16 min behind one re-run the stall rule
-# ended); a replay one of them queued whose path rests on a session the swap
-# withdraws is dropped then (campaign_stream_swap).
-campaign_stream_swap_owed() {
-  (( stream_hold > 0 && ${#stream_swaps[@]} == stream_hold ))
-}
-
+# Whether the re-run that withdraws <session> from the corpus may swap in
+# now: no reader of that session runs.  Its readers (each one's reads
+# checked in the code, 2026-10-17):
+#   - a witness's confirmation queued, running or undecided
+#     (stream_confirming) whose attempt composed it (the attempt's
+#     corpus.txt): it confirms against that corpus
+#     (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing
+#     session, withdrawn a second after its confirmation was queued; its
+#     re-run did not take the flip, and in Z2N the confirmed claim's final
+#     COMPOSE lost it).  A confirmed one ends the exploration with the swap
+#     owed (campaign_stream_end), a refuted one lets it swap;
+#   - the round planning, while its corpus.txt names it and its planner has
+#     not stated <round>/corpus_read: a round reads its sessions' files only
+#     in its corpus read (Corpus#read: rows, schedules), and fails on a
+#     session its corpus names that is gone;
+#   - nothing else: a head step (the import gate, an attempt's COMPOSE,
+#     CONFIRM's plan and decision) never runs beside a swap, which is the
+#     head's between two steps; a REPLAY, a re-run, a CONFIRM replay and a
+#     hard-lane ask read no session; and a host's solver reads the corpus
+#     as it stands without what GROW withdrew (withdrawn.txt, written before
+#     the session leaves) and again when one left while it read
+#     (ObligationSolverMain#standing), so solves run on through swaps --
+#     SGF8-adhoc-05: one solve running held all 62 swaps of a GROW.  A
+#     replay a solve then owes on the withdrawn session's path is dropped
+#     (campaign_stream_replay_drop).
 campaign_stream_swap_due() {
-  local job
-  (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold \
-     && ${#stream_confirming[@]} == 0 )) || return 1
-  for job in "${stream_jobs[@]}"; do
-    ! campaign_stream_solves "${job%% *}" || return 1
+  local session=$1 attempt
+  for attempt in "${!stream_confirming[@]}"; do
+    # An attempt states its corpus before it composes; one that does not
+    # holds every swap.
+    [[ -f "${iteration_dir}/witness-attempts/${attempt}/corpus.txt" ]] \
+      || return 1
+    ! grep -qxF -- "${session}" \
+      "${iteration_dir}/witness-attempts/${attempt}/corpus.txt" || return 1
   done
+  [[ -n "${stream_round_dir}" && ! -e "${stream_round_dir}/corpus_read" ]] \
+    || return 0
+  # The planner's file, written on its host: one the head's NFS client
+  # looked up as absent lately reads so until the directory is read again.
+  ls -- "${stream_round_dir}" >/dev/null 2>&1 || true
+  [[ -e "${stream_round_dir}/corpus_read" ]] \
+    || ! grep -qxF -- "${session}" "${stream_round_dir}/corpus.txt"
 }
 
 # The sessions workers staged ("<worker> <staged dir> <session>"), into the
@@ -7665,14 +7764,16 @@ campaign_unpauses() {
 # already runs keeps the plan and the classes it started on.  Each exposing
 # obligation's replay is
 # queued first, to re-run -- on whichever host of the pool admits it, as an
-# obligation does -- in a directory of its own beside its worker; until
-# every re-run has returned and swapped its session in
-# (campaign_stream_swap), no round is planned, and from the last return to
-# the swap no solve starts (campaign_stream_swap_owed).
+# obligation does -- in a directory of its own beside its worker
+# (stream_reruns), each swapping its session in as it returns, once no
+# reader of the session it withdraws runs (campaign_stream_swap); rounds
+# and solves go on meanwhile, and what a re-run owed captures is in flight
+# for them (stream_growing, campaign_stream_growth_new).
 # Best effort: an obligation whose re-run was dropped (grow-dropped) is
 # never re-run again.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
+  local subject=""
   local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
   local worker file unpaused key held
   # An exposure names the obligation whose replay is re-run.  One that names
@@ -7775,10 +7876,18 @@ before, so it is not re-run again"
     done
     campaign_stream_enqueue "RERUN $(basename "${round_dir}") \
 ${obligation_id} ${session}"
+    stream_reruns["${obligation_id} ${session}"]=${rerun}
     stream_hold=$((stream_hold + 1))
     rerun_count=$((rerun_count + 1))
   done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
     | awk -F'\t' '$1 != ""' | cut -f1,3 | LC_ALL=C sort -u)
+  # What each re-run queued captures, in flight until it swaps in or drops.
+  while IFS=$'\t' read -r obligation_id subject session; do
+    [[ -z "${stream_reruns["${obligation_id} ${session}"]:-}" ]] \
+      || stream_growing[${subject}]="${obligation_id} ${session}"
+  done < <(jq -r "${campaign_growth_subject}"' subject as $s
+      | select($s != null and (.obligationId // "") != "")
+      | [.obligationId, $s, .sessionId // ""] | @tsv' "${growth}")
   # A doors-only occurrence no focused replay ran is re-run by none: the
   # next round is owed all the same, so a closure still demanding it states
   # it (BLOCKING at the fixed point, ExploreMain) rather than the driver
@@ -7786,112 +7895,254 @@ ${obligation_id} ${session}"
   (( rerun_count > 0 )) || stream_dirty=1
 }
 
-# The directory the re-run for <round> of the obligation whose replay
-# landed <session> runs in.
-campaign_stream_rerun_dir() {
-  local round=$1 obligation_id=$2 session=$3 worker
-  worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
-    "${obligation_id}" "${session}") || exit 1
-  printf '%s/grow-%s/%s\n' "${worker}" "${round}" "${obligation_id}"
-}
-
-# Every re-run that returned, swapped in -- once no obligation runs, since a
-# solver reads the corpus as it starts.  The queue stays first, in flight
-# for the next round, which proposes only what none of it asks: an
-# obligation it holds cut from an exposing session is answered by its solver
-# by name (the corpus no longer states its path), and a later round asks it
-# again of the re-run's session.
+# GROW's returned re-runs swapped in, each one no reader of its exposing
+# session holds (campaign_stream_swap_due; the others stay in stream_swaps
+# for a later step), all that are due in one pass, the corpus and the ledger
+# the head's between two steps.  The queue stays first, in flight for the
+# next round, which proposes only what none of it asks: an obligation it
+# holds cut from an exposing session is answered by its solver by name (the
+# corpus no longer states its path), and a later round asks it again of the
+# re-run's session.
 #
-# One swap: the exposing session leaves the corpus for
+# One swap: the exposing session -- named in the iteration's withdrawn.txt
+# first, which every host's solver reads its corpus without
+# (ObligationSolverMain#standing) -- leaves the corpus for
 # <worker>/before-<round>/ with a copy of what its replay wrote, the
 # re-run's files become the worker's, its session is staged to land with
-# the others (campaign_stream_move), and its verdict replaces the
-# obligation's row in the ledger.  A worker file is renamed over or
-# removed, never moved aside: a peer whose NFS client looked its name up
-# lately opens the inode it cached, and one still linked aside reads as
-# current (Z2M: the import gate on lift06, 8 s after the swap, read the
-# exposing session's answer and found no worker stating the re-run's focus
-# row); a deleted one fails stale and the client looks the name up again,
-# as campaign_write_whole relies on.  Best effort: a re-run that did not
-# finish (it failed, stalled or ran past its bound) is not swapped in -- the
+# the others (campaign_stream_move: gated in the step this swap begins), and
+# its verdict replaces the exposing ask's row in the ledger (another ask's
+# row of the obligation stays).  A worker file is renamed over or removed,
+# never moved aside: a peer whose NFS client looked its name up lately
+# opens the inode it cached, and one still linked aside reads as current
+# (Z2M: the import gate on lift06, 8 s after the swap, read the exposing
+# session's answer and found no worker stating the re-run's focus row); a
+# deleted one fails stale and the client looks the name up again, as
+# campaign_write_whole relies on.  Best effort: a re-run that did not finish
+# (it failed, stalled or ran past its bound) is not swapped in -- the
 # exposing session stays -- and its obligation is never re-run again
-# (<worker>/grow-dropped, campaign_stream_grow).  A replay queued from a
-# solve that read the corpus before the swap, whose path rests on a session
-# the swap withdrew (its pathId is that session's and occurrence's,
-# Corpus#pathId), is dropped before it starts -- no replay, no re-ask: the
-# corpus no longer states its path; one that runs finishes as usual.
+# (<worker>/grow-dropped, campaign_stream_grow).  A replay owed on the path
+# of a session a swap withdrew is dropped (campaign_stream_replay_drop).
+#
+# BATCHED.  SGF8-adhoc-05's 62 swaps, one by one after its slowest re-run,
+# took 10.2 min, ~9.6 s each over NFS: a jq over every session's manifest
+# to find the exposing one, some fourteen cp and mv forks, a rewrite of the
+# whole ledger, a sha256sum per queued replay and withdrawn session.  Now
+# the exposing session is the one the re-run's entry names, all their
+# manifests read by one jq; each worker's files move in a subshell of its
+# own, campaign_stream_swap_jobs at a time (waited by pid: the head's jobs
+# are its children too); the ledger is rewritten once, the re-runs' answers
+# read by one jq; and the queue is scanned in the head's own maps.
+campaign_stream_swap_jobs=16
 campaign_stream_swap() {
-  local swap round id exposing status worker rerun aside file session
-  local entry kind focus path occurrence gone
-  local -a withdrawn=() kept=()
+  local swap="" round="" id="" exposing="" status="" key="" worker=""
+  local rerun="" session="" ids="" file="" verdict="" pid="" rests=""
+  local entry="" kind="" changed=0
+  local -a due=() held=() withdrawing=() pids=() kept=() dropped=()
+  local -A named=() swapping=() answered=() answer_session=()
   for swap in "${stream_swaps[@]}"; do
     read -r round id exposing status <<<"${swap}"
-    worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}" \
-      "${exposing}") || exit 1
-    rerun="${worker}/grow-${round}/${id}"
+    key="${id} ${exposing}"
     if [[ "${status}" -ne 0 ]]; then
+      worker=$(dirname "$(dirname "${stream_reruns[${key}]}")")
       printf '%s\n' "${round}" >>"${worker}/grow-dropped"
       campaign_log "obligation ${id}: its re-run under the grown tree did \
 not finish (exit ${status}): dropped, ${exposing} stays in the corpus"
-      continue
+      campaign_stream_rerun_done "${key}" dropped
+      changed=1
+    elif campaign_stream_swap_due "${exposing}"; then
+      due+=("${swap}")
+    else
+      held+=("${swap}")
     fi
-    aside="${worker}/before-${round}"
-    mkdir "${aside}" || campaign_fail EXPLORE CAMPAIGN "${aside}" \
-      "obligation ${id} was already swapped for this round"
-    campaign_withdraw_sessions "${id}" "${sessions}" "${aside}/sessions" \
-      "it exposed a region that is woven now, and the re-run's session \
-stands in its place" "${exposing}"
-    [[ ! -e "${sessions}/${exposing}" ]] || campaign_fail EXPLORE CAMPAIGN \
-      "${sessions}/${exposing}" "the exposing session ${exposing} does not \
-name obligation ${id}, so it was not withdrawn from the corpus"
-    # The question the exposing replay settled was asked of the plan before
-    # this generation, and goes aside with its answer.
-    for file in replay.log concolic_region_results.jsonl \
-        obligation_result.jsonl replay_verdict.jsonl question.txt \
-        question.asked stdout.log stderr.log host.txt replay-stdout.log \
-        replay-stderr.log replay-host.txt workload_rss_mb; do
-      [[ ! -e "${worker}/${file}" ]] || cp -p -- "${worker}/${file}" "${aside}/"
-      if [[ -e "${rerun}/${file}" ]]; then
-        mv -f -- "${rerun}/${file}" "${worker}/${file}"
-      else
-        rm -f -- "${worker}/${file}"
-      fi
-    done
-    session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl")
-    [[ -z "${session}" ]] \
-      || stream_staged+=("${worker} ${rerun}/sessions ${session}")
-    campaign_record_rerun "${worker}" "${id}" "${exposing}" "${results}"
-    withdrawn+=("${exposing}")
   done
-  stream_hold=$((stream_hold - ${#stream_swaps[@]}))
-  stream_swaps=()
+  stream_swaps=("${held[@]}")
+  if (( ${#due[@]} > 0 )); then
+    changed=1
+    # The exposing sessions' manifests, by one jq: each names its obligation.
+    while IFS=$'\t' read -r file ids; do
+      named[${file}]=" ${ids} "
+    done < <(for swap in "${due[@]}"; do
+        read -r round id exposing status <<<"${swap}"
+        [[ ! -f "${sessions}/${exposing}/manifest.json" ]] \
+          || printf '%s\0' "${sessions}/${exposing}/manifest.json"
+      done | xargs -0 -r jq -r '[input_filename,
+          ((.obligationIds // []) | map(tostring) | join(" "))] | @tsv' \
+        2>/dev/null || true)
+    for swap in "${due[@]}"; do
+      read -r round id exposing status <<<"${swap}"
+      if [[ ! -d "${sessions}/${exposing}" ]]; then
+        campaign_log "obligation ${id}: no session under ${sessions} names \
+it; nothing withdrawn"
+        continue
+      fi
+      [[ "${named[${sessions}/${exposing}/manifest.json]:-}" \
+          == *" ${id} "* ]] || campaign_fail EXPLORE CAMPAIGN \
+        "${sessions}/${exposing}" "the exposing session ${exposing} does not \
+name obligation ${id}, so it was not withdrawn from the corpus"
+      withdrawing+=("${exposing}")
+    done
+    # Named before any leaves: a solver reads its corpus without them, and
+    # again where one left under its read.
+    (( ${#withdrawing[@]} == 0 )) \
+      || printf '%s\n' "${withdrawing[@]}" >>"${iteration_dir}/withdrawn.txt"
+    for session in "${withdrawing[@]}"; do
+      stream_withdrawn[${session}]=1
+    done
+    for swap in "${due[@]}"; do
+      read -r round id exposing status <<<"${swap}"
+      rerun=${stream_reruns["${id} ${exposing}"]}
+      campaign_stream_swap_worker "${id}" "${round}" "${exposing}" \
+        "$(dirname "$(dirname "${rerun}")")" "${rerun}" &
+      pids+=("$!")
+      swapping[$!]=${id}
+      (( ${#pids[@]} < campaign_stream_swap_jobs )) || {
+        for pid in "${pids[@]}"; do
+          wait "${pid}" || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
+            "obligation ${swapping[${pid}]}: its re-run's swap failed"
+        done
+        pids=()
+      }
+    done
+    for pid in "${pids[@]}"; do
+      wait "${pid}" || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
+        "obligation ${swapping[${pid}]}: its re-run's swap failed"
+    done
+    # The re-runs' answers, now the workers', by one jq.
+    while IFS=$'\t' read -r file verdict session; do
+      answered[${file}]=${verdict}
+      answer_session[${file}]=${session}
+    done < <(for swap in "${due[@]}"; do
+        read -r round id exposing status <<<"${swap}"
+        rerun=${stream_reruns["${id} ${exposing}"]}
+        printf '%s\0' "$(dirname "$(dirname "${rerun}")")/obligation_result.jsonl"
+      done | xargs -0 -r jq -r '[input_filename, .verdict // "?",
+          .sessionId // ""] | @tsv')
+    # The ledger in one pass: the exposing asks' rows out, the re-runs' in.
+    for swap in "${due[@]}"; do
+      read -r round id exposing status <<<"${swap}"
+      printf '%s %s\n' "${id}" "${exposing}"
+    done | jq -R . | jq -s -c . >"${results}.swapped"
+    jq -c --slurpfile swapped "${results}.swapped" \
+      '($swapped[0] | map({(.): true}) | add // {}) as $gone
+       | select($gone["\(.obligationId) \(.sessionId // "")"] | not)' \
+      "${results}" >"${results}.tmp"
+    for swap in "${due[@]}"; do
+      read -r round id exposing status <<<"${swap}"
+      key="${id} ${exposing}"
+      rerun=${stream_reruns[${key}]}
+      worker=$(dirname "$(dirname "${rerun}")")
+      [[ -n "${answered[${worker}/obligation_result.jsonl]:-}" ]] \
+        || campaign_fail EXPLORE CAMPAIGN "${worker}" "obligation ${id}: its \
+re-run swapped in with no answer"
+      cat -- "${worker}/obligation_result.jsonl" >>"${results}.tmp"
+      session=${answer_session[${worker}/obligation_result.jsonl]}
+      [[ -z "${session}" ]] \
+        || stream_staged+=("${worker} ${rerun}/sessions ${session}")
+      campaign_log "obligation ${id}: re-run under the grown tree, \
+verdict=${answered[${worker}/obligation_result.jsonl]}"
+      campaign_stream_rerun_done "${key}"
+    done
+    mv -- "${results}.tmp" "${results}"
+    rm -f -- "${results}.swapped"
+  fi
+  (( changed == 1 )) || return 0
   for entry in "${stream_queue[@]}"; do
     read -r kind round id _ <<<"${entry}"
-    gone=""
-    if [[ "${kind}" == REPLAY ]]; then
-      focus="${iteration_dir}/${round}/${id}/focused_task.jsonl"
-      path=$(jq -r '.pathId // ""' "${focus}" 2>/dev/null) || path=""
-      occurrence=$(jq -r '.focusedOccurrenceId // ""' "${focus}" \
-        2>/dev/null) || occurrence=""
-      for session in "${withdrawn[@]}"; do
-        [[ -n "${path}" && "$(printf '%s|%s' "${session}" "${occurrence}" \
-          | sha256sum | cut -c1-16)" == "${path}" ]] && gone=${session}
-      done
-    fi
-    if [[ -z "${gone}" ]]; then
+    rests=${stream_rests[${id}]:-}
+    if [[ "${kind}" == REPLAY && -n "${rests}" \
+        && -n "${stream_withdrawn[${rests}]:-}" ]]; then
+      dropped+=("${entry}")
+    else
       kept+=("${entry}")
-      continue
     fi
-    unset "stream_queued_at[${entry}]"
-    stream_reaped+=("${id}")
-    mkdir -p "${campaign_root}/explore-reaped/${round}"
-    mv -- "${iteration_dir}/${round}/${id}" \
-      "${campaign_root}/explore-reaped/${round}/${id}"
-    campaign_log "obligation ${id}: its replay is dropped before it \
-started: its path rests on ${gone}, which GROW's swap withdrew"
   done
   stream_queue=("${kept[@]}")
+  for entry in "${dropped[@]}"; do
+    read -r kind round id _ <<<"${entry}"
+    campaign_stream_replay_drop "${entry}" "${stream_rests[${id}]}"
+  done
   stream_dirty=1
+  # An open chain's GROW swapped in whole: its witnesses are attempted again.
+  (( ${#stream_chain[@]} == 0 || stream_hold > 0 )) \
+    || campaign_stream_chain_reattempt
+}
+
+# What a swap does in its worker, in a subshell of its own
+# (campaign_stream_swap): the exposing session <exposing>, out of the
+# corpus, under <worker>/before-<round>/sessions/, the worker's files set
+# aside there as copies, and the re-run's renamed over them (one it lacks
+# removed).  The question its exposing replay settled was asked of the plan
+# before this generation, and goes aside with its answer.
+campaign_swap_files=(replay.log concolic_region_results.jsonl
+  obligation_result.jsonl replay_verdict.jsonl question.txt question.asked
+  stdout.log stderr.log host.txt replay-stdout.log replay-stderr.log
+  replay-host.txt workload_rss_mb)
+campaign_stream_swap_worker() {
+  local id=$1 round=$2 exposing=$3 worker=$4 rerun=$5 file=""
+  local aside="$4/before-$2"
+  local -a present=() over=() gone=()
+  mkdir -- "${aside}" || {
+    printf 'obligation %s was already swapped for %s: %s\n' "${id}" \
+      "${round}" "${aside}" >&2
+    return 1
+  }
+  if [[ -d "${sessions}/${exposing}" ]]; then
+    mkdir -p -- "${aside}/sessions" \
+      && mv -- "${sessions}/${exposing}" "${aside}/sessions/${exposing}" \
+      || return 1
+    campaign_log "obligation ${id}: withdrew session ${exposing} from \
+${sessions} to ${aside}/sessions/${exposing}: it exposed a region that is \
+woven now, and the re-run's session stands in its place"
+  fi
+  for file in "${campaign_swap_files[@]}"; do
+    [[ ! -e "${worker}/${file}" ]] || present+=("${worker}/${file}")
+    if [[ -e "${rerun}/${file}" ]]; then
+      over+=("${rerun}/${file}")
+    else
+      gone+=("${worker}/${file}")
+    fi
+  done
+  (( ${#present[@]} == 0 )) || cp -p -- "${present[@]}" "${aside}/" \
+    || return 1
+  (( ${#over[@]} == 0 )) || mv -f -t "${worker}" -- "${over[@]}" || return 1
+  (( ${#gone[@]} == 0 )) || rm -f -- "${gone[@]}"
+}
+
+# campaign_stream_rerun_done <key> [dropped]: the re-run <key> ("<obligation>
+# <exposing session>") owed no longer, swapped in or dropped: GROW owes one
+# fewer.  What a dropped one would have captured is no longer in flight
+# (stream_growing): its exposing session stays, uncaptured.  A swapped one's
+# stays captured for the rounds planned over its exposing session.
+campaign_stream_rerun_done() {
+  local key=$1 dropped=${2:-} subject=""
+  if [[ -n "${dropped}" ]]; then
+    for subject in "${!stream_growing[@]}"; do
+      [[ "${stream_growing[${subject}]}" != "${key}" ]] \
+        || unset 'stream_growing[$subject]'
+    done
+  fi
+  unset 'stream_reruns[$key]'
+  stream_hold=$((stream_hold - 1))
+}
+
+# campaign_stream_replay_drop <entry> <session>: the REPLAY <entry> owed on
+# the path of <session>, which a swap withdrew -- queued from a solve that
+# read the corpus before the swap (campaign_stream_swap), or returned SAT
+# after it (campaign_stream_ended) -- dropped before it starts, its worker
+# to explore-reaped/ (exploration.json `reaped`): the corpus no longer
+# states its path.  No longer in flight, so a later round may ask its arm
+# again of the re-run's session, as it does an obligation its solver
+# answered so by name.  One that runs finishes as usual.
+campaign_stream_replay_drop() {
+  local entry=$1 session=$2 kind="" round="" id=""
+  read -r kind round id _ <<<"${entry}"
+  unset 'stream_queued_at[$entry]' 'stream_rests[$id]' 'stream_flying[$id]'
+  stream_reaped+=("${id}")
+  mkdir -p "${campaign_root}/explore-reaped/${round}"
+  mv -- "${iteration_dir}/${round}/${id}" \
+    "${campaign_root}/explore-reaped/${round}/${id}"
+  campaign_log "obligation ${id}: its replay is dropped before it \
+started: its path rests on ${session}, which GROW's swap withdrew"
 }
 
 # The worker directory of the ask of <obligation> whose replay landed
@@ -7915,19 +8166,6 @@ ${found} ${worker}"
     "no worker of the exposing obligation ${obligation_id} with a focus row \
 landed session ${session:-(none)}"
   printf '%s\n' "${found}"
-}
-
-# A re-run's verdict replaces, in the ledger, the row of the ask whose
-# replay landed <exposing>; another ask's row of the obligation stays.
-campaign_record_rerun() {
-  local worker=$1 obligation_id=$2 exposing=$3 results=$4
-  jq -c --arg id "${obligation_id}" --arg session "${exposing}" \
-    'select(.obligationId != $id or .sessionId != $session)' \
-    "${results}" >"${results}.tmp"
-  cat "${worker}/obligation_result.jsonl" >>"${results}.tmp"
-  mv -- "${results}.tmp" "${results}"
-  campaign_log "obligation ${obligation_id}: re-run under the grown tree, \
-verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 }
 
 # Once nothing runs: the last generation's tree is the iteration's, with its

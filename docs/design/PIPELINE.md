@@ -1042,7 +1042,7 @@ record beside its query (`obligation_ask.json`, `explore.HardAsk`: the question,
 stated, what an UNSAT says, the model's constants, the query's sha256), and the head moves its answer
 aside (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues its HARD-LANE ask
 (`campaign_stream_hard`, `stream_hard`, `HARD <round> <id>`), which `campaign_stream_dispatch` starts only
-once no other start waits and, as any solve, not while GROW holds the solves: z3 ALONE over that query
+once no other start waits: z3 ALONE over that query
 at the full `solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB), in a
 JVM that reads no corpus (`campaign_obligation_decide`, `ObligationSolverMain --decide <worker>`, a
 512 MB heap, `hard-host.txt`), charged that and the room (`campaign_decide_need_mb`, 5024 MB), as many at
@@ -1676,8 +1676,8 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
 and its obligation), `UNPLANNED_INPUT` rows or `ZK_EDGE` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
-GROW's re-runs, as what was queued before them stays queued: they start once the re-runs have
-swapped in, in flight from the round on, so no later round asks them again (solr-bugs-reindex-cleanup
+GROW's re-runs, as what was queued before them stays queued: they start at once, in flight from the
+round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
 obligations, and the witness flip a non-growing round 1 queued in Z9 waited from round 1 to round 5,
 unanswered when the exploration ended). One GROW is one GENERATION of the plan
@@ -1693,34 +1693,60 @@ it holds and a dropped doors-only mark weave that tree again, so the generation 
 of the head's; the key is 0.8 s). Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
-ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session
-and, for the re-run and the swap, the one its queue entry carries): an obligation asked again under its id
+ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session,
+kept for the re-run and its swap, `stream_reruns`): an obligation asked again under its id
 has a worker in each round that asked it, and either may be the exposing one (SGF3-adhoc-21: the first
-ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region). Until every
-re-run has returned and swapped, no round is planned; solves go on while re-runs run, and from the last
-re-run's return until no solve runs and no witness's confirmation is queued, runs or waits for its
-verdict, no solve starts (`campaign_stream_swap_owed`; SGF7-adhoc-09: holding the solves from GROW to the
-swap cost 51 min over six GROWs, 15 and 16 min behind one re-run the stall rule ended). A REPLAY reads no
-corpus and goes on, on its solve's generation, but one still queued whose path rests on a session the swap
-withdraws is dropped then, before it starts (its `pathId` is that session's and occurrence's: no replay,
-no re-ask). A confirmation confirms against the
-corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
-with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
-(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). A re-run that did
-not finish (failed, stalled, past its bound) is dropped: not swapped in, the exposing session stays,
-and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it failed the
-campaign). Then
-each re-run SWAPS in (`campaign_stream_swap`): the exposing session (that session alone: another ask's
-session of the obligation stays) moves to
-`<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
-renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
-through a name it cached), its session lands, and its verdict replaces the exposing ask's row in
-`obligation_results.jsonl` (another ask's row of the obligation stays). The queue stays first and in flight: the round after the swap gets it as
-`--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
-HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
-obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no
-session of this corpus still states path ...") and a later round asks it again of the re-run's
-session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+ask's worker found no host for its solver, the re-ask in `obligations-0004` exposed a region).
+
+GROW HOLDS NOTHING (2026-10-17): no round, solve or swap waits for its slowest re-run. Before, no round was
+planned until every re-run had returned and swapped, no solve started from the last re-run's return to the
+swap, the swaps waited for every running solve, and ran one by one: SGF8-adhoc-05's round 4 -> 5 took 56.2 min
+(weave 2.6, re-runs 37.2 -- 62 re-runs, p50 609 s, the slowest six 27-37 min -- swaps 10.2, ~9.6 s each, gate
+6.2) while the pool ran ~32 replays of ~200. Now each re-run SWAPS in (`campaign_stream_swap`) at the head
+step after it returns, once no reader of the session it withdraws runs (`campaign_stream_swap_due`). The
+readers of a session's files, from the code: a witness's confirmation queued, running or undecided
+(`stream_confirming`) whose attempt composed it (its `corpus.txt`): it confirms against that corpus
+(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session), so a confirmed one ends
+the exploration with the swap dropped, its directory to `explore-reaped/` and the corpus exactly the
+attempt's; the round planning, while its `corpus.txt` names it and its planner has not stated
+`<round>/corpus_read` (`ExploreMain#CORPUS_READ`): a round reads session files only in its corpus read
+(`Corpus#read`, rows and schedules), and fails on a session its corpus names that is gone. Nothing else:
+a head step never runs beside a swap; a REPLAY, a re-run, a CONFIRM replay and a hard-lane ask read no
+session; and a host's solver reads the corpus as it stands without what GROW withdrew -- the iteration's
+`withdrawn.txt`, appended before each withdrawn session leaves -- and reads again when one left under its
+read (`ObligationSolverMain#standing`; a session leaves once and never returns, so one the journal does
+not name after the read stood whole while it was read; the journal, not the listing, says what left,
+since a peer's NFS listing may be a minute old while a file's open reads it as the head closed it). So
+solves run on through swaps (SGF7-adhoc-09: holding them cost 51 min over six GROWs). A replay owed on
+the path of a session a swap withdrew (its focus row's `pathSessionId`, the solver's) is dropped
+(`campaign_stream_replay_drop`): queued at the swap, or returned SAT from a solve that read the corpus
+before it -- no replay, out of flight, so a later round may ask its arm again of the re-run's session;
+one that runs finishes as usual. A kept obligation cut from an exposing session is answered by its
+solver by name (`NOT_ADMITTED`, "no session of this corpus still states path ...") and a later round
+asks it again of the re-run's session. ROUNDS PLAN WHILE RE-RUNS RUN, over their frozen corpus with the
+exposing sessions in it (§7.9): such a round, or one taken after a re-run swapped in, sees what the
+re-runs capture uncaptured still (`ClosurePlanner#uncaptured` names a demanded occurrence no session of
+its corpus runs as a task, whatever the plan holds), so its growth rows are IN FLIGHT and not grown
+again (`campaign_stream_growth_new`) where the exposing session has a re-run owed or was withdrawn by
+one, or the subject (an occurrence, a task's `<symbol>#<k>`) was grown with the re-run of a session the
+round's corpus names (`stream_growing`: planned before that re-run's session landed); the round after
+the swap sees what a round always saw after it. A re-run that did not finish (failed, stalled, past its
+bound) is dropped: not swapped in, the exposing session stays (what it would have captured is no longer
+in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
+failed the campaign).
+
+One swap: the exposing session (that session alone: another ask's session of the obligation stays),
+named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
+files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
+opens an old inode through a name it cached), its session lands and is gated in the step the swap
+begins, and its verdict replaces the exposing ask's row in `obligation_results.jsonl` (another ask's row
+of the obligation stays). The swaps due at a step go in ONE PASS: the exposing session is the one the
+re-run's entry names, all their manifests read by one jq, each worker's files moved in a subshell of its
+own (`campaign_stream_swap_jobs`, 16, waited by pid), the ledger rewritten once, the queue scanned in the
+head's maps (`stream_rests`, `stream_withdrawn`). The queue stays first and in flight: the next round
+gets it as `--in-flight` and proposes only what none of it asks, its new obligations queued behind it
+(hdfs-11741 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of
+409). The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
 the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
 run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
@@ -1785,7 +1811,9 @@ life anyway). Between two head steps, in the head's hands, in this order:
    landed, or once nothing is queued, running or returned unlanded but confirmations and the hard lane's
    asks running (z3 alone at the full budget, up to 30 min: SGF8-adhoc-40 round 6 idled the 13 lifts
    12 min behind two; their obligations stay in flight and their verdicts land in whichever round is open
-   when they return) and an answer came since the last round started (`campaign_stream_plan_due`) --
+   when they return) and an answer came since the last round started (`campaign_stream_plan_due`;
+   GROW's re-runs hold none: a re-run is a question left to wait for, which lands a session, and the
+   round plans over the exposing sessions it stands in for, §7.8) --
    over inputs frozen now, written into `planning-NNNN/` beside its files:
    `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
    landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
@@ -1793,10 +1821,13 @@ life anyway). Between two head steps, in the head's hands, in this order:
    answer that lands meanwhile is the round's (§7.1). The obligation workers' own files -- each one's
    answer, focus row and question, read for the worlds, the answers by flip and the killed replays
    (`Corpus#indexWorlds`, `ExploreMain#answersByFlip`, `#boundedFlips`) -- it reads as they stand when
-   it reads them, as a round always did: a worker writes its own answer as its replay ends, and a
-   landing writes an unfinished one's (`campaign_obligation_unfinished`);
+   it reads them, as a round always did: a worker writes its own answer as its replay ends, a
+   landing writes an unfinished one's (`campaign_obligation_unfinished`), a swap a re-run's (§7.8);
+   its sessions' files it reads in its corpus read alone, and says so (`corpus_read`), from which on a
+   swap may withdraw one of them;
 3. everything that returned meanwhile LANDS (`campaign_stream_step_start`): each verdict is appended to
-   `obligation_results.jsonl` (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the
+   `obligation_results.jsonl` (`campaign_stream_land`), GROW's returned re-runs swap in, each one no
+   reader of its exposing session holds (§7.8), and the
    sessions the workers staged move into the corpus (`campaign_stream_move`); the next head step then
    takes them in: ONE IMPORT gate (§6) over exactly them (the list `gate`, its summary
    `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT), while no round starts
