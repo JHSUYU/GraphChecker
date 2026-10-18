@@ -1699,9 +1699,31 @@ public final class Corpus implements Arms.Rows {
                 producerEndpointId, Collections.<String>emptySet());
         if (stances.isEmpty() && handlers.isEmpty()) return doors;
         String own = ContextShape.Stance.of(served).render();
-        for (OccurrenceAddress occurrence : occurrenceById.values()) {
+        // The occurrences at those stances, in corpus order: no other
+        // occurrence is a door or a cut (a scan of every occurrence per
+        // demand was 93 s of SGF8-adhoc-05 round 5's walk).
+        StanceIndex index = stanceIndex();
+        Set<String> asked = new HashSet<String>(stances);
+        asked.addAll(handlers);
+        int count = 0;
+        List<int[]> standing = new ArrayList<int[]>();
+        for (String stance : asked) {
+            int[] places = index.places.get(stance);
+            if (places == null) continue;
+            standing.add(places);
+            count += places.length;
+        }
+        int[] places = new int[count];
+        int next = 0;
+        for (int[] each : standing) {
+            System.arraycopy(each, 0, places, next, each.length);
+            next += each.length;
+        }
+        Arrays.sort(places);
+        for (int place : places) {
+            OccurrenceAddress occurrence = index.occurrences.get(place);
             if (occurrence.equals(served)) continue;
-            String stance = ContextShape.Stance.of(occurrence).render();
+            String stance = index.stances[place];
             if (stances.contains(stance) && !stance.equals(own)) {
                 if (!doors.contains(occurrence)) doors.add(occurrence);
             } else if (stances.contains(stance)) {
@@ -1711,6 +1733,49 @@ public final class Corpus implements Arms.Rows {
             }
         }
         return doors;
+    }
+
+    /** Every occurrence in corpus order, its stance, and stance -> the
+     *  places of the occurrences standing there ({@link #doorsOf}). */
+    private static final class StanceIndex {
+        final List<OccurrenceAddress> occurrences;
+        final String[] stances;
+        final Map<String, int[]> places = new HashMap<String, int[]>();
+
+        StanceIndex(Collection<OccurrenceAddress> all) {
+            occurrences = new ArrayList<OccurrenceAddress>(all);
+            stances = new String[occurrences.size()];
+            Map<String, List<Integer>> at =
+                    new HashMap<String, List<Integer>>();
+            for (int place = 0; place < stances.length; place++) {
+                stances[place] = ContextShape.Stance.of(
+                        occurrences.get(place)).render();
+                at.computeIfAbsent(stances[place],
+                        stance -> new ArrayList<Integer>()).add(place);
+            }
+            for (Map.Entry<String, List<Integer>> each : at.entrySet()) {
+                int[] held = new int[each.getValue().size()];
+                for (int index = 0; index < held.length; index++) {
+                    held[index] = each.getValue().get(index);
+                }
+                places.put(each.getKey(), held);
+            }
+        }
+    }
+
+    /** {@link StanceIndex}, built at the first {@link #doorsOf}: a corpus
+     *  does not change once read. */
+    private volatile StanceIndex stanceIndex;
+
+    private StanceIndex stanceIndex() {
+        StanceIndex held = stanceIndex;
+        if (held != null) return held;
+        synchronized (this) {
+            if (stanceIndex == null) {
+                stanceIndex = new StanceIndex(occurrenceById.values());
+            }
+            return stanceIndex;
+        }
     }
 
     /** What {@link #doorsOf} cut, by narrowing: the served occurrence's own
