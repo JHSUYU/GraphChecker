@@ -2120,16 +2120,23 @@ campaign_dispatch_remote() {
 # The peer's evidence, visible HERE: <worker>'s result and the session it
 # names under <staged>, the directory the job staged its sessions to; or
 # its ask again of a host's solver (solve_again, campaign_obligation_again),
-# which names no session.
+# or a replay of the pool set aside for memory (replay_again,
+# campaign_replay_set_aside), which name no session and are asked again
+# (campaign_stream_ended).  A <kind> REPLAY's result is its replay's, never
+# the SAT_MODEL_READY its solve left in its worker: that row is no answer
+# of the replay (the replay set aside leaves it there).
 #
 # Bounded, never assumed: see campaign_remote_visibility_wait_s.  The
 # directory is re-listed on each turn because it is the directory's cached
 # listing, not the file's contents, that a fresh lookup has to get past.
 campaign_await_remote_result() {
-  local worker=$1 host=$2 obligation_id=$3 staged=$4
+  local worker=$1 host=$2 obligation_id=$3 staged=$4 kind=${5:-}
   local result="${worker}/obligation_result.jsonl"
   local waited=0 session_id=""
-  while [[ ! -s "${result}" && ! -s "${worker}/solve_again" ]]; do
+  until [[ -s "${worker}/solve_again" || -s "${worker}/replay_again" ]] \
+      || { [[ -s "${result}" ]] && { [[ "${kind}" != REPLAY ]] \
+        || [[ "$(jq -r '.verdict // ""' "${result}" 2>/dev/null)" \
+          != SAT_MODEL_READY ]]; }; }; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
       campaign_log "obligation ${obligation_id} on ${host}: its worker \
 returned successfully but ${result} is still not visible here after \
@@ -2144,7 +2151,8 @@ ${waited}s; the shared home did not deliver what the peer wrote"
   # states the ask first (campaign_obligation_again), so the listing is read
   # again, and an ask seen is what it wrote.
   ls "${worker}" >/dev/null 2>&1 || true
-  [[ ! -s "${worker}/solve_again" ]] || return 0
+  [[ ! -s "${worker}/solve_again" && ! -s "${worker}/replay_again" ]] \
+    || return 0
   session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
   # A verdict that names no session staged none.  The solver's own opened
   # none; a replay's opened one that the peer withdrew (killed on its bound,
@@ -3325,7 +3333,8 @@ campaign_zk_keys() {
 # here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
 # a DIAGNOSTIC one is recorded and the campaign goes on.
 #
-# campaign_import_gate <iteration_dir> <iteration_id> <summary> <list> gates
+# campaign_import_gate <iteration_dir> <iteration_id> <summary> <list>
+# [<replaced>] gates
 # the sessions <list> names -- one per line, a session's directory wherever
 # it stands (the corpus at IMPORT; during EXPLORE the worker that replayed
 # it, before it lands: campaign_stream_collected) and, a tab after it, the
@@ -3336,7 +3345,8 @@ campaign_zk_keys() {
 # and one it holds is not judged again.  The rules over the SET -- one seed
 # (invariant 1), the epoch's roots (11) -- are judged against the sessions
 # the ledger holds that are still in the epoch (every one but those GROW's
-# swaps withdrew, withdrawn.txt) by their records, never by reading them
+# swaps withdrew, withdrawn.txt, and those the sessions gated now replace,
+# [<replaced>]: a re-run's exposing session) by their records, never by reading them
 # again, so gating a session at a time files exactly what one gate over the
 # whole corpus would, each row once, and a gate's cost is its own sessions'
 # (contract.ImportGateMain): SGF8-adhoc-07's gates read every admitted
@@ -3354,7 +3364,7 @@ campaign_zk_keys() {
 # Append-only, into the campaign's own gap file: a gap row a later stage
 # overwrites was never evidence.
 campaign_import_gate() {
-  local iteration_dir=$1 iteration_id=$2 summary=$3 list=$4
+  local iteration_dir=$1 iteration_id=$2 summary=$3 list=$4 replaced=${5:-}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
   local blocking violations first
   require_nonempty "the import gate's sessions" "${list}"
@@ -3364,7 +3374,8 @@ campaign_import_gate() {
     --iteration "${iteration_dir}" --gate-list "${list}" \
     --gated "${iteration_dir}/import_gated" \
     --out "${gaps}" \
-    --topology-epoch "${iteration_id}" >"${summary}"
+    --topology-epoch "${iteration_id}" \
+    ${replaced:+--replaced "${replaced}"} >"${summary}"
   require_nonempty "import gate summary" "${summary}"
   violations=$(jq -r '.violations' "${summary}")
   campaign_count IMPORT ImportGate "${summary}" \
@@ -3797,10 +3808,26 @@ campaign_solver_dir() {
     "$(hostname -s)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
 }
 
+# campaign_solver_ended_for_memory <dir> <pid>: whether the host solver
+# <pid> of <dir> ended for memory -- out of heap below the most heap a solver
+# is given (exit 3: the next starts at twice it, campaign_solver_outgrown), or
+# ended by its watcher as its host could not take its growth (137) -- which
+# says nothing of any one question it held: a solver answers eight at once
+# (campaign_solver_seats), and one heavy question took its seat-mates with
+# it, each failed for good at its second such end (campaign_obligation_worker).
+campaign_solver_ended_for_memory() {
+  local status heap
+  read -r status heap 2>/dev/null <"$1/ended.$2" || return 1
+  (( status == 137 )) && return 0
+  (( status == campaign_jvm_out_of_heap_status )) \
+    && (( ${heap:-0} < $(campaign_solver_most_heap_mb) ))
+}
+
 # campaign_solve_obligation <obligation_id> <obligations> <sessions> <worker>
 # [<charge>]: the obligation's question, answered by its host's solver into
 # <worker>: 0 with the solver's files there, 1 with why it was not answered
-# on stderr, 3 when the host had no room to start its solver now (the
+# on stderr (4: its solver ended for memory, campaign_solver_ended_for_memory),
+# 3 when the host had no room to start its solver now (the
 # question then waits in the pool's queue, campaign_obligation_worker).  A
 # flip the hard lane found sat is asked with its model (decided:
 # <worker>/obligation_model.json, explore.HardAsk.Model).
@@ -3856,6 +3883,7 @@ campaign_solve_obligation() {
       printf 'answered %s; its log is %s: %s\n' "${obligation_id}" "${file}" \
         "$(grep -v -E '^[[:space:]]+at ' "${file}" 2>/dev/null \
           | tail -n 1)" >&2
+      campaign_solver_ended_for_memory "${dir}" "${pid}" && return 4
       return 1
     fi
     printf 'starting %s\n' "${BASHPID}" >"${dir}/server"
@@ -3962,6 +3990,8 @@ campaign_start_solver() {
       </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || status=$?
     (( status != campaign_jvm_out_of_heap_status )) \
       || campaign_solver_outgrown "${sessions}" "${heap}"
+    # How it ended, for the questions it held (campaign_solve_obligation).
+    printf '%s %s\n' "${status}" "${heap}" >"${dir}/ended.${BASHPID}"
     campaign_host_release localhost "${charge}"
   } &
   printf '%s\n' "$!" >"${dir}/server.part"
@@ -4066,10 +4096,15 @@ a host's solver"
 # again), uncharged, its host cold; one its host's solver took and ended on
 # (out of heap, died, or ended at what its host could hold) or failed is
 # asked again once, then fails the worker by name, its cause what its solver
-# said (campaign_obligation_unfinished), never a bare NOT_ADMITTED.
+# said (campaign_obligation_unfinished), never a bare NOT_ADMITTED -- but a
+# solver that ended for memory fails none of the questions it held
+# (campaign_solver_ended_for_memory): each is asked again, uncounted, at
+# most campaign_solver_memory_asks times (a question that ends every solver
+# it sits on still fails, by name).
+campaign_solver_memory_asks=4
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local charge=${6:-} outcome status=0 why log
+  local charge=${6:-} outcome status=0 why log memory_asks
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -4090,6 +4125,15 @@ campaign_obligation_worker() {
 start its solver now"
       return 0 ;;
     *)
+      memory_asks=$(grep -c '' "${worker}/asked_again_memory" 2>/dev/null) \
+        || memory_asks=0
+      if (( status == 4 && memory_asks < campaign_solver_memory_asks )); then
+        # Its solver ended for memory: no failure of this question.
+        echo >>"${worker}/asked_again_memory"
+        campaign_obligation_again "${worker}" "its host's solver ended for \
+memory before it answered"
+        return 0
+      fi
       why=$(campaign_failure_said "${log}")
       [[ ! -e "${worker}/asked_again" ]] || die "obligation \
 ${obligation_id}: its host's solver did not answer it, asked twice: \
@@ -5324,7 +5368,8 @@ campaign_stream_job() {
 ${status}; its logs, and ssh's own output, are in ${worker}"
     return "${status}"
   fi
-  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}"
+  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}" \
+    "${kind}"
 }
 
 # campaign_write_whole <file>: its standard input becomes <file> as a new
@@ -5762,7 +5807,7 @@ campaign_stream_confirm_owed() {
 # A round is no head step: it plans in its own lane
 # (campaign_stream_round_start).
 campaign_stream_step_start() {
-  local dir entry kind round id host status
+  local dir entry kind round id host status session
   local -a stream_staged=() confirms=()
   if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]] \
       && ! campaign_stream_confirm_owed; then
@@ -5788,6 +5833,11 @@ campaign_stream_step_start() {
       for entry in "${stream_gate_owed[@]}"; do
         printf '%s\n' "${entry#*$'\t'}"
       done >"${dir}/gate"
+      # A re-run's session replaces its exposing one: never judged with it.
+      for entry in "${stream_gate_owed[@]}"; do
+        read -r kind round id host status session <<<"${entry%%$'\t'*}"
+        [[ "${kind}" != RERUN ]] || printf '%s\n' "${session}"
+      done >"${dir}/replaced"
       stream_gate_running=("${stream_gate_owed[@]}")
       stream_gate_owed=()
     fi
@@ -5823,7 +5873,8 @@ campaign_stream_step() {
     campaign_stream_attempt "${dir}" "${witnesses[@]}"
   else
     [[ ! -s "${dir}/gate" ]] || campaign_import_gate "${iteration_dir}" \
-      "${iteration_id}" "${dir}/import_gate.json" "${dir}/gate"
+      "${iteration_id}" "${dir}/import_gate.json" "${dir}/gate" \
+      "${dir}/replaced"
     [[ ! -s "${dir}/confirms" ]] || campaign_stream_decide "${dir}"
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
@@ -8600,6 +8651,12 @@ name obligation ${id}, so it was not withdrawn from the corpus"
 re-run swapped in with no answer"
       cat -- "${worker}/obligation_result.jsonl" >>"${results}.tmp"
       session=${answer_session[${worker}/obligation_result.jsonl]}
+      # No session reaches the corpus ungated (campaign_stream_collected
+      # gates a re-run's before its swap is due).
+      [[ -z "${session}" \
+         || -e "${iteration_dir}/import_gated/${session}.json" ]] \
+        || campaign_fail EXPLORE CAMPAIGN "${rerun}" "obligation ${id}: its \
+re-run's session ${session} would swap in ungated"
       [[ -z "${session}" ]] \
         || stream_staged+=("${worker} ${rerun}/sessions ${session}")
       campaign_log "obligation ${id}: re-run under the grown tree, \

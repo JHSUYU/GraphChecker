@@ -9,9 +9,10 @@ import edu.uva.liftlab.graphchecker.smt.Z3;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -33,16 +34,23 @@ import java.util.function.Supplier;
  *
  * <p>A kept model is ONE model of the text, as a z3 run gives one: each run
  * races two engines and answers with the one that decided first ({@link
- * Z3}), so which model a run gives was never fixed by the text.  Only a
- * decided answer is kept: a timeout, a memout, unknown, an error or engines
- * that disagree say nothing of the text, and the next ask runs z3 again at
- * its own budget and room.  A kept answer carries no core: every ask it
- * answers asks none.</p>
+ * Z3}), so which model a run gives was never fixed by the text.  ONLY A
+ * WHOLE ANSWER OF THE TEXT IS KEPT, OR ANSWERS ONE ({@link #whole}): unsat,
+ * or sat with a value for every symbol the text asks the model of.  A sat
+ * whose separate model run timed out, hit its cap or said unknown carries
+ * no values or some (Z3#ask keeps the verdict), and its ask's run alone says
+ * so; kept, every later ask of the text would read an empty model, plant
+ * nothing and be refused for good.  A timeout, a memout, unknown, an error
+ * or engines that disagree say nothing of the text either, and the next ask
+ * runs z3 again at its own budget and room.  A kept answer carries no core:
+ * every ask it answers asks none.</p>
  *
  * <p>An entry is written whole or not at all (a file of its own, moved into
  * place), and two asks deciding one text at once each write a decided answer
  * of it; a reader on another host that does not see an entry yet asks z3,
- * as before the store.</p>
+ * as before the store.  KEEPING IS BEST EFFORT: an entry that cannot be
+ * written (NFS) leaves the question z3 answered answered, and the next ask
+ * of the text runs z3.</p>
  */
 final class Solved {
     /** Its directory, in the iteration. */
@@ -73,21 +81,37 @@ final class Solved {
     }
 
     /**
-     * z3's answer to the text of this sha256: the one kept, else what
-     * {@code z3} answers, kept once decided.
+     * z3's answer to the text of this sha256, which asks the model of
+     * {@code modelSymbols}: the one kept, else what {@code z3} answers, kept
+     * once whole ({@link #whole}).
      */
-    Z3.Answer answer(String querySha256, Supplier<Z3.Answer> z3)
-            throws IOException {
+    Z3.Answer answer(String querySha256, Collection<String> modelSymbols,
+                     Supplier<Z3.Answer> z3) throws IOException {
         Z3.Answer kept = kept(querySha256);
-        if (kept != null) {
+        if (kept != null && whole(kept, modelSymbols)) {
             System.err.println("causynth: query " + querySha256
                     + " answered " + kept.status() + " as kept in " + dir
                     + ": no z3 run");
             return kept;
         }
         Z3.Answer answer = z3.get();
-        if (dir != null && answer.decided()) keep(querySha256, answer);
+        if (dir != null && whole(answer, modelSymbols)) {
+            try {
+                keep(querySha256, answer);
+            } catch (IOException unwritten) {
+                System.err.println("causynth: query " + querySha256
+                        + "'s answer not kept in " + dir + ": " + unwritten);
+            }
+        }
         return answer;
+    }
+
+    /** Whether an answer is all the text says: unsat, or sat with a value
+     *  of every symbol it asks the model of. */
+    static boolean whole(Z3.Answer answer, Collection<String> modelSymbols) {
+        if (answer.unsat()) return true;
+        return answer.sat() && (modelSymbols == null
+                || answer.values().keySet().containsAll(modelSymbols));
     }
 
     /** The answer kept for this text, or null. */
@@ -96,7 +120,8 @@ final class Solved {
         JsonObject json;
         try {
             json = ExploreCodec.readObject(dir.resolve(querySha256 + ".json"));
-        } catch (NoSuchFileException none) {
+        } catch (FileSystemException unread) {
+            // None kept, or a store that cannot be read: z3 is asked.
             return null;
         }
         if (!querySha256.equals(JsonFields.primitiveString(json,
