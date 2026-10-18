@@ -50,7 +50,6 @@ runtime.MessageDoors publishing boolean string string long runnable
 runtime.MessageDoors reading void string string
 runtime.MessageDoors refreshEnded void long
 runtime.MessageDoors refreshStarting long
-runtime.MessageDoors refreshing void string string
 runtime.MessageDoors registerNode void object string string string object[]
 runtime.MessageDoors registerSource void object string string string long
 runtime.MessageDoors registerSourceAlias void object object
@@ -61,7 +60,6 @@ runtime.MessageDoors serialized void boolean
 runtime.MessageDoors serializing boolean
 runtime.MessageDoors spelledAs void string string[]
 runtime.MessageDoors startRecording void
-runtime.MessageDoors startupWindow boolean
 runtime.MessageDoors stopRecording void
 runtime.MessageDoors storeEnded void string long
 runtime.MessageDoors storeRead void string string string object

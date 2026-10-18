@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -147,15 +146,6 @@ public final class MessageDoors {
     }
 
     /**
-     * The request scope of the calling thread, as a value the work it is
-     * creating can carry to whatever thread later sends it.
-     */
-    public static Object captureScope() {
-        return guarded("captureScope", null, null,
-                CausynthTraceRecorder::captureScope);
-    }
-
-    /**
      * One message leaves: its trace context and the symbolic values the
      * sender exported (the ports a {@code WIRE_FLOW} row declares), to
      * travel with it.
@@ -270,37 +260,6 @@ public final class MessageDoors {
     }
 
     /**
-     * A received message of {@code transport} ({@code correlationId}, {@code
-     * half}) is handed to a worker queue: an IPC server's Reader queueing a
-     * call for its handlers.  The hand-off is named by the message -- its
-     * sender's endpoint, which the receipt's anchor names too -- not by how
-     * many the thread handed off before ({@code Identity#handoffStarting}):
-     * the receiving side's twin of a request counted per verb ({@link
-     * #requestStarting}).  A message whose sender this run did not file
-     * names nothing, and its hand-off is a plain start.
-     *
-     * @return what {@link #handedOff} takes, in a finally
-     */
-    public static Object handingOff(String transport, String correlationId,
-                                    String half) {
-        try {
-            String sender = Interactions.sender(trimmed(transport),
-                    trimmed(correlationId), trimmed(half));
-            return Identity.handoffStarting(sender.isEmpty() ? ""
-                    : trimmed(transport) + "." + sender);
-        } catch (RuntimeException fault) {
-            doorFault("handingOff " + transport + " " + correlationId,
-                    fault);
-            return null;
-        }
-    }
-
-    /** The hand-off {@link #handingOff} began is over. */
-    public static void handedOff(Object handoff) {
-        guarded("handedOff", null, () -> Identity.handoffEnded(handoff));
-    }
-
-    /**
      * One message arrives: ends the exchange the thread was serving and
      * installs this one.
      *
@@ -346,65 +305,6 @@ public final class MessageDoors {
         Inbound scope = new Inbound(token, correlationId, attemptId, half);
         CURRENT.set(scope);
         return scope;
-    }
-
-    /**
-     * One request taken into the thread's own context, which it does not
-     * anchor: a DataTransfer op a DataNode's turn received.  The turn keeps
-     * its address, so a replay that sent the op from another IPC chain still
-     * answers it; the op is a message for its values (the symbolic header's,
-     * paired with the sender's exports), for the RECEIVE that binds the
-     * receiver's captures to it, and for the RECV that names the message
-     * that made the turn ({@link CausynthTraceRecorder#receivedExchange}),
-     * which the control producers read.  Nothing answers it through a door,
-     * so no response endpoint is minted.  Served until the next message or
-     * {@link #endInbound}.
-     */
-    public static Inbound received(String symbolic, String transport,
-                                   String correlationId, String attemptId,
-                                   Object localOwner) {
-        try {
-            return take(symbolic, transport, correlationId, attemptId,
-                    localOwner);
-        } catch (RuntimeException fault) {
-            doorFault("received " + transport + " " + correlationId, fault);
-            return Inbound.EMPTY;
-        }
-    }
-
-    private static Inbound take(String symbolic, String transport,
-                                String correlationId, String attemptId,
-                                Object localOwner) {
-        endInbound(true);
-        SymbolicMessageEnvelope.clearInbound();
-        String declared = trimmed(symbolic);
-        boolean correlated = !trimmed(correlationId).isEmpty();
-        if (!correlated && declared.isEmpty()) {
-            return Inbound.EMPTY;
-        }
-        if (correlated) {
-            CausynthTraceRecorder.receivedExchange(transport, correlationId,
-                    attemptId, REQUEST, localOwner);
-        }
-        if (!declared.isEmpty()) {
-            SymbolicMessageEnvelope.installInbound(declared);
-        }
-        Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST);
-        CURRENT.set(scope);
-        return scope;
-    }
-
-    /**
-     * A protobuf message parsed on this thread inside the exchange it
-     * arrived in: each of its message fields' elements is bound to it
-     * ({@link MessageCodec#receive}), for the getters that read it.
-     */
-    public static void parsed(Object message) {
-        try {
-            MessageCodec.receive(message);
-        } catch (RuntimeException fault) {
-            doorFault("parsed", fault);
-        }
     }
 
     /** Ends {@code scope} if the thread still serves it. */
@@ -922,17 +822,6 @@ public final class MessageDoors {
                 Endpoint.messageSite(trimmed(transport), "VIEW",
                         view.slot().replace('/', '.').replace('@', '.')),
                 viewOf(store, at), version);
-    }
-
-    /**
-     * The blocking hold's door, which the Solr trees before the publication
-     * hold call before a watch's refresh lock ({@code
-     * ZkStateReader.StateWatcher#refreshAndWatch}): it holds nothing now --
-     * a hold defers the node's publication instead ({@link #publishing}) --
-     * and goes with its two calls once every tree carries the publication
-     * hook (zk2-publication-hold.ZkStateReader.diff; external-callers.txt).
-     */
-    public static void refreshing(String transport, String path) {
     }
 
     /**
@@ -1516,25 +1405,6 @@ public final class MessageDoors {
     }
 
     /**
-     * Sets the served exchange aside, unended, while the thread runs an
-     * exchange of its own as a client; {@link #restore} gives it back.
-     */
-    public static Inbound setAside() {
-        Inbound serving = CURRENT.get();
-        if (serving != null) {
-            CURRENT.remove();
-        }
-        return serving;
-    }
-
-    /** Gives back what {@link #setAside} took. */
-    public static void restore(Inbound serving) {
-        if (serving != null) {
-            CURRENT.set(serving);
-        }
-    }
-
-    /**
      * Enters the scope a queued unit of work carried from where it was made:
      * the dequeue half of a queue handoff.
      */
@@ -1579,25 +1449,6 @@ public final class MessageDoors {
     }
 
     /**
-     * {@code who} is about to take startup {@code step}, a step that builds
-     * state a replay reads and that no slot of the schedule orders, before
-     * the window or inside it: a replay holds it until those its recording
-     * saw complete the step first have completed it ({@link StartupOrder}).
-     * {@code who} names the taker the same in both passes (a DataNode's
-     * UUID, which its keyed draw makes).
-     *
-     * @return what {@link #startupDone} takes
-     */
-    public static Object startupStep(String step, String who) {
-        return CausynthTraceRecorder.startupStep(step, who);
-    }
-
-    /** The step {@link #startupStep} began completed. */
-    public static void startupDone(Object pass) {
-        CausynthTraceRecorder.startupDone(pass);
-    }
-
-    /**
      * Closes the tick {@link #beginTick} opened, and the exchange its thread
      * served in it: the turn serves nothing past its end (the Solr
      * Overseer's batch write after its last item's turn served that item).
@@ -1612,15 +1463,6 @@ public final class MessageDoors {
     /** Opens the recorded window: the workload's recording boundary. */
     public static void startRecording() {
         CausynthTraceRecorder.startRecording();
-    }
-
-    /**
-     * Whether the case declares its window open before its cluster starts
-     * (case key {@code recording_window=startup}), where a system's cluster
-     * adapter then opens it; otherwise it opens once the cluster is up.
-     */
-    public static boolean startupWindow() {
-        return RecordingWindow.atStartup();
     }
 
     /**
@@ -1673,14 +1515,6 @@ public final class MessageDoors {
     /** Closes it: the workload's test is over, its teardown unrecorded. */
     public static void stopRecording() {
         CausynthTraceRecorder.stopRecording();
-    }
-
-    /**
-     * Whether this run is a concolic replay: a world the engine chose, where a
-     * workload's check of the RECORDING's world is not the workload's to make.
-     */
-    public static boolean replaying() {
-        return CausynthTraceRecorder.replaying();
     }
 
     public static void registerSource(Object anchor, String kind, String role,
@@ -1757,11 +1591,6 @@ public final class MessageDoors {
 
     public static void endWorkloadCall(long call, String api) {
         if (call != 0L) endRequest(call, api);
-    }
-
-    /** The outbound of a message that carries nothing. */
-    public static Outbound outboundNone() {
-        return Outbound.EMPTY;
     }
 
     /** What one outbound message carries. */

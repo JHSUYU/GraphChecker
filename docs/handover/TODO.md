@@ -438,8 +438,7 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   path condition, so one guard's arm is another question in every upstream world (SC9-19 r13: 32 ids per arm, 7 or 1
   without the stated handoffs); keeping only the conjuncts sharing variables with the delivered term or the guard would
   make them one question -- a query design change, and what the depth bound stands in for.
-- **g. Cleanup owed:** delete `MessageDoors#refreshing` (a no-op for trees before final4) and its external-callers row
-  once no run reads an older tree; REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
+- **g. Cleanup owed:** REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
 - **h. Timed tests:** the suites keep no timing-sensitive case (test cut 2026-10-18); what stays timed has seconds of
   margin (STREAM-1's 3 s LONG obligation, the REPLAY-BOUND rows' 1-5 s bounds, SOLVER-SERVICE's idle end).
 
