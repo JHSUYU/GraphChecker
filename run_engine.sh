@@ -825,6 +825,9 @@ campaign_engine_start_mb() {
 #   (ExposedRegionPlanMain)                its two rows: static inputs only)
 #   a plan's weave key (WeaveKey)          0.34 GB, 0.8 s (SGF8-adhoc-19's
 #                                          last generation, 497 rows)
+#   EMIT's gap ledger (GapLedgerMain)      4.4 GB RSS at -Xmx6g, 80 s
+#                                          (SGF8-adhoc-07: 3.2 M gap rows,
+#                                          their texts 2.4 GB held once)
 #   ImportGateMain sizes itself (campaign_import_gate_heap_mb).  ScopeGrowth's
 # growth step is the door step's main: measured as that.  Unmeasured, GROW's planner started at the 16 GB engine heap, which no lift
 # of a busy pool had free: V5-11741's GROW waited 40 min and more for it.
@@ -838,6 +841,7 @@ campaign_engine_start_mb() {
 campaign_engine_need_mb() {
   case "$1" in
     *.GraphCheckerMain|*.ComposeMain) echo 4096 ;;
+    *.GapLedgerMain) echo 6144 ;;
     *.CausynthTraceRecorder|*.ConcolicScheduler|*.ConfirmMain|*.LineageScan \
       |*.ScopeGrowth|*.VerifyWovenClasses|*.ExposedRegionPlanMain \
       |*.WeaveKey) \
@@ -8387,7 +8391,7 @@ campaign_bounds() {
       "${iteration_dir}/runtime_workflow_schedule_index.json" 2>/dev/null) \
     --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
 explore_manifest.json 2>/dev/null) \
-    --slurpfile gaps "${campaign_final}/gaps.json" \
+    --slurpfile gaps "${iteration_dir}/emit_gaps.json" \
     --slurpfile last <(campaign_rows "$(printf '%s\n' \
       "${iteration_dir}"/obligations-* | LC_ALL=C sort | tail -n 1)/\
 gaps.jsonl.gz") \
@@ -9380,8 +9384,12 @@ campaign_confirm_verdict() {
       refutes: $refutes, reason: $reason, sessionId: $sessionId}'
 }
 
+# campaign_artifact_digests <gaps read>: each required final artifact's path,
+# size and sha256; gaps.json's digest the one its writer took as it wrote it
+# (the read view's `published`, GapLedgerMain): the ledger is gigabytes
+# (SGF8-adhoc-07: 3.8 GB, a sha256sum of 25-80 s).
 campaign_artifact_digests() {
-  local name path bytes sha row
+  local gaps_read=$1 name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
     gaps.json result.json)
   local -a names=()
@@ -9397,7 +9405,15 @@ campaign_artifact_digests() {
   for name in "${names[@]}"; do
     path="${campaign_final}/${name}"
     if ! bytes=$(wc -c <"${path}"); then return 1; fi
-    if ! sha=$(campaign_digest "${path}"); then return 1; fi
+    if [[ "${name}" == gaps.json ]]; then
+      sha=$(jq -r --argjson bytes "${bytes}" \
+        'select(.published.bytes == $bytes) | .published.sha256' \
+        "${gaps_read}") || return 1
+      [[ "${sha}" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "the gaps EMIT reads state no digest of ${path} as it is" >&2
+        return 1
+      }
+    elif ! sha=$(campaign_digest "${path}"); then return 1; fi
     if ! row=$(jq -n -c --arg name "${name}" --arg path "${path}" \
         --argjson bytes "${bytes}" --arg sha256 "${sha}" \
         '{name: $name, path: $path, bytes: $bytes, sha256: $sha256}'); then
@@ -9406,19 +9422,6 @@ campaign_artifact_digests() {
     rows+=("${row}")
   done
   printf '%s\n' "${rows[@]}" | jq -c -s .
-}
-
-# The static catalog's own gaps, as a JSON array.
-campaign_static_gaps_json() {
-  local gzipped="${causynth_output_dir}/communication_gaps.jsonl.gz"
-  require_nonempty "static communication gaps" "${gzipped}"
-  gzip -d -c -- "${gzipped}" | jq -c -s '.' || return 1
-}
-
-# The planning gaps the runtime plan artifact carries in its catalog row.
-campaign_plan_gaps_json() {
-  require_nonempty "runtime region plan" "${runtime_region_plan}"
-  head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
 }
 
 # One generated JSON document, as a file jq can read.
@@ -9435,126 +9438,31 @@ campaign_json_file() {
 }
 
 # Every gap this campaign raised, in one document, each row classed by the row
-# itself.
+# itself (contract.GapLedgerMain, PIPELINE §11): final/gaps.json, and beside it
+# what EMIT reads of it (<read>: every BLOCKING row and the counts, of the
+# DIAGNOSTIC rows those EMIT selects, and the ledger's bytes and sha256 as
+# written).
 #
 # A GapRow states its own kind and class (CONTRACT-SPEC §2.5): the stage that
-# raised it knows what it could not do, and no later stage is in a position to
-# overrule that.  So this is a partition, not a classification.  A row that
+# raised it knows what it could not do, and no later stage is in a position
+# to overrule that.  So this is a partition, not a classification.  A row that
 # states no class is BLOCKING.
 #
-# This function and the `accepted` conjunction it feeds are the ONE reader of
-# a gap's class in the campaign: every other stage states classes and reads
-# none but its own.  classReason says which of the two rules answered.
+# That main and the `accepted` conjunction it feeds are the ONE reader of a
+# gap's class in the campaign: every other stage states classes and reads
+# none but its own.  classReason says which of the two rules answered.  The
+# ledger grows with the corpus (SGF8-adhoc-07: 1047 gap files, 3.2 M rows,
+# 3.8 GB published); the jq this replaces took 520 s and 10 GB to build it,
+# and each of EMIT's five later reads of it ~50 s.
 campaign_write_gaps() {
-  local composition=$1 iteration_dir=$2 output=$3
-  local scratch status=0
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/graphchecker-gapargs.XXXXXX") \
-    || return 1
-  campaign_json_file "${scratch}/static-gaps.json" \
-    "$(campaign_static_gaps_json)" >/dev/null \
-    || { rm -rf -- "${scratch}"; return 1; }
-  campaign_json_file "${scratch}/plan-gaps.json" \
-    "$(campaign_plan_gaps_json)" >/dev/null \
-    || { rm -rf -- "${scratch}"; return 1; }
-  # Every session's own gap rows, plus the campaign's, each labelled with the
-  # stage that raised it: a replay session's rows are REPLAY, an obligation
-  # worker's or a round's are EXPLORE, and a campaign row states its own stage
-  # (IMPORT's gate is the one writer that states none).
-  # A session's and a round's gaps are gzip (gaps.jsonl.gz), a worker's
-  # plain (gaps.jsonl), each read through the one opener (campaign_rows).
-  local gapfile gapstage
-  : >"${scratch}/session-gaps.jsonl"
-  while IFS= read -r -d '' gapfile; do
-    case "${gapfile}" in
-      */sessions/*/gaps.jsonl.gz) gapstage=REPLAY ;;
-      */obligations-*/gaps.jsonl.gz|*/obligations-*/gaps.jsonl)
-        gapstage=EXPLORE ;;
-      *) rm -rf -- "${scratch}"
-         campaign_fail EMIT campaign_write_gaps "${gapfile}" \
-           "a gaps file at a path no stage of this campaign writes" ;;
-    esac
-    campaign_rows "${gapfile}" \
-      | jq -c --arg stage "${gapstage}" '. + {stage: (.stage // $stage)}' \
-      >>"${scratch}/session-gaps.jsonl"
-  done < <(find "${iteration_dir}" -type f \( -name 'gaps.jsonl' \
-    -o -name 'gaps.jsonl.gz' \) -print0 | LC_ALL=C sort -z)
-  [[ ! -s "${iteration_dir}/campaign_gaps.jsonl" ]] \
-    || jq -c '. + {stage: (.stage // "IMPORT")}' \
-      "${iteration_dir}/campaign_gaps.jsonl" \
-      >>"${scratch}/session-gaps.jsonl"
-  jq -n \
-    --argjson provenance "${campaign_provenance}" \
-    --slurpfile composedDocuments "${composition}" \
-    --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
-    --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
-    --slurpfile sessionGaps "${scratch}/session-gaps.jsonl" '
-    ($staticGapDocuments[0] // []) as $staticGaps |
-    ($planGapDocuments[0] // []) as $planGaps |
-    $composedDocuments[0] as $composed |
-    # A row that states its own class is taken at its word.
-    # Slurped as rows, never one string: 2.5 GB of rows (v69) was past the
-    # longest string jq reads, and the split met a row cut in half.
-    ($sessionGaps
-      | map({stage: (.stage // "REPLAY"),
-             source: (if (.sessionId // "") == "" then "RUNTIME"
-                      else .sessionId end),
-             code: (.kind // "ADMISSION_GAP"),
-             subject: (.subject // ""), detail: (.detail // ""),
-             class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
-                     then "DIAGNOSTIC" else "BLOCKING" end),
-             classReason: "the row states its own class"}))
-      as $sessionRows |
-    # The composer names its refusals; each is blocking by construction.  Its
-    # own gap rows state their class like any other GapRow, and a row that
-    # states none is blocking, which is what an unregistered code means.
-    (($composed.finalStatusRefusals // [])
-      | map({stage: "COMPOSE", source: "ComposeMain",
-             code: (.kind // "COMPOSITION_GAP"),
-             subject: (.subject // ""), detail: (.detail // ""),
-             class: "BLOCKING",
-             classReason: "a composition refusal withholds its own claim"}))
-      as $refusalRows |
-    ((($composed.gaps // []) + ($composed.claim.gaps // []))
-      | map({stage: "COMPOSE", source: "ComposeMain",
-             code: (.kind // .reason // ""),
-             subject: (.subject // ""), detail: (.detail // ""),
-             class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
-                     then "DIAGNOSTIC" else "BLOCKING" end),
-             classReason: (if (.cls // "") == ""
-                           then "no stated class: blocking by default"
-                           else "the row states its own class"
-                           end)}))
-      as $composerGapRows |
-    ($refusalRows + $composerGapRows) as $composeRows |
-    # The static catalog and the runtime plan state kind and class on their
-    # own rows, like every other producer; a row that states none is blocking.
-    (($staticGaps + $planGaps)
-      | map({stage: "PLAN", source: (.source // "CATALOG"),
-             code: (.kind // ""),
-             subject: (.subject // .siteId // ""), detail: (.detail // ""),
-             class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
-                     then "DIAGNOSTIC" else "BLOCKING" end),
-             classReason: (if (.cls // "") == ""
-                           then "no stated class: blocking by default"
-                           else "the row states its own class"
-                           end)}))
-      as $declaredRows |
-    (($sessionRows + $composeRows + $declaredRows)
-      | unique_by([.stage, .source, .code, .subject, .detail])) as $rows |
-    {schemaVersion: 2,
-     kind: "CAMPAIGN_COVERAGE_GAPS",
-     provenance: $provenance,
-     gaps: [$rows[] | select(.class == "BLOCKING")],
-     telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
-    | .gapCount = (.gaps | length)
-    | .telemetryCount = (.telemetryGaps | length)
-    | .byStage = (.gaps | group_by(.stage)
-        | map({key: .[0].stage, value: length}) | from_entries)
-    | .byCode = (.gaps | group_by(.code)
-        | map({key: .[0].code, value: length}) | from_entries)
-  ' >"${output}" || status=$?
-  rm -rf -- "${scratch}"
-  return "${status}"
+  local composition=$1 iteration_dir=$2 output=$3 read=$4
+  local statics="${causynth_output_dir}/communication_gaps.jsonl.gz"
+  require_nonempty "static communication gaps" "${statics}"
+  require_nonempty "runtime region plan" "${runtime_region_plan}"
+  run_java_main edu.uva.liftlab.graphchecker.contract.GapLedgerMain \
+    --iteration "${iteration_dir}" --composition "${composition}" \
+    --static "${statics}" --plan "${runtime_region_plan}" \
+    --provenance "${campaign_provenance}" --out "${output}" --read "${read}"
 }
 
 # The named outputs. Nothing here recomputes a verdict: every field is copied
@@ -9584,14 +9492,15 @@ campaign_emit() {
   campaign_exploration_cut "${iteration_dir}"
   campaign_open_arms "${iteration_dir}"
   campaign_solver_timeouts "${iteration_dir}"
-  campaign_write_gaps \
-    "${composition_manifest}" \
-    "${iteration_dir}" \
-    "${campaign_final}/gaps.json"
+  local gaps_read="${iteration_dir}/emit_gaps.json"
+  campaign_write_gaps "${composition_manifest}" "${iteration_dir}" \
+    "${campaign_final}/gaps.json" "${gaps_read}" \
+    || campaign_fail EMIT GapLedgerMain "${campaign_final}/gaps.json" \
+      "the gap ledger could not be written"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
-  campaign_require_json "campaign gaps" "${campaign_final}/gaps.json" \
-    || campaign_fail EMIT CAMPAIGN "${campaign_final}/gaps.json" \
-      "the generated gaps JSON is malformed"
+  campaign_require_json "the gaps EMIT reads" "${gaps_read}" \
+    || campaign_fail EMIT GapLedgerMain "${gaps_read}" \
+      "the gaps EMIT reads are malformed"
 
   # The claim is the ClaimPolicy decision the solver stage published with its
   # own report.  Nothing here recomputes it: this stage copies the claim, its
@@ -9660,7 +9569,7 @@ campaign_emit() {
     --slurpfile refutedClaims "${refuted}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
-    --slurpfile gapDocuments "${campaign_final}/gaps.json" \
+    --slurpfile gapDocuments "${gaps_read}" \
     --slurpfile planCatalog <(head -n 1 -- "${runtime_region_plan}") '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
     $gapDocuments[0] as $gaps |
@@ -9868,7 +9777,7 @@ campaign_emit() {
   session_bytes=$(find "${iteration_dir}/sessions" -type f \
     -name '*.jsonl.gz' -printf '%s\n' \
     | awk '{n += $1} END {print n + 0}')
-  if ! artifacts_json=$(campaign_artifact_digests); then
+  if ! artifacts_json=$(campaign_artifact_digests "${gaps_read}"); then
     campaign_fail EMIT CAMPAIGN "${campaign_final}" \
       "failed to validate final artifact digests"
   fi
@@ -9929,8 +9838,8 @@ campaign_emit() {
   require_nonempty "campaign run manifest" \
     "${campaign_final}/run-manifest.json"
 
-  gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
-  campaign_count EMIT GapLedger "${campaign_final}/gaps.json" \
+  gapCount=$(jq -r '.gapCount' "${gaps_read}")
+  campaign_count EMIT GapLedger "${gaps_read}" \
     "the published blocking gap count" "${gapCount}"
   campaign_log "artifacts in ${campaign_final}"
   jq -r '"  claim=\(.claim) reachability=\(.reachability) blockers=\(.blockerCount) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
@@ -9949,7 +9858,7 @@ campaign_emit() {
 # confirmed witness beside a defect of the run.
 campaign_exit_verdict() {
   local gapCount
-  gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
+  gapCount=$(jq -r '.gapCount' "${campaign_final}/result.json")
   case "$(jq -r '.claim' "${campaign_final}/result.json")" in
     SAT_CANDIDATE|UNSAT_CLOSED|RUN_DEFECT) ;;
     *)

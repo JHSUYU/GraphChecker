@@ -58,6 +58,15 @@ emit_fixture() {
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
   # The one declared bound EMIT reads from the configuration (campaign_bounds).
   campaign_max_claims=8
+  # EMIT's gap ledger is an engine main (contract.GapLedgerMain), run as
+  # every main is, at a fixture's heap.
+  java_bin=${test_java}
+  graphchecker_jar=${default_graphchecker_jar}
+  graphchecker_work_dir=${emit_root}
+  causynth_loop_default_bound=8
+  causynth_system_doors=""
+  causynth_doors_only_roots=""
+  engine_memory_mb=1024
 
   mkdir -p "${campaign_final}" "${emit_classes}" \
     "${emit_iteration}/seed-result" \
@@ -71,6 +80,8 @@ emit_fixture() {
   # in its catalog row.
   causynth_output_dir="${emit_root}/causynth"
   mkdir -p "${causynth_output_dir}"
+  # The static pass always writes its catalog's gaps, none here.
+  gzip -c </dev/null >"${causynth_output_dir}/communication_gaps.jsonl.gz"
   runtime_region_plan="${emit_root}/concolic_region_plan.jsonl"
   jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
     edges: [], regions: [], gaps: []}' >"${runtime_region_plan}"
@@ -213,6 +224,12 @@ jq -e '.evidence.symbolicPropagationComplete == false
   and .confinedWriters == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+# The run manifest names the ledger by the digest its writer took as it wrote
+# it (GapLedgerMain): the digest of the file as it is.
+[[ "$(jq -r '.artifacts[] | select(.name == "gaps.json") | .sha256' \
+      "${campaign_final}/run-manifest.json")" \
+    == "$(campaign_digest "${campaign_final}/gaps.json")" ]] \
+  || fail "the run manifest names gaps.json by a digest not its own"
 
 # CONFINED-1: the writers PLAN dropped as confined are DIAGNOSTIC rows of the
 # region plan's gaps, which EMIT carries into gaps.json, and result.json
@@ -7671,6 +7688,9 @@ head_pct_was=${campaign_head_max_used_pct}
 campaign_head_max_used_pct=70
 campaign_host_poll_s=0
 engine_memory_mb=12000
+# No campaign of its own: no engine JVM's peak measured yet (an EMIT test's
+# gap ledger left one in its root).
+campaign_root=""
 (
   campaign_head_charging=1
   campaign_head_reserve

@@ -3503,15 +3503,23 @@ recording's own is not kept apart.
 ## 11. EMIT
 
 1. `campaign_verify_frozen_inputs` (§1).
-2. `final/gaps.json` (`campaign_write_gaps`), one row per distinct (stage, source, code, subject,
-   detail), class as the row states it (none stated = BLOCKING): static communication gaps and the
-   runtime plan's `gaps` as PLAN; every `gaps.jsonl.gz` (a session's, a round's) and `gaps.jsonl` (a
-   worker's) under the iteration directory, read through `campaign_rows` — a path matching
+2. `final/gaps.json` (`campaign_write_gaps`: `contract.GapLedgerMain`), one row per distinct
+   (stage, source, code, subject, detail), the first raised kept, class as the row states it (none
+   stated = BLOCKING): static communication gaps and the runtime plan's `gaps` as PLAN; every
+   `gaps.jsonl.gz` (a session's, a round's) and `gaps.jsonl` (a worker's) under the iteration
+   directory, in their paths' byte order, read once each through `smt.ArtifactIO#input`, side by
+   side on the host's cores — a path matching
    `*/sessions/*/gaps.jsonl.gz` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
    included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
    `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
-   `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
+   `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `telemetryCount`, `byStage`, `byCode`,
+   in jq 1.6's order and text: the document the jq this main replaced (2026-10-18) wrote, byte for
+   byte. Beside it, `iteration-*/emit_gaps.json`, what EMIT itself reads of it (`campaign_bounds`,
+   the result, the counts): every BLOCKING row and the counts, of the DIAGNOSTIC rows only those
+   EMIT selects (a subject naming a bound `<name>=<count>` at a line's end, `HOOK_UNDECLARED`), and
+   `published`, the ledger's bytes and sha256 as written (the run manifest's digest of it). A
+   reader of the DIAGNOSTIC rows added to EMIT selects in `GapLedgerMain#readByEmit` too.
 3. `final/result.json`: `claim` = the campaign claim; a `SAT_CANDIDATE` whose confirmation is not
    `confirmed` is `SAT_UNCONFIRMED`, and one no replay decided (`refutes` false) also a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
@@ -3544,10 +3552,12 @@ recording's own is not kept apart.
    `## Bounded` section, `triage.py` in its `bounded` column and `BOUNDED=` count,
    `tools/rounds/round-verify.sh` as `BOUNDED:<keys>` and a per-round count.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
-   required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
-   `result.json`; a missing or empty one fails EMIT), stage wall times, session rows and bytes.
+   required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`
+   (its digest the one `GapLedgerMain` took as it wrote it), `result.json`; a missing or empty one
+   fails EMIT), stage wall times, session rows and bytes.
 5. After REPRODUCE (§10b), `campaign_exit_verdict`: exit 2 when the claim is not
-   `SAT_CANDIDATE`/`UNSAT_CLOSED`; exit 3 when BLOCKING gaps remain; else 0.
+   `SAT_CANDIDATE`/`UNSAT_CLOSED`; exit 3 when BLOCKING gaps remain (`result.json`'s `gapCount`);
+   else 0.
 
 ## 12. Acceptance: `experiments/accept/`
 

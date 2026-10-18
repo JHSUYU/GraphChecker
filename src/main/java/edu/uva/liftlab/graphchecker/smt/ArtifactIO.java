@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
@@ -273,12 +274,24 @@ public final class ArtifactIO {
         }
     }
 
+    /** One artifact written as text, UTF-8 ({@link #atomicWrite}). */
+    public static void atomicReplace(Path path, Body body)
+            throws IOException {
+        atomicWrite(path, bytes -> {
+            try (BufferedWriter output = new BufferedWriter(
+                    new OutputStreamWriter(bytes,
+                            StandardCharsets.UTF_8.newEncoder()))) {
+                body.writeTo(output);
+            }
+        });
+    }
+
     /**
      * One artifact write: a temporary sibling, then one atomic move, so no
      * reader sees a partial write and a failure keeps the old artifact.  The
      * one staging envelope in the repository.
      */
-    public static void atomicReplace(Path path, Body body)
+    public static void atomicWrite(Path path, Bytes body)
             throws IOException {
         Path absolute = path.toAbsolutePath().normalize();
         Path parent = absolute.getParent();
@@ -286,8 +299,7 @@ public final class ArtifactIO {
         Path temporary = Files.createTempFile(parent,
                 "artifact-" + absolute.getFileName(), ".tmp");
         try {
-            try (BufferedWriter output = Files.newBufferedWriter(temporary,
-                    StandardCharsets.UTF_8)) {
+            try (OutputStream output = Files.newOutputStream(temporary)) {
                 body.writeTo(output);
             }
             try {
@@ -312,6 +324,11 @@ public final class ArtifactIO {
     /** What one artifact's bytes are, given the staged file to write them to. */
     public interface Body {
         void writeTo(BufferedWriter output) throws IOException;
+    }
+
+    /** {@link Body}, for a writer of bytes. */
+    public interface Bytes {
+        void writeTo(OutputStream output) throws IOException;
     }
 
     public static void replace(Path path, String value) throws IOException {
