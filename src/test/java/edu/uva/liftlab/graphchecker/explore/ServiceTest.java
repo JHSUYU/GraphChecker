@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
+
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -247,7 +249,7 @@ public class ServiceTest {
         }
         assertEquals(java.util.Arrays.asList("a", "b", "c"),
                 ObligationSolverMain.standing(sessions));
-        Files.write(sessions.resolveSibling(ObligationSolverMain.WITHDRAWN),
+        Files.write(sessions.resolveSibling(SessionDir.WITHDRAWN),
                 "b\nx\n".getBytes(StandardCharsets.UTF_8));
         assertEquals(java.util.Arrays.asList("a", "c"),
                 ObligationSolverMain.standing(sessions));
@@ -273,7 +275,7 @@ public class ServiceTest {
         for (String[] row : rows) {
             Path sessions = folder.newFolder(row[0], "sessions").toPath();
             Path journal = sessions.resolveSibling(
-                    ObligationSolverMain.WITHDRAWN);
+                    SessionDir.WITHDRAWN);
             Files.write(journal, new byte[0]);
             for (String name : new String[] {"a", "b", "c"}) {
                 Files.createDirectories(sessions.resolve(name));

@@ -157,6 +157,11 @@ cd ~/gc-run/<snap> && env -u BASH_ENV \
 environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
 `GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
 
+The head's own chain is short (OPTIMIZATIONS 1.27): an answer lands as it is collected, a session is gated where its
+worker staged it before it lands and the gate reads only the sessions it gates (the ones before by their records), and
+GROW's planner and weave build their generation beside the loop -- the pool is never left idle while the head gates,
+grows or waits for a step.
+
 A hard question no longer holds its host: every obligation is first asked at 60 s, and an undecided one waits in the
 hard lane for z3 alone at the full budget over the query its first ask built, in a JVM that reads no corpus (about
 5 GB charged, four to a free lift; PIPELINE §7.5; SP4-10: 12 z3 races of up to 30 min had held every solve slot of

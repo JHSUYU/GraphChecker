@@ -16,7 +16,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json`, `plan.log` | the scheduler refuses (its deepest throwable is the reason: not even the target's demand depth fits `schedule_max_jobs`, no declared occurrence, no target); the index does not commit the frozen plan |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
-| IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
+| IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.list`, `import_gate.json`, `import_gated/`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | ZKKEYS | `campaign_zk_keys`; `compose.ZkKeysMain` (only where PLAN wrote a ZooKeeper chain) | `zk_chain.jsonl` and `execution_task_plan.jsonl` rekeyed, `zk-keys.log` | ZkKeysMain exits nonzero |
 | EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
@@ -483,21 +483,33 @@ writes one `SESSION_CENSUS` row per (session, kind) to `session_census.jsonl` (i
 decode, `campaign_rows`). `campaign_import_gate` then runs
 `contract.ImportGateMain`, which appends every `contract.RowInvariants` violation (invariants 1-12,
 [CONTRACT-SPEC.md §2.6](CONTRACT-SPEC.md)) to `campaign_gaps.jsonl` and prints a summary; one BLOCKING
-violation fails IMPORT naming the first subject. The same gate runs on every session EXPLORE lands (§7.9).
+violation fails IMPORT naming the first subject. The same gate runs on every session EXPLORE gates
+before it lands (§7.9).
 
-`campaign_import_gate <iteration> <epoch> [summary] [session-dir...]` judges each session once: the
-sessions it names (none named: every session of the corpus not gated yet), recorded in the ledger
-`import_gated.txt`; a session the ledger names is not judged again. Every rule but two is one
-session's. The two over the set are judged against the gated sessions still in the corpus: exactly
-one SEED (1), and the epoch's roots (11) -- a new session against every root of the epoch, a gated
-one again only for a root (id, symbol) a new session brings. So gating the corpus a wave, or a
-session, at a time files exactly the rows one gate over all of it would, each once. One caller at a
-time (the head). The gate holds one session at a time, so its heap and its charge on the host it is
-placed on (§7.7) are 512 MB plus four times the largest session's text (`campaign_import_gate_heap_mb`,
-`campaign_session_bytes`: a session's rows as they decode, not their gzip), not
-`engine_memory_mb`, which is sized for a JVM holding the whole corpus (SOLR-18406 i1: charged
-16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30 min; the gate itself ran
-seconds).
+`campaign_import_gate <iteration> <epoch> <summary> <list>` judges each session once: the sessions
+`<list>` names, one per line -- a session's directory WHEREVER IT STANDS (the corpus at IMPORT, where
+the seed's is listed in `import_gate.list`; during EXPLORE the worker that replayed it, before it
+lands) and, each a tab after it, the obligation workers whose answers name it, whose focus rows
+are the ask it ran under and the flips it owes -- each recorded in the ledger `import_gated/`, one
+record per session (`<id>.json`: whether it states SEED and the roots it mints, each id with the
+first symbol its rows mint it under; `<id>.named.json.gz`: every symbol it names with one citation;
+`ImportGateMain#record`); a session the ledger holds is not judged again. Every rule but two is one
+session's. The two over the set are judged against the sessions the ledger holds that are still in
+the epoch -- every one but those GROW's swaps withdrew (`withdrawn.txt`) -- BY THEIR RECORDS, never
+by reading them again (`RowInvariants.Gated`): exactly one SEED (1), and the epoch's roots (11) -- a
+new session against every root of the epoch, a gated one again only for a root (id, symbol) a new
+session brings, by what its record names and mints; the epoch in session id order, whichever
+sessions it was gated in, so the first session to mint a root names its symbol. So gating the corpus
+a wave, or a session, at a time files exactly the rows one gate over all of it would, each once,
+and a gate's cost is its own sessions': SGF8-adhoc-07's gates read every admitted session's
+manifest and roots (8-10 s for one session) and all ~300 of them whole when one brought a root (332
+s for one, 463 s for 26). One caller at a time (the head). The gate holds one session at a time, so
+its heap and its charge on the host it is placed on (§7.7) are 512 MB plus four times the largest
+listed session's text (`campaign_import_gate_heap_mb`, `campaign_rows_bytes`: a session's rows as
+they decode, not their gzip), not `engine_memory_mb`, which is sized for a JVM holding the whole
+corpus (SOLR-18406 i1: charged 16 GB, IMPORT waited 7 min for room on the head and a wave's gate 30
+min; the gate itself ran seconds). `tools/regress/offline-ab.sh`'s IMPORT stage lists every session
+of a recorded corpus beside its workers and gates them at once with no ledger.
 
 ZKKEYS (`campaign_zk_keys`, `compose.ZkKeysMain`; SYMBOL-SCOPE §6.4), where PLAN wrote a ZooKeeper
 chain (`zk_chain.jsonl`, copied into the iteration by PLAN): the seed's own composition to the anchor,
@@ -1753,16 +1765,28 @@ round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
 obligations, and the witness flip a non-growing round 1 queued in Z9 waited from round 1 to round 5,
 unanswered when the exploration ended). One GROW is one GENERATION of the plan
-and the class tree, under `generations/g<k>/`: `plan.ExposedRegionPlanMain` writes the generation's
-plan, the one before it plus one task row per exposed address (admission basis `EXPOSED_BY:`,
-static inputs only, the plan's `replayGroupId`) and each grown invocation (below), as a new file
-kept beside the round (`grown_plan.jsonl`) -- the iteration's plan and the seed plan are its hard
-links from then on, and the generation before keeps its own inode for whatever runs on it -- and
-INSTRUMENT weaves it into the generation's own tree where its weave key (§4) is not the key of the tree
-it stands on; more planned occurrences of regions whose hooks that tree holds, a grown input at a hook
+and the class tree, under `generations/g<k>/`, BUILT BESIDE THE LOOP (`campaign_stream_grow_build`,
+GROW's lane, §7.9; one at a time, from the plan and the tree current when it started):
+`plan.ExposedRegionPlanMain` writes the generation's plan, the one before it plus one task row per
+exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`) and
+each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
+(`campaign_instrument`'s plan argument) into the generation's own tree where its weave key (§4) is
+not the key of the tree it stands on; the head meanwhile goes on starting, collecting, landing and
+planning (SGF8-adhoc-07 minutes 2-11: a GROW in the head's hands, its planner and weave 386 s with no
+start and no collection; solr-18413 Z3S: 8 min of a round's take), and a start meanwhile takes the
+generation current then. The built generation is TAKEN between two head steps
+(`campaign_stream_grow_take`): it is current from then on -- kept beside the round
+(`grown_plan.jsonl`), the iteration's plan, its chain and the seed plan its hard links, each name
+replaced whole by one rename (`campaign_link_whole`: rounds plan and hosts' solvers read the plan
+meanwhile), the generation before keeping its own inode for whatever runs on it -- and its re-runs
+are queued; no round is taken while a GROW builds or waits to be taken, so each round's growth is
+judged against every re-run queued before it (`campaign_stream_growth_new`), and a GROW building or
+built counts among GROW's owed work (`stream_hold`: a budget's end finds a round due, an open chain's
+witnesses wait for it). An end that finds a GROW building or not taken drops it (its generation to
+`explore-reaped/`, a round due). More planned occurrences of regions whose hooks that tree holds, a grown input at a hook
 it holds and a dropped doors-only mark weave that tree again, so the generation keeps it
 (SGF8-adhoc-19: 8 of its 11 generations were woven byte-identical to the tree before them, 62 s each
-of the head's; the key is 0.8 s). Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
+of the head's; the key is 0.8 s). At the take, each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in), `<worker>` the
 ask whose answer names the exposing session (`campaign_obligation_worker_dir`, by the growth row's session,
@@ -1774,8 +1798,9 @@ GROW HOLDS NOTHING (2026-10-17): no round, solve or swap waits for its slowest r
 planned until every re-run had returned and swapped, no solve started from the last re-run's return to the
 swap, the swaps waited for every running solve, and ran one by one: SGF8-adhoc-05's round 4 -> 5 took 56.2 min
 (weave 2.6, re-runs 37.2 -- 62 re-runs, p50 609 s, the slowest six 27-37 min -- swaps 10.2, ~9.6 s each, gate
-6.2) while the pool ran ~32 replays of ~200. Now each re-run SWAPS in (`campaign_stream_swap`) at the head
-step after it returns, once no reader of the session it withdraws runs (`campaign_stream_swap_due`). The
+6.2) while the pool ran ~32 replays of ~200. Now each re-run SWAPS in (`campaign_stream_swap`) between two
+head steps once it returned -- its session gated where it staged it first, as any session is (§7.9) -- once
+no reader of the session it withdraws runs (`campaign_stream_swap_due`). The
 readers of a session's files, from the code: a witness's confirmation queued, running or undecided
 (`stream_confirming`) whose attempt composed it (its `corpus.txt`): it confirms against that corpus
 (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session), so a confirmed one ends
@@ -1821,8 +1846,8 @@ failed the campaign).
 One swap: the exposing session (that session alone: another ask's session of the obligation stays),
 named in `withdrawn.txt` first, moves to `<worker>/before-<round>/` with a copy of the worker's previous
 files, the re-run's files are renamed over the worker's (one it lacks is removed, so no peer's NFS client
-opens an old inode through a name it cached), its session lands and is gated in the step the swap
-begins, and its verdict replaces the exposing ask's row in `obligation_results.jsonl` (another ask's row
+opens an old inode through a name it cached), its session, gated where the re-run staged it, lands,
+and its verdict replaces the exposing ask's row in `obligation_results.jsonl` (another ask's row
 of the obligation stays). The swaps due at a step go in ONE PASS: the exposing session is the one the
 re-run's entry names, all their manifests read by one jq, each worker's files moved in a subshell of its
 own (`campaign_stream_swap_jobs`, 16, waited by pid), the ledger rewritten once, the queue scanned in the
@@ -1879,17 +1904,32 @@ world, the new input mints the k-th call, and a later round flips it there (one 
 
 `campaign_explore` is one streaming loop on the head, with no wave barrier. It starts queued
 obligations wherever a host admits one (§7.7) and collects each as it returns
-(`campaign_stream_wait`). Its own JVM work runs in the background in TWO LANES, so the pool goes on
-starting and collecting while either waits for memory or runs, and neither waits for the other.
+(`campaign_stream_wait`). Its own JVM work runs in the background in THREE LANES, so the pool goes on
+starting and collecting while any waits for memory or runs, and none waits for another.
 HEAD STEPS, one at a time (`campaign_stream_step`, in `steps/NNNN/`): an import gate with the
 confirmation verdicts owed, or an attempt at witnesses. ROUNDS, one at a time (`campaign_stream_round`,
-in `planning-NNNN/`): the exploration's planner (§7.1). Their JVMs -- the gate, the planner, an
-attempt's composer -- and GROW's planner and weave are head steps (§7.7): each goes wherever there is
+in `planning-NNNN/`): the exploration's planner (§7.1). GROW, one generation at a time
+(`campaign_stream_grow`, §7.8): its planner, weave key and weave. Their JVMs -- the gate, the planner,
+an attempt's composer, GROW's planner and weave -- are head steps (§7.7): each goes wherever there is
 room, a planner and a composer at once each by its own charge (the served planner's is held for its
-life anyway). Between two head steps, in the head's hands, in this order:
-1. a round that returned is TAKEN (`campaign_stream_round_take`): its directory becomes
-   `obligations-NNNN/`, and the head takes its round (`campaign_stream_take_round`: the wave budget,
-   GROW, and its proposals into the queue, where they start at once, behind GROW's re-runs);
+life anyway). AN ANSWER LANDS AS IT IS COLLECTED (`campaign_stream_collected`), never at the next
+head step (SGF8-adhoc-07: an answer reached the next round's planner a median 329 s, p90 611 s, after
+it returned, 2774 obligation-minutes, the head 71 % busy in import gates and planning in minutes
+17-81): an answer that names no session -- a solve's UNSAT or NOT_ADMITTED, a hard-lane ask's, a
+worker that did not finish (answered first by why, `campaign_obligation_unfinished`) -- is appended
+to `obligation_results.jsonl` at once (`campaign_stream_land`: no head step reads the ledger, the
+head is its one writer), out of flight; one that names a session, staged in its worker, is OWED THE
+IMPORT GATE THERE (`stream_gate_owed`) and lands, session and verdict together, as the step that gated
+it returns (`campaign_stream_land_gated`) -- so the corpus holds only gated sessions, an answer
+naming a session stays in flight until its session is in the corpus, and no round waits for a gate;
+a GROW re-run naming a session is gated the same way before its swap. Between two head steps, in the
+head's hands, in this order:
+1. a GROW whose generation was built is TAKEN (`campaign_stream_grow_take`, §7.8): the generation
+   current, its re-runs queued first; then a round that returned is TAKEN (`campaign_stream_round_take`)
+   while no GROW builds or waits to be taken: its directory becomes `obligations-NNNN/`, and the head
+   takes its round (`campaign_stream_take_round`: the wave budget, GROW started for its exposures, and
+   its proposals into the queue, where they start at once, on the generation current then, as anything
+   queued before a GROW always could);
 2. the round owed STARTS when none plans (`campaign_stream_round_start`) -- owed once a session has
    landed, or once nothing is queued, running or returned unlanded but confirmations and the hard lane's
    asks running (z3 alone at the full budget, up to 30 min: SGF8-adhoc-40 round 6 idled the 13 lifts
@@ -1898,7 +1938,7 @@ life anyway). Between two head steps, in the head's hands, in this order:
    GROW's re-runs hold none: a re-run is a question left to wait for, which lands a session, and the
    round plans over the exposing sessions it stands in for, §7.8) --
    over inputs frozen now, written into `planning-NNNN/` beside its files:
-   `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
+   `corpus.txt`, the sessions landed (every one gated before it landed); `answers.jsonl`, the answers
    landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
    running (§7.3). It plans in the background, the campaign landing meanwhile, and no session or
    answer that lands meanwhile is the round's (§7.1). The obligation workers' own files -- each one's
@@ -1908,16 +1948,15 @@ life anyway). Between two head steps, in the head's hands, in this order:
    landing writes an unfinished one's (`campaign_obligation_unfinished`), a swap a re-run's (§7.8);
    its sessions' files it reads in its corpus read alone, and says so (`corpus_read`), from which on a
    swap may withdraw one of them;
-3. everything that returned meanwhile LANDS (`campaign_stream_step_start`): each verdict is appended to
-   `obligation_results.jsonl` (`campaign_stream_land`), GROW's returned re-runs swap in, each one no
-   reader of its exposing session holds (§7.8), and the
-   sessions the workers staged move into the corpus (`campaign_stream_move`); the next head step then
-   takes them in: ONE IMPORT gate (§6) over exactly them (the list `gate`, its summary
-   `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT), while no round starts
-   (`stream_gating`); once it returns, the round owed starts over them.
+3. GROW's returned re-runs, gated, swap in (`campaign_stream_step_start`), each one no reader of its
+   exposing session holds (§7.8), their sessions moving into the corpus (`campaign_stream_move`); the
+   next head step then takes in what returned owed its gate: ONE IMPORT gate (§6) over exactly them,
+   each where its worker staged it (the list `gate`, its summary `import_gate.json`; one BLOCKING
+   violation fails the campaign at IMPORT), and the confirmations' verdicts; as it returns, what it
+   gated lands, and the round owed starts over it.
 
-A round may also start while an attempt or a verdict step runs, every landed session being gated
-then. Until a round is taken no reader of the rounds sees it -- its name matches no `obligations-*`
+A round may also start while an attempt or a verdict step runs, every landed session gated before it
+landed. Until a round is taken no reader of the rounds sees it -- its name matches no `obligations-*`
 (the slot table, the workers, an attempt's COMPOSE) -- so an attempt composes only taken rounds
 (solr-18413 Z3S, one lane: a witness that returned three seconds after a step began, which gated six
 sessions and planned round 2 -- its planner out of 8 GB, then 1437 s waiting for 17.8 GB -- was
@@ -1961,12 +2000,9 @@ silent start of another. The exploration's end stops it (`campaign_planner_stop`
 head's EXIT trap. A head step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step
 or a round (§7.7) is the head's from then on (`outgrown`, joined per main at the larger heap: the
-two lanes run at once, so neither one's replaces the other's). The corpus and the ledger change only
-between two head steps, so a head step reads them as a landed whole; the busier the head, the more
-returns one step takes in. GROW still runs in the head's hands as a round is taken (its planner, the
-weave key and, where the key changed, the weave: 8 min of Z3S's take of round 2, with no start
-dispatched meanwhile); moving it into a lane is
-open (PERFORMANCE §5). The exploration has five ends, each stated in
+lanes run at once, so none's replaces another's). The corpus changes only between two head steps,
+so a head step reads it as a landed whole (the answer ledger, which no step reads, takes each answer
+as it is collected); the busier the head, the more returns one step gates. The exploration has five ends, each stated in
 `exploration.json` (stop, rounds, steps (head steps), generations, answers, attempts, every
 obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
 

@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
@@ -26,7 +27,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -135,7 +135,7 @@ public final class ObligationSolverMain {
      * <p>THE CORPUS STANDS WITHOUT WHAT GROW WITHDREW ({@link #standing}),
      * and a read is of whole sessions: GROW's swaps withdraw sessions while
      * solvers serve ({@code run_engine.sh campaign_stream_swap}), each named
-     * in {@link #WITHDRAWN} before its directory leaves.  A session the
+     * in {@link SessionDir#WITHDRAWN} before its directory leaves.  A session the
      * journal names once the read is done -- or one gone under it, failing
      * the read -- may have been read in part (a file missing reads as no
      * rows), and the corpus is read again without it; a session leaves once
@@ -234,7 +234,7 @@ public final class ObligationSolverMain {
 
     /**
      * A read of the sessions standing, {@code now} first, whole: read again,
-     * of what stands then, while {@link #WITHDRAWN} names a session of the
+     * of what stands then, while {@link SessionDir#WITHDRAWN} names a session of the
      * read once it is done, or one it read when it failed (a session gone
      * under it; a failure no withdrawal explains is thrown).  A session
      * leaves once, named first, and never returns, so a read none of whose
@@ -251,14 +251,14 @@ public final class ObligationSolverMain {
             try {
                 read = reading.read(standing);
             } catch (IOException failed) {
-                gone = withdrawn(iteration);
+                gone = SessionDir.withdrawn(iteration);
                 gone.retainAll(standing);
                 if (gone.isEmpty()) throw failed;
                 left.addAll(gone);
                 standing = standing(sessions);
                 continue;
             }
-            gone = withdrawn(iteration);
+            gone = SessionDir.withdrawn(iteration);
             gone.retainAll(standing);
             if (gone.isEmpty()) return new Whole<T>(read, left, again);
             left.addAll(gone);
@@ -313,37 +313,8 @@ public final class ObligationSolverMain {
         return bytes;
     }
 
-    /**
-     * The sessions GROW's swaps withdrew from the corpus, one per line,
-     * beside it: made empty as the exploration starts, before any solver
-     * serves, and each appended by the head before its directory leaves
-     * ({@code run_engine.sh campaign_explore}, {@code campaign_stream_swap}).
-     */
-    static final String WITHDRAWN = "withdrawn.txt";
-
-    /**
-     * The sessions {@link #WITHDRAWN} names.  Opened, never looked up first:
-     * an open reads the file as the head closed it (NFS close-to-open), where
-     * a stat may answer from a lookup cached as absent for up to a minute.
-     * Absent, it is a corpus whose exploration has not started: none left.
-     */
-    static Set<String> withdrawn(Path iteration) throws IOException {
-        Set<String> named = new HashSet<String>();
-        List<String> lines;
-        try {
-            lines = Files.readAllLines(iteration.resolve(WITHDRAWN),
-                    StandardCharsets.UTF_8);
-        } catch (NoSuchFileException absent) {
-            return named;
-        }
-        for (String line : lines) {
-            if (!line.trim().isEmpty()) named.add(line.trim());
-        }
-        return named;
-    }
-
     /** The session directory names of a corpus, sorted, but those GROW
-     *  withdrew ({@link #WITHDRAWN}). */
+     *  withdrew ({@link SessionDir#WITHDRAWN}). */
     static List<String> standing(Path sessions) throws IOException {
         List<String> names = new ArrayList<String>();
         try (DirectoryStream<Path> entries =
@@ -354,7 +325,7 @@ public final class ObligationSolverMain {
                 }
             }
         }
-        names.removeAll(withdrawn(sessions.getParent()));
+        names.removeAll(SessionDir.withdrawn(sessions.getParent()));
         Collections.sort(names);
         return names;
     }

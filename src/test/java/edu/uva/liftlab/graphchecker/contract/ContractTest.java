@@ -1441,23 +1441,43 @@ public class ContractTest {
         // gated before -- which it reads again only for a root the later
         // one brings (the mint second) -- and a gate of sessions the ledger
         // holds judges nothing.
+        //
+        // The gate after the first reads nothing of the session it judged
+        // before but its record in the ledger (what it minted and named):
+        // that session's own files may be gone or staged elsewhere.  A
+        // session gated where it is staged, before it lands, and the corpus
+        // the next gate meets, file the same rows; a session GROW withdrew
+        // (withdrawn.txt) is no longer of the epoch.
         for (boolean mintFirst : new boolean[] {true, false}) {
             Path epoch = iteration.newFolder().toPath();
             clean().read(epoch);
             unattributed.read(epoch);
             Path whole = epoch.resolve("whole.jsonl");
-            ImportGateMain.gate(epoch, Collections.<String>emptyList(), null,
-                    whole, "e");
-            Path ledger = epoch.resolve("gated.txt");
+            ImportGateMain.gate(epoch, gates(epoch, "s-gate", "s-abandoned"),
+                    null, whole, "e");
+            Path ledger = epoch.resolve("gated");
             Path stepped = epoch.resolve("stepped.jsonl");
+            String first = mintFirst ? "s-gate" : "s-abandoned";
+            String later = mintFirst ? "s-abandoned" : "s-gate";
+            ImportGateMain.gate(epoch, gates(epoch, first), ledger, stepped,
+                    "e");
+            // Staged elsewhere, as a replay's worker stages it.
+            Path staged = epoch.resolve("worker/sessions/" + later);
+            Files.createDirectories(staged.getParent());
+            Files.move(SessionDir.of(epoch, later).dir(), staged);
+            // The first one's own files gone: its record answers for it.
+            for (Path file : Files.newDirectoryStream(
+                    SessionDir.of(epoch, first).dir())) {
+                Files.delete(file);
+            }
+            List<Path> none = Collections.<Path>emptyList();
             ImportGateMain.gate(epoch, Collections.singletonList(
-                    mintFirst ? "s-gate" : "s-abandoned"), ledger, stepped,
+                    new ImportGateMain.Gate(staged, none)), ledger, stepped,
                     "e");
-            ImportGateMain.gate(epoch, Collections.<String>emptyList(),
-                    ledger, stepped, "e");
-            JsonObject again = ImportGateMain.gate(epoch,
-                    Arrays.asList("s-gate", "s-abandoned"), ledger, stepped,
-                    "e");
+            JsonObject again = ImportGateMain.gate(epoch, Arrays.asList(
+                    new ImportGateMain.Gate(staged, none),
+                    new ImportGateMain.Gate(SessionDir.of(epoch, first).dir(),
+                            none)), ledger, stepped, "e");
             List<String> filed = Files.readAllLines(stepped);
             assertEquals("mint first: " + mintFirst,
                     new LinkedHashSet<>(Files.readAllLines(whole)),
@@ -1465,6 +1485,22 @@ public class ContractTest {
             assertEquals("invariants 1 and 11, each once: " + filed, 2,
                     filed.size());
             assertEquals(0, again.get("sessions").getAsInt());
+            // Withdrawn, the first is no longer of the epoch: of the three
+            // sessions stating SEED, the epoch holds two.
+            Files.write(epoch.resolve(SessionDir.WITHDRAWN),
+                    Collections.singletonList(first));
+            Path late = epoch.resolve("late.jsonl");
+            Rows another = clean();
+            another.id = "s-late";
+            another.read(epoch);
+            ImportGateMain.gate(epoch, gates(epoch, "s-late"), ledger, late,
+                    "e");
+            assertEquals("the epoch without " + first + ": "
+                            + Files.readAllLines(late),
+                    1L, Files.readAllLines(late).stream()
+                            .filter(line -> line.contains(
+                                    "2 of 2 sessions state role SEED"))
+                            .count());
         }
         // 12: a reference write's container state is an older write of the
         // session (v7); a version no row states (the placeholder's minted
@@ -1680,13 +1716,24 @@ public class ContractTest {
         return rows;
     }
 
+    /** The gate's list of the sessions {@code ids} of an epoch's corpus. */
+    private static List<ImportGateMain.Gate> gates(Path epoch, String... ids) {
+        List<ImportGateMain.Gate> gates = new ArrayList<>();
+        for (String id : ids) {
+            gates.add(new ImportGateMain.Gate(SessionDir.of(epoch, id).dir(),
+                    Collections.<Path>emptyList()));
+        }
+        return gates;
+    }
+
     /** The violations one set of sessions states. */
     private List<GapRow> gate(Rows... sessions) throws IOException {
         Path root = iteration.newFolder().toPath();
         for (Rows rows : sessions) rows.read(root);
-        return RowInvariants.check(Collections.<SessionDir>emptyList(),
+        return RowInvariants.check(
+                Collections.<RowInvariants.Gated>emptyList(),
                 SessionDir.sessionsIn(root),
-                Collections.<String, List<JsonObject>>emptyMap());
+                Collections.<String, List<JsonObject>>emptyMap()).gaps;
     }
 
     /** That rule, that class, that subject -- and nothing silent. */
