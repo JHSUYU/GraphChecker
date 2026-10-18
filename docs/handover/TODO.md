@@ -159,7 +159,7 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   paths' re-runs and havocs grown regions otherwise) -- no tests/docs yet.
 - Next: a clean full shell-suite run (from a /localtmp copy), fix goal 4, tests + docs for goal 6, then a canary of
   solr-adhoc-13 alone. Goal 5's A/B timing (11.5 vs 62.6 s on a loaded lift11) needs a rerun on an idle host.
-- Traps: fixture manifests must state maxWorldDepth; STREAM-CAP is timing-sensitive; a fixture that never finds room
+- Traps: fixture manifests must state maxWorldDepth; a fixture that never finds room
   waits forever instead of failing.
 
 **D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore, head ee0edfcb1.**
@@ -440,11 +440,8 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   make them one question -- a query design change, and what the depth bound stands in for.
 - **g. Cleanup owed:** delete `MessageDoors#refreshing` (a no-op for trees before final4) and its external-callers row
   once no run reads an older tree; REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
-- **h. Flaky tests:** ScheduleLogTest's timing-sensitive stall cases are gone (test cut 2026-10-18; the class keeps
-  one case per rule, 5 s). Timing-sensitive still: `src/test/shell/run_engine_campaign_helpers_test.sh`'s stream timing assertions ("NEXT did not start until LONG
-  ended: a barrier, not a stream"; "exploration.json does not name the end, the coalesced attempts, the cancelled and
-  the reaped"): 3 of 3 failed on lift08 while it carried round Z3D's workers (2026-10-13, solr-zk4 bfada52ac, whose
-  change no test reads), and the same tree passed on lift06, as did a909fa5c7 on lift08 between them.
+- **h. Timed tests:** the suites keep no timing-sensitive case (test cut 2026-10-18); what stays timed has seconds of
+  margin (STREAM-1's 3 s LONG obligation, the REPLAY-BOUND rows' 1-5 s bounds, SOLVER-SERVICE's idle end).
 
 - **i. The Overseer's idle wait: DONE in `gc/solr-final9` (cd98d779dc).** SGF2's reindex seed recording stalled
   because a missed child watch of `/overseer/queue` parked the never-timeout idle wait for good (evidence
