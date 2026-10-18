@@ -2630,6 +2630,11 @@ public final class Corpus implements Arms.Rows {
             return claim.leaves;
         }
 
+        /** How many claims and answers over them it holds. */
+        public int size() {
+            return claimed.size() + held.size();
+        }
+
         /** An answer {@link #held} over a claim is read. */
         public void readHeld() {
             read = true;

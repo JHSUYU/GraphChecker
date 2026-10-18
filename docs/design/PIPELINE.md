@@ -660,13 +660,19 @@ and a member joins the closure only through them, as a writer or a producer belo
 what the occurrence touches (two readers of one location pass each other nothing).
 
 The walk runs in SUPERSTEPS on the planner host's cores (`ClosurePlanner.CORES`, `Walk#ahead`,
-`#take`): the demands at the head of the queue, up to two a core, are each walked at once against
-the state they stand in, each walk a `Step` that mutates nothing it shares and says, in its order,
+`#compute`, `#take`): of the demands at the head of the queue, two a core, those whose step is not
+held are walked at once against the state they stand in -- in queue order, a core's worth at a time,
+while the steps held weigh less than a quarter of the heap the old generation left free (`Walk#budget`,
+`Step#weight`), and never one that a step before it names as a successor (`Says#successors`: taking
+that one grows it) -- each walk a `Step` that mutates nothing it shares and says, in its order,
 what the one-at-a-time walk changes there (a successor, a gap, a gap or fault-less door said once per
-key, the occurrences offered once per key, a store version's earlier versions); the steps are then
-taken in queue order, each the walk of its demand's state as it is taken -- one an earlier step of the
-superstep grew (`Demand#version`) is walked again there -- so the plan is the one-at-a-time walk's,
-byte for byte, however many cores ran it. Inside one step, what COMPOSE keeps of each path and
+key, the occurrences offered once per key, a store version's earlier versions); the demands are then
+taken in queue order, the head and each next one while its step held is of its state then
+(`Walk#ready`, `Demand#version`): one an earlier take grew waits for the next superstep, which walks
+it again -- so the plan is the one-at-a-time walk's, byte for byte, however many cores ran it, and on
+one core no step is computed ahead. A step reads its group's index, built on the planner's thread
+before the superstep (`Walk#reads`); one that threw ahead is walked again in the order, so what the
+walk throws is what the one-at-a-time walk throws. Inside one step, what COMPOSE keeps of each path and
 delivery, the folds of its decisions, contributed values and fixed point, and its expansions run in
 parts on the cores too, taken in order (`Walk#asked`, `#each`); once the row-connected demand runs dry,
 the walks of the static candidates the bound still plans are computed at once, in the turns
