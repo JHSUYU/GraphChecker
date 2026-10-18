@@ -15,8 +15,11 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.FrozenSet;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.HeapWatch;
+import edu.uva.liftlab.graphchecker.contract.IdentitySet;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -981,9 +984,10 @@ public final class ClosurePlanner {
          *  two references a handoff ({@link PairSet}), never a key spelled
          *  of both (SGF8-adhoc-05 round 5: 5.8 M of them, 1.7 GB). */
         private final PairSet paired = new PairSet();
-        /** The demanded reads whose writers it expanded. */
-        private final Set<ReadRow> expandedReads = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<ReadRow, Boolean>(1));
+        /** The demanded reads whose writers it expanded ({@link
+         *  IdentitySet}: a row's equality is its identity). */
+        private final Set<ReadRow> expandedReads =
+                new IdentitySet<ReadRow>(1);
         /** How many of its contributed values' stated reads it expanded, in
          *  {@link #contributed}'s order (which only appends). */
         private int expandedContributed;
@@ -1190,8 +1194,8 @@ public final class ClosurePlanner {
         boolean whole = true;
         /** The decisions at its flip sites whose symbols it holds (this
          *  walk's, beside {@link #before}'s). */
-        private final Set<DecisionRow> decisions = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<DecisionRow, Boolean>());
+        private final Set<DecisionRow> decisions =
+                new IdentitySet<DecisionRow>(8);
         /** How many of the demand's contributed values' symbols it holds,
          *  in {@link Demand#contributed}'s order (which only appends). */
         int contributed;
@@ -1407,8 +1411,7 @@ public final class ClosurePlanner {
         /** Its group's reads, indexed before it ran ({@link Walk#reads}). */
         private final GroupReads group;
         private final PairSet paired = new PairSet();
-        private final Set<ReadRow> expanded = Collections.newSetFromMap(
-                new java.util.IdentityHashMap<ReadRow, Boolean>());
+        private final Set<ReadRow> expanded = new IdentitySet<ReadRow>(8);
         private int contributed;
         private Named named;
         /** What its walk claimed of the leaves its order alone makes
@@ -2585,6 +2588,10 @@ public final class ClosurePlanner {
                 }
                 at.put(each.getKey(), held);
             }
+            // Held as they were made, for good: most hold one symbol.
+            symbolsAt.replaceAll((key, symbols) -> FrozenSet.of(symbols));
+            returning.replaceAll((key, symbols) -> FrozenSet.of(symbols));
+            Held.trimmed(bySymbol);
         }
     }
 

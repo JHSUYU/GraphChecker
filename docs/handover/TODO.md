@@ -124,8 +124,8 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   peaking near 9.4 GB live; a lowering frame's side conditions are held by reference and `Independence`'s leaf sets as
   arrays (SGF7-adhoc-10's subset: 1626 -> 1008 MB after the round, adhoc-40's 1649 -> 1163). What is left grows with the
   corpus and the rounds, spread wide (STATUS 37 has the measured shares): (1) strings -- the corpus indexes' composed
-  keys, the joins', the endpoints' and locations' (done 2026-10-18, OPTIMIZATIONS 1.26-1.28: 05 r5's planner 12.7 ->
-  5.0 GB at its walk's end); left: the lowered and shared bodies' texts the memos keep for the round, and the
+  keys, the joins', the endpoints' and locations' (done 2026-10-18, OPTIMIZATIONS 1.26-1.29: 05 r5's planner 12.7 ->
+  4.0 GB at its walk's end); left: the lowered and shared bodies' texts the memos keep for the round, and the
   expression nodes the memo's keys hold strongly; (2) the slot table, whose
   rounds' changes every planner folds (`SlotTable#read`: 966K slots after round 5; its endpoints and frames held once
   per read since 1.28) and whose round 6 change file was 2.9 GB, a full endpoint per row; (3) the walk's per-session repetition (each session's demanded reads ask the same

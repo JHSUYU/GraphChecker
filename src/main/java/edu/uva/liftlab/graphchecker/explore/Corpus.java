@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.FrozenSet;
+import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -28,6 +29,8 @@ import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RowHold;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -365,13 +368,9 @@ public final class Corpus implements Arms.Rows {
                 new ConcurrentHashMap<String, Set<String>>();
         /** {@link #leaves}: the variables one term or read rests on; a
          *  flip's dependence asks every earlier condition of its path
-         *  again.  Each a {@link HeldLeaves} over {@link #leafNames}. */
+         *  again.  Each a {@link HeldLeaves}. */
         final Map<String, Set<String>> leaves =
                 new ConcurrentHashMap<String, Set<String>>();
-        /** Every name a leaf set of this session holds, once: a location
-         *  leaf is spelled anew for each term and read that reaches it. */
-        final Map<String, String> leafNames =
-                new ConcurrentHashMap<String, String>();
         /** term -> {@link #readLocations}, {@link #readEvents}; expression
          *  ref -> {@link #expressionStateReads}. */
         final Map<String, Set<String>> readLocations =
@@ -425,6 +424,7 @@ public final class Corpus implements Arms.Rows {
             for (DecisionRow row : session.decisions()) {
                 add(decisions, row.occurrence().id(), row);
             }
+            Held.trimmed(decisions);
             for (AttachRow row : session.attaches()) {
                 attachBySymbol.put(row.symbol(), row);
             }
@@ -504,6 +504,8 @@ public final class Corpus implements Arms.Rows {
                 }
                 add(readsOn, row.endpoint().occurrence().id(), row);
             }
+            Held.trimmed(readsOn);
+            Held.trimmed(writesOn);
         }
     }
 
@@ -2102,55 +2104,78 @@ public final class Corpus implements Arms.Rows {
             throw new UncheckedIOException(unreadable);
         }
         List<Fact> facts = new ArrayList<Fact>();
+        // One stance per context and one string per name, held by every
+        // fact standing there: each event spells its context and ids anew
+        // (SGF8-adhoc-05 round 5: 0.9 M facts, 2.3 M strings, 244 MB).
+        Map<String, ContextShape.Stance> stances =
+                new HashMap<String, ContextShape.Stance>();
+        Map<String, String> renders = new HashMap<String, String>();
         for (ScheduleEvent event : events) {
+            ContextShape.Stance stance = stance(stances, event.context());
+            String received = NAMES.intern(event.received());
+            String endpoint = NAMES.intern(event.endpoint());
+            String occurrence = NAMES.intern(event.occurrence());
             // A context that took a message into itself stands under it,
             // in or out of a region.
-            if (!event.received().isEmpty()) {
-                ContextShape.Stance at =
-                        ContextShape.Stance.ofSend(event.context());
-                if (at != null
-                        && !(at.context() instanceof CausalContext.Anchor)) {
-                    facts.add(new Fact(Fact.Kind.TAKEN_IN, at.render(),
-                            event.received(), null));
-                }
+            if (!received.isEmpty() && stance != null
+                    && !(stance.context() instanceof CausalContext.Anchor)) {
+                facts.add(new Fact(Fact.Kind.TAKEN_IN, renders
+                        .computeIfAbsent(stance.render(), NAMES::intern),
+                        received, null));
             }
             // Where every message was sent from, in or out of a region: a
             // daemon tick's heartbeat is sent from the tick's root alone.
             if (event.kind() == ScheduleEvent.Kind.SEND
-                    && !event.endpoint().isEmpty()) {
-                ContextShape.Stance stance =
-                        ContextShape.Stance.ofSend(event.context());
-                if (stance != null) {
-                    facts.add(new Fact(Fact.Kind.SENDER_STANCE,
-                            event.endpoint(), "", stance));
-                }
+                    && !endpoint.isEmpty() && stance != null) {
+                facts.add(new Fact(Fact.Kind.SENDER_STANCE, endpoint, "",
+                        stance));
             }
-            if (event.occurrence().isEmpty()) {
+            if (occurrence.isEmpty()) {
                 // Taken in at a turn's root, before any region of it opened
                 // (a queue item a turn consumes first): the turn's every
                 // occurrence is its receiver.  A turn standing on the
                 // message (a request's handler) is what it started, no door
                 // of it.
-                ContextShape.Stance at =
-                        ContextShape.Stance.ofSend(event.context());
-                if (!event.received().isEmpty() && at != null) {
-                    facts.add(new Fact(at.context() instanceof
+                if (!received.isEmpty() && stance != null) {
+                    facts.add(new Fact(stance.context() instanceof
                             CausalContext.Anchor ? Fact.Kind.HANDLER_STANCE
-                            : Fact.Kind.RECEIVING_STANCE, event.received(),
-                            "", at));
+                            : Fact.Kind.RECEIVING_STANCE, received, "",
+                            stance));
                 }
                 continue;
             }
             if (event.kind() == ScheduleEvent.Kind.SEND
-                    && !event.endpoint().isEmpty()) {
-                facts.add(new Fact(Fact.Kind.SENDER, event.endpoint(),
-                        event.occurrence(), null));
-            } else if (!event.received().isEmpty()) {
-                facts.add(new Fact(Fact.Kind.RECEIVER, event.received(),
-                        event.occurrence(), null));
+                    && !endpoint.isEmpty()) {
+                facts.add(new Fact(Fact.Kind.SENDER, endpoint, occurrence,
+                        null));
+            } else if (!received.isEmpty()) {
+                facts.add(new Fact(Fact.Kind.RECEIVER, received, occurrence,
+                        null));
             }
         }
         return facts;
+    }
+
+    /** The names a corpus derives -- the ids and stance renders its
+     *  schedule facts name, the leaves its leaf sets hold -- one string a
+     *  name in this JVM while anything holds it. */
+    private static final Interner<String> NAMES =
+            Interners.newWeakInterner();
+
+    /** A schedule context's stance ({@link ContextShape.Stance#ofSend}),
+     *  one per context of one session's schedule: its node and causal
+     *  context, its handoffs aside. */
+    private static ContextShape.Stance stance(
+            Map<String, ContextShape.Stance> stances, String sendContext) {
+        int first = sendContext.indexOf('|');
+        int second = first < 0 ? -1 : sendContext.indexOf('|', first + 1);
+        String key = second < 0 ? sendContext
+                : sendContext.substring(0, second);
+        if (stances.containsKey(key)) return stances.get(key);
+        ContextShape.Stance stance = ContextShape.Stance.ofSend(key);
+        stances.put(key, stance == null ? null : new ContextShape.Stance(
+                NAMES.intern(stance.node()), stance.context()));
+        return stances.get(key);
     }
 
     private void indexSchedule(String sessionId, List<Fact> facts) {
@@ -2849,7 +2874,7 @@ public final class Corpus implements Arms.Rows {
         if (of == null) return compute.get();
         Set<String> found = of.leaves.get(key);
         if (found == null) {
-            found = new HeldLeaves(compute.get(), of.leafNames);
+            found = new HeldLeaves(compute.get());
             of.leaves.put(key, found);
         }
         return found;
@@ -2875,9 +2900,9 @@ public final class Corpus implements Arms.Rows {
         if (found != null) return found;
         if (claims != null && of.sharedSeqs.contains(read.seq())) {
             return claims.claim(sessionId, read,
-                    () -> new HeldLeaves(compute.get(), of.leafNames));
+                    () -> new HeldLeaves(compute.get()));
         }
-        found = new HeldLeaves(compute.get(), of.leafNames);
+        found = new HeldLeaves(compute.get());
         if (of.sharedSeqs.contains(read.seq())) {
             of.sharedBy.put(key, read);
             of.leaves.put(key, found);
@@ -2995,7 +3020,9 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * ONE LEAF SET AS A SESSION KEEPS IT ({@link #leaves}): its names in
-     * the order computed, each the session's one instance of it, read-only.
+     * the order computed, each the JVM's one instance of it ({@link
+     * #NAMES}: the sessions' leaf sets name the same symbols and
+     * locations), read-only.
      * Held as the walk's LinkedHashSet, with a location leaf spelled anew
      * in each, the leaf sets were the largest thing a planner held after a
      * round (SGF7, offline: 478 of solr-adhoc-40's 1582 MB over 12 of its
@@ -3006,13 +3033,10 @@ public final class Corpus implements Arms.Rows {
     static final class HeldLeaves extends AbstractSet<String> {
         private final String[] names;
 
-        HeldLeaves(Set<String> computed, Map<String, String> held) {
+        HeldLeaves(Set<String> computed) {
             names = new String[computed.size()];
             int at = 0;
-            for (String name : computed) {
-                String one = held.putIfAbsent(name, name);
-                names[at++] = one == null ? name : one;
-            }
+            for (String name : computed) names[at++] = NAMES.intern(name);
         }
 
         @Override
