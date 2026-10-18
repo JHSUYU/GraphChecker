@@ -64,7 +64,7 @@ checkouts) and runs the series. **Solr is in its last round** (SGF3, 2026-10-13)
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
 [AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md),
-[PARALLEL.md](docs/handover/PARALLEL.md) and [CHECKING.md](docs/handover/CHECKING.md) as its own long-term memory.
+[PARALLEL.md](docs/handover/PARALLEL.md), [CHECKING.md](docs/handover/CHECKING.md) and [LESSONS.md](docs/handover/LESSONS.md) as its own long-term memory.
 
 | # | document | what it holds |
 | --- | --- | --- |
@@ -76,6 +76,8 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
 | 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
 | 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked: the HBase port's refactor list (owner 2026-10-16). |
+| 6c | [docs/handover/LESSONS.md](docs/handover/LESSONS.md) | The traps we fell into and how we work around them: shell, zombie processes, NFS, heaps, Java 8 concurrency; how to measure performance and how to debug and verify |
+| 6d | [docs/handover/REFACTOR-PLAN.md](docs/handover/REFACTOR-PLAN.md) | The owner-approved 2026-10-18 rewrite: rules, workstreams A-H with evidence and acceptance, the order; acceptance = all 20 Solr cases rerun |
 | 7 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
