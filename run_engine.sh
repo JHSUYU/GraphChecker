@@ -1262,7 +1262,8 @@ do_compose() {
   ensure_output_directory "$(dirname "${composed_smt}")"
   local -a selection=() cap=()
   local declared engine_need_mb status said composed
-  engine_need_mb=$(campaign_solver_heap_mb "${compose_sessions_dir}")
+  engine_need_mb=$(campaign_solver_heap_mb "${compose_sessions_dir}" \
+    "${campaign_solver_live_pct}")
   declared=$(campaign_declared_target_occurrence)
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
@@ -3511,8 +3512,11 @@ names it; nothing withdrawn"
 campaign_solver_idle_s=300
 
 # A SOLVER'S HEAP IS ITS CORPUS'S.  Its live set is the corpus it reads,
-# about its session files' size (campaign_corpus_mb) times
-# campaign_solver_live_pct, measured after a full collection with the
+# about its session files' size (campaign_corpus_mb) times the share its
+# solvers measured after their last read (ObligationSolverMain#stateLive,
+# <iteration>/solver_live/: the read of the largest corpus,
+# campaign_solver_measured_pct), before any measure, and for a composer
+# (do_compose), campaign_solver_live_pct, measured after a full collection with the
 # expression tables compact (ExpressionTable): solr-adhoc-39 PV7 3493 MB over
 # 9974 MB of sessions (35 %), solr-18413 SGF6 2527 over 5450 (46 %),
 # solr-bugs-snapshot-no-active SGF6 1554 over 4792 (32 %) -- as gson trees
@@ -3646,7 +3650,9 @@ campaign_corpus_mb() {
 # stated beside the corpus for every host: the measure fell short).
 campaign_solver_now_mb() {
   local now outgrown=0 stated="$(dirname "${1:-.}")/solver_outgrown_mb"
-  now=$(( $(campaign_corpus_mb "${1:-}") * campaign_solver_live_pct \
+  local pct=${2:-}
+  [[ -n "${pct}" ]] || pct=$(campaign_solver_measured_pct "${1:-}")
+  now=$(( $(campaign_corpus_mb "${1:-}") * pct \
     * campaign_solver_gc_pct / 10000 ))
   [[ ! -s "${stated}" ]] || outgrown=$(<"${stated}")
   (( now >= outgrown )) || now=${outgrown}
@@ -3665,7 +3671,7 @@ campaign_solver_now_mb() {
 campaign_solver_heap_mb() {
   local most heap
   most=$(campaign_solver_most_heap_mb)
-  heap=$(( 2 * $(campaign_solver_now_mb "${1:-}") ))
+  heap=$(( 2 * $(campaign_solver_now_mb "${1:-}" "${2:-}") ))
   (( heap <= most )) || heap=${most}
   printf '%s\n' "${heap}"
 }
@@ -3689,8 +3695,16 @@ campaign_solver_most_heap_mb() {
 # is given (campaign_solver_most_heap_mb), past which none is given more.
 campaign_solver_retire_mb() {
   (( $1 < $(campaign_solver_most_heap_mb) )) || { printf '0\n'; return 0; }
-  printf '%s\n' "$(( $1 * 10000 / (campaign_solver_live_pct \
+  printf '%s\n' "$(( $1 * 10000 / (${2:-${campaign_solver_live_pct}} \
     * campaign_solver_gc_pct) ))"
+}
+
+campaign_solver_measured_pct() {
+  cat -- "$(dirname "${1:-.}")/solver_live"/* 2>/dev/null \
+    | awk -v least="${campaign_solver_live_pct}" '
+        $2 > corpus || ($2 == corpus && $1 > live) {live = $1; corpus = $2}
+        END {print corpus > 0 ? int((100 * live + corpus - 1) / corpus) \
+          : least}'
 }
 
 # campaign_solver_outgrown <sessions> <heap_mb>: a solver of the corpus ran
@@ -3987,7 +4001,8 @@ campaign_start_solver() {
       --question-room-mb "${campaign_question_mb}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
-      --retire-past-mb "$(campaign_solver_retire_mb "${heap}")" \
+      --retire-past-mb "$(campaign_solver_retire_mb "${heap}" \
+        "$(campaign_solver_measured_pct "${sessions}")")" \
       </dev/null >>"$(campaign_solver_log "${sessions}")" 2>&1 || status=$?
     (( status != campaign_jvm_out_of_heap_status )) \
       || campaign_solver_outgrown "${sessions}" "${heap}"

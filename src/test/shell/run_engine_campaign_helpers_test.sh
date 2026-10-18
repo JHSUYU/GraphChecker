@@ -2838,6 +2838,43 @@ done <<'EOF_HEAP'
 16384|0|4096 2048|8192|7040|10922
 EOF_HEAP
 
+# SOLVER-MEASURED: once a corpus's solvers stated their live set after a read
+# (<iteration>/solver_live/: "<live MB> <corpus MB>", ObligationSolverMain),
+# a solver is sized by the share the read of the largest corpus measured,
+# rounded up, not campaign_solver_live_pct; a composer keeps that rule.  Per
+# row: the statements, the corpus's MB, the share, a solver's heap, charge
+# and retire point, and a composer's heap (engine heap 16384).
+while IFS='|' read -r sm_stated sm_corpus sm_pct sm_heap sm_need sm_retire \
+    sm_compose; do
+  rm -rf -- "${solver_heap_dir}"
+  mkdir -p "${solver_heap_dir}/sessions" "${solver_heap_dir}/solver_live"
+  printf '%s %s\n' "$(date +%s)" "${sm_corpus}" >"${solver_heap_dir}/corpus_mb"
+  sm_at=0
+  for sm_one in ${sm_stated}; do
+    sm_at=$((sm_at + 1))
+    echo "${sm_one/:/ }" >"${solver_heap_dir}/solver_live/host.${sm_at}"
+  done
+  sm_said=$(
+    engine_memory_mb=16384
+    sm_got=$(campaign_solver_measured_pct "${solver_heap_dir}/sessions")
+    sm_h=$(campaign_solver_heap_mb "${solver_heap_dir}/sessions")
+    printf '%s %s %s %s %s' "${sm_got}" "${sm_h}" \
+      "$(campaign_solver_need_mb "${solver_heap_dir}/sessions")" \
+      "$(campaign_solver_retire_mb "${sm_h}" "${sm_got}")" \
+      "$(campaign_solver_heap_mb "${solver_heap_dir}/sessions" \
+        "${campaign_solver_live_pct}")"
+  )
+  [[ "${sm_said}" == "${sm_pct} ${sm_heap} ${sm_need} ${sm_retire} \
+${sm_compose}" ]] \
+    || fail "SOLVER-MEASURED: [${sm_stated}] over ${sm_corpus} MB: \
+${sm_said}"
+done <<'EOF_MEASURED'
+|20000|50|16384|18625|0|16384
+3000:20000 900:300|20000|15|9000|7469|40000|16384
+3001:20000|20000|16|9600|7788|40000|16384
+600:300|3000|200|16384|12250|0|4500
+EOF_MEASURED
+
 # COMPOSE-HEAP: a composer starts at its corpus's heap, as a solver's
 # (do_compose: campaign_solver_heap_mb of the sessions it reads).  Per row:
 # the corpus's MB, the heap its composer starts at.

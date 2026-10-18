@@ -1163,7 +1163,11 @@ host's question is charged a solver's start (§7.7), and the solver it starts ta
 whole (`campaign_start_solver <dir> <sessions> <charge>`: the ledger row renamed, held by the solver,
 so the start's release drops nothing): the host is charged one solver, never two -- charged a second
 beside the first, no cold host of SGF7-adhoc-39 (21 GB of sessions) had room, and 24 questions read the
-corpus in JVMs of their own, 14-21 min each, their hosts never warm.
+corpus in JVMs of their own, 14-21 min each, their hosts never warm. A SOLVER IS SIZED BY WHAT SOLVERS MEASURED: after each corpus read a
+solver states its live set after a full collection beside the corpus (`<iteration>/solver_live/`,
+`ObligationSolverMain#stateLive`), and later solvers of the corpus take the share of its text the read of the
+largest corpus held (`campaign_solver_measured_pct`; 11-15 % after compaction, 50 % before any measure, and
+for a composer always).
 
 **NO QUESTION IS ANSWERED IN A CORPUS JVM OF ITS OWN.** A question whose host had no room to start its
 solver now (`campaign_solve_obligation` 3), or that its solver took and ended on or failed (1), is no
