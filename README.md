@@ -31,7 +31,7 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
    heads per lift, the cases sharing the replay slots); several sweeps side by side (the named-bug baseline, the reruns
    of cut cases, newly added checks). Give a full sweep `CASE_TIMEOUT_SECONDS=10800` (hdfs-11741 `14400`): under 20
    heads the 90-min default cut six cases that closed at 3 h.
-3. **Across development:** up to 4 coding agents, each on its own branch, sparse worktree, frozen snapshot and
+3. **Across development:** up to 5 coding agents (owner 2026-10-18), each on its own branch, sparse worktree, frozen snapshot and
    `GC_OUT`, each running its offline gates and at most 2 live validation runs, beside the lead's rounds; review and
    diagnosis agents read only. A landed fix is validated at once on the cases it touches, never by waiting for a round.
 4. **Isolation over NFS is what makes this safe:** worktrees and snapshots without `third_party/`
@@ -72,7 +72,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |
-| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
+| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 5 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
 | 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
 | 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
 | 6b | [docs/handover/OPTIMIZATIONS.md](docs/handover/OPTIMIZATIONS.md) | Every optimization so far -- parallelism and memory, the schedule, exploration rules, ZooKeeper -- with its measured effect and commit, and the ones designed but not done, ranked: the HBase port's refactor list (owner 2026-10-16). |

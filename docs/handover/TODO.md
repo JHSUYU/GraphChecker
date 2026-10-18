@@ -237,6 +237,23 @@ decide whether the seed replay can overlap INSTRUMENT/PLAN.
 **G NFS leftovers -- not started.** Worker schedule prefix/suffix (625 MB in 05 round 0) and flip query files
 (1.47 GB round 4) to gzip through ArtifactIO (grep every reader); `campaign_solver_read_seed_mb_s` 20 -> ~160.
 
+**How to resume: five coding agents in parallel (owner 2026-10-18), one per row, own branch and hosts.** Resume an
+agent's branch where it stands; tell each the other agents' files before it commits; the lead merges and gates.
+
+| agent | work | branch (from) | hosts | estimate at the measured pace |
+|---|---|---|---|---|
+| 1 scheduler | C goal 4 (measured charges, head host runs replays) + goal 6 tests/docs + a clean full shell-suite run, then the 13 canary | solr-stream2 (dd0a1ce64) | lift05-07, lift11 for gates | 2-3 h |
+| 2 exploration | D1: KeyGate on 07, 05 r2, 14, Z3S-18413, merge the armkey key; D2: the generational bound (design above) | solr-explore (ee0edfcb1) | lift08, lift14 | 3-5 h (critical path) |
+| 3 VM decode | E goal 3: each expression definition sent once per session (VM exp/expression.cpp + the Java decoder), skip the truncation scan, parallel record decode | solr-replay (fc70638e2) | lift15 (VM build: full checkout + gcc-6), lift13 | 3-5 h (critical path) |
+| 4 replay end | E goal 2 (replay need by the 90th percentile of peaks + out-of-heap rerun) and goal 4 (stop at the window close after checking every reader of the post-close rows) | solr-replay-end (from fc70638e2) | lift09, lift10, lift12 | 2-3 h |
+| 5 serial + NFS | F (split SEED's ~450 unattributed s, INSTRUMENT, the seed replay by phase; then cache/parallelize) and G (gzip worker schedule and flip query files; solver read seed 160) | solr-serial (a28597a8f) | lift02-04 | 2-4 h |
+
+Agents 3 and 4 both touch the replay runtime: agent 3 owns the VM serializer and the decoder, agent 4 the end/stop
+logic and run_engine's replay charges; merge 3 before 4. Merging solr-replay (fc70638e2) into solr-int conflicts
+only in docs/handover/OPTIMIZATIONS.md (row numbers): renumber its row after the last. Expected wall time for the
+construction: ~4-6 h (the measured pace of 2026-10-18: compaction 4 steps ~3 h, the holding composer ~4 h, the GROW
+pipeline ~3 h with its review fixes, EMIT ~1.7 h, the stall-end fix ~1.5 h), then ~1 h integration, then the rerun.
+
 **Then the acceptance:** a snapshot of the integrated system/solr, all 20 Solr cases each alone (bug checks first),
 debug, readings (`analysis/solr-2026-10-14/final-readings.md`), STATUS "Solr checks", STATE, TODO, OPTIMIZATIONS.
 

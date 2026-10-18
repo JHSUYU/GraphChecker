@@ -16,7 +16,7 @@ cost us time at least once; the date or the case it came from is named so it can
   solr-armkey -- found only by reading the code and git log, not by literature.
 - Decide engineering questions yourself and report; ask the owner only about his own rules (e.g. rerunning a
   case that has a result, the world depth he controls).
-- At most 4 coding agents; one branch and worktree each; give each agent its own hosts; the lead merges;
+- At most 5 coding agents (owner 2026-10-18); one branch and worktree each; give each agent its own hosts; the lead merges;
   one review at complex places (concurrency, schedule, soundness). Both reviews of 2026-10-17/18 found real bugs
   (a JDK 8 HashMap race; a witness that could be swapped out).
 

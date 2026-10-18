@@ -2,7 +2,7 @@
 
 This file is part of every agent's long-term memory ([RULES.md](RULES.md)). The binding numbers, from
 the owner on 2026-10-04 ("具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"):
-- **At most 4 coding agents at once.**
+- **At most 5 coding agents at once** (owner 2026-10-18: "我们给5个agent并行"; 4 before).
 - Read-only investigators and reviewers may be a few more.
 - A review agent is used only at key, complex places: VM, schedule and identity, soundness of
   COMPOSE and CONFIRM. One per batch, before the merge.
@@ -28,7 +28,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
   reviewing a short diff.
 
 **How many and how**
-- **At most 4 coding agents at once** (owner 2026-10-04: "具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"; read-only investigators and reviewers may be a few more, reviews only at key, complex places; refill a slot only with the current round's critical path) (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
+- **At most 5 coding agents at once** (owner 2026-10-18, raised from 4; owner 2026-10-04: "具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"; read-only investigators and reviewers may be a few more, reviews only at key, complex places; refill a slot only with the current round's critical path) (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
   usage limit in two hours on 2026-10-02) plus short read-only reviewers; no agent spawns sub-agents; ask for short reports (≤ 15–20 lines);
   no idle polling loops (use a background command that exits on the condition, or a monitor).
 - Every coding agent gets its **own git worktree** (`isolation: worktree`) and branch, a disjoint
