@@ -249,11 +249,6 @@ public final class Z3Incremental implements AutoCloseable {
         return said.toString();
     }
 
-    /** How many plain pairs ask at once. */
-    int plainPairs() {
-        return plain.pairs.size();
-    }
-
     /**
      * The same scoped z3s asked under a deadline of their asker's too
      * ({@link System#nanoTime}): past it a question is undecided --
