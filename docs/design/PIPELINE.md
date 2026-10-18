@@ -3103,7 +3103,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    shared part from one file written beside the query (the lifts' links are 1 Gb/s), and is signalled
    and ended over ssh; one that has not read the shared part within 120 s gives its questions back
    to the other pairs (SGF7-adhoc-10: one pair beside its 16 GB composer ran 315 z3 runs in the
-   30 min decide budget and left questions undecided). A
+   30 min decide budget and left questions undecided). Their ssh connections open IN WAVES: at most
+   `Z3Incremental#SSH_STARTS_PER_HOST` (4) a host until each shell prints its pid, so sshd's
+   MaxStartups refuses none (48 at once to one lift: 12 refused; 4 at a time: none); one refused
+   before its shell ran is started again, at most `SSH_ATTEMPTS` (3) times, a second apart more each
+   time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst). A
    pair holds its slots while it lives and gives them back to whoever waits for room once it has no
    question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
    take turns where the room holds no more. The valuations, asked up
