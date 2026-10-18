@@ -562,7 +562,7 @@ campaign_engine_oom=(-XX:+ExitOnOutOfMemoryError -XX:GCTimeLimit=70
 campaign_engine_stack=-Xss512m
 engine_java() {
   local heap=${engine_memory_mb:-8192} main="" start index next status
-  local out
+  local out most floor
   local -a room=()
   for (( index = 1; index < $#; index++ )); do
     [[ "${!index}" == -cp ]] || continue
@@ -571,6 +571,29 @@ engine_java() {
     break
   done
   start=$(campaign_engine_start_mb "${main}" "${engine_need_mb:-}")
+  if [[ "${campaign_head_charging}" == 1 ]] \
+      && (( $(campaign_jvm_charge_mb "${main}" "${heap}") \
+        > $(campaign_head_most_mb localhost) )); then
+    most=$(campaign_head_most_mb)
+    floor=0
+    [[ -z "${engine_need_mb:-}$(campaign_engine_need_mb "${main}")" \
+       && " ${campaign_engine_outgrown} " != *" ${main}="* ]] \
+      || floor=${start}
+    if (( most > 0 )); then
+      while (( heap > floor )) \
+          && (( $(campaign_jvm_charge_mb "${main}" "${heap}") > most )); do
+        heap=$(( heap - 1024 > floor ? heap - 1024 : floor ))
+      done
+      (( start <= heap )) || start=${heap}
+      (( $(campaign_jvm_charge_mb "${main}" "${heap}") <= most )) \
+        || die "${main##*.} needs ${start} MB of heap, charged \
+$(campaign_jvm_charge_mb "${main}" "${start}") MB: no host of the pool can \
+ever hold it, the most one holds with no charge standing being ${most} MB"
+      (( heap == ${engine_memory_mb:-8192} )) \
+        || printf '[campaign] %s may grow to %s MB of heap, the most a host \
+of the pool can ever hold (%s MB)\n' "${main##*.}" "${heap}" "${most}" >&2
+    fi
+  fi
   [[ "$(campaign_z3_room_mb "${main}" "${heap}")" != \
       "${campaign_z3_least_room_mb}" ]] \
     || printf '[campaign] %s at %s MB leaves no z3 room under the host'"'"'s \
@@ -4904,6 +4927,26 @@ campaign_host_room() {
     - $(campaign_host_head_room "${dir}" "${now}") ))"
 }
 
+campaign_head_most_mb() {
+  local host dir now total available limit charged used most=0 own
+  local campaign_host_max_used_pct=${campaign_head_max_used_pct}
+  now=$(date +%s)
+  while IFS= read -r host; do
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")"
+    mkdir -p "${dir}"
+    total=$(campaign_host_memory_total "${host}" "${dir}") || continue
+    available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
+      || continue
+    limit=$(campaign_host_limit_mb "${total}")
+    charged=$(campaign_host_charged "${dir}" "${now}")
+    used=$(( total - available ))
+    own=$(( used > charged ? used - charged : 0 ))
+    (( limit - own <= most )) || most=$(( limit - own ))
+  done < <(if (( $# > 0 )); then printf '%s\n' "$@"; else
+      { echo localhost; campaign_worker_host_list; } | awk '!seen[$0]++'; fi)
+  printf '%s\n' "${most}"
+}
+
 # campaign_pool_slots <need_mb> <host>...: how many starts of <need_mb> the
 # hosts hold at once when each holds its charge -- on each host, as many as
 # fit under its ceiling (CAUSYNTH_HOST_MAX_USED_PCT of its MemTotal) and no
@@ -5255,7 +5298,7 @@ ${#campaign_z3_hosts_grants[@]} more host(s): ${campaign_z3_hosts:-none}" >&2
 # The host is campaign_placed_host.
 campaign_placed_host=""
 campaign_head_place() {
-  local need=$1 host room best best_room said=false status=0
+  local need=$1 host room best best_room said=false status=0 most
   local since=${SECONDS}
   # A head step is placed under the head steps' ceiling: one JVM, alone on
   # its host while it holds it (campaign_head_max_used_pct).
@@ -5285,6 +5328,10 @@ campaign_head_place() {
       fi
     fi
     if [[ "${said}" == false ]]; then
+      most=$(campaign_head_most_mb)
+      (( most == 0 || need <= most )) || die "a head step of ${need} MB: no \
+host of the pool can ever hold it, the most one holds with no charge standing \
+being ${most} MB"
       campaign_head_hold_room "${need}"
       campaign_log "waiting for memory for a head step of ${need} MB on any \
 host: ${campaign_host_wait_reason}; held on ${campaign_head_hold_host:-no host}"

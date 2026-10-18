@@ -8976,6 +8976,53 @@ $(sort -u "${engine_test}/log.stack" | tr '\n' ' ')"
 )
 reset_config
 
+# HEAD-NEVER: a head step no host of the pool can ever hold -- its charge past
+# every host's ceiling less what the host uses beside the ledger's charges
+# (campaign_head_most_mb) -- never waits (SGF8-adhoc-40: 23 and 107 min): an
+# engine JVM whose heap is only a bound (its main has no measured need) runs
+# at the most a host can hold; one whose measured need no host can hold, and
+# any other step, fails at once, named.  Per row: the engine heap, the
+# main's need (- none), the most the pool's best host holds, and the heap it
+# ran at, or "fails".
+never_dir=${test_tmp}/head-never
+mkdir -p "${never_dir}"
+printf '#!/usr/bin/env bash\necho "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB}"\n' \
+  >"${never_dir}/java"
+chmod +x "${never_dir}/java"
+while IFS='|' read -r nv_engine nv_need nv_most nv_want; do
+  nv_got=$(
+    engine_memory_mb=${nv_engine}
+    campaign_head_charging=1
+    campaign_head_most_mb() { echo "${nv_most}"; }
+    campaign_engine_need_mb() { [[ "${nv_need}" == - ]] || echo "${nv_need}"; }
+    campaign_head_charged() { shift; "$@"; }
+    campaign_engine_jvm() { shift; "$@"; }
+    java_bin=${never_dir}/java
+    engine_java -cp jar x.Main 2>/dev/null | sed -n 's/^heap=//p' || true
+  )
+  [[ "${nv_got:-fails}" == "${nv_want}" ]] \
+    || fail "HEAD-NEVER: engine heap ${nv_engine}, need ${nv_need}, a host \
+holding ${nv_most} MB at most: ${nv_got:-fails}, not ${nv_want}"
+done <<'EOF'
+24576|-|30000|24576
+24576|-|26000|23552
+24576|4096|26000|4096
+24576|24000|20000|fails
+EOF
+(
+  campaign_host_gate_root=${never_dir}/hosts
+  campaign_worker_hosts="lift12"
+  campaign_head_most_mb() { echo 20000; }
+  campaign_host_try_charge() { status=1; }
+  campaign_host_room() { echo 100; }
+  sleep() { echo waited >"${never_dir}/waited"; exit 0; }
+  campaign_head_place 26496 2>/dev/null
+  echo placed >"${never_dir}/waited"
+) || true
+[[ ! -e "${never_dir}/waited" ]] \
+  || fail "HEAD-NEVER: a step no host can ever hold was $(cat \
+"${never_dir}/waited")"
+
 # ENGINE-HEAP-COMPOSE: a composer starts at 4096 MB, charged its footprint and
 # the z3 room it is placed with (one pair's 2048 MB on a 30000 MB host), and
 # told the room (campaign_head_charged --room); one that runs out of heap
