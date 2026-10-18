@@ -224,7 +224,8 @@ merged there); goal 3 GATED (mvn with tests + the shell test): merge it into sol
   one lock and imports every table in order, a withheld page's too; the truncation scan runs only once the store holds
   a marker; a page's table rows and records decode on the decoding thread and three record decoders, filed in page
   order; the store takes no lock. 07's 353 captured pages (vm-decode/): 612 -> 206 M chars; Zero decode 659.6 s ->
-  197.9 s wall (527.6 s CPU); all 33,309 location records decode alike. Left: the VM still renders each page's whole
+  197.9 s wall (527.6 s CPU); all 33,309 location records decode alike. Live reproductions (vm-decode/): 0c5f 1132 ->
+  677 s wall, end -> halt 190 -> 16 s; 9fc5 905 -> 649 s; sessions import alike. Left: the VM still renders each page's whole
   closure before choosing what to send (about 0.2 s per 20 MB, natively); the decoding thread imports the tables in
   order, alone.
 - Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
