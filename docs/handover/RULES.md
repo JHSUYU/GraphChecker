@@ -216,6 +216,11 @@ recommendation.
   accepted when each case's `.smt` holds the right causal chain and a SAT is replayed -- CONFIRM in the VM (strict) and
   REPRODUCE natively; small issues are not ground on. This supersedes rule 5 of "Code health" below (its byte-identical gate)
   for the Solr rewrite.
+- **Solr ends here, published** (2026-10-19: "请你把剩下的修复做完。然后就把所有的代码对于solr，汇集到system/solr上去。然后solr source
+  code的更改，类似地，也要给fork的solr repo推一个分支。这样别人之后从github pull下来就能直接跑我们的代码，同时请你更新对应的文档。然后剩余的case
+  我们不跑了，不要了"): the round's fixes are finished and merged, `system/solr` is pushed to GitHub with the fork's
+  `graphchecker/solr-checks`, the documents say how to run it from a fresh clone; the cases not rerun stay as they are
+  (TODO "Solr: after SGF9").
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no

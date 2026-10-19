@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr in the 2026-10-18 rewrite, stopped for handover
+# State: HDFS finished; Solr after its final round SGF9 (2026-10-19)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,77 +11,53 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr: the 2026-10-18 rewrite, stopped for handover -- read this first if you take over Solr
+## S. Solr after the final round SGF9 (2026-10-19) -- read this first if you take over Solr
 
-The owner stopped the Solr final round (2026-10-18 09:16) to rewrite the engine's bottlenecks, then stopped all work
-for a handover (2026-10-18 ~15:45). Nothing runs on any lift. Read, in order: [REFACTOR-PLAN.md](REFACTOR-PLAN.md)
-(the approved plan: rules, workstreams A-H, order), [LESSONS.md](LESSONS.md) (traps: shell, zombies, NFS, heaps,
-concurrency; how to measure; how to debug), [TODO.md](TODO.md) "Solr: the rewrite" (each workstream's branch, head,
-what is left, the exact next step), then RULES, AGENTS, OPERATIONS, PARALLEL, CHECKING.
+The owner stopped the 2026-10-18 final round to rewrite the engine's bottlenecks (REFACTOR-PLAN workstreams A-H); the
+rewrite was merged into `system/solr` and the final round SGF9 ran the 12 study checks, each alone on lift02-10 +
+lift12-15, at world depth 0, on VM `vm-force10` and the tree set `sg3j-trees`. The owner ended it on 2026-10-19 and had
+everything gathered on `system/solr`, pushed with the fork's tree, and documented ("剩余的case我们不跑了，不要了"). Nothing
+runs on any lift. Read [START-HERE.md](START-HERE.md) first, then [TODO.md](TODO.md) "Solr: after SGF9".
 
-**Acceptance (owner):** after the rewrite, rerun the 12 study checks (solr-adhoc-*) each alone on lift02-10 +
-lift12-15, after every speed change is merged; the 8 bug checks keep their SGF7 results (owner 2026-10-18 evening); the
-study checks' claims equal or more complete; the bar is a `.smt` with the right causal chain and, for a SAT, its replay
-(CONFIRM, REPRODUCE), not byte-identity; debug what breaks; then readings, STATUS, STATE, TODO, OPTIMIZATIONS. Old code is deleted for
-good (no flags, no fallbacks). The world-depth parameter stays the owner's control of the branch count.
+**`system/solr`** (GitHub `JHSUYU/GraphChecker`, pushed 2026-10-19; = `solr-int`, worktrees
+`/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`) holds, gated: the compaction of the corpus and walk
+state; the holding composer (every session's rows held until a sweep finds the old generation past 60 %, let go before
+the body is lowered); the GROW pipeline (a GROW re-run holds the fixed point until it lands: OPTIMIZATIONS 1.37
+reverted); the superstep + window walk; the parallel round and Frontier; the stream scheduler (replays spread by room,
+multi-question solvers, z3 answers reused by query text, the served planner charged its heap's footprint: 1.36
+reverted); the VM's one-channel read-out with parallel record decode and the replay's stop at its window close; the
+replay need from the 90th percentile of peaks with an out-of-heap rerun; SEED's serial speedups; gzip rows through one
+opener (old plain run dirs must be GzCopy'd); EMIT's gap ledger in Java; the nearest world for every sort; the z3 pairs
+of the decide re-asked at twice their slot after a memout while a host holds it. Its VM sources are under
+`third_party/` (image `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, built from this branch; the runtime refuses an older
+image by name). Not merged: session sharding (solr-parplan, solr-shard: shelved), the generational bound D2
+(solr-explore a2bd510cb: unsound as reviewed), GROW rows carrying their shape (solr-growshape 727d48ea5: gated, its
+read-out cost unmeasured; TODO).
 
-**`system/solr` (= `solr-int`, worktrees `/bigtemp/vnr3ne/wt/gc-solr`, `/bigtemp/vnr3ne/wt/gc-solr-merge`)** holds, gated:
-the GROW pipeline; the superstep + window walk; the parallel round and Frontier; the live-set planner hold rule; gzip rows
-through one opener (old plain run dirs are unreadable by the new code: GzCopy them first); EMIT's gap ledger in Java;
-the holding composer (07: 309/309 paths, UNSAT_CLOSED, no blocker; it had composed 1 of 309); the compaction of the
-corpus and walk state (05 r5 planner live at the walk's end 12.7 -> 3.5 GB, RSS 20.8 -> 10.6 GB, round 549 -> 398 s);
-the plan and lesson docs. Head: see TODO "Solr: the rewrite" (the last integration merge and its gate are named there).
+**The tree:** the fork `https://github.com/JHSUYU/solr.git` branch `graphchecker/solr-checks` = local
+`gc/solr-zktrace2` 12d23091d1 (2026-10-16; `/u/vnr3ne/lucene-solr-8_11`, worktree set `/bigtemp/vnr3ne/wt/sg3j-trees`):
+Solr `branch_8_11` with the adapter, every case's target marker and the bug checks' workloads. No Solr source changed
+after it.
 
-**Results so far on the final code line:** 15 of the 20 Solr cases have results from SGF7/SGF8 (STATUS "Solr checks");
-SGF8-adhoc-07 ran on sgf41 (85944a0dd) to PLANNER_HEAP_EXCEEDED with 1 of 309 paths composed (evidence; it reruns);
-31 was stopped (SGF8STOP-adhoc-31). Under the owner's acceptance all 20 rerun after the rewrite.
+**Results** (STATUS "Solr checks" has each case's row; times `analysis/solr-2026-10-14/final-stats.py SGF9`):
 
-**Shelved, not merged:** session sharding of the planner (solr-parplan 3df494a3a + repo stashes stash@{0}/{1};
-solr-shard d3b663462): the compaction gave the memory headroom in one JVM.
+| case | SGF9 snapshot | result | wall (s) | seeding / exploration / compose+solver |
+| --- | --- | --- | --- | --- |
+| solr-adhoc-38 | sgf9e baa62b2d6 | SAT MARKER_FLIPPED, confirmed in the VM, native 0/10 (as SGF7) | 922 | 335 / 226 / 10 (+344 CONFIRM, REPRODUCE) |
+| solr-adhoc-21 | sgf9 495d754b5 | UNSAT_CLOSED, 18 paths | 994 | 340 / 618 / 23 |
+| solr-adhoc-39 | sgf9e | UNSAT_CLOSED, 8 paths (SGF8 57: the re-runs' round never ran) | 1200 | 501 / 672 / 17 |
+| solr-adhoc-09 | sgf9c 662745589 | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure) | 1417 | 356 / 886 / 135 |
+| solr-adhoc-13 | sgf9b f3032afa4 | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure), 127 paths | 1762 | 508 / 922 / 296 |
+| solr-adhoc-19 | sgf9c | formula UNSAT at FIXED_POINT, 2 of 44 paths composed (unplaced clock cells) | 2672 | 411 / 1991 / 164 |
+| solr-adhoc-10 | sgf9c | formula UNSAT at FIXED_POINT, 1 BLOCKING (truncated closure), 370 paths | 5532 | 734 / 4430 / 277 |
+| solr-adhoc-40 | sgf9c | formula UNSAT at FIXED_POINT, 4 BLOCKING, 315 paths | 8731 | 715 / 5673 / 2209 |
+| solr-adhoc-05 | sgf9d 19fe33ff0 | MISSING: budget in DECIDE (340/340 paths composed, every z3 memout); re-decided offline with the slot fix: NO_SUPPORTED_WITNESS, 340 unsat, 22 at the path limit | 14400 | 807 / 10701 / ~2880 |
+| solr-adhoc-14, -07, -31 | not rerun (owner) | SGF8 evidence: 14 SGF8OOM, 07 1 of 309 composed (offline 309/309 UNSAT_CLOSED), 31 SGF9KILLED at round 26 | | |
 
-## S-old (2026-10-16, superseded by S above; kept until the rerun replaces its facts)
-
-
-The round runs: a driver on lift06 runs the ten remaining study checks one at a time, each ALONE on the cluster
-(`analysis/solr-2026-10-16/final-seq5.sh`, log `gc-out/solr/SGF8-seq.log`), 7200 s each (owner: study budget 4 h ->
-2 h), on snapshot `~/gc-run/sgf28` = 64178b266 and the tree set `GC_TREES=/bigtemp/vnr3ne/wt/sg3j-trees`, in the order
-21 19 14 13 10 40 39 05 07 31. The lead's session log is the memory file `lead-session-2026-10-15b-solr`; the
-2026-10-15 handover (`analysis/solr-2026-10-15/HANDOVER-2026-10-15.md`, `HANDOVER-agents.md`) has the design before.
-
-- **Goal (owner):** each case's time (seeding, exploration, compose+solver) and the final closure's region count
-  (`analysis/solr-2026-10-14/final-stats.py SGF7` and `SGF8`). Bug checks: SAT + CONFIRM + native. Study checks: a
-  solver SAT or UNSAT, or a named bound. Relaxed standard: a roughly-right `.smt`, best effort. A clearly improvable
-  performance problem is fixed first, for the next cases; a running case is stopped only when stuck.
-- **Results, SGF7** (`gc-out/solr/accept-SGF7-<case>`, readings in `analysis/solr-2026-10-14/final-readings.md`): the
-  eight bug checks -- 18406 828 s, 18413 2019 s, migrate 699, restore 610, lock-leak 875, tra 943, reindex 1113,
-  snapshot-no-active 878 (SAT, confirmed, native 10/10 each) -- and adhoc-38 1222 s (SAT), adhoc-09 6887 s
-  (UNSAT_CLOSED). adhoc-10 10228 s (UNSAT_CLOSED, PLANNER_HEAP_EXCEEDED) and its rerun on the pooled compose
-  (`accept-SGF7B-adhoc-10`, 6086 s: seeding 1384, exploration 3146, compose+solver 1312) are evidence; SGF8 runs it
-  again with the whole batch. adhoc-40's SGF7 run was killed at its budget with no claim (the drain defect below).
-- **The optimization batch (owner 2026-10-16: "use all the servers"; each gated, merged by fast-forward):**
-  - the final COMPOSE's z3 pairs on every other pool host over ssh (`ComposeMain --z3-hosts`,
-    `campaign_z3_hosts_grant`), the path asks following the pairs; the composer's heap its corpus's (`do_compose`).
-    SGF7B-adhoc-10: decide 1800 s (budget, questions left) -> 250 s, 544 z3 runs; no 4 -> 8 -> 16 GB restarts (818 s);
-  - the budget ends the drain after any stop but a witness (`CAMPAIGN_BUDGET_REACHED` naming that stop): adhoc-40's
-    planner ran out of heap at 5473 s and its replays drained to the case timeout;
-  - a stream replay charged its life's mean resident memory, each admission keeping room for four end peaks
-    (`campaign_replay_typical`, `workload_rss_mean_mb`): replays peak in their last read, publishing;
-  - in the workload client's own root contexts only the system's request transports fail (`explore.ClientFaults`,
-    Solr `client_fault_transports`): the test's own ZooKeeper calls, 276 flips of 10/39/40's round 0, none reaching the
-    anchor;
-  - a timed-wait loop's events take their turn family's slots and its reads none (`ScheduleLog#turnFamily`); with the
-    tree below, adhoc-10's seed replay 107 -> 22-33 stalls, its window 574 -> 407-489 s;
-  - a root's compared literals indexed once over the corpus (`Corpus#deciding`): adhoc-10's composition 891 -> 52 s in
-    its roots' domains, adhoc-09's candidate byte-identical;
-  - the planner's heap: a lowering frame holds its committed side conditions by reference, a session's leaf sets as
-    arrays over shared names: live set -30..38 % (adhoc-10/-40 subsets), EXPLORE.N byte-identical on five corpora.
-- **Code:** `solr-int` = `system/solr` = 64178b266 (local; GitHub `origin/system/solr` is 4866f58a0, a push needs the
-  owner).
-- **Tree:** `gc/solr-zktrace2` 12d23091d1 via `sg3j-trees` (17/17 natives pass); pushed to the fork `JHSUYU/solr`
-  `graphchecker/solr-checks`. The SGF7 results ran on `gc/solr-zktrace` 8fde6b812c (`sg3i-trees`).
-- **Open** (TODO "Solr" §3): CONFIRM's and the native plant's ORDER rows still carry a timed-wait turn's number (§3bb);
-  31's test-client polls stall 16 s each (§3cc); snapshot's state.json delivery race (§3y); the static pass's second
-  run over demanded doors (~95 s a case); 18413's hand WIRE_FLOW rows (§3aa).
+Against SGF7/SGF8 the rewritten engine is faster on every case it finished (21 2363 -> 994 s, 13 3076 -> 1762, 09
+6887 -> 1417, 19 6752 -> 2672 and to its fixed point instead of the budget, 10 7660 -> 5532 and to its fixed point instead
+of PLANNER_HEAP_EXCEEDED, 40 no claim -> 8731 s, 38 1222 -> 922). Fewer paths in 39 (and re-run sessions unplanned in 19,
+13, 09) came from the fixed point beside GROW re-runs, fixed after those runs.
 
 ## 0. The end state: two branches (owner 2026-10-06)
 
@@ -173,8 +149,9 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` | `gc/hdfs-study-r8` `e3dab6266a7` | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8` |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` | `gc/hdfs-study-r7-21` `c360d869629` | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
+| `/bigtemp/vnr3ne/wt/sg3j-trees/lucene-solr-checks` (worktree of `~/lucene-solr-8_11`) | `gc/solr-zktrace2` `12d23091d1` | `graphchecker/solr-checks` on the fork `JHSUYU/solr` (pushed 2026-10-16, unchanged since) | THE Solr tree of every `system/solr` case since SGF8 (SGF8, SGF9; REPRODUCE §6 clones it); the Solr rows below are its history |
 | `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
-| `/bigtemp/vnr3ne/wt/lucene-solr-checks` | `gc/solr-checks` `3bcca50` | to be `graphchecker/solr-checks` on the fork `JHSUYU/solr` (owner 2026-10-08; TODO Solr §2), never an apache remote | the Solr group's one tree, every `system/solr` case: `gc/solr-bugs` `f65aaf7` (`gc/solr-unified-storing2` + the reindex marker) + the 12 study markers, the five new bug markers, the six bug workloads, the full-distributed tests' hook, the routed-alias tests' configset, the reindex latch's bound (STATUS "Per-system surface") |
+| `/bigtemp/vnr3ne/wt/lucene-solr-checks` | `gc/solr-checks` `3bcca50` | history (the fork's `graphchecker/solr-checks` is now `gc/solr-zktrace2`, above); never an apache remote | the Solr group's one tree, every `system/solr` case: `gc/solr-bugs` `f65aaf7` (`gc/solr-unified-storing2` + the reindex marker) + the 12 study markers, the five new bug markers, the six bug workloads, the full-distributed tests' hook, the routed-alias tests' configset, the reindex latch's bound (STATUS "Per-system surface") |
 | `/bigtemp/vnr3ne/wt/lucene-solr-body` | `gc/solr-body` `7e51565080` | (part of the final `graphchecker/solr-checks`) | the Solr body's tree hooks: the HTTP send in `executeMethod`, `CausynthRandom` (node order, seeded draws), `CausynthPorts`, `CausynthBounds` (SocketProxy, SolrConfigHandler), the store READ turn's SolrZkClient read hooks; agent M's rounds |
 | `/bigtemp/vnr3ne/wt/lucene-solr-zk2`, `-zk3` | `gc/solr-zk-next` `53d81b09b1` | (part of the final tree) | Z1's hooks (`gc/solr-zk`: `decoded`, the queue-head tick, consumed items, the compared version on `stored`) + `gc/solr-body` 3bcf5616c2 |
 | `/bigtemp/vnr3ne/wt/lucene-solr-zkdoors` | `gc/solr-zk-doors` `92c234a5d1` | (part of the final tree) | `gc/solr-zk-next` + `gc/solr-body` + the ZooKeeper READ doors' hooks (`causynthReading`, `causynthReplied` with the lost reply's local unwatch); built (agent RD's runs: `GC_TREES=/bigtemp/vnr3ne/wt/zkdoors-trees`) |

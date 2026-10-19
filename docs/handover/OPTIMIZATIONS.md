@@ -1,11 +1,11 @@
-# GraphChecker optimizations: what was done, what it bought, what is still owed (2026-10-18)
+# GraphChecker optimizations: what was done, what it bought, what is still owed (2026-10-19)
 
 The owner asked for one document of every optimization so far -- the parallel ones, the ZooKeeper ones, and the
 ones designed but not done -- as the starting point of the HBase port, where the code is to be refactored
 thoroughly and these optimizations completed. Solr stays as it is after its final round (owner 2026-10-16).
 
 Each row says the problem as measured, the mechanism, where it lives (commit on `system/solr`), and what it bought.
-Numbers are from the Solr final rounds SGF7/SGF8 (`gc-out/solr/accept-<round>-<case>`) unless named otherwise.
+Numbers are from the Solr final rounds SGF7/SGF8/SGF9 (`gc-out/solr/accept-<round>-<case>`) unless named otherwise.
 
 ## 0. Where the time goes in one case, and what bounds it
 
@@ -135,6 +135,8 @@ store path, writers and decodes are taken only up to the version the read observ
 | 5.14 | Several cases at once in the pool (SGF5: 13.4 h of case time in a 4 h span) | The owner's call: final rounds ran each case alone | -- |
 | 5.15 | What a composed path still leaves | Done by 1.27 (the holding composer): 07 composes 309/309 paths at 54 % of the old generation | -- |
 | 5.18 | After 1.23 the walk is bound by its heads: of 05 r5's 303 s, 116 s walking 112 heads no step ran ahead for (the cores full, or named by the step before), 100 s waiting for the heads' steps (the slowest 33 s), 51 s applying steps, 19 s walking again what claimed a seq another row holds (STATUS open defect 70) | Across rounds a memo by (demand state, session) (05 r5 keeps 280 of 342 sessions; withdrawals are GROW's swaps, each the same obligation re-run); defect 70's fix drops the claims and their walks again | explore/compose; medium |
+| 5.19 | GROW re-runs re-expose occurrences already planned under another name (Root tick ordinal, anchor id, loop index): rename-only re-runs SGF9 05 19, 40 25, 10 13 (its 34-min tail), 19 80, 09 8; 05's obligation 1019a08704dc2746 re-ran 5 times serially (`analysis/solr-2026-10-18/final9/growchain/FINDINGS.txt`) | GROW rows carry the contextShape and recordedBeside seed rows carry, through the one ContextShape path, so the runtime answers a renamed occurrence by shape: branch solr-growshape 727d48ea5, gated, NOT merged -- offline 23-39 of 05's 54 renames answered (one activation per row; 903 non-demanded same-shape activations may take a row first), 10 saves ~5 min (`final9/growshape/`) | small; measure the extra instrumented activations' read-out cost on one case first |
+| 5.20 | A replay's read-out volume jumps when a generation runs doors-only roots whole: 05 at g14 (the Overseer task roots) read-outs 81 MB -> 1.0-1.65 GB, versions 57 K -> 3.5-6.0 M, decoding ~0.9 of each window, windows 136 -> 1659 s (`growchain/FINDINGS.txt` Q4) | Find which roots produce the volume, then bound what a whole-run root reads out (the demanded cells only, as 5.4) | the largest replay cost seen in SGF9 |
 
 ## 6. For the HBase port
 

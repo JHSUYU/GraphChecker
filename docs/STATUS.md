@@ -97,12 +97,17 @@ remain, each named where it applies:
 The 20 cases of the Solr group (TODO "Solr"): the eight bug checks must be SAT, confirmed, native; the twelve study
 checks end SAT, UNSAT or at a named bound (owner: a roughly-right `.smt`, best effort). The final rounds ran each case
 ALONE on the 13 pool lifts (lift11 the control host): SGF7 (2026-10-14/16, `system/solr` eeda09fc6..bad02c271, tree
-gc/solr-zktrace 8fde6b812c) and SGF8 (2026-10-16/17, after the owner's optimization batch; tree gc/solr-zktrace2
-12d23091d1 = the fork's `graphchecker/solr-checks`, sets `sg3i-trees`/`sg3j-trees`, VM `vm-force8`). Times and the
-final closure's regions: `analysis/solr-2026-10-14/final-stats.py SGF7|SGF8`; light `.smt` readings:
+gc/solr-zktrace 8fde6b812c), SGF8 (2026-10-16/17, after the owner's optimization batch; tree gc/solr-zktrace2
+12d23091d1 = the fork's `graphchecker/solr-checks`, sets `sg3i-trees`/`sg3j-trees`, VM `vm-force8`) and SGF9
+(2026-10-18/19, after the rewrite: the 12 study checks only, at world depth 0, `system/solr` 495d754b5..baa62b2d6 as the
+round's fixes landed, the same tree, VM `vm-force10`; the 8 bug checks keep SGF7). The owner ended the round on
+2026-10-19 with 14, 07 and 31 not rerun; the fixes it found after its cases ran (the z3 pair slot, COMPOSE's hold before
+the body, the fixed point beside GROW re-runs) are on `system/solr` but no case has run on them yet. Times and the final
+closure's regions: `analysis/solr-2026-10-14/final-stats.py SGF7|SGF8|SGF9`; light `.smt` readings:
 `analysis/solr-2026-10-14/final-readings.md` (legends `analysis/solr-2026-10-16/legend-<n>.txt`); rounds under
-`/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`, the driver's log `SGF8-seq.log`. The fork's fresh-clone check
-(2026-10-17, `analysis/solr-2026-10-16/fork-check5.sh`): 17/17 natives, 20/20 cases valid.
+`/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`, the drivers' logs `SGF8-seq.log`, `SGF9-seq.log`; SGF9's per-case
+notes `analysis/solr-2026-10-18/final9/RESULTS.txt`. The fork's fresh-clone check (2026-10-17,
+`analysis/solr-2026-10-16/fork-check5.sh`): 17/17 natives, 20/20 cases valid.
 
 Latest evidence per case (the detailed rows below are each case's history):
 
@@ -116,18 +121,18 @@ Latest evidence per case (the detailed rows below are each case's history):
 | solr-bugs-tra-start-overwrite | SGF7 | PASS: SAT STATE_PAIRING_FLIPPED, confirmed, native 10/10 | 943 |
 | solr-bugs-reindex-cleanup | SGF7 | PASS: SAT MARKER_FLIPPED, confirmed, native 10/10 | 1113 |
 | solr-bugs-snapshot-no-active | SGF7 (sgf20 bad02c271) | SAT MARKER_FLIPPED, confirmed, native 10/10, control 0/10 | 878 |
-| solr-adhoc-38 | SGF7 (sgf10) | SAT MARKER_FLIPPED, confirmed in the VM, native 0/10 (the PULL replicas' getLeader hang) | 1222 |
-| solr-adhoc-09 | SGF7 (sgf20) | UNSAT_CLOSED (fixed point; plain re-check unsat) | 6887 |
-| solr-adhoc-21 | SGF8 (sgf28 64178b266) | UNSAT_CLOSED (fixed point; 10 of 20 paths composed, 10 refused on map reads, now havoc) | 2363 |
-| solr-adhoc-19 | SGF8 (sgf28) | formula UNSAT at CAMPAIGN_BUDGET_REACHED (5 of 23 paths; 17 on unplaced clock cells) | 6752 |
-| solr-adhoc-13 | SGF8 (sgf32 e60df391d) | formula UNSAT at FIXED_POINT, closure truncated (126/126 paths) | 3128 |
-| solr-adhoc-10 | SGF8 (sgf32) | formula UNSAT at PLANNER_HEAP_EXCEEDED, closure truncated (382/382 paths) | 7660 |
-| solr-adhoc-40 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8Z3ROOM (no claim: its composer fitted no lift at heap 18432) | |
-| solr-adhoc-39 | SGF8 (sgf36 2aa686ec9) | formula UNSAT at FIXED_POINT (57/57 paths; 3 planned occurrences no session ran, named) | 2581 |
-| solr-adhoc-05 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8BODY on sgf39 (MISSING: the composer out of heap in the body after 332 paths, 12186 s) | |
-| solr-adhoc-07 | SGF8 (sgf41 85944a0dd); reruns after the rewrite | formula UNSAT at PLANNER_HEAP_EXCEEDED, 1 of 309 paths composed (COMPOSE_HEAP_BOUND); the holding composer composes all 309 offline: UNSAT_CLOSED, no blocker | 7306 |
-| solr-adhoc-31 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8STOP-adhoc-31 (stopped in exploration on sgf41) | |
-| solr-adhoc-14 | rerun after the rewrite (REFACTOR-PLAN) | evidence: SGF8OOM (every path refused, composer out of heap) | |
+| solr-adhoc-38 | SGF9 (sgf9e baa62b2d6) | SAT MARKER_FLIPPED, WITNESSED, confirmed in the VM (the witness session itself), native 0/10 (the PULL replicas' getLeader hang, as SGF7) | 922 |
+| solr-adhoc-09 | SGF9 (sgf9c 662745589) | formula UNSAT at FIXED_POINT (45 rounds), 38 paths, 1 BLOCKING (truncated closure, named); 6 GROW re-run sessions no round planned over (the fixed point beside re-runs, reverted after) | 1417 |
+| solr-adhoc-21 | SGF9 (sgf9 495d754b5) | UNSAT_CLOSED (fixed point; 18 paths composed, none refused); 1 GROW re-run session no round planned over | 994 |
+| solr-adhoc-19 | SGF9 (sgf9c) | formula UNSAT at FIXED_POINT (86 rounds), 2 of 44 admitted paths composed: 41 refused on unplaced clock cells (`Composer#unplacedClocks`; placing node0's clock cell composes 28 of 44, still no supported witness: `analysis/solr-2026-10-18/final9/c19/FINDINGS.txt`); 18 GROW re-run sessions no round planned over | 2672 |
+| solr-adhoc-13 | SGF9 (sgf9b f3032afa4) | formula UNSAT at FIXED_POINT (51 rounds), 127 paths, 1 BLOCKING (truncated closure, named); 8 GROW re-run sessions no round planned over | 1762 |
+| solr-adhoc-10 | SGF9 (sgf9c) | formula UNSAT at FIXED_POINT (44 rounds), 370 paths, 1 BLOCKING (closure truncated: 69 occurrences past the task bound, named); 1 GROW re-run session no round planned over | 5532 |
+| solr-adhoc-40 | SGF9 (sgf9c) | formula UNSAT at FIXED_POINT (45 rounds), 315 paths, 4 BLOCKING (closure truncated 27 occurrences; 2 SOLVER_TIMEOUT in the hard lane; 1 occurrence no session ran); 631 of 762 decide z3 runs memout at the fixed pair slot | 8731 |
+| solr-adhoc-39 | SGF9 (sgf9e baa62b2d6) | UNSAT_CLOSED (fixed point, 0 gaps), 8 paths where SGF8 composed 57: its 4 GROW re-runs landed after the fixed point, so the round they owed (77 obligations in SGF8) never ran (`analysis/solr-2026-10-18/final9/c39b/FINDINGS.txt`) | 1200 |
+| solr-adhoc-05 | SGF9 (sgf9d 19fe33ff0); its decide offline on `system/solr` (solr-z3slot) | in the round MISSING at its 14400 s budget in DECIDE: FIXED_POINT (37 rounds, 1315 verdicts), 340 of 340 paths composed (SGF8 ran out of heap after 332), every scoped z3 out of memory at the fixed 1024 MB pair slot (213 of 214 runs). Re-decided offline from its frozen inputs with the slot fix: 340 unsat, 22 at the 60 s path limit, NO_SUPPORTED_WITNESS, 341 PATH_SELF_CONTRADICTORY, no blocking gap (`analysis/solr-2026-10-18/final9/z3slot/`); 1 GROW re-run session no round planned over | 14400 (+ 1802 s decide offline) |
+| solr-adhoc-07 | SGF8 (sgf41 85944a0dd); not rerun (owner 2026-10-19) | formula UNSAT at PLANNER_HEAP_EXCEEDED, 1 of 309 paths composed (COMPOSE_HEAP_BOUND); the holding composer composes all 309 offline: UNSAT_CLOSED, no blocker | 7306 |
+| solr-adhoc-31 | not rerun (owner 2026-10-19) | evidence: SGF9KILLED-adhoc-31 (round 26, its planner killed when its measured charge could not grow: OPTIMIZATIONS 1.36, reverted); SGF8STOP-adhoc-31 | |
+| solr-adhoc-14 | not rerun (owner 2026-10-19) | evidence: SGF8OOM (every path refused, composer out of heap) | |
 
 | case | branch, round | verdict | reading |
 | --- | --- | --- | --- |

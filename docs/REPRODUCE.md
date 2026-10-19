@@ -149,7 +149,10 @@ with the adapter, every case's target marker and the bug checks' workloads.
    ```
 
 2. **The image.** As §2, from `system/solr` (its VM sources carry the forced replay's native,
-   `System.forceNextConcolicBranch`, which the HDFS image lacks):
+   `System.forceNextConcolicBranch`, which the HDFS image lacks, and the one-channel read-out,
+   `System.readOutTrackedLocations`: the runtime refuses an image without it by name -- a seed replay ends "Concolic task
+   plan requires current custom VM broker capabilities: [readOutTrackedLocations]"; on the cluster the image is
+   `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, built from these sources):
 
    ```bash
    ssh <host> 'git clone -q -b system/solr git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-solr &&
@@ -183,7 +186,8 @@ with the adapter, every case's target marker and the bug checks' workloads.
    $GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
    reads.
 
-4. **The 20 cases**, each alone on the cluster with its budget (07 takes the longest):
+4. **The 20 cases**, each alone on the cluster with its budget (05, 07 and 14 take the longest; the times of the last
+   rounds are STATUS "Solr checks"):
 
    ```bash
    export GC_OUT=$GC_BULK/gc-out/repro-solr CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
