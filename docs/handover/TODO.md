@@ -588,6 +588,23 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
 (`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
 (`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
 
+**7. COMPOSE frees what a stale run left concrete (StaleRuns; built, NOT merged: branch `hbase-reask` c2c0f0803,
+WIP).** A session that ran an occurrence paused (doors-only) or unplanned, which a later round's GROW now runs whole
+(the iteration's `execution_task_plan.jsonl` plans it with no `doorsOnly` mark), holds that occurrence's writes as
+constants: a read of a version no non-initial row states takes the value the run read. StaleRuns frees such a read
+(row or expression) in that session, named in the composition's `concrete` list, when its carrier (the read's own
+VM site, `StaticScopeMap#carriersAt`) has a static write site the stale occurrence's region holds
+(`StaticScopeMap#regionHolds`; `Corpus#staleRuns`, `compose/StaleRuns`, `SmtLowering#guardedReadTerm`,
+`Composer#statedReads`): over-approximate in COMPOSE, CONFIRM strict. Measured on HZ7-mat (master-active-time,
+`analysis/hbase-2026-10-19/reask/compose/`): 68 of 73 sessions ran master0's activation doors-only before the g4
+unpause, yet the composition is the same with and without it, because the constant CONFIRM refuted (T0 on
+`message_arm__19`) is not one of master0's: rs0's `RegionStateTransitionContext.initiatingMasterActiveTime` is
+written from a concrete value in every session, the minted ones too, though rs0's attach of
+`OpenRegionRequest.initiating_master_active_time` is a handoff symbol (a propagation gap on the regionserver, H2).
+Becomes needed when a claim's selected path takes a value through a read whose writer ran paused or unplanned in its
+session and runs whole now: then merge it with a ComposerTest (a doors-only writer in the session, the plan running it
+whole, its carrier read at INITIAL: freed; the same read in a session that ran it whole: held).
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
