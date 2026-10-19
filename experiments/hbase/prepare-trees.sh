@@ -22,7 +22,7 @@ for name in "${names[@]}"; do
     [[ -n "${id}" && "${id}" != \#* ]] || continue
     read -r dir arg <<<"$(case_dir_of "${graphchecker}" "${id}")"
     [[ "${arg}" != - ]] || arg=""
-    read -r repo spec < <(bash -c 'source "$1" "$2" "$3" >/dev/null && echo "${repo} ${test_class}#${test_method}${recording_window:+@${recording_window}}"' \
+    read -r repo spec < <(bash -c 'source "$1" "$2" "$3" >/dev/null && echo "${repo} $(hbase_spec)"' \
       _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}")
     [[ "$(basename "${repo}")" == "${name}" ]] || continue
     [[ " ${specs[*]-} " == *" ${spec} "* ]] || specs+=("${spec}")

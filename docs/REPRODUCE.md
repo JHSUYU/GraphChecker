@@ -235,8 +235,10 @@ cluster and bounds").
    ```
 
    `prepare-trees.sh` clones the fork's `graphchecker/hbase-checks` into `$GC_TREES/hbase-checks` (a directory already
-   there is only built), installs the checkout's plain jar into the tree's Maven repository (`$GC_M2/hbase-checks`, or
-   `HBASE_MAVEN_REPO`; the tree compiles against GraphChecker's `MessageDoors` and `Sessions`, a provided dependency,
+   there is only built), installs the checkout's plain jar into the tree's Maven repository (`HBASE_MAVEN_REPO`, by
+   default one named by the tree's path under `$GC_M2`, e.g. `$GC_M2/hbase_bigtemp_vnr3ne_wt_hbase-checks`, so no two
+   trees share one; `tools/onlift.sh` passes no environment, so give it inside the command, `env
+   HBASE_MAVEN_REPO=...`); the tree compiles against GraphChecker's `MessageDoors` and `Sessions`, a provided dependency,
    so it runs on the jar of the same checkout), builds hbase-server and every module of a workload with what they
    depend on (`experiments/hbase/build.sh`), and runs every case's workload once natively by surefire, with
    `causynth.cluster.automatic` and the case's window: a case's classpath is read off its workload's surefire report.

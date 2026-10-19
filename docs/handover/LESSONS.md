@@ -35,6 +35,10 @@ cost us time at least once; the date or the case it came from is named so it can
   failing: an analyst agent sat 2 h on one (2026-10-19). Use literal absolute paths or `"${VAR:?}"/...`.
 - Start a detached remote driver with `ssh -f host 'setsid nohup ... &'`: without `-f` the local ssh waits on
   the remote's output forever.
+- `tools/onlift.sh` passes no environment to the remote command: `HBASE_MAVEN_REPO=x tools/onlift.sh ... build.sh` built
+  into build.sh's default repository, another agent's at the time (2026-10-19, agent H2). Put variables inside the
+  command (`tools/onlift.sh -h <host> env NAME=value ...`); `experiments/hbase/build.sh`'s default repository is now
+  named by the tree's path, so a lost variable builds into a repository of that tree's own.
 - Never source run_engine.sh functions through process substitution in a foreground call
   (`bash -c 'source <(sed -n ... run_engine.sh)'`): an agent hung 3 h on that (2026-10-18). Extract the
   functions to a file, run with `timeout`.
