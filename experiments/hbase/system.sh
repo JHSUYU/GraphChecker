@@ -49,7 +49,7 @@ system_classpath() {
     echo "missing test report: ${report}; run build first" >&2
     return 2
   }
-  python3 "${system_dir}/classpath.py" "${repo}" "${report}" "${test_module}" "${hbase_modules[@]}"
+  python3 "${system_dir}/classpath.py" "${repo}" "${report}" "${test_module}"
 }
 
 hbase_spec() {
