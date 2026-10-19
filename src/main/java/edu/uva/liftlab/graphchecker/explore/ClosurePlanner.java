@@ -1466,7 +1466,7 @@ public final class ClosurePlanner {
             if (found != null) return found;
             found = new ArrayList<OccurrenceAddress>();
             for (OccurrenceAddress occurrence : corpus.occurrences()) {
-                if (!holds(map, occurrence.regionId(), site)
+                if (!map.regionHolds(occurrence.regionId(), site)
                         || node != null && !RuntimeSelectedRegionFinalizer.pairs(
                                 node.render(), occurrence.node().render(),
                                 corpus.client(node),
@@ -2234,17 +2234,6 @@ public final class ClosurePlanner {
         String site = frames.get(0).callSite();
         String method = SiteId.methodOf(site);
         return method.isEmpty() ? site : method;
-    }
-
-    private static boolean holds(StaticScopeMap map, String regionId,
-                                 StaticScopeMap.Site site) {
-        Set<String> methods = map.methodsOf(regionId);
-        if (methods.isEmpty()) return site.regionId.equals(regionId);
-        if (methods.contains(SiteId.methodOf(site.siteId))) return true;
-        for (String caller : site.callers) {
-            if (methods.contains(caller)) return true;
-        }
-        return false;
     }
 
     private static boolean activated(Corpus corpus,
