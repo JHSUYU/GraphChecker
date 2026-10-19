@@ -159,7 +159,7 @@ public class IdentityTest {
     public void aContinuationStandsAtItsRegistrantsAddressWhereverItRuns()
             throws Exception {
         String site = "HBASE_RPC#REQUEST:MasterService.MoveRegion";
-        List<String> stood = new ArrayList<String>();
+        List<List<String>> stood = new ArrayList<List<String>>();
         for (boolean inline : new boolean[] {true, false}) {
             reset();
             Object client = new Object();
@@ -168,14 +168,17 @@ public class IdentityTest {
             RuntimeTraceContext.registerSource(loop, DN);
             long request = RuntimeTraceContext.beginRequest(client, "test");
             long test = Identity.enterFrame("<a.Test: void move()>#u2", null);
-            String[] seen = new String[1];
+            List<String> seen = new ArrayList<String>();
             BiConsumer<Object, Object> carried = Continuations.carry(
                     (value, error) -> {
                         OccurrenceAddress at = Identity.occurrence(DN.key(),
                                 "REGION.call", true);
-                        seen[0] = at.render() + " sends " + Identity.endpointAt(
-                                Identity.currentOccurrence(DN.key()), site, 0)
-                                .id();
+                        seen.add(at.render());
+                        seen.add(Identity.endpointAt(Identity
+                                .currentOccurrence(DN.key()), site, 0).id());
+                        seen.add(ScheduleLog.contextOf(
+                                Identity.contextHere()));
+                        seen.add("inbound " + MessageDoors.current());
                         Identity.regionExit(null);
                     });
             Identity.startWork("<a.Admin: void move()>#u4", carried, null);
@@ -188,23 +191,36 @@ public class IdentityTest {
                     long finish = Identity.enterFrame(
                             "<a.Connection: void finishCall()>#u3", null);
                     Identity.occurrence(DN.key(), "REGION.finish", true);
+                    MessageDoors.putBack(MessageDoors.Inbound.EMPTY);
                     carried.accept(null, null);
-                    String after = Identity.currentOccurrence(DN.key())
-                            .regionId();
+                    assertEquals(MessageDoors.Inbound.EMPTY,
+                            MessageDoors.current());
+                    assertEquals("REGION.finish", Identity.currentOccurrence(
+                            DN.key()).regionId());
+                    MessageDoors.putBack(null);
                     Identity.regionExit(null);
                     Identity.exitFrame(finish);
                     RuntimeTraceContext.endRequest(reply);
-                    seen[0] += " then " + after;
                 });
             }
             Identity.exitFrame(test);
             RuntimeTraceContext.endRequest(request);
-            stood.add(seen[0].replace(" then REGION.finish", ""));
+            stood.add(seen);
         }
         assertEquals(stood.get(0), stood.get(1));
-        assertEquals(DN.key() + "/region/REGION.call/ctx:Root:CLIENT/test#1"
-                + "/idx:<a.Test: void move()>#u2@0/<a.Admin: void move()>#u4@0",
-                stood.get(0).substring(0, stood.get(0).indexOf(" sends ")));
+        String registered = "<a.Admin: void move()>#u4:";
+        List<String> inline = stood.get(0);
+        assertEquals("inbound null", inline.get(3));
+        Object[][] table = {
+            {inline.get(0), DN.key() + "/region/REGION.call/ctx:Root:CLIENT/"
+                    + "test#1/idx:<a.Test: void move()>#u2@0/" + registered},
+            {inline.get(2), DN.key() + "|Root:CLIENT/test#1|<a.Test: void"
+                    + " move()>#u2@0>" + registered}};
+        for (Object[] row : table) {
+            String said = (String) row[0];
+            assertEquals(said, true, said.startsWith((String) row[1])
+                    && said.endsWith("@0"));
+        }
     }
 
     private static String opened(String region) {

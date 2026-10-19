@@ -595,7 +595,13 @@ until the procedure is done) nests one start frame per poll, so the request afte
 which is timing (hbase-adhoc-21 HC11-21: `MasterService.RestoreSnapshot` planned under `7be160aff4b342f7`, ran under
 `b6701a92041c9536`). Until a poll stops counting (a claim of the same start site under itself restarting at its own
 frame), such a workload makes the operation its own synchronous call on the test thread (hbase-adhoc-21's restore
-without the failsafe snapshot).
+without the failsafe snapshot). Also open from the review of hbase-rpc 7384c1e61 (`review-cont/REVIEW.txt`): the VM's
+activation stack, store-read rows and wire exports do not stand apart in a continuation (M3: a marker on
+`ConcolicRegionRuntime` like `SILENCED`, popped at the claim's end, then a case whose planned region registers a
+listener); an unnamed registrant folds where it runs and files no gap (L3); a queue claim inside a continuation with no
+woven frame between can drop the continuation's start frames (L4); `LineageScan` selects registrations by the exact
+owner `CompletableFuture`/`CompletionStage`, the weave by hierarchy (L5a); Netty and Guava future listeners and static
+`supplyAsync`/`runAsync` are no continuations (L5b); a poll chain's index grows by one frame per poll (L6).
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

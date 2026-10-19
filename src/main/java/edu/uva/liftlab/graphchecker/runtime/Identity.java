@@ -162,8 +162,8 @@ public final class Identity {
             }
         }
 
-        private void standApart(boolean ranHere) {
-            if (!ranHere) scopeBase = starts.peek().depth;
+        private void standApart() {
+            scopeBase = starts.peek().depth;
             Region apart = new Region(scopeBase);
             apart.apart = true;
             regions.add(apart);
@@ -428,6 +428,7 @@ public final class Identity {
         private final int scopeBase;
         private final String requestVerb;
         private MessageDoors.Inbound inbound;
+        private boolean aside;
 
         private ClaimScope(State state, boolean continuation) {
             this.serial = state.claimSerial;
@@ -462,11 +463,11 @@ public final class Identity {
             state.claimUnnamed(own);
             return;
         }
-        boolean ranHere = !own && start.ranHere(state);
+        boolean ranHere = !own && !continuation && start.ranHere(state);
         state.openStart(start, own, ranHere, item ? ClaimKind.ITEM
                 : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
                 : ClaimKind.QUEUED_TASK);
-        if (continuation) state.standApart(ranHere);
+        if (continuation) state.standApart();
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
@@ -483,7 +484,9 @@ public final class Identity {
             return;
         }
         State state = state();
-        String named = state.requestVerb;
+        boolean continuation = carrier instanceof Continuations.Carrier;
+        String named = continuation ? Continuations.registrant()
+                : state.requestVerb;
         String site = named.isEmpty() ? stable : stable + ":" + named;
         int window = RecordingWindow.index();
         int iteration = state.nextStartEvent(site, window);
@@ -497,7 +500,9 @@ public final class Identity {
                                 + ExecutionIndex.of(frames).render(),
                         Thread.currentThread(), state.top(), state.depth(),
                         window, handsOff(submittedTo)));
-        ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+        if (!continuation) {
+            ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+        }
     }
 
     private static boolean handsOff(Object executor) {
@@ -580,10 +585,16 @@ public final class Identity {
         State state = state();
         ClaimScope scope = new ClaimScope(state, continuation);
         state.claimScopes.push(scope);
-        claim(state, carrier, false, continuation);
-        if (continuation) {
-            scope.inbound = MessageDoors.setAside();
-            state.requestVerb = "";
+        try {
+            claim(state, carrier, false, continuation);
+            if (continuation) {
+                scope.inbound = MessageDoors.setAside();
+                scope.aside = true;
+                state.requestVerb = "";
+            }
+        } catch (RuntimeException | Error failed) {
+            endClaim(scope.id);
+            throw failed;
         }
         return scope.id;
     }
@@ -623,7 +634,7 @@ public final class Identity {
             }
             state.scopeBase = scope.scopeBase;
             state.requestVerb = scope.requestVerb;
-            MessageDoors.putBack(scope.inbound);
+            if (scope.aside) MessageDoors.putBack(scope.inbound);
         }
         if (state.scopeBase > state.depth()) state.scopeBase = state.depth();
         state.journal();

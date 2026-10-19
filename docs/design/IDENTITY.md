@@ -446,18 +446,31 @@ start's carrier, `CausynthPipeline#carryContinuations`) whose functional method 
 around the function (`Identity#claimStart(carrier, true)`). Whether the stage was complete when
 the continuation was registered decides where it runs: inline on the registering thread, or later
 on whichever thread completes the stage -- in HBase's async client the event loop, inside the
-reply-leg occurrence of the previous call's response. Both stand at one address: the claim stands
-apart from whatever occurrence its thread runs (`State#standApart`: an opaque region below which
-no region folds), its index runs from the registrant's scope base through the start frame (a
-claim on another thread makes the start's frames its scope base), and the thread's inbound and
-request in hand are put aside until the claim ends (`MessageDoors#setAside`), so a request the
-continuation makes starts a level of its own and stands in the registrant's context, not on the
-reply. Folded into the reply leg, hbase-adhoc-11's `MoveRegion` went out under the meta scan's
-reply anchor when the reply came after the registration and under the test's root when it came
-before (`OCCURRENCE_ANCHOR_UNMATCHED`, run R9-11). A chain that re-registers per poll (a
-procedure's `getProcedureResult` polls) still nests one start frame per poll, so a request after
-it stands under the poll count (hbase-adhoc-21 keeps its synchronous workaround). Solr's and HDFS's class roots register none (Solr's
-`Http2SolrClient` listeners are Jetty's), so their addresses are unchanged.
+reply-leg occurrence of the previous call's response. Both take one path, so both stand at one
+address and in one schedule context: the claim is never run-here (it stands on copies of the
+start's frames, which become its scope base, whichever thread runs it), it stands apart from
+whatever occurrence its thread runs (`State#standApart`: an opaque region below which no region
+folds), and the thread's inbound and request in hand are put aside until the claim ends
+(`MessageDoors#setAside`), so a request the continuation makes starts a level of its own in the
+registrant's context. The start is named by the registration site and the first caller outside
+the registering class (`Continuations#registrant`: `FutureUtils#addListener`'s
+`whenComplete` called from `RawAsyncHBaseAdmin.move`), its `k` counted per that name, so a
+registration another path skips (`AsyncRegionLocator`'s already-done location) shifts no other
+path's continuations; and it writes no `START` event: a registration whose continuation never runs
+(`exceptionally` on a normal completion) holds no slot, and the `CLAIM` orders the run. Two passes
+in which the reply beat the registration in one and not the other ran hbase-adhoc-11's `MoveRegion`
+under the meta scan's reply anchor in one and the test's root in the other before this
+(`OCCURRENCE_ANCHOR_UNMATCHED`, run R9-11). A request sent straight from an RPC callback inside a
+reply's exchange, no continuation (HBase's `AsyncScanSingleRegionRpcRetryingCaller` next batch,
+`closeScanner`, `renewLease`), stands on that reply instead (the tree's `CausynthRpc#starting`);
+inside a continuation the inbound is put aside, so that rule never fires there. Limits: the
+registrant must be named (an unnamed start is claimed as before, folding where it runs); the VM's
+activation stack (`ConcolicRegionRuntime`), the store-read rows and the wire exports still follow
+the activation running on the thread, so a continuation's code outside its own regions is the
+registrant's activation's inline and the completing thread's late (hbase-adhoc-11's `MoveRegion`
+export is made inside `callMethod`'s own activation, unaffected); a chain that re-registers per
+poll (a procedure's `getProcedureResult` polls) nests one start frame per poll, so a request after
+it stands under the poll count (hbase-adhoc-21 keeps its synchronous workaround).
 
 The lineage scope (`plan/LineageScan`, run by `run_engine.sh campaign_lineage_classes` over
 `causynth_lineage_roots`) weaves the start, claim and timed-wait hooks into every class of the
