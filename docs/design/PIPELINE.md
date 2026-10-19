@@ -1266,7 +1266,13 @@ and preamble lines its texts reach in each lowered session's lowering (`FlipQuer
 `FlipQuery.Builder#unbound`, `#stateFacts`): its texts are read once per ask (`SmtNames.Named`) and
 each lowering walks from the names it holds (`SmtLowering#reachedBy(Named)`), the preamble reached
 once per distinct preamble -- read again per lowered session, solr-adhoc-39's 20 MB query took
-220-283 s to build and its z3 run 1.3 s (PV7), now 8 s, the query byte-identical. Each symbol it
+220-283 s to build and its z3 run 1.3 s (PV7), now 8 s, the query byte-identical. A fact stands where
+every name it states is reached or is a shared term (a long text named once, `term_dag__`/
+`defined_dag__`) whose body's names stand (`SmtLowering#facts`, `#stands`): a term's definedness past
+2048 characters is such a shared name, which no text of the query names, so it was dropped -- an
+`Enum.valueOf` over a case conversion (`Slice.State.getState`) lost "the name is one of the constants",
+and z3 chose states "", "l" or "MP" (SGF8B2H-adhoc-14: 31 answers-only flips at `DocCollection.<init>#u102`,
+none admitted; offline over its round-0 corpus, all 7 re-asked now name a constant). Each symbol it
 names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
@@ -1812,8 +1818,13 @@ is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its heap 
 (`CAUSYNTH_HEAP_BASIS_MB`, `campaign_replay_basis_mb`): its heap is half of it (4 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
 resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
-granted unless the host's real use would pass `L` with it, and holds what it was granted, released
-when it ends; one the host cannot take is ended, saying so; each states its peak at its end and
+granted unless the host's real use would pass `L` with it -- once its run's end began (the replay JVM marks
+it, `<worker>/workload_ending`, `JUnitMethodRunner#exit`: the settle's read-outs and publications, its end
+peak), unless it would pass 85 % (`campaign_host_end_used_pct`, owner 2026-10-18; starts stay at `L`) -- and
+holds what it was granted, released when it ends; one the host cannot take is ended, saying so (of the
+end-peak kills the not-admitted study counted, those after the test's end, where this rule now applies:
+14 B2H 25 of 36, 23 of them within 85 %; 14 OOM 10 of 47, 7 within; 07 0 of 18 and 13 1 of 21, the rest
+mid-window at a host's 70 % of real use); each states its peak at its end and
 writes it to `workload_rss_mb` in its worker directory, where the head reads it.
 
 THE SHARED POOL. With `stream_shared_pool=true` (a sweep's cases, `tools/adhoc/sweep.sh`) the

@@ -2767,6 +2767,8 @@ campaign_replay_refused_mb=""
 # reached (campaign_watch_workload).
 campaign_refused_file=workload_refused_mb
 campaign_out_of_heap_file=workload_out_of_heap_mb
+campaign_ending_file=workload_ending
+campaign_host_end_used_pct=85
 
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
@@ -4449,7 +4451,8 @@ session"
 # question stays asked: the run that answers it settles it.
 campaign_replay_ended_files=(replay.log concolic_region_results.jsonl
   workload_rss_mb workload_rss_mean_mb workload_cores_x100
-  "${campaign_refused_file}" "${campaign_out_of_heap_file}")
+  "${campaign_refused_file}" "${campaign_out_of_heap_file}"
+  "${campaign_ending_file}")
 campaign_replay_set_aside() {
   local obligation_id=$1 worker=$2 sessions=$3 charged=$4 aside file
   local ended=0 heap=-
@@ -4824,7 +4827,8 @@ in use and $4 MB held for a head; one needs $5 MB${beside} and at most $7 MB \
 # The most of a host of <total_mb> its charges, or its real use, may reach:
 # CAUSYNTH_HOST_MAX_USED_PCT of it.
 campaign_host_limit_mb() {
-  printf '%s\n' "$(( $1 - $1 * (100 - campaign_host_max_used_pct) / 100 ))"
+  local pct=${2:-${campaign_host_max_used_pct}}
+  printf '%s\n' "$(( $1 - $1 * (100 - pct) / 100 ))"
 }
 
 # The MB the live charges of the host directory <dir> hold at <now>: each
@@ -4912,7 +4916,8 @@ campaign_host_hold() {
 # in campaign_host_charge_id), so the starts after it wait for it.  2 when the
 # host's memory cannot be read, 3 while another holds the ledger's lock.
 campaign_host_try_grow() {
-  local host=$1 mb=$2 key dir now total available limit
+  local host=$1 mb=$2 pct=${3:-${campaign_host_max_used_pct}}
+  local key dir now total available limit
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
@@ -4920,13 +4925,12 @@ campaign_host_try_grow() {
   total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
-  limit=$(campaign_host_limit_mb "${total}")
+  limit=$(campaign_host_limit_mb "${total}" "${pct}")
   campaign_host_lock "${dir}" "${now}" || return 3
   if (( total - available + mb > limit )); then
     rmdir "${dir}/lock"
     campaign_host_wait_reason="${key} has ${available} MB available of \
-${total} MB, and ${mb} MB more would put over \
-${campaign_host_max_used_pct}% of it in use"
+${total} MB, and ${mb} MB more would put over ${pct}% of it in use"
     return 1
   fi
   campaign_host_charge_row "${dir}" "${mb}"
@@ -5187,7 +5191,7 @@ campaign_workload_output_bytes() {
 campaign_clock_ticks=$(getconf CLK_TCK 2>/dev/null) || campaign_clock_ticks=100
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
-  local reserve=${5:-} asked want
+  local reserve=${5:-} asked want ending
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
   local sum=0 reads=0 ticks=0 started=${EPOCHREALTIME/./} lasted=0
   local output="" wrote="" since=${SECONDS}
@@ -5242,13 +5246,16 @@ ever times out; its threads are dumped on its output; ended"
       want=${asked}
     fi
     if (( charged > 0 && want > held )); then
+      ending=""
+      [[ -z "${dir}" || ! -e "${dir}/${campaign_ending_file}" ]] \
+        || ending=${campaign_host_end_used_pct}
       campaign_host_unlocked campaign_host_try_grow localhost \
-        "$(( want - held ))"
+        "$(( want - held ))" "${ending}"
       # The reserve refused: what the JVM grew to, alone.
       if (( status != 0 && want > peak && peak > held )); then
         want=${peak}
         campaign_host_unlocked campaign_host_try_grow localhost \
-          "$(( want - held ))"
+          "$(( want - held ))" "${ending}"
       fi
       if (( status != 0 && peak > held )); then
         refused="the host cannot take the $(( peak - held )) MB more \

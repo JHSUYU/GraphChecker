@@ -6227,6 +6227,35 @@ public class ComposerTest {
         }
     }
 
+    @Test
+    public void aLongEnumChoicesDefinednessIsAFactWhereItsCompareIsStated() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        SmtLowering lowering = new SmtLowering(declared);
+        JsonObject state = enumValueOf("s");
+        JsonArray named = state.getAsJsonArray("_param_list");
+        named.set(1, vmString("toUpperCase", vmLeaf("SymbolExpression", "s",
+                "Ljava/lang/String;")));
+        while (named.size() > 2) named.remove(2);
+        for (char constant = 'A'; constant <= 'L'; constant++) {
+            named.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_STATE_OF_A_"
+                    + "LONG_NAMED_CONSTANT_" + constant, "java/lang/String"));
+        }
+        VmTermLowering.Term term = lowering.dispatch(vmString("equals",
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_STATE_OF_A_LONG_"
+                        + "NAMED_CONSTANT_A", "java/lang/String"), state),
+                VmTermLowering.Sort.BOOL, "t");
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        lowering.assertPlain(term.precondition);
+        String compare = term.text;
+        List<String> facts = lowering.facts(Collections.singletonList(
+                compare));
+        assertTrue(compare + " " + facts, facts.stream().anyMatch(fact
+                -> fact.contains("defined_dag__")));
+    }
+
     /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
     private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
