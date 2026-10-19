@@ -19,8 +19,8 @@ case "${1:?usage: case.sh <bug>}" in
       common:org/apache/hadoop/hbase/util/DefaultEnvironmentEdge)
     ;;
   backup-lock-reply-lost)
-    test_class=org.apache.hadoop.hbase.backup.TestBackupManager
-    test_method=testStartBackupExclusiveOperation
+    test_class=org.apache.hadoop.hbase.backup.TestCausynthBackupLockReplyLost
+    test_method=takeAndReleaseTheBackupLock
     target_occurrence=first
     scope=(
       backup=:org/apache/hadoop/hbase/backup/impl/BackupSystemTable
