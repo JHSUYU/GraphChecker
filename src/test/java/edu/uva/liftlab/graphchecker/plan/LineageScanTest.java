@@ -10,6 +10,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingDeque;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -91,6 +92,22 @@ public class LineageScanTest {
         assertTrue(kept(Shuffler.class));
         assertTrue(kept(Lister.class));
         assertFalse(kept(ListWriter.class));
+    }
+
+    @Test
+    public void aRootNamingAClassScansThatClassFamilyAlone() {
+        Object[][] table = {
+            {"a/b/TestX.class", true},
+            {"a/b/TestX$1.class", true},
+            {"a/b/TestX$Worker$2.class", true},
+            {"a/b/TestXY.class", false},
+            {"a/b/TestY.class", false},
+            {"a/TestX.class", false},
+        };
+        for (Object[] row : table) {
+            assertEquals((String) row[0], row[1], LineageScan.ofFamily(
+                    java.nio.file.Paths.get((String) row[0]), "a/b/TestX"));
+        }
     }
 
     private static boolean kept(Class<?> type) throws IOException {

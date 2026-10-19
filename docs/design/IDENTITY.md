@@ -442,7 +442,11 @@ row by row.
 The lineage scope (`plan/LineageScan`, run by `run_engine.sh campaign_lineage_classes` over
 `causynth_lineage_roots`) weaves the start, claim and timed-wait hooks into every class of the
 system's own class roots that starts, hands off, runs or waits, whether or not the case analyses
-it.
+it, and into the workload's own test class and its nested classes (a root `<test classes>#<class>`
+scans that family alone): a test that starts its workers itself gives each its start frame, so two
+workers calling one method are two addresses. Unwoven, both inherited the test thread's index whole
+(hbase-bugs-backup-lock-reply-lost: `TestBackupManager`'s two `new Thread(r).start()` workers took one
+address for their two lock acquisitions, `OCCURRENCE_ADDRESS_SHARED`).
 
 ## 7. Doors
 

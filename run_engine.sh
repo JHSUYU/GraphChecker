@@ -772,6 +772,8 @@ campaign_lineage_classes() {
   local -a roots=()
   if [[ ! -d "${out}" ]]; then
     IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
+    [[ -z "${trace_test}" || ! -d "${project_test_classes_dir}" ]] \
+      || roots+=("${project_test_classes_dir}#${trace_test%%#*}")
     rm -rf -- "${out}.partial"
     mkdir -p "${out}.partial"
     run_java_main edu.uva.liftlab.graphchecker.plan.LineageScan \
