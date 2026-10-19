@@ -1432,9 +1432,17 @@ public final class SmtLowering {
                 : choice.constant(choice.names);
     }
 
+    private Term enumOperand(JsonElement operand, String origin) {
+        JsonObject chosen = enumRead(operand);
+        if (chosen == null) return dispatch(operand, null, origin);
+        return "MethodExpression".equals(VmExpressionIr.typeOf(chosen))
+                ? enumName(array(chosen, "_param_list"), origin)
+                : dispatch(chosen, null, origin);
+    }
+
     private Term enumOrdinal(JsonArray arguments, String origin) {
         Term name = arguments.size() < 2 ? null
-                : dispatch(arguments.get(0), null, origin + ":constant");
+                : enumOperand(arguments.get(0), origin + ":constant");
         List<String> names = enumNames(arguments, 1);
         if (name == null || name.sort != Sort.STRING || names == null) {
             return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
@@ -1570,6 +1578,9 @@ public final class SmtLowering {
             if ("MethodExpression".equals(type)) {
                 return read && ENUM_VALUE_OF.equals(optionalString(node,
                         "_name")) ? node : null;
+            }
+            if ("ConStringSymbolExp".equals(type)) {
+                return read && stringLiteral(node) != null ? node : null;
             }
             if (!VmRows.GUARDED_READ_TYPE.equals(type)
                     || !unstatedVersion(node)) {
@@ -4510,11 +4521,7 @@ public final class SmtLowering {
         }
         Term receiver = dispatch(params.get(0), null,
                 origin + ":equals:parameter0");
-        JsonObject chosen = enumRead(params.get(1));
-        Term argument = chosen != null
-                ? enumName(array(chosen, "_param_list"),
-                origin + ":equals:parameter1")
-                : dispatch(params.get(1), null,
+        Term argument = enumOperand(params.get(1),
                 origin + ":equals:parameter1");
         if (receiver.sort != Sort.STRING) {
             return codecGap("equals", "NON_STRING_PARAMETER", origin,
