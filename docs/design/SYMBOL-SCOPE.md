@@ -447,6 +447,7 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `HDFS_DATA_TRANSFER` | `RESPONSE` | every analysed caller (no door method) | after `BlockOpResponseProto#parseFrom(InputStream)` (an op's response), `DNTransferAckProto#parseFrom(InputStream)` (a transfer's close ack), `PipelineAck#readFields(InputStream)` (a write pipeline's ack) |
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
+| `HBASE_RPC` | `REQUEST` / `RESPONSE` | `AbstractRpcClient#callMethod` / `RpcConnection#finishCall` | before `RpcConnection#sendRequest` (the call fails with the fault, never sent) / before `Call#setResponse` (the server ran the call; the call fails with the fault in place of its reply) |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
 | `ZOOKEEPER` | `READ` | `ZooKeeper#{getData, exists, getChildren (two)}`, `sites` `DATA_FLOW` (below) | before `ClientCnxn#submitRequest`: the read never reaches the server, so it registers no watch on the client |
 | `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
@@ -571,7 +572,9 @@ the hook it reaches by control flow, forward for a door after its hook, backward
 (`DoorWeave#moved`, `LibraryCatalog.Door#relocated`): a system method making the door call itself
 (Solr's `SolrZkClient#makePath` did, before it made each node by `create`) would carry none. A door
 method that calls the hook method itself (Solr's HTTP/2 request parsing its response) carries the door
-in every call of it, so none is moved. A direct call that reaches no hook call or several, or is made
+in every call of it, so none is moved, and so does a hook in the door's own method (Solr's HTTP
+response in `HttpSolrClient#executeMethod`, HBase's two): every other call of the method reaches the
+door there. A direct call that reaches no hook call or several, or is made
 outside the hook's class family, carries no door and is named, DIAGNOSTIC `DOOR_UNPLACED` in the
 catalog gaps: `SolrZkClient#create`'s own retry lambda is one, covered by the door after the hook call
 `create` makes once the retry returns. So every Solr ZooKeeper door stands at the retry boundary,
@@ -599,7 +602,20 @@ retry lambda's own call a `DOOR_UNPLACED` row covered by its caller's door; the 
 `SOLR_HTTP2` responses after `CausynthHttp#response` (in `HttpSolrClient#executeMethod` and
 `Http2SolrClient#processErrorsAndResponse`). HDFS's: the trunk line's `HADOOP_IPC` response in
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
-catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
+catalog anchor already follows it). HBase's: the `HBASE_RPC` request in `AbstractRpcClient#callMethod`
+after `CausynthRpc#sent` (the send, on the calling thread, inside the `try` whose `catch` fails the
+call with what it caught) and the response in `RpcConnection#finishCall` after `CausynthRpc#parsed`
+(the reply's message fields bound inside the reply's exchange; `readResponse` fails the call with the
+fault and the connection reads on); each hook stands right before the catalog's anchor, so the rows
+move nothing and name the two client families every case weaves (`ScopeGrowth --doors`), whatever its
+scope calls. Their kinds are the ones HBase's retry code tells apart
+(`ClientExceptionsUtil#isConnectionException`, `RSProcedureDispatcher#unableToConnectToServer` and
+`#isNetworkError`, `HBaseServerException#isServerOverloaded`): a request's `IOException`,
+`ConnectionClosedException` and `CallQueueTooBigException` (a server refusing a call it did not run),
+a response's `IOException`, `CallTimeoutException` and `ConnectionClosedException`. A response fault
+is a reply lost after the server committed: the client's own retry runs the call again (a
+`checkAndMutate` sent with no nonce meets its own first write, HBASE.md H2-16).
+These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
 caller after the anchor). A data read is no door (DataTransfer's `PacketReceiver`: every packet would
 be one) but a shared store's, a data-flow door (above).
@@ -1440,7 +1456,9 @@ A message field's port crosses with its message, through the door that carries i
 (`runtime/MessageCodec`, its table the scope map's `EXPORT_SITE` cells): the IPC request and
 response doors and the DataTransfer op's (the r6 trees hand the shim the message: `outboundRequest`'s
 request payload, `outboundResponse`'s return value, `outboundOp(op)`; the IPC client's and server's
-parse and each op handler of `Receiver` call `received(message)`). Its value is exported where it is
+parse and each op handler of `Receiver` call `received(message)`; the HBase tree's `CausynthRpc` hands
+`MessageDoors#outboundRequest` the call's request and `#outbound` the reply, and each side's parse to
+`MessageDoors#parsed` inside the exchange it arrived in). Its value is exported where it is
 live: at the builder's setter (the port's producer capture, woven in every region skeleton), inside
 the region that computed it and at that region's occurrence, which the closure grows (PIPELINE
 §7.2), and bound to the BUILDER (`MessageCodec#set`); every `m = b.build()` (or `buildPartial()`)

@@ -550,8 +550,11 @@ door is gone with WIRE-CODEC); rebuild hbase-client.
 **1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
 - An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not
   inherit their racing creator's frames.
-- Message-bound exports for a value exported on one thread and sent by another after a queue (what WIRE-CODEC's
-  message-bound exports did; the body no longer carries WIRE-CODEC, so design it on the current WIRE path).
+- Message-bound exports for a value exported on one thread and sent by another after a queue: settled (agent H3
+  2026-10-19), nothing to build. A protobuf field's export binds to its builder and message (codec capture), and the
+  HBase RPC door walks the message and drains the envelope on the calling thread in `AbstractRpcClient#callMethod`;
+  the event loop that writes the call after the connection's queue only copies its header (IDENTITY §7.1). A declared
+  `WIRE_FLOW` row's export stays on its thread's envelope; HBase declares none.
 
 **2. HBase #14 (master-active-time) to a confirmed CLOCK witness.**
 
@@ -563,8 +566,8 @@ door is gone with WIRE-CODEC); rebuild hbase-client.
 
 04 and 07 are re-sited to the server: `AbstractStateMachineTableProcedure.java:163` and `SnapshotManager.java:1046`.
 
-**4. The two admitted bugs.** backup-lock-reply-lost: needs a RESPONSE door on HBase RPC (`checkAndMutate` with
-NO_NONCE). ns-rsgroup-removal: STATE re-pairing of `removeRSGroup`'s namespace read.
+**4. The two admitted bugs.** backup-lock-reply-lost: the `HBASE_RPC` RESPONSE door (catalog, `RpcConnection#finishCall`)
+fails the first `checkAndMutate` (NO_NONCE) after the server committed it. ns-rsgroup-removal: STATE re-pairing of `removeRSGroup`'s namespace read.
 
 **5. Run the group of 20.**
 

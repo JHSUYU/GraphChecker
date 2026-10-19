@@ -500,6 +500,21 @@ extra status polls renumber no other request. The Solr trees call
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
 they carry, served by the server's `PrepRequestProcessor` and `FinalRequestProcessor` stages).
+The HBase tree calls it from `CausynthRpc` (transport `HBASE_RPC`, one exchange per RPC call,
+correlation `hbase-rpc-<client>-<call id>`, the context in three `RequestHeader` and two
+`ResponseHeader` fields of `RPC.proto`). A call's request starts and ends in
+`AbstractRpcClient#callMethod` (`requestStarting`/`requestEnded`, verb `<Service>.<Method>`; HBase's
+own retries are new calls, new requests of the verb), and the calling thread sends it there
+(`outboundRequest` with the request message, before `RpcConnection#sendRequest`), so the envelope it
+staged and every element bound to the message are drained where the call is made; the connection's
+event loop, which writes the call after its queue, only copies the call's header strings
+(`IPCUtil#buildRequestHeader`). A value exported on one thread and sent by another after a queue
+therefore needs no message-bound export of its own. The response is received by the thread that reads
+it (`RpcConnection#readResponse`: the client's event loop, or a blocking connection's reader), its
+message fields bound to the parsed reply (`MessageDoors#parsed`) before the call completes; the call's
+callbacks run inside that exchange, which ends when they return. A handler opens the call's exchange
+at the start of `CallRunner#run` and binds the request's fields, and `ServerCall#setResponse` sends the
+reply with its message.
 
 A DataTransfer op leaves in `Sender#send`, whose SEND names the op's producer endpoint; it sets the
 op's correlation and every value the thread exported for the op on the op's trace info

@@ -46,6 +46,7 @@ runtime.MessageDoors notified void string string string string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
 runtime.MessageDoors outboundRequest doors.Outbound string string string object object string object
+runtime.MessageDoors parsed void object
 runtime.MessageDoors publishing boolean string string long runnable
 runtime.MessageDoors reading void string string
 runtime.MessageDoors refreshEnded void long

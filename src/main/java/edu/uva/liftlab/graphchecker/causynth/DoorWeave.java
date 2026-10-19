@@ -220,7 +220,9 @@ final class DoorWeave {
     static Map<SootMethod, Set<Stmt>> moved(LibraryCatalog.Door door,
                                            List<SootClass> analysed) {
         Map<SootMethod, Set<Stmt>> found = new LinkedHashMap<>();
-        if (door.relocated == null) return found;
+        if (door.relocated == null || door.relocated.equals(door.method)) {
+            return found;
+        }
         Matcher target = SIGNATURE.matcher(door.relocated);
         if (!target.matches()) {
             throw new IllegalStateException("DOOR_METHOD_UNAVAILABLE: "
