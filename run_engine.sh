@@ -6097,6 +6097,7 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
     | rows("pairing-bound") as $pairing
     | rows("loop-body-bound") as $loops
     | rows("daemon-tick-bound") as $ticks
+    | rows("ordered-map-unmodeled") as $sorted
     | (rows("view-hold-max") + [$confirmHolds[] | bound("view-hold-max")])
       as $holds
     | ($rounds | last | .ceilingCut // 0) as $ceiling
@@ -6136,6 +6137,15 @@ gaps.jsonl.gz | grep -F 'unplanned-input-max=' || true) \
               + " versions'"'"' values, or an arm handed their message is"
               + " refused (" + ($ticks
               | map(.subject | sub(" daemon-tick-bound=.*"; "")) | unique
+              | join(", ")) + ")")}),
+        (select(($sorted | length) > 0)
+         | {by: "ordered_map_unmodeled",
+            detail: ("\($sorted | map(.subject) | unique | length) site(s)"
+              + " held a sorted container no VM model knows (TreeMap,"
+              + " ConcurrentSkipList*, TreeSet or a view or wrapper of one):"
+              + " its state is unversioned and its queries decided on the"
+              + " run'"'"'s contents (" + ($sorted
+              | map(.subject | sub(" ordered-map-unmodeled=.*"; "")) | unique
               | join(", ")) + ")")}),
         (select(($holds | length) > 0)
          | {by: "view_hold_max",

@@ -28,13 +28,15 @@ public final class SessionManifest {
     private final RunSpellings runSpellings;
     private final Set<String> doorsOnly;
     private final Set<String> servingTasks;
+    private final Set<String> clientNodes;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
                             Map<String, Integer> unnamedEntries,
                             Map<String, Map<String, String>> readings,
                             Set<String> derived, Map<String, String> spelled,
-                            Set<String> doorsOnly, Set<String> serving) {
+                            Set<String> doorsOnly, Set<String> serving,
+                            Set<String> clients) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
@@ -55,6 +57,8 @@ public final class SessionManifest {
                 new TreeSet<String>(doorsOnly));
         this.servingTasks = Collections.unmodifiableSet(
                 new TreeSet<String>(serving));
+        this.clientNodes = Collections.unmodifiableSet(
+                new TreeSet<String>(clients));
     }
 
     public static SessionManifest of(String sessionId, Role role,
@@ -73,6 +77,7 @@ public final class SessionManifest {
                 Collections.<String>emptySet(),
                 Collections.<String, String>emptyMap(),
                 Collections.<String>emptySet(),
+                Collections.<String>emptySet(),
                 Collections.<String>emptySet());
     }
 
@@ -81,7 +86,8 @@ public final class SessionManifest {
                                    Set<String> derived,
                                    Map<String, String> spelled,
                                    Set<String> doorsOnly,
-                                   Set<String> serving) {
+                                   Set<String> serving,
+                                   Set<String> clients) {
         return new SessionManifest(sessionId, role, obligationIds,
                 entries == null ? Collections.<String, Integer>emptyMap()
                         : entries,
@@ -93,7 +99,12 @@ public final class SessionManifest {
                         : spelled,
                 doorsOnly == null ? Collections.<String>emptySet()
                         : doorsOnly,
-                serving == null ? Collections.<String>emptySet() : serving);
+                serving == null ? Collections.<String>emptySet() : serving,
+                clients == null ? Collections.<String>emptySet() : clients);
+    }
+
+    public Set<String> clientNodes() {
+        return clientNodes;
     }
 
     public Set<String> doorsOnly() {
@@ -176,6 +187,11 @@ public final class SessionManifest {
             serving.add(task);
         }
         json.add("servingTasks", serving);
+        JsonArray clients = new JsonArray();
+        for (String node : clientNodes) {
+            clients.add(node);
+        }
+        json.add("clientNodes", clients);
         return json;
     }
 
@@ -236,7 +252,9 @@ public final class SessionManifest {
                 spelled,
                 new TreeSet<String>(JsonFields.strings(json, "doorsOnly")),
                 new TreeSet<String>(JsonFields.strings(json,
-                        "servingTasks")));
+                        "servingTasks")),
+                new TreeSet<String>(JsonFields.strings(json,
+                        "clientNodes")));
     }
 
     @Override

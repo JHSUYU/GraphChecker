@@ -1910,7 +1910,10 @@ public final class CausynthPipeline {
         while (!pending.isEmpty()) {
             SootClass current = pending.pop();
             if (!seen.add(current.getName())) continue;
-            if (current.getName().equals(name)) return true;
+            if (current.getName().equals(name) || name.startsWith("*")
+                    && current.getName().endsWith(name.substring(1))) {
+                return true;
+            }
             if (current.hasSuperclass()) pending.push(current.getSuperclass());
             for (SootClass implemented : current.getInterfaces()) {
                 pending.push(implemented);

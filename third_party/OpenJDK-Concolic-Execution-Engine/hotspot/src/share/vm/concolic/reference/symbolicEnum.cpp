@@ -33,9 +33,24 @@ public:
     return _class.empty() ? NULL : _class.c_str();
   }
   virtual bool is_enum_ordinal() { return _class.empty(); }
+  virtual bool is_enum_value_of() { return !_class.empty(); }
 
 private:
   // The constant's class (valueOf's), or empty for an ordinal.
+  std::string _class;
+};
+
+// A constant the program held, by its name: the name of a constant of its
+// class.  Stored into a tracked location, it names what a read of the
+// location observed, so a compare of that read with a constant is a compare
+// of names (SymEnum::compare), as a constant valueOf named is.
+class EnumConstantName : public ConStringSymbolExp {
+public:
+  EnumConstantName(const std::string &name, const std::string &klass)
+      : ConStringSymbolExp(name), _class(klass) {}
+  virtual const char *enum_constant_class() { return _class.c_str(); }
+
+private:
   std::string _class;
 };
 
@@ -163,8 +178,9 @@ Expression *SymEnum::finish_method_helper(MethodSymbolizerHandle &handle) {
 }
 
 Expression *SymEnum::constant_name(oop value) {
-  return value == NULL || enum_class(value->klass()) == NULL ? NULL
-      : new ConStringSymbolExp(name_of(value));
+  InstanceKlass *klass = value == NULL ? NULL : enum_class(value->klass());
+  return klass == NULL ? NULL
+      : new EnumConstantName(name_of(value), class_name(klass));
 }
 
 Expression *SymEnum::compare(Expression *left, oop left_obj,
@@ -173,15 +189,26 @@ Expression *SymEnum::compare(Expression *left, oop left_obj,
   const char *left_class = left == NULL ? NULL : left->enum_constant_class();
   const char *right_class =
       right == NULL ? NULL : right->enum_constant_class();
-  if (left_class == NULL && right_class == NULL) return NULL;
+  if (left_class == NULL && right_class == NULL) {
+    return compare_with_constant(left, left_obj, right, right_obj, op,
+                                 outcome);
+  }
   const bool named_left = left_class != NULL;
   Expression *named = named_left ? left : right;
   const char *named_class = named_left ? left_class : right_class;
   Expression *other = named_left ? right : left;
   const char *other_class = named_left ? right_class : left_class;
   oop other_obj = named_left ? right_obj : left_obj;
+  if (other != NULL && other_class == NULL && !named->is_enum_value_of()) {
+    // A read of a name compared with a value of its own expression: the
+    // reference compare over both (CONCOLIC_OPC_REF_CMP).
+    return NULL;
+  }
   if (other_class == NULL && other_obj == NULL) {
     // A read of a name may be null in another world: a reference test.
+    if (other != NULL) {
+      ConcolicMngr::ctx->note_model_gap("ENUM_OPERAND_PINNED");
+    }
     return new OpSymExpression(named, SymbolExpression::get(Sym_NULL), op,
                                outcome);
   }
@@ -195,6 +222,9 @@ Expression *SymEnum::compare(Expression *left, oop left_obj,
   } else {
     InstanceKlass *klass = enum_class(other_obj->klass());
     if (klass == NULL || class_name(klass) != named_class) {
+      if (other != NULL) {
+        ConcolicMngr::ctx->note_model_gap("ENUM_OPERAND_PINNED");
+      }
       equal = new ConExpression((jboolean) false);
     } else {
       // A constant of its class: the constant's name the receiver, the
@@ -208,6 +238,28 @@ Expression *SymEnum::compare(Expression *left, oop left_obj,
     }
   }
   return new OpSymExpression(equal, new ConExpression((jboolean) true), op,
+                             outcome);
+}
+
+Expression *SymEnum::compare_with_constant(Expression *left, oop left_obj,
+                                           Expression *right, oop right_obj,
+                                           SymbolicOp op, bool outcome) {
+  if ((left == NULL) == (right == NULL)) return NULL;
+  Expression *valued = left != NULL ? left : right;
+  oop valued_obj = left != NULL ? left_obj : right_obj;
+  oop constant = left != NULL ? right_obj : left_obj;
+  InstanceKlass *klass =
+      constant == NULL ? NULL : enum_class(constant->klass());
+  if (klass == NULL) return NULL;
+  if (valued_obj != NULL && enum_class(valued_obj->klass()) != klass) {
+    return NULL;
+  }
+  // A value of its own expression -- a read that observed null, a
+  // container's answer, a call's return -- compared with a constant of its
+  // class that carries none: the constant's name equals it, null in another
+  // world never.
+  return new OpSymExpression(equal_names(constant_name(constant), valued),
+                             new ConExpression((jboolean) true), op,
                              outcome);
 }
 
