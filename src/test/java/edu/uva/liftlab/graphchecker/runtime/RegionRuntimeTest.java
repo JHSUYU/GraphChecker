@@ -322,6 +322,35 @@ public class RegionRuntimeTest {
     }
 
     @Test
+    public void aSortedContainerIsNamedThroughItsViewsAndWrappers() {
+        java.util.TreeMap<String, String> tree = new java.util.TreeMap<>();
+        java.util.concurrent.ConcurrentSkipListMap<String, String> skip =
+                new java.util.concurrent.ConcurrentSkipListMap<>();
+        java.util.TreeSet<String> sortedSet = new java.util.TreeSet<>();
+        java.util.concurrent.ConcurrentSkipListSet<String> skipSet =
+                new java.util.concurrent.ConcurrentSkipListSet<>();
+        Object[][] table = {
+            {tree, tree},
+            {skip, skip},
+            {sortedSet, sortedSet},
+            {skipSet, skipSet},
+            {Collections.unmodifiableSet(skipSet), skipSet},
+            {Collections.unmodifiableMap(tree), tree},
+            {Collections.synchronizedMap(skip), skip},
+            {Collections.unmodifiableCollection(tree.values()), tree},
+            {tree.values(), tree},
+            {skip.values(), skip},
+            {skip.keySet(), skip.keySet()},
+            {new HashMap<String, String>(), null},
+            {Collections.unmodifiableMap(new HashMap<String, String>()), null},
+        };
+        for (Object[] row : table) {
+            assertSame(row[0].getClass().getName(), row[1],
+                    ConcolicRegionRuntime.sortedContainer(row[0]));
+        }
+    }
+
+    @Test
     public void aDoorsOnlyOccurrenceRunsPausedButForItsDoors()
             throws Exception {
         installVm();
