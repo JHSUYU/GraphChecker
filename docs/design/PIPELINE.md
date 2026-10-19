@@ -1262,7 +1262,13 @@ and preamble lines its texts reach in each lowered session's lowering (`FlipQuer
 `FlipQuery.Builder#unbound`, `#stateFacts`): its texts are read once per ask (`SmtNames.Named`) and
 each lowering walks from the names it holds (`SmtLowering#reachedBy(Named)`), the preamble reached
 once per distinct preamble -- read again per lowered session, solr-adhoc-39's 20 MB query took
-220-283 s to build and its z3 run 1.3 s (PV7), now 8 s, the query byte-identical. Each symbol it
+220-283 s to build and its z3 run 1.3 s (PV7), now 8 s, the query byte-identical. A fact stands where
+every name it states is reached or is a shared term (a long text named once, `term_dag__`/
+`defined_dag__`) whose body's names stand (`SmtLowering#facts`, `#stands`): a term's definedness past
+2048 characters is such a shared name, which no text of the query names, so it was dropped -- an
+`Enum.valueOf` over a case conversion (`Slice.State.getState`) lost "the name is one of the constants",
+and z3 chose states "", "l" or "MP" (SGF8B2H-adhoc-14: 31 answers-only flips at `DocCollection.<init>#u102`,
+none admitted; offline over its round-0 corpus, all 7 re-asked now name a constant). Each symbol it
 names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
