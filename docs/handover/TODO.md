@@ -157,17 +157,17 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   (2adb77b2e: a remote replay set aside for memory is asked again; only whole z3 answers kept; a solver's memory end
   fails none of its seat-mates; a re-run's session gated without the one it replaces, never swapped in ungated).
   On solr-stream2 beyond it: goal 4 (the planner's host holds its measured need per round, the hold bounded,
-  OPTIMIZATIONS 1.36), goal 6 (a GROW re-run past the rounds' maxWorldDepth holds no fixed point, COMPOSE waits for
-  its paths' re-runs and frees the unstated reads of sessions whose re-run did not land, 1.37; a no-op while the
-  depth is unbounded), the fd keeper (1.38: a head step charged inside $(...) 10.0 -> 0.2 s), the control-plane
-  events (`stream_events.tsv`, read by `analysis/solr-2026-10-18/stream2/ctlplane.py <run dir>`), a reap that
-  freezes whole trees. Goal 5's A/B on idle lift05: no slowdown (1.35).
+  OPTIMIZATIONS 1.36, reverted), goal 6 (the fixed point beside GROW re-runs past the rounds' maxWorldDepth, 1.37:
+  reverted 2026-10-19 on solr-fixedpoint, every re-run holds the fixed point again; its uncaptured sessions, whose
+  unstated reads COMPOSE frees, stay for re-runs that never land), the fd keeper (1.38: a head step charged inside
+  $(...) 10.0 -> 0.2 s), the control-plane events (`stream_events.tsv`, read by
+  `analysis/solr-2026-10-18/stream2/ctlplane.py <run dir>`), a reap that freezes whole trees. Goal 5's A/B on idle
+  lift05: no slowdown (1.35).
 - Next: run ctlplane.py on the integrated canary (the full pool). Solvers are still charged their corpus's estimate
   at start (`campaign_solver_live_pct` 50 %, measured before compaction; the composer's heap reads the same
   estimate, do_compose) and grown as measured -- re-measure a solver's live set after compaction before lowering it.
-- Traps: fixture manifests state maxWorldDepth (the planner stub's `stream_test_world_depth`); the planner stub
-  holds its reserve as the watcher would; the stream fixtures' gate stub keeps the gate's ledger (`test_gated`);
-  never edit a script a running gate executes (NFS: "Stale file handle").
+- Traps: the stream fixtures' gate stub keeps the gate's ledger (`test_gated`); never edit a script a running gate
+  executes (NFS: "Stale file handle").
 
 **D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore.**
 - STATUS (2026-10-18 evening): D1 merged into solr-int (15114b420). D2, the generational bound (solr-explore
