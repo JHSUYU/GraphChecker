@@ -1774,6 +1774,87 @@ public class ExploreTest {
                 capped.truncated));
     }
 
+    @Test
+    public void aWriterThatRanForItsDoorsAloneIsDemandedThroughAReadInsideAValue()
+            throws Exception {
+        Path iteration = tree.newFolder("doors-only-writer").toPath();
+        OccurrenceAddress boot = occurrence("hdfs-case/dn0", "REGION.boot",
+                CausalContext.of(Role.of("BOOT"), "", 1),
+                "o.a.h.h.s.d.Boot#run#1");
+        LocationId limit = LocationId.of(LocationKind.INSTANCE, "9", "2");
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ReadFromExpression");
+        read.addProperty("_java_type", "I");
+        read.addProperty("readEventId", 3L);
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", 9L);
+        location.addProperty("slot", 2L);
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        read.add("location", location);
+        JsonObject site = new JsonObject();
+        site.addProperty("className", "example/Config");
+        site.addProperty("methodName", "limit");
+        site.addProperty("methodDescriptor", "()I");
+        site.addProperty("bci", 4);
+        read.add("site", site);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 1L);
+        observed.addProperty("versionKind", "INITIAL");
+        read.add("observedVersion", observed);
+        for (boolean ranWhole : new boolean[] {false, true}) {
+            Path at = iteration.resolve("ran-whole-" + ranWhole);
+            Files.createDirectories(at);
+            Session seed = new Session(at, "s-seed");
+            for (OccurrenceAddress each : Arrays.asList(TARGET, WRITER,
+                    boot)) {
+                seed.activation(each, false);
+            }
+            if (!ranWhole) seed.doorsOnly.add(boot.render());
+            seed.write(at(boot, Endpoint.stateSite("example.Boot", "run", 2,
+                    true), "Boot#run#2"), LocationId.of(LocationKind.INSTANCE,
+                    "77", "1"), 1L, "");
+            seed.writes.add(WriteRow.initial("s-seed", 0L, at(WRITER,
+                    Endpoint.initialSite("example.Config#limit()I#4:READ"),
+                    "Config#limit#4"), limit, 1L, "", "I"));
+            seed.expression("e.stored", read);
+            seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+            seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "7");
+            seed.anchored(TARGET);
+            seed.flush();
+            Files.write(at.resolve(StaticScopeMap.REGIONS),
+                    ("{\"regionId\":\"REGION.boot\",\"methods\":["
+                            + "\"<example.Boot: void run()>\","
+                            + "\"<example.Config: void init()>\"]}\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(at,
+                    targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                    scopeSite(StaticScopeMap.READ_SITE, "REGION.addkeys",
+                            "<example.Config: int limit()>#u1",
+                            "example.Config#limit()I",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", ""),
+                    scopeSite(StaticScopeMap.WRITE_SITE, "REGION.init",
+                            "<example.Config: void init()>#u1",
+                            "example.Config#init()V",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", "")));
+            ClosurePlanner.Plan plan = closure(Corpus.read(at, null), TARGET,
+                    map);
+            Set<String> whole = new LinkedHashSet<String>();
+            for (OccurrenceAddress each : plan.unpaused.keySet()) {
+                whole.add(each.render());
+            }
+            for (OccurrenceAddress each : plan.runWhole) {
+                whole.add(each.render());
+            }
+            assertEquals("ran whole " + ranWhole + ", planned: "
+                    + focused(plan), !ranWhole,
+                    focused(plan).contains(boot.render()));
+            assertEquals("ran whole " + ranWhole + ": " + whole, !ranWhole,
+                    whole.contains(boot.render()));
+        }
+    }
+
     private static List<String> focused(ClosurePlanner.Plan plan) {
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
