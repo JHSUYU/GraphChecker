@@ -179,8 +179,8 @@ public final class Composer {
         private final Map<String, String> clockBefore;
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
-        private final Map<String, List<String>> observedArrivals;
-        private final Map<String, List<String>> heldArrivals;
+        private final Map<String, Map<String, String>> observedArrivals;
+        private final Map<String, Map<String, String>> heldArrivals;
         private final Map<String, Endpoint> openArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final Map<String, Refutations.Refuted> refutations;
@@ -641,6 +641,14 @@ public final class Composer {
             return Composer.configurationOnly(moved, this::categoryOf);
         }
 
+        public int faultsMoved(Collection<String> moved) {
+            int faults = 0;
+            for (String key : moved) {
+                if (categoryOf(key) == RootCategory.FAULT) faults++;
+            }
+            return faults;
+        }
+
         public Map<String, List<String>> unplanted(Collection<String> moved) {
             Map<String, List<String>> found =
                     new LinkedHashMap<String, List<String>>();
@@ -834,7 +842,13 @@ public final class Composer {
         }
 
         public List<String> observedArrivals(String pathId) {
-            return asserted(observedArrivals.get(pathId));
+            for (Disjunct disjunct : disjuncts) {
+                if (disjunct.path().pathId.equals(pathId)) {
+                    return asserted(heldByOwnArms(disjunct,
+                            observedArrivals.get(pathId)));
+                }
+            }
+            return asserted(null);
         }
 
         public List<String> recordedPairings() {
@@ -858,12 +872,39 @@ public final class Composer {
         private String recordedPairing(Disjunct disjunct) {
             List<String> terms = new ArrayList<String>();
             List<String> reads = observedReads.get(disjunct.path().pathId);
-            List<String> arrivals = heldArrivals.get(disjunct.path().pathId);
             if (reads != null) terms.addAll(reads);
-            if (arrivals != null) terms.addAll(arrivals);
+            terms.addAll(heldByOwnArms(disjunct,
+                    heldArrivals.get(disjunct.path().pathId)));
             if (terms.isEmpty()) return null;
             return "(assert (=> " + disjunct.selector() + " "
                     + VmTermLowering.and(terms) + "))";
+        }
+
+        private List<String> heldByOwnArms(Disjunct disjunct,
+                                           Map<String, String> arrivals) {
+            List<String> held = new ArrayList<String>();
+            if (arrivals == null) return held;
+            Set<String> stated = new HashSet<String>();
+            List<String> own = ownArms.get(disjunct.selector());
+            for (String arm : own == null ? Collections.<String>emptyList()
+                    : own) {
+                ComposedFamilies.ArmChoice choice = armChoices.get(arm);
+                if (choice == null) continue;
+                boolean states = false;
+                for (ComposedFamilies.BoundLeaf leaf
+                        : choice.leaves().values()) {
+                    if (arrivals.containsKey(leaf.symbol)) {
+                        states = stated.add(leaf.symbol) || states;
+                    }
+                }
+                if (states) held.add(arm);
+            }
+            for (Map.Entry<String, String> arrival : arrivals.entrySet()) {
+                if (!stated.contains(arrival.getKey())) {
+                    held.add(arrival.getValue());
+                }
+            }
+            return held;
         }
 
         private static List<String> asserted(List<String> terms) {
@@ -1155,10 +1196,10 @@ public final class Composer {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, List<String>> observedReads =
             new LinkedHashMap<String, List<String>>();
-    private final Map<String, List<String>> heldArrivals =
-            new LinkedHashMap<String, List<String>>();
-    private final Map<String, List<String>> observedArrivals =
-            new LinkedHashMap<String, List<String>>();
+    private final Map<String, Map<String, String>> heldArrivals =
+            new LinkedHashMap<String, Map<String, String>>();
+    private final Map<String, Map<String, String>> observedArrivals =
+            new LinkedHashMap<String, Map<String, String>>();
     private final Map<String, Endpoint> openArrivals =
             new LinkedHashMap<String, Endpoint>();
     private Set<String> openedWires;
@@ -2734,14 +2775,14 @@ public final class Composer {
         return true;
     }
 
-    private List<String> arrivals(List<AttachRow> attaches) {
-        List<String> stated = new ArrayList<String>();
-        Set<String> seen = new LinkedHashSet<String>();
+    private Map<String, String> arrivals(List<AttachRow> attaches) {
+        Map<String, String> stated = new LinkedHashMap<String, String>();
         for (AttachRow attach : attaches) {
-            if (!seen.add(attach.symbol())) continue;
+            if (stated.containsKey(attach.symbol())) continue;
             Term received = arrived(attach);
             if (received == null) continue;
-            stated.add("(= " + attach.symbol() + " " + received.text + ")");
+            stated.put(attach.symbol(), "(= " + attach.symbol() + " "
+                    + received.text + ")");
         }
         return stated;
     }

@@ -3309,8 +3309,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `Z3#until`): past it no question starts and every one running ends, each undecided -- a named
    bound (DIAGNOSTIC `decide budget`), never a refutation, so no UNSAT stands on it.
 3. *As it happened* = every clock cell pinned to its reading plus `recordedPairings` (each path held to
-   its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
-   as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
+   its own observed reads and received arrivals; an arrival is held by its own run's arm,
+   `Composition#ownRun`'s, so its value still follows the producer's roots and clocks, and by its
+   received value only where no own arm states it). `recordingDecides`: ordinal 0 is sat free and
+   unsat as it happened; the published row 0 is then that as-happened ask, whose core is not asked
+   (hbase-bugs-master-active-time HZ10: "unsat, core []" read as the clocks-free ordinal 0, which was
+   sat). `clockDriven`: ordinal 0 with every `recordedPairing` held and the clocks free is a witness
+   (the clocks alone reach the fatal, every pairing as recorded; "unsat with the clocks alone pinned"
+   missed it wherever a re-pairing reaches the fatal too: HZ10 re-paired the new master's read of its
+   active time to the INITIAL 0, so the old master's clock carried by the report was never moved); then the witness keeps
    every clock running on wherever it can (`leastClocks`: a cell's skew off its reading equals that
    of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading;
    pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
@@ -3326,7 +3333,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match. First of all, a seed replay that observed the fatal at the declared
+4. The claim, first match, fewest moved fault markers first (`RootCategory.FAULT` roots a witness's
+   valuation moves, `Composition#faultsMoved`), then the order below within each count: a witness
+   injecting no failure is the nearer world, and a refuted fault claim costs a CONFIRM loop (HZ10:
+   77 sat door-marker valuations ranked ahead of the clock world; the two claimed were refuted). First of all, a seed replay that observed the fatal at the declared
    occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
    counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
    `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
@@ -3406,7 +3416,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      or one only a configuration whose plant leaves reads at the recording's value satisfies
      (`UNPRODUCIBLE_ANSWER`), is BLOCKING.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
-   `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
+   `STATE_PAIRING_FLIPPED`; its observed anchor arrivals (held as in 3: by their own run's arm) →
+   `MESSAGE_PAIRING_FLIPPED`; a moved root →
    `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`.
 6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
    re-asked with each clock jump a margin (one minute in its ticks) further the same way (`withMargin`:
