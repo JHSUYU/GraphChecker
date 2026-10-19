@@ -15,6 +15,7 @@ case "${1:?usage: case.sh <bug>}" in
       server=:org/apache/hadoop/hbase/regionserver/RSRpcServices
       server=:org/apache/hadoop/hbase/regionserver/HRegionServer
       server=:org/apache/hadoop/hbase/regionserver/handler/AssignRegionHandler
+      server=:org/apache/hadoop/hbase/regionserver/RegionServerServices
       common=:org/apache/hadoop/hbase/util/EnvironmentEdgeManager
       common:org/apache/hadoop/hbase/util/DefaultEnvironmentEdge)
     ;;
