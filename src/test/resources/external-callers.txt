@@ -22,7 +22,8 @@ annotation.Debug makeSymbolicBoolean boolean string
 
 # The message doors the Solr (CausynthHttp, SolrZkClient's store doors,
 # CausynthSolrCluster), ZooKeeper (CausynthZk, CausynthZkCluster) and HBase
-# (CausynthRpc, CausynthHBaseCluster) trees call themselves.
+# (CausynthRpc, CausynthHBaseCluster, RecoverableZooKeeper's store doors,
+# ZKWatcher) trees call themselves.
 runtime.MessageDoors beginNodeStartup long object
 runtime.MessageDoors beginNodeStartup long string string string
 runtime.MessageDoors beginRequest long object string
@@ -46,6 +47,7 @@ runtime.MessageDoors notified void string string string string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
 runtime.MessageDoors outboundRequest doors.Outbound string string string object object string object
+runtime.MessageDoors parsed void object
 runtime.MessageDoors publishing boolean string string long runnable
 runtime.MessageDoors reading void string string
 runtime.MessageDoors refreshEnded void long
@@ -70,5 +72,6 @@ runtime.MessageDoors storingChild long string string
 runtime.MessageDoors vacant boolean long
 runtime.MessageDoors viewed void string string object
 
-# The Solr cluster's ZooKeeper session expiry (CausynthSolrCluster).
+# The in-process ZooKeeper's session expiry (Solr's CausynthSolrCluster,
+# HBase's MiniZooKeeperCluster).
 runtime.Sessions expirer void predicate

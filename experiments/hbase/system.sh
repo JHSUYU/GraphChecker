@@ -1,5 +1,6 @@
 system_jar_first=false
 system_scope=()
+client_fault_transports=(HBASE_RPC)
 system_sources=(
   common:hbase-common/src/main/java
   client:hbase-client/src/main/java

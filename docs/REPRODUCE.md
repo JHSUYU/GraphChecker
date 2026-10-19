@@ -1,4 +1,4 @@
-# Reproducing the 46 HDFS checks (and the Solr group, §6) from GitHub
+# Reproducing the 46 HDFS checks (and the Solr group, §6, and the HBase group, §7) from GitHub
 
 Everything a run of the 46 HDFS cases needs is in two GitHub repositories (the Solr cases: §6). Nothing on the cluster's disks is assumed
 besides the operating system packages below.
@@ -208,3 +208,49 @@ with the adapter, every case's target marker and the bug checks' workloads.
    (confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
    confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
    checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).
+
+## 7. The HBase cases
+
+The 22 HBase cases ([`experiments/hbase/hbase-cases.tsv`](../experiments/hbase/hbase-cases.tsv): case, branch, budget;
+each check's target, workload and state: [checks/HBASE.md](checks/HBASE.md) §E) run on GraphChecker's `system/hbase`
+and one HBase tree, the branch `graphchecker/hbase-checks` of the public fork `https://github.com/JHSUYU/hbase.git`
+(tree `hbase-checks`, [`experiments/hbase/trees.tsv`](../experiments/hbase/trees.tsv)): Apache HBase master
+`1790942bb2` backported to Java 8, with the adapter, every case's target marker and the workloads of the tree's own.
+No HDFS: every workload's mini cluster runs on the local filesystem (STATUS "Per-system surface", HBase, "tree:
+cluster and bounds").
+
+1. **GraphChecker.** As §6.1, on the branch `system/hbase` (`~/GraphChecker-hbase`).
+
+2. **The image.** The Solr image (§6.2), built from `system/hbase`'s VM sources (the same as `system/solr`'s); on
+   the cluster `/bigtemp/vnr3ne/vm-force10/j2sdk-image`. It is `CAUSYNTH_CUSTOM_JDK_HOME` for every HBase run.
+
+3. **The tree.** Maven and JDK 8 (§0); the first build downloads the tree's dependencies into its own repository:
+
+   ```bash
+   cd ~/GraphChecker-hbase
+   tools/onlift.sh -g 8 experiments/hbase/prepare-trees.sh > $GC_BULK/prepare-hbase.log 2>&1
+   ```
+
+   `prepare-trees.sh` clones the fork's `graphchecker/hbase-checks` into `$GC_TREES/hbase-checks` (a directory already
+   there is only built), installs the checkout's plain jar into the tree's Maven repository (`$GC_M2/hbase-checks`, or
+   `HBASE_MAVEN_REPO`; the tree compiles against GraphChecker's `MessageDoors` and `Sessions`, a provided dependency,
+   so it runs on the jar of the same checkout), builds hbase-server and every module of a workload with what they
+   depend on (`experiments/hbase/build.sh`), and runs every case's workload once natively by surefire, with
+   `causynth.cluster.automatic` and the case's window: a case's classpath is read off its workload's surefire report.
+   The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or `MISSING`
+   (the script fails). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/hbase/build.sh
+   $GC_TREES/hbase-checks '<Class>#<method>[@startup]'` runs one workload; never build a tree a run reads.
+
+4. **The cases**, each alone on the cluster with its budget:
+
+   ```bash
+   export GC_OUT=$GC_BULK/gc-out/repro-hbase CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
+   (setsid nohup tools/rounds/run-series.sh B1 experiments/hbase/hbase-cases.tsv system/hbase=$HOME/GraphChecker-hbase \
+     > $GC_OUT/series-B1.out 2>&1 < /dev/null &)
+   ```
+
+   One case alone: `CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh ~/GraphChecker-hbase hbase-adhoc-15 B1-15`
+   (the same `GC_OUT` and image).
+
+5. **Reading them**, as §6.5: a bug check reproduces when it ends `SAT_CANDIDATE` (confirmed, reproduced natively); a
+   study check when its `.smt` is right, SAT confirmed or UNSAT at its fixed point.

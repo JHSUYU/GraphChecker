@@ -18,6 +18,26 @@ case "${1:?usage: case.sh <bug>}" in
       common=:org/apache/hadoop/hbase/util/EnvironmentEdgeManager
       common:org/apache/hadoop/hbase/util/DefaultEnvironmentEdge)
     ;;
+  backup-lock-reply-lost)
+    test_class=org.apache.hadoop.hbase.backup.TestBackupManager
+    test_method=testStartBackupExclusiveOperation
+    target_occurrence=first
+    scope=(
+      backup=:org/apache/hadoop/hbase/backup/impl/BackupSystemTable
+      backup=:org/apache/hadoop/hbase/backup/impl/BackupManager
+      client=:org/apache/hadoop/hbase/client/RawAsyncTableImpl
+      server=:org/apache/hadoop/hbase/regionserver/HRegion)
+    ;;
+  ns-rsgroup-removal)
+    test_class=org.apache.hadoop.hbase.rsgroup.TestCausynthNamespaceGroupRemoval
+    test_method=removeTheGroupOfANamespaceBeingCreated
+    target_occurrence='auto0/master0#epoch0/region/REGION.SEED#2'
+    scope=(
+      server=:org/apache/hadoop/hbase/master/procedure/MasterProcedureUtil
+      server=:org/apache/hadoop/hbase/rsgroup/RSGroupInfoManagerImpl
+      server=:org/apache/hadoop/hbase/master/TableNamespaceManager
+      server=:org/apache/hadoop/hbase/master/ClusterSchemaServiceImpl)
+    ;;
   *)
     echo "unknown HBase bug-study case: $1" >&2
     return 2

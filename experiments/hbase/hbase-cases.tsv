@@ -1,5 +1,25 @@
 # The HBase cases (docs/checks/HBASE.md): the GraphChecker branch that runs each and its case budget
 # (CASE_TIMEOUT_SECONDS), for tools/rounds/run-series.sh.  Its tree is its case.sh's repo= (experiments/hbase/trees.tsv).
 # case	branch	budget_s
+hbase-adhoc-04	system/hbase	14400
+hbase-adhoc-07	system/hbase	21600
+hbase-adhoc-08	system/hbase	14400
+hbase-adhoc-10	system/hbase	14400
+hbase-adhoc-11	system/hbase	14400
+hbase-adhoc-12	system/hbase	14400
+hbase-adhoc-13	system/hbase	14400
+hbase-adhoc-14	system/hbase	14400
 hbase-adhoc-15	system/hbase	14400
-hbase-bugs-master-active-time	system/hbase	14400
+hbase-adhoc-19	system/hbase	14400
+hbase-adhoc-20	system/hbase	14400
+hbase-adhoc-21	system/hbase	14400
+hbase-adhoc-22	system/hbase	14400
+hbase-adhoc-24	system/hbase	21600
+hbase-adhoc-28	system/hbase	14400
+hbase-adhoc-31	system/hbase	14400
+hbase-adhoc-34	system/hbase	14400
+hbase-adhoc-35	system/hbase	14400
+hbase-adhoc-37	system/hbase	14400
+hbase-bugs-master-active-time	system/hbase	21600
+hbase-bugs-backup-lock-reply-lost	system/hbase	14400
+hbase-bugs-ns-rsgroup-removal	system/hbase	14400
