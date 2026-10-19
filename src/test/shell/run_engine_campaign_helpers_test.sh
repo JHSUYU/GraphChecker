@@ -2192,6 +2192,16 @@ next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
 [[ "${next_out}" == *'campaign_max_claims=3'* \
     && ! -e "${campaign_final}/refuted/0003" ]] \
   || fail "the re-decision bound was not named: ${next_out}"
+jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}},
+  paths: [{pathId: "P", selector: "path_selector__4__p"}]}' \
+  >"${composition_manifest}"
+jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
+  selectedPathId: "P", selectedArms: [{selector: "m__4__a"},
+  {selector: "m__3__seed"}], assignment: {}}]}' >"${campaign_final}/claim.json"
+[[ "$(campaign_claim_model "${campaign_final}/claim.json" | jq -c '.arms')" \
+    == '["m__4__a"]' ]] \
+  || fail "a refuted model kept an arm of another path than the one it \
+selected, which no refutation of that path can compose"
 unset -f next_claim
 reset_config
 
