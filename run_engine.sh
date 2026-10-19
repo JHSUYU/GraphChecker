@@ -6552,10 +6552,15 @@ campaign_confirm_settle() {
 campaign_model_key='def key: .arms |= ((. // []) | map(sub("__[0-9]+__"; "__")));'
 
 campaign_claim_model() {
-  jq -c '.claim as $c | $c.valuationOrdinal as $o | (.valuations // [])[]
-    | select(.ordinal == $o) | {findingKind: $c.kind,
-      pathId: .selectedPathId,
-      arms: ([(.selectedArms // [])[].selector] | sort),
+  jq -c --slurpfile manifest "${1%/*}/candidate_composition_manifest.json" '
+    def ordinal: (capture("^.*?__(?<o>[0-9]+)__") | .o) // "";
+    .claim as $c | $c.valuationOrdinal as $o | (.valuations // [])[]
+    | select(.ordinal == $o) | .selectedPathId as $p
+    | ([($manifest[0].paths // [])[] | select(.pathId == $p)
+        | .selector | ordinal] | first // "") as $at
+    | {findingKind: $c.kind, pathId: $p,
+      arms: ([(.selectedArms // [])[].selector
+        | select($at == "" or ordinal == $at)] | sort),
       assignment: (.assignment // {}), moved: ($c.movedRoots // {})}' "$1"
 }
 

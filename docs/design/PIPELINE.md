@@ -3606,7 +3606,11 @@ the claim (`UNSAT_CLOSED` with its exclusions in `refutedClaims`: COMPOSE SAT ->
 **A claim CONFIRM did not confirm is followed by the next.** An excluded claim (`campaign_refute`,
 its `outcome` refuted or undecided, logged "COMPOSE SAT -> CONFIRM <outcome>: <reason> -> excluded")
 is one row of `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
-finding kind, the selected path, the arm selectors it chose there, the valuation, and the claim's
+finding kind, the selected path, the arm selectors it chose there -- at the selected path's ordinal in
+the claim's own manifest, as CONFIRM reads them: a model's `selectedArms` also name other paths' arms the
+model set, which no exclusion of this path can compose (hbase-adhoc-22 HC10-22: a forced path's
+moves-nothing claim, refuted twice, kept the seed path's arm `writer_arm__32__…`, so its exclusion was
+never stated and the next composition repeated it) --, the valuation, and the claim's
 moved roots, a clock by its cell's symbol at the model's instant), where it was `claimed`, and the
 confirmation's `reason`. Every later composition of the iteration excludes each
 (`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
