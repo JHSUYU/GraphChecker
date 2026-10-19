@@ -29,7 +29,12 @@ cost us time at least once; the date or the case it came from is named so it can
   (process groups on every lift), never pkill.
 - zsh is the login shell: `====` is `=command` expansion ("=== not found"); an unmatched glob is an error
   ("no matches found"); quote globs or test with `ls -d` first.
-- Heredocs: a heredoc inside a python heredoc needs a distinct delimiter (`<<'PYEOF'`).
+- Heredocs: a heredoc inside a python heredoc needs a distinct delimiter (`<<'PYEOF'`); a python text holding a
+  line `EOF` ends a shell `<<'EOF'` early (2026-10-19): write such scripts to a file and run the file.
+- The tool's safety check refuses `rm -rf $VAR/...` with an unquoted variable, and the call waits instead of
+  failing: an analyst agent sat 2 h on one (2026-10-19). Use literal absolute paths or `"${VAR:?}"/...`.
+- Start a detached remote driver with `ssh -f host 'setsid nohup ... &'`: without `-f` the local ssh waits on
+  the remote's output forever.
 - Never source run_engine.sh functions through process substitution in a foreground call
   (`bash -c 'source <(sed -n ... run_engine.sh)'`): an agent hung 3 h on that (2026-10-18). Extract the
   functions to a file, run with `timeout`.
@@ -37,6 +42,9 @@ cost us time at least once; the date or the case it came from is named so it can
   writes its `exit=` line, and a waiter on it waits forever (several stale waiters were found on 2026-10-17/18).
 - Drivers (final-seq*.sh) run detached (`setsid nohup`) on a pool lift, never on lift11. Before repointing a
   driver, read the round log's tail: a case was launched twice once (SGF8DUP).
+- A driver's defaults must name the current image and trees: a relaunch without `VM_IMAGE` fell back to
+  vm-force8 and two cases died at their seed replay (SGF9VM8-adhoc-39/38). Check the `.job` file of the first case
+  after every relaunch.
 - Never `git add -A`; never rebuild a snapshot (`~/gc-run/sgf*`) a run reads; worktree creation over NFS can take
   more than 2 min (run it in the background).
 
@@ -50,6 +58,9 @@ cost us time at least once; the date or the case it came from is named so it can
 - The watchdog /bigtemp/vnr3ne/analysis/solr-2026-10-18/watchdog.sh (+ watch-remote.sh) runs during rounds and
   exits at the first D-state pid seen twice, ssh refused twice, a stalled case log (> 15 min), a host past 90 %
   memory, a JVM/z3 of a case other than the running one, or a z3 orphaned > 60 min. Re-arm it after each alarm.
+  Its stall check must look at every log a case writes, not the case log alone: COMPOSE writes only its
+  `placed.*/stderr.log` or `final/compose.log` (SGF9-adhoc-40, -05), a last GROW re-run only its `replay.log`
+  (SGF9-adhoc-05, 25 min); all raised false stalls (`analysis/solr-2026-10-18/final9/watchdog9p.sh` now lists all of them).
 
 ## 4. NFS and storage
 
@@ -76,7 +87,12 @@ cost us time at least once; the date or the case it came from is named so it can
   24576) made a head step wait forever.
 - Never predict a JVM's memory from file sizes: the planner held 0.32-0.37x of its session files as rows but
   peaked at 0.57x to >1.09x (40's Frontier). Measure the old generation after a full collection (HeapWatch);
-  the planner's hold rule does exactly that now.
+  COMPOSE's hold (RowHold, 60 % of the old generation) does exactly that now.
+- Never charge a JDK 8 JVM by its live set: ParallelGC grows the resident set toward -Xmx whatever the live set
+  and seldom gives it back. OPTIMIZATIONS 1.36 charged the served planner its measured need (4995 MB); in
+  SGF9-adhoc-31 it reached 20220 MB resident at 6.4 GB live beside replays, its growth was refused at 88 % and
+  the watcher killed it (EXPLORE lost at round 26). Reverted (19fe33ff0): a long-lived JVM is charged its heap's
+  footprint for its life.
 - A heap basis that follows the largest peak ever seen (2048 -> 9728 MB in 07) shrinks every host's room.
 - Before an architecture change for memory, take a heap dump and attribute it by owner
   (analysis/solr-2026-10-18/redundancy/tool/HeapOwners.java): 68 % of the planner's 12.7 GB was redundancy
