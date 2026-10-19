@@ -130,7 +130,8 @@ its chain runs through HDFS scans).
 ## C. Known cases mapped to study items
 
 - `hbase-bugs-master-active-time` (bug_study HBase #14): `master/MasterRpcServices.java:2629` (marked), CLOCK,
-  `TestSplitWALProcedure#testMasterRestart`. **No study item is this throw.** Its closest relative is HBASE-31
+  the tree's `TestCausynthMasterActiveTime#reportOpenedToTheNextMaster` (a master failover while a region opens).
+  **No study item is this throw.** Its closest relative is HBASE-31
   (`RSRpcServices:1880`, the RS refusing a request whose master-side ServerName names another incarnation): the
   same identity-across-nodes idea, but a different throw, and not CLOCK-flippable (see A).
 - bug_study fatals that land on study sites but are excluded: H2-11 -> HBASE-22 (`:168`), H2-30 -> HBASE-08
@@ -264,7 +265,7 @@ the class whose code writes that field.
 | hbase-adhoc-37 | MasterAddressTracker:206 | TestRSStatusPage#testStatusPage (expects `text/html`: the Java 8 tree serves the page without a charset) | up | first (the test's `getActiveMasterInfoPort`) | zookeeper MasterAddressTracker, master/ActiveMasterManager | 13 s | ready (P2 done) |
 | hbase-bugs-backup-lock-reply-lost | BackupSystemTable:504 | TestBackupManager#testStartBackupExclusiveOperation | up | `first`, to check at the first seed: it must be the first acquirer's call, whose lost reply is the bug | BackupSystemTable, BackupManager, client RawAsyncTableImpl, server HRegion | 15 s | needs P1 |
 | hbase-bugs-ns-rsgroup-removal | MasterProcedureUtil:231 | TestCausynthNamespaceGroupRemoval#removeTheGroupOfANamespaceBeingCreated (ours) | up | the CreateTableProcedure's occurrence on master0 (the namespace's prepare checks the group first): the first seed names its region and index | MasterProcedureUtil, rsgroup/RSGroupInfoManagerImpl, TableNamespaceManager, ClusterSchemaServiceImpl | 9-11 s, 3/3 | selector at the first seed |
-| hbase-bugs-master-active-time | MasterRpcServices:2629 | TestSplitWALProcedure#testMasterRestart | startup | first | (the platform's) | 14 s | the platform's second case |
+| hbase-bugs-master-active-time | MasterRpcServices:2629 | TestCausynthMasterActiveTime#reportOpenedToTheNextMaster (the tree's own: a master failover while a region opens; the region server reports OPENED with the old master's active time to the new master) | startup | first | MasterRpcServices, HMaster, OpenRegionProcedure, RegionRemoteProcedureBase, RSProcedureDispatcher, RemoteProcedureDispatcher, RSRpcServices, HRegionServer, AssignRegionHandler, EnvironmentEdgeManager | 10 s | workload replaced (owner 2026-10-19: no WAL contents); not yet run |
 
 **HBASE-30483 in hbase-adhoc-22 (yes).** A table truncated without its splits keeps its old region count in the
 master's namespace quota (`TruncateTableProcedure` never updates it; the fork's fix/truncate-namespace-region-quota
