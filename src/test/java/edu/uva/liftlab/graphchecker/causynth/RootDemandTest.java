@@ -71,6 +71,7 @@ public class RootDemandTest {
                             + " int value>",
                     "SCOPE 1 true <t.Other: int app()>.return",
                     "TRACK 1 true " + field("int count"),
+                    "TRACK 1 true " + field("int peers"),
                     "TRACK_CONTAINER 1 true <java.util.Map: java.lang.Object"
                             + " get(java.lang.Object)>.return",
                     "TRACK_IDENTITY 1 true " + field("java.lang.String name"),
@@ -90,6 +91,11 @@ public class RootDemandTest {
                     demand.configSources().toString()},
             {"each measured where it was", "PATH WRITERS",
                     measured(demand, field("int limit"))},
+            {"a tracked read the guard of a demanded store's writer decides"
+                    + " on is demanded where that guard is",
+                    "WRITERS TRACK 1 true", measured(demand, field(
+                    "int peers")) + " " + mark(demand.marks().at(RUN + "#u5",
+                    field("int peers")))},
             {"the scope growth demands", "{" + field("int old")
                     + "=PRE_WINDOW, <t.Other: int app()>=SCOPE}",
                     kinds(demand.frontier())},
@@ -107,6 +113,10 @@ public class RootDemandTest {
         }
         Collections.sort(found);
         return String.join(" ", found);
+    }
+
+    private static String mark(StaticScopeMap.Demanded mark) {
+        return mark.kind + " " + mark.distance + " " + mark.chosen;
     }
 
     private static String kinds(
@@ -177,6 +187,10 @@ public class RootDemandTest {
                         2, null),
                 edge("field_read", field("boolean flag"), RUN + "::$z1", RUN,
                         1, null),
+                edge("field_read", field("int peers"), RUN + "::$z2", RUN,
+                        5, null),
+                edge("field_write", RUN + "::$i1", field("int peers"), RUN,
+                        6, null),
                 edge("field_read", field("java.lang.String name"), z0, CHECK,
                         5, null),
                 edge("field_write", RUN + "::$r0",
