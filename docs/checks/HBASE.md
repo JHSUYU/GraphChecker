@@ -149,8 +149,8 @@ Shared prerequisites:
   `TestBackupManager#testStartBackupExclusiveOperation` passes on the local filesystem as written (the test needs no
   HDFS or MapReduce); `experiments/hbase/system.sh` names its sources and its test module (`hbase_test_module`).
 - **P4**: a target occurrence where the test throws by design (11, 12, 19, 20): each one's first occurrence does
-  not throw, so their rows say `first`. 22, the bug checks' backup-lock and ns-rsgroup-removal take a selector
-  that the first seed recording resolves (§E).
+  not throw, so their rows say `first`. 22 and ns-rsgroup-removal take a selector whose region the first seed
+  recording supplies; backup-lock-reply-lost's `first` is checked there (§E).
 - **P5**: `recording_window=startup` for 28 (owner opt-in): its row's window is `startup`.
 
 No kept site needs a `checkState`/assert rewrite. Each needs only `throw new @CausynthExceptionTarget("<id>") E(..)`.
