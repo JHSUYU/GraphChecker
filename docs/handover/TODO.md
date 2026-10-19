@@ -167,16 +167,37 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   estimate, do_compose) and grown as measured -- re-measure a solver's live set after compaction before lowering it.
 - Traps: fixture manifests state maxWorldDepth (the planner stub's `stream_test_world_depth`); the planner stub
   holds its reserve as the watcher would; the stream fixtures' gate stub keeps the gate's ledger (`test_gated`);
-  STREAM-CAP is timing-sensitive; never edit a script a running gate executes (NFS: "Stale file handle").
+  never edit a script a running gate executes (NFS: "Stale file handle").
 
-**D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore, head ee0edfcb1.**
-- 32140c8bb merges compaction step 3 (built, tests not run); merge b4518df43 (step 4) next.
-- WIP ee0edfcb1: the parked solr-armkey key (keys name only the roots the question reads) cherry-picked, plus
-  explore/KeyGate (+ KeyGateTest): re-keys every asked flip and fails on a key holding a satisfiable answer beside an
-  UNSAT one (unless the UNSAT world strictly extends it) or a first settling answer that is not ADMITTED while another
-  is. Passed on 18413 (424 ids -> 339 keys), 18406, the 6 solr-bugs, 13, 19, 21, 39, 05 r5; NOT yet on 07, 05 r2, 14
-  and Z3S-18413 (depth 3, 415 sessions: the meaningful one). Renumber the clock-reading defect the cherry-pick added
-  (clashes with STATUS 70).
+**D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore.**
+- STATUS (2026-10-18 evening): D1 merged into solr-int (15114b420). D2, the generational bound (solr-explore
+  a2bd510cb), is NOT merged: its review (analysis/solr-2026-10-18/resume/D2-REVIEW.txt) found UNSAT/NOT_FLIPPABLE
+  inheritance unsound in three ways (moving reads invisible to the guard, free-window writes, WINDOW arms), and it
+  saved little (14 round 4: 523 -> 427; the old 12,438 were view guards that 3.4 removes). The final round runs the
+  study checks at world depth 0 (owner), where the bound never fires. Redo D2 with the review's fixes, and the
+  generation-1 redundancy study (analysis/solr-2026-10-18/gen1/), before any depth > 0 default.
+- The generation-1 study (analysis/solr-2026-10-18/gen1/FINDINGS.txt): generation 1 is mostly the seed's arms asked again
+  in every world (14: 3,065 obligations on 60 distinct arms, 97.6 % re-asks of 16 arms; 39: 11,252 on 254; Z3S-18413:
+  6,106 on 418); the world's change misses the re-ask's cone in 81 / 100 / 84 %, yet only 0 / 27 / 42 % are provably
+  the same query, because replays vary run constants (port digits in HTTP buffers, clock-derived times, object
+  numbering, writer sets after the held prefix). The path to depth > 0, in order: (1) replays reproduce the seed's run
+  constants (ports, clock base, object numbering) -- then <= 80 / 98 / 83 % become provable repeats; (2) a KLEE-style
+  answer cache keyed on the lowered cone sub-query (UNSAT/NOT_FLIPPABLE settle; a SAT still replays its world);
+  (3) D2 redone with its review's fixes and a parent lookup by flip, not by drifting id (513 / 1,530 / 1,581 missed);
+  (4) fault pairs commute only with clean effect sets (0 provable today, 32-43 % after noise).
+- D1 done (gated): solr-int 5396683d6 merged (f06ec4845); the key stays the whole-guard key -- the parked solr-armkey
+  key (3bfdca7bc, cherry-picked in ee0edfcb1) is reverted: `explore.KeyGate` (kept as the key's merge gate,
+  OPERATIONS §6) finds on Z3S-18413 one key folding an UNSAT depth-1 fault world with two satisfiable siblings
+  (787 keys; the whole guard 1416 keys, no defect), STATUS 64's note. The whole-guard key passes on 07, 05 r2, 05 r5,
+  14, 13, 19, 21, 39, Z3S-18413, SGF5-adhoc-14 and the 8 bug checks (`analysis/solr-2026-10-18/explore/gate/d2d/`).
+  The clock-reading key defect is STATUS 71.
+- The nearest world for every sort (branch solr-nearest, gated): a flip's model plants each root and answered
+  handoff its flipped predicate does not name at its recorded value where the query stays sat
+  (`explore.NearestWorld`, PIPELINE §7.5, OPTIMIZATIONS 3.5); 14's 31 `DocCollection.<init>#u102` flips stay SAT with
+  573 unneeded leaves at their recording (they planted `""` and every replay failed at `Slice.<init>`); the 8 bug
+  checks' witness plants are unchanged (`analysis/solr-2026-10-18/explore/nearest/`). Open, seen there: a non-control
+  handoff whose String arrival is unquoted is not pinned (`FlipQuery#pinArrival` reads it as a JSON literal; COMPOSE
+  quotes it, `Composer#arrived`).
 - Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
   round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
   6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains
@@ -198,8 +219,8 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   order); expression refs differ across sessions for 45 % of pre-cut decisions (compare structure, not refs); two
   GzCopy runs into one destination collide.
 
-**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, head fc70638e2 (on b07793ee9), GATED
-(mvn with tests + the shell test); merge it into solr-int next.**
+**E replay and VM -- branch solr-replay, worktree /bigtemp/vnr3ne/wt/gc-replay, on solr-int 5396683d6 (goal 1, fc70638e2,
+merged there); goal 3 GATED (mvn with tests + the shell test): merge it into solr-int before solr-replay-end.**
 - Done (goal 1): the stall-end run-on (07: 43 of 72 stall-ended replays ran on, 5 to the 2400 s timeout). Cause
   confirmed by thread dumps of an old-jar reproduction (07's 70f7d6878c96ed36): the settle thread waited in
   ConcolicResultPublisher#awaitSelectedResultPublications while an activation that closed after the end read out page
@@ -208,31 +229,42 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   their decoding, wait only for publications submitted by the end; GC counts as progress only while a publication or
   decode computes. An AT_NO_PROGRESS replay halted 44 s after its end; a STALLED_AFTER_FLIP one 190 s (decoding its
   session still needs: goal 3).
-- Goal 2 next: the replay need from the 90th percentile of measured peaks plus an out-of-heap guard
-  (-XX:+ExitOnOutOfMemoryError + HeapWatch in replays; a replay exiting 3 reruns once at twice its heap; later replays
-  start there); the replay VM's GC is Serial, so -Xmx caps the heap without growing RSS; update the MEASURED-NEED rows
-  of the shell test.
-- Goal 3: decoding (measured on pages captured from 07's 615997597e3c4202, `analysis/solr-2026-10-18/replay-e/`): the
-  Zero VM decodes 0.65 s per million chars (HotSpot ~95x faster); 82 % of page text is the expression table and 92 % of
-  its definitions are re-sent from earlier pages; profile: table reading 40 %, truncation scan 16.5 % (read-out pages
-  never hold a truncation marker), expansion 17 % (under a lock), parsing 17 %; whole-page parallel decode was 2.25x
-  faster for 53 % more CPU. So: the VM sends each expression definition once per session (VM serializer
-  exp/expression.cpp + the Java decoder, emission and table registration under one lock), skip the truncation scan when
-  nothing is marked, decode records within a page in parallel.
-- Goal 4: stop at the window close (old-jar test end -> halt took 264-324 s); check every reader of the ~330 post-close
-  rows first.
+- Goal 2 (branch solr-replay-end, agent 4): DONE -- the need from the 90th percentile of the stream's peaks
+  (`campaign_replay_need_mb`, 07: 9728 -> 5376 MB) and the out-of-heap guard (`-XX:+ExitOnOutOfMemoryError` +
+  `HeapWatch` in replays; exit 3 reruns once at twice its heap through the one re-queue path, later replays start
+  there, at most half a host's ceiling; OPTIMIZATIONS 1.41, PIPELINE §7.7); the exit-3 path checked live on vm-force10.
+- Done (goal 3, branch solr-replay, VM commit 96214b520 + the decoder commit after it; image
+  `/bigtemp/vnr3ne/vm-force10/j2sdk-image`, smoke 73 OK): a session's read-out pages are one channel, each expression
+  definition sent once, the tables numbered under the channel's lock (VM `VmExpressionChannel`,
+  `System.readOutTrackedLocations`; the runtime refuses vm-force8 by name); the engine reads and hands pages on under
+  one lock and imports every table in order, a withheld page's too; the truncation scan runs only once the store holds
+  a marker; a page's table rows and records decode on the decoding thread and three record decoders, filed in page
+  order; the store takes no lock. 07's 353 captured pages (vm-decode/): 612 -> 206 M chars; Zero decode 659.6 s ->
+  197.9 s wall (527.6 s CPU); all 33,309 location records decode alike. Live reproductions (vm-decode/): 0c5f 1132 ->
+  677 s wall, end -> halt 190 -> 16 s; 9fc5 905 -> 649 s; sessions import alike. Left: the VM still renders each page's whole
+  closure before choosing what to send (about 0.2 s per 20 MB, natively); the decoding thread imports the tables in
+  order, alone.
+- Goal 4 (branch solr-replay-end, agent 4): DONE -- a concolic replay ends at its window's close
+  (`JUnitMethodRunner#endAtWindowClose`, PIPELINE §5 with the reader audit; OPTIMIZATIONS 1.40); evidence
+  `analysis/solr-2026-10-18/replay-end/` (postclose2.py, cutclose.py + plan13.sh, closehalt.py, runs/).
 - Traps: reproductions of one obligation are not deterministic (stalls recur only sometimes): check decode equivalence
   offline on captured pages, not by byte-comparing sessions; repro script replay-e/repro.sh; the VM build needs a full
   checkout with third_party/ and gcc-6 on lift15.
 
-**F serial fixed cost -- branch solr-serial (= a28597a8f, nothing committed).** Measured: 07 SEED 540 s, of which the
-static pass is only 91 s (seedAnalysis 32, skeletonPlanning 32); ~450 s of SEED is unattributed (likely the recording);
-INSTRUMENT 83 s; the seed replay 569 s (13: 435/145/325 s). Next: split SEED/INSTRUMENT/REPLAY by phase from
-solr-adhoc-07.log's timestamped lines, then cache/parallelize what depends only on the tree + static-pass code, and
-decide whether the seed replay can overlap INSTRUMENT/PLAN.
+**F serial fixed cost -- branch solr-serial (agent 5).** Measured (`analysis/solr-2026-10-18/serial/`: jstack samples,
+0.5 s ps samples, a timestamped xtrace of run_engine): SEED's "~450 unattributed s" were the static pass run 2-4 times
+(07 4 passes 337 s, 13 2 passes 177 s; no pass repeats its inputs: each follows new demanded doors or a scope growth),
+the aggregation (07 48 s, 13 80 s), ScopeGrowth (13 38 s) and ~10 s shell gaps around every engine JVM (the ledger's
+lease keeper holds a saved copy of the caller's pipe: agent 1's fix). Done: 1.42 (dispatch targets resolved once,
+foldedUnion by hash), 1.43 (parallel tree digest), 1.45 (a lambda class joins the live hierarchy): a pass 80-94 ->
+29-31 s, the recording weave 54-61 -> 39-40 s, INSTRUMENT's weave 54 -> 40 s, the aggregation 50-78 -> 11-14 s. Not
+adopted: 5.7 (doors and growth together grew another scope). The seed replay cannot overlap PLAN or INSTRUMENT (it reads
+PLAN's plan and recorded schedule and INSTRUMENT's woven classes); its split (13): Zero VM start to the test's first
+line 30 s, the test 257 s (window 224 s), the halt at once. Open: a cross-run cache of SEED's static part (jar + inputs
+digest) helps only reruns of one snapshot or a precompute of every case before a round (~2-3 min a case).
 
-**G NFS leftovers -- not started.** Worker schedule prefix/suffix (625 MB in 05 round 0) and flip query files
-(1.47 GB round 4) to gzip through ArtifactIO (grep every reader); `campaign_solver_read_seed_mb_s` 20 -> ~160.
+**G NFS leftovers -- done (1.44).** A worker's schedule prefix/suffix, flip query and gap rows are gzip through
+ArtifactIO (05: queries 59x, schedules 25x, gaps 33x smaller); `campaign_solver_read_seed_mb_s` = 160.
 
 **How to resume: five coding agents in parallel (owner 2026-10-18), one per row, own branch and hosts.** Resume an
 agent's branch where it stands; tell each the other agents' files before it commits; the lead merges and gates.
@@ -445,16 +477,9 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   path condition, so one guard's arm is another question in every upstream world (SC9-19 r13: 32 ids per arm, 7 or 1
   without the stated handoffs); keeping only the conjuncts sharing variables with the delivered term or the guard would
   make them one question -- a query design change, and what the depth bound stands in for.
-- **g. Cleanup owed:** delete `MessageDoors#refreshing` (a no-op for trees before final4) and its external-callers row
-  once no run reads an older tree; REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
-- **h. Flaky test:** `ScheduleLogTest#aSettledConflictIsGivenUpOnceWhoeverAsks` failed once in a gate on a loaded lift09
-  (2026-10-13, solr-int 13eca0d4c: 3 slots given up in 1 stall) and passed 3 of 3 alone: timing-sensitive. So do
-  `src/test/shell/run_engine_campaign_helpers_test.sh`'s stream timing assertions ("NEXT did not start until LONG
-  ended: a barrier, not a stream"; "exploration.json does not name the end, the coalesced attempts, the cancelled and
-  the reaped"): 3 of 3 failed on lift08 while it carried round Z3D's workers (2026-10-13, solr-zk4 bfada52ac, whose
-  change no test reads), and the same tree passed on lift06, as did a909fa5c7 on lift08 between them.
-  `ScheduleLogTest#aPublicationsTurnWaitsWhereTheWatchdogSeesIt` too (its 1 s watchdog): failed in two full gates on lifts
-  loaded by offline COMPOSE runs (2026-10-13, solr-viewwriter), passed alone on three lifts and in the whole class on lift08.
+- **g. Cleanup owed:** REPRODUCE's summary counts no VIEW_HOLD row (its jq reads ROOT/ANSWER/ORDER only).
+- **h. Timed tests:** the suites keep no timing-sensitive case (test cut 2026-10-18); what stays timed has seconds of
+  margin (STREAM-1's 3 s LONG obligation, the REPLAY-BOUND rows' 1-5 s bounds, SOLVER-SERVICE's idle end).
 
 - **i. The Overseer's idle wait: DONE in `gc/solr-final9` (cd98d779dc).** SGF2's reindex seed recording stalled
   because a missed child watch of `/overseer/queue` parked the never-timeout idle wait for good (evidence

@@ -433,30 +433,6 @@ final class Provenance {
         return DECODES.get() > 0L;
     }
 
-    static void resetForTests() {
-        DECODED.clear();
-        DECODES.set(0L);
-        OBJECTS.set(0L);
-        NANOS.set(0L);
-        MAX_NANOS.set(0L);
-        BOUNDED.set(0L);
-        SHARED.set(0L);
-        STATED.clear();
-        UNREGISTERED.set(0L);
-        UNREGISTERED_SITES.clear();
-        SKIPPED.set(0L);
-    }
-
-    /** Objects decodes skipped as no product of theirs (tests). */
-    static long skipped() {
-        return SKIPPED.get();
-    }
-
-    /** Provenance reads of an object no decode registered (tests). */
-    static long unregistered() {
-        return UNREGISTERED.get();
-    }
-
     /** Objects a decode reached that another version holds, holders built
      *  from two decodes, members it could not read (tests). */
     static long shared() {

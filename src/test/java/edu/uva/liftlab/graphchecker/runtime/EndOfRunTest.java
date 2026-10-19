@@ -86,6 +86,28 @@ public class EndOfRunTest {
                 .contains("\"obligationId\":\"OB\""));
     }
 
+    @Test
+    public void aReplayEndsAtItsWindowsCloseAndRunsNoTeardown()
+            throws Exception {
+        Path worker = folder.newFolder("closed").toPath();
+        Files.write(worker.resolve(ObligationDir.FOCUSED_TASK),
+                (focusRow() + "\n").getBytes(StandardCharsets.UTF_8));
+        Path plan = worker.resolve("execution_task_plan.jsonl");
+        Files.write(plan, (taskRow() + "\n").getBytes(
+                StandardCharsets.UTF_8));
+        Process jvm = workload("window", worker,
+                "-D" + FocusedReplay.PLAN_PROPERTY + "=" + plan,
+                "-Dcausynth.concolic.task.id=TASK.1",
+                "-Dcausynth.concolic.results="
+                        + worker.resolve("concolic_region_results.jsonl"));
+        assertEquals("the close's own end", 0, ended(jvm, worker));
+        assertFalse("no teardown: " + log(worker),
+                log(worker).contains("teardown ran"));
+        assertTrue("the replay stated its verdict: " + log(worker),
+                Files.isRegularFile(worker.resolve(
+                        ObligationDir.REPLAY_VERDICT)));
+    }
+
     /**
      * The recording and a native reproduction end the same way: the trace
      * is flushed and closed, its manifest CLOSED, before the halt.
@@ -165,7 +187,9 @@ public class EndOfRunTest {
      * cluster never lets go -- a shutdown hook that never returns and a
      * non-daemon thread -- so only a halt ends it.  {@code replay}: a
      * focused replay's session, then the run's end; {@code recording}: one
-     * trace row, then the end; {@code told}: the JVM's shutdown begun (a
+     * trace row, then the end; {@code window}: a replay's window opened and
+     * closed, then a teardown that never ends; {@code told}: the JVM's
+     * shutdown begun (a
      * System.exit) before the run's end; {@code native}: one plant row,
      * then never an end.
      */
@@ -190,6 +214,12 @@ public class EndOfRunTest {
             } else {
                 RowRuntime.configure(Paths.get(System.getProperty(
                         "causynth.concolic.results")));
+            }
+            if ("window".equals(args[0])) {
+                CausynthTraceRecorder.startRecording();
+                CausynthTraceRecorder.stopRecording();
+                System.out.println("teardown ran");
+                parkForever();
             }
             if ("told".equals(args[0])) {
                 new Thread(() -> System.exit(0), "a-signal").start();

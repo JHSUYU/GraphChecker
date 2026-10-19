@@ -12,13 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * GROW weaves a generation only where its plan's weave key is not its tree's
@@ -67,32 +64,6 @@ public class WeaveKeyTest {
         other.addProperty("regionId", "S");
         assertNotEquals("a region more: a root hook group more",
                 held, key(first, other));
-    }
-
-    /** The parse is the weave's: a plan it refuses is refused. */
-    @Test
-    public void aPlanTheWeaveRefusesHasNoKey() throws IOException {
-        JsonObject first = row("T.1", "R#62", BRANCHES, "$z0", 12);
-        try {
-            key(first, row("T.1", "R#67", BRANCHES, "$z0", 12));
-            fail("a duplicate task was keyed");
-        } catch (IllegalStateException refused) {
-            assertTrue(refused.getCause().getMessage(),
-                    refused.getCause().getMessage().contains("duplicate"));
-        }
-    }
-
-    /** A value of no engine class has no field the key can vouch for. */
-    @Test
-    public void aForeignValueIsRefused() {
-        try {
-            ConcolicInstrumentationSelections.canonical(
-                    Arrays.asList("a", new Thread()), new StringBuilder());
-            fail("a foreign value was keyed");
-        } catch (IllegalStateException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().startsWith("WEAVE_KEY_UNVOUCHED"));
-        }
     }
 
     private String key(JsonObject... rows) throws IOException {

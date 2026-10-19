@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -131,6 +132,8 @@ final class FlipQuery {
          *  the flipped predicate itself, and the reads it rests on -- so
          *  every world under that key is refused alike ({@link #atArm}). */
         final boolean armRefused;
+        final Map<String, String> recorded;
+        final Set<String> flipVariables;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       List<Control> controls, Map<String, String> rootVariables,
@@ -138,14 +141,18 @@ final class FlipQuery {
                       List<WriterChoice> choices, Map<String, String> sorts,
                       List<GapRow> gaps) {
             this(smt2, modelSymbols, refusal, controls, rootVariables,
-                    clockVariables, choices, sorts, gaps, false);
+                    clockVariables, choices, sorts, gaps, false,
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String>emptySet());
         }
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
                       List<WriterChoice> choices, Map<String, String> sorts,
-                      List<GapRow> gaps, boolean armRefused) {
+                      List<GapRow> gaps, boolean armRefused,
+                      Map<String, String> recorded,
+                      Set<String> flipVariables) {
             this.smt2 = smt2;
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
@@ -159,6 +166,8 @@ final class FlipQuery {
             this.sorts = Collections.unmodifiableMap(sorts);
             this.gaps = Collections.unmodifiableList(gaps);
             this.armRefused = armRefused;
+            this.recorded = Collections.unmodifiableMap(recorded);
+            this.flipVariables = Collections.unmodifiableSet(flipVariables);
         }
 
         /**
@@ -175,7 +184,7 @@ final class FlipQuery {
         Built atArm() {
             return new Built(smt2, modelSymbols, refusal, controls,
                     rootVariables, clockVariables, choices, sorts, gaps,
-                    true);
+                    true, recorded, flipVariables);
         }
 
         boolean ok() {
@@ -198,7 +207,7 @@ final class FlipQuery {
             return new Built(smt2 + SmtNames.legalSymbols(text.toString()),
                     modelSymbols, refusal,
                     controls, rootVariables, clockVariables, choices, sorts,
-                    gaps);
+                    gaps, armRefused, recorded, flipVariables);
         }
     }
 
@@ -593,6 +602,8 @@ final class FlipQuery {
          */
         private final Map<String, String> nearest =
                 new LinkedHashMap<String, String>();
+        private final Map<String, String> recorded =
+                new LinkedHashMap<String, String>();
         /**
          * What each session's lowering states about declared names (non-null
          * identities, integral domains, container shapes; {@link
@@ -799,7 +810,9 @@ final class FlipQuery {
                     answerable,
                     reached(rootVariables, reached),
                     reached(clockVariables, reached),
-                    chosen, declared, gaps);
+                    chosen, declared, gaps, false,
+                    reached(recorded, declared.keySet()), flipVariables(cone,
+                    declared.keySet()));
         }
 
         /**
@@ -1158,6 +1171,7 @@ final class FlipQuery {
                 return;
             }
             rootVariables.put(variable, row.rootId());
+            record(variable, corpus.rootValue(path.sessionId, row.rootId()));
             if (row.kind() == RootKind.MARKER && row.declared()) return;
             RootDomain resolved = corpus.domainOf(row);
             String[] domain = resolved.min() == null
@@ -1896,6 +1910,22 @@ final class FlipQuery {
             controls.put(attach.endpoint().id(), new Control(
                     attach.endpoint().id(), variable, sorts.get(variable),
                     unproducible));
+            String answered = attach.answeredValue() == null ? ""
+                    : attach.answeredValue().trim();
+            String arrival = attach.arrival() == null ? ""
+                    : attach.arrival();
+            if (answered.isEmpty() && !arrival.isEmpty()
+                    && VmTermLowering.Sort.STRING.smt.equals(
+                    sorts.get(variable))) {
+                recorded.put(variable, VmExpressionIr.quote(arrival));
+            } else {
+                record(variable, answered.isEmpty() ? arrival : answered);
+            }
+        }
+
+        private void record(String variable, String value) {
+            String literal = SmtText.literal(value, sorts.get(variable));
+            if (!literal.isEmpty()) recorded.put(variable, literal);
         }
 
         /** A root with no window, pinned to its recorded value. */
@@ -1977,6 +2007,13 @@ final class FlipQuery {
                 cone.addAll(SmtNames.names(declaration));
             }
             return cone;
+        }
+
+        private static Set<String> flipVariables(Set<String> cone,
+                                                 Set<String> declared) {
+            Set<String> named = new LinkedHashSet<String>(cone);
+            named.retainAll(declared);
+            return named;
         }
 
         /** Whether a variable of this query is in the cone. */

@@ -111,14 +111,6 @@ public final class TargetRow extends Value {
     public static TargetRow of(String sessionId, long seq,
                                OccurrenceAddress occurrence,
                                String anchorSiteId, String phiTerm,
-                               boolean observedFatal, boolean reachedAnchor) {
-        return of(sessionId, seq, occurrence, anchorSiteId, phiTerm,
-                observedFatal, reachedAnchor, null);
-    }
-
-    public static TargetRow of(String sessionId, long seq,
-                               OccurrenceAddress occurrence,
-                               String anchorSiteId, String phiTerm,
                                boolean observedFatal, boolean reachedAnchor,
                                OpenArm openArm) {
         return new TargetRow(Fields.text(sessionId, "sessionId"),

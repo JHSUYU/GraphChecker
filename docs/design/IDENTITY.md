@@ -189,8 +189,9 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
   started thread for its life, a task claimed on a pool's thread until it returns.
-- **A received message's hand-off.** A thread that hands a received message to a worker queue names
-  the hand-off by the message (`MessageDoors#handingOff`, `Identity#handoffStarting`; from the Hadoop
+- **A received message's hand-off** (`system/hdfs` only; `system/solr` has no such door). A thread that hands a
+  received message to a worker queue names the hand-off by the message (`MessageDoors#handingOff`,
+  `Identity#handoffStarting`; from the Hadoop
   trees' IPC `Server#internalQueueCall` through the shim, `CausynthMessagePropagation#handingOff`, the
   call's correlation): every start it makes meanwhile is `<site>:<transport>.<sender endpoint>` --
   the endpoint the receipt's anchor names too -- standing on none of the thread's own frames, so its
@@ -478,7 +479,7 @@ it.
   `END`).
 
 The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`, shipped
-with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
+with GraphChecker on `system/hdfs`: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
 several messages on one thread, possibly opened by a thread serving a request) and
 `HDFS_DATA_TRANSFER` (one op, a request on a correlation of its own: `outboundOp`, `inboundOp`). The HDFS trees call
 it from IPC `Client`/`Server`, the SASL data-transfer classes and the DataTransfer op's two ends. The IPC server's
@@ -713,8 +714,8 @@ where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS,
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
-`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
-(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step that builds state a replay reads and
+`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names (the HDFS and HBase
+trees, through `system/hdfs`'s `MessageDoors#startupStep(step, who)`/`#startupDone`; no Solr adapter names one): a step that builds state a replay reads and
 that no slot orders, before the window or inside it (the NameNode's IPC handler takes no slot between
 its `RECV` and the write lock its step runs under); `who` names the taker the same in both passes.
 Marks are written in completion order and handed on with every order (`SchedulePrefix#write`). A
@@ -734,7 +735,7 @@ orders DataNodes as they are added, and block placement picks pipelines by posit
 order:
 
 - the order is the source session's prefix (`CAUSYNTH_SCHEDULE_PREFIX` / `causynth.schedule.prefix`)
-  then its rest (`schedule_suffix.jsonl`), cut by `explore/SchedulePrefix` at the task's target;
+  then its rest (`schedule_suffix.jsonl.gz`), cut by `explore/SchedulePrefix` at the task's target;
 - an event takes the earliest open or given-up slot of its key that its own occurrence made, else
   the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
   and must not swap slots); with none it runs free. In a timed-wait loop's turn (`Root:WAKE/<wait>#k`)

@@ -409,7 +409,7 @@ def accepted_pairs(stage, d, acc):
         for name in sorted(os.listdir(d)):
             if not os.path.isdir(os.path.join(d, name)):
                 continue
-            for file in ("obligation.jsonl", "obligation_query.smt2",
+            for file in ("obligation.jsonl", "obligation_query.smt2.gz",
                          "focused_task.jsonl"):
                 pairs.append((os.path.join(d, name, file), os.path.join(
                     it, "obligations-0000", name, file)))

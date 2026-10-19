@@ -1,6 +1,5 @@
 # GraphChecker APIs called from OUTSIDE this repository: the system trees'
-# own source calls them (hadoop-hdfs-study-r7/-r8, hadoop-hdfs-21,
-# hadoop-hdfs-11741-r6, lucene-solr-storing, zookeeper-unified,
+# own source calls them (lucene-solr-checks, zookeeper-unified,
 # hbase-unified).  They are not woven, so ConcolicHookAbiTest's catalog check
 # cannot see them and a `git grep` of src/ finds no caller.  The trees compile
 # against an older jar in ~/.m2, so a rename or a deletion here surfaces only
@@ -8,8 +7,7 @@
 # the build is already green.
 #
 # Format: <class> <method> <return> <parameters...>; a class is named under
-# edu.uva.liftlab.graphchecker. unless it is the Hadoop shim
-# (org.apache.hadoop.ipc, src/shim).
+# edu.uva.liftlab.graphchecker.
 # Also external, and checked by the compiler rather than here:
 #   annotation.CausynthExceptionTarget, the known-bug marker on a target
 #   throw (the unified HDFS tree: BlockTokenSecretManager,
@@ -22,46 +20,6 @@
 # catalog names it).
 annotation.Debug makeSymbolicBoolean boolean string
 
-# The Hadoop shim: every Hadoop tree's IPC, SASL, DataTransfer and cluster
-# hooks.
-org.apache.hadoop.ipc.CausynthSymbolicSource symbolize boolean string object string
-org.apache.hadoop.ipc.CausynthMessagePropagation beginNodeStartup long object
-org.apache.hadoop.ipc.CausynthMessagePropagation beginNodeStartup long string string string
-org.apache.hadoop.ipc.CausynthMessagePropagation beginRequest long object string
-org.apache.hadoop.ipc.CausynthMessagePropagation beginSasl void
-org.apache.hadoop.ipc.CausynthMessagePropagation beginTick long object string
-org.apache.hadoop.ipc.CausynthMessagePropagation captureScope object
-org.apache.hadoop.ipc.CausynthMessagePropagation endInbound void
-org.apache.hadoop.ipc.CausynthMessagePropagation endInbound void shim.Inbound
-org.apache.hadoop.ipc.CausynthMessagePropagation endNodeStartup void long
-org.apache.hadoop.ipc.CausynthMessagePropagation endRequest void long string
-org.apache.hadoop.ipc.CausynthMessagePropagation endSasl void
-org.apache.hadoop.ipc.CausynthMessagePropagation endTick void long
-org.apache.hadoop.ipc.CausynthMessagePropagation enterCarriedScope long object string string
-org.apache.hadoop.ipc.CausynthMessagePropagation exitCarriedScope void long
-org.apache.hadoop.ipc.CausynthMessagePropagation handedOff void object
-org.apache.hadoop.ipc.CausynthMessagePropagation handingOff object byte[] int
-org.apache.hadoop.ipc.CausynthMessagePropagation inbound shim.Inbound string string string string string string object
-org.apache.hadoop.ipc.CausynthMessagePropagation inboundOp void string string
-org.apache.hadoop.ipc.CausynthMessagePropagation inboundSasl shim.Inbound string string string string
-org.apache.hadoop.ipc.CausynthMessagePropagation outboundOp shim.Outbound object
-org.apache.hadoop.ipc.CausynthMessagePropagation outboundRequest shim.Outbound string string string object object object
-org.apache.hadoop.ipc.CausynthMessagePropagation outboundResponse shim.Outbound string string string object object
-org.apache.hadoop.ipc.CausynthMessagePropagation outboundSasl shim.Outbound
-org.apache.hadoop.ipc.CausynthMessagePropagation received void object
-org.apache.hadoop.ipc.CausynthMessagePropagation registerNode void object string string string object[]
-org.apache.hadoop.ipc.CausynthMessagePropagation registerSource void object string string string long
-org.apache.hadoop.ipc.CausynthMessagePropagation registerSourceAlias void object object
-org.apache.hadoop.ipc.CausynthMessagePropagation replaying boolean
-org.apache.hadoop.ipc.CausynthMessagePropagation requestEnded void long
-org.apache.hadoop.ipc.CausynthMessagePropagation requestStarting long object int
-org.apache.hadoop.ipc.CausynthMessagePropagation restartSource void object string string string long
-org.apache.hadoop.ipc.CausynthMessagePropagation rpcCorrelation string byte[] int
-org.apache.hadoop.ipc.CausynthMessagePropagation startRecording void
-org.apache.hadoop.ipc.CausynthMessagePropagation startupDone void object
-org.apache.hadoop.ipc.CausynthMessagePropagation startupStep object string string
-org.apache.hadoop.ipc.CausynthMessagePropagation startupWindow boolean
-
 # The message doors the Solr (CausynthHttp, SolrZkClient's store doors,
 # CausynthSolrCluster), ZooKeeper (CausynthZk, CausynthZkCluster) and HBase
 # (CausynthRpc, CausynthHBaseCluster) trees call themselves.
@@ -70,6 +28,7 @@ runtime.MessageDoors beginNodeStartup long string string string
 runtime.MessageDoors beginRequest long object string
 runtime.MessageDoors beginTick long object string
 runtime.MessageDoors beginWorkloadCall long string
+runtime.MessageDoors callStarting void
 runtime.MessageDoors capturingContent boolean
 runtime.MessageDoors consumed void string string
 runtime.MessageDoors decoded void string string object
@@ -86,19 +45,29 @@ runtime.MessageDoors jsonWritten void byte[] object
 runtime.MessageDoors notified void string string string string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
-runtime.MessageDoors refreshEnded void long
+runtime.MessageDoors outboundRequest doors.Outbound string string string object object string object
 runtime.MessageDoors publishing boolean string string long runnable
+runtime.MessageDoors reading void string string
+runtime.MessageDoors refreshEnded void long
 runtime.MessageDoors refreshStarting long
-runtime.MessageDoors refreshing void string string
 runtime.MessageDoors registerNode void object string string string object[]
+runtime.MessageDoors registerSource void object string string string long
+runtime.MessageDoors registerSourceAlias void object object
+runtime.MessageDoors requestEnded void long
+runtime.MessageDoors requestStarting long string string int
+runtime.MessageDoors restartSource void object string string string long
 runtime.MessageDoors serialized void boolean
 runtime.MessageDoors serializing boolean
+runtime.MessageDoors spelledAs void string string[]
 runtime.MessageDoors startRecording void
-runtime.MessageDoors startupWindow boolean
 runtime.MessageDoors stopRecording void
 runtime.MessageDoors storeEnded void string long
 runtime.MessageDoors storeRead void string string string object
 runtime.MessageDoors stored void string string object byte[]
 runtime.MessageDoors storing long string string
+runtime.MessageDoors storingChild long string string
 runtime.MessageDoors vacant boolean long
 runtime.MessageDoors viewed void string string object
+
+# The Solr cluster's ZooKeeper session expiry (CausynthSolrCluster).
+runtime.Sessions expirer void predicate

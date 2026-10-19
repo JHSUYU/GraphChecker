@@ -146,8 +146,9 @@ def worker_times(worker):
         [t for t in (mtime(os.path.join(worker, "stderr.log")),
                      mtime(os.path.join(worker, "stdout.log")), end) if t] or [None])
     solver = [t for t in (mtime(os.path.join(worker, name)) for name in
-              ("obligation.jsonl", "obligation_query.smt2", "gaps.jsonl",
-               "focused_task.jsonl", "schedule_prefix.jsonl", "schedule_suffix.jsonl"))
+              ("obligation.jsonl", "obligation_query.smt2.gz", "gaps.jsonl.gz",
+               "focused_task.jsonl", "schedule_prefix.jsonl.gz",
+               "schedule_suffix.jsonl.gz"))
               if t]
     solve_end = max(solver) if solver else (replay_start if replay_end else end)
     return start, solve_end, replay_start, replay_end, end

@@ -134,7 +134,7 @@ public class PlanTest {
 
     private static ActivationRow activation(OccurrenceAddress occurrence) {
         return ActivationRow.of("s-seed", occurrence, "task", false, true,
-                "main#1");
+                "main#1", ActivationRow.ClaimKind.NONE, null);
     }
 
     private static OccurrenceAddress anchored(NodeId node, int iteration) {

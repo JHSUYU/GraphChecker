@@ -2834,11 +2834,12 @@ public final class RuntimeSelectedRegionFinalizer {
             List<String> foldedRegionIds,
             Function<StaticProgram.RegionRow, Collection<T>> catalog) {
         List<T> union = new ArrayList<>(catalog.apply(skeleton));
+        Set<T> held = new HashSet<>(union);
         for (String folded : foldedRegionIds) {
             StaticProgram.RegionRow row = program.skeletons.get(folded);
             if (row == null) continue;
             for (T item : catalog.apply(row)) {
-                if (!union.contains(item)) union.add(item);
+                if (held.add(item)) union.add(item);
             }
         }
         return union;

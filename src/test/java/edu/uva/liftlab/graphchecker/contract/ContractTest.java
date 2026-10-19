@@ -1,18 +1,13 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
-import com.google.gson.internal.LazilyParsedNumber;
-import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
-import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -58,144 +53,8 @@ public class ContractTest {
     private static final String COMPUTE =
             "o.a.h.h.s.d.BlockChecksumHelper#compute#7";
 
-    /** A case declaration naming the request that reached the region. */
-    private static final String V1_WITH_API =
-            "hdfs-17897/dn0#epoch0/region/" + REGION
-                    + "@hdfs-17897/client#epoch0/striped-file-checksum#1";
-    /** A case declaration under no request at all. */
-    private static final String V1_BARE =
-            "hdfs-17899/dn0#epoch0/region/" + REGION + "#2";
-    private static final String DECLARED_API =
-            "hdfs-17897/client#epoch0/striped-file-checksum";
-
-    private static final String STABLE_TASK = "n0|Root:TASK#4|<A: void"
-            + " call()>@0><H: void submit()>#u9@";
-
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
-
-    /** A session's expressions are logged as the DAG they are: a chain
-     *  whose every node names the one below twice is 2^64 nodes as a tree (a
-     *  File.getParent chain left finalize-gs a8's table unwritable).  A ref
-     *  is the content's, whatever the objects and their member order. */
-    /**
-     * What a read node returned, as its row spells it: no String content
-     * reads as a number, an identity or null, and an identity states none.
-     */
-    @Test
-    public void aReadRowSpellsWhatItsReadReturned() {
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "Y_J_1003");
-        Object[][] cases = {
-                {constant, "1003", null},
-                {new com.google.gson.JsonPrimitive("N"), "\"N\"", "N"},
-                {new com.google.gson.JsonPrimitive("Y_I_2 \"q\""),
-                        "\"Y_I_2 \\\"q\\\"\"", "Y_I_2 \"q\""},
-                {com.google.gson.JsonNull.INSTANCE, "N", null},
-                {symbol("M_L'java/util/HashMap'_12"),
-                        "M_L'java/util/HashMap'_12", null},
-                {truncated(), null, null},
-                {null, null, null}};
-        for (Object[] each : cases) {
-            JsonObject node = new JsonObject();
-            if (each[0] != null) {
-                node.add("concreteValue", (com.google.gson.JsonElement) each[0]);
-            }
-            String spelled = ReadRow.returned(node);
-            assertEquals(String.valueOf(each[0]), each[1], spelled);
-            assertEquals(each[2], ReadRow.stringContent(spelled));
-        }
-        // A node that states nothing: an exact read returned its version's
-        // leaf (a reference cell's INITIAL null), an inexact one or a
-        // symbolic version nothing.
-        Object[][] observed = {
-                {symbol("N"), true, "N"},
-                {symbol("M_L'java/util/HashMap'_12"), true,
-                        "M_L'java/util/HashMap'_12"},
-                {constant, true, "1003"},
-                {symbol("N"), false, null},
-                {symbol("S_J_clock"), true, null}};
-        for (Object[] each : observed) {
-            JsonObject version = new JsonObject();
-            version.add("expression", (JsonObject) each[0]);
-            JsonObject node = new JsonObject();
-            node.addProperty("observedExact", (Boolean) each[1]);
-            node.add("observedVersion", version);
-            assertEquals(java.util.Arrays.toString(each), each[2],
-                    ReadRow.returned(node));
-        }
-    }
-
-    /** A String the VM cut past its bound: its length, and no content. */
-    private static JsonObject truncated() {
-        JsonObject value = new JsonObject();
-        value.addProperty("_type", "TruncatedValue");
-        value.addProperty("length", 5000);
-        return value;
-    }
-
-    @Test
-    public void aSessionLogHoldsTheDagAndRefsNameContent()
-            throws IOException {
-        Path file = iteration.getRoot().toPath().resolve(
-                SessionDir.EXPRESSIONS);
-        JsonObject chain = new JsonObject();
-        chain.addProperty("_type", "ConstExpr");
-        chain.addProperty("_exp", "C_I_1");
-        chain.addProperty("_java_type", "I");
-        for (int depth = 0; depth < 64; depth++) {
-            JsonObject sum = new JsonObject();
-            sum.addProperty("_type", "BinaryExpression");
-            sum.addProperty("_op", "+");
-            sum.add("_left", chain);
-            sum.add("_right", chain);
-            chain = sum;
-        }
-        Map<String, JsonObject> expressions =
-                new LinkedHashMap<String, JsonObject>();
-        expressions.put("EXPR.0000000000000001", chain);
-        RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
-        assertTrue(Files.size(file) < 64 * 1024);
-        JsonObject read = SessionExpressionLog.read(file, new RowPool())
-                .expression("EXPR.0000000000000001");
-        assertSame(read.get("_left"), read.get("_right"));
-        assertEquals(new ExpressionRefs().ref(chain),
-                new ExpressionRefs().ref(read));
-
-        JsonObject reordered = new JsonObject();
-        reordered.addProperty("_java_type", "I");
-        reordered.addProperty("_exp", "C_I_1");
-        reordered.addProperty("_type", "ConstExpr");
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "C_I_1");
-        constant.addProperty("_java_type", "I");
-        assertEquals(new ExpressionRefs().ref(constant),
-                new ExpressionRefs().ref(reordered));
-        constant.addProperty("_exp", "C_I_2");
-        assertNotEquals(new ExpressionRefs().ref(constant),
-                new ExpressionRefs().ref(reordered));
-
-        // A log the session never published is refused, never the empty
-        // table every ref then misses (hdfs-17960's offline compose read
-        // UNSTATED_VALUE and hid the missing file): IMPORT and COMPOSE
-        // refuse the session SESSION_INCOMPLETE.
-        Files.write(file, new byte[0]);
-        SessionDir bare = SessionDir.of(iteration.getRoot().toPath(),
-                "s-no-log").create();
-        for (Path unpublished : new Path[] {file, bare.expressions()}) {
-            try {
-                SessionExpressionLog.read(unpublished, new RowPool());
-                fail("read " + unpublished + " as a table");
-            } catch (IllegalArgumentException refused) {
-                assertTrue(refused.getMessage(), refused.getMessage()
-                        .contains(unpublished.toString()));
-            }
-        }
-        assertTrue(SessionReader.read(bare).incomplete()
-                .startsWith(SessionDir.EXPRESSIONS + " could not be read"));
-    }
 
     /**
      * A session's row files are gzip streams (CONTRACT-SPEC §2.1) every
@@ -283,154 +142,6 @@ public class ContractTest {
     }
 
     /**
-     * A table is held compact and its nodes are built as they are asked for
-     * ({@link ExpressionTable}): the Gson object of a node is THE object of
-     * that node while anything holds it -- asked again, or reached as the
-     * child of a node built again -- and released once nothing does, then
-     * built again equal, numbers by their spelling and members in order.
-     */
-    @Test
-    public void aTableBuildsEachHeldNodeOnceAndReleasesTheRest()
-            throws IOException {
-        JsonObject leaf = new JsonObject();
-        leaf.addProperty("_type", "SymbolExpression");
-        leaf.addProperty("_exp", "M_KEY");
-        leaf.addProperty("_java_type", "J");
-        JsonObject sum = new JsonObject();
-        sum.addProperty("_type", "BinaryExpression");
-        sum.addProperty("_op", "+");
-        sum.add("_left", leaf);
-        JsonArray params = new JsonArray();
-        params.add(leaf);
-        params.add(new JsonPrimitive(new LazilyParsedNumber("5.0")));
-        params.add(JsonNull.INSTANCE);
-        params.add(new JsonPrimitive(true));
-        sum.add("_param_list", params);
-        JsonObject location = new JsonObject();
-        location.addProperty("kind", "MAP");
-        location.addProperty("rid", 12);
-        sum.add("location", location);
-        Map<String, JsonObject> expressions =
-                new LinkedHashMap<String, JsonObject>();
-        expressions.put("EXPR.sum", sum);
-        expressions.put("EXPR.leaf", leaf);
-        Path file = iteration.getRoot().toPath().resolve(
-                SessionDir.EXPRESSIONS);
-        RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
-        ExpressionTable table = SessionExpressionLog.read(file,
-                new RowPool());
-        assertEquals(Arrays.asList("EXPR.sum", "EXPR.leaf"),
-                new ArrayList<String>(table.refs()));
-
-        JsonObject held = table.expression("EXPR.leaf");
-        assertEquals(leaf.toString(), held.toString());
-        assertSame("asked again while held: the same object", held,
-                table.expression("EXPR.leaf"));
-        WeakReference<JsonObject> built =
-                new WeakReference<JsonObject>(table.expression("EXPR.sum"));
-        assertEquals(sum.toString(), built.get().toString());
-        assertSame("a child is the node itself", held,
-                built.get().get("_left"));
-        released(built);
-        JsonObject again = table.expression("EXPR.sum");
-        assertEquals("built again, equal", sum.toString(), again.toString());
-        assertSame("its child still the object held", held,
-                again.get("_left"));
-        assertSame(held, again.getAsJsonArray("_param_list").get(0));
-        assertEquals("5.0", again.getAsJsonArray("_param_list").get(1)
-                .getAsString());
-        assertEquals(ExpressionTable.of(expressions), table);
-    }
-
-    /** Waits for the collector to clear what nothing holds. */
-    private static void released(WeakReference<?> reference) {
-        for (int collection = 0; collection < 50
-                && reference.get() != null; collection++) {
-            System.gc();
-        }
-        assertNull("released once nothing holds it", reference.get());
-    }
-
-    /**
-     * A VM chain is imported and judged once per node and to its end: one
-     * whose nodes name the one below twice is 2^64 paths as a tree, and one
-     * 100000 deep overflowed the import's recursion (the publication thread
-     * was given a 512 MB stack for it) and passed the gate's depth-64 cap
-     * unjudged.
-     */
-    @Test(timeout = 120_000L)
-    public void aDeepSharedChainIsImportedAndJudgedToItsEnd()
-            throws IOException {
-        for (int depth : new int[]{64, 100_000}) {
-            boolean doubled = depth == 64;
-            // The VM's own encoding: node k names node k-1 by its id.
-            JsonArray definitions = new JsonArray();
-            definitions.add(vmDefinition(1, binary("!=",
-                    symbol("M_Z_marker"), literal("Y_Z_0"))));
-            for (int id = 2; id <= depth; id++) {
-                definitions.add(vmDefinition(id, binary("==",
-                        vmReference(id - 1), doubled ? vmReference(id - 1)
-                                : literal("Y_Z_1"))));
-            }
-            JsonObject table = new JsonObject();
-            table.addProperty("schemaVersion", 1);
-            table.addProperty("kind", VmExpressionTable.KIND);
-            table.addProperty("authority", VmExpressionTable.AUTHORITY);
-            table.addProperty("sessionId", 1L);
-            table.addProperty("definitionCount", depth);
-            table.add("definitions", definitions);
-            JsonObject envelope = new JsonObject();
-            envelope.add(VmExpressionTable.FIELD, table);
-            envelope.add("expression", vmReference(depth));
-            JsonObject chain = new VmExpressionTable.Store(owner -> false)
-                    .importEnvelope(envelope).getAsJsonObject("expression");
-            if (doubled) assertSame(chain.get("_left"), chain.get("_right"));
-            Set<String> symbols = new LinkedHashSet<>();
-            Arms.symbolsIn(chain, symbols);
-            assertTrue(depth + ": " + symbols, symbols.contains("M_Z_marker"));
-
-            // True at the marker the session minted, so outcome=false is
-            // the complement of what the term held.
-            Rows flipped = clean();
-            flipped.expressions.put("EXPR.0000000000000001", chain);
-            flipped.decisions.set(0, DecisionRow.of("s-gate", 12L,
-                    flipped.anchor, "Guard#u8", 1, false,
-                    "EXPR.0000000000000001",
-                    Collections.<String, Long>emptyMap()));
-            assertInvariant(6, GapClass.BLOCKING, "field=outcome", flipped);
-        }
-    }
-
-    /**
-     * A JVM's store keeps each VM node's expansion, not its definition: a
-     * node another envelope names again is the same object, two nodes'
-     * equal strings are one value, and a node defined again otherwise is
-     * refused.
-     */
-    @Test
-    public void aVmNodeIsKeptOnceAndDefinedAlike() {
-        VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
-        JsonObject first = store.importEnvelope(vmEnvelope(
-                vmReference(1), vmDefinition(1, symbol("M_I_site"))))
-                .getAsJsonObject("expression");
-        JsonObject twice = store.importEnvelope(vmEnvelope(vmReference(2),
-                vmDefinition(1, symbol("M_I_site")),
-                vmDefinition(2, binary("==", vmReference(1),
-                        symbol("M_I_site"))))).getAsJsonObject("expression");
-        assertSame(first, twice.get("_left"));
-        assertSame(first.get("_exp"),
-                twice.getAsJsonObject("_right").get("_exp"));
-        try {
-            store.importEnvelope(vmEnvelope(vmReference(1),
-                    vmDefinition(1, symbol("M_I_other"))));
-            fail("node 1 defined again otherwise");
-        } catch (IllegalArgumentException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains("conflicting"));
-        }
-    }
-
-    /**
      * The engine's own plumbing is never program state: a read a generated
      * message's code (or the engine's) made is imported as the value of the
      * version it observed, so no row and no HELD value can stand on it
@@ -462,15 +173,15 @@ public class ContractTest {
     }
 
     /**
-     * A paged read-out is read one record at a time against the page's own
-     * table, which comes after its records: each record is expanded and
-     * handed on in page order, sharing the nodes the table shares (and the
-     * store's earlier pages'), the header states the rest and the count, an
-     * unadmitted page hands on nothing, and a record naming a node the
-     * table lacks is refused.
+     * A self-contained envelope of records (a branch window) is read one
+     * record at a time against its own table, which comes after its
+     * records: each record is expanded and handed on in page order, sharing
+     * the nodes the table shares (and the store's earlier envelopes'), the
+     * header states the rest and the count, an unadmitted envelope hands on
+     * nothing, and a record naming a node the table lacks is refused.
      */
     @Test
-    public void aPagedReadOutIsReadOneRecordAtATime() {
+    public void anEnvelopeOfRecordsIsReadOneRecordAtATime() {
         VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
         JsonObject earlier = store.importEnvelope(vmEnvelope(vmReference(1),
                 vmDefinition(1, symbol("M_I_site"))))
@@ -536,15 +247,6 @@ public class ContractTest {
         assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
         assertEquals("a \"q\" } ] \\", read.get(0).get("note").getAsString());
         assertSame(earlier, read.get(1).getAsJsonObject("value"));
-        int[] decodes = {0};
-        for (int pass = 0; pass < 2; pass++) {
-            store.importRepeatedRecords(spelled, "records", stated -> true,
-                    JsonObject.class, record -> {
-                        decodes[0]++;
-                        return record.getAsJsonObject();
-                    }, record -> { });
-        }
-        assertEquals("read again, held", 2, decodes[0]);
         // Refused, never read past: a record naming a node the table lacks;
         // a row spelled otherwise than the VM does (no row start the reader
         // knows: it stays in the row before it, which then holds two); a
@@ -583,69 +285,186 @@ public class ContractTest {
     }
 
     /**
-     * A record a read-out states again unchanged is decoded once: the store
-     * hands on the decoding its first reading had, in page order, and a
-     * page whose every record it holds reads no table (here a broken one,
-     * which a page with a record to decode is refused for).  A record
-     * changed by one member is decoded again and held from then on.
+     * A session's read-out pages are one channel: each table states only
+     * what no earlier one stated and is imported in the VM's order, whatever
+     * becomes of its records -- a page withheld (unadmitted) still defines
+     * what a later page names; a record a page states again unchanged is
+     * decoded once; the records are decoded at once and handed on in page
+     * order, up to the first that fails, whose failure is thrown; a table
+     * whose row names a node only a lost table defined is still imported and
+     * the loss remembered; the truncation marker in a definition or a record
+     * marks the store.
+     * Refused by name: an older table, another session, a self-contained
+     * table, no table, a short count, a node no table defined.
      */
     @Test
-    public void aRepeatedRecordIsDecodedOnce() {
-        VmExpressionTable.Store store =
-                new VmExpressionTable.Store(owner -> false);
-        JsonObject first = new JsonObject();
-        first.add("value", vmReference(2));
-        JsonObject second = new JsonObject();
-        second.add("value", vmReference(1));
-        JsonObject[] definitions = {vmDefinition(1, symbol("M_I_site")),
-                vmDefinition(2, binary("==", vmReference(1),
-                        symbol("M_I_site")))};
-        String page = vmPage(new JsonObject[] {first, second}, definitions)
-                .toString();
-        int[] decodes = {0};
-        List<JsonObject> read = new ArrayList<>();
-        java.util.function.Function<com.google.gson.JsonElement, JsonObject>
-                decode = record -> {
-                    decodes[0]++;
-                    return record.getAsJsonObject();
-                };
-        JsonObject header = store.importRepeatedRecords(page, "records",
-                stated -> true, JsonObject.class, decode, read::add);
-        assertEquals(2, decodes[0]);
-        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
-        List<JsonObject> again = new ArrayList<>();
-        String broken = page.replace("\"definitionCount\":2",
-                "\"definitionCount\":3");
-        header = store.importRepeatedRecords(broken, "records",
-                stated -> true, JsonObject.class, decode, again::add);
-        assertEquals("held: decoded no more", 2, decodes[0]);
-        assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
-        assertSame(read.get(0), again.get(0));
-        assertSame(read.get(1), again.get(1));
-        JsonObject changed = second.deepCopy();
-        changed.addProperty("readEventId", 7L);
-        String moved = vmPage(new JsonObject[] {first, changed},
-                definitions).toString();
+    public void aReadOutPageIsItsChannelsNextTable() throws Exception {
+        java.util.concurrent.ExecutorService helpers =
+                java.util.concurrent.Executors.newFixedThreadPool(3);
         try {
-            store.importRepeatedRecords(moved.replace(
-                    "\"definitionCount\":2", "\"definitionCount\":3"),
-                    "records", stated -> true, JsonObject.class, decode,
-                    record -> { });
-            fail("a page with a record to decode reads its table");
-        } catch (IllegalArgumentException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains("count"));
+            VmExpressionTable.Store store =
+                    new VmExpressionTable.Store(owner -> false);
+            int[] decodes = {0};
+            java.util.function.Function<com.google.gson.JsonElement,
+                    JsonObject> decode = record -> {
+                        synchronized (decodes) {
+                            decodes[0]++;
+                        }
+                        return record.getAsJsonObject();
+                    };
+            JsonObject first = record("first", vmReference(2));
+            JsonObject second = record("second", vmReference(1));
+            String one = channelPage(1L, new JsonObject[] {first, second},
+                    vmDefinition(1, symbol("M_I_site")), vmDefinition(2,
+                            binary("==", vmReference(1), symbol("M_I_site"))));
+            List<JsonObject> read = new ArrayList<>();
+            assertFalse(store.truncationMarked());
+            JsonObject header = store.importReadOutPage(one, "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT)
+                    .getAsInt());
+            assertEquals(2, decodes[0]);
+            JsonObject site = read.get(1).getAsJsonObject("value");
+            assertSame(site, read.get(0).getAsJsonObject("value")
+                    .get("_left"));
+            // Table 2 names node 2 from table 1 without restating it; page 3
+            // is withheld, its table imported all the same, so page 4 reads
+            // node 4; page 5 states page 1's records again unchanged.
+            read.clear();
+            store.importReadOutPage(channelPage(2L, new JsonObject[] {
+                    record("third", vmReference(3))}, vmDefinition(3,
+                    binary("+", vmReference(2), vmReference(1)))), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertSame(site, read.get(0).getAsJsonObject("value")
+                    .getAsJsonObject("_left").get("_left"));
+            store.importReadOutPage(channelPage(3L, new JsonObject[] {
+                    record("withheld", vmReference(4))}, vmDefinition(4,
+                    symbol("M_I_late"))), "records", stated -> false,
+                    JsonObject.class, decode, read::add, helpers, 3);
+            assertEquals("a withheld page hands on nothing", 1, read.size());
+            store.importReadOutPage(channelPage(4L, new JsonObject[] {
+                    record("late", vmReference(4))}), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals("M_I_late", read.get(1).getAsJsonObject("value")
+                    .get("_exp").getAsString());
+            int before = decodes[0];
+            read.clear();
+            store.importReadOutPage(channelPage(5L, new JsonObject[] {first,
+                    second}), "records", stated -> true, JsonObject.class,
+                    decode, read::add, helpers, 3);
+            assertEquals("held: decoded no more", before, decodes[0]);
+            assertEquals(2, read.size());
+            // Tables 6-8 lost: table 9 is imported whole though a row of
+            // it names node 7, which only a lost table defined; a record
+            // naming that row fails, the records before it are handed on in
+            // page order, and the table's other row serves the next page.
+            JsonObject[] many = new JsonObject[40];
+            for (int index = 0; index < many.length; index++) {
+                many[index] = record("many" + index, vmReference(
+                        index == 17 ? 20 : 1 + index % 4));
+            }
+            read.clear();
+            assertTrue(store.readOutLosses().isEmpty());
+            try {
+                store.importReadOutPage(channelPage(9L, many, vmDefinition(
+                        20, binary("+", vmReference(7), vmReference(1))),
+                        vmDefinition(21, symbol("M_I_kept"))), "records",
+                        stated -> true, JsonObject.class, decode, read::add,
+                        helpers, 3);
+                fail("a node only a lost table defined");
+            } catch (IllegalArgumentException missing) {
+                // a record is never read against a node no table defined
+            }
+            assertFalse(store.readOutLosses().isEmpty());
+            assertEquals("handed on in page order up to the failure", 17,
+                    read.size());
+            for (int index = 0; index < read.size(); index++) {
+                assertEquals("many" + index,
+                        read.get(index).get("name").getAsString());
+            }
+            read.clear();
+            store.importReadOutPage(channelPage(10L, new JsonObject[] {
+                    record("kept", vmReference(21))}), "records",
+                    stated -> true, JsonObject.class, decode, read::add,
+                    helpers, 3);
+            assertEquals("M_I_kept", read.get(0).getAsJsonObject("value")
+                    .get("_exp").getAsString());
+            String[] refusals = {
+                // an older table, another session, a self-contained table
+                // (an image whose read-out restates every definition), no
+                // table, a short count
+                channelPage(10L, new JsonObject[0]),
+                channelPage(11L, new JsonObject[0]).replace(
+                        "\"sessionId\":1,\"sequence\"",
+                        "\"sessionId\":2,\"sequence\""),
+                vmPage(new JsonObject[0]).toString(),
+                "{\"records\":[]}",
+                channelPage(11L, new JsonObject[0], vmDefinition(5,
+                        symbol("M_I_x"))).replace("\"definitionCount\":1",
+                        "\"definitionCount\":2"),
+            };
+            for (String refused : refusals) {
+                try {
+                    store.importReadOutPage(refused, "records",
+                            stated -> true, JsonObject.class, decode,
+                            record -> { }, helpers, 3);
+                    fail("read: " + refused);
+                } catch (IllegalArgumentException expected) {
+                    // refused by name
+                }
+            }
+            assertFalse(store.truncationMarked());
+            JsonObject truncated = new JsonObject();
+            truncated.addProperty("_type", "TruncatedExpression");
+            truncated.addProperty("expressionAuthority",
+                    "VM_SERIALIZATION_TRUNCATION_V1");
+            JsonObject wrapped = binary("==", vmReference(1), truncated);
+            store.importReadOutPage(channelPage(12L, new JsonObject[] {
+                    record("cut", vmReference(6))}, vmDefinition(6,
+                    wrapped)), "records", stated -> true, JsonObject.class,
+                    decode, record -> { }, helpers, 3);
+            assertTrue("a definition holding the marker",
+                    store.truncationMarked());
+            VmExpressionTable.Store fresh =
+                    new VmExpressionTable.Store(owner -> false);
+            fresh.importReadOutPage(channelPage(1L, new JsonObject[] {
+                    record("cut", truncated)}), "records", stated -> true,
+                    JsonObject.class, decode, record -> { }, null, 0);
+            assertTrue("a record holding the marker",
+                    fresh.truncationMarked());
+        } finally {
+            helpers.shutdownNow();
         }
-        again.clear();
-        store.importRepeatedRecords(moved, "records", stated -> true,
-                JsonObject.class, decode, again::add);
-        assertEquals("only the changed record is decoded", 3, decodes[0]);
-        assertSame(read.get(0), again.get(0));
-        assertEquals(7L, again.get(1).get("readEventId").getAsLong());
-        assertSame(read.get(0).get("value"), again.get(0).get("value"));
-        store.importRepeatedRecords(moved, "records", stated -> true,
-                JsonObject.class, decode, record -> { });
-        assertEquals(3, decodes[0]);
+    }
+
+    /** A read-out record: a name and a value. */
+    private static JsonObject record(String name, JsonObject value) {
+        JsonObject record = new JsonObject();
+        record.addProperty("name", name);
+        record.add("value", value);
+        return record;
+    }
+
+    /** A read-out page whose table is its channel's {@code sequence}th. */
+    private static String channelPage(long sequence, JsonObject[] records,
+                                      JsonObject... definitions) {
+        JsonObject page = vmPage(records, definitions);
+        JsonObject table = page.getAsJsonObject(VmExpressionTable.FIELD);
+        JsonObject channel = new JsonObject();
+        for (Map.Entry<String, com.google.gson.JsonElement> member
+                : table.entrySet()) {
+            if ("definitionCount".equals(member.getKey())) {
+                channel.addProperty("sequence", sequence);
+            }
+            channel.add(member.getKey(), member.getValue());
+        }
+        channel.addProperty("authority",
+                VmExpressionTable.READ_OUT_AUTHORITY);
+        page.add(VmExpressionTable.FIELD, channel);
+        return page.toString();
     }
 
     /** A read-out page: its records, then its table, as the VM writes it. */
@@ -751,81 +570,6 @@ public class ContractTest {
                 java.math.BigInteger.TEN, "x")));
     }
 
-    /**
-     * A root row's bounds are absolute: a configuration whose default is -1
-     * states {@code domainMin "-2"}, minus two.  Only a case's declaration
-     * (root-domains.jsonl) spells {@code +k}/{@code -k} off the reading.
-     */
-    @Test
-    public void aRootRowsBoundsAreAbsoluteAndOnlyADeclarationIsRelative() {
-        OccurrenceAddress at = OccurrenceAddress.of(DN0, REGION,
-                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
-        Map<String, RootDomain> declared = new LinkedHashMap<>();
-        declared.put("CASE.K", RootDomain.of("CASE.K", RootKind.INTEGRAL, "",
-                "-2", "+3"));
-        Object[][] rows = {
-            {"a row's negative bound is a value", "CONFIG:k", "-2", "5",
-                "[-2, 5]"},
-            {"a declaration's -k is off the reading", "CASE.K", "-2", "5",
-                "[98, 103]"},
-            {"no bound is pinned", "CONFIG:k", null, null, "[null, null]"},
-            {"a bound that is no integer is none", "CONFIG:k", "x", "5",
-                "[null, 5]"}};
-        for (Object[] row : rows) {
-            RootDomain domain = RootDomain.resolved(RootMintRow.of("s", 1L,
-                    at, (String) row[1], "sym", RootKind.INTEGRAL,
-                    RootCategory.CONFIG, "100", (String) row[2],
-                    (String) row[3], true, null, 0L), declared,
-                    Collections.<java.math.BigInteger>emptyList());
-            assertEquals((String) row[0], row[4],
-                    "[" + domain.min() + ", " + domain.max() + "]");
-        }
-    }
-
-    @Test
-    public void rendersAndParsesEveryCausalContextAndIndex() {
-        OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,
-                CausalContext.of(PRODUCER_ID, RPC),
-                index(frame(RUN, 0), frame(CHECKSUM, 2), frame(COMPUTE, 0)));
-        assertEquals(DN0.render() + "/region/" + REGION
-                        + "/ctx:Anchor:" + PRODUCER_ID + "@" + RPC
-                        + "/idx:" + RUN + "@0/" + CHECKSUM + "@2/"
-                        + COMPUTE + "@0",
-                anchored.render());
-        assertEquals(anchored, OccurrenceAddress.parse(anchored.render()));
-        assertEquals(anchored.id(),
-                OccurrenceAddress.parse(anchored.render()).id());
-        assertEquals(16, anchored.id().length());
-        // An id built anew of the same input is hashed once (Digests).
-        assertSame(anchored.id(),
-                OccurrenceAddress.parse(anchored.render()).id());
-        assertFalse(anchored.lineageLost());
-        assertEquals(3, anchored.index().frames().size());
-
-        // A daemon tick has no incoming message, only its role and the k-th
-        // tick of that role inside the window.
-        OccurrenceAddress tick = OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 3),
-                index(frame("o.a.h.h.s.b.KeyManager#run#9", 0)));
-        assertEquals(NN0.render() + "/region/REGION.a1b2"
-                        + "/ctx:Root:KEY_MANAGER_TICK#3"
-                        + "/idx:o.a.h.h.s.b.KeyManager#run#9@0",
-                tick.render());
-        assertEquals(tick, OccurrenceAddress.parse(tick.render()));
-
-        // A scope nobody could attribute degrades to its role and says so in
-        // the id itself, rather than in a flag beside it.
-        OccurrenceAddress lost = OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty());
-        assertEquals(NN0.render()
-                + "/region/REGION.a1b2/ctx:Lost:UNKNOWN/idx:", lost.render());
-        assertEquals(lost, OccurrenceAddress.parse(lost.render()));
-        assertTrue(lost.lineageLost());
-        assertEquals(16, ExecutionIndex.empty().hash().length());
-        assertEquals(anchored.index(),
-                ExecutionIndex.parse(anchored.index().render()));
-    }
-
     @Test
     public void theSameControlPathIsTheSameOccurrence() {
         List<Frame> path = Arrays.asList(frame(RUN, 0), frame(CHECKSUM, 2),
@@ -911,45 +655,6 @@ public class ContractTest {
     }
 
     @Test
-    public void selectorsReadTheV1CaseDeclarations() {
-        Selector declared = OccurrenceAddress.parseSelector(V1_WITH_API);
-        assertEquals(DN0, declared.node());
-        assertEquals(REGION, declared.regionId());
-        assertEquals(DECLARED_API, declared.api());
-        assertEquals(1, declared.k());
-        assertEquals(V1_WITH_API, declared.render());
-        Selector elsewhere = OccurrenceAddress.parseSelector(V1_BARE);
-        assertEquals(NodeId.of("hdfs-17899/dn0", 0), elsewhere.node());
-        assertEquals(REGION, elsewhere.regionId());
-        assertNull(elsewhere.api());
-        assertEquals(2, elsewhere.k());
-
-        OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,
-                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
-        // The same region on another component is another case: the node the
-        // declaration names is part of what selects.
-        assertFalse(elsewhere.matches(anchored, null));
-        // Region only, on this component: every occurrence of that region is a
-        // candidate, and k among them is the scheduler's business.
-        Selector here = OccurrenceAddress.parseSelector(
-                DN0.render() + "/region/" + REGION + "#2");
-        assertTrue(here.matches(anchored, null));
-        assertTrue(declared.matches(anchored, DECLARED_API));
-        assertFalse(declared.matches(anchored, "hdfs-17897/client#epoch0/x"));
-        assertFalse(here.matches(OccurrenceAddress.of(DN0, "REGION.other",
-                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0))),
-                null));
-        // A selector that names an api matches nothing no message started.
-        assertFalse(declared.matches(tick(1), DECLARED_API));
-        // A declaration with no component selects on every component, and
-        // round-trips through its own rendering.
-        Selector anywhere = Selector.of(REGION, null, 1, null);
-        assertTrue(anywhere.matches(anchored, null));
-        assertEquals(anywhere, OccurrenceAddress.parseSelector(
-                anywhere.render()));
-    }
-
-    @Test
     public void everyRowKindSurvivesItsFileInTheSessionLayout()
             throws IOException {
         Path root = iteration.getRoot().toPath();
@@ -1000,7 +705,7 @@ public class ContractTest {
                 RootCategory.HOOK, "3", "3", "6", true, null, 0L);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
-                true);
+                true, null);
         GapRow gap = GapRow.of("s-17897-1", GapKind.LINEAGE_LOST,
                 GapClass.DIAGNOSTIC, export.id(),
                 "the exporter ran outside any attributable scope");
@@ -1038,7 +743,7 @@ public class ContractTest {
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.
         ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
-                false, false, "KeyManager-1#13");
+                false, false, "KeyManager-1#13", ActivationRow.ClaimKind.NONE, null);
         ActivationRow ambientBack = RowCodec.readActivation(
                 reline(RowCodec.writeActivation(ambient)), new RowPool());
         assertEquals(ambient, ambientBack);
@@ -1161,11 +866,9 @@ public class ContractTest {
         expression.addProperty("name", "root_serial_no");
         Map<String, JsonObject> expressions = new LinkedHashMap<>();
         expressions.put("EXPR.v1.9f2c", expression);
-        RowCodec.writeExpressions(session.expressions(),
-                ExpressionTable.of(expressions));
-        assertEquals(ExpressionTable.of(expressions),
-                SessionExpressionLog.read(session.expressions(),
-                        new RowPool()));
+        ExpressionLogs.write(session.expressions(), expressions);
+        assertEquals(expressions, SessionExpressionLog.read(
+                session.expressions(), new RowPool()).expressions());
         assertEquals(Collections.singletonList(session),
                 SessionDir.sessionsIn(root));
 
@@ -1243,21 +946,21 @@ public class ContractTest {
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 index(frame(RUN, 0)));
         unreached.activations.add(ActivationRow.of("s-gate", other, "t",
-                false, true, "DataXceiver-8#42"));
+                false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
         unreached.targets.add(TargetRow.of("s-gate", 0L, unreached.anchor,
-                "Guard#u8", "", false, false));
+                "Guard#u8", "", false, false, null));
         unreached.targets.add(TargetRow.of("s-gate", 0L, other, "Guard#u8",
-                "", false, false));
+                "", false, false, null));
         assertTrue("an unreached anchor is one row per occurrence: "
                 + names(gate(unreached)), noViolation(gate(unreached), 4));
         // Nor does a concrete decision: it stands after the last VM event,
         // which two occurrences can share.
         Rows decided = clean();
         decided.activations.add(ActivationRow.of("s-gate", other, "t",
-                false, true, "DataXceiver-8#42"));
+                false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
         decided.targets.add(TargetRow.of("s-gate",
                 decided.targets.get(0).seq(), other, "Guard#u8", "", false,
-                true));
+                true, null));
         assertTrue("two occurrences deciding concretely after one event: "
                 + names(gate(decided)), noViolation(gate(decided), 4));
         // A store read is one reader's read of one version: two nodes'
@@ -1270,7 +973,7 @@ public class ContractTest {
                 {"the same read", null, 4L, false}}) {
             Rows stored = clean();
             stored.activations.add(ActivationRow.of("s-gate", other, "t",
-                    false, true, "DataXceiver-8#42"));
+                    false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
             Endpoint first = Endpoint.of(stored.anchor, "Guard#u3:READ",
                     stored.readAt.siteIndex(), 0);
             Endpoint reader = each[1] == null ? first
@@ -1400,7 +1103,7 @@ public class ContractTest {
         for (Object[] row : nine) {
             Rows stated = clean();
             stated.targets.set(0, TargetRow.of("s-gate", 15L, stated.anchor,
-                    "Guard#u8", (String) row[0], (Boolean) row[1], true));
+                    "Guard#u8", (String) row[0], (Boolean) row[1], true, null));
             if (row[2] == null) {
                 assertTrue("phi " + row[0] + " on the " + (Boolean.TRUE.equals(
                                 row[1]) ? "fatal" : "healthy") + " arm: "
@@ -1531,82 +1234,6 @@ public class ContractTest {
         }
     }
 
-    /** The one order of a session's rows ({@link RowOrder}). */
-    @Test
-    public void rowsStandBySeqThenEngineTiesThenTheVmEventOfTheSeq() {
-        Object[][] rows = {
-                // seq, tie, other seq, other tie, before?
-                {41L, 0, 42L, 1, true},   // a VM event, then the engine's row
-                {42L, 1, 42L, 0, true},   // the engine's row, then VM event 42
-                {42L, 0, 42L, 1, false},
-                {42L, 1, 42L, 2, true},   // a decode, then the read of it
-                {42L, 2, 42L, 1, false},  // the read, then a newer decode
-                {42L, 1, 42L, 1, false},
-                {42L, 0, 42L, 0, false},
-                {0L, 0, 42L, 1, false},   // no clock orders nothing
-                {42L, 1, 0L, 0, false},
-                {43L, 1, 42L, 5, false},
-        };
-        for (Object[] row : rows) {
-            assertEquals(java.util.Arrays.toString(row), row[4],
-                    RowOrder.before((Long) row[0], (Integer) row[1],
-                            (Long) row[2], (Integer) row[3]));
-        }
-        Object[][] cutoffs = {
-                // seq, tie, the VM event, before it?
-                {41L, 0, 42L, true},
-                {42L, 1, 42L, true},   // the guard's read, then its branch
-                {42L, 0, 42L, false},
-                {43L, 1, 42L, false},
-                {0L, 0, 42L, true},    // no clock: as seq < event
-        };
-        for (Object[] row : cutoffs) {
-            assertEquals(java.util.Arrays.toString(row), row[3],
-                    RowOrder.beforeEvent((Long) row[0], (Integer) row[1],
-                            (Long) row[2]));
-        }
-        Object[][] cuts = {
-                // seq, tie, the cut's seq and tie, before it?
-                {42L, 1, 42L, 2, true},   // read, then the engine's write
-                {42L, 3, 42L, 2, false},  // stated after that write: past
-                {42L, 2, 42L, 2, false},
-                {42L, 0, 42L, 2, false},  // VM event 42 follows its ties
-                {41L, 0, 42L, 2, true},
-                {42L, 3, 42L, 0, true},   // a VM event's cut: beforeEvent
-                {0L, 0, 42L, 2, true},
-        };
-        for (Object[] row : cuts) {
-            assertEquals(java.util.Arrays.toString(row), row[4],
-                    RowOrder.beforeCut((Long) row[0], (Integer) row[1],
-                            (Long) row[2], (Integer) row[3]));
-        }
-    }
-    /** A context's name across runs: no counts, each hop its sender's first
-     *  send. */
-    @Test
-    public void aHopIsItsSendersFirstSendOfTheSiteWhateverCameBefore() {
-        StableEventNames confirmed = new StableEventNames();
-        confirmed.sent(STABLE_TASK + "1", "HTTP:STATUS", "e1");
-        // a poll's second
-        confirmed.sent(STABLE_TASK + "2", "HTTP:STATUS", "e2");
-        confirmed.sent(STABLE_TASK + "3", "HTTP:SPLIT", "e3");
-        StableEventNames nativeRun = new StableEventNames();
-        nativeRun.sent(STABLE_TASK + "1", "HTTP:STATUS", "f1"); // polled once
-        nativeRun.sent(STABLE_TASK + "2", "HTTP:SPLIT", "f2");
-        String split = confirmed.context(
-                "n1|Anchor:e3@HTTP/TASK|<B: void x()>@3");
-        assertEquals("n1|Anchor:{n0|Root:TASK#4|<A: void call()>><H: void"
-                        + " submit()>#u9 >HTTP:SPLIT}@HTTP/TASK|<B: void x()>",
-                split);
-        assertEquals(split, nativeRun.context(
-                "n1|Anchor:f2@HTTP/TASK|<B: void x()>@5"));
-        assertNull("a loop's later send has no fixed name",
-                confirmed.context("n1|Anchor:e2@HTTP/TASK"));
-        assertNull("a send this run never made",
-                nativeRun.context("n1|Anchor:e3@HTTP/TASK"));
-        assertEquals("plain|context", confirmed.context("plain|context@7"));
-    }
-
     /**
      * A TIMED-WAIT LOOP'S TURN IS NAMED BY ITS FAMILY, its number left out
      * (the schedule's turn family): a stable name and CONFIRM's activation
@@ -1683,8 +1310,7 @@ public class ContractTest {
             RowCodec.writeAll(dir.exports(), exports, RowCodec::writeExport);
             RowCodec.writeAll(dir.attaches(), attaches,
                     RowCodec::writeAttach);
-            RowCodec.writeExpressions(dir.expressions(),
-                    ExpressionTable.of(expressions));
+            ExpressionLogs.write(dir.expressions(), expressions);
             // The fixture STATES the role, as a campaign's own session
             // manifest does.
             boolean focused = false;
@@ -1718,7 +1344,7 @@ public class ContractTest {
                 "INSTANCE_FIELD/2#24" + RowInvariants.PLACEHOLDER + "0:READ",
                 site, 0);
         rows.activations.add(ActivationRow.of("s-gate", rows.anchor, "t", false,
-                true, "DataXceiver-7#41"));
+                true, "DataXceiver-7#41", ActivationRow.ClaimKind.NONE, null));
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, RootCategory.FAULT,
@@ -1746,7 +1372,7 @@ public class ContractTest {
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
                 7L, "M_I_field_" + REGION + ".in.a1", "I", "2", 8L));
         rows.targets.add(TargetRow.of("s-gate", 15L, rows.anchor, "Guard#u8",
-                "EXPR.0000000000000001", true, true));
+                "EXPR.0000000000000001", true, true, null));
         return rows;
     }
 

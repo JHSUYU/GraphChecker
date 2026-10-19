@@ -66,11 +66,6 @@ public final class Randoms {
         return seed ^ (seed >>> 33);
     }
 
-    /** Test seam: a fresh run's counts. */
-    static void resetForTests() {
-        COUNTS.clear();
-    }
-
     /**
      * The Random one draw at {@code site} draws from, seeded by its key: a
      * fresh one per draw, so the draw is a function of where it is drawn

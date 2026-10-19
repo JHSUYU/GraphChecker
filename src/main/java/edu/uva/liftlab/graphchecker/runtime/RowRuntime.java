@@ -1520,36 +1520,4 @@ public final class RowRuntime {
             }
         });
     }
-
-    public static void resetForTests() {
-        synchronized (LOCK) {
-            AMBIENT.clear();
-            CLAIMED_EVENTS.clear();
-            SharedStateCapture.resetForTests();
-            ENDPOINTS.clear();
-            WRITTEN.clear();
-            READERS.clear();
-            STORE_READS.clear();
-            PRE_WINDOW.clear();
-            OUTSIDE.clear();
-            MINT_LABELS.clear();
-            UNNAMED.clear();
-            CONCRETE.clear();
-            DERIVED.clear();
-            DOORS_ONLY.clear();
-            expressions = new ExpressionRefs();
-            Identity.resetForTests();
-            CLOCK_CELLS.clear();
-            publisher = null;
-            sessionId = "";
-            Interactions.resetForTests();
-            Lineage.resetForTests();
-            FocusedReplay.resetForTests();
-            ForcedArms.resetForTests();
-            RootMint.resetForTests();
-            Confirmation.resetForTests();
-            SessionPublisher.resetForTests();
-            HandoffMint.resetForTests();
-        }
-    }
 }

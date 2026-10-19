@@ -4325,13 +4325,12 @@ public final class SmtLowering {
             reached.add(declaration.name);
         }
         List<String> stated = new ArrayList<String>();
+        Map<String, Boolean> closed = new HashMap<String, Boolean>();
         for (Stated held : assertions) {
             if (!held.label.isEmpty()) continue;
             boolean whole = true;
             for (String name : held.names()) {
-                if (SmtNames.BUILTIN.contains(name) || reached.contains(name)) {
-                    continue;
-                }
+                if (stands(name, reached, closed)) continue;
                 whole = false;
                 break;
             }
@@ -4340,6 +4339,23 @@ public final class SmtLowering {
             }
         }
         return stated;
+    }
+
+    private boolean stands(String name, Set<String> reached,
+                           Map<String, Boolean> closed) {
+        if (SmtNames.BUILTIN.contains(name) || reached.contains(name)) {
+            return true;
+        }
+        SharedTerm shared = sharedTerms.get(name);
+        if (shared == null) return false;
+        Boolean known = closed.get(name);
+        if (known != null) return known;
+        closed.put(name, Boolean.FALSE);
+        for (String inner : shared.names()) {
+            if (!stands(inner, reached, closed)) return false;
+        }
+        closed.put(name, Boolean.TRUE);
+        return true;
     }
 
     /**

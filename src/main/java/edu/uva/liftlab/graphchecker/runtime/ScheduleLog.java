@@ -102,9 +102,9 @@ public final class ScheduleLog {
     public static final String PREFIX_ENV = "CAUSYNTH_SCHEDULE_PREFIX";
     /** The same, as a system property; the property wins. */
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
-    public static final String PREFIX_FILE = "schedule_prefix.jsonl";
+    public static final String PREFIX_FILE = "schedule_prefix.jsonl.gz";
     /** The rest, beside the prefix in the worker directory. */
-    public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
+    public static final String SUFFIX_FILE = "schedule_suffix.jsonl.gz";
     /** The recording's schedule beside its trace ({@link #installFile}),
      *  plain JSONL: SEED copies it to the iteration's recorded schedule. */
     public static final String RECORDING_FILE = "schedule.jsonl";
@@ -2982,85 +2982,6 @@ public final class ScheduleLog {
         synchronized (LOCK) {
             loaded = true;
             installLocked(events, after, atWitness, readsHeld);
-        }
-    }
-
-    public static void resetForTests() {
-        TURN.remove();
-        synchronized (LOCK) {
-            sink = null;
-            PENDING.clear();
-            COUNTS.clear();
-            MARKED.clear();
-            synchronized (SENDERS) {
-                SENDERS.clear();
-                UNKNOWN_SENDERS.clear();
-            }
-            seq = 0L;
-            MADE_KEYS.clear();
-            counting = false;
-            lastNewNanos = 0L;
-            longestQuietNanos = 0L;
-            realized = null;
-            names = new StableEventNames();
-            AWAITED.clear();
-            MADE_AWAITED.clear();
-            OVERDUE.clear();
-            DUE.clear();
-            loaded = false;
-            holds = false;
-            order = Collections.emptyList();
-            cut = 0;
-            line = 0;
-            state = new byte[0];
-            slotKeys = new String[0];
-            slotContexts = new String[0];
-            SLOTS.clear();
-            BY_OCCURRENCE.clear();
-            BY_CONTEXT.clear();
-            TAKEN_WAKES.clear();
-            WAITERS.clear();
-            ARRIVED.clear();
-            HELD.clear();
-            LET_GO.clear();
-            CONFLICTED.clear();
-            BY_LOCATION.clear();
-            DEAD_BY_KEY.clear();
-            IN_FLIGHT.clear();
-            FAILED.clear();
-            POLLED.clear();
-            PASSED_BY_CONTEXT.clear();
-            PASSED_SLOTS.clear();
-            MADE.clear();
-            ClockLoops.resetForTests();
-            RunNames.resetForTests();
-            moves = 0L;
-            letGoSinceProgress = false;
-            letGoAt = 0L;
-            firstOpen = 0;
-            firstBlocking = 0;
-            openHeld = 0;
-            lastProgress = 0L;
-            restStalls = 0;
-            taken = 0;
-            ranFree = 0;
-            letGo = 0;
-            closedOpen = 0;
-            givenUp = 0;
-            stalls = 0;
-            dead = 0;
-            settledByEnd = 0;
-            passed = 0;
-            stallSince = -1L;
-            CPU_SEEN.clear();
-            ELSEWHERE.clear();
-            RELEASED.clear();
-            ownerAtWork = false;
-            collectedSeen = 0L;
-            cpuSampledAt = 0L;
-            computing = false;
-            computedInStall = false;
-            LOCK.notifyAll();
         }
     }
 }

@@ -87,7 +87,7 @@ final class ConcolicVmBroker {
     private Method export;
     private Method attach;
     private Method range;
-    private Method trackedLocations;
+    private Method readOutTrackedLocations;
     private Method installGuardedStoreSites;
     private Method forceNextBranch;
     private Method exportLeaf;
@@ -388,15 +388,22 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * The write log: every location a symbolic value reached, with versions
-     * and reads after {@code afterEventId} (an activation passes its entry
-     * event).  {@code maxBytes} bounds one answer ({@code complete: false}
-     * then says where to resume); 0 means no bound.
+     * One page of the write log: every location a symbolic value reached,
+     * with versions and reads after {@code afterEventId} (an activation
+     * passes its entry event).  {@code maxBytes} bounds one answer
+     * ({@code complete: false} then says where to resume); 0 means no
+     * bound.  The session's pages are one channel: each table states only
+     * the definitions no earlier page stated, numbered in the channel
+     * (VM.md §8), so every page must be decoded, in that order: call it
+     * only under {@code SharedStateCapture#READ_OUT_ORDER}.  An image
+     * whose read-out restates every definition lacks this native, and a
+     * replay plan is refused on it by name ({@link
+     * #requireCurrentCapabilities}: {@code readOutTrackedLocations}).
      */
-    String trackedLocationVersions(long afterEventId, int maxBytes)
+    String readOutTrackedLocations(long afterEventId, int maxBytes)
             throws Exception {
-        return requiredVmJson(trackedLocations.invoke(null, afterEventId,
-                maxBytes), "getTrackedLocationVersions");
+        return requiredVmJson(readOutTrackedLocations.invoke(null,
+                afterEventId, maxBytes), "readOutTrackedLocations");
     }
 
     /**
@@ -484,8 +491,8 @@ final class ConcolicVmBroker {
         api.attach = method(system, "attachExpression", Object.class,
                 String.class, String.class, String.class, long.class,
                 long[].class);
-        api.trackedLocations = method(system,
-                "getTrackedLocationVersions", long.class, int.class);
+        api.readOutTrackedLocations = method(system,
+                "readOutTrackedLocations", long.class, int.class);
         api.range = method(system, "getConcolicPathConditionRange",
                 int.class, int.class);
         api.installGuardedStoreSites = method(system,

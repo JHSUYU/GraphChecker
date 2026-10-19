@@ -176,8 +176,9 @@ room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). 
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
 (twice the recording's measured peak at its start, its heap sized for seven times it, growing while its host has room), an obligation's solve (what a solver starts at), then
 every obligation's, re-run's and CONFIRM's replay
-(the campaign's measured replay need: the largest peak its replays stated so far, the seed's first,
-times 1.5, at least 512 MB; `campaign_replay_need_mb`), each replay at most half a host's ceiling at
+(the campaign's measured replay need: the largest peak its replays stated so far, the seed's first, then
+once eight more returned their peaks' 90th percentile, times 1.5, at least 512 MB; `campaign_replay_need_mb`),
+each replay at most half a host's ceiling at
 its start, a host's solver of the exploration (its start's need; PIPELINE §7.5), a campaign head's
 engine JVM (its main's measured need, else `engine_memory_mb`, and once more at `engine_memory_mb`
 if it runs out; PIPELINE §7.7), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its
@@ -261,7 +262,6 @@ src/main/java/edu/uva/liftlab/graphchecker/
   contract/    row kinds, identity types, gap registry, session layout, IMPORT gate, row pool
   smt/         expression IR, arms and families, z3 driver
   annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
-src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
 src/test/                         unit tests; shell/run_engine_campaign_helpers_test.sh
 third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/share/vm/concolic,
                                   interpreter/bytecodeInterpreter.cpp) and its smoke tests

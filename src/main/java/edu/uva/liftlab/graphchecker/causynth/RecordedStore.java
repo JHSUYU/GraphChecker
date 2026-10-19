@@ -169,8 +169,6 @@ public final class RecordedStore {
     private final Map<Integer, Map<String, Long>> decoded = new HashMap<>();
     /** object -> the fetch whose decode registered it first. */
     private final Map<Integer, Fetch> fetchedBy = new HashMap<>();
-    /** transport + location -> its fetches, in trace order. */
-    private final Map<String, List<Fetch>> fetches = new HashMap<>();
     /** occurrence -> the locations it read, decoded or was called back on,
      *  each with the highest version it read or decoded there (-1: only
      *  called back). */
@@ -253,10 +251,6 @@ public final class RecordedStore {
             if (event.kind != Event.Kind.DECODE) continue;
             Fetch fetch = event.occurrence.isEmpty() || wrote(event) ? null
                     : new Fetch(event, since == null ? 0L : since);
-            if (fetch != null) {
-                fetches.computeIfAbsent(event.key(),
-                        ignored -> new ArrayList<>()).add(fetch);
-            }
             for (int object : event.objects) {
                 if (object == 0) continue;
                 // The first decode that registered it keeps it (runtime.
@@ -350,12 +344,6 @@ public final class RecordedStore {
             if (fetch != null) found.add(fetch);
         }
         return new ArrayList<>(found);
-    }
-
-    /** Every fetch of {@code location} (transport + location). */
-    List<Fetch> fetchesAt(String location) {
-        return fetches.getOrDefault(location,
-                Collections.<Fetch>emptyList());
     }
 
     /** The occurrences (rendered addresses) that made {@code location}'s

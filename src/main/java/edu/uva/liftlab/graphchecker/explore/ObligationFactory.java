@@ -1080,7 +1080,8 @@ public final class ObligationFactory {
      * unsupported__*}) has no recorded value and stays free.  "" when the
      * query has no writer choice to hold.
      */
-    private static String heldToRecording(FlipQuery.Built built) {
+    private static String heldToRecording(FlipQuery.Built built,
+                                          String pins) {
         StringBuilder held = new StringBuilder();
         for (FlipQuery.WriterChoice choice : built.choices) {
             if (built.modelSymbols.contains(choice.recorded)) {
@@ -1088,7 +1089,7 @@ public final class ObligationFactory {
                         .append(")\n");
             }
         }
-        return held.length() == 0 ? "" : built.smt2 + held;
+        return held.length() == 0 ? "" : built.smt2 + pins + held;
     }
 
     /** Whether any clock skew is non-zero; a non-integer delta counts as no
@@ -1289,6 +1290,19 @@ public final class ObligationFactory {
         }
         Outcome settled = settled(ask, answer, budget, solver, query);
         if (settled != null) return settled;
+        Z3 asker = decided == null ? solver
+                : solver.alone(decided.budgetMillis, decided.roomMb);
+        NearestWorld nearest = NearestWorld.of(text -> solved.answer(
+                ArtifactIO.sha256(Z3.modelQuery(text, asked.modelSymbols)),
+                asked.modelSymbols,
+                () -> asker.ask(text, asked.modelSymbols, false)),
+                built.smt2, built.modelSymbols, built.recorded,
+                built.flipVariables, answer, decided == null);
+        answer = nearest.answer;
+        if (!nearest.pins.isEmpty()) {
+            query = Z3.modelQuery(built.smt2 + nearest.pins,
+                    built.modelSymbols);
+        }
         Planted planted = planted(corpus, candidate, built, answer.values(),
                 gaps);
         if (!planted.refusal.isEmpty()) {
@@ -1301,11 +1315,8 @@ public final class ObligationFactory {
         // that then plants something is the one run -- a root moved under
         // the run's own pairings, which no order has to realize.
         if (!planted.pairings.isEmpty()) {
-            String held = heldToRecording(built);
+            String held = heldToRecording(built, nearest.pins);
             String heldQuery = Z3.modelQuery(held, built.modelSymbols);
-            // A hard lane's flip asks it at the hard lane's budget and room.
-            Z3 asker = decided == null ? solver
-                    : solver.alone(decided.budgetMillis, decided.roomMb);
             Z3.Answer again = held.isEmpty() ? null
                     : solved.answer(ArtifactIO.sha256(heldQuery),
                     asked.modelSymbols,

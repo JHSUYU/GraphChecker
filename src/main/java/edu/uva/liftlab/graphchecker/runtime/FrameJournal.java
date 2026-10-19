@@ -117,8 +117,4 @@ public final class FrameJournal {
         FrameJournal journal = JOURNALS.get(Long.valueOf(activationKey));
         return journal == null ? null : journal.at(eventId);
     }
-
-    static void resetForTests() {
-        JOURNALS.clear();
-    }
 }

@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
-import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import org.junit.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -47,7 +46,7 @@ import static org.junit.Assert.fail;
  * checkouts use.</p>
  *
  * <p>The other half of the ABI is not woven at all: the system trees call
- * GraphChecker (the Hadoop shim, the message doors) from their own source,
+ * GraphChecker (the message doors) from their own source,
  * compiled against an older jar, so a {@code git grep} of this repository
  * returns empty for every one of them and the reference resolves only at
  * campaign SEED.
@@ -68,8 +67,6 @@ public class ConcolicHookAbiTest {
     private static final String LIFECYCLE_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.JUnitLifecycle";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
-    /** The Hadoop shim's package (src/shim), named whole in a row. */
-    private static final String SHIM = "org.apache.hadoop.ipc.";
     /** APIs called from outside this repository; see the class javadoc. */
     private static final String EXTERNAL_CALLERS =
             "src/test/resources/external-callers.txt";
@@ -381,8 +378,7 @@ public class ConcolicHookAbiTest {
             }
             Method api;
             try {
-                api = Class.forName(called[0].startsWith(SHIM)
-                        ? called[0] : PACKAGE + called[0])
+                api = Class.forName(PACKAGE + called[0])
                         .getMethod(called[1], parameters);
             } catch (ReflectiveOperationException gone) {
                 fail("the system trees call " + row + "; deleting it "
@@ -488,12 +484,10 @@ public class ConcolicHookAbiTest {
             case "object": return Object.class;
             case "ArrayType.v(object, 1)": case "object[]": return Object[].class;
             case "byte[]": return byte[].class;
+            case "string[]": return String[].class;
+            case "predicate": return java.util.function.Predicate.class;
             case "doors.Outbound": return MessageDoors.Outbound.class;
             case "doors.Inbound": return MessageDoors.Inbound.class;
-            case "shim.Outbound":
-                return CausynthMessagePropagation.Outbound.class;
-            case "shim.Inbound":
-                return CausynthMessagePropagation.Inbound.class;
             case "runnable": return Runnable.class;
             case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
             default: throw new IllegalStateException(

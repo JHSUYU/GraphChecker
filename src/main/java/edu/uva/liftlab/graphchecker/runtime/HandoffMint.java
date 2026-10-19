@@ -448,12 +448,6 @@ final class HandoffMint {
                 nextAttach(consumer, portId, elementPath), elementPath);
     }
 
-    static void resetForTests() {
-        synchronized (ATTACHES) {
-            ATTACHES.clear();
-        }
-    }
-
     /** One primitive leaf of one attach, and how the row names it. */
     private static final class HandoffLeaf {
         private final Object owner;

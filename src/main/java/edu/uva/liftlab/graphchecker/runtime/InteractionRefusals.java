@@ -74,9 +74,4 @@ final class InteractionRefusals {
         }
         return null;
     }
-
-    /** Called with the {@link Interactions} monitor held: declared order. */
-    static synchronized void resetForTests() {
-        MESSAGE_OF_ENDPOINT.clear();
-    }
 }

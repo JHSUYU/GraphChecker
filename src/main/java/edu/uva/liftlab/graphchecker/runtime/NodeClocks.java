@@ -49,10 +49,6 @@ final class NodeClocks {
     private NodeClocks() {
     }
 
-    static void reset() {
-        JUMPS.clear();
-    }
-
     /**
      * The skew one reading of a node's clock runs at: that of the jump on
      * its clock latest at or before its place (of two at one place, the one

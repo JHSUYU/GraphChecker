@@ -9,7 +9,9 @@ import java.util.List;
  *   <li>D2: a container whose first symbolic access wrote it states its
  *       INITIAL as a refusal, never as a stated empty base.</li>
  *   <li>D3: the tracked-location read-out pages by each location's highest
- *       event, so a resume neither repeats nor skips a location.</li>
+ *       event, so a resume neither repeats nor skips a location; its pages
+ *       are one channel, each definition stated once, by the first page
+ *       whose locations name it, each table numbered in the channel.</li>
  *   <li>D4: a reference a thread outside every region stores is a version,
  *       unattributed, naming what it stored.</li>
  *   <li>D5: a concrete store at a store site the scope map lists as
@@ -153,13 +155,40 @@ public final class RegionVersionDefectsSmoke {
                         && element.contains("RPC.values"),
                 "the attach published no element version: " + element);
 
-        // D3: pages of one location each, resumed, meet every location once.
+        // D3: pages of one location each, resumed, meet every location once;
+        // each definition is stated by one page only, every reference a page
+        // makes is to a definition it or an earlier page stated, and the
+        // tables are numbered 1, 2, ... in the session.
         java.util.Set<String> seen = new java.util.HashSet<String>();
+        java.util.Set<Long> defined = new java.util.HashSet<Long>();
         long after = 0L;
         int pages = 0;
         while (true) {
-            String page = System.getTrackedLocationVersions(after, 1);
+            String page = System.readOutTrackedLocations(after, 1);
             pages++;
+            require(page.startsWith("{\"schemaVersion\":2,")
+                            && page.contains("\"authority\":"
+                            + "\"VM_READ_OUT_EXPRESSION_DELTA_V1\"")
+                            && number(page, "\"sequence\":") == pages,
+                    "page " + pages + " is no table of the read-out's"
+                            + " channel: " + page);
+            int table = page.indexOf("\"vmExpressionTable\":");
+            String row = "\"_type\":\"VmExpressionDefinition\","
+                    + "\"sessionId\":";
+            for (int at = page.indexOf(row, table); at >= 0;
+                 at = page.indexOf(row, at + 1)) {
+                long id = number(page.substring(at), "\"expressionId\":");
+                require(defined.add(id), "page " + pages + " stated "
+                        + id + " again");
+            }
+            String refers = "\"_type\":\"VmExpressionReference\","
+                    + "\"sessionId\":";
+            for (int at = page.indexOf(refers); at >= 0;
+                 at = page.indexOf(refers, at + 1)) {
+                long id = number(page.substring(at), "\"expressionId\":");
+                require(defined.contains(id), "page " + pages
+                        + " names " + id + ", which no page stated");
+            }
             int offset = 0;
             String key = "\"selected\":true,\"location\":{";
             while ((offset = page.indexOf(key, offset)) >= 0) {
@@ -175,8 +204,17 @@ public final class RegionVersionDefectsSmoke {
             after = next;
             require(pages < 10000, "the read-out did not end");
         }
-        require(seen.size() >= 4 && pages >= 4,
-                "the read-out paged " + pages + " times over " + seen.size());
+        require(seen.size() >= 4 && pages >= 4 && !defined.isEmpty(),
+                "the read-out paged " + pages + " times over " + seen.size()
+                        + ", " + defined.size() + " definitions");
+        // Read out whole again, nothing new since: every location, no
+        // definition, the channel's next table.
+        String again = System.readOutTrackedLocations(0L, 0);
+        require(count(again, "\"selected\":true,\"location\":{")
+                        == seen.size()
+                        && number(again, "\"definitionCount\":") == 0L
+                        && number(again, "\"sequence\":") == pages + 1,
+                "a read-out restated a definition: " + again);
 
         System.endConcolic();
         System.out.println("RegionVersionDefectsSmoke OK");

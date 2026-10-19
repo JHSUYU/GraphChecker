@@ -15,6 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -44,7 +46,7 @@ final class ConcolicResultPublisher {
      * interpreter was still hashing the expressions of earlier ones.
      */
     private static final ThreadPoolExecutor RESULT_PUBLICATION_EXECUTOR =
-            engineThread("causynth-result-publication-");
+            engineThreads("causynth-result-publication-", 1, null);
     /**
      * Decodes the read-out pages, in the order they were read, beside the
      * publications: an activation's publication waits for its own pages
@@ -54,13 +56,32 @@ final class ConcolicResultPublisher {
      * half publication, 29 s after the test).
      */
     private static final ThreadPoolExecutor READ_OUT_DECODE_EXECUTOR =
-            engineThread("causynth-read-out-decode-");
+            engineThreads("causynth-read-out-decode-", 1, null);
 
-    /** One engine thread, its tasks in order: in the JVM's root group, not
-     *  the group of the test that first published (a test framework fails
-     *  its suite on a thread its group leaks); with the engine's stack, as
-     *  compaction recurses along an expression chain (java.sh -Xss). */
-    private static ThreadPoolExecutor engineThread(String name) {
+    /**
+     * How many record decoders help the decoding thread decode a page's
+     * records at once ({@code VmExpressionTable.Store#importReadOutPage}).
+     */
+    static final int RECORD_DECODERS = 3;
+    /** The record decoders' threads, for the settle's progress. */
+    private static final List<Thread> RECORD_DECODER_THREADS =
+            new CopyOnWriteArrayList<Thread>();
+    private static final ThreadPoolExecutor RECORD_DECODE_EXECUTOR =
+            engineThreads("causynth-read-out-record-", RECORD_DECODERS,
+                    RECORD_DECODER_THREADS);
+
+    /** The threads that help decode a page's records. */
+    static Executor recordDecoders() {
+        return RECORD_DECODE_EXECUTOR;
+    }
+
+    /** {@code count} engine threads, tasks in order when one: in the JVM's
+     *  root group, not the group of the test that first published (a test
+     *  framework fails its suite on a thread its group leaks); with the
+     *  engine's stack, as compaction recurses along an expression chain
+     *  (java.sh -Xss); each one made added to {@code made}, when given. */
+    private static ThreadPoolExecutor engineThreads(String name, int count,
+                                                    List<Thread> made) {
         ThreadFactory threads = runnable -> {
             ThreadGroup root = Thread.currentThread().getThreadGroup();
             while (root.getParent() != null) root = root.getParent();
@@ -68,9 +89,10 @@ final class ConcolicResultPublisher {
                     + PUBLICATION_THREAD_COUNTER.incrementAndGet(),
                     512L << 20);
             thread.setDaemon(true);
+            if (made != null) made.add(thread);
             return thread;
         };
-        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        return new ThreadPoolExecutor(count, count, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<Runnable>(), threads);
     }
     /** Guarded by {@link #PUBLICATION_LOCK}. */
@@ -105,7 +127,7 @@ final class ConcolicResultPublisher {
      * settle, or met while it waits -- every activation still live is
      * stranded at once, before any wait: its root runs on, but its terminal
      * reads nothing out ({@code ConcolicRegionRuntime#closeStranded}), and
-     * one that closed meanwhile, its read-out cut ({@link #endedEarly}),
+     * one that closed meanwhile, its read-out cut ({@link #awaitDecodeRoom}),
      * publishes only its mints; so the wait is for the publications the
      * session owes, those submitted by the end, and the mints of the ones
      * after it -- and, at a refusal or a stall before any flip, whose
@@ -260,8 +282,14 @@ final class ConcolicResultPublisher {
         long[] moved = movedLocked();
         long[] progress = Arrays.copyOf(moved, moved.length + 3);
         progress[moved.length] = cpu(publishingThread);
-        progress[moved.length + 1] = cpu(decodingThread);
-        if (computing(publishingThread) || computing(decodingThread)) {
+        long decoding = cpu(decodingThread);
+        boolean decodes = computing(decodingThread);
+        for (Thread recordDecoder : RECORD_DECODER_THREADS) {
+            decoding += cpu(recordDecoder);
+            decodes |= computing(recordDecoder);
+        }
+        progress[moved.length + 1] = decoding;
+        if (computing(publishingThread) || decodes) {
             collectedComputing = ScheduleLog.collectedMillis();
         }
         progress[moved.length + 2] = collectedComputing;
@@ -335,19 +363,12 @@ final class ConcolicResultPublisher {
      * decided, its session withdrawn, when no flip it was asked was taken
      * yet ({@link Conclusion#AT_NO_PROGRESS}); its session standing as the
      * run made it, the flips taken keeping their verdicts, when one was
-     * ({@link Conclusion#STALLED_AFTER_FLIP}).  After its window closed its
-     * test was over: the teardown answers nothing the question asked, and
-     * the run ends as at the workload's own end, every verdict settled as
-     * there ({@link Conclusion#TEST_OVER}, {@code FocusedReplay#testOver});
-     * the close is a move, so a teardown has the whole bound (PV7-38: a
-     * failed test's teardown stood on an Overseer response until the kill;
-     * of 567 teardowns that ended, 558 took under a minute and 9 took
-     * 600-620 s, each freed only by a ZooKeeper session's expiry).  Its
-     * threads are dumped on the log either way.  From the window's opening
-     * on ({@link RecordingWindow#index}; before it the cluster starts).
-     * Never the seed's replay (it carries no obligation) nor a
-     * confirmation's (its verdict rules stand); a replay whose workload
-     * ended settles on the settle's bound.
+     * ({@link Conclusion#STALLED_AFTER_FLIP}).  Its threads are dumped on
+     * the log.  From the window's opening on ({@link RecordingWindow#index};
+     * before it the cluster starts) to its close, where the replay ends
+     * ({@code JUnitMethodRunner#endAtWindowClose}).  Never the seed's replay
+     * (it carries no obligation) nor a confirmation's (its verdict rules
+     * stand); a replay whose workload ended settles on the settle's bound.
      */
     static void watchProgress() {
         if (FocusedReplay.obligationIds().isEmpty()
@@ -401,18 +422,11 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * How a replay that stood still for {@code still} ends, or null when it
-     * ends otherwise already (its workload ended, a refusal decided it):
-     * after its window closed, as at the workload's own end ({@link
-     * Conclusion#TEST_OVER}); inside it, by the stall ({@code
-     * FocusedReplay#noProgress}).
+     * How a replay that stood still for {@code still} ends ({@code
+     * FocusedReplay#noProgress}), or null when it ends otherwise already:
+     * its workload ended or its window closed, or a refusal decided it.
      */
     static Conclusion stall(String still) {
-        if (RecordingWindow.index() > 0 && !RecordingWindow.opened()) {
-            return FocusedReplay.testOver("its window closed, and its"
-                    + " teardown then made " + still) ? Conclusion.TEST_OVER
-                    : null;
-        }
         if (!FocusedReplay.noProgress(still, ScheduleLog.holding())) {
             return null;
         }
@@ -423,7 +437,7 @@ final class ConcolicResultPublisher {
     /**
      * What the watch counts as progress, each bounded but the first: the
      * distinct events the run made ({@code ScheduleLog#newKeys}); its
-     * window's opening and closing; what its own question moved ({@code
+     * window's opening; what its own question moved ({@code
      * FocusedReplay#questionMoved}: focused occurrences entered, flips
      * taken, roots planted); the order's slots taken or given up ({@code
      * ScheduleLog#settledSlots}); a model's order holds begun and ended
@@ -433,13 +447,12 @@ final class ConcolicResultPublisher {
      */
     static long[] watched(long computed) {
         long[] question = FocusedReplay.questionMoved();
-        long[] watched = Arrays.copyOf(question, question.length + 6);
+        long[] watched = Arrays.copyOf(question, question.length + 5);
         watched[question.length] = ScheduleLog.newKeys();
         watched[question.length + 1] = RecordingWindow.index();
-        watched[question.length + 2] = RecordingWindow.opened() ? 1L : 0L;
-        watched[question.length + 3] = ScheduleLog.settledSlots();
-        watched[question.length + 4] = Confirmation.holdMoves();
-        watched[question.length + 5] = computed;
+        watched[question.length + 2] = ScheduleLog.settledSlots();
+        watched[question.length + 3] = Confirmation.holdMoves();
+        watched[question.length + 4] = computed;
         return watched;
     }
 
@@ -511,7 +524,7 @@ final class ConcolicResultPublisher {
      *  thread, how many have finished, and whether a settle gave up. */
     private static ActiveRegion publishingNow;
     private static Thread publishingThread;
-    /** The thread decoding read-out pages ({@link #decodeBeforePublication}). */
+    /** The thread decoding read-out pages ({@link #decodeInOrder}). */
     private static Thread decodingThread;
     /** Submitted and not yet started, in submission order. */
     private static final Set<ActiveRegion> queued =
@@ -521,7 +534,7 @@ final class ConcolicResultPublisher {
     /** Whether a settle stranded the live at the run's early end. */
     private static boolean strandedAtEnd;
     /** Read-out text handed to the decoding thread and not yet decoded,
-     *  in chars ({@link #decodeBeforePublication}). */
+     *  in chars ({@link #decodeInOrder}). */
     private static long undecodedChars;
 
     /** Why a focused replay ends before its workload does. */
@@ -543,13 +556,6 @@ final class ConcolicResultPublisher {
          *  #watchProgress}), which decided every obligation it carries. */
         AT_NO_PROGRESS("nothing new for " + NO_NEW_EVENT_MILLIS / 1000L
                 + " s, which decided every obligation this replay carries"),
-        /** Nothing moved for {@link #NO_NEW_EVENT_MILLIS} after the
-         *  window closed ({@link #watchProgress}): the test was over, its
-         *  teardown stood, and the run ends as at the workload's own end,
-         *  every verdict settled as there ({@code FocusedReplay#testOver}). */
-        TEST_OVER("its test was over, and its teardown then moved nothing"
-                + " for " + NO_NEW_EVENT_MILLIS / 1000L + " s: every verdict"
-                + " stands as at the workload's end"),
         /** Nothing new for {@link #NO_NEW_EVENT_MILLIS} after a flip the
          *  replay was asked was taken: the session stands as the run made
          *  it, the obligations still open NOT_ADMITTED. */
@@ -615,8 +621,7 @@ final class ConcolicResultPublisher {
      * strands every activation still live.
      *
      * <p>What still publishes differs.  At the witness, at a forced
-     * target, at a stall after a flip was taken, or once a test over stood
-     * in its teardown, every occurrence
+     * target, or at a stall after a flip was taken, every occurrence
      * completed before it (the witness's own among them): its session is a
      * corpus session, read whole up to there, and its schedule states the
      * run cut there.  At a refusal or a stall before any flip, no
@@ -654,6 +659,10 @@ final class ConcolicResultPublisher {
                 JUnitMethodRunner.exit(0);
             }
         }, "causynth-early-end").start();
+    }
+
+    static boolean concluded() {
+        return concluded != null;
     }
 
     /** Written under {@link #PUBLICATION_LOCK}; volatile for the decoding
@@ -739,47 +748,61 @@ final class ConcolicResultPublisher {
     }
 
     /**
-     * Decodes one read-out page of {@code chars} on the decoding thread, in
-     * the order the pages were read ({@link #READ_OUT_DECODE_EXECUTOR}): an
-     * activation's pages are decoded there as they are read, and its
-     * publication waits for them ({@code SharedStateCapture
-     * #captureRecordedSharedState}).  The page is handed on once the pages
-     * before it, not yet decoded, leave room for it under
-     * {@link #UNDECODED_BOUND_CHARS} (or none is left); until then the
-     * reading thread waits, bounded by progress as the settle is
-     * ({@link Grace}), so a stuck decoding delays it, never holds it; an
-     * early end ends the wait, and the page is not handed on.
+     * Waits until the read-out pages handed on and not yet decoded leave
+     * room for a page of up to {@code chars} under
+     * {@link #UNDECODED_BOUND_CHARS} (or none is left), before that page is
+     * read ({@code SharedStateCapture#captureRecordedSharedState}): its
+     * hand-on then never waits ({@link #decodeInOrder}).  Bounded by
+     * progress as the settle is ({@link Grace}), so a stuck decoding delays
+     * the reading thread, never holds it; an early end ends the wait.
      *
-     * @return false when the executor refused the work, or the run ended
-     *         early ({@link #endedEarly})
+     * @return false when the replay ended early ({@link #conclude}): a
+     *         read-out still reading belongs to an activation that submits
+     *         after the end, whose publication is withheld ({@link
+     *         #publishCompletedResult}), so it reads no more pages
      */
-    static boolean decodeBeforePublication(long chars, Runnable decode) {
+    static boolean awaitDecodeRoom(long chars) {
         boolean interrupted = false;
-        synchronized (PUBLICATION_LOCK) {
-            Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
-                    System.nanoTime(), progressLocked());
-            while (undecodedChars > 0L
-                    && undecodedChars + chars > UNDECODED_BOUND_CHARS
-                    && !gaveUp && concluded == null) {
-                long remaining = grace.remaining(System.nanoTime(),
-                        progressLocked());
-                if (remaining <= 0L) break;
-                try {
-                    PUBLICATION_LOCK.wait(remaining / 1_000_000L,
-                            (int) (remaining % 1_000_000L));
-                } catch (InterruptedException ignored) {
-                    interrupted = true;
+        try {
+            synchronized (PUBLICATION_LOCK) {
+                Grace grace = new Grace(TERMINAL_GRACE_MILLIS * 1_000_000L,
+                        System.nanoTime(), progressLocked());
+                while (undecodedChars > 0L
+                        && undecodedChars + chars > UNDECODED_BOUND_CHARS
+                        && !gaveUp && concluded == null) {
+                    long remaining = grace.remaining(System.nanoTime(),
+                            progressLocked());
+                    if (remaining <= 0L) break;
+                    try {
+                        PUBLICATION_LOCK.wait(remaining / 1_000_000L,
+                                (int) (remaining % 1_000_000L));
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
                 }
+                return concluded == null;
             }
-            // A page read after an early end is of a read-out the session
-            // withholds (#endedEarly): it is not decoded.
-            if (concluded != null) {
-                if (interrupted) Thread.currentThread().interrupt();
-                return false;
-            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Decodes one read-out page of {@code chars} on the decoding thread, in
+     * the order the pages were handed on ({@link #READ_OUT_DECODE_EXECUTOR},
+     * one thread): an activation's pages are decoded there as they are
+     * read, and its publication waits for them ({@code SharedStateCapture
+     * #captureRecordedSharedState}).  Never waits: the reader waited for
+     * room before it read the page ({@link #awaitDecodeRoom}), and every
+     * page read is handed on, after an early end too -- its table is the
+     * read-out channel's, which later pages' records may need.
+     *
+     * @return false when the executor refused the work
+     */
+    static boolean decodeInOrder(long chars, Runnable decode) {
+        synchronized (PUBLICATION_LOCK) {
             undecodedChars += chars;
         }
-        if (interrupted) Thread.currentThread().interrupt();
         try {
             READ_OUT_DECODE_EXECUTOR.execute(() -> {
                 synchronized (PUBLICATION_LOCK) {
@@ -802,18 +825,6 @@ final class ConcolicResultPublisher {
         synchronized (PUBLICATION_LOCK) {
             undecodedChars -= chars;
             PUBLICATION_LOCK.notifyAll();
-        }
-    }
-
-    /**
-     * Whether the replay ended early ({@link #conclude}): a read-out still
-     * reading belongs to an activation that submits after the end, whose
-     * publication is withheld ({@link #publishCompletedResult}), so it reads
-     * no more pages ({@code SharedStateCapture#captureRecordedSharedState}).
-     */
-    static boolean endedEarly() {
-        synchronized (PUBLICATION_LOCK) {
-            return concluded != null;
         }
     }
 

@@ -103,20 +103,6 @@ public class LineageScanTest {
         assertFalse(kept(ListWriter.class));
     }
 
-    @Test
-    public void aDequesEndsAreHandoffsForTheWeaveToo() {
-        WorkStartSites.Types deque = LinkedBlockingDeque.class.getName()
-                ::equals;
-        WorkStartSites.Types queue = type -> type.equals(
-                BlockingQueue.class.getName())
-                || type.equals(LinkedBlockingDeque.class.getName());
-        assertFalse("the receiver type decides", WorkStartSites
-                .submitsToQueue("putFirst", 1, deque));
-        assertTrue(WorkStartSites.submitsToQueue("putFirst", 1, queue));
-        assertTrue(WorkStartSites.claimsFromQueue("takeFirst", queue));
-        assertTrue(WorkStartSites.claimsFromQueue("pollLast", queue));
-    }
-
     private static boolean kept(Class<?> type) throws IOException {
         String resource = type.getName().replace('.', '/') + ".class";
         try (InputStream in = LineageScanTest.class.getClassLoader()

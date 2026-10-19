@@ -242,6 +242,8 @@ public final class SiteControlDependence {
         static CallSites ofApplication() {
             Map<String, List<String>> byCallee =
                     new LinkedHashMap<String, List<String>>();
+            Map<soot.SootMethod, Collection<soot.SootMethod>> dispatched =
+                    new java.util.HashMap<>();
             for (soot.SootClass owner : new ArrayList<soot.SootClass>(
                     soot.Scene.v().getApplicationClasses())) {
                 for (soot.SootMethod method
@@ -249,13 +251,17 @@ public final class SiteControlDependence {
                     Body body = method.isConcrete()
                             ? CausynthStaticFacts.activeBody(method) : null;
                     if (body == null) continue;
-                    for (Unit unit : body.getUnits()) {
+                    List<Unit> units = new ArrayList<Unit>(body.getUnits());
+                    boolean woven = tagged(units);
+                    for (int index = 0; index < units.size(); index++) {
+                        Unit unit = units.get(index);
                         soot.jimple.Stmt stmt = (soot.jimple.Stmt) unit;
                         if (!stmt.containsInvokeExpr()) continue;
-                        String site = SiteId.of(method.getSignature(),
-                                originalIndex(body, unit));
+                        String site = SiteId.of(method.getSignature(), woven
+                                ? CausynthPipeline.originalUnitIndex(unit)
+                                : index);
                         for (soot.SootMethod callee
-                                : targets(stmt.getInvokeExpr())) {
+                                : targets(stmt.getInvokeExpr(), dispatched)) {
                             byCallee.computeIfAbsent(callee.getSignature(),
                                     key -> new ArrayList<String>()).add(site);
                         }
@@ -268,19 +274,27 @@ public final class SiteControlDependence {
         /** The methods one call may run; none when the hierarchy cannot
          *  resolve it (a phantom supertype). */
         private static Collection<soot.SootMethod> targets(
-                soot.jimple.InvokeExpr call) {
+                soot.jimple.InvokeExpr call,
+                Map<soot.SootMethod, Collection<soot.SootMethod>> dispatched) {
+            soot.SootMethod declared;
             try {
-                soot.SootMethod declared = call.getMethod();
-                if (call instanceof soot.jimple.StaticInvokeExpr
-                        || call instanceof soot.jimple.SpecialInvokeExpr) {
-                    return Collections.singletonList(declared);
-                }
-                return soot.Scene.v().getOrMakeFastHierarchy()
-                        .resolveAbstractDispatch(declared.getDeclaringClass(),
-                                declared);
+                declared = call.getMethod();
             } catch (RuntimeException unresolved) {
                 return Collections.<soot.SootMethod>emptyList();
             }
+            if (call instanceof soot.jimple.StaticInvokeExpr
+                    || call instanceof soot.jimple.SpecialInvokeExpr) {
+                return Collections.singletonList(declared);
+            }
+            return dispatched.computeIfAbsent(declared, method -> {
+                try {
+                    return soot.Scene.v().getOrMakeFastHierarchy()
+                            .resolveAbstractDispatch(
+                                    method.getDeclaringClass(), method);
+                } catch (RuntimeException unresolved) {
+                    return Collections.<soot.SootMethod>emptyList();
+                }
+            });
         }
 
         List<String> into(String callee) {

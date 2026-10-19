@@ -768,8 +768,8 @@ public final class System {
 
 
     /**
-     * Every location this session is tracking, as shared-field-version
-     * envelopes.
+     * One page of the session's read-out of every location it is tracking,
+     * as shared-field-version envelopes.
      *
      * Retention is by value: a location is tracked from the first symbolic
      * value written to it, so the caller cannot enumerate the tracked set on
@@ -783,9 +783,14 @@ public final class System {
      * boundary and reports {@code complete:false} with a
      * {@code nextAfterEventId} to resume from; pass {@code 0} for no bound.
      *
-     * @return one SHARED_TRACKED_LOCATIONS document
+     * The answers of one session form one channel: each expression
+     * definition is stated once, by the first answer whose locations name
+     * it, and every answer's table carries its {@code sequence} in the
+     * channel.  A reader imports every answer's table, in sequence order.
+     *
+     * @return one SHARED_TRACKED_LOCATIONS document (schema 2)
      */
-    public static native String getTrackedLocationVersions(
+    public static native String readOutTrackedLocations(
             long afterEventId, int maxBytes);
 
     /**
