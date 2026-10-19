@@ -70,39 +70,6 @@ public class IdentityTest {
     }
 
     @Test
-    public void aClientsTaskClaimedOnANodesThreadIsTheNodes() throws Exception {
-        SourceRef client = new SourceRef(CausynthTraceRecorder.WORKLOAD_KIND,
-                "HBASE_CLIENT", "t/client0", 0L);
-        Object[][] table = {
-            {client, NODE, NODE},
-            {NODE, OTHER, NODE},
-            {client, null, client},
-        };
-        for (Object[] row : table) {
-            reset();
-            SourceRef putterNode = (SourceRef) row[0];
-            SourceRef claimerNode = (SourceRef) row[1];
-            Object putter = new Object();
-            RuntimeTraceContext.registerSource(putter, putterNode);
-            Object step = new Object();
-            long request = RuntimeTraceContext.beginRequest(putter, "test");
-            Identity.startWork("<a.Scheduler: void push(a.Step)>#u3", step,
-                    null);
-            RuntimeTraceContext.endRequest(request);
-            Object[] seen = new Object[1];
-            on(() -> {
-                long startup = claimerNode == null ? 0L
-                        : RuntimeTraceContext.beginNodeStartup(claimerNode);
-                Identity.claimStart(step);
-                seen[0] = RuntimeTraceContext.explicitSource();
-                RuntimeTraceContext.endNodeStartup(startup);
-            });
-            assertEquals(putterNode + " put, " + claimerNode + " claimed",
-                    row[2], seen[0]);
-        }
-    }
-
-    @Test
     public void aTurnInsideAnOccurrenceRestartsNoCount() {
         String loop = "<a.Actor: void offerService()>#u3";
         String send = "<a.Actor: void sendHeartBeat()>#u5";

@@ -423,13 +423,7 @@ the scope (a weaker one made explicit would outrank the work's own frames); the 
 (`Attribution#capture`, rule 4) names the starter's node by all four rules, so a task or a queue
 item names its putter's node whenever the putter has one -- a DataNode's actor, created by its
 startup under no request and so its node by inheritance alone, handed Hadoop IPC's shared sender
-work that claimed as `workload/unregistered` until the node registered (round HN1, hdfs-adhoc-53). One exception
-(`RuntimeTraceContext#taker`): a client's (`EXTERNAL_APP`) task claimed on a thread that stands in a cluster node is that
-node's, under the client's request and lineage -- in one JVM a test may put work straight into a node's executor, and the
-work runs in that node's memory: HBase's procedure tests submit into the master's `ProcedureExecutor`, whose step
-(tree `CausynthStep`) stood on `auto0/client0`, so the closure, which pairs a read only with writers of its own node
-(`RuntimeSelectedRegionFinalizer` DemandWalk), planned none of the master's writers of `RegionStateNode.state`
-(hbase-adhoc-15, HP5). A start no hop names captures
+work that claimed as `workload/unregistered` until the node registered (round HN1, hdfs-adhoc-53). A start no hop names captures
 nothing and writes no event; its work is unnamed (§1). A pool's own worker thread
 inherits no scope (`runtime/PoolWorkers`: `ThreadPoolExecutor.addWorker`,
 `ForkJoinPool.createWorker`, Jetty `QueuedThreadPool.startThread`); each task carries its own.
