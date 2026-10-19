@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
-import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ByIdentity;
@@ -493,7 +492,6 @@ public final class Corpus implements Arms.Rows {
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
         corpus.uncaptured.addAll(SessionDir.uncaptured(iteration));
-        corpus.indexPlannedWhole(iteration);
         return corpus;
     }
 
@@ -567,7 +565,6 @@ public final class Corpus implements Arms.Rows {
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
         corpus.uncaptured.addAll(SessionDir.uncaptured(iteration));
-        corpus.indexPlannedWhole(iteration);
         return corpus;
     }
 
@@ -581,47 +578,6 @@ public final class Corpus implements Arms.Rows {
 
     public boolean uncaptured(String sessionId) {
         return uncaptured.contains(sessionId);
-    }
-
-    private final Set<String> plannedWhole = new HashSet<String>();
-
-    private void indexPlannedWhole(Path iteration) throws IOException {
-        Path plan = iteration.resolve(TASK_PLAN);
-        if (!Files.isRegularFile(plan)) return;
-        edu.uva.liftlab.graphchecker.contract.RowCodec.readEach(plan,
-                row -> row.has("occurrenceId")
-                && !(row.has(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
-                && row.get(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
-                .getAsBoolean())
-                ? row.get("occurrenceId").getAsString() : null,
-                occurrence -> {
-                    if (occurrence != null) plannedWhole.add(occurrence);
-                });
-    }
-
-    private static final String TASK_PLAN = "execution_task_plan.jsonl";
-
-    private final Map<String, Set<String>> staleRuns =
-            new ConcurrentHashMap<String, Set<String>>();
-
-    public Set<String> staleRuns(String sessionId) {
-        return staleRuns.computeIfAbsent(sessionId, id -> {
-            SessionReader session = sessionById.get(id);
-            Set<String> stale = new TreeSet<String>();
-            if (session == null) return stale;
-            Set<String> doorsOnly = session.manifest() == null
-                    ? Collections.<String>emptySet()
-                    : session.manifest().doorsOnly();
-            for (String planned : plannedWhole) {
-                OccurrenceAddress at = OccurrenceAddress.parse(planned);
-                ActivationRow ran = at == null ? null : activation(id, at);
-                if (ran != null && (!ran.instrumented()
-                        || doorsOnly.contains(planned))) {
-                    stale.add(planned);
-                }
-            }
-            return Collections.unmodifiableSet(stale);
-        });
     }
 
     public static final String RECORDED_SCHEDULE = "recorded_schedule.jsonl";
@@ -2393,7 +2349,18 @@ public final class Corpus implements Arms.Rows {
             this.locationKey = locationKey;
             this.readEventId = readEventId;
             this.write = write;
-            this.site = readSite(node);
+            JsonObject at = node == null ? null : JsonFields.object(node,
+                    "site");
+            String className = at == null ? ""
+                    : JsonFields.optionalString(at, "className");
+            String method = at == null ? ""
+                    : JsonFields.optionalString(at, "methodName");
+            this.site = className.isEmpty() || method.isEmpty() ? ""
+                    : Endpoint.stateSite(JvmNames.stable(className)
+                            .replace('/', '.'), method,
+                    JsonFields.optionalString(at, "methodDescriptor"),
+                    Math.max(0, JsonFields.optionalInteger(at, "bci", 0)),
+                    false);
             this.javaType = node == null ? ""
                     : JsonFields.optionalString(node, "_java_type");
         }
@@ -2417,19 +2384,6 @@ public final class Corpus implements Arms.Rows {
         public WriteRow write() {
             return write;
         }
-    }
-
-    public static String readSite(JsonObject node) {
-        JsonObject at = node == null ? null : JsonFields.object(node, "site");
-        String className = at == null ? ""
-                : JsonFields.optionalString(at, "className");
-        String method = at == null ? ""
-                : JsonFields.optionalString(at, "methodName");
-        return className.isEmpty() || method.isEmpty() ? ""
-                : Endpoint.stateSite(JvmNames.stable(className)
-                        .replace('/', '.'), method,
-                JsonFields.optionalString(at, "methodDescriptor"),
-                Math.max(0, JsonFields.optionalInteger(at, "bci", 0)), false);
     }
 
     public List<StateRead> expressionStateReads(String sessionId,

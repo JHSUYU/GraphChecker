@@ -55,7 +55,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiPredicate;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -126,10 +125,6 @@ public final class SmtLowering {
 
         default RefusalFrame frameOfWrite(String locationKey, long version) {
             return null;
-        }
-
-        default String stale(JsonObject read) {
-            return "";
         }
     }
 
@@ -219,15 +214,8 @@ public final class SmtLowering {
     public static SessionJoin repairing(final SessionJoin join,
                                         final BiPredicate<String, Long> repaired,
                                         final BiPredicate<OccurrenceAddress,
-                                                OccurrenceAddress> concurrent,
-                                        final Function<JsonObject, String>
-                                                stale) {
+                                                OccurrenceAddress> concurrent) {
         return new SessionJoin() {
-            @Override
-            public String stale(JsonObject read) {
-                return stale.apply(read);
-            }
-
             @Override
             public JsonElement writeExpression(String locationKey,
                                                long version) {
@@ -403,7 +391,7 @@ public final class SmtLowering {
         lowering.scope = session.sessionId();
         lowering.join = repairing(join,
                 (location, event) -> !join.writes(location).isEmpty(),
-                join::concurrent, join::stale);
+                join::concurrent);
         return lowering;
     }
 
@@ -1824,15 +1812,6 @@ public final class SmtLowering {
         long version = VmRows.joinedVersion(expression);
         String javaType = primitiveString(expression, "_java_type");
         long event = VmRows.readEvent(expression);
-        String stale = join.stale(expression);
-        if (!stale.isEmpty() && !key.isEmpty() && version >= 0L) {
-            WriteRow write = join.write(key, version);
-            if (write == null || write.initial()) {
-                freed(key + "@" + version, stale,
-                        Collections.<String>emptySet());
-                return leaf(expected, javaType);
-            }
-        }
         return bind(key, version, event,
                 observedVersionExpression(expression), new Binder<Term>() {
             @Override
@@ -3255,10 +3234,6 @@ public final class SmtLowering {
         freed(subject, UNCAPTURED, Collections.<String>emptySet());
     }
 
-    public void freedStale(String subject, String why) {
-        freed(subject, why, Collections.<String>emptySet());
-    }
-
     public void held(String subject, String value, String why) {
         top().unbound(new Unbound(Unbound.HELD, subject, value,
                 Unbound.PRODUCER_UNSTATED + ": " + why,
@@ -3453,10 +3428,6 @@ public final class SmtLowering {
             slot = Long.toString(optionalLongInteger(location, "slot", 0L));
         }
         return LocationId.of(locationKind(kind), owner, slot).key();
-    }
-
-    static LocationKind kindOf(JsonObject location) {
-        return locationKind(primitiveString(location, "locationKind"));
     }
 
     private static LocationKind locationKind(String kind) {

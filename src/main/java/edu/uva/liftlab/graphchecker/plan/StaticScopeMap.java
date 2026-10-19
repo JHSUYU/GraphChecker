@@ -467,16 +467,6 @@ public final class StaticScopeMap {
         return reads == null ? Collections.<String>emptyList() : reads;
     }
 
-    public boolean regionHolds(String regionId, Site site) {
-        Set<String> methods = methodsOf(regionId);
-        if (methods.isEmpty()) return site.regionId.equals(regionId);
-        if (methods.contains(SiteId.methodOf(site.siteId))) return true;
-        for (String caller : site.callers) {
-            if (methods.contains(caller)) return true;
-        }
-        return false;
-    }
-
     public Set<String> methodsOf(String regionId) {
         Set<String> methods = regionMethods.get(
                 regionId == null ? "" : regionId);

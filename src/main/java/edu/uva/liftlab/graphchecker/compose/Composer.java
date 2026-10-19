@@ -1139,7 +1139,6 @@ public final class Composer {
     private final Corpus corpus;
     private final OccurrenceAddress anchor;
     private final StaticScopeMap scope;
-    private final StaleRuns staleRuns;
     private final int maxValuations;
     private final SmtLowering lowering;
     private final List<GapRow> gaps = new ArrayList<GapRow>();
@@ -1197,7 +1196,6 @@ public final class Composer {
         this.heapFull = heapFull;
         this.maxPaths = maxPaths;
         this.restsOn = new RestsOn(corpus, scope, anchor);
-        this.staleRuns = new StaleRuns(corpus, scope);
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
         lowering.clockBases(clockBases());
@@ -1519,8 +1517,7 @@ public final class Composer {
                 corpus.join(session),
                 (location, event) -> moved.contains(
                         SmtLowering.readKey(location, event)),
-                (reader, writer) -> arms.concurrent(reader, writer, session),
-                read -> staleRuns.reason(session, read));
+                (reader, writer) -> arms.concurrent(reader, writer, session));
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -2573,14 +2570,9 @@ public final class Composer {
             }
             String subject = SmtLowering.locationKey(read.location()) + "@"
                     + read.observedVersion();
-            String stale = staleRuns.reason(session, read.endpoint().site(),
-                    read.javaType(), read.location().kind());
             if (corpus.uncaptured(session)) {
                 joins.put(read.symbol(), "true");
                 lowering.freedUncaptured(subject);
-            } else if (!stale.isEmpty()) {
-                joins.put(read.symbol(), "true");
-                lowering.freedStale(subject, stale);
             } else {
                 lowering.held(subject, read.concreteValue(),
                         "no write row states the version this read saw");
