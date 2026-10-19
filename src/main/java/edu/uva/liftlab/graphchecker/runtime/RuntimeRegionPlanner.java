@@ -716,6 +716,8 @@ public final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("occurrenceAddress", root.occurrenceAddress);
+        activation.put(SOURCE_KIND, root.source == null ? ""
+                : root.source.kind());
         if (root.laneId > 0L) activation.put("laneId", root.laneId);
         activation.put("callIds", new ArrayList<>(calls));
         activation.put("observedMethods", new ArrayList<>(observed));
@@ -1097,6 +1099,8 @@ public final class RuntimeRegionPlanner {
         return LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.declaredDefault(), declared);
     }
+
+    public static final String SOURCE_KIND = "sourceKind";
 
     static Result plan(List<Map<String, Object>> regions,
                        String regionSource,

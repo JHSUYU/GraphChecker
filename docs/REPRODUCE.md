@@ -224,8 +224,10 @@ cluster and bounds").
 
 1. **GraphChecker.** As §6.1, on the branch `system/hbase` (`~/GraphChecker-hbase`).
 
-2. **The image.** The Solr image (§6.2), built from `system/hbase`'s VM sources (the same as `system/solr`'s); on
-   the cluster `/bigtemp/vnr3ne/vm-force10/j2sdk-image`. It is `CAUSYNTH_CUSTOM_JDK_HOME` for every HBase run.
+2. **The image.** Built as the Solr image (§6.2), from `system/hbase`'s VM sources (`system/solr`'s plus the held enum
+   constant named of its class and no silent enum compare, VM.md §2/§4); on the cluster
+   `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (its `SOURCE.txt` and `smoke.log` beside it). It is
+   `CAUSYNTH_CUSTOM_JDK_HOME` for every HBase run.
 
 3. **The tree.** Maven and JDK 8 (§0); the first build downloads the tree's dependencies into its own repository:
 

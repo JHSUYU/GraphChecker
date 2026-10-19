@@ -1775,6 +1775,59 @@ public class ExploreTest {
     }
 
     @Test
+    public void aClientsStaticWriterPairsAcrossNodesByObjectAlone()
+            throws Exception {
+        Object[][] table = {
+            {"hdfs-case/dn0", Collections.<String>emptySet(), true},
+            {"hdfs-case/nn0", Collections.<String>emptySet(), false},
+            {"hdfs-case/client0",
+                    Collections.singleton("hdfs-case/client0#epoch0"), true},
+            {"hdfs-case/nn0",
+                    Collections.singleton("hdfs-case/dn0#epoch0"), true},
+            {"hdfs-case/nn0",
+                    Collections.singleton("hdfs-case/client0#epoch0"), false},
+        };
+        int at = 0;
+        for (Object[] row : table) {
+            Path iteration = tree.newFolder("client-pairs-" + at++).toPath();
+            OccurrenceAddress refresher = occurrence((String) row[0],
+                    "REGION.refresh", CausalContext.of(Role.of("KEY_REFRESH"),
+                            "", 1), "o.a.h.h.s.d.KeyRefresh#run#1");
+            Session seed = new Session(iteration, "s-seed");
+            for (OccurrenceAddress active : Arrays.asList(TARGET, WRITER,
+                    refresher)) {
+                seed.activation(active, false);
+            }
+            @SuppressWarnings("unchecked")
+            Set<String> clients = (Set<String>) row[1];
+            seed.clients.addAll(clients);
+            seed.symbolic("e.stored", "M_HOFF_KEY");
+            seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+            seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                            "retrieveDataEncryptionKey", 8, false),
+                            "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                    ALL_KEYS, 5L, "M_READ_KEY", "119992");
+            seed.anchored(TARGET);
+            seed.flush();
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                    targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                    put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                            "BlockTokenSecretManager#u12",
+                            "BlockTokenSecretManager#addKeys",
+                            "<example.Keys: int value>",
+                            "<example.Manager: example.Keys allKeys>", "")),
+                    put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                            "KeyManager#u4", "KeyManager#refresh",
+                            "<example.Keys: int value>",
+                            "<example.Manager: example.Keys allKeys>", ""))));
+            List<String> planned = focused(plannedOn(Corpus.read(iteration,
+                    null), map, ClosurePlanner.CORES));
+            assertEquals(row[0] + " wrote, clients " + row[1] + ": " + planned,
+                    row[2], planned.contains(refresher.render()));
+        }
+    }
+
+    @Test
     public void aWriterThatRanForItsDoorsAloneIsDemandedThroughAReadInsideAValue()
             throws Exception {
         Path iteration = tree.newFolder("doors-only-writer").toPath();
@@ -2198,6 +2251,7 @@ public class ExploreTest {
         private final Map<String, String> spelled =
                 new LinkedHashMap<String, String>();
         private final Set<String> doorsOnly = new TreeSet<String>();
+        private final Set<String> clients = new TreeSet<String>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         private long seq;
@@ -2392,7 +2446,7 @@ public class ExploreTest {
                                     "OBL." + sessionId)
                                     : Collections.<String>emptyList())
                             .atClose(null, null, null, spelled, doorsOnly,
-                                    null));
+                                    null, clients));
         }
     }
 }

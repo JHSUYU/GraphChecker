@@ -2004,6 +2004,9 @@ run:
       condition = enum_condition;                                             \
     } else if (left != NULL && right != NULL) {                               \
       condition = new OpSymExpression(left, right, op, outcome);              \
+    } else if (left != NULL || right != NULL) {                               \
+      /* One operand stated, the other no object a model names. */            \
+      ConcolicMngr::ctx->note_model_gap("REF_OPERAND_UNSTATED");              \
     }                                                                         \
     ConcolicMngr::record_branch_condition(                                    \
         condition, outcome, (int) opcode);                                    \

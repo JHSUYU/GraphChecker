@@ -151,12 +151,13 @@ public final class SessionPublisher {
     public void atClose(Map<String, Integer> entries,
                         Map<String, Map<String, String>> readings,
                         Set<String> derived, Map<String, String> spelled,
-                        Set<String> doorsOnly, Set<String> serving) {
+                        Set<String> doorsOnly, Set<String> serving,
+                        Set<String> clients) {
         synchronized (LOCK) {
             if (failed || closed || manifest == null || withdrawn()) return;
             try {
                 manifest = manifest.atClose(entries, readings, derived,
-                        spelled, doorsOnly, serving);
+                        spelled, doorsOnly, serving, clients);
                 writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);

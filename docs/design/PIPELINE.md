@@ -846,7 +846,8 @@ are counted, never dropped silently: `concreteAnchors` states how many
   construction, a constructor or class initializer anywhere on its frame chain; no version between
   them a read observed and no row states -- or the location's INITIAL by the same test, whose
   expression's symbols are demanded and which is no task: no occurrence wrote it), and every activated occurrence on the reader's node holding a static write site of the
-  location's carrier, unless the read's session states it holding other objects only
+  location's carrier -- on any node when the reader or the holder is a client, a node the session's manifest
+  names in `clientNodes` (PLAN's rule, `RuntimeSelectedRegionFinalizer#pairs`, `explore.Corpus#client`) --, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
   location's, is no candidate; a static field, an owner that names no one object, an occurrence
