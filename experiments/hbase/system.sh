@@ -52,8 +52,12 @@ system_classpath() {
   python3 "${system_dir}/classpath.py" "${repo}" "${report}" "${test_module}" "${hbase_modules[@]}"
 }
 
+hbase_spec() {
+  echo "${test_class}#${test_method}${recording_window:+@${recording_window}}"
+}
+
 system_build() {
-  bash "${system_dir}/build.sh" "${repo}" "${test_class}#${test_method}${recording_window:+@${recording_window}}"
+  bash "${system_dir}/build.sh" "${repo}" "$(hbase_spec)"
 }
 
 system_jvm_properties() {

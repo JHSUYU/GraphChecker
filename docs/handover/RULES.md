@@ -221,6 +221,11 @@ recommendation.
   我们不跑了，不要了"): the round's fixes are finished and merged, `system/solr` is pushed to GitHub with the fork's
   `graphchecker/solr-checks`, the documents say how to run it from a fresh clone; the cases not rerun stay as they are
   (TODO "Solr: after SGF9").
+- **HBase runs with no write-ahead log** (2026-10-19: "HBase 自带的 disabled WAL provider，把这些线程整个去掉 没事。我直接允许你
+  这么做，就这么做"; "什么fshlog可以全部换成本地，都没啥问题。减少这样的问题"): in an automatic cluster every WAL the region servers
+  and the master's local region ask for is HBase's own `DisabledWALProvider`'s (the tree's `CausynthHBaseCluster#configure`),
+  so the log's coalescing consumer and sync runners, whose timing no two runs share, are gone from every case; no case keeps
+  FSHLog, and a case whose workload needs WAL contents (a WAL split, an edits replay) takes another workload.
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
