@@ -840,17 +840,30 @@ public final class Composer {
         public List<String> recordedPairings() {
             List<String> held = new ArrayList<String>();
             for (Disjunct disjunct : disjuncts) {
-                List<String> terms = new ArrayList<String>();
-                List<String> reads = observedReads.get(disjunct.path().pathId);
-                List<String> arrivals =
-                        heldArrivals.get(disjunct.path().pathId);
-                if (reads != null) terms.addAll(reads);
-                if (arrivals != null) terms.addAll(arrivals);
-                if (terms.isEmpty()) continue;
-                held.add("(assert (=> " + disjunct.selector() + " "
-                        + VmTermLowering.and(terms) + "))");
+                String pairing = recordedPairing(disjunct);
+                if (pairing != null) held.add(pairing);
             }
             return held;
+        }
+
+        public String recordedPairing(String selector) {
+            for (Disjunct disjunct : disjuncts) {
+                if (disjunct.selector().equals(selector)) {
+                    return recordedPairing(disjunct);
+                }
+            }
+            return null;
+        }
+
+        private String recordedPairing(Disjunct disjunct) {
+            List<String> terms = new ArrayList<String>();
+            List<String> reads = observedReads.get(disjunct.path().pathId);
+            List<String> arrivals = heldArrivals.get(disjunct.path().pathId);
+            if (reads != null) terms.addAll(reads);
+            if (arrivals != null) terms.addAll(arrivals);
+            if (terms.isEmpty()) return null;
+            return "(assert (=> " + disjunct.selector() + " "
+                    + VmTermLowering.and(terms) + "))";
         }
 
         private static List<String> asserted(List<String> terms) {
