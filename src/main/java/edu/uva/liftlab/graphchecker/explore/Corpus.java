@@ -75,6 +75,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -418,10 +419,10 @@ public final class Corpus implements Arms.Rows {
         this.arms = new Arms(this);
     }
 
-    private Corpus(Path iteration, List<SessionDir> dirs, long bytes)
-            throws IOException {
+    private Corpus(Path iteration, List<SessionDir> dirs,
+                   DoubleSupplier swept) throws IOException {
         this.iteration = iteration;
-        this.hold = new RowHold(bytes, this::released);
+        this.hold = new RowHold(swept, this::released);
         List<SessionReader> real = new ArrayList<SessionReader>();
         List<Derived> forced = new ArrayList<Derived>();
         SessionReader.Pooled reader = new SessionReader.Pooled();
@@ -474,10 +475,10 @@ public final class Corpus implements Arms.Rows {
         hold.take(of.session);
     }
 
-    public static Corpus holding(Path iteration, Path rootDomains, long bytes)
-            throws IOException {
+    public static Corpus holding(Path iteration, Path rootDomains,
+                                 DoubleSupplier swept) throws IOException {
         Corpus corpus = new Corpus(iteration,
-                SessionDir.sessionsIn(iteration), bytes);
+                SessionDir.sessionsIn(iteration), swept);
         corpus.domains(rootDomains);
         corpus.indexWorlds(iteration);
         corpus.indexRecordedTicks(iteration);
@@ -493,10 +494,6 @@ public final class Corpus implements Arms.Rows {
 
     public long held() {
         return hold == null ? 0L : hold.holding();
-    }
-
-    public long holdable() {
-        return hold == null ? 0L : hold.bytes();
     }
 
     public long[] readAgain() {
