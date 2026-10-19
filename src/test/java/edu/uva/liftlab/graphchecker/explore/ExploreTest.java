@@ -1908,6 +1908,92 @@ public class ExploreTest {
         }
     }
 
+    @Test
+    public void aVersionNoRowWroteDemandsTheRecordedWritersOfItsCarrier()
+            throws Exception {
+        LocationId limit = LocationId.of(LocationKind.INSTANCE, "9", "2");
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ReadFromExpression");
+        read.addProperty("_java_type", "I");
+        read.addProperty("readEventId", 3L);
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", 9L);
+        location.addProperty("slot", 2L);
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        read.add("location", location);
+        JsonObject site = new JsonObject();
+        site.addProperty("className", "example/Config");
+        site.addProperty("methodName", "limit");
+        site.addProperty("methodDescriptor", "()I");
+        site.addProperty("bci", 4);
+        read.add("site", site);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 1L);
+        observed.addProperty("versionKind", "INITIAL");
+        read.add("observedVersion", observed);
+        Object[][] rows = {
+            {"the version no row wrote", "<example.Boot: void run()>", false,
+                    "", true},
+            {"a view class's work", "<example.View: void decode()>", false,
+                    "example.View", false},
+            {"a version a row wrote", "<example.Boot: void run()>", true,
+                    "", false},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            Path iteration = tree.newFolder("unrecorded-" + at++).toPath();
+            OccurrenceAddress writer = occurrence("hdfs-case/dn0",
+                    "REGION.boot", CausalContext.of(Role.of("BOOT"), "", 1),
+                    (String) row[1]);
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.activation(writer, false, false);
+            Endpoint first = at(TARGET, Endpoint.initialSite(
+                    "example.Config#limit()I#4:READ"), "Config#limit#4");
+            if ((Boolean) row[2]) {
+                seed.write(at(WRITER, Endpoint.stateSite("example.Config",
+                        "init", 1, true), "Config#init#1"), limit, 1L, "",
+                        "I");
+            } else {
+                seed.writes.add(WriteRow.initial("s-seed", 0L, first, limit,
+                        1L, "", "I"));
+            }
+            seed.expression("EXPR.0a1b", read);
+            seed.target(TARGET, "BlockTokenSecretManager"
+                    + "#retrieveDataEncryptionKey#8", "(not EXPR.0a1b)");
+            seed.flush();
+            Files.write(iteration.resolve(StaticScopeMap.REGIONS),
+                    ("{\"regionId\":\"REGION.boot\",\"methods\":["
+                            + "\"<example.Config: void init()>\"]}\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                    targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                    scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                            "<example.Config: int limit()>#u1",
+                            "example.Config#limit()I",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", ""),
+                    scopeSite(StaticScopeMap.WRITE_SITE, "REGION.init",
+                            "<example.Config: void init()>#u1",
+                            "example.Config#init()V",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", "")));
+            Corpus corpus = Corpus.read(iteration, null);
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, map, Branches.of(corpus,
+                            Collections.singletonList(TARGET),
+                            new ArrayList<GapRow>()),
+                    Collections.<String>emptySet(),
+                    Collections.<String>emptySet(), ClientFaults.NONE,
+                    SystemView.of((String) row[3]), gap -> { });
+            Set<OccurrenceAddress> reached =
+                    new LinkedHashSet<OccurrenceAddress>(plan.exposed.keySet());
+            reached.addAll(plan.waiting);
+            assertEquals(row[0] + ": " + reached + " " + focused(plan),
+                    row[4], reached.contains(writer));
+        }
+    }
+
     private static List<String> focused(ClosurePlanner.Plan plan) {
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());

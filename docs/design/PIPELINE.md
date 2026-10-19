@@ -873,8 +873,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   frozen plan's `storeFetches`, `StaticScopeMap#withPlan`, `ClosurePlanner#storeFetches`: a lost
   reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
   no value and not followed, flipped at their fault decisions as every task is;
-- state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
-  `Corpus.expressionStateReads` (never for the anchor), each read's carriers named by its own VM site
+- state reads a contributed expression makes (no ReadRow names them), and those of the anchor's own
+  decision and fatal terms (`ClosurePlanner#anchorReads`, each term once): the same writer rule, through
+  `Corpus.expressionStateReads`, each read's carriers named by its own VM site
   and type as a read row's are (`Corpus.StateRead#site`, `#javaType`): a read of a version no row
   wrote -- its writer ran paused, for its doors alone -- has no recorded write to name its carrier,
   and only its site makes the writer a static candidate, so a value demand that GROW unpauses
@@ -928,7 +929,18 @@ with no method set, region-id equality. "Activated" means an instrumented activa
 row (a port event outside every admitted activation, `RowRuntime#ambientActivation`) names where the
 event ran, not a region that ran the site, so it makes no static candidate
 (`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
-it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
+it, or as the writer of a version no row wrote: a demanded read (a row's or a term's) that observed a
+version no recorded write states -- its INITIAL, or one no row has -- was written by an occurrence that
+ran unplanned, so every occurrence on the reader's node that ran with no instrumented activation and
+whose region holds a static write site of the read's carrier is demanded as a value
+(`UNRECORDED_WRITER`, `ClosurePlanner#unrecorded`, `Walk#holders`), unbounded like a member -- it has
+no seed, so it is exposed to GROW or waits -- but for an occurrence entered in one of the system's
+view classes (§3.4: a view's content is its store's, the chain's) and for a carrier a view class
+declares; its rows state its doors only, so it is never judged to hold other objects only
+(`Walk#holdsOthersOnly`). hbase-bugs-ns-rsgroup-removal HC9: the namespace procedure's group lookup
+read `RSGroupInfoHolder.groupName2Group` at INITIAL, written by `moveServers`, which PLAN left
+unplanned (the ZooKeeper chain's off-chain writers); offline its four occurrences are exposed
+(Z3S-18413: 2 more exposures, tasks and proposals unchanged). A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
 not a task. A decider the seed's closure left out for its class's planned first member (§3) runs
 unplanned in every replay: no activation row names it, so it is no static candidate, and its class is
 asked through the planned member. One anchor's walk scans one site's holders on one node once and offers an occurrence
@@ -3606,7 +3618,11 @@ the claim (`UNSAT_CLOSED` with its exclusions in `refutedClaims`: COMPOSE SAT ->
 **A claim CONFIRM did not confirm is followed by the next.** An excluded claim (`campaign_refute`,
 its `outcome` refuted or undecided, logged "COMPOSE SAT -> CONFIRM <outcome>: <reason> -> excluded")
 is one row of `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
-finding kind, the selected path, the arm selectors it chose there, the valuation, and the claim's
+finding kind, the selected path, the arm selectors it chose there -- at the selected path's ordinal in
+the claim's own manifest, as CONFIRM reads them: a model's `selectedArms` also name other paths' arms the
+model set, which no exclusion of this path can compose (hbase-adhoc-22 HC10-22: a forced path's
+moves-nothing claim, refuted twice, kept the seed path's arm `writer_arm__32__…`, so its exclusion was
+never stated and the next composition repeated it) --, the valuation, and the claim's
 moved roots, a clock by its cell's symbol at the model's instant), where it was `claimed`, and the
 confirmation's `reason`. Every later composition of the iteration excludes each
 (`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
