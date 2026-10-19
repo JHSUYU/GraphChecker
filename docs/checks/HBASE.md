@@ -47,18 +47,18 @@ bug_study's base commit `63d06533` is not in our tree; every added bug was re-re
 | 08 | `master/ClusterSchemaServiceImpl.java:111` | throw NamespaceNotFoundException | `TableNamespaceManager.cache.get(ns)==null` | weak: the master's own cache vs its namespace procedures | STATE: cache read re-paired to INITIAL vs CreateNamespaceProcedure's put; HB-ordered by the client's wait, so CONFIRM should refute | ok | `namespace/TestNamespaceAuditor#testTableOperations` (2 masters, quota on) | C |
 | 09 | `master/HMasterCommandLine.java:229` | throw | standalone ZK port | - | - | - | NO_PATH | DROP |
 | 10 | `master/assignment/AssignmentManager.java:765` | throw HBaseIOException | `regionNode.getProcedure()!=null` | Y-weak: assign RPC vs TRSP attachment | STATE: getProcedure re-paired to the unassign TRSP's setProcedure (before its unset in confirmClosed); under regionNode lock and the client's wait | ok | `regionserver/TestRegionMove#testDisableAndMove` (2 RS) | C/B- |
-| 11 | `AssignmentManager.java:769` | throw DoNotRetryRegionException | `!regionNode.isInState(expected)` | request vs master region state | the test REACHES it by design (move after unassign); target = the `admin.assign` occurrence (selector); STATE re-pair to CLOSING is HB-ordered | ok | same | C |
-| 12 | `AssignmentManager.java:772` | throw DoNotRetryIOException | `isTableDisabled(table)` | request vs TableStateManager | REACHED by design (move after disable); at the assign occurrence the only other writer (disable) is HB-after, so it is ineligible | ok | same | C |
+| 11 | `AssignmentManager.java:769` | throw DoNotRetryRegionException | `!regionNode.isInState(expected)` | request vs master region state | the test REACHES it by design (both moves: after the unassign, and after the disable, whose region is CLOSED); its first occurrence, the `admin.unassign`'s, does not throw and is the case's target; STATE re-pair to an earlier state is HB-ordered | ok | same | C |
+| 12 | `AssignmentManager.java:772` | throw DoNotRetryIOException | `isTableDisabled(table)` | request vs TableStateManager | not reached by the move after the disable (its region is CLOSED, so :769 throws first); evaluated at the `admin.unassign` and the `admin.assign`, neither throwing; the target is the first, and the only other writer (the disable) is HB-after both | ok | same | C |
 | 13 | `master/assignment/MergeTableRegionsProcedure.java:499` | throw MergeRegionException | `regionStateStore.hasMergeRegions(ri)` (meta Get) | CatalogJanitor GC vs new merge | STATE on the meta row (RS memstore); no other writer in the test | ok | `master/assignment/TestMergeTableRegionsProcedure#testMergeTwoRegions` (1 RS, procedure submitted in-JVM) | C |
 | 14 | `MergeTableRegionsProcedure.java:503` | throw UnknownRegionException | `regionStates.getRegionState(enc)==null` | master map vs region creation | STATE INITIAL vs node creation: HB-ordered | ok | same | C |
 | 15 | `MergeTableRegionsProcedure.java:507` | throw MergeRegionException | `!state.isOpened()` | Y: master's region view (driven by the RS's OPENED report) vs merge request | STATE: RegionStateNode.state re-paired to OPENING (TRSP write before the report); the test waits for assignment, CONFIRM decides | ok | same | B |
 | 16 | `master/assignment/TransitRegionStateProcedure.java:427` | throw HBaseIOException "Failed to close region" | region still CLOSING at confirmClosed | Y master state vs RS close | FAULT at `RSProcedureDispatcher` executeProcedures, kind CallQueueTooBigException (first attempt -> remoteCallFailed); needs the HBASE_RPC door | ok | `TestTransitRegionStateProcedure` exists, but normal runs return at CLOSED before the guard | UNCERTAIN: not kept (no test evaluates the guard); could be promoted with a fault |
 | 17 | `TransitRegionStateProcedure.java:435` | assert ABNORMALLY_CLOSED | after the CLOSED/CLOSING arms | Y | abnormal close only | ok | none evaluates it | UNCERTAIN: not kept |
 | 18 | `TransitRegionStateProcedure.java:368` | throw | retries > assignRetryImmediatelyMaxAttempts | Y | needs several failed opens (several flips) | ok | none | UNCERTAIN: not kept |
-| 19 | `master/procedure/ModifyTableProcedure.java:134` | throw HBaseIOException | unmodified CF count != modified (reopenRegions=false) | N: request vs stored descriptor | STATE on the FSTableDescriptors cache re-paired to an older descriptor; procedures run one after another | ok | `master/procedure/TestModifyTableProcedure#testModifyWillNotReopenRegions` (1 RS). REACHED by design (3rd modify), so selector = the 1st modify | C |
+| 19 | `master/procedure/ModifyTableProcedure.java:134` | throw HBaseIOException | unmodified CF count != modified (reopenRegions=false) | N: request vs stored descriptor | STATE on the FSTableDescriptors cache re-paired to an older descriptor; procedures run one after another | ok | `master/procedure/TestModifyTableProcedure#testModifyWillNotReopenRegions` (1 RS). REACHED by design (Test 3's modify); the guard runs in the procedure's constructor (`preflightChecks`, on the test thread), and its first occurrence, Test 1's modify, does not throw | C |
 | 20 | `ModifyTableProcedure.java:138` | throw HBaseIOException | `isCoprocModified()` | N | same | ok | `testModifyWillNotReopenRegions` / `testModifyTableWithCoprocessorAndColumnFamilyPropertyChange` | C |
 | 21 | `namespace/NamespaceStateManager.java:130` | throw QuotaExceededException | regions - tableRegions + incr > maxRegions | Y-weak: namespace count cache vs restore/split | STATE on NamespaceTableAndRegionInfo; no concurrent writer. maxRegions is a namespace-descriptor String, not a Configuration getter | ok | named `testRestoreSnapshotQuotaExceed` REACHES it by design; use `TestNamespaceAuditor#testRestoreSnapshot` | C |
-| 22 | `NamespaceStateManager.java:168` | throw QuotaExceededException | regionCount + numRegions > maxRegions | Y-weak: its message says "transient ... ongoing split" (split vs create) | STATE: count re-paired to a version with a concurrent split's increment; needs a concurrent split | ok | named `testTableOperations` REACHES :168 and :160 by design; use `TestNamespaceAuditor#testDeleteTable` | C/B- |
+| 22 | `NamespaceStateManager.java:168` | throw QuotaExceededException | regionCount + numRegions > maxRegions | Y-weak: its message says "transient ... ongoing split" (split vs create) | STATE: count re-paired to a version with a concurrent split's increment; needs a concurrent split | ok | named `testTableOperations` REACHES :168 and :160 by design; the case runs our `TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted`, which holds HBASE-30483 (§E) | B- |
 | 23 | `procedure/ZKProcedureCoordinator.java:131` | throw | PB magic of a reached znode | - | timing + ZK data | - | none | UNCERTAIN: not kept |
 | 24 | `procedure/ZKProcedureMemberRpcs.java:210` (caught at :217) | throw IllegalArgumentException | `!isPBMagicPrefix(znode data)` | N: format check | none in memory: the data crosses the ZK socket (no door) | ZK-lost | `master/procedure/TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback` (3 RS) | C |
 | 25 | `procedure2/store/wal/WALProcedureStore.java:727` | throw | store not running | - | - | - | NO_PATH (master uses RegionProcedureStore) | DROP |
@@ -139,23 +139,33 @@ its chain runs through HDFS scans).
 ## D. Pick list (owner ruling 2026-10-04: every TESTED study item kept unless there is a hard reason)
 
 Shared prerequisites:
-- **P1**: HBASE_RPC DOOR rows in the library catalog (bug 2; also promotes 16).
-- **P2**: adapter hook for a directly built `LocalHBaseCluster` (34, 37).
-- **P3**: `hbase-backup` in `experiments/hbase/system.sh` (module, surefire report, classes); its native JDK 8
-  build is not done yet (`hbase-backup/target` is absent).
-- **P4**: a selector target where the test throws by design (11, 12, 19).
-- **P5**: `recording_window=startup` for 28 (owner opt-in).
+- **P1**: HBASE_RPC DOOR rows in the library catalog (bug 2; also promotes 16): agent H3's.
+- **P2**: adapter hook for a directly built `LocalHBaseCluster` (34, 37): done on the tree (gc/hb-checks
+  `bded085587`): `LocalHBaseCluster.Observer`, installed by every `HBaseTestingUtil` in automatic mode, has
+  `CausynthHBaseCluster` configure such a cluster, register its nodes and open the window once it is up, and close
+  the window before it shuts down; `startMiniDFSCluster` starts no HDFS in automatic mode, so these tests' own
+  HDFS is the local filesystem too.
+- **P3**: `hbase-backup`: builds on JDK 8 (`-pl hbase-server,hbase-backup -am install`), and
+  `TestBackupManager#testStartBackupExclusiveOperation` passes on the local filesystem as written (the test needs no
+  HDFS or MapReduce); `experiments/hbase/system.sh` names its sources and its test module (`hbase_test_module`).
+- **P4**: a target occurrence where the test throws by design (11, 12, 19, 20): each one's first occurrence does
+  not throw, so their rows say `first`. 22 and ns-rsgroup-removal take a selector whose region the first seed
+  recording supplies; backup-lock-reply-lost's `first` is checked there (§E).
+- **P5**: `recording_window=startup` for 28 (owner opt-in): its row's window is `startup`.
 
 No kept site needs a `checkState`/assert rewrite. Each needs only `throw new @CausynthExceptionTarget("<id>") E(..)`.
+The scopes below are the study's lists; each case's row (§E) cuts them to the classes whose code the target's guard
+reads and whose code writes what it reads (owner 2026-10-19: "范围弄小点").
 
 1. **hbase-adhoc-08**: `ClusterSchemaServiceImpl.java:111`, `TestNamespaceAuditor#testTableOperations`; scope
    ClusterSchemaServiceImpl, TableNamespaceManager, procedure/CreateNamespaceProcedure, HMaster(createTable),
    MasterRpcServices. STATE INITIAL on the namespace cache. Fit C: HB-ordered, expect a refutation.
 2. **hbase-adhoc-10**: `AssignmentManager.java:765`, `TestRegionMove#testDisableAndMove`; scope AssignmentManager,
    RegionStateNode, RegionStates, TransitRegionStateProcedure. STATE on regionNode.procedure. C/B-.
-3. **hbase-adhoc-11**: `AssignmentManager.java:769`, same test, selector = the `admin.assign` occurrence (the move
-   throws by design); same scope. C.
-4. **hbase-adhoc-12**: `AssignmentManager.java:772`, same test and selector rule; scope + TableStateManager. C.
+3. **hbase-adhoc-11**: `AssignmentManager.java:769`, same test, the first occurrence (`admin.unassign`'s; both
+   moves throw by design); same scope. C.
+4. **hbase-adhoc-12**: `AssignmentManager.java:772`, same test, the first occurrence (`admin.unassign`'s); scope +
+   TableStateManager. C.
 5. **hbase-adhoc-13**: `MergeTableRegionsProcedure.java:499`, `TestMergeTableRegionsProcedure#testMergeTwoRegions`;
    scope MergeTableRegionsProcedure, RegionStateStore, CatalogFamilyFormat. C.
 6. **hbase-adhoc-14**: `:503`, same test; scope + RegionStates. C.
@@ -163,14 +173,14 @@ No kept site needs a `checkState`/assert rewrite. Each needs only `throw new @Ca
    TransitRegionStateProcedure. STATE: the region state re-paired to OPENING (master view vs the RS's report). B:
    the best of the study items.
 8. **hbase-adhoc-19**: `ModifyTableProcedure.java:134`, `TestModifyTableProcedure#testModifyWillNotReopenRegions`,
-   selector = the 1st ModifyTableProcedure; scope ModifyTableProcedure, util/FSTableDescriptors. C.
+   the first occurrence (Test 1's ModifyTableProcedure); scope ModifyTableProcedure, util/FSTableDescriptors. C.
 9. **hbase-adhoc-20**: `ModifyTableProcedure.java:138`, same test (or
    `#testModifyTableWithCoprocessorAndColumnFamilyPropertyChange`); same scope. C.
 10. **hbase-adhoc-21**: `NamespaceStateManager.java:130`, `TestNamespaceAuditor#testRestoreSnapshot` (the named
     QuotaExceed test throws by design); scope NamespaceStateManager, NamespaceTableAndRegionInfo, NamespaceAuditor,
     quotas/MasterQuotaManager, procedure/RestoreSnapshotProcedure. C.
-11. **hbase-adhoc-22**: `NamespaceStateManager.java:168`, `TestNamespaceAuditor#testDeleteTable`; scope as 21 +
-    CreateTableProcedure. Split-vs-create count. C/B-.
+11. **hbase-adhoc-22**: `NamespaceStateManager.java:168`, our `TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted`
+    (HBASE-30483's truncate in a passing recording, §E); scope as 21. Deletion-vs-create count. B-.
 12. **hbase-adhoc-24**: `ZKProcedureMemberRpcs.java:210`,
     `TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback`; scope ZKProcedureMemberRpcs,
     ZKProcedureCoordinator, ZKProcedureUtil. C: ZK data lost, format check.
@@ -186,10 +196,11 @@ No kept site needs a `checkState`/assert rewrite. Each needs only `throw new @Ca
     HbckRegionInfo. C.
 17. **hbase-adhoc-37**: `MasterAddressTracker.java:206`, `TestRSStatusPage#testStatusPage`, needs P2; scope
     zookeeper MasterAddressTracker, master/ActiveMasterManager, HMaster. C: ZK data lost.
-18. (optional re-site) **hbase-adhoc-04**: `AbstractStateMachineTableProcedure.java:163`,
+18. (re-site, wanted) **hbase-adhoc-04**: `AbstractStateMachineTableProcedure.java:163`,
     `TestMobStoreScanner#testMobStoreScanner`; scope AbstractStateMachineTableProcedure, FlushTableProcedure,
-    TableStateManager. C. It is also the fatal of H2-10 and H3-09.
-19. (optional re-site) **hbase-adhoc-07**: `SnapshotManager.java:1046`,
+    TableStateManager. C. It is also the fatal of H2-10 and H3-09 (HBASE-30484), which no single counterfactual
+    reaches from a passing recording (§E), so the workload stays.
+19. (re-site, wanted) **hbase-adhoc-07**: `SnapshotManager.java:1046`,
     `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot`; scope SnapshotManager, TableStateManager. C.
 20. **hbase-bugs-backup-lock-reply-lost** (H2-16): target `BackupSystemTable.java:504` with selector = the first
     acquirer's first `startBackupExclusiveOperation` (the other thread throws there by contention in the passing
@@ -205,11 +216,76 @@ No kept site needs a `checkState`/assert rewrite. Each needs only `throw new @Ca
     CreateTableProcedure occurrence. Self-written test justified (no existing test interleaves an in-flight
     namespace creation with a group removal; `TestRSGroupsAdmin1#testNamespaceConstraint` does them one after
     another, so its removal is refused and a re-pairing would be HB-refuted). The test: enable rsgroup, 2 RS,
-    `addRSGroup(G)` + move 1 server in; `createNamespaceAsync(N, hbase.rsgroup.name=G)` without waiting; move the
-    server out; `removeRSGroup(G)` (refused in the recording, caught); join; `createTable(N:T)` (caught).
+    `addRSGroup(G)` + move the server not holding meta in; `createNamespaceAsync(N, hbase.rsgroup.name=G)`, then a
+    1 s sleep (not a wait on the procedure: the RPC returns before the procedure's prepare, and only time orders the
+    namespace's insertion before the removal); move the server out; `removeRSGroup(G)` (refused in the recording,
+    caught); join; `createTable(N:T)` (refused for the empty group at `MasterProcedureUtil:216`, caught):
+    `TestCausynthNamespaceGroupRemoval#removeTheGroupOfANamespaceBeingCreated` in the fork.
     Counterfactual: STATE INITIAL on `removeRSGroup`'s namespace scan (`TableNamespaceManager.cache` values, read
     at `RSGroupInfoManagerImpl:385`). Chain: the removal passes -> holder drops G -> CreateTableProcedure inherits
     G from N -> `getRSGroup(G)==null` -> throw. Persistent: N->G is in meta and G is gone from hbase:rsgroup; a
     restart does not fix it. Scope: rsgroup/RSGroupInfoManagerImpl, procedure/CreateNamespaceProcedure,
     AbstractStateMachineNamespaceProcedure, CreateTableProcedure, MasterProcedureUtil, TableNamespaceManager,
     ClusterSchemaServiceImpl. Fit B: the risk is re-pairing a container iteration (`cache.values().stream()`).
+
+## E. State per check (2026-10-19)
+
+Tree: gc/hb-checks `c72b1d7e80` (for the fork's `graphchecker/hbase-checks`; gc/hbase-checks + the
+platform's local-filesystem switch + the markers, P2 and the workloads below). Every site of §D was re-located there:
+none moved. Each target is marked `throw new @CausynthExceptionTarget("<case>") E(..)`. Native: each workload alone,
+JDK 8, the automatic cluster on the local filesystem (no DataNode or NameNode), the test's own time from its surefire
+report (`/bigtemp/vnr3ne/analysis/hbase-2026-10-19/checks/native.tsv`). The row's scope is the case's classes
+(`root=:class`, the class and its nested classes): the target's class, the class whose field its guard reads, and
+the class whose code writes that field.
+
+| case | target | workload | window | occurrence | row scope | native | state |
+|---|---|---|---|---|---|---|---|
+| hbase-adhoc-04 | AbstractStateMachineTableProcedure:163 | TestMobStoreScanner#testMobStoreScanner | up | first (the flush's preflight) | AbstractStateMachineTableProcedure, TableStateManager | 12 s | ready |
+| hbase-adhoc-07 | SnapshotManager:1046 | TestRestoreFlushSnapshotFromClient#testRestoreSnapshot | up | first (the 1st restore, table disabled) | SnapshotManager, TableStateManager | 16 s | ready |
+| hbase-adhoc-08 | ClusterSchemaServiceImpl:111 | TestNamespaceAuditor#testTableOperations | up | first | ClusterSchemaServiceImpl, TableNamespaceManager | 13 s | ready |
+| hbase-adhoc-10 | AssignmentManager:765 | TestRegionMove#testDisableAndMove | up | first (`admin.unassign`) | AssignmentManager, RegionStateNode | 12 s | ready |
+| hbase-adhoc-11 | AssignmentManager:769 | same | up | first (`admin.unassign`) | AssignmentManager, RegionStateNode | same run | ready |
+| hbase-adhoc-12 | AssignmentManager:772 | same | up | first (`admin.unassign`) | AssignmentManager, TableStateManager | same run | ready |
+| hbase-adhoc-13 | MergeTableRegionsProcedure:499 | TestMergeTableRegionsProcedure#testMergeTwoRegions | up | first | MergeTableRegionsProcedure, RegionStateStore, client CatalogFamilyFormat | 14 s | ready |
+| hbase-adhoc-14 | MergeTableRegionsProcedure:503 | same | up | first | MergeTableRegionsProcedure, RegionStates | same run | ready |
+| hbase-adhoc-15 | MergeTableRegionsProcedure:507 | same | up | first | (the platform's row) | same run | the platform's first case |
+| hbase-adhoc-19 | ModifyTableProcedure:134 | TestModifyTableProcedure#testModifyWillNotReopenRegions | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | 11 s | ready |
+| hbase-adhoc-20 | ModifyTableProcedure:138 | same | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | same run | ready |
+| hbase-adhoc-21 | NamespaceStateManager:130 | TestNamespaceAuditor#testRestoreSnapshot | up | first (the restore) | NamespaceStateManager, NamespaceTableAndRegionInfo | 15 s | ready |
+| hbase-adhoc-22 | NamespaceStateManager:168 | TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted (ours) | up | the 2nd occurrence on master0 (the created table's check; the 1st is the truncated table's own creation): the first seed names its region | NamespaceStateManager, NamespaceTableAndRegionInfo | 12-14 s, 3/3 | selector at the first seed |
+| hbase-adhoc-24 | ZKProcedureMemberRpcs:210 | TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback | up | first | ZKProcedureMemberRpcs, ZKProcedureCoordinator | 37 s | ready (its data crosses ZooKeeper: the ZOOKEEPER doors) |
+| hbase-adhoc-28 | HBaseServerBase:353 | TestInfoServers#testInfoServersRedirect | startup | first | HBaseServerBase, common util/Addressing | 9 s | ready |
+| hbase-adhoc-31 | RSRpcServices:1880 (ServiceException) | TestRegionMove#testDisableAndMove | up | first | RSRpcServices, master/procedure/RSProcedureDispatcher | 12 s | ready |
+| hbase-adhoc-34 | AuthenticationTokenSecretManager:160 | TestGenerateDelegationToken#testOnlyToken | up | first | AuthenticationTokenSecretManager, ZKSecretWatcher | 14 s | needs MiniKdc in the VM (P2 done) |
+| hbase-adhoc-35 | HBaseFsck:2742 (anonymous visitor) | TestHBaseFsckReplication#test | up | first | util/HBaseFsck, util/HbckRegionInfo | 9 s | ready |
+| hbase-adhoc-37 | MasterAddressTracker:206 | TestRSStatusPage#testStatusPage (expects `text/html`: the Java 8 tree serves the page without a charset) | up | first (the test's `getActiveMasterInfoPort`) | zookeeper MasterAddressTracker, master/ActiveMasterManager | 13 s | ready (P2 done) |
+| hbase-bugs-backup-lock-reply-lost | BackupSystemTable:504 | TestBackupManager#testStartBackupExclusiveOperation | up | `first`, to check at the first seed: it must be the first acquirer's call, whose lost reply is the bug | BackupSystemTable, BackupManager, client RawAsyncTableImpl, server HRegion | 15 s | needs P1 |
+| hbase-bugs-ns-rsgroup-removal | MasterProcedureUtil:231 | TestCausynthNamespaceGroupRemoval#removeTheGroupOfANamespaceBeingCreated (ours) | up | the CreateTableProcedure's occurrence on master0 (the namespace's prepare checks the group first): the first seed names its region and index | MasterProcedureUtil, rsgroup/RSGroupInfoManagerImpl, TableNamespaceManager, ClusterSchemaServiceImpl | 9-11 s, 3/3 | selector at the first seed |
+| hbase-bugs-master-active-time | MasterRpcServices:2629 | TestSplitWALProcedure#testMasterRestart | startup | first | (the platform's) | 14 s | the platform's second case |
+
+**HBASE-30483 in hbase-adhoc-22 (yes).** A table truncated without its splits keeps its old region count in the
+master's namespace quota (`TruncateTableProcedure` never updates it; the fork's fix/truncate-namespace-region-quota
+13f4fa2 sets it). For :168 the bug is a refusal by exactly the stale surplus, so the workload holds a creation that
+fits only once something has released quota: a namespace of 2 regions, a 2-region table truncated to 1 (the quota
+still counts 2), the table deleted asynchronously, then (after 2 s, not a wait on the deletion) a 1-region table
+created; the deletion's release (`DeleteTableProcedure#postDelete` -> `NamespaceStateManager#removeTable`) lands
+first and the creation fits (0 + 1 <= 2). The counterfactual is the creation's region-count read re-paired to before
+that release, which no synchronization orders: 2 + 1 > 2 throws at :168, while under the fix the same order counts
+1 + 1 <= 2. Natively, the same creation run before the deletion is refused with "not allowed to have 1 regions ...
+current region count is 2" (cached 2 for 1 real region). A split cannot play the release's part: its own quota
+check (`incr > 0 && regionCount >= max`) is stricter than :168's, so a recording in which both pass has no order in
+which only :168 throws. Risk for the replay: the deletion's last step and the creation must run on different
+procedure workers (16 by default).
+
+**HBASE-30484 in hbase-adhoc-04 (no).** The quota observer advances its in-memory snapshot before it enables the
+table (`QuotaObserverChore#updateTableQuota` and the insufficient-reports path); the stuck table needs that
+enable to fail before any enable procedure is submitted. No single counterfactual of the engine does that from a
+passing recording: a FAULT on the chore's EnableTable request is retried by `AsyncRpcRetryingCaller`
+(`hbase.client.retries.number`, 15), one on its response is retried with the same nonce and
+`MasterProcedureUtil#submitProcedure`'s `registerNonce` returns the submitted procedure, and the door's fault kinds
+are all retriable; the master's own refusal (`HMaster#enableTable`'s AccessDeniedException when hbase:quota still
+says DISABLE) reads a row the chore's `transitionTable` wrote earlier on the same thread, so that re-pairing is
+HB-refuted; a coprocessor failure has no door; the client's timeouts are 6 h in automatic mode, and a timed-out wait
+leaves the submitted procedure to enable the table. The same misordering has a transient form the engine could
+reach (a client that sees the master's snapshot out of violation and flushes before the enable lands), but that is
+not the reported stuck table, so 04 keeps `TestMobStoreScanner`.
