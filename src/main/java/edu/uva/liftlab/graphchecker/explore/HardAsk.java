@@ -26,11 +26,12 @@ final class HardAsk {
     final List<GapRow> gaps;
     final List<String> modelSymbols;
     final String querySha256;
+    final Solved.Key solvedKey;
     final Path solved;
 
     HardAsk(String obligationId, String gapSession, String question,
             String unsatDetail, List<GapRow> gaps, List<String> modelSymbols,
-            String querySha256, Path solved) {
+            String querySha256, Solved.Key solvedKey, Path solved) {
         this.obligationId = obligationId;
         this.gapSession = gapSession;
         this.question = question;
@@ -39,6 +40,7 @@ final class HardAsk {
         this.modelSymbols = Collections.unmodifiableList(
                 new ArrayList<String>(modelSymbols));
         this.querySha256 = querySha256;
+        this.solvedKey = solvedKey;
         this.solved = solved;
     }
 
@@ -55,6 +57,13 @@ final class HardAsk {
         for (String symbol : modelSymbols) symbols.add(symbol);
         json.add("modelSymbols", symbols);
         json.addProperty("querySha256", querySha256);
+        json.addProperty("solvedKey", solvedKey.sha256);
+        JsonObject names = new JsonObject();
+        for (java.util.Map.Entry<String, String> name
+                : solvedKey.names.entrySet()) {
+            names.addProperty(name.getKey(), name.getValue());
+        }
+        json.add("solvedNames", names);
         json.addProperty("solved", solved == null ? "" : solved.toString());
         Path part = file.resolveSibling(file.getFileName() + ".part");
         Files.write(part, (json + "\n").getBytes(StandardCharsets.UTF_8));
@@ -121,12 +130,20 @@ final class HardAsk {
         for (JsonElement symbol : JsonFields.array(json, "modelSymbols")) {
             symbols.add(symbol.getAsString());
         }
+        java.util.Map<String, String> names =
+                new java.util.LinkedHashMap<String, String>();
+        for (java.util.Map.Entry<String, JsonElement> name
+                : JsonFields.object(json, "solvedNames").entrySet()) {
+            names.put(name.getKey(), name.getValue().getAsString());
+        }
         String solved = JsonFields.primitiveString(json, "solved");
         return new HardAsk(JsonFields.primitiveString(json, "obligationId"),
                 JsonFields.primitiveString(json, "gapSession"),
                 JsonFields.primitiveString(json, "question"),
                 JsonFields.primitiveString(json, "unsatDetail"), gaps,
                 symbols, JsonFields.primitiveString(json, "querySha256"),
+                new Solved.Key(JsonFields.primitiveString(json, "solvedKey"),
+                        names),
                 solved.isEmpty() ? null : java.nio.file.Paths.get(solved));
     }
 }
