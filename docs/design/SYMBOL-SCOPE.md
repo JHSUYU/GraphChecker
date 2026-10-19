@@ -983,7 +983,15 @@ reaches, to a fixed point:
   RESTORECORE and REQUESTAPPLYUPDATES requests before its ACTIVE offer; the failure crosses the
   shard handler's executor as an exception, a concrete object no term names). The turn is the
   bound: no recorded order cuts it, its other threads' occurrences included wherever they ran (the
-  owner's rule: the recorded order is no fixed order). It contributes no value, so the doors of the
+  owner's rule: the recorded order is no fixed order). So are the **reply legs** of an admitted
+  occurrence (`RecordedMessages#replyLegsOf`): the occurrences anchored on the reply to a request it
+  sent (a `<transport>#RESPONSE` `SEND` under that request's anchor) that read a fault marker, and
+  in turn the readers of the replies to what they sent, the occurrence's asynchronous continuation:
+  a reply's door decides whether the sender sees the reply wherever the reply is read. A synchronous
+  client reads it in the sender (Hadoop IPC, Solr's `HttpSolrClient`) or in the sender's own work
+  anchored on the reply; HBase's client reads every reply on its event loop, whose callbacks send the
+  next request of an async chain (`RpcConnection#finishCall`), as Solr's `Http2SolrClient` listener
+  reads an asynchronous request's. It contributes no value, so the doors of the
   message that started it are not admitted in turn. These are the control producers EXPLORE
   proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
   move such an IPC door. A value rule that reaches one moves its basis -- a demand (`DemandWalk#reach`),
