@@ -60,6 +60,7 @@ runtime.MessageDoors serialized void boolean
 runtime.MessageDoors serializing boolean
 runtime.MessageDoors spelledAs void string string[]
 runtime.MessageDoors startRecording void
+runtime.MessageDoors startupWindow boolean
 runtime.MessageDoors stopRecording void
 runtime.MessageDoors storeEnded void string long
 runtime.MessageDoors storeRead void string string string object

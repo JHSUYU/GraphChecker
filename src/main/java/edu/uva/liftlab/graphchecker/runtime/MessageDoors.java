@@ -892,6 +892,10 @@ public final class MessageDoors {
         CausynthTraceRecorder.startRecording();
     }
 
+    public static boolean startupWindow() {
+        return RecordingWindow.atStartup();
+    }
+
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
         return guarded("beginNodeStartup", role, 0L, () -> {
