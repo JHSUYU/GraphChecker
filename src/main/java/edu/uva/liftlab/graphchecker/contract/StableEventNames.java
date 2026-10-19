@@ -51,6 +51,7 @@ public final class StableEventNames {
      * its sender's first of its site, or no send of this run named it.
      */
     public String context(String context) {
+        context = turnFamily(context);
         StringBuilder name = new StringBuilder();
         Matcher hop = ANCHOR.matcher(context);
         int at = 0;
@@ -64,5 +65,48 @@ public final class StableEventNames {
         }
         return name.append(COUNT.matcher(context.substring(at))
                 .replaceAll("")).toString();
+    }
+
+    /** How a timed-wait loop's turn renders ({@code
+     *  RuntimeTraceContext#beginWake}): {@code Root:WAKE/<wait>#k}. */
+    private static final String TIMED_WAIT_TURN =
+            "Root:" + Role.WAKE.name() + "/";
+
+    /**
+     * Whether an event context stands in a timed-wait loop's turn: its
+     * causal context, after the node, is {@code Root:WAKE/<wait>#k}, whose k
+     * counts the loop's wakes -- a timing fact, so the k-th turn of a replay
+     * is another turn than the recording's k-th.
+     */
+    public static boolean timedWaitTurn(String context) {
+        return context.startsWith(TIMED_WAIT_TURN, context.indexOf('|') + 1);
+    }
+
+    /**
+     * The context a slot is matched by: a timed-wait loop's turn in its
+     * family's form, the turn number alone left out ({@code
+     * Root:WAKE/<wait>#*}; node and start frames kept, unlike {@code
+     * runtime.ScheduleLog#familyOf}); any other context itself.  The number counts the node's
+     * wakes of that loop -- a signal or a timeout, one count for every
+     * thread waiting there -- a timing fact, never an identity (owner
+     * 2026-10-11: semantic counts only), so a replay's loop takes the
+     * recorded turns' slots in order, whatever turn it is at.  Its events
+     * name no occurrence here: an occurrence id digests the turn number, so
+     * a replay's occurrence of that id is another wake than the recording's
+     * -- its close settles none of the family's slots, and its waiter
+     * passes them as a waiter no occurrence names does ({@code
+     * runtime.ScheduleLog#passedLocked}).  SGF7-adhoc-10's seed: the Overseer's peekElements
+     * loops woke 348 times to the recording's 82, and 113 of its 172
+     * SCHEDULE_DIVERGED rows stood on such a turn -- reads at recorded turn
+     * numbers that never came, slots killed by another wake's close.
+     */
+    public static String turnFamily(String context) {
+        if (!timedWaitTurn(context)) return context;
+        int node = context.indexOf('|');
+        int frames = context.indexOf('|', node + 1);
+        int end = frames < 0 ? context.length() : frames;
+        int number = context.lastIndexOf('#', end - 1);
+        return number <= node ? context
+                : context.substring(0, number) + "#*" + context.substring(end);
     }
 }

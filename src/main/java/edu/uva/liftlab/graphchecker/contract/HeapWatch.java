@@ -170,6 +170,12 @@ public final class HeapWatch {
                 PEAK_SWEPT.get());
     }
 
+    public static long liveAfterCollection() {
+        System.gc();
+        return ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()
+                .getUsed();
+    }
+
     private static long collectedMillis() {
         long total = 0L;
         for (GarbageCollectorMXBean collector

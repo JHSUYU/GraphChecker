@@ -85,9 +85,8 @@ import java.util.stream.Stream;
 public final class GapLedgerMain {
     private static final Gson GSON = new GsonBuilder().serializeNulls()
             .disableHtmlEscaping().create();
-    /** A worker's own gap rows (ObligationSolverMain), plain. */
-    static final String WORKER_GAPS = "gaps.jsonl";
-    /** A session's and a round's gap rows (SessionDir, ExploreMain). */
+    /** A session's, a round's and a worker's gap rows (SessionDir,
+     *  ExploreMain, ObligationSolverMain). */
     static final String GAPS = SessionDir.GAPS;
     /** The campaign's own gap rows, appended by whoever raises them. */
     static final String CAMPAIGN_GAPS = "campaign_gaps.jsonl";
@@ -194,7 +193,7 @@ public final class GapLedgerMain {
         try (Stream<Path> walk = Files.walk(iteration)) {
             List<Path> files = walk.filter(path -> {
                 String name = path.getFileName().toString();
-                return (name.equals(GAPS) || name.equals(WORKER_GAPS))
+                return name.equals(GAPS)
                         && Files.isRegularFile(path,
                         LinkOption.NOFOLLOW_LINKS);
             }).collect(Collectors.toList());

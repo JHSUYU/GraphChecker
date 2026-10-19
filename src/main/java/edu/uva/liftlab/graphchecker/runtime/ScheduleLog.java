@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
-import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
@@ -54,7 +53,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * of its key {@code (kind, c, site)}; with none it runs free.  In a
  * timed-wait loop's turn ({@code Root:WAKE/<wait>#k}, whose k counts the
  * loop's wakes, a timing fact) c is the turn's family, its number left out
- * ({@link #turnFamily}): the loop's events take the recorded turns' slots
+ * ({@link StableEventNames#turnFamily}): the loop's events take the recorded turns' slots
  * in order, whatever turn the replay's loop is at.  A slot before
  * the cut, or a WAKE slot anywhere, is HELD until every earlier slot is
  * settled; other slots past the cut are taken at once.  An INTERRUPT slot
@@ -103,9 +102,9 @@ public final class ScheduleLog {
     public static final String PREFIX_ENV = "CAUSYNTH_SCHEDULE_PREFIX";
     /** The same, as a system property; the property wins. */
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
-    public static final String PREFIX_FILE = "schedule_prefix.jsonl";
+    public static final String PREFIX_FILE = "schedule_prefix.jsonl.gz";
     /** The rest, beside the prefix in the worker directory. */
-    public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
+    public static final String SUFFIX_FILE = "schedule_suffix.jsonl.gz";
     /** The recording's schedule beside its trace ({@link #installFile}),
      *  plain JSONL: SEED copies it to the iteration's recorded schedule. */
     public static final String RECORDING_FILE = "schedule.jsonl";
@@ -184,21 +183,21 @@ public final class ScheduleLog {
      */
     private static int line;
     private static byte[] state = new byte[0];
-    /** Per slot key ({@link #turnFamily}), the slots not taken and not
+    /** Per slot key ({@link StableEventNames#turnFamily}), the slots not taken and not
      *  dead, in order. */
     private static final Map<String, ArrayDeque<Integer>> SLOTS =
             new HashMap<String, ArrayDeque<Integer>>();
-    /** Each slot's key and context as {@link #turnFamily} matches them. */
+    /** Each slot's key and context as {@link StableEventNames#turnFamily} matches them. */
     private static String[] slotKeys = new String[0];
     private static String[] slotContexts = new String[0];
     /**
      * Per recorded occurrence, the slots its events were; none of a
      * timed-wait loop's turn, whose occurrence ids digest its turn number
-     * ({@link #turnFamily}).
+     * ({@link StableEventNames#turnFamily}).
      */
     private static final Map<String, List<Integer>> BY_OCCURRENCE =
             new HashMap<String, List<Integer>>();
-    /** Per slot context ({@link #turnFamily}), the slots its events were. */
+    /** Per slot context ({@link StableEventNames#turnFamily}), the slots its events were. */
     private static final Map<String, List<Integer>> BY_CONTEXT =
             new HashMap<String, List<Integer>>();
     /**
@@ -1041,7 +1040,7 @@ public final class ScheduleLog {
         /** The key its row's k counts by ({@link #appendLocked}). */
         private final String key;
         /** The context, key and occurrence its slot is matched by ({@link
-         *  #turnFamily}): in a timed-wait loop's turn, the turn's family and
+         *  StableEventNames#turnFamily}): in a timed-wait loop's turn, the turn's family and
          *  no occurrence, since the occurrence id digests the turn number. */
         private final String slotContext;
         private final String slotKey;
@@ -1062,8 +1061,8 @@ public final class ScheduleLog {
             this.occurrence = occurrence;
             this.endpoint = endpoint;
             this.key = ScheduleEvent.key(kind, context, site);
-            boolean turn = timedWaitTurn(context);
-            this.slotContext = turn ? turnFamily(context) : context;
+            boolean turn = StableEventNames.timedWaitTurn(context);
+            this.slotContext = turn ? StableEventNames.turnFamily(context) : context;
             this.slotKey = turn ? ScheduleEvent.key(kind, slotContext, site)
                     : key;
             this.slotOccurrence = turn ? "" : occurrence;
@@ -1692,7 +1691,7 @@ public final class ScheduleLog {
      * elsewhere.  Run free or into a slot past the frontier anywhere else,
      * its thread runs on {@link #ELSEWHERE}, unless the watchdog released it
      * since the frontier moved.  A timed-wait loop's turn is its exact turn
-     * here, not its family ({@link #turnFamily}): the loop's other turns,
+     * here, not its family ({@link StableEventNames#turnFamily}): the loop's other turns,
      * taking their family's later slots, are not at work toward this one
      * (SGF7-adhoc-10's seed, judged by the family: the Overseer's polls held
      * each give-up of a queue write its replay made in another context 7 to
@@ -1718,7 +1717,7 @@ public final class ScheduleLog {
      * occurrence, else the earliest; -1 when none.  Two concurrent RPCs under
      * one context share a key, and must not swap slots (and anchors).  An
      * event of a timed-wait loop's turn names no occurrence here ({@link
-     * #turnFamily}): it takes its family's earliest.
+     * StableEventNames#turnFamily}): it takes its family's earliest.
      */
     private static int slotOf(Pending event) {
         ArrayDeque<Integer> slots = SLOTS.get(event.slotKey);
@@ -1735,10 +1734,10 @@ public final class ScheduleLog {
     }
 
     /** A slot's occurrence as {@link #slotOf} matches it: none in a
-     *  timed-wait loop's turn ({@link #turnFamily}). */
+     *  timed-wait loop's turn ({@link StableEventNames#turnFamily}). */
     private static String slotOccurrenceOf(int slot) {
         ScheduleEvent event = order.get(slot);
-        return timedWaitTurn(event.context()) ? "" : event.occurrence();
+        return StableEventNames.timedWaitTurn(event.context()) ? "" : event.occurrence();
     }
 
     /**
@@ -1761,7 +1760,7 @@ public final class ScheduleLog {
      *       context left, it waits at the line.</li>
      * </ul>
      *
-     * An event of a timed-wait loop's turn ({@link #timedWaitTurn}) whose
+     * An event of a timed-wait loop's turn ({@link StableEventNames#timedWaitTurn}) whose
      * slot is not due is held at it the same way: it takes its family's
      * slots in order, and a loop that makes more of them than recorded
      * finds a later turn's; let go, it takes it.
@@ -1798,7 +1797,7 @@ public final class ScheduleLog {
             HELD.put(self, event);
             return write + 1;
         }
-        boolean turn = timedWaitTurn(event.context);
+        boolean turn = StableEventNames.timedWaitTurn(event.context);
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)
                 && !(turn && LET_GO.contains(self))) {
             if (!turn) return slot;
@@ -2022,49 +2021,6 @@ public final class ScheduleLog {
      *  #watchdogLocked}). */
     private static final Set<String> FAILED = new HashSet<String>();
 
-    /** How a timed-wait loop's turn renders ({@code
-     *  RuntimeTraceContext#beginWake}): {@code Root:WAKE/<wait>#k}. */
-    private static final String TIMED_WAIT_TURN =
-            "Root:" + Role.WAKE.name() + "/";
-
-    /**
-     * Whether an event context stands in a timed-wait loop's turn: its
-     * causal context, after the node, is {@code Root:WAKE/<wait>#k}, whose k
-     * counts the loop's wakes -- a timing fact, so the k-th turn of a replay
-     * is another turn than the recording's k-th.
-     */
-    static boolean timedWaitTurn(String context) {
-        return context.startsWith(TIMED_WAIT_TURN, context.indexOf('|') + 1);
-    }
-
-    /**
-     * The context a slot is matched by: a timed-wait loop's turn in its
-     * family's form, the turn number alone left out ({@code
-     * Root:WAKE/<wait>#*}; node and start frames kept, unlike {@link
-     * #familyOf}); any other context itself.  The number counts the node's
-     * wakes of that loop -- a signal or a timeout, one count for every
-     * thread waiting there -- a timing fact, never an identity (owner
-     * 2026-10-11: semantic counts only), so a replay's loop takes the
-     * recorded turns' slots in order, whatever turn it is at.  Its events
-     * name no occurrence here: an occurrence id digests the turn number, so
-     * a replay's occurrence of that id is another wake than the recording's
-     * -- its close settles none of the family's slots, and its waiter
-     * passes them as a waiter no occurrence names does ({@link
-     * #passedLocked}).  SGF7-adhoc-10's seed: the Overseer's peekElements
-     * loops woke 348 times to the recording's 82, and 113 of its 172
-     * SCHEDULE_DIVERGED rows stood on such a turn -- reads at recorded turn
-     * numbers that never came, slots killed by another wake's close.
-     */
-    static String turnFamily(String context) {
-        if (!timedWaitTurn(context)) return context;
-        int node = context.indexOf('|');
-        int frames = context.indexOf('|', node + 1);
-        int end = frames < 0 ? context.length() : frames;
-        int number = context.lastIndexOf('#', end - 1);
-        return number <= node ? context
-                : context.substring(0, number) + "#*" + context.substring(end);
-    }
-
     private static final java.util.regex.Pattern TURN_OR_ANCHOR =
             java.util.regex.Pattern.compile("#[0-9]+|Anchor:[0-9a-f]+");
 
@@ -2156,7 +2112,7 @@ public final class ScheduleLog {
      * nothing held addBlock past the client's 60 s).  Given up, WAKEs aside.
      *
      * <p>A waiter no occurrence names -- a timed-wait loop's turn names
-     * none ({@link #turnFamily}) -- passes the earlier slots of its own slot
+     * none ({@link StableEventNames#turnFamily}) -- passes the earlier slots of its own slot
      * context, no occurrence naming them either, at any site it made since
      * it last entered that context ({@link Made}: every kind and site of its
      * events there, not only a loop's) -- so the rest of a loop it left is
@@ -2352,6 +2308,20 @@ public final class ScheduleLog {
      * #inFlightLocked}): no wait held behind it is let go meanwhile, to read
      * the version before it.
      */
+    private static boolean behindReadsOnlyLocked(int first, int waiter) {
+        if (waiter >= order.size()
+                || order.get(waiter).kind() != ScheduleEvent.Kind.WRITE) {
+            return false;
+        }
+        for (int at = first; at < waiter; at++) {
+            if (state[at] == OPEN
+                    && order.get(at).kind() != ScheduleEvent.Kind.READ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
         long now = System.currentTimeMillis();
@@ -2423,7 +2393,10 @@ public final class ScheduleLog {
                 || FAILED.contains(familyOf(order.get(first).context())))
                 ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
         if (stood < bound) return false;
-        if (stood < CEILING * bound && computingLocked(now)) return false;
+        if (stood < CEILING * bound && computingLocked(now)
+                && !behindReadsOnlyLocked(first, earliest)) {
+            return false;
+        }
         if (!HELD.isEmpty() && !letGoSinceProgress) {
             letGoHeldLocked(stood, now);
             return true;
@@ -2542,7 +2515,7 @@ public final class ScheduleLog {
         }
         Integer at = WAITERS.get(thread);
         if (held.kind != ScheduleEvent.Kind.WAKE && at != null && at >= 0
-                && timedWaitTurn(held.context)) {
+                && StableEventNames.timedWaitTurn(held.context)) {
             return held.render() + " in a timed wait's turn, at slot " + at;
         }
         return SLOTS.containsKey(held.slotKey)
@@ -2834,8 +2807,8 @@ public final class ScheduleLog {
         openHeld = 0;
         for (int index = 0; index < all.size(); index++) {
             ScheduleEvent event = all.get(index);
-            boolean turn = timedWaitTurn(event.context());
-            slotContexts[index] = turn ? turnFamily(event.context())
+            boolean turn = StableEventNames.timedWaitTurn(event.context());
+            slotContexts[index] = turn ? StableEventNames.turnFamily(event.context())
                     : event.context();
             slotKeys[index] = turn ? ScheduleEvent.key(event.kind(),
                     slotContexts[index], event.site()) : event.key();
@@ -2882,7 +2855,7 @@ public final class ScheduleLog {
         for (ScheduleEvent event : events) {
             if (event.kind() != ScheduleEvent.Kind.READ
                     || readsHeld && written.contains(event.site())
-                    && !timedWaitTurn(event.context())) {
+                    && !StableEventNames.timedWaitTurn(event.context())) {
                 kept.add(event);
             }
         }

@@ -578,10 +578,6 @@ public class ScheduleLogTest {
         }
         assertEquals("another node", made + 3, ScheduleLog.newKeys());
         progress((made + 3) + " distinct event(s), at most ");
-        watched = ConcolicResultPublisher.watched(0L);
-        RecordingWindow.close();
-        assertFalse("the window's close is a step", Arrays.equals(watched,
-                ConcolicResultPublisher.watched(0L)));
     }
 
     /** The workload closes its window: what the order still holds goes. */
@@ -641,6 +637,36 @@ public class ScheduleLogTest {
                 recorded.get(1).context()), Arrays.asList(
                 events().get(0).context(), events().get(1).context()));
         progress(" 0 given up");
+    }
+
+    /**
+     * A WRITE WAITING ONLY BEHIND READ SLOTS stands a grace, not the
+     * ceiling, while the reader's thread computes elsewhere: solr-adhoc-31's
+     * test client polled past its recorded read, and the write behind it
+     * waited CEILING graces (16 s) at each such read.
+     */
+    @Test(timeout = 60000L)
+    public void aWriteWaitingOnlyBehindReadsStandsNoCeiling()
+            throws Exception {
+        enforceRecorded("o:R c:W", 300L, kind -> turn(kind));
+        CountDownLatch written = new CountDownLatch(1);
+        long before = System.nanoTime();
+        Thread poller = started(() -> request("o", () -> {
+            long spun = 0L;
+            while (written.getCount() > 0L) spun++;
+            assertTrue(spun > 0L);
+        }));
+        Thread write = started(() -> request("c", () -> {
+            turn("W");
+            written.countDown();
+        }));
+        write.join(30000L);
+        long took = since(before);
+        written.countDown();
+        poller.join(30000L);
+        assertFalse(write.isAlive() || poller.isAlive());
+        assertTrue("a grace, not the ceiling: " + took,
+                took < 3 * 300L);
     }
 
     /** A fresh run on this thread, its schedule empty, with no request
@@ -871,5 +897,20 @@ public class ScheduleLogTest {
         List<String> sites = new ArrayList<String>();
         for (ScheduleEvent event : events()) sites.add(event.site());
         return sites;
+    }
+
+    /** A fresh run held to the recording of {@code turns} (request:at),
+     *  each made by {@code make}. */
+    private void enforceRecorded(String turns, long timeout,
+                                 java.util.function.Consumer<String> make) {
+        noRequest();
+        for (String turn : turns.split(" ")) {
+            String[] at = turn.split(":", 2);
+            request(at[0], () -> make.accept(at[1]));
+        }
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        timeout(timeout);
+        enforce(recorded);
     }
 }

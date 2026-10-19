@@ -74,4 +74,34 @@ public final class ScopedFixture {
         }
         return scoped;
     }
+
+    /**
+     * What stands in for ssh in {@code dir}: its first argument the host,
+     * the rest the command, run here as ssh's login shell runs it, in a
+     * shell of its own, so a z3 there ends with it as with its sshd
+     * ({@code setpriv --pdeathsig}); host {@code gone} refuses, as ssh to a
+     * host that is down does.
+     */
+    public static Path ssh(Path dir) throws IOException {
+        Path ssh = dir.resolve("ssh");
+        Files.write(ssh, Arrays.asList("#!/bin/bash",
+                "host=$1; shift",
+                "if [[ $host == gone ]]; then",
+                "  echo \"ssh: connect to host $host port 22:"
+                        + " Connection refused\" >&2; exit 255",
+                "fi",
+                "if [[ $host == busy ]]; then",
+                "  n=$(cat \"$0.busy\" 2>/dev/null || echo 0)",
+                "  echo $((n + 1)) >\"$0.busy\"",
+                "  if (( n < 2 )); then",
+                "    echo \"kex_exchange_identification: Connection closed"
+                        + " by remote host\" >&2; exit 255",
+                "  fi",
+                "fi",
+                "bash -c \"$*\""), StandardCharsets.UTF_8);
+        if (!ssh.toFile().setExecutable(true)) {
+            throw new IOException("not executable: " + ssh);
+        }
+        return ssh;
+    }
 }

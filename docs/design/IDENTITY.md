@@ -735,7 +735,7 @@ orders DataNodes as they are added, and block placement picks pipelines by posit
 order:
 
 - the order is the source session's prefix (`CAUSYNTH_SCHEDULE_PREFIX` / `causynth.schedule.prefix`)
-  then its rest (`schedule_suffix.jsonl`), cut by `explore/SchedulePrefix` at the task's target;
+  then its rest (`schedule_suffix.jsonl.gz`), cut by `explore/SchedulePrefix` at the task's target;
 - an event takes the earliest open or given-up slot of its key that its own occurrence made, else
   the earliest of its key (`ScheduleLog#slotOf`: two concurrent RPCs under one context share a key
   and must not swap slots); with none it runs free. In a timed-wait loop's turn (`Root:WAKE/<wait>#k`)
@@ -839,7 +839,10 @@ order:
   `causynth.schedule.timeout.ms` (default 15 s) when something computes, or eight
   timeouts (`CEILING`) whatever threads do, both counted from the frontier's last move or its
   earliest current waiter's arrival, whichever is later (`ScheduleLog#stallSinceLocked`): the
-  frontier owes nothing to a wait that has not begun. A slot taken past the frontier (past the cut
+  frontier owes nothing to a wait that has not begun. A WRITE WAITING ONLY BEHIND READ SLOTS stands a
+  grace, never the computing deferral to `CEILING` (`ScheduleLog#behindReadsOnlyLocked`): a read's slot
+  holds no frontier, and a reader computing elsewhere (solr-adhoc-31's test client polling past its
+  recorded read) held the write 16 s at each such read. A slot taken past the frontier (past the cut
   a non-`WAKE` slot is taken at once) or an event run free moves no wait for a slot or the line,
   so it does not restart the stall (hdfs-17899-bug2 w4d1 CONFIRM: the test thread's polls took
   their later slots, then ran free, for the whole of its 30 s wait while a BPServiceActor, held at

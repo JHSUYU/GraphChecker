@@ -30,9 +30,11 @@ import java.util.Map;
  */
 final class SchedulePrefix {
     /** The file the replay reads, beside its focus row. */
-    static final String FILE = "schedule_prefix.jsonl";
+    static final String FILE =
+            edu.uva.liftlab.graphchecker.runtime.ScheduleLog.PREFIX_FILE;
     /** The rest of the schedule past the cut, beside it. */
-    static final String REST_FILE = "schedule_suffix.jsonl";
+    static final String REST_FILE =
+            edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE;
 
     private SchedulePrefix() {
     }

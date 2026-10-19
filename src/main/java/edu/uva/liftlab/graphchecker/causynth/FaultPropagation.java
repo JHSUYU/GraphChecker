@@ -522,25 +522,39 @@ final class FaultPropagation {
     /** The methods one call may run in the analysed program; none when the
      *  hierarchy cannot resolve it. */
     private List<SootMethod> targets(InvokeExpr call) {
-        List<SootMethod> found = new ArrayList<>();
+        SootMethod declared;
         try {
-            SootMethod declared = call.getMethod();
-            Collection<SootMethod> candidates = call instanceof StaticInvokeExpr
-                    || call instanceof SpecialInvokeExpr
-                    ? Collections.singletonList(declared)
-                    : Scene.v().getOrMakeFastHierarchy()
-                    .resolveAbstractDispatch(declared.getDeclaringClass(),
-                            declared);
-            for (SootMethod candidate : candidates) {
-                if (byMethod.containsKey(candidate.getSignature())) {
-                    found.add(candidate);
-                }
-            }
+            declared = call.getMethod();
         } catch (RuntimeException unresolved) {
             return Collections.emptyList();
         }
+        if (call instanceof StaticInvokeExpr
+                || call instanceof SpecialInvokeExpr) {
+            return analysed(Collections.singletonList(declared));
+        }
+        return dispatched.computeIfAbsent(declared, method -> {
+            try {
+                return analysed(Scene.v().getOrMakeFastHierarchy()
+                        .resolveAbstractDispatch(method.getDeclaringClass(),
+                                method));
+            } catch (RuntimeException unresolved) {
+                return Collections.emptyList();
+            }
+        });
+    }
+
+    private final Map<SootMethod, List<SootMethod>> dispatched =
+            new java.util.HashMap<>();
+
+    private List<SootMethod> analysed(Collection<SootMethod> candidates) {
+        List<SootMethod> found = new ArrayList<>();
+        for (SootMethod candidate : candidates) {
+            if (byMethod.containsKey(candidate.getSignature())) {
+                found.add(candidate);
+            }
+        }
         found.sort((a, b) -> a.getSignature().compareTo(b.getSignature()));
-        return found;
+        return Collections.unmodifiableList(found);
     }
 
     /** A call of an application interface's method: with no analysed

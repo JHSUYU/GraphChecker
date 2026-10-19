@@ -369,10 +369,13 @@ public final class Confirmation {
         return endpoint.anyDelivery().anyTurn().id();
     }
 
-    /** The key CONFIRM knows one method activation by ({@link #id}). */
+    /** The key CONFIRM knows one method activation by ({@link #id}): its
+     *  occurrence at every delivery and every turn of a timed-wait loop
+     *  ({@code OccurrenceAddress#anyTurn}, the schedule's turn family). */
     public static String activation(OccurrenceAddress occurrence,
                                     ExecutionIndex frames) {
-        return Endpoint.activation(occurrence.anyDelivery(), frames);
+        return Endpoint.activation(occurrence.anyDelivery().anyTurn(),
+                frames);
     }
 
     /** How many sends {@link #submitter} follows up a chain of claimed

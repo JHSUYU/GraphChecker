@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.FocusedReplay;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -230,6 +231,7 @@ public final class ObligationSolverMain {
                     });
                     read.clear();
                     read.putAll(whole.read);
+                    stateLive(iteration, read);
                     if (!whole.left.isEmpty()) {
                         System.err.println("ObligationSolverMain: question "
                                 + JsonFields.primitiveString(question,
@@ -242,6 +244,25 @@ public final class ObligationSolverMain {
                 return corpus;
             }
         };
+    }
+
+    static final String LIVE = "solver_live";
+
+    static void stateLive(Path iteration, Map<String, Long> read) {
+        long corpus = 0L;
+        for (long bytes : read.values()) corpus += bytes;
+        long live = HeapWatch.liveAfterCollection();
+        String self = ManagementFactory.getRuntimeMXBean().getName()
+                .replace('@', '.');
+        try {
+            Path dir = iteration.resolve(LIVE);
+            Files.createDirectories(dir);
+            ArtifactIO.replace(dir.resolve(self),
+                    (live >> 20) + " " + (corpus >> 20) + "\n");
+        } catch (IOException unstated) {
+            System.err.println("ObligationSolverMain: its live set not "
+                    + "stated: " + unstated);
+        }
     }
 
     /** One read of the corpus: the sessions {@code standing} in it. */
@@ -399,10 +420,12 @@ public final class ObligationSolverMain {
         Path query = worker.resolve(QUERY);
         byte[] suffix = Z3.modelQuery("", ask.modelSymbols)
                 .getBytes(StandardCharsets.UTF_8);
-        long body = Files.size(query) - suffix.length;
-        String sha = ArtifactIO.sha256(query);
+        QueryText text = QueryText.of(query, suffix.length);
+        long body = text.size - suffix.length;
+        String sha = text.sha256;
         if (!ask.obligationId.equals(obligationId)
-                || !sha.equals(ask.querySha256) || !endsWith(query, suffix)) {
+                || !sha.equals(ask.querySha256)
+                || !java.util.Arrays.equals(text.tail, suffix)) {
             String why = HARD_ASK_MISMATCH + ": the record of "
                     + ask.obligationId + " over query " + ask.querySha256
                     + " is not obligation " + obligationId + "'s query "
@@ -441,8 +464,7 @@ public final class ObligationSolverMain {
     private static void body(Path query, long body, java.io.Writer output)
             throws IOException {
         try (java.io.Reader in = new java.io.InputStreamReader(
-                new java.io.BufferedInputStream(new LimitedInput(
-                        Files.newInputStream(query), body)),
+                new LimitedInput(ArtifactIO.input(query), body),
                 StandardCharsets.UTF_8)) {
             char[] buffer = new char[1 << 16];
             for (int read; (read = in.read(buffer)) > 0; ) {
@@ -451,19 +473,48 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** Whether the file ends with these bytes. */
-    private static boolean endsWith(Path file, byte[] tail) throws IOException {
-        long size = Files.size(file);
-        if (size < tail.length) return false;
-        try (java.nio.channels.FileChannel channel =
-                     java.nio.channels.FileChannel.open(file)) {
-            java.nio.ByteBuffer read = java.nio.ByteBuffer.allocate(
-                    tail.length);
-            channel.position(size - tail.length);
-            while (read.hasRemaining() && channel.read(read) > 0) {
-                continue;
+    static final class QueryText {
+        final String sha256;
+        final long size;
+        final byte[] tail;
+
+        private QueryText(String sha256, long size, byte[] tail) {
+            this.sha256 = sha256;
+            this.size = size;
+            this.tail = tail;
+        }
+
+        static QueryText of(Path query, int tailLength) throws IOException {
+            java.security.MessageDigest digest;
+            try {
+                digest = java.security.MessageDigest.getInstance("SHA-256");
+            } catch (java.security.NoSuchAlgorithmException missing) {
+                throw new IllegalStateException(missing);
             }
-            return java.util.Arrays.equals(read.array(), tail);
+            byte[] tail = new byte[tailLength];
+            long size = 0L;
+            try (java.io.InputStream in = ArtifactIO.input(query)) {
+                byte[] buffer = new byte[1 << 16];
+                for (int read; (read = in.read(buffer)) > 0; ) {
+                    digest.update(buffer, 0, read);
+                    if (read >= tailLength) {
+                        System.arraycopy(buffer, read - tailLength, tail, 0,
+                                tailLength);
+                    } else {
+                        System.arraycopy(tail, read, tail, 0,
+                                tailLength - read);
+                        System.arraycopy(buffer, 0, tail, tailLength - read,
+                                read);
+                    }
+                    size += read;
+                }
+            }
+            if (size < tailLength) {
+                tail = java.util.Arrays.copyOfRange(tail,
+                        (int) (tailLength - size), tailLength);
+            }
+            return new QueryText(String.format("%064x",
+                    new java.math.BigInteger(1, digest.digest())), size, tail);
         }
     }
 
@@ -497,7 +548,7 @@ public final class ObligationSolverMain {
     static final String HARD_ASK_MISMATCH = "HARD_ASK_MISMATCH";
 
     /** The query a worker's ask published. */
-    static final String QUERY = "obligation_query.smt2";
+    static final String QUERY = "obligation_query.smt2.gz";
 
     /** A flip's focus row: the session its path ran in, by which a replay
      *  owed on a path whose session GROW withdrew is dropped ({@code
@@ -701,16 +752,16 @@ public final class ObligationSolverMain {
         RowCodec.writeAll(out.resolve(ObligationDir.OBLIGATION),
                 Collections.singletonList(obligation),
                 ExploreCodec::writeObligation);
-        RowCodec.writeAll(out.resolve("gaps.jsonl"),
+        RowCodec.writeAll(out.resolve(ObligationDir.GAPS),
                 ExploreMain.distinct(new ArrayList<GapRow>(gaps)),
                 RowCodec::writeGap);
         // Always written -- but by a hard-lane ask (null), which keeps its
         // first ask's: an UNSAT query is the one a reader most needs.
         if (smt2 != null) {
-            Files.write(out.resolve(QUERY), (smt2.isEmpty()
+            Files.write(out.resolve(QUERY), ArtifactIO.gzip((smt2.isEmpty()
                     ? "; no query was encoded: " + result.verdict() + " "
                     + result.detail() + System.lineSeparator()
-                    : smt2).getBytes(StandardCharsets.UTF_8));
+                    : smt2).getBytes(StandardCharsets.UTF_8)));
         }
         ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
                 focus);

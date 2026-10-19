@@ -148,6 +148,29 @@ public class Z3IncrementalTest {
         assertEquals(solver.errors().toString(), 1, solver.errors().size());
     }
 
+    /**
+     * A HOST WHOSE sshd REFUSES THE FIRST CONNECTIONS (MaxStartups under a
+     * burst: SGF8-adhoc-39, 15 of 102 pairs) is asked again: a z3 that
+     * ended before its shell printed its pid is started again, at most
+     * {@link Z3Incremental#SSH_ATTEMPTS} times, and its pair answers.
+     */
+    @Test
+    public void aHostThatRefusesItsFirstConnectionsIsAskedAgain()
+            throws Exception {
+        Path visible = folder.newFolder("busy-visible").toPath();
+        Path ssh = ScopedFixture.ssh(folder.newFolder("busy").toPath());
+        Z3 solver = new Z3(fake(), 30000L, 2048, Arrays.asList(
+                new Z3.Room("busy", 2048, Arrays.asList(ssh.toString(),
+                        "busy"))), visible);
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"), 1)) {
+            assertEquals("sat", scopes.ask(output -> output.write(
+                    "; sat\n"), null, false, 0L).status());
+        }
+        assertTrue(Integer.parseInt(Files.readAllLines(
+                ssh.resolveSibling("ssh.busy")).get(0).trim()) > 2);
+    }
+
     private Path fake() throws IOException {
         return fake(folder.newFile("unused.log").toPath());
     }

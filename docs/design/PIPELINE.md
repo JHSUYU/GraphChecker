@@ -388,7 +388,40 @@ second thread ending the same run (an early end meeting the workload's own) wait
 halt, so no end halts another's close half-done. Cluster threads outlive the test, and a region they
 start while the end settles and closes the rows would be an occurrence no row states.
 
-A focused replay ends early, once, for one of seven reasons (`ConcolicResultPublisher#conclude`):
+A concolic replay -- the seed's, a focused, FORCE or CONFIRM one -- ENDS AT ITS WINDOW'S CLOSE
+(`CausynthTraceRecorder#stopRecording` -> `JUnitMethodRunner#endAtWindowClose`; Solr: `SolrCloudTestCase`'s
+`@After`, before the class's cluster shutdown): the test's thread closing its window goes no further, and the
+end runs on a thread of its own as at the workload's own end -- the activations still live settle on the
+settle's bound while the cluster stays up, every verdict as at the workload's end (`FocusedReplay#windowClosed`:
+a faithful world never entered is still `WORLD_REFUTED`, its (d) naming the close, its exception the test
+method's own failure where the engine's lifecycle ran the method, `JUnitLifecycle#methodFailure`, printed on the
+log; a test its own JUnit runner runs -- Solr's RandomizedRunner -- reports its failure only after its `@After`,
+so none is known at the close); the log says `the replay ends at its window's close`. A close that comes after
+the run concluded (a witness, a forced target, a refusal or a stall) changes no verdict. The test's thread
+waits for the halt holding whatever its `@After` holds (Solr: `CausynthSolrCluster`'s class monitor, which no
+cluster thread takes). The recording and a native reproduction run their teardown (natively, seconds;
+neither records after the close). Nothing after the close is needed: no occurrence is admitted outside the
+window (`ConcolicTaskPlan#select`, `#addressLoopRootInvocation`, `#selectNamed`), the recording states nothing
+after it (`CausynthTraceRecorder#tracing`), the order is settled there (`ScheduleLog#windowClosed`) and the
+window's duration measured there (`RecordingWindow#close`). What a teardown published were doors' rows of the
+cluster's shutdown -- store and view writes, content exports and their watchers' attaches of the nodes' `down`
+states (SGF8-adhoc-07: ~310 rows a session past the schedule's last event; 13: ~12) -- and the shutdown paths of
+activations live at the close. Their readers: PLAN/EXPLORE's closure walk took them as WIRE and STATE edges and
+slots (13 r10 offline over its sessions cut at the close: the same 1154 closure nodes, 79 WIRE edges of the
+shutdown's `state.json` writes gone, so the slots and the arm keys that named them), COMPOSE as more versions of
+a location to choose from, GROW as producers or door invocations no task planned, the gap ledger and EMIT as
+gaps the shutdown filed, the import gate and the ledger as more rows of a session. Each pairs a window read with
+a version made after the test ended, or names work no replay of the question runs (admission ends at the close,
+and the replay now stops there): none needs them. CONFIRM's and REPRODUCE's questions are the window's.
+A workload's second window would find its order already settled at the first close (every Solr recording opens
+one). Run, the teardown cost a replay minutes after its close (07 reproductions, close to statement: the SGF8 jar
+259-354 s, solr-int 142 s for 0298); ended at the close, 0298 105 s, and 18-156 s in four replays whose stall ended 3-4 s
+before it -- what is left is the settle's publications decoding their pages. Their sessions import (no BLOCKING row)
+and plan as before (07's seed plus 0298's session: 740 obligations against 741). While the end settles the cluster
+runs on, so a door still states rows of ambient occurrences (07: the followers' replication polls, ~8 rows a second)
+until the session closes, as it did after an early end's cut before.
+
+A focused replay ends early, once, for one of six reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
@@ -408,8 +441,6 @@ A focused replay ends early, once, for one of seven reasons (`ConcolicResultPubl
 - `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
   it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
   questions still open are `NOT_ADMITTED` (§7.6).
-- `TEST_OVER`: the same stand after the window closed, in the teardown: the run ends as at the
-  workload's own end, nothing decided, every verdict settled as there (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log,
 every activation still live is stranded at once, before the settle waits for anything
@@ -1165,7 +1196,11 @@ host's question is charged a solver's start (§7.7), and the solver it starts ta
 whole (`campaign_start_solver <dir> <sessions> <charge>`: the ledger row renamed, held by the solver,
 so the start's release drops nothing): the host is charged one solver, never two -- charged a second
 beside the first, no cold host of SGF7-adhoc-39 (21 GB of sessions) had room, and 24 questions read the
-corpus in JVMs of their own, 14-21 min each, their hosts never warm.
+corpus in JVMs of their own, 14-21 min each, their hosts never warm. A SOLVER IS SIZED BY WHAT SOLVERS MEASURED: after each corpus read a
+solver states its live set after a full collection beside the corpus (`<iteration>/solver_live/`,
+`ObligationSolverMain#stateLive`), and later solvers of the corpus take the share of its text the read of the
+largest corpus held (`campaign_solver_measured_pct`; 11-15 % after compaction, 50 % before any measure, and
+for a composer always).
 
 **NO QUESTION IS ANSWERED IN A CORPUS JVM OF ITS OWN.** A question whose host had no room to start its
 solver now (`campaign_solve_obligation` 3), or that its solver took and ended on or failed (1), is no
@@ -1461,7 +1496,7 @@ the writer of a version a read in the cone, or a read of the anchor's own occurr
 read counting as the read of each occurrence it is the role prefix of, the rule the pairing flip was
 offered by, `Corpus#rolePrefix`).
 The worker writes `obligation_result.jsonl`
-(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
+(`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2.gz`, `gaps.jsonl.gz`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
 schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
@@ -1471,7 +1506,7 @@ at or after a decode a `VIEW_HOLD` reorders (`Holding#cutBefore`; each schedule 
 was made among the VM's events, `ScheduleEvent#vmEvent`, on the scale a decode's view write states
 its seq on, after every VM event so far (`Identity#afterLastEvent`): a decode in a
 watcher's or the Overseer's role work, which runs on, is cut before itself and not before its
-occurrence's first event) goes to `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
+occurrence's first event) goes to `schedule_prefix.jsonl.gz`, the rest to `schedule_suffix.jsonl.gz` (gzip).
 
 ### 7.6 The obligation replay
 
@@ -1556,8 +1591,7 @@ doing again what it did moves none of them:
   hash). A poll, a retry or a watch made again makes no new key; other code, another store location,
   another request handler or another node does. A view's `PUBLISH` names the version it put in force,
   so a loop publishing new versions still makes new keys: the safe direction, a cut missed;
-- the window's opening and closing: a teardown, which records no event, has the whole bound from the
-  close;
+- the window's opening (at its close the replay ends, §5);
 - the question's own moves (`FocusedReplay#questionMoved`): focused occurrences entered (the
   obligations', the assigned roots' mints', the inherited flips'), flips taken, own and inherited,
   roots planted, the world's first act;
@@ -1579,16 +1613,13 @@ then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROG
 session, its question settled. After one was taken the flips taken keep their verdicts, never
 rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
 to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
-it. After its window closed the test was over, and its teardown answers nothing the question asked:
-the run ends as at the workload's own end (`TEST_OVER`, §5; `FocusedReplay#testOver`), nothing
-decided, every verdict settled as there -- a faithful world never entered is still `WORLD_REFUTED`,
-its condition (d) naming the stand. Either way its threads are dumped on the replay log. A workload
+it. Either way its threads are dumped on the replay log; at its window's close the replay ends (§5), so no
+stall comes after it. A workload
 that ended settles on the settle's own bound instead. The bound: of 1,077 Solr
 replays that ended by themselves or at their witness (PV7-38, PV7-39, nine SGF6 cases), the longest
 span with no new kind of log line was 230 s (p99 162 s, p50 16 s); of their 567 teardowns 558 took
 under a minute and 9 took 600-620 s, each standing on an Overseer response until a ZooKeeper session
-expired (all ADMITTED: they now end at the bound as `TEST_OVER`, about 20 s sooner, verdicts and
-sessions the same); every replay PV7-38 lost to `replay_timeout_s` made
+expired (all ADMITTED; a replay now ends at its window's close, before its teardown); every replay PV7-38 lost to `replay_timeout_s` made
 nothing new for more than 2,100 s before it (PULL replicas polling a leader left down, inside the
 window; a failed test's teardown waiting on an Overseer response that never came), while the old
 measure -- any schedule step, activation, loop body or thread CPU -- saw the polls move. Each watched
@@ -1656,7 +1687,7 @@ ALREADY WAITED LONGER THAN THAT READ -- a solver restarting or reading again hol
 queued for it: SGF8-adhoc-07 round 12, 19 solves ~1100 s behind a 575 s restart and a 170 s read,
 while the mean seat said none was due -- `campaign_corpus_mb` at the rate the first
 question a solver started for measured, its MB over its seconds -- both measured as questions return,
-`campaign_stream_seated_returned`, the seat from four on, 2 s and 20 MB/s until then, SGF7-adhoc-39's
+`campaign_stream_seated_returned`, the seat from four on, 2 s and 160 MB/s until then (gzip rows), SGF7-adhoc-39's
 first lane holding a seat 12 s per question on average, 102 of about 570 the whole 60 s) -- else it
 waits for a serving solver's seat and the other hosts keep their room for replays (SGF7-adhoc-39: a
 solver of its 21 GB corpus held 18.4 GB of a lift's 22.1 GB, one replay beside it, and the
@@ -1672,9 +1703,28 @@ queues its entry again unchanged (the REPLAY on the tree its solve started on, t
 in flight, owed or under confirmation as it was) at ITS FULL NEED, charged whole with no end's room
 beside it (`campaign_stream_replay_again`, the entry's `stream_entry_need`); only one whose full need,
 at most half a host's ceiling, is no more than it reached would end again, and is answered
-`REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`). SGF8-adhoc-07: 33 replays
-ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. THE CONTROL
-PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
+`REPLAY_BOUNDED` as a replay past its bound is (`campaign_replay_bounded`); its full need is at least what
+its own peak needs (`campaign_need_of_peak_mb` of what it reached), the campaign's need being the 90th
+percentile's. SGF8-adhoc-07: 33 replays
+ended so, 240 replay-minutes, each landed REPLAY_BOUNDED and 31 asked again by later rounds. A replay OUT
+OF HEAP ends with 3 before it states anything -- the JVM's own OutOfMemoryError
+(`-XX:+ExitOnOutOfMemoryError`, `experiments/lib/execute.sh`, a replay-context JVM only) or a heap that only
+collects (`contract.HeapWatch`, started by `JUnitMethodRunner#main`); caught by the workload (a Solr node
+catches Throwable) an OutOfMemoryError had let the replay run on without that thread's work. Its worker
+names the heap it ran at (`workload_out_of_heap_mb`, `campaign_replay`) and sets its run aside the same way,
+`replay_again` naming that heap; the head queues it again once at its kind's charge, and every replay from
+then on -- that one first -- starts at twice that heap, at most half a host's ceiling
+(`campaign_replay_heap_raised`, `campaign_replay_heap_floor_mb`: the heap basis a start hands on is at least
+twice it and at least the charge it was admitted at, `campaign_replay_basis_mb`, `campaign_stream_start`; the
+charge stays the measured need's, the replay VM's Serial collector growing its resident memory only as its
+live set does); out of heap twice, or once at that most, it is `REPLAY_BOUNDED`. The seed replay and the final
+CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`): out of heap at twice the
+heap, the CONFIRM ended for memory at its full need (`campaign_replay_full_need_mb`); a second end fails the
+seed's REPLAY and bounds the CONFIRM by name (`campaign_replay_bounded`: its confirmation refuted as
+`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). Checked live on vm-force10 with
+the replay's heap overridden to 256 MB (`CAUSYNTH_WORKLOAD_JAVA_OPTS`): `Terminating due to
+java.lang.OutOfMemoryError`, exit 3, the run set aside under `ended-1`, `replay_again` naming the heap. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
+THE CONTROL PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
 time in it (the ledger's lock, the hosts' readings, the choice), each kind no host admitted in a pass,
 and each job's end as the head takes it; a peer states its start time (`campaign_peer_enter`'s "peer <host>
 at <epoch>" line, in the job's logs); `analysis/solr-2026-10-18/stream2/ctlplane.py` reads them with the
@@ -1736,8 +1786,11 @@ JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
-CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
-times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
+CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) -- until eight
+replays after the seed's returned, then the 90th percentile of their peaks (`campaign_replay_peak_p90_mb`:
+SGF8-adhoc-07's largest of 538 peaks, 6476 MB, had raised every replay's heap basis and full charge to 9728 MB;
+their 90th percentile, 3547 MB, gives 5376), times 1.5, rounded up to 128 MB, at least 512 MB, and charged at
+most half a host's ceiling
 (`campaign_replay_charge_mb`). The need sizes a replay's heap; until eight replays after the seed's
 returned, a replay of the stream is CHARGED a quarter more than the seed replay's life's mean, with room for
 four ends that reach the largest peak so far (charged 1.5 times the seed's peak, SGF8POOL-adhoc-05's round 0 of 600
@@ -1750,13 +1803,13 @@ SGF7B-adhoc-10: 19 replays, peaks 680-1557 MB, lives' medians 413-834 MB); charg
 of real use and admitted nothing more (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB). An obligation replay peaks near its own seed replay (round HG4:
 hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
 and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
-use (HG5A); one that outgrows the need grows its charge as below and raises the need of every
-start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
+use (HG5A); one that outgrows the need grows its charge as below, and before eight returned raises the
+need of every start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
 start (`campaign_stream_admit_host`, `stream_admitted_mb`, handed to the job); the head holds it,
 the job releases it as soon as its work returned, before the head waits to see what a peer wrote,
 and the head again once it collected or reaped the job (`campaign_stream_release`). A replay JVM
-is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its whole need
-(`CAUSYNTH_HEAP_BASIS_MB`): its heap is half the need (4 GB at least), and
+is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its heap basis
+(`CAUSYNTH_HEAP_BASIS_MB`, `campaign_replay_basis_mb`): its heap is half of it (4 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
 resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
 granted unless the host's real use would pass `L` with it, and holds what it was granted, released
@@ -1784,7 +1837,10 @@ HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room 
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
 room is not held against it), else the pool's host with the most room under the ceiling
 (`campaign_host_room`), charged there while it runs and released when it returns; none having room,
-it waits, saying so once. A step on a peer runs through the remote worker script as
+it waits, saying so once -- but A STEP NO HOST CAN EVER HOLD never waits: past the most a pool host holds
+with no charge standing (its ceiling less what it uses beside the ledger, at most the system's own 2048 MB, `campaign_head_most_mb`), an
+engine JVM whose heap is only a bound (no measured need) runs at the largest heap that fits it, and any
+other step fails at once, named (`engine_java`, `campaign_head_place`). A step on a peer runs through the remote worker script as
 `run_engine.sh --run-placed` (`campaign_run_placed`) in the head's working directory, with the
 head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back as its own: a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
@@ -3098,7 +3154,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    shared part from one file written beside the query (the lifts' links are 1 Gb/s), and is signalled
    and ended over ssh; one that has not read the shared part within 120 s gives its questions back
    to the other pairs (SGF7-adhoc-10: one pair beside its 16 GB composer ran 315 z3 runs in the
-   30 min decide budget and left questions undecided). A
+   30 min decide budget and left questions undecided). Their ssh connections open IN WAVES: at most
+   `Z3Incremental#SSH_STARTS_PER_HOST` (4) a host until each shell prints its pid, so sshd's
+   MaxStartups refuses none (48 at once to one lift: 12 refused; 4 at a time: none); one refused
+   before its shell ran is started again, at most `SSH_ATTEMPTS` (3) times, a second apart more each
+   time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst). A
    pair holds its slots while it lives and gives them back to whoever waits for room once it has no
    question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
    take turns where the room holds no more. The valuations, asked up
@@ -3397,7 +3457,9 @@ with it is a `RUN_DEFECT`.
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
-  the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
+  the recording took two still takes the model's edges), and an activation as every turn of its
+  timed-wait loop is (`Confirmation#activation`, `OccurrenceAddress#anyTurn`: `Root:WAKE/<wait>#k`
+  counts the loop's wakes, the schedule's turn family). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`, the three halves of
@@ -3577,7 +3639,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   the cone none is held and Y8 reproduces 10/10, IB1 10/10).
 
   Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
-  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
+  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`) and a timed-wait
+  turn's number (`StableEventNames#turnFamily`, the schedule's rule), and each message
   hop is named by its sender's stable context and the send's site when that send was the sender's
   first of its site; a hop of a later send (a loop's) has no stable name and an edge naming one is
   not held. A producer endpoint id hashes the sender's counts, so a poll before a send renames all
@@ -3721,7 +3784,7 @@ recording's own is not kept apart.
 2. `final/gaps.json` (`campaign_write_gaps`: `contract.GapLedgerMain`), one row per distinct
    (stage, source, code, subject, detail), the first raised kept, class as the row states it (none
    stated = BLOCKING): static communication gaps and the runtime plan's `gaps` as PLAN; every
-   `gaps.jsonl.gz` (a session's, a round's) and `gaps.jsonl` (a worker's) under the iteration
+   `gaps.jsonl.gz` (a session's, a round's, a worker's) under the iteration
    directory, in their paths' byte order, read once each through `smt.ArtifactIO#input`, side by
    side on the host's cores — a path matching
    `*/sessions/*/gaps.jsonl.gz` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
@@ -3884,7 +3947,7 @@ comparison.
   admissions by basis (and the basis of each occurrence that minted a root the claim moved), the
   "decided concretely" refusals and the boundaries the fatal guards' operands stop at.
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
-  `detail`, `obligation_query.smt2` (the query as asked, with its `check-sat` and `get-value`; it
+  `detail`, `obligation_query.smt2.gz` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
   An obligation id holds no session id (§7.3), so it repeats across runs whose replays reproduce
   the same addresses and input shapes: an earlier run's directory is a baseline.
@@ -3895,7 +3958,7 @@ comparison.
 - `final/claim.json` (valuations with status, unsat core, selected path, session and arms),
   `candidate_composition_manifest.json`, `compose.log`, `confirm.json`, `confirm/confirm.log`.
 - A schedule divergence is read by aligning: take the rows with a `kind` of the prefix the replay
-  was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl`) and of the
+  was held to (`recorded_schedule.jsonl`, or the worker's `schedule_prefix.jsonl.gz`) and of the
   session's `schedule.jsonl.gz`, compare `(kind, context, site)` position by position to the first
   mismatch, then count how many events of the expected key the replay made at all (none: an event
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
