@@ -244,6 +244,12 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Set<String>> takenInByStance =
             new HashMap<String, Set<String>>();
+    private final Map<String, Set<String>> sentByOccurrence =
+            new HashMap<String, Set<String>>();
+    private final Map<String, Set<String>> repliesByRequest =
+            new HashMap<String, Set<String>>();
+    private final Map<String, Set<String>> readersByEndpoint =
+            new HashMap<String, Set<String>>();
 
     private final Arms arms;
 
@@ -378,7 +384,7 @@ public final class Corpus implements Arms.Rows {
 
     private static final class Fact {
         enum Kind { TAKEN_IN, SENDER_STANCE, SENDER, RECEIVER,
-            RECEIVING_STANCE, HANDLER_STANCE }
+            RECEIVING_STANCE, HANDLER_STANCE, REPLY }
 
         final Kind kind;
         final String key;
@@ -1384,6 +1390,33 @@ public final class Corpus implements Arms.Rows {
                         Collections.<String>emptySet());
     }
 
+    public List<OccurrenceAddress> replyLegsOf(OccurrenceAddress occurrence) {
+        Set<String> legs = new LinkedHashSet<String>();
+        Deque<String> pending = new ArrayDeque<String>();
+        pending.add(occurrence.id());
+        while (!pending.isEmpty()) {
+            for (String request : sentByOccurrence.getOrDefault(
+                    pending.poll(), Collections.<String>emptySet())) {
+                for (String reply : repliesByRequest.getOrDefault(request,
+                        Collections.<String>emptySet())) {
+                    for (String reader : readersByEndpoint.getOrDefault(
+                            reply, Collections.<String>emptySet())) {
+                        if (!reader.equals(occurrence.id())
+                                && legs.add(reader)) {
+                            pending.add(reader);
+                        }
+                    }
+                }
+            }
+        }
+        List<OccurrenceAddress> readers = new ArrayList<OccurrenceAddress>();
+        for (String reader : legs) {
+            OccurrenceAddress address = occurrenceById.get(reader);
+            if (address != null) readers.add(address);
+        }
+        return readers;
+    }
+
     public OccurrenceAddress receiverOf(String producerEndpointId) {
         String receiver = receiverByEndpoint.get(producerEndpointId);
         return receiver == null ? null : occurrenceById.get(receiver);
@@ -1509,6 +1542,12 @@ public final class Corpus implements Arms.Rows {
                     && !endpoint.isEmpty() && stance != null) {
                 facts.add(new Fact(Fact.Kind.SENDER_STANCE, endpoint, "",
                         stance));
+                if (stance.context() instanceof CausalContext.Anchor
+                        && Endpoint.replySite(event.site())) {
+                    facts.add(new Fact(Fact.Kind.REPLY, NAMES.intern(
+                            ((CausalContext.Anchor) stance.context())
+                                    .producerEndpointId()), endpoint, null));
+                }
             }
             if (occurrence.isEmpty()) {
                 if (!received.isEmpty() && stance != null) {
@@ -1560,7 +1599,14 @@ public final class Corpus implements Arms.Rows {
                     break;
                 case SENDER:
                     senderByEndpoint.put(fact.key, fact.occurrence);
+                    sentByOccurrence.computeIfAbsent(fact.occurrence,
+                            key -> new LinkedHashSet<String>()).add(fact.key);
                     named(sessionId, fact.occurrence);
+                    break;
+                case REPLY:
+                    repliesByRequest.computeIfAbsent(fact.key,
+                            key -> new LinkedHashSet<String>())
+                            .add(fact.occurrence);
                     break;
                 case RECEIVING_STANCE:
                     receivingStances.computeIfAbsent(fact.key,
@@ -1702,6 +1748,11 @@ public final class Corpus implements Arms.Rows {
     private void remember(String sessionId, OccurrenceAddress occurrence) {
         if (occurrence == null) return;
         occurrenceById.put(occurrence.id(), occurrence);
+        if (occurrence.context() instanceof CausalContext.Anchor) {
+            readersByEndpoint.computeIfAbsent(((CausalContext.Anchor)
+                    occurrence.context()).producerEndpointId(),
+                    key -> new LinkedHashSet<String>()).add(occurrence.id());
+        }
         named(sessionId, occurrence.id());
     }
 

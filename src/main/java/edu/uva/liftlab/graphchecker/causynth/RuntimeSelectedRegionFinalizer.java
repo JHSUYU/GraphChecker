@@ -1180,14 +1180,20 @@ public final class RuntimeSelectedRegionFinalizer {
             RecordedMessages messages) throws IOException {
         Map<String, List<RootRead>> reading = new LinkedHashMap<>();
         Map<String, String> occurrenceById = new LinkedHashMap<>();
+        Map<String, List<String>> readers = new LinkedHashMap<>();
         Map<String, List<String>> methodsByRegion = new LinkedHashMap<>();
         for (StaticProgram.RegionRow skeleton : program.skeletons.values()) {
             methodsByRegion.put(skeleton.regionId, skeleton.methods);
         }
         for (Map.Entry<String, Map<String, Object>> entry
                 : program.activations.entrySet()) {
-            occurrenceById.put(OccurrenceAddress.parse(entry.getKey()).id(),
-                    entry.getKey());
+            OccurrenceAddress address = OccurrenceAddress.parse(entry.getKey());
+            occurrenceById.put(address.id(), entry.getKey());
+            if (address.context() instanceof CausalContext.Anchor) {
+                readers.computeIfAbsent(((CausalContext.Anchor)
+                        address.context()).producerEndpointId(),
+                        ignored -> new ArrayList<>()).add(address.id());
+            }
             List<RootRead> reads = rootReads(entry.getValue(), scopeMap);
             if (!reads.isEmpty()) reading.put(entry.getKey(), reads);
         }
@@ -1263,8 +1269,11 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 served.add(occurrence);
-                for (String door : doorsOf(messages, program,
-                        OccurrenceAddress.parse(occurrence))) {
+                Set<String> doors = doorsOf(messages, program,
+                        OccurrenceAddress.parse(occurrence));
+                doors.addAll(messages.replyLegsOf(
+                        OccurrenceAddress.parse(occurrence), readers));
+                for (String door : doors) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
                             || walk.excluded.contains(held)

@@ -2,11 +2,14 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
+import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,6 +23,8 @@ final class RecordedMessages {
     private final Map<String, Set<String>> takenIn = new HashMap<>();
     private final Map<String, Set<String>> receivingStances = new HashMap<>();
     private final Map<String, Set<String>> handlers = new HashMap<>();
+    private final Map<String, Set<String>> sent = new HashMap<>();
+    private final Map<String, Set<String>> replies = new HashMap<>();
 
     RecordedMessages(Collection<ScheduleEvent> schedule) {
         for (ScheduleEvent event : schedule) {
@@ -30,6 +35,17 @@ final class RecordedMessages {
                 if (stance != null) stances.put(event.endpoint(), stance);
                 if (!event.occurrence().isEmpty()) {
                     senders.put(event.endpoint(), event.occurrence());
+                    sent.computeIfAbsent(event.occurrence(),
+                            ignored -> new LinkedHashSet<>())
+                            .add(event.endpoint());
+                }
+                if (stance != null
+                        && stance.context() instanceof CausalContext.Anchor
+                        && Endpoint.replySite(event.site())) {
+                    replies.computeIfAbsent(((CausalContext.Anchor)
+                            stance.context()).producerEndpointId(),
+                            ignored -> new LinkedHashSet<>())
+                            .add(event.endpoint());
                 }
             } else if (!event.received().isEmpty()) {
                 String message = event.received();
@@ -64,6 +80,29 @@ final class RecordedMessages {
         }
         doors.remove(occurrence.id());
         return doors;
+    }
+
+    Set<String> replyLegsOf(OccurrenceAddress occurrence,
+                            Map<String, List<String>> readers) {
+        Set<String> legs = new LinkedHashSet<>();
+        Deque<String> pending = new ArrayDeque<>();
+        pending.add(occurrence.id());
+        while (!pending.isEmpty()) {
+            for (String request : sent.getOrDefault(pending.poll(),
+                    Collections.<String>emptySet())) {
+                for (String reply : replies.getOrDefault(request,
+                        Collections.<String>emptySet())) {
+                    for (String reader : readers.getOrDefault(reply,
+                            Collections.<String>emptyList())) {
+                        if (!reader.equals(occurrence.id())
+                                && legs.add(reader)) {
+                            pending.add(reader);
+                        }
+                    }
+                }
+            }
+        }
+        return legs;
     }
 
     Set<String> sendersOf(OccurrenceAddress occurrence) {
