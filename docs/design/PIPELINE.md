@@ -3179,7 +3179,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    and ended over ssh; one that has not read the shared part within 120 s gives its questions back
    to the other pairs (SGF7-adhoc-10: one pair beside its 16 GB composer ran 315 z3 runs in the
    30 min decide budget and left questions undecided). Their ssh connections open IN WAVES: at most
-   `Z3Incremental#SSH_STARTS_PER_HOST` (4) a host until each shell prints its pid, so sshd's
+   `Z3Incremental#SSH_STARTS_PER_HOST` (4) a host until each shell prints its pid (the slot given back
+   by the z3's reader as that line comes or its output ends, never by its pair's driver), so sshd's
    MaxStartups refuses none (48 at once to one lift: 12 refused; 4 at a time: none); one refused
    before its shell ran is started again, at most `SSH_ATTEMPTS` (3) times, a second apart more each
    time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst). A

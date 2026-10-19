@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.TreeSet;
@@ -169,6 +170,40 @@ public class Z3IncrementalTest {
         }
         assertTrue(Integer.parseInt(Files.readAllLines(
                 ssh.resolveSibling("ssh.busy")).get(0).trim()) > 2);
+    }
+
+    /**
+     * EIGHT PAIRS ON ONE HOST, ITS ssh STARTS IN WAVES OF
+     * {@link Z3Incremental#SSH_STARTS_PER_HOST}: a wave's slot is given back
+     * as each shell prints its pid, whatever its pair's driver does, so
+     * every engine starts and every question is answered (CAN9-adhoc-13: a
+     * slot given back only by its pair's driver, itself waiting for a slot,
+     * left 4 z3s a host started and the decide waiting for ever).
+     */
+    @Test(timeout = 120000L)
+    public void eightPairsOnOneHostStartInWavesAndAllAnswer()
+            throws Exception {
+        Path visible = folder.newFolder("waves-visible").toPath();
+        Path ssh = ScopedFixture.ssh(folder.newFolder("waves").toPath());
+        Z3 solver = new Z3(fake(), 30000L, 2048, Arrays.asList(
+                new Z3.Room("far", 8 * 2 * Z3Incremental.PAIR_SLOT_MB,
+                        Arrays.asList(ssh.toString(), "far"))), visible);
+        java.util.concurrent.ExecutorService askers =
+                java.util.concurrent.Executors.newFixedThreadPool(16);
+        try (Z3Incremental scopes = new Z3Incremental(solver,
+                output -> output.write("(declare-const x Int)\n"), 8)) {
+            List<java.util.concurrent.Future<Z3.Answer>> asked =
+                    new ArrayList<java.util.concurrent.Future<Z3.Answer>>();
+            for (int at = 0; at < 16; at++) {
+                asked.add(askers.submit(() -> scopes.ask(output ->
+                        output.write("; sat\n"), null, false, 0L)));
+            }
+            for (java.util.concurrent.Future<Z3.Answer> each : asked) {
+                assertEquals("sat", each.get().status());
+            }
+        } finally {
+            askers.shutdownNow();
+        }
     }
 
     private Path fake() throws IOException {

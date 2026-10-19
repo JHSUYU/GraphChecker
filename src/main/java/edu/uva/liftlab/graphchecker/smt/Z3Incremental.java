@@ -962,7 +962,7 @@ public final class Z3Incremental implements AutoCloseable {
          *  ({@link #CANCEL_GRACE_MILLIS}); 0: none. */
         private Turn signalTurn;
         private long signalDue;
-        private final AtomicBoolean handshaking = new AtomicBoolean();
+        private volatile AtomicBoolean handshaking = new AtomicBoolean();
         private int refusals;
 
         Engine(Pair pair, int arithmetic) {
@@ -1003,18 +1003,19 @@ public final class Z3Incremental implements AutoCloseable {
             List<String> command = Z3.command(solver.executable(),
                     pair.slotMb, life);
             Process started;
+            AtomicBoolean handshake = null;
             try {
                 if (remote) {
                     command = remote(pair.room, command,
                             files.of(arithmetic));
-                    handshake();
+                    handshake = handshake();
                 }
                 ProcessBuilder builder = new ProcessBuilder(command);
                 builder.redirectErrorStream(true);
                 started = builder.start();
             } catch (IOException notLaunched) {
                 if (remote) {
-                    handshook();
+                    handshook(handshake);
                     lose(notLaunched.toString());
                 }
                 return false;
@@ -1038,17 +1039,22 @@ public final class Z3Incremental implements AutoCloseable {
             cancelDeadline = 0L;
             signalTurn = null;
             signalDue = 0L;
+            AtomicBoolean shaking = handshake;
             Thread reader = new Thread(() -> {
                 try (BufferedReader output = new BufferedReader(
                         new InputStreamReader(started.getInputStream(),
                                 StandardCharsets.UTF_8))) {
                     for (String line = output.readLine(); line != null;
                          line = output.readLine()) {
+                        if (line.trim().startsWith(PID.trim())) {
+                            handshook(shaking);
+                        }
                         pair.printed.add(new Line(this, born, line));
                     }
                 } catch (IOException ended) {
                     // Its end, below.
                 }
+                handshook(shaking);
                 pair.printed.add(new Line(this, born, null));
             }, "graphchecker-z3-scope-reader");
             reader.setDaemon(true);
@@ -1126,7 +1132,6 @@ public final class Z3Incremental implements AutoCloseable {
             if (remote && pid <= 0L && text.startsWith(PID.trim())) {
                 // Its shell's first line, before anything z3 prints.
                 pid = pidOf(text.substring(PID.trim().length()));
-                handshook();
                 return;
             }
             Mark head = expected.peekFirst();
@@ -1327,7 +1332,7 @@ public final class Z3Incremental implements AutoCloseable {
             }
         }
 
-        private void handshake() {
+        private AtomicBoolean handshake() {
             if (refusals > 0) {
                 try {
                     Thread.sleep(SSH_RETRY_MS * refusals);
@@ -1338,11 +1343,12 @@ public final class Z3Incremental implements AutoCloseable {
             SSH_STARTS.computeIfAbsent(pair.room.host,
                     host -> new Semaphore(SSH_STARTS_PER_HOST))
                     .acquireUninterruptibly();
-            handshaking.set(true);
+            handshaking = new AtomicBoolean(true);
+            return handshaking;
         }
 
-        private void handshook() {
-            if (handshaking.compareAndSet(true, false)) {
+        private void handshook(AtomicBoolean handshake) {
+            if (handshake != null && handshake.compareAndSet(true, false)) {
                 SSH_STARTS.get(pair.room.host).release();
             }
         }
@@ -1482,7 +1488,7 @@ public final class Z3Incremental implements AutoCloseable {
 
         /** Its z3 ended, if running, and what it printed dropped. */
         void stop() {
-            handshook();
+            handshook(handshaking);
             Process ending = process;
             if (ending == null) return;
             long ended = pid;
