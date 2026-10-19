@@ -1413,7 +1413,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    static boolean pairs(String readerNode, String writerNode,
+    public static boolean pairs(String readerNode, String writerNode,
                          boolean readerClient, boolean writerClient) {
         return readerClient || writerClient || readerNode.equals(writerNode);
     }

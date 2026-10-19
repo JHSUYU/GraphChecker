@@ -2892,6 +2892,7 @@ public class ComposerTest {
                             readings, derived,
                             Collections.<String, String>emptyMap(),
                             Collections.<String>emptySet(),
+                            Collections.<String>emptySet(),
                             Collections.<String>emptySet()));
             RowCodec.writeAll(dir.obligations(), explored || forced
                             ? Collections.singletonList(settled)

@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.Held;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -155,6 +156,7 @@ public final class Corpus implements Arms.Rows {
     private final List<SessionReader> sessions;
     private final Map<String, SessionReader> sessionById =
             new LinkedHashMap<String, SessionReader>();
+    private final Set<String> clientNodes = ConcurrentHashMap.newKeySet();
     private final Map<String, SmtLowering> loweringById =
             new ConcurrentHashMap<String, SmtLowering>();
     private final RowHold hold;
@@ -1636,6 +1638,9 @@ public final class Corpus implements Arms.Rows {
             indexSchedule(session.sessionId(), of.schedule);
         }
         sessionById.put(session.sessionId(), session);
+        if (session.manifest() != null) {
+            clientNodes.addAll(session.manifest().clientNodes());
+        }
         for (ActivationRow row : session.activations()) {
             if (apart) continue;
             remember(session.sessionId(), row.occurrence());
@@ -1863,6 +1868,10 @@ public final class Corpus implements Arms.Rows {
 
     public List<SessionReader> sessions() {
         return sessions;
+    }
+
+    boolean client(NodeId node) {
+        return node != null && clientNodes.contains(node.render());
     }
 
     List<SessionReader> everySession() {
