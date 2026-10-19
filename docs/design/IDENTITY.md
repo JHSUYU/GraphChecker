@@ -411,9 +411,9 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 | shape | calls |
 |---|---|
 | receiver starts | `Thread.start()`, `ForkJoinTask.fork()`/`invoke()` |
-| submissions | `execute`, `submit`, `schedule`, `invokeAll` with a `Runnable`, `Callable`, `ForkJoinTask` or `Collection` (one start per element) argument |
+| submissions | `execute`, `submit`, `schedule`, `invokeAll`, `newTimeout` with a `Runnable`, `Callable`, `ForkJoinTask`, `Collection` (one start per element) or Netty `TimerTask` argument (any shading: a type `*.netty.util.TimerTask` names the class by its suffix; HBase's client schedules every retry on a `HashedWheelTimer`, so a retried call carries the context of the call that failed) |
 | queue submissions and claims | `BlockingQueue` `put`/`offer`/`add` (and deque ends); `take`/`poll` (and deque ends) return the work |
-| work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run` |
+| work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run`, Netty `TimerTask.run(Timeout)` |
 | timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`; notifiers and untimed waits as signal state |
 
 A start made under a hop (§3) captures the starter's scope with the carrier
