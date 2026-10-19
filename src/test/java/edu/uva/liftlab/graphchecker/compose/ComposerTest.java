@@ -1657,6 +1657,86 @@ public class ComposerTest {
     }
 
     @Test
+    public void aClockAnArrivalCarriesMovesUnderItsOwnArmBeforeAnyFault()
+            throws Exception {
+        OccurrenceAddress reader = occurrence("case/dn0", "REGION.report",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Master#report#4", 0));
+        OccurrenceAddress activating = occurrence("case/dn0",
+                "REGION.activate", CausalContext.of(Role.of("MASTER"), "", 1),
+                frame("Master#run#2", 0));
+        Endpoint sent = Endpoint.of(PRODUCER, "PORT.time", at("export#1", 0),
+                0);
+        LocationId active = LocationId.of(LocationKind.INSTANCE, "10",
+                "activeTime");
+        Object[][] table = {
+                {"carried", "(> vh read_t1)", ClaimKind.CLOCK_SKEW},
+                {"a fault also reaches it", "(or (> vh read_t1) " + MARKER
+                        + ")", ClaimKind.CLOCK_SKEW},
+                {"only a fault reaches it", MARKER, ClaimKind.MARKER_FLIPPED},
+        };
+        for (Object[] row : table) {
+            String name = (String) row[0];
+            Path iteration = folder.newFolder("carried-" + name.replace(' ',
+                    '-')).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(activating);
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    false, true);
+            session.marker("false");
+            session.root(PRODUCER, "ROOT.T0", "clock_t0", RootKind.CLOCK,
+                    "700");
+            session.decision(PRODUCER, "nn#u1", "(or (> clock_t0 0) (not "
+                    + "(> clock_t0 0)))", "ROOT.T0", 700L);
+            session.expression("EXPR.v1.t0", symbol("clock_t0", "J"));
+            session.export(sent, "EXPR.v1.t0", "J", 1L, "700");
+            session.root(activating, "ROOT.T1", "clock_t1", RootKind.CLOCK,
+                    "800");
+            session.decision(activating, "activate#u1", "(or (> clock_t1 0) "
+                    + "(not (> clock_t1 0)))", "ROOT.T1", 800L);
+            session.expression("EXPR.v1.zero", integer("J", 0L));
+            session.expression("EXPR.v1.t1", symbol("clock_t1", "J"));
+            session.writes.add(WriteRow.initial("s0", ++session.seq,
+                    Endpoint.of(activating, "Master#<clinit>#1:INITIAL",
+                            at("w#0", 0), 0), active, 1L, "EXPR.v1.zero",
+                    "J"));
+            session.write(Endpoint.of(activating, "Master#activate#9:WRITE",
+                    at("w#1", 0), 0), active, 2L, "EXPR.v1.t1");
+            session.attach(Endpoint.of(reader, "PORT.time", at("attach#1",
+                    0), 0), "vh", "J", "700", sent);
+            session.read(Endpoint.of(reader, "Master#activeTime#5:READ",
+                    at("r#1", 0), 0), active, 2L, "read_t1", "J", "800");
+            session.target((String) row[1], false, true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, reader, 4,
+                    StaticScopeMap.empty());
+            String pairing = composition.recordedPairing(
+                    composition.disjuncts().get(0).selector());
+            assertTrue(name + ": the arrival is held by its own run's arm: "
+                    + pairing, pairing.contains("message_arm__"));
+            assertFalse(name + ": not by the value it carried, which the "
+                    + "producer's clock moves: " + pairing,
+                    pairing.contains("(= vh 700)"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(name + ": " + decision.claim().gaps(), row[2],
+                    decision.claim().kind());
+            if (row[2] != ClaimKind.CLOCK_SKEW) continue;
+            String moved = decision.claim().movedRoots().get("clock_t0");
+            assertNotNull(name + ": the producer's clock carries the skew: "
+                    + decision.claim().movedRoots(), moved);
+            assertTrue(name + ": past the reading the report is compared "
+                    + "with: " + moved, Long.parseLong(moved.trim()) > 800L);
+            assertFalse(name + ": the nearer world injects no fault: "
+                    + decision.claim().movedRoots(),
+                    decision.claim().movedRoots().containsKey(MARKER_ROOT));
+        }
+    }
+
+    @Test
     public void theInitialIsTheWriterAtVersionZero() throws Exception {
         String map = "java/util/concurrent/ConcurrentHashMap";
         LocationId pools = LocationId.of(LocationKind.MAP, "21", "-3");

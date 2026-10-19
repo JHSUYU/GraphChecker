@@ -279,9 +279,14 @@ public final class ClaimPolicy {
         if (unasked != null) return unasked;
         Reading reading = new Reading(composition, asks, gaps,
                 selfCheckCapMillis);
-        Decision claimed = reading.movedRoot(false);
-        if (claimed == null) claimed = reading.clockOrPairing();
-        if (claimed == null) claimed = reading.movedRoot(true);
+        Decision claimed = null;
+        for (int faults = 0; claimed == null
+                && faults <= reading.mostFaults(); faults++) {
+            reading.faults = faults;
+            claimed = reading.movedRoot(false);
+            if (claimed == null) claimed = reading.clockOrPairing();
+            if (claimed == null) claimed = reading.movedRoot(true);
+        }
         if (claimed == null) claimed = reading.observedElsewhere();
         return claimed != null ? claimed : reading.noWitness();
     }
@@ -327,6 +332,7 @@ public final class ClaimPolicy {
         private final boolean clockDriven;
         private final boolean polarityDecides;
         private Outcome recorded;
+        private int faults;
         private final Set<String> partial = new LinkedHashSet<String>();
 
         Reading(Composer.Composition composition, Disjunction asks,
@@ -347,20 +353,22 @@ public final class ClaimPolicy {
             }
             recorded = outcomes.isEmpty() ? null : outcomes.get(0);
             cells = composition.clockCells();
+            List<String> pairings = composition.recordedPairings();
             asHappened = new ArrayList<String>(pins(composition, cells));
-            asHappened.addAll(composition.recordedPairings());
+            asHappened.addAll(pairings);
             asRecorded = recorded != null && recorded.witness()
                     && !asHappened.isEmpty()
                     ? outcome(composition, asks, recorded.valuation(),
                             asHappened, false) : null;
             recordingDecides = asRecorded != null
                     && asRecorded.answer().unsat();
-            clockDriven = recordingDecides && !cells.isEmpty()
-                    && outcome(composition, asks, recorded.valuation(),
-                            pins(composition, cells), false).answer()
-                            .unsat();
+            Outcome ownPairings = !recordingDecides || cells.isEmpty() ? null
+                    : pairings.isEmpty() ? recorded
+                    : outcome(composition, asks, recorded.valuation(),
+                            pairings, false);
+            clockDriven = ownPairings != null && ownPairings.witness();
             if (clockDriven) {
-                recorded = leastClocks(composition, asks, recorded, cells,
+                recorded = leastClocks(composition, asks, ownPairings, cells,
                         true, gaps);
                 outcomes.set(0, recorded);
             }
@@ -477,8 +485,22 @@ public final class ClaimPolicy {
             return null;
         }
 
+        private int mostFaults() {
+            int most = 0;
+            for (Outcome outcome : outcomes) {
+                most = Math.max(most, faultsOf(outcome));
+            }
+            return most;
+        }
+
+        private int faultsOf(Outcome outcome) {
+            return composition.faultsMoved(
+                    outcome.valuation().moved().keySet());
+        }
+
         private boolean ownCandidate(Outcome outcome, boolean configuration) {
             return outcome.valuation().ordinal() != 0 && outcome.witness()
+                    && faultsOf(outcome) == faults
                     && ranked(composition, outcome, configuration)
                     && composition.unplanted(outcome.valuation().moved()
                     .keySet()).isEmpty()
@@ -500,6 +522,7 @@ public final class ClaimPolicy {
 
         private boolean movedWitness(Outcome outcome, boolean configuration) {
             return outcome.valuation().ordinal() != 0 && outcome.witness()
+                    && faultsOf(outcome) == faults
                     && ranked(composition, outcome, configuration)
                     && !unplanted(composition, outcome, partial, gaps);
         }
@@ -507,7 +530,8 @@ public final class ClaimPolicy {
         Decision clockOrPairing() {
             for (Outcome outcome : outcomes) {
                 if (!outcome.witness()
-                        || !outcome.valuation().moved().isEmpty()) {
+                        || !outcome.valuation().moved().isEmpty()
+                        || faults != 0) {
                     continue;
                 }
                 ClaimKind still = mechanism(composition, asks, outcome,
@@ -1005,12 +1029,12 @@ public final class ClaimPolicy {
             }
         }
         Outcome witness = new Outcome(outcome.valuation(),
-                runsOn(composition, kept), outcome.answer(),
+                runsOn(composition, outcome, kept), outcome.answer(),
                 outcome.selected(), outcome.arms);
         long deadline = System.currentTimeMillis() + REFINE_BUDGET_MS;
         if (!needed && kept.size() < cells.size()) {
             Outcome all = outcome(composition, asks, outcome.valuation(),
-                    runsOn(composition, cells), false, outcome,
+                    runsOn(composition, outcome, cells), false, outcome,
                     REFINE_BUDGET_MS);
             if (all.witness()) return all;
         }
@@ -1019,7 +1043,7 @@ public final class ClaimPolicy {
             List<String> tried = new ArrayList<String>(kept);
             tried.addAll(outside);
             Outcome within = outcome(composition, asks, outcome.valuation(),
-                    runsOn(composition, tried), false, outcome,
+                    runsOn(composition, outcome, tried), false, outcome,
                     REFINE_BUDGET_MS);
             if (within.witness()) {
                 kept = tried;
@@ -1037,7 +1061,7 @@ public final class ClaimPolicy {
             }
             kept.add(order.get(at));
             Outcome asked = outcome(composition, asks, outcome.valuation(),
-                    runsOn(composition, kept), false, outcome, left);
+                    runsOn(composition, outcome, kept), false, outcome, left);
             if (asked.witness()) {
                 witness = asked;
             } else {
@@ -1114,6 +1138,13 @@ public final class ClaimPolicy {
             }
         }
         return roomy;
+    }
+
+    private static List<String> runsOn(Composer.Composition composition,
+                                       Outcome witness, List<String> cells) {
+        List<String> pinned = new ArrayList<String>(witness.pinned());
+        pinned.addAll(runsOn(composition, cells));
+        return pinned;
     }
 
     private static List<String> runsOn(Composer.Composition composition,
