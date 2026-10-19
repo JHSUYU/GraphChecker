@@ -170,6 +170,12 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   STREAM-CAP is timing-sensitive; never edit a script a running gate executes (NFS: "Stale file handle").
 
 **D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore.**
+- STATUS (2026-10-18 evening): D1 merged into solr-int (15114b420). D2, the generational bound (solr-explore
+  a2bd510cb), is NOT merged: its review (analysis/solr-2026-10-18/resume/D2-REVIEW.txt) found UNSAT/NOT_FLIPPABLE
+  inheritance unsound in three ways (moving reads invisible to the guard, free-window writes, WINDOW arms), and it
+  saved little (14 round 4: 523 -> 427; the old 12,438 were view guards that 3.4 removes). The final round runs the
+  study checks at world depth 0 (owner), where the bound never fires. Redo D2 with the review's fixes, and the
+  generation-1 redundancy study (analysis/solr-2026-10-18/gen1/), before any depth > 0 default.
 - D1 done (gated): solr-int 5396683d6 merged (f06ec4845); the key stays the whole-guard key -- the parked solr-armkey
   key (3bfdca7bc, cherry-picked in ee0edfcb1) is reverted: `explore.KeyGate` (kept as the key's merge gate,
   OPERATIONS §6) finds on Z3S-18413 one key folding an UNSAT depth-1 fault world with two satisfiable siblings
