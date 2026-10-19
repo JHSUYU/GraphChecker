@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-tree=$(cd "${1:?usage: build.sh <tree> [<class>#<method>[@<window>]...]}" && pwd -P)
+tree=$(cd "${1:?usage: build.sh <tree> [<class>#<method>[@startup]...]}" && pwd -P)
 shift
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
 source "${graphchecker}/tools/lib/gc-env.sh"
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export PATH=${JAVA_HOME}/bin:/usr/lib/maven/bin:${PATH}
-repository=${HBASE_MAVEN_REPO:-${GC_M2}/$(basename "${tree}")}
+repository=${HBASE_MAVEN_REPO:-${GC_M2}/hbase${tree//\//_}}
 jar=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT.jar
 full=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 [[ -f "${jar}" && -f "${full}" ]] || { echo "no ${jar}: run mvn package in ${graphchecker} first" >&2; exit 2; }
@@ -42,12 +42,11 @@ fi
 missing=0
 for spec in "$@"; do
   class=${spec%%#*}
-  method=${spec#*#}
-  window=""
-  if [[ "${method}" == *@* ]]; then
-    window=${method#*@}
-    method=${method%@*}
-  fi
+  IFS=@ read -r method window <<<"${spec#*#}"
+  case "${window}" in
+    ""|startup) ;;
+    *) echo "${spec}: unknown window @${window}" >&2; exit 2 ;;
+  esac
   module=$(module_of "${class}")
   size=$(grep -hoE '@Tag\((Small|Medium|Large)Tests\.TAG\)' "${module}/src/test/java/${class//.//}.java" \
     | head -1 | sed -E 's/@Tag\((.*)\.TAG\)/\1/')
