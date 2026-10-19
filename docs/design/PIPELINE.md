@@ -2646,6 +2646,10 @@ consecutive paths sharing a median of none -- so the bound this replaced, 0.15 o
 each go before its next ask (`analysis/solr-2026-10-18/hold/`: an LRU replay of 40's asks misses 3968 times at
 2293 MB, 461 at 5000, none at 8442). Held whole, 40 composes in 396 s against 1426 (3859 sessions read again,
 110 GB), the old generation's peak 29 % against 27 %, the formula byte for byte the same (OPTIMIZATIONS 1.51).
+Every held row is let go of before the body is lowered (`Corpus#letGo`, `RowHold#letGo`; read again from its
+files if a path is composed again): SGF9-adhoc-05's 340 paths composed with all 427 sessions held, and its
+16384 MB composer ran out of heap building the 1083 MB body (11.1 of 13.4 GB of old generation live after its
+last full collection); let go of first, the body is lowered in 44 s and COMPOSE ends in 1391 s.
 Every other row of every session stays held --
 decisions, activations, attaches, exports, roots, targets, expressions, the gap kinds a corpus reads -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
 sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),

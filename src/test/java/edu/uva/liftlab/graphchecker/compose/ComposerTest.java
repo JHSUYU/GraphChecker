@@ -961,6 +961,8 @@ public class ComposerTest {
                 held.readAgain()[0] > 0);
         assertEquals("under the share nothing is let go of", 0L,
                 room.readAgain()[0]);
+        assertEquals("every row let go of before the body is lowered", 0L,
+                room.held());
         assertEquals("the same formula held whole", all.body(),
                 kept.body());
         assertEquals("three paths", 3, all.disjuncts().size());

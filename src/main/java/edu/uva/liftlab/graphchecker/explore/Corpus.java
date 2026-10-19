@@ -496,6 +496,10 @@ public final class Corpus implements Arms.Rows {
         return hold == null ? 0L : hold.holding();
     }
 
+    public void letGo() {
+        if (hold != null) hold.letGo();
+    }
+
     public long[] readAgain() {
         return hold == null ? new long[2] : hold.readAgain();
     }
