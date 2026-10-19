@@ -197,9 +197,11 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   573 unneeded leaves at their recording (they planted `""` and every replay failed at `Slice.<init>`); the 8 bug
   checks' witness plants are unchanged (`analysis/solr-2026-10-18/explore/nearest/`). An attach's value is read
   by one rule in COMPOSE and EXPLORE (`VmTermLowering#received`), so a String handoff no arm states is pinned to its
-  arrival. It answers none of 14's 108 UNPRODUCIBLE_ANSWER refusals (rounds 0-2, `nearest/unprod-*`): each is the
-  state.json shard-state control whose one producer arm's delivered expression does not lower (gap
-  DECLARATION_MISSING "arm dropped: its delivered expression EXPR.34cb5d34c476f07d does not lower") -- open.
+  arrival. 14's 108 UNPRODUCIBLE_ANSWER refusals (rounds 0-2) were the state.json shard-state control whose one
+  producer arm dropped: its map held a `DocRouter.Range` bound rendered by `Integer.toHexString`, which the VM records
+  as `unsupportedPrimitiveStringConversion` and the lowering refused; it now lowers the unsigned radix renderings
+  exactly (`SmtLowering#unsignedString`, VM.md String row), and the 108 answer 60 SAT, 45 UNSAT, 1 refused at another
+  arm, 2 solver timeouts (`nearest/unprod-hex-*`).
 - Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
   round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
   6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains
