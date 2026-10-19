@@ -8,6 +8,8 @@ import soot.Local;
 import soot.Scene;
 import soot.Trap;
 import soot.Unit;
+import soot.Value;
+import soot.jimple.AssignStmt;
 import soot.jimple.InvokeExpr;
 import soot.jimple.InvokeStmt;
 import soot.jimple.NullConstant;
@@ -18,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -70,6 +73,49 @@ public class WeaveTest {
             assertSame(start.toString(), task, filed.getArg(1));
             assertEquals(start.toString(), row[2], filed.getArg(2));
         }
+    }
+
+    @Test
+    public void aContinuationIsCarriedAndStartedWhereItIsRegistered()
+            throws Exception {
+        String future = "java.util.concurrent.CompletableFuture";
+        String action = "java.util.function.BiConsumer";
+        JimpleScene.load("public interface java.util.concurrent.CompletionStage"
+                        + " { }",
+                "public class " + future + " extends java.lang.Object"
+                        + " implements java.util.concurrent.CompletionStage { }",
+                "public interface " + action + " { }",
+                "application public class a.Listener { public static void"
+                        + " listen(" + future + ", " + action + ") { " + future
+                        + " r0; " + action + " r1; r0 := @parameter0: " + future
+                        + "; r1 := @parameter1: " + action + "; virtualinvoke"
+                        + " r0.<" + future + ": " + future + " whenComplete("
+                        + action + ")>(r1); return; } }");
+        Body body = JimpleScene.method("<a.Listener: void listen(" + future
+                + "," + action + ")>").getActiveBody();
+        Stmt registered = (Stmt) new ArrayList<>(body.getUnits()).get(2);
+        Local registrant = body.getParameterLocal(0);
+        assertEquals(1, CausynthPipeline.fileStarts(body, registered,
+                "<a.Listener: void listen()>#u2",
+                CausynthPipeline.HookCatalog.concolic()));
+        InvokeExpr filed = startWorkBefore(body, registered);
+        Value carried = registered.getInvokeExpr().getArg(0);
+        assertSame(carried, filed.getArg(1));
+        assertSame(registrant, filed.getArg(2));
+        Stmt carrying = null;
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof AssignStmt && ((AssignStmt) unit).getLeftOp()
+                    == carried) {
+                carrying = (Stmt) unit;
+            }
+        }
+        assertEquals("carry", carrying.getInvokeExpr().getMethodRef()
+                .getName());
+        assertSame(body.getParameterLocal(1),
+                carrying.getInvokeExpr().getArg(0));
+        assertNotNull(Class.forName(carrying.getInvokeExpr().getMethodRef()
+                .getDeclaringClass().getName()).getMethod("carry",
+                Class.forName(action)));
     }
 
     @Test

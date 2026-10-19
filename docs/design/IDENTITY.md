@@ -412,6 +412,7 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 |---|---|
 | receiver starts | `Thread.start()`, `ForkJoinTask.fork()`/`invoke()` |
 | submissions | `execute`, `submit`, `schedule`, `invokeAll`, `newTimeout` with a `Runnable`, `Callable`, `ForkJoinTask`, `Collection` (one start per element) or Netty `TimerTask` argument (any shading: a type `*.netty.util.TimerTask` names the class by its suffix; HBase's client schedules every retry on a `HashedWheelTimer`, so a retried call carries the context of the call that failed) |
+| continuations | a `CompletionStage`'s `whenComplete`, `handle`, `thenApply`, `thenAccept`, `thenRun`, `thenCompose`, `exceptionally`, `thenCombine`, `thenAcceptBoth`, `runAfterBoth`, `applyToEither`, `acceptEither`, `runAfterEither` (and each `*Async`) with a `Function`, `BiFunction`, `Consumer`, `BiConsumer` or `Runnable` argument |
 | queue submissions and claims | `BlockingQueue` `put`/`offer`/`add` (and deque ends); `take`/`poll` (and deque ends) return the work |
 | work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run`, Netty `TimerTask.run(Timeout)` |
 | timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`; notifiers and untimed waits as signal state |
@@ -438,6 +439,25 @@ list of the creator's frame receivers named each one by a container relation, so
 of their fields was symbolic: in hdfs-17960 a planned checkpoint handler's `Thread.init` read its
 own `contextClassLoader` symbolically, and the image savers' `core-default.xml` parse was tracked
 row by row.
+
+A continuation is a start at its registration and a claim where it runs. The weave hands the
+registration a carrier in place of the function (`runtime/Continuations#carry`, filed as the
+start's carrier, `CausynthPipeline#carryContinuations`) whose functional method claims itself
+around the function (`Identity#claimStart(carrier, true)`). Whether the stage was complete when
+the continuation was registered decides where it runs: inline on the registering thread, or later
+on whichever thread completes the stage -- in HBase's async client the event loop, inside the
+reply-leg occurrence of the previous call's response. Both stand at one address: the claim stands
+apart from whatever occurrence its thread runs (`State#standApart`: an opaque region below which
+no region folds), its index runs from the registrant's scope base through the start frame (a
+claim on another thread makes the start's frames its scope base), and the thread's inbound and
+request in hand are put aside until the claim ends (`MessageDoors#setAside`), so a request the
+continuation makes starts a level of its own and stands in the registrant's context, not on the
+reply. Folded into the reply leg, hbase-adhoc-11's `MoveRegion` went out under the meta scan's
+reply anchor when the reply came after the registration and under the test's root when it came
+before (`OCCURRENCE_ANCHOR_UNMATCHED`, run R9-11). A chain that re-registers per poll (a
+procedure's `getProcedureResult` polls) still nests one start frame per poll, so a request after
+it stands under the poll count (hbase-adhoc-21 keeps its synchronous workaround). Solr's and HDFS's class roots register none (Solr's
+`Http2SolrClient` listeners are Jetty's), so their addresses are unchanged.
 
 The lineage scope (`plan/LineageScan`, run by `run_engine.sh campaign_lineage_classes` over
 `causynth_lineage_roots`) weaves the start, claim and timed-wait hooks into every class of the

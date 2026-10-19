@@ -1703,6 +1703,9 @@ public final class CausynthPipeline {
         }
     }
 
+    private static final String CONTINUATIONS_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.Continuations";
+
     private static final String LISTINGS_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.Listings";
 
@@ -1885,8 +1888,40 @@ public final class CausynthPipeline {
                     carrier, submittedTo);
             started++;
         }
+        started += carryContinuations(body, call, site, submittedTo, before,
+                refs);
         if (started > 0) insertBeforeSequence(body, stmt, before);
         return started;
+    }
+
+    private static int carryContinuations(Body body, InvokeExpr call,
+                                          String site, Value submittedTo,
+                                          List<Unit> before,
+                                          HookCatalog refs) {
+        SootMethodRef callee = call.getMethodRef();
+        if (!(call instanceof InstanceInvokeExpr)
+                || !WorkStartSites.registersContinuation(callee.name(),
+                        hierarchyOf(callee.declaringClass()))) {
+            return 0;
+        }
+        int carried = 0;
+        for (int index = 0; index < call.getArgCount(); index++) {
+            Type declared = callee.getParameterType(index);
+            Value action = call.getArg(index);
+            if (!(action instanceof Local) || !(declared instanceof RefType)
+                    || !WorkStartSites.continues(
+                            ((RefType) declared).getClassName())) {
+                continue;
+            }
+            Local wrapped = newTraceLocal(body, declared,
+                    "$causynthContinuation");
+            refs.carry(before, wrapped, action);
+            refs.bracket(before, Hook.START_WORK, StringConstant.v(site),
+                    wrapped, submittedTo);
+            call.setArg(index, wrapped);
+            carried++;
+        }
+        return carried;
     }
 
     private static WorkStartSites.Types hierarchyOf(Type type) {
@@ -3485,6 +3520,13 @@ public final class CausynthPipeline {
 
         Unit bracket(Collection<Unit> units, Hook hook, Value... args) {
             return bracketed(units, invoke(ref(hook), args));
+        }
+
+        Unit carry(Collection<Unit> units, Local wrapped, Value action) {
+            Type type = wrapped.getType();
+            return bracketed(units, invokeTo(wrapped, Scene.v().makeMethodRef(
+                    phantomClass(CONTINUATIONS_CLASS), "carry",
+                    Collections.singletonList(type), type, true), action));
         }
 
         Unit bracket(Collection<Unit> units, Value target, Hook hook,

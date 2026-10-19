@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import org.junit.Before;
 import org.junit.Test;
@@ -152,6 +153,58 @@ public class IdentityTest {
             Identity.regionExit(null);
             return first;
         }));
+    }
+
+    @Test
+    public void aContinuationStandsAtItsRegistrantsAddressWhereverItRuns()
+            throws Exception {
+        String site = "HBASE_RPC#REQUEST:MasterService.MoveRegion";
+        List<String> stood = new ArrayList<String>();
+        for (boolean inline : new boolean[] {true, false}) {
+            reset();
+            Object client = new Object();
+            Object loop = new Object();
+            RuntimeTraceContext.registerSource(client, DN);
+            RuntimeTraceContext.registerSource(loop, DN);
+            long request = RuntimeTraceContext.beginRequest(client, "test");
+            long test = Identity.enterFrame("<a.Test: void move()>#u2", null);
+            String[] seen = new String[1];
+            BiConsumer<Object, Object> carried = Continuations.carry(
+                    (value, error) -> {
+                        OccurrenceAddress at = Identity.occurrence(DN.key(),
+                                "REGION.call", true);
+                        seen[0] = at.render() + " sends " + Identity.endpointAt(
+                                Identity.currentOccurrence(DN.key()), site, 0)
+                                .id();
+                        Identity.regionExit(null);
+                    });
+            Identity.startWork("<a.Admin: void move()>#u4", carried, null);
+            if (inline) {
+                carried.accept(null, null);
+            } else {
+                on(() -> {
+                    long reply = RuntimeTraceContext.beginRequest(loop,
+                            "reply");
+                    long finish = Identity.enterFrame(
+                            "<a.Connection: void finishCall()>#u3", null);
+                    Identity.occurrence(DN.key(), "REGION.finish", true);
+                    carried.accept(null, null);
+                    String after = Identity.currentOccurrence(DN.key())
+                            .regionId();
+                    Identity.regionExit(null);
+                    Identity.exitFrame(finish);
+                    RuntimeTraceContext.endRequest(reply);
+                    seen[0] += " then " + after;
+                });
+            }
+            Identity.exitFrame(test);
+            RuntimeTraceContext.endRequest(request);
+            stood.add(seen[0].replace(" then REGION.finish", ""));
+        }
+        assertEquals(stood.get(0), stood.get(1));
+        assertEquals(DN.key() + "/region/REGION.call/ctx:Root:CLIENT/test#1"
+                + "/idx:<a.Test: void move()>#u2@0/<a.Admin: void move()>#u4@0",
+                stood.get(0).substring(0, stood.get(0).indexOf(" sends ")));
     }
 
     private static String opened(String region) {
