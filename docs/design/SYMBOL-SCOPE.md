@@ -485,14 +485,21 @@ flipped at their fault decisions -- one predicate, PLAN's.
 
 A watch callback's occurrence is named only by the first version it reads (IDENTITY §7.2,
 `MessageDoors#fetched`), so a door before that read ran in no occurrence: nothing records it, nothing
-mints or plants it, and a read it failed would leave the callback unnamed. Solr's data read
-(`SolrZkClient#getData`) therefore places its door after the read's hook, where the reply reaches the
-caller after `ZkCmdExecutor`'s retries: the fault is the reply lost. ZooKeeper's client registers a
-data watch only with a delivered reply (`ClientCnxn#finishPacket`, `watchRegistration.register` for
-`rc == 0`) and re-sends only registered watches on reconnect, so the tree's fault arm removes the
-watch the read set on this client alone (`removeWatches(path, w, Data, true)`, its own failure only
-logged) and rethrows: the state a lost reply leaves, the external study's. Its other reads
-(`exists`, `getChildren`) name no occurrence and keep the door before the request.
+mints or plants it, and a read it failed would leave the callback unnamed. A data read
+(Solr's `SolrZkClient#getData`, HBase's `RecoverableZooKeeper#getData`) therefore places its door
+after the read's hook, where the reply reaches the caller after the client's retries: the fault is
+the reply lost. ZooKeeper's client registers a data watch only with a delivered reply
+(`ClientCnxn#finishPacket`, `watchRegistration.register` for `rc == 0`), while the server set it, so
+the tree's fault arm marks the read's watch (its watcher, the path) lost and rethrows; the server
+fires that watch and the client, which has no watcher registered for it, drops the event: the tree
+drops that watcher's next data event for the path (never a `NodeChildrenChanged`), and a later data
+read of the path with that watcher whose reply arrives heals it -- the state a lost reply leaves, the
+external study's. Solr drops it in its wrapped watcher's `ProcessWatchWithExecutor#process`; HBase
+wraps every watcher `RecoverableZooKeeper` hands ZooKeeper, its default watcher included
+(`CausynthWatch`, equal by the watcher it wraps, as ZooKeeper's watch sets compare). Removing the
+client's watch instead (`removeWatches`) delivers a `DataWatchRemoved` to the watcher, which re-reads
+and re-arms at once, a callback a lost reply never makes. The other reads (`exists`, `getChildren`)
+name no occurrence and keep the door before the request.
 
 **Demanded doors.** A local file operation is a door only where the root demand chose its call
 (§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
@@ -548,7 +555,12 @@ the system's expirer after the marker's test (`DoorWeave#guard`, `runtime.Sessio
 engine work): it expires the session of the door's owner -- the client whose method holds the door --
 at its server, which deletes the session's ephemeral nodes, and only then does the door throw; every
 later operation on that handle fails by itself and the client reconnects with a new session (Solr's
-`ConnectionManager`, `ZkController` re-registering its live node and elections). Planted on one call
+`ConnectionManager`, `ZkController` re-registering its live node and elections), or the server aborts
+(HBase's `ZKWatcher` on `Expired`: a master or region server whose session expired stops, its
+ephemeral master or region-server node gone). The expirer is the in-process ZooKeeper's: Solr's
+`CausynthSolrCluster` over its `ZkTestServer`s, HBase's `MiniZooKeeperCluster` over the servers of
+every started cluster (`ZooKeeperServer#expire`), its owner a `RecoverableZooKeeper` or a `ZooKeeper`.
+Planted on one call
 of a live session instead, the exception reaches a world no ZooKeeper does: Solr's Overseer exits its
 loop while its node's session, and the leader node no other node may take, live on
 (solr-bugs-overseer-lock-leak LL4). A system with no expirer, or one that knows no session of the
@@ -597,7 +609,17 @@ start of each read method, before `ZkCmdExecutor#retryOperation`: the caller see
 sees one after the retries), `SolrZkClient#exists(String,boolean)` by the moved-door rule, every
 retry lambda's own call a `DOOR_UNPLACED` row covered by its caller's door; the `SOLR_HTTP` and
 `SOLR_HTTP2` responses after `CausynthHttp#response` (in `HttpSolrClient#executeMethod` and
-`Http2SolrClient#processErrorsAndResponse`). HDFS's: the trunk line's `HADOOP_IPC` response in
+`Http2SolrClient#processErrorsAndResponse`). HBase's, the same doors on `RecoverableZooKeeper`, whose
+retry loop is inline: each public method takes its turn, runs the loop (moved unchanged into a private
+`*Retrying` method, whose own door call is a `DOOR_UNPLACED` covered by its caller's door), then calls
+its hook, so every door stands at the retry boundary: `ZooKeeper#setData`, `#create`, `#delete` and
+`#multiInternal` in `RecoverableZooKeeper#setData`, `#create`, `#delete` and `#multi` after
+`causynthWrote` (`causynthDeleted` for a delete, an empty hook; a multi's `causynthWrote(Iterable,
+List)` files every result first, so its door follows all of its writes, a delete-only multi's too);
+`ZooKeeper#getData` in the private `getData(String,Watcher,Boolean,Stat)` before `causynthReplied`
+(a lost reply, as Solr's), `#exists` and `#getChildren(String,Watcher)` in the private
+`exists`/`getChildren(String,Watcher,Boolean)`, which both public overloads call, before
+`causynthReading`. HDFS's: the trunk line's `HADOOP_IPC` response in
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
