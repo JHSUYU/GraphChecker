@@ -5492,8 +5492,45 @@ public final class SmtLowering {
         if ("valueOf".equals(operation)) {
             return javaValueOf(params, origin);
         }
+        Matcher radix = RADIX_STRING.matcher(firstNonBlank(operation, ""));
+        if (radix.matches()) {
+            return unsignedString(params, operation,
+                    "Integer".equals(radix.group(1)) ? 32 : 64,
+                    "Hex".equals(radix.group(2)) ? 4
+                            : "Octal".equals(radix.group(2)) ? 3 : 1, origin);
+        }
         return codecGap(firstNonBlank(operation, "unknown"),
                 "UNSUPPORTED_OPERATION", origin, Sort.STRING);
+    }
+
+    private static final Pattern RADIX_STRING = Pattern.compile(
+            "unsupportedPrimitiveStringConversion:java/lang/(Integer|Long)"
+                    + "\\.to(Hex|Octal|Binary)String\\([IJ]\\)"
+                    + "Ljava/lang/String;");
+
+    private Term unsignedString(JsonArray params, String operation, int bits,
+                                int shift, String origin) {
+        if (params.size() != 1) {
+            return codecGap(operation, "ARITY", origin, Sort.STRING);
+        }
+        Term value = dispatch(params.get(0), null, origin + ":unsigned");
+        if (value.sort != Sort.INT) {
+            return codecGap(operation, "NON_INTEGRAL_TERM", origin,
+                    Sort.STRING);
+        }
+        BigInteger radix = BigInteger.ONE.shiftLeft(shift);
+        String unsigned = "(mod " + value.text + " "
+                + BigInteger.ONE.shiftLeft(bits) + ")";
+        StringBuilder text = new StringBuilder("(str.++");
+        for (int at = (bits + shift - 1) / shift - 1; at >= 0; at--) {
+            BigInteger place = radix.pow(at);
+            String digit = "(str.at \"0123456789abcdef\" (mod (div "
+                    + unsigned + " " + place + ") " + radix + "))";
+            text.append(' ').append(at == 0 ? digit : "(ite (>= " + unsigned
+                    + " " + place + ") " + digit + " \"\")");
+        }
+        return Term.nonNullString(text.append(')').toString(),
+                value.precondition);
     }
 
     /**

@@ -6,11 +6,16 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
+import org.junit.Assume;
 import org.junit.Test;
 
+import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -161,6 +166,61 @@ public class StringIdentitiesTest {
                         + stated.length(), stated.toString().contains(
                 "(str.substr s 1 ") && stated.length()
                 < 100 * SmtLowering.NAMED_TEXT_CHARS);
+    }
+
+    @Test
+    public void anUnsignedRadixRenderingIsJavas() throws Exception {
+        Assume.assumeTrue(z3Available());
+        String hex = "unsupportedPrimitiveStringConversion:java/lang/Integer"
+                + ".toHexString(I)Ljava/lang/String;";
+        String longHex = "unsupportedPrimitiveStringConversion:java/lang/Long"
+                + ".toHexString(J)Ljava/lang/String;";
+        String binary = "unsupportedPrimitiveStringConversion:java/lang/"
+                + "Integer.toBinaryString(I)Ljava/lang/String;";
+        String octal = "unsupportedPrimitiveStringConversion:java/lang/Long"
+                + ".toOctalString(J)Ljava/lang/String;";
+        Object[][] rows = {
+            {hex, E, 0L, Integer.toHexString(0)},
+            {hex, E, 255L, Integer.toHexString(255)},
+            {hex, E, -1L, Integer.toHexString(-1)},
+            {hex, E, (long) Integer.MIN_VALUE,
+                    Integer.toHexString(Integer.MIN_VALUE)},
+            {longHex, L, -2L, Long.toHexString(-2L)},
+            {binary, E, 5L, Integer.toBinaryString(5)},
+            {octal, L, 4096L, Long.toOctalString(4096L)},
+        };
+        for (Object[] row : rows) {
+            SmtLowering lowering = lowering();
+            Term term = lowering.dispatch(string((String) row[0],
+                    (JsonObject) row[1]), null, "test");
+            assertEquals("[]", lowering.openRefusals().toString());
+            String variable = ((JsonObject) row[1]).get("_exp").getAsString();
+            StringBuilder query = new StringBuilder();
+            for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                    Arrays.asList(term.text, term.precondition))) {
+                query.append(declaration.render()).append('\n');
+            }
+            query.append("(assert (= ").append(variable).append(' ')
+                    .append(smtInteger((Long) row[2]))
+                    .append("))\n(assert (not (= ").append(term.text)
+                    .append(" \"").append(row[3]).append("\")))\n");
+            Z3.Answer answer = new Z3(Paths.get("z3"), 30000L, 2048).ask(
+                    query.toString(), Collections.<String>emptyList(), false);
+            assertTrue(row[0] + " of " + row[2] + ": " + answer.status(),
+                    answer.unsat());
+        }
+    }
+
+    private static String smtInteger(long value) {
+        return value < 0 ? "(- " + (-value) + ")" : Long.toString(value);
+    }
+
+    private static boolean z3Available() {
+        try {
+            return new ProcessBuilder("z3", "-version").start().waitFor() == 0;
+        } catch (IOException | InterruptedException unavailable) {
+            return false;
+        }
     }
 
     /** §6.1: a recorded value is a literal of the sort it is read at. */
