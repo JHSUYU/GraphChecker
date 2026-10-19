@@ -84,6 +84,10 @@ EXPECTED_MECHANISM = {
                            "clocks": False},
     "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    "hbase-bugs-backup-lock-reply-lost": {
+        "kinds": ("MARKER_FLIPPED",),
+        "fault": ("org.apache.hadoop.hbase.ipc.RpcConnection",),
+        "clocks": False},
 }
 for _case, _rule in EXPECTED_MECHANISM.items():
     if not isinstance(_rule.get("fault", ()), tuple):
