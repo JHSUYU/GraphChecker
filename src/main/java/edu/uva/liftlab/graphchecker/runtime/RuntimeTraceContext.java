@@ -16,6 +16,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
@@ -221,6 +223,19 @@ final class RuntimeTraceContext {
                     return new ArrayDeque<Long>();
                 }
             };
+
+    static Set<String> clientNodes() {
+        Set<String> clients = new TreeSet<String>();
+        synchronized (LOCK) {
+            for (SourceRef source : SOURCES_BY_KEY.values()) {
+                if (CausynthTraceRecorder.WORKLOAD_KIND.equals(
+                        source.kind())) {
+                    clients.add(source.key());
+                }
+            }
+        }
+        return clients;
+    }
 
     static SourceRef explicitSource() {
         return explicitIn(CURRENT.get());

@@ -701,13 +701,22 @@ public final class ConcolicRegionRuntime {
         try {
             if (engine().observeContainer(container, afterMutation)
                     == ConcolicVmBroker.UNSUPPORTED_TARGET) {
+                Object sorted = sortedContainer(container);
+                String site = firstNonBlank(nonNull(siteId),
+                        nonNull(fieldSignature));
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
+                        sorted == null ? site
+                                : site + " " + ORDERED_MAP_UNMODELED + "=0",
                         nonNull(fieldSignature) + " holds a "
-                                + container.getClass().getName() + ", which"
-                                + " no container model of the VM knows, so"
-                                + " its state at this site is not versioned"
-                                + " and a query of it reads no version");
+                                + container.getClass().getName()
+                                + (sorted == null ? ""
+                                : ", a sorted " + sorted.getClass().getName()
+                                + " whose order and navigable views no"
+                                + " model states")
+                                + ", which no container model of the VM"
+                                + " knows, so its state at this site is not"
+                                + " versioned and a query of it decides on"
+                                + " the run's contents");
             }
         } catch (Throwable failure) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -718,6 +727,37 @@ public final class ConcolicRegionRuntime {
                             + " so a query of it reads no version: "
                             + rootCause(failure));
         }
+    }
+
+    static final String ORDERED_MAP_UNMODELED = "ordered-map-unmodeled";
+    private static final String[] BACKING_FIELDS = {"m", "c", "this$0"};
+
+    static Object sortedContainer(Object container) {
+        Object at = container;
+        for (int hop = 0; at != null && hop < 4; hop++) {
+            if (at instanceof java.util.SortedMap
+                    || at instanceof java.util.SortedSet) {
+                return at;
+            }
+            at = backing(at);
+        }
+        return null;
+    }
+
+    private static Object backing(Object view) {
+        for (Class<?> type = view.getClass(); type != null
+                && type.getName().startsWith("java.util.");
+             type = type.getSuperclass()) {
+            for (String name : BACKING_FIELDS) {
+                try {
+                    java.lang.reflect.Field field = type.getDeclaredField(name);
+                    field.setAccessible(true);
+                    return field.get(view);
+                } catch (ReflectiveOperationException | RuntimeException none) {
+                }
+            }
+        }
+        return null;
     }
 
     public static void symbolizeArgument(long token, int argumentIndex,

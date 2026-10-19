@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -1466,7 +1467,10 @@ public final class ClosurePlanner {
             found = new ArrayList<OccurrenceAddress>();
             for (OccurrenceAddress occurrence : corpus.occurrences()) {
                 if (!holds(map, occurrence.regionId(), site)
-                        || node != null && !node.equals(occurrence.node())) {
+                        || node != null && !RuntimeSelectedRegionFinalizer.pairs(
+                                node.render(), occurrence.node().render(),
+                                corpus.client(node),
+                                corpus.client(occurrence.node()))) {
                     continue;
                 }
                 if (unrecorded ? !activated(corpus, occurrence)

@@ -1472,6 +1472,25 @@ public class ComposerTest {
                 -> fact.contains("defined_dag__")));
     }
 
+    @Test
+    public void aHeldEnumNameIsTheValueOfAReadNoWriteRowStates() {
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        JsonObject state = read("INSTANCE", 130L, 96L, 1242L, "L");
+        state.addProperty(VmRows.WRITER_SET_COMPLETE, true);
+        state.getAsJsonObject(VmRows.OBSERVED_VERSION).add("expression",
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
+                        "java/lang/String"));
+        VmTermLowering.Term term = lowering.dispatch(vmString("equals",
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
+                        "java/lang/String"), state),
+                VmTermLowering.Sort.BOOL, "t");
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        assertEquals(term.text, VmTermLowering.Sort.BOOL, term.sort);
+        assertTrue(term.text, term.text.contains("\"OPEN\""));
+    }
+
     private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
         valueOf.addProperty("_type", "MethodExpression");
@@ -2872,6 +2891,7 @@ public class ComposerTest {
                     .atClose(Collections.<String, Integer>emptyMap(),
                             readings, derived,
                             Collections.<String, String>emptyMap(),
+                            Collections.<String>emptySet(),
                             Collections.<String>emptySet(),
                             Collections.<String>emptySet()));
             RowCodec.writeAll(dir.obligations(), explored || forced

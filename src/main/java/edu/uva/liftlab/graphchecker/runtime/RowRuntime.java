@@ -1006,7 +1006,7 @@ public final class RowRuntime {
             serving.add(ActivationRow.CLAIMED + start);
         }
         session.atClose(unnamed, CONCRETE, DERIVED, RunNames.stated(),
-                DOORS_ONLY, serving);
+                DOORS_ONLY, serving, RuntimeTraceContext.clientNodes());
         unattributedStores();
         for (Map.Entry<String, String> unplanted
                 : FocusedReplay.unplantedAssignments().entrySet()) {

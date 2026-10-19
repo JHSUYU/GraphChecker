@@ -544,8 +544,9 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 **Read first:** [OPTIMIZATIONS.md](OPTIMIZATIONS.md): the owner moves GraphChecker to HBase next, with a thorough
 refactor that carries every optimization done on Solr and completes the ones not done (its §5, §6).
 
-**0.** Before any HBase run on the new body: `hbase-unified` `CausynthRpc.java:61-62` drops `, call.param` (the payload
-door is gone with WIRE-CODEC); rebuild hbase-client.
+**0. The VM image.** Every HBase run is on `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`hbase-platform`'s VM sources:
+the held enum constant named of its class, no silent enum compare, `REF_OPERAND_UNSTATED`); `system/solr` keeps
+`vm-force10` until the Solr canaries (18406, 18413, restore) pass on `vm-force12`.
 
 **1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
 - An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not
