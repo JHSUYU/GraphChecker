@@ -239,9 +239,9 @@ public final class ClaimPolicy {
                             + "are planted"));
             return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
-        Outcome refined = withMargin(composition, asks, leastClocks(
-                composition, asks, witness, composition.clockCells(), false,
-                gaps), gaps);
+        Outcome refined = ownReads(composition, asks, withMargin(composition,
+                asks, leastClocks(composition, asks, witness,
+                composition.clockCells(), false, gaps), gaps));
         outcomes.set(outcomes.indexOf(witness), refined);
         return new Decision(Claim.of(ClaimKind.FORMULA_SAT,
                 refined.valuation().ordinal(),
@@ -416,8 +416,9 @@ public final class ClaimPolicy {
             done = recordingDecides
                     ? outcome(composition, asks, found.valuation(),
                     asHappened, false)
-                    : withMargin(composition, asks, leastClocks(composition,
-                    asks, found, cells, false, named), named);
+                    : ownReads(composition, asks, withMargin(composition, asks,
+                    leastClocks(composition, asks, found, cells, false,
+                    named), named));
             settled.put(index, done);
             settledGaps.put(index, named);
             return done;
@@ -1053,6 +1054,19 @@ public final class ClaimPolicy {
                         + "out of its " + REFINE_BUDGET_MS / 1000L + " s "
                         + "with " + untried.size() + " cell(s) untried, "
                         + "which it publishes as they stand: " + untried));
+    }
+
+    private static Outcome ownReads(Composer.Composition composition,
+                                    Disjunction asks, Outcome witness) {
+        if (!witness.witness()) return witness;
+        String reads = composition.recordedPairing(
+                witness.selected().selector());
+        if (reads == null) return witness;
+        List<String> pins = new ArrayList<String>(witness.pinned());
+        pins.add(reads);
+        Outcome own = outcome(composition, asks, witness.valuation(), pins,
+                false, witness, REFINE_BUDGET_MS);
+        return own.witness() ? own : witness;
     }
 
     private static Outcome withMargin(Composer.Composition composition,
