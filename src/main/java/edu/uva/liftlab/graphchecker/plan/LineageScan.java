@@ -23,7 +23,7 @@ public final class LineageScan {
     public static void main(String[] args) throws IOException {
         if (args.length < 3) {
             throw new IllegalArgumentException("usage: LineageScan <out-dir> "
-                    + "<analysed-dirs> <class-root>...");
+                    + "<analysed-dirs> <class-root>[#<class>]...");
         }
         Path out = Paths.get(args[0]);
         List<Path> analysed = new ArrayList<>();
@@ -34,14 +34,22 @@ public final class LineageScan {
         int scanned = 0;
         int kept = 0;
         for (int index = 2; index < args.length; index++) {
-            Path root = Paths.get(args[index]);
+            String[] named = args[index].split("#", 2);
+            Path root = Paths.get(named[0]);
+            String family = named.length < 2 ? null
+                    : named[1].replace('.', '/');
             if (!Files.isDirectory(root)) {
                 throw new IllegalStateException(
                         "lineage class root not found: " + root);
             }
-            for (Path file : ArtifactIO.classFiles(root)) {
-                scanned++;
+            Path walked = family == null || family.indexOf('/') < 0 ? root
+                    : root.resolve(family.substring(0,
+                    family.lastIndexOf('/')));
+            if (!Files.isDirectory(walked)) continue;
+            for (Path file : ArtifactIO.classFiles(walked)) {
                 Path relative = root.relativize(file);
+                if (family != null && !ofFamily(relative, family)) continue;
+                scanned++;
                 if (analysed.stream().anyMatch(dir
                         -> Files.exists(dir.resolve(relative)))) {
                     continue;
@@ -56,6 +64,13 @@ public final class LineageScan {
         System.out.println("lineage scope: " + kept + " of " + scanned
                 + " class(es) start, hand off, run, wait, signal or draw"
                 + " outside the analysis scope");
+    }
+
+    static boolean ofFamily(Path relative, String family) {
+        String name = relative.toString().replace(
+                java.io.File.separatorChar, '/');
+        return name.equals(family + ".class")
+                || name.startsWith(family + "$") && name.endsWith(".class");
     }
 
     static boolean handsOffWork(Path file) throws IOException {
