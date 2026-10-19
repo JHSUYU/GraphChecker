@@ -2291,6 +2291,9 @@ $(cat "${stream_dir}/explore.log")"
   [[ "${gb_ended}|${gb_landed}" == "FIXED_POINT|${gb_session}" ]] \
     || fail "GROW-BESIDE ${gb_case}: ended ${gb_ended} with [${gb_landed}], \
 not FIXED_POINT with ${gb_session}: $(cat "${stream_dir}/explore.log")"
+  [[ -d "${stream_dir}/obligations-0002" ]] \
+    || fail "GROW-BESIDE ${gb_case}: the grown generation got no round of its \
+own before the fixed point: $(ls "${stream_dir}")"
   gb_reaped=$(jq -r '.reaped | join(" ")' "${stream_dir}/exploration.json")
   [[ "${gb_free}|${gb_reaped}" == "${gb_named}" ]] \
     || fail "GROW-BESIDE ${gb_case}: uncaptured ${gb_free}, reaped \

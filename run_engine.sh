@@ -3705,6 +3705,7 @@ campaign_explore() {
   local stream_classes="${iteration_dir}/instrumented-classes"
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
+  local stream_grow_owed=0
   local stream_generation=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
@@ -3804,7 +3805,8 @@ ${stream_stop_detail}"
       fi
       break
     fi
-    if [[ -z "${stream_stop}" ]] && campaign_stream_idle offpath; then
+    if [[ -z "${stream_stop}" ]] && (( stream_grow_owed == 0 )) \
+        && campaign_stream_idle offpath; then
       campaign_stream_fixed_beside
     fi
     if [[ "${stream_stop}" == FIXED_POINT ]] \
@@ -3974,6 +3976,7 @@ campaign_stream_round_args() {
 campaign_stream_plan_due() {
   local entry
   (( stream_dirty == 1 )) || return 1
+  (( ${stream_grow_owed:-0} == 0 )) || return 0
   (( stream_landed > 0 )) && return 0
   for entry in "${stream_jobs[@]}"; do
     [[ "${entry}" == CONFIRM\ * || "${entry}" == HARD\ * ]] || return 1
@@ -4071,6 +4074,7 @@ campaign_stream_round_start() {
   stream_round=$((stream_round + 1))
   stream_dirty=0
   stream_landed=0
+  stream_grow_owed=0
   campaign_stream_round "${dir}" &
   stream_round_pid=$!
   stream_round_dir=${dir}
@@ -5993,7 +5997,8 @@ ${obligation_id} ${session}"
   done < <(jq -r "${campaign_growth_subject}"' subject as $s
       | select($s != null and (.obligationId // "") != "")
       | [.obligationId, $s, .sessionId // ""] | @tsv' "${growth}")
-  (( rerun_count > 0 )) || stream_dirty=1
+  stream_dirty=1
+  stream_grow_owed=1
   (( ${#stream_chain[@]} == 0 || stream_hold > 0 )) \
     || campaign_stream_chain_reattempt
 }
