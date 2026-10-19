@@ -2372,12 +2372,15 @@ $(cat "${need_dir}/adapter.args")"
 # MemAvailable, the MB a foreign live charge holds on the ledger (0: none),
 # the charge, the JVM's resident memory at each read,
 # whether it was ended, the most rows the ledger held for it, and what it
-# says last.
+# says last.  A JVM whose run's end began (its worker's workload_ending,
+# JUnitMethodRunner#exit; ending in the last column) grows up to 85% of
+# the host's real use instead.
 watch_dir="${test_tmp}/watch"
 while IFS='|' read -r watch_available watch_foreign watch_charged watch_rss \
-    watch_ended watch_rows watch_said; do
+    watch_ended watch_rows watch_said watch_ending; do
   rm -rf -- "${watch_dir}"
   mkdir -p "${watch_dir}/trace" "${watch_dir}/hosts/gate-head/charges"
+  [[ "${watch_ending}" != ending ]] || : >"${watch_dir}/trace/workload_ending"
   printf '%s\n' ${watch_rss//,/ } >"${watch_dir}/rss"
   : >"${watch_dir}/rows"
   watch_foreign_row=""
@@ -2440,6 +2443,8 @@ done <<'EOF'
 5000|0|2500|2541,6000|ended|1|causynth: the workload JVM's resident memory peaked at 6000 MB; its host was charged 2500 MB for it and took 2541 MB as it grew
 6000|5000|2500|2541,2600|ran|2|causynth: the workload JVM's resident memory peaked at 2600 MB; its host was charged 2500 MB for it and took 2600 MB as it grew
 3000|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it
+3000|0|2500|2541|ran|1|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it and took 2541 MB as it grew|ending
+1400|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it|ending
 3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
 28000|0|0|400,486|ran|0|
 EOF
