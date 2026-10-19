@@ -546,7 +546,11 @@ refactor that carries every optimization done on Solr and completes the ones not
 
 **0. The VM image.** Every HBase run is on `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`hbase-platform`'s VM sources:
 the held enum constant named of its class, no silent enum compare, `REF_OPERAND_UNSTATED`); `system/solr` keeps
-`vm-force10` until the Solr canaries (18406, 18413, restore) pass on `vm-force12`.
+`vm-force10` until the Solr canaries (18406, 18413, restore) pass on `vm-force12`. A procedure step stands on its
+procedure's previous step (tree `CausynthStep`, STATUS "tree: daemon ticks"); a step that only met a busy entity lock
+(`LOCK_EVENT_WAIT`) or yielded is a step too, so where two procedures contend, the later steps' occurrences can be
+renumbered between runs. If a case shows it (an occurrence only one replay ran, under a procedure that waited on a
+lock), hand the next step off again from the empty step's own hand-off context instead of from the empty step.
 
 **1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
 - An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not
