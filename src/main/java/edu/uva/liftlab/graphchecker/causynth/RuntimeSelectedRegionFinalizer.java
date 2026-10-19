@@ -21,6 +21,8 @@ import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder;
+import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -1411,6 +1413,11 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
+    static boolean pairs(String readerNode, String writerNode,
+                         boolean readerClient, boolean writerClient) {
+        return readerClient || writerClient || readerNode.equals(writerNode);
+    }
+
     private static final class DemandWalk {
         private final StaticProgram program;
         private final StaticScopeMap scopeMap;
@@ -1623,7 +1630,9 @@ public final class RuntimeSelectedRegionFinalizer {
                     for (String writerOccurrence : held.candidates) {
                         if (writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
-                                || !node.equals(nodes.get(writerOccurrence))
+                                || !pairs(node, nodes.get(writerOccurrence),
+                                        client(occurrenceId),
+                                        client(writerOccurrence))
                                 || holdsOthersOnly(writerOccurrence,
                                         occurrenceId, cell, site)) {
                             continue;
@@ -1677,6 +1686,12 @@ public final class RuntimeSelectedRegionFinalizer {
                         DemandWalk.this.movable(decider,
                                 deciders.get(decider)));
             }
+        }
+
+        private boolean client(String occurrence) {
+            return CausynthTraceRecorder.WORKLOAD_KIND.equals(text(
+                    program.activations.get(occurrence).get(
+                            RuntimeRegionPlanner.SOURCE_KIND)));
         }
 
         private boolean holdsOthersOnly(String writerOccurrence,
