@@ -703,7 +703,9 @@ public final class ConcolicRegionRuntime {
                     == ConcolicVmBroker.UNSUPPORTED_TARGET) {
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
-                        nonNull(fieldSignature) + " holds a "
+                        (container instanceof java.util.SortedMap
+                                ? "ORDERED_MAP_UNMODELED: " : "")
+                                + nonNull(fieldSignature) + " holds a "
                                 + container.getClass().getName() + ", which"
                                 + " no container model of the VM knows, so"
                                 + " its state at this site is not versioned"
