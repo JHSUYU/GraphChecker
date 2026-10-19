@@ -73,6 +73,7 @@ public final class ClosurePlanner {
             "STATIC_CANDIDATE_WRITER";
     public static final String STATIC_CANDIDATE_PRODUCER =
             "STATIC_CANDIDATE_PRODUCER";
+    public static final String UNRECORDED_WRITER = "UNRECORDED_WRITER";
 
     static final ForkJoinPool CORES = new ForkJoinPool(
             Runtime.getRuntime().availableProcessors());
@@ -150,7 +151,7 @@ public final class ClosurePlanner {
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
                      ClientFaults faults, SystemView view, ForkJoinPool cores,
                      Consumer<GapRow> gaps) {
-        Walk walk = new Walk(corpus, scope, anchor, cores, gaps);
+        Walk walk = new Walk(corpus, scope, anchor, view, cores, gaps);
         Map<String, Demand> demands = walk.demands;
         Deque<String> pending = walk.pending;
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
@@ -586,6 +587,7 @@ public final class ClosurePlanner {
 
     static boolean valueDemand(String why) {
         return CLOSURE_MEMBER.equals(why)
+                || UNRECORDED_WRITER.equals(why)
                 || STORE_ITEM_PRODUCER.equals(why)
                 || STATIC_CANDIDATE_WRITER.equals(why)
                 || STATIC_CANDIDATE_PRODUCER.equals(why);
@@ -1047,6 +1049,7 @@ public final class ClosurePlanner {
     static final class Walk {
         private final Corpus corpus;
         private final StaticScopeMap map;
+        private final SystemView view;
         private final RestsOn restsOn;
         private final Consumer<GapRow> gaps;
         private final Set<Object> gapKeys = ConcurrentHashMap.newKeySet();
@@ -1069,6 +1072,7 @@ public final class ClosurePlanner {
         private final Map<String, Boolean> faults =
                 new ConcurrentHashMap<String, Boolean>();
         private final Set<String> faultless = ConcurrentHashMap.newKeySet();
+        private final Set<String> anchorTerms = ConcurrentHashMap.newKeySet();
         private final Set<String> cut = ConcurrentHashMap.newKeySet();
         private final Map<String, Long> storeExpanded =
                 new ConcurrentHashMap<String, Long>();
@@ -1097,11 +1101,12 @@ public final class ClosurePlanner {
         private int running;
 
         Walk(Corpus corpus, StaticScopeMap map, OccurrenceAddress anchor,
-             ForkJoinPool cores, Consumer<GapRow> gaps) {
+             SystemView view, ForkJoinPool cores, Consumer<GapRow> gaps) {
             this.planner = Thread.currentThread();
             this.gaps = gaps;
             this.corpus = corpus;
             this.map = map;
+            this.view = view;
             this.restsOn = new RestsOn(corpus, map, anchor);
             this.cores = cores;
         }
@@ -1454,18 +1459,24 @@ public final class ClosurePlanner {
         }
 
         private List<OccurrenceAddress> holders(StaticScopeMap.Site site,
-                                                NodeId node) {
-            List<Object> key = Arrays.<Object>asList(site, node);
+                                                NodeId node,
+                                                boolean unrecorded) {
+            List<Object> key = Arrays.<Object>asList(site, node, unrecorded);
             List<OccurrenceAddress> found = holders.get(key);
             if (found != null) return found;
             found = new ArrayList<OccurrenceAddress>();
             for (OccurrenceAddress occurrence : corpus.occurrences()) {
-                if (holds(map, occurrence.regionId(), site)
-                        && (node == null || RuntimeSelectedRegionFinalizer.pairs(
+                if (!holds(map, occurrence.regionId(), site)
+                        || node != null && !RuntimeSelectedRegionFinalizer.pairs(
                                 node.render(), occurrence.node().render(),
                                 corpus.client(node),
-                                corpus.client(occurrence.node())))
-                        && activated(corpus, occurrence)) {
+                                corpus.client(occurrence.node()))) {
+                    continue;
+                }
+                if (unrecorded ? !activated(corpus, occurrence)
+                        && !corpus.activationsOf(occurrence).isEmpty()
+                        && !view.holds(entered(occurrence))
+                        : activated(corpus, occurrence)) {
                     found.add(occurrence);
                 }
             }
@@ -1481,8 +1492,10 @@ public final class ClosurePlanner {
                 return false;
             }
             SessionReader session = corpus.session(sessionId);
+            ActivationRow ran = corpus.activation(sessionId, occurrence);
             if (session != null && session.manifest().doorsOnly()
-                    .contains(occurrence.render())) {
+                    .contains(occurrence.render())
+                    || ran == null || !ran.instrumented()) {
                 return false;
             }
             String key = sessionId + "|" + occurrence.id();
@@ -1659,7 +1672,10 @@ public final class ClosurePlanner {
 
     private static void statedReads(Walk walk, Step step) {
         Demand demand = step.demand;
-        if (demand.anchor) return;
+        if (demand.anchor) {
+            anchorReads(walk, step);
+            return;
+        }
         int index = 0;
         int done = step.contributed;
         step.contributed = step.values.size();
@@ -1677,6 +1693,42 @@ public final class ClosurePlanner {
                         demand.occurrence.id(), demand.occurrence::render,
                         () -> read.locationKey() + " (read at event "
                                 + read.readEventId() + ")");
+            }
+        }
+    }
+
+    private static void anchorReads(Walk walk, Step step) {
+        Demand demand = step.demand;
+        Corpus corpus = walk.corpus;
+        List<String[]> terms = new ArrayList<String[]>();
+        for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
+            for (DecisionRow decision : path.decisions) {
+                if (FlipQuery.asks(step.flipSites, decision)) {
+                    terms.add(new String[] {path.sessionId,
+                            decision.term()});
+                }
+            }
+        }
+        for (TargetRow target : corpus.targetsOn(demand.occurrence)) {
+            terms.add(new String[] {target.sessionId(), target.phiTerm()});
+        }
+        for (String[] term : terms) {
+            java.util.regex.Matcher refs = Corpus.EXPRESSION_REF.matcher(
+                    term[1] == null ? "" : term[1]);
+            while (refs.find()) {
+                if (!walk.anchorTerms.add(term[0] + "|" + refs.group())) {
+                    continue;
+                }
+                for (Corpus.StateRead read : corpus.expressionStateReads(
+                        term[0], refs.group())) {
+                    writersOfVersion(walk, step, term[0], demand.occurrence,
+                            read.write().location(), read.write().version(),
+                            walk.map.carriersAt(read.site(), read.javaType(),
+                                    read.write().location().kind()), null,
+                            demand.occurrence.id(), demand.occurrence::render,
+                            () -> read.locationKey() + " (read at event "
+                                    + read.readEventId() + ")");
+                }
             }
         }
     }
@@ -2001,7 +2053,7 @@ public final class ClosurePlanner {
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
             candidates(walk, site, STATIC_CANDIDATE_PRODUCER, guards, step,
-                    attach.sessionId(), "port " + portId, sender, null);
+                    attach.sessionId(), "port " + portId, sender, null, false);
         }
     }
 
@@ -2056,13 +2108,24 @@ public final class ClosurePlanner {
                                 + "candidate writer of it can be"));
             return;
         }
+        boolean unrecorded = unrecorded(corpus, sessionId, locationKey,
+                observedVersion);
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : walk.writersOf(carrier)) {
                 candidates(walk, site, STATIC_CANDIDATE_WRITER, site.guards,
                         step, sessionId, "carrier " + carrier, reader.node(),
-                        location);
+                        location, unrecorded && !walk.view.holds(carrier));
             }
         }
+    }
+
+    private static boolean unrecorded(Corpus corpus, String sessionId,
+                                      String locationKey, long version) {
+        if (version < 0L) return false;
+        for (WriteRow write : corpus.writesOf(sessionId, locationKey)) {
+            if (write.version() == version && !write.initial()) return false;
+        }
+        return true;
     }
 
     private static void storeWriters(Walk walk, ReadRow row, Says step) {
@@ -2139,10 +2202,17 @@ public final class ClosurePlanner {
                                    String why, Collection<String> guards,
                                    Says step, String sessionId,
                                    String what, NodeId node,
-                                   LocationId location) {
-        List<OccurrenceAddress> holders = walk.holders(site, node);
+                                   LocationId location, boolean unrecorded) {
+        List<OccurrenceAddress> holders = walk.holders(site, node, false);
         step.offer(Arrays.<Object>asList(why, site, guards, node),
                 holders, why, guards, sessionId, location);
+        if (unrecorded) {
+            List<OccurrenceAddress> ran = walk.holders(site, node, true);
+            step.offer(Arrays.<Object>asList(UNRECORDED_WRITER, site, guards,
+                    node), ran, UNRECORDED_WRITER, guards, sessionId,
+                    location);
+            if (!ran.isEmpty()) return;
+        }
         if (!holders.isEmpty()) return;
         step.gap(Arrays.<Object>asList(why, sessionId, site.regionId,
                 site.siteId, what, String.valueOf(node)),
@@ -2156,6 +2226,14 @@ public final class ClosurePlanner {
                         + ": the retained set would have "
                         + "to grow before it can be a task (PIPELINE "
                         + "§7.2)"));
+    }
+
+    private static String entered(OccurrenceAddress occurrence) {
+        List<Frame> frames = occurrence.index().frames();
+        if (frames.isEmpty()) return "";
+        String site = frames.get(0).callSite();
+        String method = SiteId.methodOf(site);
+        return method.isEmpty() ? site : method;
     }
 
     private static boolean holds(StaticScopeMap map, String regionId,
