@@ -182,6 +182,13 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   (787 keys; the whole guard 1416 keys, no defect), STATUS 64's note. The whole-guard key passes on 07, 05 r2, 05 r5,
   14, 13, 19, 21, 39, Z3S-18413, SGF5-adhoc-14 and the 8 bug checks (`analysis/solr-2026-10-18/explore/gate/d2d/`).
   The clock-reading key defect is STATUS 71.
+- The nearest world for every sort (branch solr-nearest, gated): a flip's model plants each root and answered
+  handoff its flipped predicate does not name at its recorded value where the query stays sat
+  (`explore.NearestWorld`, PIPELINE §7.5, OPTIMIZATIONS 3.5); 14's 31 `DocCollection.<init>#u102` flips stay SAT with
+  573 unneeded leaves at their recording (they planted `""` and every replay failed at `Slice.<init>`); the 8 bug
+  checks' witness plants are unchanged (`analysis/solr-2026-10-18/explore/nearest/`). Open, seen there: a non-control
+  handoff whose String arrival is unquoted is not pinned (`FlipQuery#pinArrival` reads it as a JSON literal; COMPOSE
+  quotes it, `Composer#arrived`).
 - Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
   round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
   6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains

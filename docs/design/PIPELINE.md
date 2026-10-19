@@ -49,8 +49,10 @@ the concolic VM is [VM.md](VM.md).
   a family of arms over the variable the consumer minted, each arm guarded by the world it was
   collected in. No replay has to realize a cross-node chain end to end.
 - *The asked world is the one nearest the recording.* A flip query minimizes
-  `Σ|x − recorded(x)|` over the integral roots and clocks it bounds, so a model is the smallest move
-  that still takes the other arm (with a one-minute margin where the arm rests on a clock).
+  `Σ|x − recorded(x)|` over the integral roots and clocks it bounds, and every root or answered
+  handoff of any sort the flipped predicate does not name is planted at its recorded value wherever
+  the query stays sat, so a model is the smallest move that still takes the other arm (with a
+  one-minute margin where the arm rests on a clock).
 - *Demand, not exhaustion.* Exploration starts at the anchor's fatal predicate and guards and grows
   only along boundary inputs of demanded values and the doors of messages a demanded occurrence
   served; an arm is owed once across the corpus. Propagation alone cannot replace it: a root that
@@ -1354,7 +1356,17 @@ lowering refuses inside a stated term becomes a fresh `unsupported__*` constant 
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
 an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest world:
-`minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
+`minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`). For every other
+sort the nearest world is taken after the answer (`explore.NearestWorld`): each root and each control
+handoff the model plants that the flipped predicate does not name (`FlipQuery.Built#flipVariables`,
+its own text and the definitions it reaches) is pinned to the value its path's run had
+(`Built#recorded`: the root's `Corpus#rootValue`, the attach's answered value or arrival, a String
+arrival quoted) and the query asked again; if it is sat that model is the one planted, else each is
+pinned in turn and kept where the query stays sat (a hard lane's model tries all at once only), so a
+leaf the flip needs keeps the solver's value. Pins only add conjuncts: a model under them is a model
+of the query. solr-adhoc-14's 31 `DocCollection.<init>#u102` flips planted `""` for the other slice's
+state and its ranges, and every replay failed at `Slice.<init>`; they now plant 573 leaves at their
+recording and move only the flipped slice's state (`analysis/solr-2026-10-18/explore/nearest/`).
 THE QUERY IS THE FLIP'S CONE (KLEE's constraint independence, `FlipQuery#cone`): what it asserts --
 prefix decisions, inherited flips, writer choices, root and clock domains, stated facts -- is split
 into top-level conjuncts (`and`, `not not`, `not or`; `FlipQuery#conjuncts`), and only those that
@@ -1417,7 +1429,8 @@ is a **planted pairing**, counted like an answered handoff (`ObligationFactory#p
 writer, each as CONFIRM names them, `Confirmation#writer`; one of a read another session made refuses,
 `PAIRING_UNPLANTABLE`). A pairing is planted only where the recorded ones take no flip: a model
 that moves one is asked again with every writer choice held to the recorded writer
-(`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
+(`ObligationFactory#heldToRecording`, under the nearest world's pins; a container state follows its
+writer's, and a refused term
 `unsupported__*` has no recorded value and stays free), and a model that then plants something is
 the one issued. An open decider arm's flip -- the decision a run that left the arm open asks,
 flipped TOWARD the arm, away from what that run took (`Corpus#openArmFlip`; the same decision
