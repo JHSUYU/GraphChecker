@@ -1360,8 +1360,8 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 sort the nearest world is taken after the answer (`explore.NearestWorld`): each root and each control
 handoff the model plants that the flipped predicate does not name (`FlipQuery.Built#flipVariables`,
 its own text and the definitions it reaches) is pinned to the value its path's run had
-(`Built#recorded`: the root's `Corpus#rootValue`, the attach's answered value or arrival, a String
-arrival quoted) and the query asked again; if it is sat that model is the one planted, else each is
+(`Built#recorded`: the root's `Corpus#rootValue`, the attach's `VmTermLowering#received`) and the
+query asked again; if it is sat that model is the one planted, else each is
 pinned in turn and kept where the query stays sat (a hard lane's model tries all at once only), so a
 leaf the flip needs keeps the solver's value. Pins only add conjuncts: a model under them is a model
 of the query. solr-adhoc-14's 31 `DocCollection.<init>#u102` flips planted `""` for the other slice's
@@ -1423,7 +1423,9 @@ long refuses), controls as answers keyed by attach endpoint id (`ObligationFacto
 control as its JSON string literal, which the replay plants verbatim; one whose model value is no
 string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
-by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
+by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`); an attach's value is read
+as COMPOSE reads it (`VmTermLowering#received`: the answered value, else the arrival, a String's
+text whatever it begins with), so a String handoff no arm states is pinned to its arrival. A writer choice the
 model sets away from the writer the recording's reads observed, the location's INITIAL among them,
 is a **planted pairing**, counted like an answered handoff (`ObligationFactory#planted`: reader →
 writer, each as CONFIRM names them, `Confirmation#writer`; one of a read another session made refuses,
