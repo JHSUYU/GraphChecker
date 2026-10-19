@@ -3477,10 +3477,16 @@ name (`CONFIRM refused:`, exit 1): a defect of the rows, `refutes` false, so a c
 with it is a `RUN_DEFECT`.
 
 - **The run as recorded**: a claim whose selected session is the seed's or a forced one (§7.10: the
-  recording's world), that moves no root and no clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
-  is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a run of
-  it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
-  excludes it.
+  recording's world), that moves no root and no clock, re-pairs no arm (the valuation's `repairedArms`
+  for its path is empty), every selected arm the seed's own delivery and every chosen write the one its
+  read saw, is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a
+  run of it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
+  excludes it. A re-pairing is a move: a read of the join closure takes the write the model chose for
+  its version (`StateClosure#chosen`), named by the arm's STATE interaction with that read or with any
+  read of the same location and version -- the composer's symbol is one per version, and its arm may
+  name a later read of it, past the cutoff (hbase-adhoc-22: the arm named the quota total's read inside
+  `addTable`, the anchor's own read in `getRegionCount` saw the same version) -- so a seed-path
+  re-pairing goes to its replay.
 - **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
   run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
   a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
