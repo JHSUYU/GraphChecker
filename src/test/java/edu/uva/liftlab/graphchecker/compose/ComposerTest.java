@@ -949,13 +949,20 @@ public class ComposerTest {
             session.write();
         }
         Corpus whole = Corpus.read(iteration, null);
-        Corpus held = Corpus.holding(iteration, null, 0L);
+        Corpus held = Corpus.holding(iteration, null, everSwept());
+        Corpus room = Corpus.holding(iteration, null, () -> 0.0);
         Composer.Composition all = Composer.compose(whole, ANCHOR, 8,
                 StaticScopeMap.empty());
         Composer.Composition some = Composer.compose(held, ANCHOR, 8,
                 StaticScopeMap.empty());
+        Composer.Composition kept = Composer.compose(room, ANCHOR, 8,
+                StaticScopeMap.empty());
         assertTrue("the rows were let go of and read again",
                 held.readAgain()[0] > 0);
+        assertEquals("under the share nothing is let go of", 0L,
+                room.readAgain()[0]);
+        assertEquals("the same formula held whole", all.body(),
+                kept.body());
         assertEquals("three paths", 3, all.disjuncts().size());
         assertEquals("the same formula", all.body(), some.body());
         assertEquals("the same gaps", all.gaps(), some.gaps());
@@ -963,6 +970,11 @@ public class ComposerTest {
                 some.families().toString());
         assertEquals("the same concrete rows", concreteRows(all),
                 concreteRows(some));
+    }
+
+    private static java.util.function.DoubleSupplier everSwept() {
+        double[] sweep = {1.0};
+        return () -> sweep[0] += 1.0;
     }
 
     private static List<String> concreteRows(Composer.Composition composed) {
@@ -2429,8 +2441,8 @@ public class ComposerTest {
                                                 StaticScopeMap scope)
             throws IOException {
         Composer.Composition composition = Composer.compose(
-                Corpus.holding(iteration, null, 0L), anchor, maxValuations,
-                scope);
+                Corpus.holding(iteration, null, everSwept()), anchor,
+                maxValuations, scope);
         java.util.regex.Matcher named = java.util.regex.Pattern.compile(
                 ":named ([^ )]+)").matcher(composition.body());
         Set<String> names = new LinkedHashSet<String>();

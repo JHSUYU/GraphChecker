@@ -2637,18 +2637,28 @@ building the body (SGF8-adhoc-05: 332 of 332 paths at 73 %); `do_compose` then c
 paths the composer said it composed (`ComposeMain --max-paths`, the rest named `COMPOSE_HEAP_BOUND` as above),
 until one composition ends or one path is all it had.
 
-THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (`Corpus#holding`, `contract.RowHold`,
-`ComposeMain#HELD_ROWS` 0.15). Its corpus is read `Parallel#READS` sessions at a time, the next ones read while
-these are indexed, as a corpus holding every row indexes it (each session in read order, the forced ones after),
-and of each session's rows its reads and writes -- with what the corpus builds of them alone: its state join (its
-writes by version and by location among what it answers), its reads by symbol, its rows by occurrence, the answers that hold rows
-(`Corpus.StateRows`) -- are held apart: at most 0.15 of the heap of their text as it decodes, the sessions asked
-for least recently let go of and read again from their files when next asked, value for value (a landed
-session's files never change; reads and writes side by side). Every other row of every session stays held --
+THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR, AS FAR AS ITS HEAP HAS ROOM (`Corpus#holding`,
+`contract.RowHold`, `RowHold#SHARE` 0.6). Its corpus is read `Parallel#READS` sessions at a time, the next ones
+read while these are indexed, as a corpus holding every row indexes it (each session in read order, the forced
+ones after), and of each session's rows its reads and writes -- with what the corpus builds of them alone: its
+state join (its writes by version and by location among what it answers), its reads by symbol, its rows by
+occurrence, the answers that hold rows (`Corpus.StateRows`) -- are held apart: every one while the composer's old
+generation after its last sweep (`HeapWatch#oldGenerationSwept`) stays under 60 % of it; each sweep past that
+halves the decoded text the hold may hold from then on (said in the log: `hold: the old generation N % full after
+a sweep: ...`), the sessions asked for least recently let go of first and read again from their files when next
+asked, value for value (a landed session's files never change; reads and writes side by side). Held, the rows
+take a small part of their text (pooled): SGF9-adhoc-40's 8442 MB of reads' and writes' text held whole cost
+~450 MB more of the old generation than 2293 MB of it. Its paths ask a wide, recurring set: 1-156 sessions'
+reads and writes a path (median 4, mean 21), 150 sessions (4.4 GB of text) asked by 10 paths or more,
+consecutive paths sharing a median of none -- so the bound this replaced, 0.15 of the heap counted in text, let
+each go before its next ask (`analysis/solr-2026-10-18/hold/`: an LRU replay of 40's asks misses 3968 times at
+2293 MB, 461 at 5000, none at 8442). Held whole, 40 composes in 396 s against 1426 (3859 sessions read again,
+110 GB), the old generation's peak 29 % against 27 %, the formula byte for byte the same (OPTIMIZATIONS 1.51).
+Every other row of every session stays held --
 decisions, activations, attaches, exports, roots, targets, expressions, the gap kinds a corpus reads -- since a path's families ask most sessions for them: SGF8-adhoc-39's paths asked 52-71 of its 71
 sessions for the decisions, activations, exports and expressions of their arms (every sender's pi and export),
 and 1-8 for their reads and writes (the path's own session and the producers whose arms it closes); the final
-phase asks every session once. Reads and writes are most of a held corpus: SGF8-adhoc-13's 201 sessions held
+phase asks every session once. Before the rows were pooled, reads and writes were most of a held corpus: SGF8-adhoc-13's 201 sessions held
 1260 MB with them, 516 without; SGF8-adhoc-07's 358 (28.4 GB of rows, 14.6 GB of them reads and writes, 1.9 GB
 gaps) filled 85 % of its composer's old generation, and 1 of its 309 paths was composed. Nothing else the
 composer keeps holds a row it let go of: an index across sessions keeps an endpoint's occurrence, never the
@@ -2659,9 +2669,8 @@ decisions compare it with only where they widen it (`RootDomain#widened`: an int
 declares nothing for), each root's a walk of every session's decisions reaching it, lowered with that session's
 reads and writes (07's 367 fault markers were each asked). The formula, its manifest rows and gaps are byte for
 byte a whole corpus's (13, 39, 21, 10 at the composer's hold and at none; every composer test composes over a
-corpus holding none). 07 at 21504 MB: 309 of 309 paths composed, 2.9 GB live after the read, the old generation
-54 % after the last path; 1322 s (read 173, admission 134 -- the slot table's read --, paths 1000 -- the last 9
-of them 336 --, the rest 148), 1359 sessions read again (61.9 GB of text).
+corpus whose every sweep is past the share, so it holds next to nothing). 07 at 21504 MB, held at 0.15 of the
+heap's text: 309 of 309 paths composed, 2.9 GB live after the read, the old generation 54 % after the last path.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the

@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.RowHold;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -56,13 +57,13 @@ public final class ComposeMain {
             return reuse(arguments, inputs, started);
         }
         Corpus corpus = Corpus.holding(arguments.iteration,
-                arguments.rootDomains,
-                (long) (HELD_ROWS * Runtime.getRuntime().maxMemory()));
+                arguments.rootDomains, HeapWatch::oldGenerationSwept);
         System.err.println("compose: read " + corpus.sessions().size()
                 + " session(s) in " + seconds(System.nanoTime() - started)
-                + " s, holding " + corpus.held() / (1024 * 1024) + " of at"
-                + " most " + corpus.holdable() / (1024 * 1024) + " MB of"
-                + " their reads' and writes' text");
+                + " s, holding " + corpus.held() / (1024 * 1024) + " MB of"
+                + " their reads' and writes' text, let go of only past "
+                + Math.round(RowHold.SHARE * 100) + " % of the old"
+                + " generation after a sweep");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         StaticScopeMap scope = StaticScopeMap.read(arguments.scopeMap);
         Composer.Composition composition = Composer.compose(corpus, anchor,
@@ -120,8 +121,6 @@ public final class ComposeMain {
     }
 
     static final String CLAIM = "claim.json";
-
-    static final double HELD_ROWS = 0.15;
 
     private static Z3 solver(Arguments arguments) {
         return new Z3(arguments.z3, arguments.timeoutMillis,

@@ -270,6 +270,11 @@ digest) helps only reruns of one snapshot or a precompute of every case before a
 **G NFS leftovers -- done (1.44).** A worker's schedule prefix/suffix, flip query and gap rows are gzip through
 ArtifactIO (05: queries 59x, schedules 25x, gaps 33x smaller); `campaign_solver_read_seed_mb_s` = 160.
 
+**H composer hold -- branch solr-hold (`/bigtemp/vnr3ne/wt/gc-hold`), done (1.51).** COMPOSE holds every session's
+reads and writes until a sweep finds its old generation past 60 %, then halves the hold per such sweep
+(`RowHold#SHARE`); SGF9-adhoc-40 offline 1426 -> 396 s. Next in COMPOSE's time: the read (~120 s on 40) and the
+admission (~104 s, no row of the hold asked), measured in `analysis/solr-2026-10-18/hold/`.
+
 **How to resume: five coding agents in parallel (owner 2026-10-18), one per row, own branch and hosts.** Resume an
 agent's branch where it stands; tell each the other agents' files before it commits; the lead merges and gates.
 
