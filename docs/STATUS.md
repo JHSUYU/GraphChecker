@@ -107,7 +107,9 @@ closure's regions: `analysis/solr-2026-10-14/final-stats.py SGF7|SGF8|SGF9`; lig
 `analysis/solr-2026-10-14/final-readings.md` (legends `analysis/solr-2026-10-16/legend-<n>.txt`); rounds under
 `/bigtemp/vnr3ne/gc-out/solr/accept-<round>-<case>`, the drivers' logs `SGF8-seq.log`, `SGF9-seq.log`; SGF9's per-case
 notes `analysis/solr-2026-10-18/final9/RESULTS.txt`. The fork's fresh-clone check (2026-10-17,
-`analysis/solr-2026-10-16/fork-check5.sh`): 17/17 natives, 20/20 cases valid.
+`analysis/solr-2026-10-16/fork-check5.sh`): 17/17 natives, 20/20 cases valid; again on 2026-10-19 from GitHub's
+`system/solr` 980b76e80 (`analysis/solr-2026-10-18/final9/fork-check6.sh`): 17/17, 20/20, and 38 ran end to end from
+the clone (`accept-FC6STOP-adhoc-38`, REPRODUCE §6).
 
 Latest evidence per case (the detailed rows below are each case's history):
 

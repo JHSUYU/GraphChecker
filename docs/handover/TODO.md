@@ -178,6 +178,10 @@ largest replay cost seen in SGF9; confirm which roots produce the volume, then b
 - Unplaced clock cells: 19 composed 2 of 44 paths (41 refused, `Composer#unplacedClocks`); placing node0's clock cell
   composes 28 of 44 and still decides NO_SUPPORTED_WITNESS (`c19/FINDINGS.txt`).
 - A re-run that lands mid-round is seen one round late (~6.5 min a link; 50 of 1019's 160 min were waits).
+- Chains of doors-only growths: with the fixed point waiting for every re-run (b9ecc0ba2), the fresh-clone run of 38
+  (`accept-FC6STOP-adhoc-38`, no witness that run) spent rounds 47-64 growing one doors-only occurrence "run whole" at a
+  time, one re-run each (~5 min a link), still going when stopped: batch a round's doors-only occurrences, or bound
+  what a whole-run occurrence adds (item 4).
 - COMPOSE's read (~120 s on 40) and admission (~104 s) after the hold (`analysis/solr-2026-10-18/hold/`).
 - Solvers are charged their corpus's estimate at start (`campaign_solver_live_pct` 50 %, measured before compaction):
   re-measure a solver's live set before lowering it.
@@ -186,10 +190,10 @@ largest replay cost seen in SGF9; confirm which roots produce the volume, then b
   `resume/D2-REVIEW.txt`) -- before any depth > 0 default.
 - The VM still renders each read-out page's whole closure before choosing what to send (~0.2 s per 20 MB).
 
-**6. Cleanup owed.** Worktrees gc-hold, gc-planner-full (their branches merged or kept: solr-growshape), gc-compact,
-gc-composebatch, gc-emitgaps, gc-growpipe, gc-parkeys, gc-nfs, gc-shard, gc-parplan, gc-claims, gc-shardstudy,
-gc-capcomp, gc-solr-small, gc-closure2, gc-dispatch, gc-grow, gc-compmem, gc-solr-pool; snapshots `~/gc-run/sgf2*..sgf40`,
-`sgf9`, `sgf9b`..`sgf9e`, growpipe1, nfs2, can9a/b (check `ps` on all lifts first); the analysis dirs keep their evidence.
+**6. Cleanup.** Done 2026-10-19: the rewrite's and the round's worktrees (their branches kept: solr-growshape is the one
+unmerged that TODO names) and the Solr snapshots sgf9*, sgf28-41, can9a/b, growpipe1, nfs2. Left: the older snapshots
+under `~/gc-run` from before the Solr final rounds (z2-*, zk*, rx*, sbm*, ...: check `tools/lib/alive.sh` first) and the
+fresh-clone check's `/bigtemp/vnr3ne/wt/fork-check6-gc`, `fork-trees6`; the analysis dirs keep their evidence.
 
 **7. Next system: HBase** (owner's order). Before its cases, measure in the Zero VM what HDFS costs a workload: a typical
 HBase unit test with MiniDFSCluster against a local filesystem (`hbase.rootdir=file://`, `hbase.wal.provider=filesystem`,

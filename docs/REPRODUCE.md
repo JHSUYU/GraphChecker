@@ -182,7 +182,12 @@ with the adapter, every case's target marker and the bug checks' workloads.
    an unbatched Overseer's queue removal in its message's own turn; engine system/solr 19ae623a7) all 17 workloads of the 20 cases passed (05 and 07
    share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
    each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
-   experiments/solr/<case dir> <arg> validate` found every case's configuration valid. After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
+   experiments/solr/<case dir> <arg> validate` found every case's configuration valid. Checked again from a fresh clone on
+   2026-10-19 (`system/solr` 980b76e80 from GitHub, the fork's branch into an empty `GC_TREES`;
+   `/bigtemp/vnr3ne/analysis/solr-2026-10-18/final9/fork-check6.sh`, run through `tools/onlift.sh` -- a bare ssh shell
+   has no `mvn` on its PATH): the build, 17 of 17 workloads PASSED, 20 of 20 cases valid, and solr-adhoc-38 ran from
+   that clone through SEED, PLAN, INSTRUMENT, REPLAY and 64 rounds of EXPLORE (stopped after 45 min; its witness, a
+   timing-dependent fatal, did not recur in that run). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
    $GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
    reads.
 
