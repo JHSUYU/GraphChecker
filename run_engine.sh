@@ -1491,11 +1491,28 @@ campaign_reap_remote_workers() {
 workers on ${#reaping[@]} host(s) matching ${campaign_root}"
 }
 
+campaign_stream_stop_solvers() {
+  local host pid
+  local -a stopping=()
+  [[ -n "${sessions:-}" ]] || return 0
+  while IFS= read -r host; do
+    campaign_reap_on_host "${host}" \
+      "ObligationSolverMain .*--sessions ${sessions}( |\$)" &
+    stopping+=("$!")
+  done < <(campaign_worker_host_list)
+  for pid in "${stopping[@]}"; do
+    wait "${pid}" || true
+  done
+}
+
 campaign_reap_on_host() {
   local host=$1 pattern=$2 script
   script="pattern=$(printf '%q' "${pattern}")
 pkill -TERM -u \"\$(id -u)\" -f \"\${pattern}\" 2>/dev/null || exit 0
-sleep ${campaign_adapter_kill_grace_s}
+for at in \$(seq $(( campaign_adapter_kill_grace_s * 2 ))); do
+  pgrep -u \"\$(id -u)\" -f \"\${pattern}\" >/dev/null 2>&1 || exit 0
+  sleep 0.5
+done
 pkill -KILL -u \"\$(id -u)\" -f \"\${pattern}\" 2>/dev/null || true"
   if campaign_host_is_local "${host}"; then
     bash -s <<<"${script}" >/dev/null 2>&1 || true
@@ -3730,8 +3747,9 @@ campaign_explore() {
   campaign_stream_round_args
   campaign_stream_enroll
   campaign_stream_read_hosts
-  trap 'campaign_stream_reap; campaign_planner_stop; campaign_stream_unenroll
-    campaign_stream_unread_hosts; campaign_head_unreserve' EXIT
+  trap 'campaign_stream_reap; campaign_planner_stop; campaign_stream_stop_solvers
+    campaign_stream_unenroll; campaign_stream_unread_hosts
+    campaign_head_unreserve' EXIT
 
   while true; do
     if [[ -z "${stream_step_pid}" && -n "${stream_grow_returned}" \
@@ -3801,6 +3819,7 @@ ${stream_stop_detail}"
     wait "${stream_ticker}" 2>/dev/null || true
   fi
   campaign_planner_stop
+  campaign_stream_stop_solvers
   campaign_stream_unenroll
   campaign_stream_unread_hosts
   trap campaign_head_unreserve EXIT

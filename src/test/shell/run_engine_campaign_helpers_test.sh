@@ -1934,6 +1934,26 @@ EOF
          fail "STREAM-REAP: what the job started outlived the end:${reap_left}"; }
 ) || fail "STREAM-REAP failed"
 
+(
+  ss_dir=${test_tmp}/stop-solvers
+  mkdir -p "${ss_dir}"
+  campaign_adapter_kill_grace_s=2
+  campaign_worker_host_list() { echo localhost; }
+  bash -c "exec -a 'java -Xmx4096m edu.uva.liftlab.graphchecker.explore.ObligationSolverMain --serve d --sessions ${ss_dir}/a/sessions --seats 8' sleep 600" &
+  ss_ours=$!
+  bash -c "exec -a 'java -Xmx4096m edu.uva.liftlab.graphchecker.explore.ObligationSolverMain --serve d --sessions ${ss_dir}/b/sessions --seats 8' sleep 600" &
+  ss_theirs=$!
+  command sleep 0.3
+  sessions=${ss_dir}/a/sessions campaign_stream_stop_solvers
+  command sleep 0.3
+  ss_left=$(kill -0 "${ss_ours}" 2>/dev/null && echo ours || true)
+  ss_kept=$(kill -0 "${ss_theirs}" 2>/dev/null && echo theirs || true)
+  kill "${ss_ours}" "${ss_theirs}" 2>/dev/null || true
+  [[ -z "${ss_left}" && "${ss_kept}" == theirs ]] \
+    || fail "STOP-SOLVERS: an exploration's end left its host solver \
+(${ss_left:-ended}) or ended another's (${ss_kept:-ended})"
+) || fail "STOP-SOLVERS failed"
+
 while IFS='|' read -r rq_kind rq_mb rq_heap rq_want; do
   rq_dir="${test_tmp}/kill-requeue"
   rm -rf -- "${rq_dir}"
