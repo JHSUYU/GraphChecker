@@ -52,6 +52,11 @@ cost us time at least once; the date or the case it came from is named so it can
 - Never `git add -A`; never rebuild a snapshot (`~/gc-run/sgf*`) a run reads; worktree creation over NFS can take
   more than 2 min (run it in the background).
 
+- HBase with no WAL (owner 2026-10-19): a master's local region keeps its procedures only in memory until a flush,
+  so a standby master that takes over as soon as the active one's znode goes loads the region while the old master is
+  still flushing it and misses procedures (agent H2, master-active-time). A workload that restarts a master runs one
+  master, stops it cleanly, joins its thread, then starts the next.
+
 ## 3. Zombies, orphans, hung agents
 
 - Orphaned z3 (`z3 -in -smt2`, parent init, hours old, 2-3 GB each): kill by pid; z3 must die with its JVM.
