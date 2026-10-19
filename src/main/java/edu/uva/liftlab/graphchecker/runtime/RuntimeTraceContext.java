@@ -193,18 +193,25 @@ final class RuntimeTraceContext {
             return;
         }
         State state = CURRENT.get();
+        SourceRef node = taker(seed.source, explicitIn(state));
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state);
-        scope.opened = seed.source;
+        scope.opened = node;
         scope.lineageToken = Lineage.restore(seed.lineage,
-                seed.source == null ? "" : seed.source.key(),
-                Role.EXECUTOR_TASK, "");
+                node == null ? "" : node.key(), Role.EXECUTOR_TASK, "");
         state.scopes.push(scope);
-        if (seed.source != null) state.source = seed.source;
+        if (node != null) state.source = node;
         state.flow = seed.flow;
         CARRIED.get().push(token);
         Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
+    }
+
+    static SourceRef taker(SourceRef putter, SourceRef claimer) {
+        return putter != null && claimer != null
+                && CausynthTraceRecorder.WORKLOAD_KIND.equals(putter.kind())
+                && !CausynthTraceRecorder.WORKLOAD_KIND.equals(
+                        claimer.kind()) ? claimer : putter;
     }
 
     static void releaseCarried() {
