@@ -2230,8 +2230,10 @@ public final class ClosurePlanner {
 
     private static String entered(OccurrenceAddress occurrence) {
         List<Frame> frames = occurrence.index().frames();
-        return frames.isEmpty() ? ""
-                : SiteId.methodOf(frames.get(0).callSite());
+        if (frames.isEmpty()) return "";
+        String site = frames.get(0).callSite();
+        String method = SiteId.methodOf(site);
+        return method.isEmpty() ? site : method;
     }
 
     private static boolean holds(StaticScopeMap map, String regionId,
