@@ -24,7 +24,8 @@ last line counts BOUNDED, UNBOUND and HOLD cases.
 **An UNSAT is done when** the claim is `UNSAT_CLOSED`, `end=(FIXED_POINT)`, z3 says unsat on the file, there is no
 BOUNDED, no UNBOUND on any path, no BLOCKING gap, `defects` is empty (`result.json`; e.g. `OPEN_ARM_UNANSWERED`,
 `EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
-code, why the chain is constant inside the window. An UNSAT resting on a hold names it (`HOLD:<n>`): read the held
+code, why the chain is constant inside the window (`tools/analysis/vacuity.py` names a vacuous one,
+trap 24). An UNSAT resting on a hold names it (`HOLD:<n>`): read the held
 location's dropped store-state choices (the run writer's closure, not offered there) before counting it.
 
 **A SAT is done when** the claim is `SAT_CANDIDATE`, CONFIRM confirmed it (`final/confirm.json`), `claim.json`
@@ -158,3 +159,14 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     the way, makes the case `BOUNDED:loop_body_bound`, a failure of the loop accounting a RUN_DEFECT). Still, for every UNSAT with a `concrete[]` WAY row, the
     reading names the guard (site, file:line), the arm the path took, and the throw its other arm leads to, read in
     the code; a WAY row on the anchor itself means the path stopped on the way and says how.
+24. **A vacuous UNSAT** (HBase, 2026-10-19): the formula could move nothing at the guard, so the UNSAT only restates
+    that no explored world took the fatal arm. Three shapes: every path's fatal arm literal false (hbase-adhoc-37:
+    both target phis `false`); the guard decided with no term; or no root and no read some other writer could
+    answer in the slice of the guard and the phi (NO_ROOT) -- hbase-bugs-ns-rsgroup-removal's 19 paths read
+    `getRSGroup`'s map at INITIAL with no writer of it in any path's session, hbase-adhoc-15's 29 read
+    `RegionStateNode.state` at INITIAL whose one later writer ran on the reader's thread.
+    `tools/analysis/vacuity.py --latest <rounds>` prints per check the phi per path, the guard's terms, each read in
+    the slice with its writer family (any non-INITIAL writer?) and whether COMPOSE could offer another writer, the
+    moved roots, the BLOCKING codes, the named gap kinds and the verdict. A vacuous UNSAT is a NO-SYMBOL one (trap 10):
+    not done without the written reason, or name the writer that is missing (an unplanned occurrence, state set
+    before the window) and fix the scope or the plan.

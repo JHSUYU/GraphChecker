@@ -4041,6 +4041,12 @@ comparison.
   campaign and over all, the anchor rows with a phi, wave-0 obligations, roots by category, PLAN
   admissions by basis (and the basis of each occurrence that minted a root the claim moved), the
   "decided concretely" refusals and the boundaries the fatal guards' operands stop at.
+- Whether an UNSAT is vacuous: `tools/analysis/vacuity.py [--latest] <round-or-campaign>...` prints,
+  per check, each composed path's phi (literal false after folding, unstated, true, symbolic), the
+  guard decisions' terms, every read in the slice of the guard terms and the phi with its writer
+  family in the path's session and whether `smt.Arms` could offer another writer (constructor,
+  same-thread and LOST writers dropped; ancestry and order not repeated), the roots in that slice,
+  the claim's moved roots, the BLOCKING codes, the named gap kinds and a verdict (CHECKING trap 24).
 - `iteration-0000/obligation_results.jsonl` and each `obligations-NNNN/<id>/`: the verdict's
   `detail`, `obligation_query.smt2.gz` (the query as asked, with its `check-sat` and `get-value`; it
   re-runs by hand in z3), `focused_task.jsonl` (the world), `replay.log`, `stdout.log`/`stderr.log`.
