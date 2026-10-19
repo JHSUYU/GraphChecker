@@ -605,6 +605,21 @@ Becomes needed when a claim's selected path takes a value through a read whose w
 session and runs whole now: then merge it with a ComposerTest (a doors-only writer in the session, the plan running it
 whole, its carrier read at INITIAL: freed; the same read in a session that ran it whole: held).
 
+**8. An async continuation stands in its registrant's occurrence** (lead 2026-10-19: an identity change for every
+system, with its own review; being built on `hbase-rpc` since hbase-adhoc-11 and -12 hit it with no workload workaround; until it lands a workload whose
+chain passes a procedure poll before its next request makes that operation its own synchronous call on the test
+thread, hbase-adhoc-21's disable). HBase's async client sends the next request of a chain from the client event loop,
+inside the callbacks of the previous reply (`CausynthRpc#starting`: a request made in a reply's exchange stands on it).
+The fold rule mints that request's producer endpoint in the reply-leg occurrence (`RpcConnection#finishCall`, anchored
+on the reply), and where the chain passes a procedure poll (`getProcedureResult`, rescheduled on the HashedWheelTimer
+until the procedure is done) the request goes out of the k-th poll's reply: k is timing, so its anchor differs between
+passes (hbase-adhoc-21 HC11-21: `MasterService.RestoreSnapshot` planned under `7be160aff4b342f7`, ran under
+`b6701a92041c9536`). A sync client sends it from the caller's own occurrence, counted per verb (IDENTITY §3), and the
+polls move only `GetProcedureResult`'s own k. Two mechanisms: (a) a `CompletableFuture` continuation (`whenComplete`,
+`thenApply`/`thenCompose`/`handle`, HBase's `FutureUtils#addListener`) is a lineage start at its registration, claimed
+where it runs, and a claim inside a running occurrence opens the claimant's own occurrence instead of folding into it;
+(b) a reply-leg occurrence folds into its sender's occurrence across threads. (a) is the lead's choice.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
