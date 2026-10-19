@@ -101,13 +101,6 @@ public final class HeapWatch {
         return new long[] {peak, swept == null ? 0L : swept.getMax()};
     }
 
-    public static long peakSwept() {
-        MemoryPoolMXBean old = oldGeneration();
-        MemoryUsage swept = old == null ? null : old.getCollectionUsage();
-        return Math.max(swept == null ? 0L : swept.getUsed(),
-                PEAK_SWEPT.get());
-    }
-
     public static long liveAfterCollection() {
         System.gc();
         return ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()

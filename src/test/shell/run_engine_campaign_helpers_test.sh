@@ -509,29 +509,20 @@ done <<'EOF'
 1000|900 950 1000 1100 1200 1300 1400 1500 1450 1350 6476|2304|1536|0
 EOF
 plan_dir="${test_tmp}/planner-start"
-while IFS='|' read -r plan_heap plan_live plan_read plan_asked plan_status \
-    plan_done; do
+while IFS='|' read -r plan_heap plan_asked plan_status plan_done; do
   rm -rf -- "${plan_dir}"
   mkdir -p "${plan_dir}/planning-0003" "${plan_dir}/planner"
-  echo S1 >"${plan_dir}/planning-0003/corpus.txt"
-  echo 4321 >"${plan_dir}/planning-0003/planner_live_mb"
-  [[ "${plan_live}" == - ]] || echo "${plan_live}" >"${plan_dir}/planner/live_mb"
-  [[ "${plan_read}" == - ]] || echo S1 >"${plan_dir}/planner/read.txt"
   plan_got=$(
     iteration_dir=${plan_dir}
     engine_memory_mb=16384
-    sessions=${plan_dir}/sessions
-    campaign_engine_outgrown=""
     plan_alive=0
     if [[ "${plan_heap}" != - ]]; then
       plan_alive=1
       echo "${plan_heap}" >"${plan_dir}/planner/heap"
       echo 1 >"${plan_dir}/planner/id"
     fi
-    campaign_session_bytes() { echo "S1 104857600"; }
     campaign_planner_alive() { (( plan_alive )); }
     campaign_planner_start() { plan_alive=1; echo "start $1 $2" >>"${plan_dir}/done"; }
-    campaign_planner_hold() { echo "hold $1" >>"${plan_dir}/done"; }
     campaign_planner_round() { echo ask >>"${plan_dir}/done"; return "${plan_asked}"; }
     status=0
     campaign_stream_plan "${plan_dir}/planning-0003" 2>/dev/null || status=$?
@@ -541,93 +532,10 @@ while IFS='|' read -r plan_heap plan_live plan_read plan_asked plan_status \
   [[ "${plan_got}" == "${plan_status}|${plan_done}" ]] \
     || fail "PLANNER-START: a planner of ${plan_heap} asked ${plan_asked} \
 gave ${plan_got}, not ${plan_status}|${plan_done}"
-  if (( plan_status == 0 )); then
-    [[ "$(cat "${plan_dir}/planner/live_mb")|$(cat \
-        "${plan_dir}/planner/read.txt")" == "4321|S1" ]] \
-      || fail "PLANNER-START: a planned round left no measure for the next"
-  fi
 done <<'EOF'
-16384|-|-|0|0|hold 3910 ask
--|2000|S1|0|0|start 16384 3910 hold 3910 ask
-16384|2000|S1|0|0|hold 6521 ask
-16384|2000|-|3|3|hold 6566 ask
-EOF
-
-need_dir="${test_tmp}/planner-need"
-while IFS='|' read -r need_heap need_live need_read need_round need_want; do
-  rm -rf -- "${need_dir}"
-  mkdir -p "${need_dir}/planner" "${need_dir}/planning-0001"
-  echo "${need_live}" >"${need_dir}/planner/live_mb"
-  tr ' ' '\n' <<<"${need_read}" >"${need_dir}/planner/read.txt"
-  : >"${need_dir}/planning-0001/corpus.txt"
-  : >"${need_dir}/bytes"
-  for need_session in ${need_round}; do
-    echo "${need_session%=*}" >>"${need_dir}/planning-0001/corpus.txt"
-    echo "${need_session%=*} $(( ${need_session#*=} * 1048576 ))" \
-      >>"${need_dir}/bytes"
-  done
-  echo "S.late 99999999999" >>"${need_dir}/bytes"
-  need_got=$(
-    iteration_dir=${need_dir}
-    sessions=${need_dir}/sessions
-    campaign_session_bytes() { cat "${need_dir}/bytes"; }
-    campaign_planner_need_mb "${need_dir}/planning-0001" "${need_heap}"
-  )
-  [[ "${need_got}" == "${need_want}" ]] \
-    || fail "PLANNER-NEED: a planner of ${need_heap} MB, ${need_live} MB \
-live, having read ${need_read}, needs ${need_got} for ${need_round}, not \
-${need_want}"
-done <<'EOF'
-24576|0||S1=0|5606
-24576|8000|S1|S1=900 S2=4000|18090
-24576|20000|S1 S2|S1=900 S2=4000|26496
-16384|2000|S1|S1=100|6521
-EOF
-
-hold_dir="${test_tmp}/planner-hold"
-while IFS='|' read -r hold_first hold_later hold_need hold_waited; do
-  rm -rf -- "${hold_dir}"
-  mkdir -p "${hold_dir}/planner" "${hold_dir}/hosts/lift12/heads"
-  echo lift12 >"${hold_dir}/planner/host"
-  echo "${hold_first}" >"${hold_dir}/planner/reserve_mb.held"
-  hold_status=0
-  (
-    iteration_dir=${hold_dir}
-    campaign_host_gate_root=${hold_dir}/hosts
-    campaign_host_poll_s=0.1
-    campaign_planner_hold_max_s() { echo 2; }
-    campaign_planner_alive() { true; }
-    ( sleep 0.5; echo "${hold_later}" >"${hold_dir}/planner/reserve_mb.held"
-    ) &
-    hold_seen=""
-    campaign_head_heartbeat() {
-      [[ -n "${hold_seen}" ]] || hold_seen=$(cat \
-        "${hold_dir}"/hosts/lift12/heads/*.hold 2>/dev/null || true)
-      [[ -z "${hold_seen}" ]] || echo "${hold_seen}" >"${hold_dir}/seen"
-    }
-    held_status=0
-    campaign_planner_hold "${hold_need}" 2>"${hold_dir}/said" \
-      || held_status=$?
-    wait
-    exit "${held_status}"
-  ) || hold_status=$?
-  [[ "${hold_status}" == "$([[ "${hold_waited}" == failed ]] && echo 1 \
-      || echo 0)" ]] \
-    || fail "PLANNER-HOLD: a hold of ${hold_need} MB (${hold_first} then \
-${hold_later} held) ended ${hold_status}: $(cat "${hold_dir}/said")"
-  [[ "$(cat "${hold_dir}/planner/reserve_mb")" == "${hold_need}" ]] \
-    || fail "PLANNER-HOLD: the watcher was not asked ${hold_need} MB"
-  [[ -z "$(ls "${hold_dir}/hosts/lift12/heads")" ]] \
-    || fail "PLANNER-HOLD: the shortfall's hold outlived the wait"
-  [[ "$(cat "${hold_dir}/seen" 2>/dev/null || echo 0)" == "$( \
-      [[ "${hold_waited}" == no ]] && echo 0 \
-      || echo "$(( hold_need - hold_first ))")" ]] \
-    || fail "PLANNER-HOLD: a hold of ${hold_need} MB with ${hold_first} \
-held held $(cat "${hold_dir}/seen" 2>/dev/null) of the shortfall"
-done <<'EOF'
-6000|6000|5000|no
-2000|6000|5000|yes
-2000|3000|5000|failed
+16384|0|0|ask
+-|0|0|start 16384 17792 ask
+16384|3|3|ask
 EOF
 (
   plan_dir="${test_tmp}/planner-live"
@@ -762,56 +670,6 @@ done <<'EOF'
 1400|0|2500|2541|ended|0|causynth: the workload JVM's resident memory peaked at 2541 MB; its host was charged 2500 MB for it|ending
 3000|0|2500|2400|ran|0|causynth: the workload JVM's resident memory peaked at 2400 MB; its host was charged 2500 MB for it
 28000|0|0|400,486|ran|0|
-EOF
-
-reserve_dir="${test_tmp}/watch-reserve"
-while IFS='|' read -r reserve_available reserve_charged reserve_asked \
-    reserve_rss reserve_ended reserve_held; do
-  rm -rf -- "${reserve_dir}"
-  mkdir -p "${reserve_dir}/trace" "${reserve_dir}/hosts/gate-head/charges"
-  tr ',' '\n' <<<"${reserve_rss}" >"${reserve_dir}/rss"
-  echo "${reserve_asked}" >"${reserve_dir}/reserve"
-  (
-    campaign_host_gate_root="${reserve_dir}/hosts"
-    campaign_local_host_names=" localhost gate-head "
-    hostname() { echo gate-head; }
-    campaign_host_available_mb() { echo "${reserve_available}"; }
-    campaign_host_total_mb() { echo 10000; }
-    campaign_host_max_used_pct=70
-    campaign_watch_interval_s=0.1
-    campaign_process_rss_mb() {
-      local mb
-      mb=$(head -n 1 "${reserve_dir}/rss")
-      [[ -n "${mb}" ]] || { kill "$1"; return 1; }
-      sed -i 1d "${reserve_dir}/rss"
-      echo "${mb}"
-    }
-    sleep 60 &
-    reserve_jvm=$!
-    campaign_watch_workload "${reserve_jvm}" "${reserve_charged}" \
-      "${reserve_dir}/trace" "" "${reserve_dir}/reserve" \
-      2>"${reserve_dir}/said" &
-    reserve_pid=$!
-    reserve_exit=0
-    wait "${reserve_jvm}" 2>/dev/null || reserve_exit=$?
-    wait "${reserve_pid}"
-    echo "${reserve_exit}" >"${reserve_dir}/exit"
-  ) || fail "WATCH-RESERVE: a watch failed"
-  reserve_got="$( (( $(cat "${reserve_dir}/exit") == 137 )) && echo ended \
-    || echo ran)|$(cat "${reserve_dir}/reserve.held")"
-  [[ "${reserve_got}" == "${reserve_ended}|${reserve_held}" ]] \
-    || fail "WATCH-RESERVE: a JVM charged ${reserve_charged} MB, reserve \
-${reserve_asked}, at ${reserve_rss} MB on a host with ${reserve_available} MB \
-was ${reserve_got}, not ${reserve_ended}|${reserve_held}: $(cat \
-"${reserve_dir}/said")"
-  [[ -z "$(ls "${reserve_dir}/hosts/gate-head/charges")" ]] \
-    || fail "WATCH-RESERVE: what the JVM was granted outlived it"
-done <<'EOF'
-28000|2000|5000|1000,1000,1000|ran|5000
-5000|2000|5000|1000,1000,1000|ran|2000
-5000|2000|5000|1000,2600,2600|ran|2600
-3000|2000|5000|1000,2600|ended|2000
-28000|2000|1500|1000,1800|ran|2000
 EOF
 
 solver_test=${test_tmp}/solver-service
@@ -1352,10 +1210,10 @@ stream_fixture() {
   TMPDIR=${test_tmp}
 }
 stream_planner_serve() {
-  local heap=$1 id=$2 log=$4 reserve=$7 sessions="" dir request name round
+  local heap=$1 id=$2 log=$4 sessions="" dir request name round
   local status refused
   printf '%s\n' "${BASHPID}" >"$5"
-  shift 7
+  shift 6
   while [[ $# -gt 0 ]]; do
     [[ "$1" != --sessions ]] || sessions=$2
     shift
@@ -1365,7 +1223,6 @@ stream_planner_serve() {
   printf '%s\n' "${heap}" >>"${stream_dir}/planner-heaps.txt"
   printf '%s\n' "${BASHPID}" >"${dir}/server"
   while true; do
-    [[ ! -s "${reserve}" ]] || cp -f -- "${reserve}" "${reserve}.held"
     for request in "${dir}"/requests/*.json; do
       [[ -e "${request}" ]] || continue
       name=$(basename "${request}" .json)

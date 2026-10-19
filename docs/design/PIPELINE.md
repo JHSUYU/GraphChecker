@@ -2182,18 +2182,10 @@ a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its sta
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
 PLANNER_HEAP_EXCEEDED (below). IT RUNS AT THE ENGINE HEAP (`campaign_stream_plan`): one started lower outgrew its
 heap mid-exploration and read the whole corpus again at the next (05: 11.6 GB, ~10 min of an idle pool) after
-collecting to its end (~17 min each). ITS HOST HOLDS WHAT IT NEEDS, not the engine heap's footprint (at the
-Solr checks' 24576 MB a planner's 26.5 GB charge was its host's whole head ceiling, and its host ran no
-replay): before each round its need (`campaign_planner_need_mb`) -- its young generation whole (a fifth of the
-heap) and 1.25 times its old generation's need by its own rule below, the live set it stated beside its last
-round (`planner_live_mb`, `HeapWatch#peakSwept`) and 0.35 of the text of the round's sessions it has not read
-(a planner started anew: none measured, every session) -- is asked of its watcher, which holds it ahead of
-the JVM's growth (its reserve: a refusal ends nothing, the JVM's own growth is granted or ends it as any
-watched JVM's), and the round is asked once its host holds it, the shortfall meanwhile held among the
-head reservations of the planner's host (`campaign_planner_hold`); a host still short past
-`replay_timeout_s` and a margin (`campaign_planner_hold_max_s`: every replay running there when the wait
-began has ended, none started since) holds memory no start of the campaign holds, and the round fails
-EXPLORE by name. A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
+collecting to its end (~17 min each). ITS HOST IS CHARGED ITS HEAP'S FOOTPRINT for its life (`campaign_jvm_footprint_mb`), and its host runs no replay
+beside it: a JDK 8 parallel collector grows the resident set toward the heap whatever the live set (SGF9-adhoc-31:
+6.4 GB live at 20.2 GB resident), so a charge of its measured need let replays take the room its growth then
+needed, and its watcher ended it at the head ceiling (the case lost). A ROUND IT CANNOT HOLD IT DOES NOT READ: before a round it judges its room by
 its own measure (`contract.HeapWatch#outgrown`)
 -- its old generation's live set at its highest since the last round (what it held after a full collection, as
 `HeapWatch` reads it every 5 s, `#takePeakSwept`) with `HeapWatch#ROWS_PER_FILE_BYTE` (0.35) of the files of the

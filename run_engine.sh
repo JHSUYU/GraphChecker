@@ -3367,13 +3367,12 @@ campaign_workload_output_bytes() {
 campaign_clock_ticks=$(getconf CLK_TCK 2>/dev/null) || campaign_clock_ticks=100
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
-  local reserve=${5:-} asked want ending
+  local ending
   local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
   local sum=0 reads=0 ticks=0 started=${EPOCHREALTIME/./} lasted=0
   local output="" wrote="" since=${SECONDS}
   local -a grants=() stat=()
   [[ -z "${traced}" ]] || rm -f -- "${dir}/${campaign_recording_end_marker}"
-  [[ -z "${reserve}" ]] || printf '%s\n' "${held}" >"${reserve}.held"
   while kill -0 "${pid}" 2>/dev/null; do
     if (( max_mb > 0 )); then
       written=$(stat -c %s "${dir}/runtime_trace.jsonl" 2>/dev/null) \
@@ -3415,23 +3414,13 @@ ever times out; its threads are dumped on its output; ended"
       [[ -z "${dir}" ]] \
         || printf '%s\n' "${peak}" >"${dir}/workload_rss_mb"
     fi
-    want=${peak}
-    if [[ -n "${reserve}" ]] && read -r asked 2>/dev/null <"${reserve}" \
-        && [[ "${asked}" =~ ^[0-9]+$ ]] && (( asked > want )); then
-      want=${asked}
-    fi
-    if (( charged > 0 && want > held )); then
+    if (( charged > 0 && peak > held )); then
       ending=""
       [[ -z "${dir}" || ! -e "${dir}/${campaign_ending_file}" ]] \
         || ending=${campaign_host_end_used_pct}
       campaign_host_unlocked campaign_host_try_grow localhost \
-        "$(( want - held ))" "${ending}"
-      if (( status != 0 && want > peak && peak > held )); then
-        want=${peak}
-        campaign_host_unlocked campaign_host_try_grow localhost \
-          "$(( want - held ))" "${ending}"
-      fi
-      if (( status != 0 && peak > held )); then
+        "$(( peak - held ))" "${ending}"
+      if (( status != 0 )); then
         refused="the host cannot take the $(( peak - held )) MB more \
 (${campaign_host_wait_reason})"
         kill -KILL "${pid}" 2>/dev/null || true
@@ -3439,12 +3428,8 @@ ever times out; its threads are dumped on its output; ended"
           || printf '%s\n' "${peak}" >"${dir}/${campaign_refused_file}"
         break
       fi
-      if (( status == 0 )); then
-        grants+=("${campaign_host_charge_id}")
-        held=${want}
-        [[ -z "${reserve}" ]] || printf '%s\n' "${held}" >"${reserve}.held"
-      fi
-      status=0
+      grants+=("${campaign_host_charge_id}")
+      held=${peak}
     fi
     sleep "${campaign_watch_interval_s}"
   done
@@ -4167,19 +4152,11 @@ campaign_stream_plan() {
       if [[ -s "${state}/id" ]]; then
         campaign_planner_ended "${round_dir}" || return
       fi
-      rm -f -- "${state}/live_mb" "${state}/read.txt"
       campaign_planner_start "${engine}" \
-        "$(campaign_planner_need_mb "${round_dir}" "${engine}")"
+        "$(campaign_jvm_footprint_mb "${engine}")"
     fi
-    campaign_planner_hold "$(campaign_planner_need_mb "${round_dir}" \
-      "${engine}")" || return 1
     status=0
     campaign_planner_round "${round_dir}" || status=$?
-    if (( status == 0 )); then
-      [[ ! -s "${round_dir}/planner_live_mb" ]] \
-        || cp -f -- "${round_dir}/planner_live_mb" "${state}/live_mb"
-      cp -f -- "${round_dir}/corpus.txt" "${state}/read.txt"
-    fi
     (( status == 5 )) || return "${status}"
     since=${SECONDS}
     while campaign_planner_alive \
@@ -4193,65 +4170,6 @@ end (its log: %s)\n' "$(cat "${state}/host")" "$(basename "${round_dir}")" \
       return 1
     fi
   done
-}
-
-campaign_planner_rows_pct=35
-campaign_planner_old_room_pct=125
-campaign_planner_need_mb() {
-  local round_dir=$1 heap=$2 state="${iteration_dir}/planner" live=0 new need
-  [[ ! -s "${state}/live_mb" ]] || live=$(<"${state}/live_mb")
-  [[ "${live}" =~ ^[0-9]+$ ]] || live=0
-  new=$(awk 'FILENAME == ARGV[1] {read[$1] = 1; next}
-      FILENAME == ARGV[2] {asked[$1] = 1; next}
-      ($1 in asked) && !($1 in read) {n += $2}
-      END {printf "%d\n", n / 1048576}' \
-    <(cat -- "${state}/read.txt" 2>/dev/null) "${round_dir}/corpus.txt" \
-    <(campaign_session_bytes "${sessions}"))
-  need=$(( heap / 5 + (live + new * campaign_planner_rows_pct / 100) \
-    * campaign_planner_old_room_pct / 100 ))
-  (( need <= heap )) || need=${heap}
-  campaign_jvm_footprint_mb "${need}"
-}
-
-campaign_planner_hold_max_s() {
-  printf '%s\n' "$(( replay_timeout_s + campaign_remote_bound_margin_s ))"
-}
-campaign_planner_hold() {
-  local need=$1 state="${iteration_dir}/planner" held=0 said=false dir
-  local since=${SECONDS} bound status=0
-  bound=$(campaign_planner_hold_max_s)
-  printf '%s\n' "${need}" >"${state}/reserve_mb.part"
-  mv -f -- "${state}/reserve_mb.part" "${state}/reserve_mb"
-  while campaign_planner_alive; do
-    read -r held 2>/dev/null <"${state}/reserve_mb.held" || held=0
-    [[ "${held}" =~ ^[0-9]+$ ]] || held=0
-    (( held < need )) || break
-    if (( SECONDS - since >= bound )); then
-      echo "the planner's host $(cat "${state}/host") held ${held} MB of \
-the ${need} MB its round needs after $(( SECONDS - since )) s \
-(campaign_planner_hold_max_s)" >&2
-      status=1
-      break
-    fi
-    if [[ "${said}" == false ]]; then
-      dir="${campaign_host_gate_root}/$(campaign_host_key \
-"$(cat "${state}/host")")/heads"
-      mkdir -p "${dir}"
-      campaign_head_hold="${dir}/$(hostname -s).${BASHPID}.$(date +%s).hold"
-      printf '%s\n' "$(( need - held ))" >"${campaign_head_hold}"
-      campaign_log "the planner's round waits for its host to hold ${need} \
-MB for it (${held} held)" >&2
-      said=true
-    fi
-    campaign_head_heartbeat
-    sleep "${campaign_host_poll_s}"
-  done
-  [[ "${said}" == true ]] || return "${status}"
-  rm -f -- "${campaign_head_hold}"
-  campaign_head_hold=""
-  (( status != 0 )) || campaign_log "the planner's host holds ${held} MB \
-for its round after waiting $(( SECONDS - since )) s" >&2
-  return "${status}"
 }
 
 campaign_planner_ended() {
@@ -4274,7 +4192,6 @@ campaign_planner_alive() {
 campaign_planner_start() {
   local heap=$1 need=$2 state="${iteration_dir}/planner" host charge id
   local busy=""
-  rm -f -- "${state}/reserve_mb" "${state}/reserve_mb.held"
   campaign_head_place "${need}" >&2
   host=${campaign_placed_host}
   charge=${campaign_host_charge_id}
@@ -4297,13 +4214,11 @@ campaign_planner_start() {
       campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
         "${iteration_dir}/planner.log" "${state}/jvm" "${need}" \
-        "${state}/reserve_mb" \
         --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     else
       campaign_run_placed "${host}" campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
         "${iteration_dir}/planner.log" "${state}/jvm" "${need}" \
-        "${state}/reserve_mb" \
         --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     fi
     [[ -z "${busy}" ]] || rm -f -- "${busy}"
@@ -4317,9 +4232,9 @@ charged ${need}" >&2
 }
 
 campaign_planner_serve() {
-  local heap=$1 id=$2 peak_file=$3 log=$4 jvm_file=$5 charged=$6 reserve=$7
+  local heap=$1 id=$2 peak_file=$3 log=$4 jvm_file=$5 charged=$6
   local dir watched jvm status=0 peak
-  shift 7
+  shift 6
   local sessions=""
   local -a args=("$@")
   local index
@@ -4348,7 +4263,7 @@ campaign_planner_serve() {
   watched=$(mktemp -d) || return
   campaign_host_max_used_pct=${campaign_head_max_used_pct} \
     campaign_watch_workload "${jvm}" "${charged}" "${watched}" "" \
-    "${reserve}" 2>>"${log}"
+    2>>"${log}"
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
   rm -rf -- "${watched}" "${dir}/requests" "${dir}/answers" "${dir}/out"

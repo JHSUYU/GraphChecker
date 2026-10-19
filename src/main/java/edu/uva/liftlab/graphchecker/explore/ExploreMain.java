@@ -154,8 +154,6 @@ public final class ExploreMain {
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
                                 "results")), named, planned);
-                ArtifactIO.replace(planned.resolve(LIVE_MB),
-                        (HeapWatch.peakSwept() >> 20) + "\n");
             });
             return;
         }
@@ -168,8 +166,6 @@ public final class ExploreMain {
                 (int) options.number("round", 0), options.path("in-flight"),
                 options.path("results"), null, out)));
     }
-
-    static final String LIVE_MB = "planner_live_mb";
 
     long toRead(Collection<String> named) throws IOException {
         Set<String> held = new LinkedHashSet<String>();
