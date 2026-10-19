@@ -252,7 +252,7 @@ the class whose code writes that field.
 | hbase-adhoc-12 | AssignmentManager:772 | same | up | first (`admin.unassign`) | AssignmentManager, TableStateManager | same run | ready |
 | hbase-adhoc-13 | MergeTableRegionsProcedure:499 | TestMergeTableRegionsProcedure#testMergeTwoRegions | up | first | MergeTableRegionsProcedure, RegionStateStore, client CatalogFamilyFormat | 14 s | ready |
 | hbase-adhoc-14 | MergeTableRegionsProcedure:503 | same | up | first | MergeTableRegionsProcedure, RegionStates | same run | ready |
-| hbase-adhoc-15 | MergeTableRegionsProcedure:507 | same | up | first | (the platform's row) | same run | the platform's first case |
+| hbase-adhoc-15 | MergeTableRegionsProcedure:507 | same | up | first | MergeTableRegionsProcedure, RegionStates, RegionStateNode, AssignmentManager | same run | HP5 (vm-force11): UNSAT_CLOSED, NO_ROOT -- the guard `RegionState.state == OPEN` is stated over RegionStateNode.state's read (VM fb831fa24), but no writer of that field (AssignmentManager#transitStateAndUpdate: OPENING, OPEN) is planned, so its only versions are the INITIAL OPEN and the merge's own write; open: the writer closure of a TRACK_IDENTITY read |
 | hbase-adhoc-19 | ModifyTableProcedure:134 | TestModifyTableProcedure#testModifyWillNotReopenRegions | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | 11 s | ready |
 | hbase-adhoc-20 | ModifyTableProcedure:138 | same | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | same run | ready |
 | hbase-adhoc-21 | NamespaceStateManager:130 | TestNamespaceAuditor#testRestoreSnapshot | up | first (the restore) | NamespaceStateManager, NamespaceTableAndRegionInfo | 15 s | ready |
