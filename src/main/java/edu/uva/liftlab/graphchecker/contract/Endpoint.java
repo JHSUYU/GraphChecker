@@ -34,6 +34,16 @@ public final class Endpoint extends Value {
         return named.isEmpty() ? site : site + ":" + named;
     }
 
+    public static boolean replySite(String site) {
+        int half = site == null ? -1 : site.indexOf('#');
+        if (half < 0) return false;
+        int verb = site.indexOf(':', half);
+        return REPLY.equals(verb < 0 ? site.substring(half + 1)
+                : site.substring(half + 1, verb));
+    }
+
+    public static final String REPLY = "RESPONSE";
+
     public static String verb(String verb) {
         if (verb == null) return "";
         if (verb.indexOf('/') >= 0 || verb.indexOf('@') >= 0) {

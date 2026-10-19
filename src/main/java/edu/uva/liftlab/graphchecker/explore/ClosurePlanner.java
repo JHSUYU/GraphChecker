@@ -1594,6 +1594,21 @@ public final class ClosurePlanner {
         for (String endpoint : corpus.startedBy(step.demand.occurrence)) {
             doorsOf(walk, step, endpoint);
         }
+        for (OccurrenceAddress reader
+                : corpus.replyLegsOf(step.demand.occurrence)) {
+            if (walk.faulted(reader)) {
+                step.next(new Demand(reader, CONTROL_PRODUCER, false));
+            } else {
+                step.faultless(reader.id(), () -> GapRow.of(
+                        ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
+                        GapClass.DIAGNOSTIC, reader.render(), "a reader of"
+                                + " the reply to a request "
+                                + step.demand.occurrence.render()
+                                + " sent decided no fault in any session, so"
+                                + " nothing of it decides whether the sender"
+                                + " sees the reply: no control producer"));
+            }
+        }
     }
 
     private static void doorsOf(Walk walk, Step step, String endpoint) {

@@ -883,7 +883,17 @@ are counted, never dropped silently: `concreteAnchors` states how many
   `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
   or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
   door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
-  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. A control producer contributes no
+  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. Its reply legs too: the readers of the
+  reply to every request a demanded occurrence sent, and, in turn, of the replies to what those
+  readers sent (`Corpus#replyLegsOf`; a reply is a `<transport>#RESPONSE` message sent under the
+  request's anchor, its readers the occurrences anchored on it), each that decided a fault
+  (`CONTROL_PRODUCER`): a reply door decides whether the sender sees the reply wherever the reply is
+  read. A synchronous client reads it in the sender itself (Hadoop IPC's `Client#getRpcResponse`,
+  Solr's `HttpSolrClient#executeMethod`) or in the sender's own work anchored on the reply; an
+  asynchronous one on its event loop, whose callbacks send the next request of the chain
+  (HBase's `RpcConnection#finishCall`; Solr's `Http2SolrClient` listener;
+  hbase-bugs-backup-lock-reply-lost: the lock's checkAndMutate goes out of the reply to its location
+  lookup, and its own reply's door is the bug's fault). A control producer contributes no
   value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
   six hops of request and queue-item doors behind the store writers' items doubled the plan).
   One door is a value: the SENDER of a message that started the writer of a store version a demand

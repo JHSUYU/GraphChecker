@@ -24,9 +24,7 @@ case "${1:?usage: case.sh <bug>}" in
     target_occurrence=first
     scope=(
       backup=:org/apache/hadoop/hbase/backup/impl/BackupSystemTable
-      backup=:org/apache/hadoop/hbase/backup/impl/BackupManager
-      client=:org/apache/hadoop/hbase/client/RawAsyncTableImpl
-      server=:org/apache/hadoop/hbase/regionserver/HRegion)
+      backup=:org/apache/hadoop/hbase/backup/impl/BackupManager)
     ;;
   ns-rsgroup-removal)
     test_class=org.apache.hadoop.hbase.rsgroup.TestCausynthNamespaceGroupRemoval
