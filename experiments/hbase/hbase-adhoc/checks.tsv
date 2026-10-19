@@ -15,6 +15,6 @@
 24	org.apache.hadoop.hbase.master.procedure.TestFlushTableProcedureWithDoNotSupportFlushTableMaster	testFlushFallback	up	first	server=:org/apache/hadoop/hbase/procedure/ZKProcedureMemberRpcs	server=:org/apache/hadoop/hbase/procedure/ZKProcedureCoordinator
 28	org.apache.hadoop.hbase.TestInfoServers	testInfoServersRedirect	startup	first	server=:org/apache/hadoop/hbase/HBaseServerBase	common=:org/apache/hadoop/hbase/util/Addressing
 31	org.apache.hadoop.hbase.regionserver.TestRegionMove	testDisableAndMove	up	first	server=:org/apache/hadoop/hbase/regionserver/RSRpcServices	server=:org/apache/hadoop/hbase/master/procedure/RSProcedureDispatcher
-34	org.apache.hadoop.hbase.security.token.TestGenerateDelegationToken	testOnlyToken	up	first	server=:org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager	server=:org/apache/hadoop/hbase/security/token/ZKSecretWatcher
+34	org.apache.hadoop.hbase.security.token.TestCausynthTokenKeys	anotherServerValidatesTheKeyMastersToken	startup	first	server=:org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager	server=:org/apache/hadoop/hbase/security/token/ZKSecretWatcher
 35	org.apache.hadoop.hbase.util.TestHBaseFsckReplication	test	up	first	server=:org/apache/hadoop/hbase/util/HBaseFsck	server=:org/apache/hadoop/hbase/util/HbckRegionInfo
 37	org.apache.hadoop.hbase.regionserver.http.TestRSStatusPage	testStatusPage	up	first	zookeeper=:org/apache/hadoop/hbase/zookeeper/MasterAddressTracker	server=:org/apache/hadoop/hbase/master/ActiveMasterManager

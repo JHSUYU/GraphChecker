@@ -3,7 +3,7 @@ case "${1:?usage: case.sh <bug>}" in
   master-active-time)
     test_class=org.apache.hadoop.hbase.master.assignment.TestCausynthMasterActiveTime
     test_method=reportOpenedToTheNextMaster
-    target_occurrence=first
+    target_occurrence='auto0/master1#epoch0/region/REGION.f3a7cc84-4aa9-3e73-ae53-0232639dea95#1'
     recording_window=startup
     scope=(
       server:org/apache/hadoop/hbase/master/MasterRpcServices
