@@ -1137,7 +1137,14 @@ cone from the guards of the writers of each chosen `TRACK`, `TRACK_IDENTITY`, `T
 `READ` read (the guard rows into its cell: the store's own branches and those of the calls into
 its method, §2.2), each one edge past the read; of the keys the path's cone did not choose, the
 twelve nearest within sixteen there are minted too, so a key near a writer never displaces one
-near the anchor. Each configuration row states the cone
+near the anchor. The same guards decide whether that writer stores, so the walk runs again from
+them (its own sixteen edges, every rule as on the path) and the `TRACK`, `TRACK_IDENTITY`,
+`TRACK_CONTAINER` and `READ` boundaries it meets that the path did not are chosen the twelve nearest
+of each class: PLAN moves such a writer only when its guard reaches a tracked cell
+(`RuntimeSelectedRegionFinalizer#movable`), so a check-then-act writer's check is a READ_SITE
+(hbase-bugs-ns-rsgroup-removal: `removeRSGroup`'s loop over `getNamespaces()` stores the group map
+only when no namespace names the group, and `TableNamespaceManager#list`'s read of `cache` is fifteen
+edges up from its `hasNext`). Each configuration row and each such read states the cone
 it was measured on (`measured`: `PATH`, `WRITERS`); a row is chosen when its key is. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
 **Local file faults.** A local file operation is a door (§4.2) only where its result or its

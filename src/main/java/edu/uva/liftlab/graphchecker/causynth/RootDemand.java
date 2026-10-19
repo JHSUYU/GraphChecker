@@ -213,13 +213,15 @@ final class RootDemand {
                 roots, clocks, config, trackedKind, constructionOnly,
                 systemClass);
         Map<String, Integer> demanded = new HashMap<>();
-        List<Boundary> found = walk(into, starts, classes, demanded);
+        List<Boundary> found = walk(into, starts, classes, demanded, PATH);
         choose(found);
+        Map<String, Integer> writerGuards = writerGuards(found, into);
         Set<String> chosenKeys = configuration(found, cone(into, starts),
-                cone(into, writerGuards(found, into)), config, edges);
+                cone(into, writerGuards), config, edges);
         List<DemandedDoors.Site> doors = new ArrayList<>(woven);
         Map<String, Integer> ioFrontier = doors(found, into, demanded, path,
                 faults, doors);
+        found.addAll(writerReads(into, writerGuards.keySet(), classes, found));
         found.sort(Comparator.comparingInt((Boundary b) -> b.distance)
                 .thenComparing(b -> b.kind.name())
                 .thenComparing(b -> b.cell).thenComparing(b -> b.siteId)
@@ -380,9 +382,29 @@ final class RootDemand {
         return frontier;
     }
 
+    private static List<Boundary> writerReads(
+            Map<String, List<Map<String, Object>>> into, Set<String> guards,
+            Classifier classes, List<Boundary> path) {
+        Set<String> held = new HashSet<>();
+        for (Boundary boundary : path) {
+            held.add(boundary.siteId + "\n" + boundary.cell);
+        }
+        List<Boundary> reads = new ArrayList<>();
+        for (Boundary boundary : walk(into, guards, classes,
+                new HashMap<String, Integer>(), WRITERS)) {
+            if (TRACKED.contains(boundary.kind)
+                    && !held.contains(boundary.siteId + "\n" + boundary.cell)) {
+                reads.add(boundary);
+            }
+        }
+        choose(reads);
+        return reads;
+    }
+
     private static List<Boundary> walk(
             Map<String, List<Map<String, Object>>> into, Set<String> starts,
-            Classifier classes, Map<String, Integer> demanded) {
+            Classifier classes, Map<String, Integer> demanded,
+            String measured) {
         Map<String, Integer> distance = new HashMap<>();
         Map<String, Boundary> found = new LinkedHashMap<>();
         Deque<String> queue = new ArrayDeque<>();
@@ -400,7 +422,7 @@ final class RootDemand {
                 if (!classes.follows(edge)) continue;
                 if (next > DISTANCE) {
                     found.putIfAbsent(Kind.CUT + "\n" + cell, new Boundary(
-                            Kind.CUT, cell, "", "", DISTANCE));
+                            Kind.CUT, cell, "", "", DISTANCE, measured));
                     break;
                 }
                 String from = text(edge.get("fromCell"));
@@ -414,7 +436,7 @@ final class RootDemand {
                     String siteId = text(edge.get("siteId"));
                     found.putIfAbsent(kind + "\n" + from + "\n" + siteId,
                             new Boundary(kind, from, siteId,
-                                    text(edge.get("kind")), next));
+                                    text(edge.get("kind")), next, measured));
                     if (kind != Kind.PROVENANCE || holds) continue;
                 }
                 if (distance.putIfAbsent(from, next) == null) {
