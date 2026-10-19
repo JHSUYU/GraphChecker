@@ -849,8 +849,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   location's carrier, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
-  location's, is no candidate; a static field, an owner that names no one object, or an occurrence
-  with no recorded access is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  location's, is no candidate; a static field, an owner that names no one object, an occurrence
+  with no recorded access, or one that ran for its doors alone in that session (its rows state its
+  doors, never what it touched) is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
   confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its
@@ -872,7 +873,15 @@ are counted, never dropped silently: `concreteAnchors` states how many
   reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
   no value and not followed, flipped at their fault decisions as every task is;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
-  `Corpus.expressionStateReads` (never for the anchor);
+  `Corpus.expressionStateReads` (never for the anchor), each read's carriers named by its own VM site
+  and type as a read row's are (`Corpus.StateRead#site`, `#javaType`): a read of a version no row
+  wrote -- its writer ran paused, for its doors alone -- has no recorded write to name its carrier,
+  and only its site makes the writer a static candidate, so a value demand that GROW unpauses
+  (hbase-bugs-master-active-time HZ5: master0's activation wrote `HMaster.masterActiveTime` paused,
+  `RemoteOperation`'s constructor read it at INITIAL inside the export of
+  `OpenRegionRequest.initiating_master_active_time`, and the planner named the carrier of that read
+  nowhere: T0 crossed as a constant, every world re-asked `throwOnOldMaster` under a key of its own
+  host clock, and CONFIRM refuted the claims on that leaf);
 - the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
   producer endpoint; every occurrence of the turn that sent it, on any of its threads and whatever
   its recorded place, a fault of which can stop the turn short of the send -- RestoreCmd's
@@ -1088,8 +1097,11 @@ of a planned round at world depth 1 built as the solver builds it (`analysis/hba
 Z3S-18413 round 2, 4103 queries, every text distinct (no hit by the text), 1470 canonical keys: 2633
 asks answered from the store, 2054 of them UNSAT (settled, no z3), 579 SAT (the model handed on, the
 replay owed); 299 of them solved again on their own text agreed, the 10 SAT models satisfied their own
-texts renamed. z3 decided all 1470 keys in 38 s, so what the store saves is z3 time, small beside the
-replays: a gen-1 re-ask's cost is its SAT replay (§7.3: a re-ask in another world is a pair world).
+texts renamed; solr-adhoc-39 round 5, 5526 texts, 4110 keys, 1416 asks from the store (1310 UNSAT), 164 re-solved
+both ways agreed; hbase-bugs-master-active-time's 92 asks of depth 0 were 92 texts and 6 keys. z3 decided Z3S's
+1470 keys in 38 s and 39's 4110 in 1363 s (the hits 37 s), and a worker that UNSAT settles takes ~2 s against minutes
+for a replay, so what the store saves is z3 time: whether a re-ask is dispatched at all is the ledger's (its
+dependence, above), and a SAT re-ask in another world is a pair world, whose replay depth > 0 asks for.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 

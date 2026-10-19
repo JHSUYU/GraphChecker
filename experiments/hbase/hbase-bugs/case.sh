@@ -3,7 +3,7 @@ case "${1:?usage: case.sh <bug>}" in
   master-active-time)
     test_class=org.apache.hadoop.hbase.master.assignment.TestCausynthMasterActiveTime
     test_method=reportOpenedToTheNextMaster
-    target_occurrence=first
+    target_occurrence='auto0/master1#epoch0/region/REGION.f3a7cc84-4aa9-3e73-ae53-0232639dea95#1'
     recording_window=startup
     scope=(
       server:org/apache/hadoop/hbase/master/MasterRpcServices
@@ -29,7 +29,7 @@ case "${1:?usage: case.sh <bug>}" in
   ns-rsgroup-removal)
     test_class=org.apache.hadoop.hbase.rsgroup.TestCausynthNamespaceGroupRemoval
     test_method=removeTheGroupOfANamespaceBeingCreated
-    target_occurrence='auto0/master0#epoch0/region/REGION.e244192e-5f27-3987-a408-e5bcdcf259b0#3'
+    target_occurrence='auto0/master0#epoch0/region/REGION.874dbcb2-c79c-38ee-bb4f-4dfdf62bd234#3'
     scope=(
       server=:org/apache/hadoop/hbase/master/procedure/MasterProcedureUtil
       server=:org/apache/hadoop/hbase/rsgroup/RSGroupInfoManagerImpl
