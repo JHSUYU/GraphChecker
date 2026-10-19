@@ -16,8 +16,12 @@ import java.util.Set;
  * is decided by the class, with null is a reference test, and through a
  * tracked field read is over the read -- also when the field's writer stored
  * a constant the program held, not one valueOf named (HBase's
- * RegionState.State: `state == State.OPEN`, `equals`).  An enum with a static
- * array of its own type still states its constants in ordinal order.
+ * RegionState.State: `state == State.OPEN`, `equals`): each condition is over
+ * that read -- a compare, equals, name(), ordinal() and a switch of it, a read
+ * of the location's INITIAL, one that observed null, one of a constant with
+ * a body of its own, two such reads compared, and a container's answer
+ * compared with the read or a constant.  An enum with a static array of its
+ * own type still states its constants in ordinal order.
  */
 public final class RegionEnumSmoke {
     enum State {
@@ -55,10 +59,37 @@ public final class RegionEnumSmoke {
         State state = State.DOWN;
     }
 
+    private static final class Unset {
+        State state;
+    }
+
+    enum Mode {
+        FAST {
+            @Override
+            int speed() {
+                return 2;
+            }
+        },
+        SLOW;
+
+        int speed() {
+            return 1;
+        }
+    }
+
+    private static final class Modes {
+        Mode mode = Mode.SLOW;
+    }
+
     public static void main(String[] args) {
         Input input = new Input();
         Sink sink = new Sink();
         Held held = new Held();
+        Held initial = new Held();
+        Unset unset = new Unset();
+        Modes modes = new Modes();
+        Map<String, State> byName = new HashMap<String, State>();
+        byName.put("DOWN", State.RECOVERING);
         // Held before the window: keys the program put, plain constants.
         Map<State, Integer> weights = new HashMap<State, Integer>();
         weights.put(State.ACTIVE, Integer.valueOf(1));
@@ -73,15 +104,25 @@ public final class RegionEnumSmoke {
         System.symbolizeField(input, "phase", "PHASE");
         System.observeField(sink, Sink.class.getName(), "state",
                 "L" + State.class.getName().replace('.', '/') + ";");
-        System.observeField(held, Held.class.getName(), "state",
-                "L" + State.class.getName().replace('.', '/') + ";");
+        String stateType = "L" + State.class.getName().replace('.', '/') + ";";
+        System.observeField(held, Held.class.getName(), "state", stateType);
+        System.observeField(initial, Held.class.getName(), "state",
+                stateType);
+        System.observeField(unset, Unset.class.getName(), "state", stateType);
+        System.observeField(modes, Modes.class.getName(), "mode",
+                "L" + Mode.class.getName().replace('.', '/') + ";");
         sink.state = State.getState(input.state);
         State state = sink.state;
         held.state = State.RECOVERING;
+        modes.mode = Mode.FAST;
         State plain = held.state;
         int heldCompared = 0;
+        int mark = conditions();
         if (plain == State.RECOVERING) heldCompared |= 1;
+        String heldIs = since(mark);
+        mark = conditions();
         if (plain.equals(State.ACTIVE)) heldCompared |= 2;
+        String heldEquals = since(mark);
 
         int compared = 0;
         if (state != State.ACTIVE) compared |= 1;
@@ -113,8 +154,54 @@ public final class RegionEnumSmoke {
         seen.add(state);
         Phase phase = Phase.valueOf(input.phase);
         boolean running = phase == Phase.RUN;
-        String path = System.getConcolicPathConditionRange(
-                0, Integer.MAX_VALUE);
+        int stated = conditions();
+        String path = System.getConcolicPathConditionRange(0, stated);
+
+        mark = conditions();
+        int heldArm;
+        switch (plain) {
+            case RECOVERING:
+                heldArm = 3;
+                break;
+            case DOWN:
+                heldArm = 2;
+                break;
+            default:
+                heldArm = 1;
+                break;
+        }
+        String heldSwitch = since(mark);
+        mark = conditions();
+        if (plain.ordinal() == 2) heldCompared |= 4;
+        String heldOrdinal = since(mark);
+        mark = conditions();
+        if (plain.name().equals("RECOVERING")) heldCompared |= 8;
+        String heldName = since(mark);
+        State first = initial.state;
+        mark = conditions();
+        if (first == State.DOWN) heldCompared |= 16;
+        String initialIs = since(mark);
+        State missing = unset.state;
+        mark = conditions();
+        if (missing == State.ACTIVE) heldCompared |= 32;
+        String missingIs = since(mark);
+        mark = conditions();
+        if (((Object) plain) == Other.ACTIVE) heldCompared |= 64;
+        String otherClass = since(mark);
+        mark = conditions();
+        if (plain == first) heldCompared |= 128;
+        String heldPair = since(mark);
+        Mode mode = modes.mode;
+        mark = conditions();
+        if (mode == Mode.FAST) heldCompared |= 256;
+        String bodied = since(mark);
+        State looked = byName.get(name);
+        mark = conditions();
+        if (looked == plain) heldCompared |= 512;
+        String answerHeld = since(mark);
+        mark = conditions();
+        if (looked == State.DOWN) heldCompared |= 1024;
+        String answerConstant = since(mark);
         String weightsVersions = System.getSharedMapVersions(weights);
         String seenVersions = System.getSharedMapVersions(seen);
         String summary = System.finishConcolicRegion();
@@ -122,7 +209,9 @@ public final class RegionEnumSmoke {
         System.out.println("PATH " + path);
         System.out.println("WEIGHTS " + weightsVersions);
         System.out.println("SEEN " + seenVersions);
-        require(compared == 3 && heldCompared == 1 && "DOWN".equals(name)
+        require(compared == 3 && heldCompared == (1 | 4 | 8 | 16 | 256 | 512)
+                        && heldArm == 3 && mode.speed() == 2
+                        && looked == State.RECOVERING && "DOWN".equals(name)
                         && "down".equals(text)
                         && ordinal == 1 && arm == 2 && !alive
                         && weight.intValue() == 2 && wasSeen && !running,
@@ -151,8 +240,128 @@ public final class RegionEnumSmoke {
                         && seenVersions.contains("Y_L'String'_DOWN"),
                 "a constant a container holds is not its name: "
                         + weightsVersions + " " + seenVersions);
+        over("== of the held read", heldIs, "Y_L'String'_RECOVERING", "==");
+        over("equals of the held read", heldEquals, "Y_L'String'_ACTIVE",
+                "!=");
+        overRead("a switch of the held read", heldSwitch,
+                "java/lang/Enum ordinal", "\"operation\":\"READ\"");
+        overRead("ordinal() of the held read", heldOrdinal,
+                "java/lang/Enum ordinal");
+        overRead("name() of the held read", heldName,
+                "\"_name\":\"equals\"", "Y_L'String'_RECOVERING");
+        over("a read of the INITIAL", initialIs, "Y_L'String'_DOWN", "==");
+        require(initialIs.contains("\"versionKind\":\"INITIAL\""),
+                "the INITIAL read is not of the INITIAL: " + initialIs);
+        over("a read that observed null", missingIs, "Y_L'String'_ACTIVE",
+                "!=");
+        require(!otherClass.contains("ReadFromExpression"),
+                "a compare with another class is not decided by it: "
+                        + otherClass);
+        require(count(heldPair, "ReadFromExpression") >= 2,
+                "two held reads are not compared over both: " + heldPair);
+        over("a constant with a body", bodied, "Y_L'String'_FAST", "==");
+        overRead("a container's answer and the held read", answerHeld,
+                "\"operation\":\"READ\"");
+        require(answerConstant.contains("\"operation\":\"READ\"")
+                        && answerConstant.contains("\"_name\":\"equals\"")
+                        && answerConstant.contains("Y_L'String'_DOWN"),
+                "a container's answer and a constant are no equals of"
+                        + " names: " + answerConstant);
         require(summary.length() > 0, "no summary");
         System.out.println("CAUSYNTH_REGION_ENUM_SMOKE_OK");
+    }
+
+    private static void over(String what, String slice, String name,
+                             String polarity) {
+        overRead(what, slice, "\"_name\":\"equals\"", name,
+                "\"_op\":\"" + polarity + "\"");
+    }
+
+    private static void overRead(String what, String slice,
+                                 String... needles) {
+        require(slice.contains("ReadFromExpression")
+                        && !slice.contains("java/lang/Enum valueOf"),
+                what + " is not over the read: " + slice);
+        for (String needle : needles) {
+            require(slice.contains(needle), what + " states no " + needle
+                    + ": " + slice);
+        }
+    }
+
+    private static int conditions() {
+        String range = System.getConcolicPathConditionRange(0,
+                Integer.MAX_VALUE);
+        String key = "\"conditionCount\":";
+        int at = range.indexOf(key);
+        require(at >= 0, range);
+        int end = at + key.length();
+        while (end < range.length() && Character.isDigit(range.charAt(end))) {
+            ++end;
+        }
+        return Integer.parseInt(range.substring(at + key.length(), end));
+    }
+
+    private static String since(int from) {
+        String range = System.getConcolicPathConditionRange(from,
+                Integer.MAX_VALUE);
+        int at = range.indexOf("\"conditions\":[");
+        int end = range.indexOf("],\"emittedConditionCount\"", at);
+        require(at >= 0 && end > at, range);
+        return expand(range, range.substring(at, end), 0);
+    }
+
+    private static String expand(String artifact, String text, int depth) {
+        require(depth < 32, "an expression nests past 32: " + text);
+        String marker = "{\"_type\":\"VmExpressionReference\"";
+        StringBuilder out = new StringBuilder();
+        int from = 0;
+        for (int at = text.indexOf(marker); at >= 0;
+             at = text.indexOf(marker, from)) {
+            out.append(text, from, at);
+            String reference = objectAt(text, at);
+            out.append(expand(artifact, definition(artifact, reference),
+                    depth + 1));
+            from = at + reference.length();
+        }
+        return out.append(text.substring(from)).toString();
+    }
+
+    private static String definition(String artifact, String reference) {
+        String id = "\"expressionId\":";
+        int at = reference.indexOf(id) + id.length();
+        int end = at;
+        while (Character.isDigit(reference.charAt(end))) end++;
+        String prefix = "\"_type\":\"VmExpressionDefinition\","
+                + reference.substring(reference.indexOf("\"sessionId\""), end)
+                + ",\"expression\":";
+        int found = artifact.indexOf(prefix);
+        require(found >= 0, "no definition of " + reference);
+        return objectAt(artifact, found + prefix.length());
+    }
+
+    private static String objectAt(String json, int start) {
+        int depth = 0;
+        boolean quoted = false;
+        boolean escaped = false;
+        for (int index = start; index < json.length(); index++) {
+            char current = json.charAt(index);
+            if (quoted) {
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '"') {
+                    quoted = false;
+                }
+            } else if (current == '"') {
+                quoted = true;
+            } else if (current == '{') {
+                depth++;
+            } else if (current == '}' && --depth == 0) {
+                return json.substring(start, index + 1);
+            }
+        }
+        throw new AssertionError("unterminated object: " + json.substring(start));
     }
 
     private static int count(String text, String needle) {

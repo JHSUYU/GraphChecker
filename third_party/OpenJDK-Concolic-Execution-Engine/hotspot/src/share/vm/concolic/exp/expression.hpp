@@ -98,6 +98,9 @@ public:
   virtual const char *enum_constant_class() { return NULL; }
   // Whether this value is such a constant's ordinal (SymEnum).
   virtual bool is_enum_ordinal() { return false; }
+  // Whether this value is Enum.valueOf's own node, not a read of a location
+  // a writer stored one into (SymEnum::compare).
+  virtual bool is_enum_value_of() { return false; }
 
   // Consumer-boundary nodes are semantic identities.  Pointer identity is
   // still authoritative for every ordinary expression, but a field/version

@@ -41,6 +41,12 @@ public:
   static Expression *compare(Expression *left, oop left_obj,
                              Expression *right, oop right_obj, SymbolicOp op,
                              bool outcome);
+  // Neither operand named: one of its own expression, run null or a
+  // constant of the other's class, compared with a constant of an enum that
+  // carries none, is a compare of that constant's name with it; else NULL.
+  static Expression *compare_with_constant(Expression *left, oop left_obj,
+                                           Expression *right, oop right_obj,
+                                           SymbolicOp op, bool outcome);
   // A getstatic of `holder`'s field at `offset` loaded `value`: a switch
   // map is noted for table_read.
   static void loaded_static(Klass *holder, int offset, oop value);
