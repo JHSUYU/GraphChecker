@@ -28,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class Z3Incremental implements AutoCloseable {
 
@@ -63,6 +64,7 @@ public final class Z3Incremental implements AutoCloseable {
     private final Z3 solver;
     private final ArtifactIO.Body shared;
     private final int slotMb;
+    private final AtomicInteger outgrownMb;
     private final Lane plain;
     private final Lane tracked;
     private final SharedFiles files;
@@ -78,6 +80,7 @@ public final class Z3Incremental implements AutoCloseable {
         this.slotMb = fit(room) >= 2
                 ? room / (Z3.ARITHMETIC.length * (here + 1))
                 : room / Z3.ARITHMETIC.length;
+        this.outgrownMb = new AtomicInteger();
         this.plain = new Lane(false, placed);
         this.tracked = new Lane(true,
                 Collections.singletonList(solver.room()));
@@ -85,13 +88,15 @@ public final class Z3Incremental implements AutoCloseable {
         this.deadlineNanos = 0L;
         System.err.println("z3 scoped: " + placed.size()
                 + " plain pair(s): " + where(placed) + "; the tracking one"
-                + " here");
+                + " here; an engine starts at " + PAIR_SLOT_MB + " MB on"
+                + " another host, " + slotMb + " MB here");
     }
 
     private Z3Incremental(Z3Incremental scopes, long deadlineNanos) {
         this.solver = scopes.solver;
         this.shared = scopes.shared;
         this.slotMb = scopes.slotMb;
+        this.outgrownMb = scopes.outgrownMb;
         this.plain = scopes.plain;
         this.tracked = scopes.tracked;
         this.files = scopes.files;
@@ -435,6 +440,22 @@ public final class Z3Incremental implements AutoCloseable {
             notifyAll();
         }
 
+        boolean holds(Pair asking, int slot) {
+            for (Pair pair : pairs) {
+                if (pair != asking && !pair.lost && pair.largest() >= slot) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        boolean served(Pair asking) {
+            for (Pair pair : pairs) {
+                if (pair != asking && pair.holding) return true;
+            }
+            return false;
+        }
+
         List<Question> stopped() {
             List<Question> left = new ArrayList<Question>();
             synchronized (this) {
@@ -460,15 +481,15 @@ public final class Z3Incremental implements AutoCloseable {
         final Lane lane;
         final boolean tracking;
         final Z3.Room room;
-        final int slotMb;
+        private int slotMb;
         private final Engine[] engines;
         private final BlockingQueue<Line> printed =
                 new LinkedBlockingQueue<Line>();
         private Thread driver;
-        private boolean holding;
+        private volatile boolean holding;
         private long heldSinceNanos;
         private int answeredBy;
-        private boolean lost;
+        private volatile boolean lost;
 
         Pair(Lane lane, Z3.Room room) {
             this.lane = lane;
@@ -486,6 +507,59 @@ public final class Z3Incremental implements AutoCloseable {
             return Z3.ARITHMETIC.length * slotMb;
         }
 
+        int largest() {
+            return room.mb / Z3.ARITHMETIC.length;
+        }
+
+        private int wanted() {
+            int slot = Math.max(slotMb, outgrownMb.get());
+            if (slot <= largest()) return slot;
+            return lane.holds(this, slot) ? 0 : largest();
+        }
+
+        private boolean outgrown(Z3.Answer answer) {
+            int bigger = 2 * slotMb;
+            if (!answer.memOut() || (slotMb >= largest()
+                    && !lane.holds(this, bigger))) {
+                return false;
+            }
+            if (outgrownMb.getAndAccumulate(bigger, Math::max) < bigger) {
+                System.err.println("z3 scoped: an engine"
+                        + (room.host == null ? "" : " on " + room.host)
+                        + " ran out of memory at " + slotMb + " MB: the"
+                        + " pairs run at " + bigger + " MB an engine");
+            }
+            return true;
+        }
+
+        private boolean hold() throws InterruptedException {
+            int slot = wanted();
+            if (slot == 0) {
+                lost = true;
+                System.err.println("z3 scoped: a pair"
+                        + (room.host == null ? " here" : " on " + room.host)
+                        + " holds no " + Math.max(slotMb, outgrownMb.get())
+                        + " MB an engine, another pair does: it asks no"
+                        + " more");
+                return false;
+            }
+            if (slot != slotMb) {
+                release();
+                slotMb = slot;
+            }
+            if (holding) return true;
+            if (!room.tryTake(need())) {
+                if (lane.served(this)) {
+                    room.await(POLL_MILLIS);
+                    return false;
+                }
+                if (!room.take(need())) return false;
+            }
+            holding = true;
+            heldSinceNanos = System.nanoTime();
+            return true;
+        }
+
         void start() {
             driver = new Thread(this::drive, "graphchecker-z3-scopes"
                     + (tracking ? "-tracked" : ""));
@@ -497,32 +571,32 @@ public final class Z3Incremental implements AutoCloseable {
             Question question = null;
             try {
                 while (true) {
+                    if (!hold()) {
+                        if (lost || lane.closed) return;
+                        continue;
+                    }
                     question = lane.next(this);
                     if (question == null) return;
                     if (question == YIELD) {
                         release();
                         continue;
                     }
-                    if (holding && room.contended()
+                    if (wanted() != slotMb || (room.contended()
                             && System.nanoTime() - heldSinceNanos
-                            >= TimeUnit.MILLISECONDS.toNanos(YIELD_AFTER_MS)) {
+                            >= TimeUnit.MILLISECONDS.toNanos(YIELD_AFTER_MS))) {
                         release();
-                    }
-                    if (!holding) {
-                        if (!room.take(need())) return;
-                        holding = true;
-                        heldSinceNanos = System.nanoTime();
+                        lane.putBack(question);
+                        question = null;
+                        continue;
                     }
                     Z3.Answer answer = asked(question);
-                    if (lost && !answer.decided()) {
+                    if ((lost && !answer.decided()) || outgrown(answer)) {
                         lane.putBack(question);
                     } else {
                         question.answer(answer);
                     }
-                    if (lost) {
-                        question = null;
-                        return;
-                    }
+                    question = null;
+                    if (lost) return;
                 }
             } catch (InterruptedException closing) {
             } catch (RuntimeException failed) {
@@ -988,7 +1062,7 @@ public final class Z3Incremental implements AutoCloseable {
                     && ++refusals < SSH_ATTEMPTS;
             String said = String.join(" | ", collected);
             stop();
-            if (remote && unread && !refused) {
+            if (remote && unread && !refused && !memOut) {
                 lose("ended first, saying: " + said);
             }
             if (of == null || of.done() || of.cancelled) return;

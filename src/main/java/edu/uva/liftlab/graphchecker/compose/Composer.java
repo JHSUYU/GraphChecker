@@ -1482,6 +1482,7 @@ public final class Composer {
         for (Valuation valuation : valuations) {
             pins.addAll(valuation.assertions());
         }
+        corpus.letGo();
         String body = lowering.body(pins);
         reached("body lowered");
         return new Composition(this, body, disjuncts, entries, valuations,

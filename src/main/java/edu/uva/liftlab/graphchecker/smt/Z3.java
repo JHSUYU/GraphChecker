@@ -175,6 +175,16 @@ public final class Z3 {
             return true;
         }
 
+        synchronized boolean tryTake(int need) {
+            if (issued != serving || held + need > mb) return false;
+            held += need;
+            return true;
+        }
+
+        synchronized void await(long millis) throws InterruptedException {
+            wait(millis);
+        }
+
         private void pass() {
             while (abandoned.remove(serving)) serving++;
             notifyAll();

@@ -164,6 +164,64 @@ public class Z3IncrementalTest {
         }
     }
 
+    @Test(timeout = 180000L)
+    public void anEngineOutOfMemoryAsksAgainAtTwiceItsSlotWhileAHostHoldsIt()
+            throws Exception {
+        Object[][] rows = {
+                {4096, 0, "; reads 1500", "; sat", 1, "sat", "[960, 1984]"},
+                {4096, 0, "", "; sat ; needs 1500", 1, "sat", "[960, 1984]"},
+                {4096, 0, "", "; sat ; needs 3000", 1, "memout",
+                        "[960, 1984]"},
+                {2048, 8192, "; reads 3000", "; sat", 6, "sat",
+                        "[960, 1984, 4032]"},
+        };
+        Path log = folder.newFile("grow.log").toPath();
+        Path fake = fake(log);
+        Path ssh = ScopedFixture.ssh(folder.newFolder("grow").toPath());
+        java.util.concurrent.ExecutorService askers =
+                java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            for (Object[] row : rows) {
+                int remote = (Integer) row[1];
+                Z3 solver = new Z3(fake, 30000L, (Integer) row[0],
+                        remote == 0 ? Collections.<Z3.Room>emptyList()
+                                : Arrays.asList(new Z3.Room("far", remote,
+                                Arrays.asList(ssh.toString(), "far"))),
+                        folder.newFolder().toPath());
+                int before = Files.readAllLines(log).size();
+                List<String> answers = new ArrayList<String>();
+                try (Z3Incremental scopes = new Z3Incremental(solver,
+                        output -> output.write("(declare-const x Int)\n"
+                                + row[2] + "\n"), (Integer) row[4])) {
+                    List<java.util.concurrent.Future<Z3.Answer>> asked =
+                            new ArrayList<java.util.concurrent.Future<
+                                    Z3.Answer>>();
+                    for (int at = 0; at < (Integer) row[4]; at++) {
+                        asked.add(askers.submit(() -> scopes.ask(output ->
+                                output.write(row[3] + "\n"), null, false,
+                                0L)));
+                    }
+                    for (java.util.concurrent.Future<Z3.Answer> each
+                            : asked) {
+                        answers.add(each.get().status());
+                    }
+                }
+                List<String> started = Files.readAllLines(log);
+                TreeSet<Integer> caps = new TreeSet<Integer>();
+                for (String line : started.subList(before, started.size())) {
+                    caps.add(Integer.parseInt(line.split(" ")[1]));
+                }
+                String what = Arrays.toString(row) + ": " + answers + " "
+                        + caps;
+                assertEquals(what, Collections.nCopies((Integer) row[4],
+                        row[5]), answers);
+                assertEquals(what, row[6], caps.toString());
+            }
+        } finally {
+            askers.shutdownNow();
+        }
+    }
+
     private Path fake() throws IOException {
         return fake(folder.newFile("unused.log").toPath());
     }
@@ -180,8 +238,14 @@ public class Z3IncrementalTest {
                 "    if solving: raise Cancelled()",
                 "    os._exit(1)",
                 "signal.signal(signal.SIGINT, cancel)",
+                "cap = next((int(a.split('=', 1)[1]) for a in sys.argv"
+                        + " if a.startswith('memory_max_size=')), 1 << 30)",
+                "def short(key, said):",
+                "    at = said.find(key)",
+                "    return at >= 0 and cap < int(said[at + len(key):]"
+                        + ".split()[0])",
                 "with open('" + log + "', 'a') as starts: starts.write("
-                        + "'start\\n')",
+                        + "'start ' + str(cap) + '\\n')",
                 "with open('" + log + ".pids', 'a') as pids: pids.write("
                         + "str(os.getpid()) + '\\n')",
                 "engine = '2'; tracking = False; answered = 0",
@@ -218,6 +282,7 @@ public class Z3IncrementalTest {
                 "        reason = 'incomplete'",
                 "        if '; oom' in scope: oom()",
                 "        if '; agedoom' in scope and answered > 0: oom()",
+                "        if short('; needs ', scope): oom()",
                 "        answered += 1",
                 "        with open('" + log + ".checks', 'a') as checks:",
                 "            checks.write(('tracking' if tracking else 'plain')"
@@ -255,6 +320,8 @@ public class Z3IncrementalTest {
                 "    elif '(get-unsat-core)' in text:",
                 "        if '; corecut' in scope: oom()",
                 "        say('(c)')",
+                "    elif short('; reads ', text):",
+                "        oom()",
                 "    elif '; slowread' in text:",
                 "        time.sleep(12)",
                 "    elif '(get-info' in text:",

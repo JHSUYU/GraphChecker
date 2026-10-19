@@ -59,6 +59,19 @@ public final class RowHold {
         held.get(session.sessionId());
     }
 
+    public void letGo() {
+        List<Unit> out;
+        synchronized (this) {
+            out = new ArrayList<Unit>(held.values());
+            held.clear();
+            holding = 0L;
+        }
+        for (Unit unit : out) {
+            unit.session.release();
+            released.accept(unit.session);
+        }
+    }
+
     void loaded(SessionReader session) {
         synchronized (this) {
             reads++;
