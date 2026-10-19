@@ -1088,8 +1088,11 @@ of a planned round at world depth 1 built as the solver builds it (`analysis/hba
 Z3S-18413 round 2, 4103 queries, every text distinct (no hit by the text), 1470 canonical keys: 2633
 asks answered from the store, 2054 of them UNSAT (settled, no z3), 579 SAT (the model handed on, the
 replay owed); 299 of them solved again on their own text agreed, the 10 SAT models satisfied their own
-texts renamed. z3 decided all 1470 keys in 38 s, so what the store saves is z3 time, small beside the
-replays: a gen-1 re-ask's cost is its SAT replay (§7.3: a re-ask in another world is a pair world).
+texts renamed; solr-adhoc-39 round 5, 5526 texts, 4110 keys, 1416 asks from the store (1310 UNSAT), 164 re-solved
+both ways agreed; hbase-bugs-master-active-time's 92 asks of depth 0 were 92 texts and 6 keys. z3 decided Z3S's
+1470 keys in 38 s and 39's 4110 in 1363 s (the hits 37 s), and a worker that UNSAT settles takes ~2 s against minutes
+for a replay, so what the store saves is z3 time: whether a re-ask is dispatched at all is the ledger's (its
+dependence, above), and a SAT re-ask in another world is a pair world, whose replay depth > 0 asks for.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
