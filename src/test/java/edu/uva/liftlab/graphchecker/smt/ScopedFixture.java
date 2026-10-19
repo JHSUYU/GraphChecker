@@ -77,7 +77,11 @@ public final class ScopedFixture {
                         + " by remote host\" >&2; exit 255",
                 "  fi",
                 "fi",
-                "bash -c \"$*\""), StandardCharsets.UTF_8);
+                "setsid bash -c \"$*\" <&0 &",
+                "pid=$!",
+                "wait \"$pid\"; status=$?",
+                "kill -KILL -- \"-$pid\" 2>/dev/null",
+                "exit \"$status\""), StandardCharsets.UTF_8);
         if (!ssh.toFile().setExecutable(true)) {
             throw new IOException("not executable: " + ssh);
         }

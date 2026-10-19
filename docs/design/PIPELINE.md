@@ -3186,10 +3186,21 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    by the z3's reader as that line comes or its output ends, never by its pair's driver), so sshd's
    MaxStartups refuses none (48 at once to one lift: 12 refused; 4 at a time: none); one refused
    before its shell ran is started again, at most `SSH_ATTEMPTS` (3) times, a second apart more each
-   time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst). A
-   pair holds its slots while it lives and gives them back to whoever waits for room once it has no
-   question, or between questions after 30 s of them (`YIELD_AFTER_MS`), so pairs and one-shot asks
-   take turns where the room holds no more. The valuations, asked up
+   time, then its pair asks no more (SGF8-adhoc-39: 15 of 102 pairs lost to the burst).
+   An engine starts at 1024 MB on another host and at its share of the room here; one that runs out
+   of memory -- reading the shared part or on a question -- is no answer while a host holds twice its
+   slot: every pair runs at twice that slot from then on (`Z3Incremental#outgrownMb`), stops its
+   engines, gives back its slots, takes the larger ones and starts afresh, and the question is asked
+   again (SGF9-adhoc-05: its shared part, 255 MB of text, needs 2662 MB a z3; at 1024 MB every remote
+   pair was lost reading it within a minute and the one here answered 124 of 124 questions memout).
+   A host's pairs never hold more than its room: a pair takes its slots before it starts its engines
+   (`Z3.Room#tryTake`) and, where they do not fit beside the others, waits and asks nothing; only a
+   pair whose lane has no other pair holding slots waits in the room's line (`Room#take`), so lanes and
+   one-shot asks still take turns. A pair whose host's whole room is less than the slot asks no more
+   while another pair of its lane could hold it; else it asks at its whole room, and an engine out of
+   memory there answers memout. A pair holds its slots while it lives and gives them back to whoever
+   waits in the room's line once it has no question, or between questions after 30 s of them
+   (`YIELD_AFTER_MS`), so pairs and one-shot asks take turns where the room holds no more. The valuations, asked up
    to four at a time (`PARALLEL_ASKS`, at most as many as there are), ask their whole disjunctions in
    slots of the room shared that many ways (`Disjunction#asking`, `Z3#shared`), and a lone one-shot
    ask -- the formula's -- in half of it each engine; a model or core run at a shared slot's cap is
