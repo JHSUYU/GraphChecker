@@ -545,8 +545,8 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 refactor that carries every optimization done on Solr and completes the ones not done (its §5, §6).
 
 **0. The VM image.** Every HBase run is on `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`hbase-platform`'s VM sources:
-the held enum constant named of its class, no silent enum compare, `REF_OPERAND_UNSTATED`); `system/solr` keeps
-`vm-force10` until the Solr canaries (18406, 18413, restore) pass on `vm-force12`. A procedure step stands on its
+the held enum constant named of its class, no silent enum compare, `REF_OPERAND_UNSTATED`); `system/solr` is its
+own branch on its own image (owner 2026-10-19: HBase changes are judged by HBase's cases only). A procedure step stands on its
 procedure's previous step (tree `CausynthStep`, STATUS "tree: daemon ticks"); a step that only met a busy entity lock
 (`LOCK_EVENT_WAIT`) or yielded is a step too, so where two procedures contend, the later steps' occurrences can be
 renumbered between runs. If a case shows it (an occurrence only one replay ran, under a procedure that waited on a
