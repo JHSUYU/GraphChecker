@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""classpath.py <tree> <surefire report> <test module> <module>...: the
-workload's classpath, as the tree's own test run stated it, with the tree's
-modules loaded from the tree.
+"""classpath.py <tree> <surefire report> <test module>: the workload's
+classpath, as the tree's own test run stated it, with the tree's modules
+loaded from the tree.
 
 The report states the test JVM's java.class.path.  A module the build
 resolved from its repository (every one but the module under test) is that
 repository's jar of this tree; it is replaced by the module's compiled
-classes (and a test jar by its test classes), so a workload loads one
-checkout's classes, and a class rebuilt in the tree is the one it runs.
+classes (and a test jar by its test classes) wherever the tree has them, so a
+workload loads one checkout's classes, a class rebuilt in the tree is the one
+it runs, and a rebuild of another tree into the same repository changes
+nothing a run reads.
 GraphChecker's jar is not the tree's: the launcher supplies the frozen one,
 so the entries the build added are dropped, and so is the tree's Gson (2.9,
 Hadoop's): GraphChecker's jar follows the tree's classpath, and the runtime's
@@ -21,7 +23,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 repo, report, test_module = Path(os.path.realpath(sys.argv[1])), sys.argv[2], sys.argv[3]
-modules = set(sys.argv[3:])
 root = ET.parse(report).getroot()
 value = next((p.get("value", "") for p in root.findall("./properties/property")
               if p.get("name") == "java.class.path"), "")
@@ -34,10 +35,11 @@ JAR = re.compile(r"/org/apache/hbase/(hbase-[a-z-]+)/[^/]+/\1-[^/]+?(-tests)?\.j
 
 def tree_entry(entry):
     match = JAR.search(entry)
-    if not match or match.group(1) not in modules:
+    if not match:
         return None
     kind = "test-classes" if match.group(2) else "classes"
-    return str(repo / match.group(1) / "target" / kind)
+    classes = repo / match.group(1) / "target" / kind
+    return str(classes) if classes.is_dir() else None
 
 
 entries = []
