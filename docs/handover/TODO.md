@@ -169,14 +169,13 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   holds its reserve as the watcher would; the stream fixtures' gate stub keeps the gate's ledger (`test_gated`);
   STREAM-CAP is timing-sensitive; never edit a script a running gate executes (NFS: "Stale file handle").
 
-**D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore, head ee0edfcb1.**
-- 32140c8bb merges compaction step 3 (built, tests not run); merge b4518df43 (step 4) next.
-- WIP ee0edfcb1: the parked solr-armkey key (keys name only the roots the question reads) cherry-picked, plus
-  explore/KeyGate (+ KeyGateTest): re-keys every asked flip and fails on a key holding a satisfiable answer beside an
-  UNSAT one (unless the UNSAT world strictly extends it) or a first settling answer that is not ADMITTED while another
-  is. Passed on 18413 (424 ids -> 339 keys), 18406, the 6 solr-bugs, 13, 19, 21, 39, 05 r5; NOT yet on 07, 05 r2, 14
-  and Z3S-18413 (depth 3, 415 sessions: the meaningful one). Renumber the clock-reading defect the cherry-pick added
-  (clashes with STATUS 70).
+**D exploration core -- branch solr-explore, worktree /bigtemp/vnr3ne/wt/gc-explore.**
+- D1 done (gated): solr-int 5396683d6 merged (f06ec4845); the key stays the whole-guard key -- the parked solr-armkey
+  key (3bfdca7bc, cherry-picked in ee0edfcb1) is reverted: `explore.KeyGate` (kept as the key's merge gate,
+  OPERATIONS §6) finds on Z3S-18413 one key folding an UNSAT depth-1 fault world with two satisfiable siblings
+  (787 keys; the whole guard 1416 keys, no defect), STATUS 64's note. The whole-guard key passes on 07, 05 r2, 05 r5,
+  14, 13, 19, 21, 39, Z3S-18413, SGF5-adhoc-14 and the 8 bug checks (`analysis/solr-2026-10-18/explore/gate/d2d/`).
+  The clock-reading key defect is STATUS 71.
 - Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
   round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
   6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains

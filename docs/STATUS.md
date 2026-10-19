@@ -550,7 +550,19 @@ Correctness:
     a fold). Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
     raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
     differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
-    its id alone (as before).
+    its id alone (as before). A producer arm's guard named by only the roots its term and predicates
+    reach (branch `solr-armkey` 3bfdca7bc: Z3S-18413's 1478 asks under 787 keys instead of 1416) folds
+    sibling worlds: the key gate (`explore.KeyGate`) finds SliceMutator#addRoutingRule's `#u17#1 ->
+    false` UNSAT in one depth-1 fault world under the key of two sibling fault worlds whose queries
+    were satisfiable (models their replays did not take), where the whole guard keeps them apart; so it
+    is not merged (`analysis/solr-2026-10-18/explore/gate/d2b/z3s18413.json`, base side `gate/base/`).
+71. A clock reading the program kept concrete reaches an arm's key as a term's constant: Solr's
+    `MigrateCmd` (243) and `OverseerCollectionMessageHandler` (1024) name a sub-request
+    `asyncId + Math.abs(System.nanoTime())`, a reading no root mints (only declared clock sites are
+    roots), so the Overseer queue item's `async` leaf differs in every run (Z3S-18413 round 1: it
+    re-keys 4 tasks' arms, 72ff1904's among them): a re-ask, never a fold. Fix: the runtime states the
+    concrete clock readings a run's program got, as it states `runSpellings`, and
+    `Corpus#programNames` names them by their clock.
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is
