@@ -260,8 +260,12 @@ public final class RegionEnumSmoke {
         require(count(heldPair, "ReadFromExpression") >= 2,
                 "two held reads are not compared over both: " + heldPair);
         over("a constant with a body", bodied, "Y_L'String'_FAST", "==");
-        overRead("a container's answer and the held read", answerHeld,
-                "\"operation\":\"READ\"");
+        require(answerHeld.contains("\"operation\":\"READ\"")
+                        && answerHeld.contains("\"locationKind\":\"MAP_STATE\"")
+                        && answerHeld.contains("\"locationKind\":\"INSTANCE_FIELD\"")
+                        && !answerHeld.contains("\"_name\":\"equals\""),
+                "a container's answer and the held read are no reference"
+                        + " compare over both: " + answerHeld);
         require(answerConstant.contains("\"operation\":\"READ\"")
                         && answerConstant.contains("\"_name\":\"equals\"")
                         && answerConstant.contains("Y_L'String'_DOWN"),
