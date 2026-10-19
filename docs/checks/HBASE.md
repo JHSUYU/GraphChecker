@@ -151,8 +151,9 @@ Shared prerequisites:
   HDFS or MapReduce); `experiments/hbase/system.sh` names its sources and its test module (`hbase_test_module`),
   and `build.sh` builds a workload's own module with hbase-server and runs it there.
 - **P4**: a target occurrence where the test throws by design (11, 12, 19, 20): each one's first occurrence does
-  not throw, so their rows say `first`. 22 and ns-rsgroup-removal take a selector whose region the first seed
-  recording supplies; backup-lock-reply-lost's `first` is checked there (§E).
+  not throw, so their rows say `first`. 22 and ns-rsgroup-removal take a selector (§E: the region of the target on
+  master0 and the occurrence's index in it, read off a seed recording); backup-lock-reply-lost's `first` is
+  checked at its first seed.
 - **P5**: `recording_window=startup` for 28 (owner opt-in): its row's window is `startup`, which
   `hbase-adhoc/case.sh` declares as `recording_window=startup`; the adapter opens the window before the HBase
   cluster starts when `MessageDoors#startupWindow` says so (as hbase-bugs-master-active-time's).
@@ -256,7 +257,7 @@ the class whose code writes that field.
 | hbase-adhoc-19 | ModifyTableProcedure:134 | TestModifyTableProcedure#testModifyWillNotReopenRegions | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | 11 s | ready |
 | hbase-adhoc-20 | ModifyTableProcedure:138 | same | up | first (Test 1's modify) | ModifyTableProcedure, util/FSTableDescriptors | same run | ready |
 | hbase-adhoc-21 | NamespaceStateManager:130 | TestNamespaceAuditor#testRestoreSnapshot | up | first (the restore) | NamespaceStateManager, NamespaceTableAndRegionInfo | 15 s | ready |
-| hbase-adhoc-22 | NamespaceStateManager:168 | TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted (ours) | up | the 2nd occurrence on master0 (the created table's check; the 1st is the truncated table's own creation): the first seed names its region | NamespaceStateManager, NamespaceTableAndRegionInfo | 12-14 s, 3/3 | selector at the first seed |
+| hbase-adhoc-22 | NamespaceStateManager:168 | TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted (ours) | up | `auto0/master0#epoch0/region/REGION.ebc27075-13a0-35bd-8787-ae2532aac65d#2`: the created table's check (the 1st is the truncated table's own creation; seed HC1SEED-22 observed exactly these 2) | NamespaceStateManager, NamespaceTableAndRegionInfo | 12-14 s, 3/3 | ready |
 | hbase-adhoc-24 | ZKProcedureMemberRpcs:210 | TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback | up | first | ZKProcedureMemberRpcs, ZKProcedureCoordinator | 37 s | ready (its data crosses ZooKeeper: the ZOOKEEPER doors) |
 | hbase-adhoc-28 | HBaseServerBase:353 | TestInfoServers#testInfoServersRedirect | startup | first | HBaseServerBase, common util/Addressing | 9 s | ready |
 | hbase-adhoc-31 | RSRpcServices:1880 (ServiceException) | TestRegionMove#testDisableAndMove | up | first | RSRpcServices, master/procedure/RSProcedureDispatcher | 12 s | ready |
@@ -264,7 +265,7 @@ the class whose code writes that field.
 | hbase-adhoc-35 | HBaseFsck:2742 (anonymous visitor) | TestHBaseFsckReplication#test | up | first | util/HBaseFsck, util/HbckRegionInfo | 9 s | ready |
 | hbase-adhoc-37 | MasterAddressTracker:206 | TestRSStatusPage#testStatusPage (expects `text/html`: the Java 8 tree serves the page without a charset) | up | first (the test's `getActiveMasterInfoPort`) | zookeeper MasterAddressTracker, master/ActiveMasterManager | 13 s | ready (P2 done) |
 | hbase-bugs-backup-lock-reply-lost | BackupSystemTable:504 | TestBackupManager#testStartBackupExclusiveOperation | up | `first`, to check at the first seed: it must be the first acquirer's call, whose lost reply is the bug | BackupSystemTable, BackupManager, client RawAsyncTableImpl, server HRegion | 15 s | needs P1 |
-| hbase-bugs-ns-rsgroup-removal | MasterProcedureUtil:231 | TestCausynthNamespaceGroupRemoval#removeTheGroupOfANamespaceBeingCreated (ours) | up | the CreateTableProcedure's occurrence on master0 (the namespace's prepare checks the group first): the first seed names its region and index | MasterProcedureUtil, rsgroup/RSGroupInfoManagerImpl, TableNamespaceManager, ClusterSchemaServiceImpl | 9-11 s, 3/3 | selector at the first seed |
+| hbase-bugs-ns-rsgroup-removal | MasterProcedureUtil:231 | TestCausynthNamespaceGroupRemoval#removeTheGroupOfANamespaceBeingCreated (ours) | up | `auto0/master0#epoch0/region/REGION.e244192e-5f27-3987-a408-e5bcdcf259b0#3`: CreateTableProcedure's second `checkGroupExists`, the group the table inherits from its namespace (seed HC1SEED-nsrg observed 3: the namespace's prepare, then the table's own group and the inherited one in one context) | MasterProcedureUtil, rsgroup/RSGroupInfoManagerImpl, TableNamespaceManager, ClusterSchemaServiceImpl | 9-11 s, 3/3 | ready |
 | hbase-bugs-master-active-time | MasterRpcServices:2629 | TestCausynthMasterActiveTime#reportOpenedToTheNextMaster (the tree's own: a master failover while a region opens; the region server reports OPENED with the old master's active time to the new master) | startup | first | MasterRpcServices, HMaster, OpenRegionProcedure, RegionRemoteProcedureBase, RSProcedureDispatcher, RemoteProcedureDispatcher, RSRpcServices, HRegionServer, AssignRegionHandler, EnvironmentEdgeManager | 10 s | workload replaced (owner 2026-10-19: no WAL contents); not yet run |
 
 **HBASE-30483 in hbase-adhoc-22 (yes).** A table truncated without its splits keeps its old region count in the

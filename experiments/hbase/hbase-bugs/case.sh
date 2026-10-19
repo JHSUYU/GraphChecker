@@ -31,7 +31,7 @@ case "${1:?usage: case.sh <bug>}" in
   ns-rsgroup-removal)
     test_class=org.apache.hadoop.hbase.rsgroup.TestCausynthNamespaceGroupRemoval
     test_method=removeTheGroupOfANamespaceBeingCreated
-    target_occurrence='auto0/master0#epoch0/region/REGION.SEED#2'
+    target_occurrence='auto0/master0#epoch0/region/REGION.e244192e-5f27-3987-a408-e5bcdcf259b0#3'
     scope=(
       server=:org/apache/hadoop/hbase/master/procedure/MasterProcedureUtil
       server=:org/apache/hadoop/hbase/rsgroup/RSGroupInfoManagerImpl
