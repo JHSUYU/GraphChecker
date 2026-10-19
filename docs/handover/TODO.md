@@ -186,9 +186,11 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   handoff its flipped predicate does not name at its recorded value where the query stays sat
   (`explore.NearestWorld`, PIPELINE §7.5, OPTIMIZATIONS 3.5); 14's 31 `DocCollection.<init>#u102` flips stay SAT with
   573 unneeded leaves at their recording (they planted `""` and every replay failed at `Slice.<init>`); the 8 bug
-  checks' witness plants are unchanged (`analysis/solr-2026-10-18/explore/nearest/`). Open, seen there: a non-control
-  handoff whose String arrival is unquoted is not pinned (`FlipQuery#pinArrival` reads it as a JSON literal; COMPOSE
-  quotes it, `Composer#arrived`).
+  checks' witness plants are unchanged (`analysis/solr-2026-10-18/explore/nearest/`). An attach's value is read
+  by one rule in COMPOSE and EXPLORE (`VmTermLowering#received`), so a String handoff no arm states is pinned to its
+  arrival. It answers none of 14's 108 UNPRODUCIBLE_ANSWER refusals (rounds 0-2, `nearest/unprod-*`): each is the
+  state.json shard-state control whose one producer arm's delivered expression does not lower (gap
+  DECLARATION_MISSING "arm dropped: its delivered expression EXPR.34cb5d34c476f07d does not lower") -- open.
 - Then the GENERATIONAL BOUND (world-dedup study, `analysis/solr-2026-10-18/world-dedup/README.txt`): at depth 1, 14
   round 4: 80.9 % of obligations re-ask an arm BEFORE the world's flip with the same path prefix (parents NOT_FLIPPABLE
   6,856, NOT_ADMITTED 2,799, ADMITTED 0); the child queries are NOT equal (inherited fault-root conjunct, version domains

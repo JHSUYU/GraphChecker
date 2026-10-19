@@ -2959,17 +2959,8 @@ public final class Composer {
      * spells it ({@link SmtLowering#statedValue}).
      */
     private Term arrived(AttachRow attach) {
-        String answered = attach.answeredValue() == null ? ""
-                : attach.answeredValue().trim();
-        if (!answered.isEmpty()) {
-            return lowering.statedValue(answered, attach.javaType());
-        }
-        String arrival = attach.arrival() == null ? "" : attach.arrival();
-        if (JavaSmtSorts.sortOfJava(attach.javaType()) == Sort.STRING
-                && !arrival.isEmpty()) {
-            return Term.nonNullString(VmExpressionIr.quote(arrival), "true");
-        }
-        return lowering.statedValue(arrival, attach.javaType());
+        return lowering.statedValue(VmTermLowering.received(attach),
+                attach.javaType());
     }
 
     /**

@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -10,6 +11,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +34,16 @@ public final class VmTermLowering {
      * them, a String's content from its JSON string literal, quoted (Java
      * null, {@code N}, is no String).
      */
+    public static String received(AttachRow attach) {
+        String answered = attach.answeredValue() == null ? ""
+                : attach.answeredValue().trim();
+        if (!answered.isEmpty()) return answered;
+        String arrival = attach.arrival() == null ? "" : attach.arrival();
+        return !arrival.isEmpty()
+                && JavaSmtSorts.sortOfJava(attach.javaType()) == Sort.STRING
+                ? new JsonPrimitive(arrival).toString() : arrival;
+    }
+
     public static String smtLiteral(String value, Sort sort) {
         String text = value == null ? "" : value.trim();
         if (sort == Sort.BOOL) {

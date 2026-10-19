@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -1317,7 +1316,7 @@ final class FlipQuery {
          *  named; the closure check then refuses the obligation. */
         private void pinArrival(AttachRow attach, String variable,
                                 String why) {
-            String arrival = SmtText.literal(attach.arrival(),
+            String arrival = SmtText.literal(VmTermLowering.received(attach),
                     sorts.get(variable));
             if (arrival.isEmpty()) {
                 gaps.add(GapRow.of(attach.sessionId(),
@@ -1910,17 +1909,7 @@ final class FlipQuery {
             controls.put(attach.endpoint().id(), new Control(
                     attach.endpoint().id(), variable, sorts.get(variable),
                     unproducible));
-            String answered = attach.answeredValue() == null ? ""
-                    : attach.answeredValue().trim();
-            String arrival = attach.arrival() == null ? ""
-                    : attach.arrival();
-            if (answered.isEmpty() && !arrival.isEmpty()
-                    && VmTermLowering.Sort.STRING.smt.equals(
-                    sorts.get(variable))) {
-                recorded.put(variable, VmExpressionIr.quote(arrival));
-            } else {
-                record(variable, answered.isEmpty() ? arrival : answered);
-            }
+            record(variable, VmTermLowering.received(attach));
         }
 
         private void record(String variable, String value) {
