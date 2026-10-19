@@ -38,53 +38,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * One obligation's query: the path as its replay ran it, one decision negated,
- * over a world the corpus states. Four rules decide what a symbol may be:
- *
- * <ul>
- *   <li>a ROOT is one quantity across the corpus: free in its declared
- *       domain (a marker over both values), else PINNED to the recorded read,
- *       as the composition pins it;</li>
- *   <li>a CLOCK is per path, never equal across paths, with domain {@code
- *       [host reading, host reading + 30 days]} in the clock's own ticks:
- *       the host's reading of that execution ({@code
- *       RootMintRow#hostReading}), which a skew is off, so no model skews a
- *       clock behind its host ({@link
- *       JavaPrimitiveSmtSemantics#clockSkewCeiling}; no reading: {@code [0,
- *       Long.MAX_VALUE]}); its nearest world is the instant the execution
- *       ran it at (PIPELINE §7.5);</li>
- *   <li>a CONTROL handoff (attached at the flipped occurrence, where a
- *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
- *       guard_q AND v_H = e_q)}, closed to a fixed point over forwarded
- *       handoffs; no arm = free and {@code unproducible}. EVERY
- *       OTHER handoff is bound by the arms of its OWN run only (what that
- *       run's producer computed it from, over roots and clocks the replay
- *       plants), and PINNED to its recorded arrival where none states
- *       it;</li>
- *   <li>a STATE read offers its eligible writers ({@link Arms#stateArms}) as
- *       exactly-one Bool selectors ({@code wchoice_*}), each binding it to
- *       what that writer delivered, plus the run's own choice where no one
- *       writer's arm is the run; with no writer (or none that lowers) it
- *       is pinned to the row's {@code concreteValue}, else the obligation is
- *       refused ({@code UNSTATED_VALUE}) (PIPELINE §7.5).</li>
- * </ul>
- *
- * <p>Nothing else is free: an undeclared name refuses the obligation on the
- * flipped decision and drops the conjunct (named gap) on a prefix decision.
- * Demanded conjuncts (this flip and inherited flips) get a clock {@link
- * ClockMargin}; prefix decisions do not.</p>
- */
 final class FlipQuery {
     private FlipQuery() {
     }
 
-    /** One handoff of the focused occurrence the replay can be answered at. */
     static final class Control {
         final String attachEndpointId;
         final String variable;
-        /** The variable's sort ({@link VmTermLowering.Sort#smt}): how the
-         *  model's value of it is spelled as an answer. */
         final String sort;
         final boolean unproducible;
 
@@ -97,39 +57,18 @@ final class FlipQuery {
         }
     }
 
-    /** How a flip whose predicate reaches no variable is named: UNSAT on its
-     *  path, the recording's arm the only one ({@code
-     *  ObligationFactory#solve}). */
     static final String NOT_FLIPPABLE = "NOT_FLIPPABLE";
 
-    /** One assembled query, or the reason there is none. */
     static final class Built {
-        /** The formula: declarations and assertions, without a check-sat. */
         final String smt2;
-        /** Every declared variable, in order: the names a model is asked for.
-         */
         final List<String> modelSymbols;
         final String refusal;
         final List<Control> controls;
-        /** query variable -> root, for model read-back: only roots the
-         *  assertions REACH ({@link Builder#reached}). A root the flip does not
-         *  depend on is a free solver pick, and planting it would owe an
-         *  ASSIGNMENT_UNPLANTED; hence {@link Builder#rootFacts} is kept apart.
-         */
         final Map<String, String> rootVariables;
-        /** The same for the flipped path's clocks, apart because a clock's
-         *  model is read back as a SKEW the replay adds to its own reading. */
         final Map<String, String> clockVariables;
-        /** Each reader's choice of writer per location ({@code
-         *  wchoice_*}). */
         final List<WriterChoice> choices;
-        /** Every declared variable's sort ({@link
-         *  VmTermLowering.Sort#smt}): how a value of it is spelled. */
         final Map<String, String> sorts;
         final List<GapRow> gaps;
-        /** Whether the refusal's cause lies in what an arm's key names --
-         *  the flipped predicate itself, and the reads it rests on -- so
-         *  every world under that key is refused alike ({@link #atArm}). */
         final boolean armRefused;
         final Map<String, String> recorded;
         final Set<String> flipVariables;
@@ -169,17 +108,6 @@ final class FlipQuery {
             this.flipVariables = Collections.unmodifiableSet(flipVariables);
         }
 
-        /**
-         * This refusal as one of the ARM ({@code
-         * ObligationResult#ARM_REFUSED}): its cause is the flipped predicate
-         * -- a name its session declares nowhere, a construct the query
-         * cannot state -- or the reads it rests on, versions no row wrote,
-         * all of which the arm's key names ({@code
-         * ObligationFactory#dependence}), so it settles the arm as UNSAT
-         * does.  A refusal resting on what the key leaves out -- an
-         * inherited flip, a writer choice, the query's closure -- settles
-         * only its flip.
-         */
         Built atArm() {
             return new Built(smt2, modelSymbols, refusal, controls,
                     rootVariables, clockVariables, choices, sorts, gaps,
@@ -190,14 +118,10 @@ final class FlipQuery {
             return refusal.isEmpty();
         }
 
-        /** Whether the flipped predicate reaches no variable and rests on no
-         *  held fact: its other arm is UNSAT on this path. */
         boolean notFlippable() {
             return refusal.startsWith(NOT_FLIPPABLE + ":");
         }
 
-        /** This query with {@code assertions} after its own: the worlds
-         *  its flip's replays refuted ({@code ObligationFactory#solve}). */
         Built excluding(List<String> assertions) {
             StringBuilder text = new StringBuilder();
             for (String assertion : assertions) {
@@ -210,50 +134,29 @@ final class FlipQuery {
         }
     }
 
-    /** Whether one recorded decision is a flip candidate at all: it carries a
-     *  term (a branch with a symbol IS a flip target; producibility is the
-     *  solver's verdict, {@link Builder#unbound}).
-     *  A CONCRETE branch has no term to negate. Where candidates may sit is the
-     *  closure's question (PIPELINE §7.4, {@link
-     *  ObligationFactory#candidates}). */
     static boolean flippable(DecisionRow decision) {
         return Arms.predicate(decision.term());
     }
 
-    /**
-     * Whether a task's flip sites ask this decision: every decision at a
-     * site they name, or the one decision an entry {@link #asked} names
-     * (an open decider arm's, TargetRow.OpenArm: only the call that fed the
-     * guard, never every call of the helper).
-     */
     static boolean asks(Set<String> flipSites, DecisionRow decision) {
         return flipSites.contains(decision.siteId())
                 || flipSites.contains(asked(decision.siteId(),
                 decision.ordinal()));
     }
 
-    /** A flip-site entry naming one decision of a site. */
     static String asked(String siteId, int ordinal) {
         return siteId + "@" + ordinal;
     }
 
-    /** One published term with its {@code EXPR.} references lowered by the ONE
-     *  lowering (as the composer does), so flip and composition read the same
-     *  predicate. A term with no reference returns unchanged. */
     static String statedTerm(Corpus corpus, String sessionId,
                              String term) {
         if (term == null || term.isEmpty()) return "";
         SmtLowering lowering = corpus.lowering(sessionId);
         if (lowering == null) return term;
         String lowered = lowering.statedTerm(term, "flip:" + sessionId);
-        // A refusal ("") keeps the raw term; the unknown-symbol rule names it.
         return lowered.isEmpty() ? term : lowered;
     }
 
-    /** Whether a lowered conjunct is unusable: blank, or an application
-     *  with missing arguments ({@code (not )}), which z3 answers with an
-     *  error and no verdict.  {@link Builder#arm} drops such an arm, and
-     *  such a conjunct of one, and {@code Corpus#handoffName} names it so. */
     static boolean malformed(String term) {
         if (term == null || term.trim().isEmpty()) return true;
         for (int at = term.indexOf('('); at >= 0;
@@ -277,15 +180,6 @@ final class FlipQuery {
         return false;
     }
 
-    /**
-     * The first name of one session's lowered term a flip query cannot
-     * declare, or null: {@link Builder#rename}'s refusal -- a name that is
-     * no builtin, no preamble name, no name the lowering minted and no
-     * symbol of the corpus (a let-bound text is not checked, {@link
-     * SmtNames#rename}).  {@link Builder#arm} drops an arm, and {@link
-     * Builder#delivered} a writer's value, that names one; {@code
-     * Corpus#term} names such a term as stating nothing.
-     */
     static String undeclared(Corpus corpus, String sessionId, String text) {
         SmtLowering lowering = corpus.lowering(sessionId);
         Set<String> unknown = new LinkedHashSet<String>();
@@ -297,10 +191,6 @@ final class FlipQuery {
         return unknown.isEmpty() ? null : unknown.iterator().next();
     }
 
-    /** The top-level conjuncts of one asserted term: {@code (and a b)} is
-     *  a and b, {@code (not (not a))} is a, {@code (not (or a b))} is
-     *  {@code (not a)} and {@code (not b)}, each split again; any other
-     *  term is itself.  {@code (and)} states nothing. */
     static List<String> conjuncts(String term) {
         List<String> conjuncts = new ArrayList<String>();
         Deque<String> open = new ArrayDeque<String>();
@@ -330,10 +220,6 @@ final class FlipQuery {
         return conjuncts;
     }
 
-    /** A list term's members as written, its head first; empty for an
-     *  atom.  Only this level is read: a quoted symbol or string is one
-     *  member, as {@link edu.uva.liftlab.graphchecker.smt.SExpression}
-     *  reads it, and nothing below is parsed. */
     private static List<String> members(String term) {
         List<String> members = new ArrayList<String>();
         if (!term.startsWith("(")) return members;
@@ -352,7 +238,6 @@ final class FlipQuery {
         }
     }
 
-    /** Past the one member that starts at {@code at}. */
     private static int memberEnd(String term, int at) {
         int depth = 0;
         for (int index = at; index < term.length(); index++) {
@@ -374,16 +259,6 @@ final class FlipQuery {
         return term.length();
     }
 
-    /**
-     * Which of these conjuncts the {@code seed} reaches ({@code
-     * Builder#cone}): two conjuncts are joined when both reach one name --
-     * one of these {@code variables}, or a declaration of these (name ->
-     * its line), which reaches the names its line names in turn -- closed
-     * to a fixed point from the names the seed reaches; every name reached
-     * is added to {@code names}.  A conjunct that names neither states
-     * constants alone and is kept.  Linear: a name is walked once down
-     * (what it reaches) and once up (what reaches it).
-     */
     static boolean[] cone(List<String> conjuncts, String seed,
                           Set<String> variables,
                           Map<String, String> declarations,
@@ -462,13 +337,9 @@ final class FlipQuery {
         return kept;
     }
 
-    /** What a query keeps of its conjuncts ({@code Builder#cone}). */
     private static final class Cone {
-        /** The conjuncts kept, in the order asserted, each once. */
         final List<String> texts = new ArrayList<String>();
-        /** Of those, the ones the assertions (not the facts) state. */
         final List<String> assertions = new ArrayList<String>();
-        /** Every variable and declaration they reach. */
         final Set<String> names;
 
         private Cone(Set<String> names) {
@@ -481,14 +352,6 @@ final class FlipQuery {
         return new Builder(corpus, task, path).build(flipIndex);
     }
 
-    /**
-     * THE FORCED FLIP (PIPELINE §7.10): a forced path's decisions before
-     * {@code flipIndex} -- the first one forced against its concrete arm --
-     * as run, and its forced path condition (its target row's phi, every
-     * decision from there to the throw at the arm the forced run took) as
-     * the demanded conjunct, with its clock margins; every symbol rule as a
-     * flip's.  A model is a world in which the whole way to the throw holds.
-     */
     static Built buildForced(Corpus corpus, Task task,
                              Corpus.RecordedPath path, int flipIndex) {
         TargetRow target = corpus.target(path.sessionId, path.occurrence);
@@ -497,7 +360,6 @@ final class FlipQuery {
         return builder.build(flipIndex);
     }
 
-    /** One symbol as one session named it. */
     private static final class Ref {
         private final String sessionId;
         private final String symbol;
@@ -512,49 +374,22 @@ final class FlipQuery {
         }
     }
 
-    /**
-     * One reader occurrence's choice of writer for one location ({@code
-     * wchoice_*}): the reads it made of the location, which move as a block
-     * (IDENTITY §4), and the write each selector delivers them.  A model
-     * that sets another selector than the recorded writer's moves the
-     * pairing, which an obligation replay plants
-     * ({@code ObligationFactory#planted}).
-     */
     static final class WriterChoice {
-        /** The reads the choice binds. */
         final List<ReadRow> reads = new ArrayList<ReadRow>();
-        /** Selector -> the write it delivers (null: an arm stating none, the
-         *  run's own choice among them). */
         final Map<String, WriteRow> writes =
                 new LinkedHashMap<String, WriteRow>();
-        /** The selector of the run as it happened: the writer the reads
-         *  observed, the run's own choice where that is no one writer's arm
-         *  ({@code Builder#choices}), or "" where no eligible writer wrote
-         *  what they saw. */
         String recorded = "";
-        /** (reader occurrence, location), the reader and the location. */
         final String key;
         private final OccurrenceAddress reader;
         private final LocationId location;
         private final List<Choice> alternatives = new ArrayList<Choice>();
-        /** Each bound read's variable -> the read, and its observed write's
-         *  delivery as the query spells it (null: none, or none that
-         *  lowers): what the run's choice holds it to. */
         private final Map<String, ReadRow> boundReads =
                 new LinkedHashMap<String, ReadRow>();
         private final Map<String, String> observedDelivery =
                 new LinkedHashMap<String, String>();
-        /** The selectors a read of another version could not have seen
-         *  ({@link Arms#eligible}): no choice once the block saw two. */
         private final Set<String> ineligible = new LinkedHashSet<String>();
-        /** Where its exactly-one stands among the query's assertions:
-         *  restated over the run's choice too when that is added. */
         private int exactlyOne;
-        /** Whether the observed writer's selector delivers some read a
-         *  value of another sort: no choice once the run's replaces it. */
         private boolean recordedDeliversNothing;
-        /** Whether no one writer's arm is the run: the reads saw several
-         *  versions, or one no row wrote. */
         private boolean asHappened;
 
         private WriterChoice(String key, OccurrenceAddress reader,
@@ -565,7 +400,6 @@ final class FlipQuery {
         }
     }
 
-    /** One eligible writer occurrence, and the selector that picks it. */
     private static final class Choice {
         private final String selector;
         private final Arms.Arm alternative;
@@ -587,61 +421,31 @@ final class FlipQuery {
         private final Map<String, String> meaning =
                 new LinkedHashMap<String, String>();
         private final List<String> assertions = new ArrayList<String>();
-        /** The ROOT rule's statements about a root's own variable (window,
-         *  clock floor, or pin), kept apart from assertions so the model
-         *  projection ({@link Built#rootVariables}) is not trivially "every
-         *  root". */
         private final List<String> rootFacts = new ArrayList<String>();
-        /**
-         * query variable -> recorded literal, for bounded Int roots and clocks:
-         * THE NEAREST-WORLD RULE. z3 answers at a window's boundary, and a
-         * clock moved by the whole window changes what the replay does; so the
-         * query minimizes sum |x - recorded|: the smallest move that still
-         * flips, with margin.
-         */
         private final Map<String, String> nearest =
                 new LinkedHashMap<String, String>();
         private final Map<String, String> recorded =
                 new LinkedHashMap<String, String>();
-        /**
-         * What each session's lowering states about declared names (non-null
-         * identities, integral domains, container shapes; {@link
-         * SmtLowering#facts}). Apart from assertions: recording facts, not the
-         * claim, and no reason to keep a name in the model. Unstated, a solver
-         * may null an object the recording saw non-null.
-         */
         private final List<String> statedFacts = new ArrayList<String>();
         private final Set<String> explained = new LinkedHashSet<String>();
         private final Deque<Ref> pending = new ArrayDeque<Ref>();
         private final Set<String> queued = new LinkedHashSet<String>();
         private final Map<String, Control> controls =
                 new LinkedHashMap<String, Control>();
-        /** reader occurrence + location -> its one choice of writer. */
         private final Map<String, WriterChoice> choicesByReader =
                 new LinkedHashMap<String, WriterChoice>();
-        /** The flipped occurrence's own reads, by symbol ({@link
-         *  #readOf}). */
         private final Map<String, ReadRow> ownReads =
                 new LinkedHashMap<String, ReadRow>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
         private final Map<String, String> clockVariables =
                 new LinkedHashMap<String, String>();
-        /** Sessions whose lowering this query's terms are written in. */
         private final Set<String> lowered = new LinkedHashSet<String>();
-        /** session|symbol the query bound to a variable of its own. */
         private final Set<String> bound = new LinkedHashSet<String>();
-        /** session -> recorded symbol -> the query's variable for it. */
         private final Map<String, Map<String, String>> renames =
                 new LinkedHashMap<String, Map<String, String>>();
-        /** Every declared CLOCK cell, by variable, with its MARGIN in its
-         *  own ticks: what {@code clockDomain} bounds and the margin applies
-         *  to. {@link #clockVariables} (read-back) holds only the flipped
-         *  path's own. */
         private final Map<String, Long> clockCells =
                 new LinkedHashMap<String, Long>();
-        /** Every clock variable, with the row of the execution it reads
-         *  ({@link #clockOrder}). */
         private final Map<String, RootMintRow> clockRows =
                 new LinkedHashMap<String, RootMintRow>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
@@ -653,8 +457,6 @@ final class FlipQuery {
             this.path = path;
         }
 
-        /** A forced flip's demanded conjunct ({@link #buildForced}), or
-         *  null for a flip. */
         private String forcedFatal;
 
         private Built build(int flipIndex) {
@@ -664,9 +466,6 @@ final class FlipQuery {
             for (int index = 0; index <= flipIndex; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 Set<String> unknown = new LinkedHashSet<String>();
-                // Arms.conjunct is the one "what a decision asserts" (shared
-                // with the composer); renaming follows: polarity is the
-                // recording's, names ours.
                 boolean last = index == flipIndex;
                 if (last && forced) {
                     Built refused = forced(flipped);
@@ -674,7 +473,6 @@ final class FlipQuery {
                     continue;
                 }
                 if (!Arms.predicate(decision.term())) {
-                    // Concrete: nothing to assert, never the flipped decision.
                     continue;
                 }
                 String held = rename(conjunct(decision, path.sessionId),
@@ -696,9 +494,6 @@ final class FlipQuery {
                                     + " is undeclared"));
                     continue;
                 }
-                // A term that cannot be stated (blank, or missing arguments) is
-                // refused by name, never negated: z3 would reject the whole
-                // query and lose the arm.
                 if (malformed(held)) {
                     if (last) {
                         return refuse(GapKind.DECLARATION_MISSING,
@@ -717,8 +512,6 @@ final class FlipQuery {
                                     + "\")"));
                     continue;
                 }
-                // The obligation IS the complement of the recorded arm, with
-                // clock margin.
                 if (last) flippedText = held;
                 assertions.add(last
                         ? demanded("(not " + held + ")", decision)
@@ -742,22 +535,8 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
-            // A query whose FLIPPED predicate reaches no variable of its own
-            // is not sent: whatever the other conjuncts bind (a variable a
-            // prefix decision binds is no reason to ask it), every name the
-            // predicate rests on is a definition or a recorded fact.  By the
-            // owner's standing ruling -- only SAT or UNSAT; a concrete value
-            // is a constant, never a reason to refuse -- its other arm is
-            // UNSAT on this path, named NOT_FLIPPABLE.  Two kinds of fact keep
-            // the refusal, since the scope hole is real there: a frame's
-            // write freed on an arrival it refused (no plant reaches it), and
-            // a read of a version no row of the corpus wrote (HELD at what it
-            // read, its producer unstated, as COMPOSE holds it).
             Set<String> cone = flipCone();
             if (!moves(cone) && !framed(cone).isEmpty()) {
-                // A leaf a frame's write was freed to (its writer computed
-                // on an arrival it refused, SmtLowering.RefusalFrame): no
-                // plant reaches it, so no replay can take the flip.
                 return refuse(GapKind.UNPRODUCIBLE_ANSWER,
                         GapClass.DIAGNOSTIC, ExploreCodec.EXPLORATION,
                         flipped.siteId() + "#" + flipped.ordinal(),
@@ -784,8 +563,6 @@ final class FlipQuery {
                 return refused(NOT_FLIPPABLE + ":" + flipped.siteId() + "#"
                         + flipped.ordinal(), flipped);
             }
-            // One notion of reached for both read-back maps; only the
-            // cone's variables are declared, minimized and read back.
             Set<String> reached = reachedVariables(kept.assertions);
             Map<String, String> declared = reached(sorts, kept.names);
             List<Control> answerable = new ArrayList<Control>();
@@ -814,31 +591,6 @@ final class FlipQuery {
                     declared.keySet()));
         }
 
-        /**
-         * THE CONE (KLEE's constraint independence): of what this query
-         * asserts ({@link #asserted}), split into top-level conjuncts
-         * ({@link FlipQuery#conjuncts}), only those that share a name with
-         * the flipped conjunct, closed to a fixed point ({@link
-         * FlipQuery#cone}): a variable of this query, or a declaration it
-         * states, which shares the names its definition reaches as well.
-         * A preamble function ({@code assoc_*}, {@code string_ref}) is in
-         * every query and shares nothing.
-         *
-         * <p>THE RULE: a dropped conjunct shares no name with the kept ones,
-         * and it holds at the recording's values -- a prefix decision as
-         * the run took it, a writer choice's exactly-one at the run's
-         * choice, a root's or clock's domain or pin at what was read, an
-         * inherited flip as the world this session ran in took it, a stated
-         * fact as recorded.  So the cone UNSAT is the whole query UNSAT, and
-         * a model of the cone with every dropped name at its recorded value
-         * is a model of the whole: no dropped root, clock, handoff or
-         * writer choice is declared, read back or planted, so the replay
-         * runs each as recorded.  SOLR-18413's witness flip
-         * (RoutingRule#isExpired, b616891a77d1afb8): 8 of 245 conjuncts,
-         * SAT at once, where ZkStateReader's map bookkeeping, sharing
-         * nothing with the flip, left the whole query "incomplete (theory
-         * array)".</p>
-         */
         private Cone cone() {
             List<String> texts = new ArrayList<String>();
             for (String assertion : assertions) {
@@ -864,8 +616,6 @@ final class FlipQuery {
             return cone;
         }
 
-        /** A forced flip's demanded conjunct, the forced path condition, in
-         *  the forced session's scope; the refusal, or null once asserted. */
         private Built forced(DecisionRow flipped) {
             Set<String> unknown = new LinkedHashSet<String>();
             String held = rename(lower(forcedFatal, path.sessionId),
@@ -889,25 +639,9 @@ final class FlipQuery {
             return null;
         }
 
-        /**
-         * THE PARENT'S FLIPS, asserted: a cut path exists only in its parent's
-         * world ({@link Corpus.World}), so each inherited flip's occurrence
-         * prefix THROUGH the flipped decision is asserted, lowered and renamed
-         * in the cut session's scope. Assertions, not facts, so the projection
-         * reaches their roots and clocks.
-         *
-         * <p>Fail closed: an unknown occurrence, a missing or opposite
-         * decision, or an undeclared name in the flipped conjunct refuses by
-         * name; an undeclared name in an inherited prefix conjunct drops it
-         * (DIAGNOSTIC).</p>
-         *
-         * @return the refusal, or null when every inherited flip is stated
-         */
         private Built inheritedFlips(DecisionRow flipped) {
             for (Corpus.Flip inherited
                     : corpus.world(path.sessionId).flips) {
-                // A pairing flip is no decision: the world's pairing holds
-                // it (ConfirmMain#holding).
                 if (Obligation.pairing(inherited.siteId)) continue;
                 OccurrenceAddress at =
                         corpus.occurrence(inherited.focusedOccurrenceId);
@@ -926,8 +660,6 @@ final class FlipQuery {
                 if (row == null || row.outcome() != inherited.outcome) {
                     return refuseInherited(inherited, flipped);
                 }
-                // The parent's prefix through its flipped decision;
-                // Arms.pathCondition owns the polarity, as in the composition.
                 List<DecisionRow> taken = new ArrayList<DecisionRow>();
                 for (DecisionRow candidate : decisions) {
                     if (candidate.seq() < row.seq() + 1) taken.add(candidate);
@@ -941,8 +673,6 @@ final class FlipQuery {
                     String held = rename(lower(pi.get(index),
                             path.sessionId), path.sessionId, unknown);
                     if (unknown.isEmpty()) {
-                        // The inherited flip is demanded too: margin on it, not
-                        // its prefix.
                         assertions.add(decision == row
                                 ? demanded(held, decision) : held);
                         continue;
@@ -968,13 +698,6 @@ final class FlipQuery {
             return null;
         }
 
-        /**
-         * One DEMANDED conjunct (this flip, or an inherited one) with the clock
-         * margin ({@link ClockMargin}): the replay runs a skewed reading, not
-         * the model's instant. Applied to the lowered, renamed text (the only
-         * form with whole atoms and this query's clock variables); unmarginable
-         * atoms are named once as a diagnostic.
-         */
         private String demanded(String held, DecisionRow decision) {
             ClockMargin.Strengthened asked = ClockMargin.strengthen(held,
                     clockCells);
@@ -1002,10 +725,6 @@ final class FlipQuery {
                             + inherited.render(), flipped);
         }
 
-        /** THE PROJECTION: the entries of one read-back map whose variables the
-         *  assertions reach ({@link #reachedVariables}). A root reached only
-         *  via a dropped arm would otherwise be planted at a mint the flip
-         *  never read. */
         private Map<String, String> reached(Map<String, String> declared,
                                             Set<String> names) {
             Map<String, String> kept = new LinkedHashMap<String, String>();
@@ -1017,9 +736,6 @@ final class FlipQuery {
             return kept;
         }
 
-        /** Every variable these ASSERTIONS reach (the cone's, {@link
-         *  #cone}), including through the renamed definitions they mention
-         *  ({@link FlipQueryText}); never via {@link #rootFacts}. */
         private Set<String> reachedVariables(List<String> assertions) {
             Set<String> names = new LinkedHashSet<String>();
             for (String assertion : assertions) {
@@ -1032,15 +748,12 @@ final class FlipQuery {
             return names;
         }
 
-        /** One term lowered, remembering the session so its declarations are
-         *  rendered. */
         private String lower(String term, String sessionId) {
             String text = statedTerm(corpus, sessionId, term);
             if (text != null && !text.equals(term)) lowered.add(sessionId);
             return text;
         }
 
-        /** Whether the rendered query already states this name. */
         @Override
         public boolean stated(String name, String sessionId) {
             if (SmtNames.preambleNames().contains(name)) return true;
@@ -1048,14 +761,11 @@ final class FlipQuery {
             return lowering != null && lowering.minted(name);
         }
 
-        /** One decision as the arm its run took ({@link Arms#conjunct}),
-         *  references lowered. */
         private String conjunct(DecisionRow decision, String sessionId) {
             return Arms.conjunct(lower(decision.term(), sessionId),
                     decision.outcome());
         }
 
-        /** The fixed point: every symbol the query names gets its own rule. */
         private void drain() {
             int guard = 0;
             while (!pending.isEmpty() && refusal.isEmpty()) {
@@ -1080,16 +790,6 @@ final class FlipQuery {
             }
         }
 
-        /**
-         * ONE ORDER PER CLOCK OF A NODE, as COMPOSE states it ({@code
-         * Composer#clocks}): within one execution a cell is no earlier than
-         * the cell before it (by seq) on the same clock of the same node,
-         * giving way where that execution read the two the other way round.
-         * Without it a model jumps a clock forward at one cell and back at
-         * the next, a replay plants exactly that, and no composed world is
-         * that replay's own (hdfs-11741 L1: be888ea2 +10 h, the next cell
-         * 29a8b781 at the host's reading, in 485e5c2a and 92985f34).
-         */
         private void clockOrder() {
             Map<String, List<Map.Entry<String, RootMintRow>>> byClock =
                     new LinkedHashMap<String,
@@ -1123,8 +823,6 @@ final class FlipQuery {
             }
         }
 
-        /** How far the execution read {@code later} before {@code earlier},
-         *  or "" where it read them in order (or states no instant). */
         private static String inversion(RootMintRow earlier,
                                         RootMintRow later) {
             try {
@@ -1137,29 +835,17 @@ final class FlipQuery {
             }
         }
 
-        // ---- the four rules ------------------------------------------
 
         private void root(RootMintRow minted) {
             String variable = variable(minted.sessionId(), minted.symbol());
             if (!explained.add(variable)) return;
-            // A declared domain is relative to the FLIPPED path's own reading,
-            // not whichever session's mint the drain reached first.
             RootMintRow own = corpus.rootOf(path.sessionId, minted.rootId());
             RootMintRow row = own == null ? minted : own;
             if (row.kind() == RootKind.CLOCK) {
                 clockRows.put(variable, minted);
-                // Read back only the flipped path's clock: another session's
-                // instant is not one this replay can be held to.
                 if (minted.sessionId().equals(path.sessionId)) {
                     clockVariables.put(variable, row.rootId());
                 }
-                // {@link JavaPrimitiveSmtSemantics#clockDomain}: floor = this
-                // execution's host reading (a skew is off it, and never
-                // below), ceiling = floor + window ({@link
-                // JavaPrimitiveSmtSemantics#clockSkewCeiling}), so no model
-                // flips by long overflow.  The nearest world is the instant
-                // the execution ran the cell at, where its node's clock may
-                // have run on off the host (RootMintRow#clockSkew).
                 String floor = instant(minted.hostReading());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
                         floor.isEmpty() ? "0" : floor,
@@ -1177,8 +863,6 @@ final class FlipQuery {
                     || resolved.max() == null ? null
                     : new String[]{resolved.min(), resolved.max()};
             if (domain == null) {
-                // A declared relative window with no recorded reading is
-                // unresolvable: named, not treated as "no domain".
                 if (corpus.declaredDomain(row.rootId()) != null
                         && SmtText.literal(row.recordedValue(),
                                 sorts.get(variable)).isEmpty()) {
@@ -1211,8 +895,6 @@ final class FlipQuery {
             }
         }
 
-        /** A clock row's instant as a decimal, or "" when it states none a
-         *  Java long can hold. */
         private static String instant(String reading) {
             if (reading == null || reading.trim().isEmpty()) return "";
             try {
@@ -1236,12 +918,6 @@ final class FlipQuery {
                 if (control) registerControl(attach, variable, false);
                 return;
             }
-            // Only a Control can be answered (ObligationFactory#solve applies
-            // answers at the focused occurrence's attaches only).  Any other
-            // handoff moves only as its own run's producer computed it: its
-            // arms from that run alone, over roots and clocks the replay
-            // plants, and pinned to its arrival where none states it.  Another
-            // run's arrival is a value nothing would plant.
             List<String> disjuncts = new ArrayList<String>();
             Set<String> seen = new LinkedHashSet<String>();
             Map<String, List<String>> bySlot =
@@ -1288,9 +964,6 @@ final class FlipQuery {
                 registerControl(attach, variable, false);
                 return;
             }
-            // A PAIRED handoff whose every arm was dropped is REFUSED, never
-            // answered with a value no producer sent. Only an UNPAIRED arrival
-            // (from outside the corpus) is a free input, named unproducible.
             if (offered > 0) {
                 refusal = "UNPRODUCIBLE_ANSWER:" + attach.endpoint();
                 gaps.add(GapRow.of(attach.sessionId(),
@@ -1311,9 +984,6 @@ final class FlipQuery {
                     "no producer arm in this corpus for this slot"));
         }
 
-        /** One handoff pinned to its recorded arrival (a handoff no arm of
-         *  its own run states). An arrival with no literal pins nothing and is
-         *  named; the closure check then refuses the obligation. */
         private void pinArrival(AttachRow attach, String variable,
                                 String why) {
             String arrival = SmtText.literal(VmTermLowering.received(attach),
@@ -1335,10 +1005,6 @@ final class FlipQuery {
                     attach.endpoint()).id();
         }
 
-        /** One arm in this query's variables. What an arm IS belongs to {@link
-         *  Arms} (shared with the composer); here only renaming: roots
-         *  corpus-wide, clocks per path, handoffs per INTERACTION (this query
-         *  conjoins several sessions). */
         private String arm(Arms.Arm arm, String variable, String own) {
             Set<String> unknown = new LinkedHashSet<String>();
             SmtLowering.Lowered lowered = corpus.lowering(arm.sessionId())
@@ -1366,11 +1032,6 @@ final class FlipQuery {
             }
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
-                // Same rule as the prefix (and the composer's pi_p): concrete
-                // decisions are no conjunct, unstatable conjuncts are dropped
-                // by name, and THE ARM STAYS. Dropping the whole arm leaves the
-                // control with no family, and z3 then answers a value no
-                // producer sent.
                 if (!Arms.predicate(term)) continue;
                 Set<String> undeclared = new LinkedHashSet<String>();
                 String renamed = rename(lower(term, arm.sessionId()),
@@ -1389,15 +1050,12 @@ final class FlipQuery {
                 }
                 conjuncts.add(renamed);
             }
-            // A varied root's guard, and a root the arm's replay read where
-            // it minted none: its literals hold at that reading (Arms).
             for (Map.Entry<String, RootMintRow> guarded
                     : arm.guardMints().entrySet()) {
                 RootMintRow root = guarded.getValue();
                 boolean read = corpus.rootOf(arm.sessionId(),
                         root.rootId()) == null;
                 if (!read && !corpus.varied(root.rootId())) continue;
-                // Named in the session that minted it: one variable per root.
                 String rootVariable = variable(root.sessionId(),
                         root.symbol());
                 String literal = SmtText.literal(
@@ -1406,8 +1064,6 @@ final class FlipQuery {
                 if (literal.isEmpty()) continue;
                 conjuncts.add("(= " + rootVariable + " " + literal + ")");
             }
-            // The family's own slot binds the consumer's variable; a nested
-            // slot binds the forwarded symbol's variable in its own session.
             String target = arm.symbol().isEmpty()
                     || arm.symbol().equals(own) ? variable
                     : variable(arm.sessionId(), arm.symbol());
@@ -1421,25 +1077,10 @@ final class FlipQuery {
             return VmTermLowering.and(conjuncts);
         }
 
-        /** A read the flipped path's text names, at the row's sort. */
         private void read(ReadRow row) {
             bind(row, variable(row.sessionId(), row.symbol()));
         }
 
-        /**
-         * The flipped occurrence's reads another writer could have answered
-         * ({@link #eligible}: more than one arm) are their own symbols, as
-         * COMPOSE keeps the anchor's ({@code Composer#stateJoins},
-         * {@code SmtLowering#rowSymbol}): inlined, the written value is a
-         * constant no writer choice moves (hdfs-bugs-slowdisk-zero: the
-         * detector turn's {@code maxSlowDisksToExclude <= 0}, the
-         * reconfiguration's 0, its INITIAL 1).  The text then names each,
-         * and its {@code wchoice_*} selectors bind it ({@link #bind}); a
-         * read of a node's VIEW is movable too, so what the path read
-         * through the view follows the decode they pick.  A
-         * container's state, and a query of one, stays inlined (see {@link
-         * #rename}); a placeholder's mint is a root's.
-         */
         private void movableReads() {
             SmtLowering lowering = corpus.lowering(path.sessionId);
             if (lowering == null) return;
@@ -1452,9 +1093,6 @@ final class FlipQuery {
                     continue;
                 }
                 ownReads.putIfAbsent(row.symbol(), row);
-                // A container location's writes are states and its reads
-                // answers of a query over one: no read of it is a writer's
-                // value (solr-18413 G2: a map lookup bound to a map state).
                 VmTermLowering.Sort sort =
                         JavaSmtSorts.sortOfJava(row.javaType());
                 if (row.location().kind() == LocationKind.MAP
@@ -1463,30 +1101,18 @@ final class FlipQuery {
                     continue;
                 }
                 lowering.state(row.symbol(), sort);
-                // A node's view: the content leaves the path read through it
-                // are the leaves of whichever decode its selectors pick
-                // (SmtLowering#throughView), as a STATE family's re-paired
-                // read is in COMPOSE.
                 if (row.location().kind() == LocationKind.VIEW) {
                     lowering.movable(row);
                 }
             }
         }
 
-        /**
-         * The read a session's symbol names here: a session states one
-         * symbol per location and version, so reads of one version by
-         * several occurrences share it (hdfs-bugs-slowdisk-zero: the
-         * detector's three turns each read the reconfigured bound), and in
-         * the flipped occurrence's text it is that occurrence's own read.
-         */
         private ReadRow readOf(String sessionId, String symbol) {
             ReadRow own = path.sessionId.equals(sessionId)
                     ? ownReads.get(symbol) : null;
             return own != null ? own : corpus.read(sessionId, symbol);
         }
 
-        /** The writer occurrences one read could have taken its value from. */
         private List<Arms.Arm> eligible(ReadRow row) {
             List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
@@ -1495,9 +1121,6 @@ final class FlipQuery {
             return eligible;
         }
 
-        /** Files every arm {@link Arms} refused since the last drain: an
-         *  arm naming a root its session minted no row for is refused,
-         *  filed as COMPOSE does ({@code ComposedFamilies#fileRefusals}). */
         private void fileRefusals() {
             for (String refusal : corpus.arms().drainRefusals()) {
                 String[] named = refusal.split("\\|", -1);
@@ -1511,8 +1134,6 @@ final class FlipQuery {
             }
         }
 
-        /** One read joined to the writes it could have seen (IDENTITY §4); the
-         *  caller chose the variable's sort. */
         private void bind(ReadRow row, String variable) {
             if (!explained.add(variable)) return;
             List<Arms.Arm> eligible = eligible(row);
@@ -1524,9 +1145,6 @@ final class FlipQuery {
                 stated(row, variable);
                 return;
             }
-            // IDENTITY §4: a writer occurrence's writes move as a BLOCK
-            // relative to this reader, so all its reads of this location share
-            // one selector per writer.
             String location = SmtLowering.locationKey(row.location());
             String choiceKey = row.endpoint().occurrence().id() + "|"
                     + location;
@@ -1557,16 +1175,6 @@ final class FlipQuery {
                 assertions.add(Arms.exactlyOne(new ArrayList<String>(
                         choices.writes.keySet())));
             }
-            // One writer choice binds every read of the block, so it is the
-            // run only where every read saw that writer's one write.  Reads
-            // that saw several writes (a nested region of the reader's own
-            // thread wrote between two of them: hdfs-adhoc-23's
-            // layoutVersion), or a version no row wrote, are each held to
-            // their own by the run's choice ({@link #choices}), as COMPOSE's
-            // observed arm holds them ({@code ComposedFamilies#stateFamilies});
-            // and a writer a read of another version could not have seen is
-            // no choice (hdfs-adhoc-16: updatePipeline's earlier read bound
-            // to its own later write).
             boolean another = !choices.reads.isEmpty()
                     && choices.reads.get(0).observedVersion()
                     != row.observedVersion();
@@ -1612,8 +1220,6 @@ final class FlipQuery {
                                     + "it wrote, not why"));
                 }
             }
-            // Its observed write's delivery: among the choices, else (a read
-            // of another version) among its own eligible arms.
             for (Arms.Arm arm : seen == null ? eligible
                     : Collections.<Arms.Arm>emptyList()) {
                 if (observes(arm, row)) own = delivered(arm, sort);
@@ -1627,29 +1233,11 @@ final class FlipQuery {
             for (String binding : bindings) assertions.add(binding);
         }
 
-        /** Whether this arm delivers the write the read observed. */
         private static boolean observes(Arms.Arm arm, ReadRow row) {
             return arm.write() != null
                     && arm.write().version() == row.observedVersion();
         }
 
-        /**
-         * Once every read is bound, each writer choice where no one writer's
-         * arm is the run ({@link WriterChoice#asHappened}) gets COMPOSE's
-         * rule ({@code ComposedFamilies#stateFamilies}): a writer a read of
-         * another version could not have seen is no choice; where a writer
-         * left is HB-concurrent with the reader, one more selector, the
-         * RUN'S CHOICE, holds each read to the value it read and is the
-         * recorded pairing (a model taking it plants nothing), beside the
-         * writer choices, its exactly-one restated over all of them, and the
-         * observed writer's selector, no longer the recorded one, is no
-         * choice where it delivers a read a value of another sort; where
-         * none is, there is no choice: each read is held to the value it
-         * read, as COMPOSE's reads keep their own joins where no family
-         * forms.  The value a read read is its observed write's delivery,
-         * else its row's value; a read stating neither refuses the query by
-         * name.
-         */
         private void choices() {
             List<String> runOnly = new ArrayList<String>();
             for (WriterChoice choice : choicesByReader.values()) {
@@ -1712,12 +1300,6 @@ final class FlipQuery {
             for (String key : runOnly) choicesByReader.remove(key);
         }
 
-        /**
-         * What one eligible writer delivers, as this query spells it, or ""
-         * where it does not lower; null where its write is of another sort
-         * than the read (an array cell's whole array, a narrower cell): it
-         * delivers nothing the read could be, named, and no model takes it.
-         */
         private String delivered(Arms.Arm alternative, String sort) {
             SmtLowering.Lowered lowered =
                     corpus.lowering(alternative.sessionId())
@@ -1737,8 +1319,6 @@ final class FlipQuery {
             return unknown.isEmpty() ? value : "";
         }
 
-        /** The recorded value for a read nothing else explains, else a BLOCKING
-         *  refusal. */
         private void stated(ReadRow row, String variable) {
             String literal = recorded(row, variable);
             if (!literal.isEmpty()) {
@@ -1753,9 +1333,6 @@ final class FlipQuery {
         }
 
 
-        /** What a read read, as a term of its variable's sort: a literal, or
-         *  the identity its session lowers the object to
-         *  ({@link SmtLowering#recordedValue}); "" when neither. */
         private String recorded(ReadRow row, String variable) {
             SmtLowering lowering = corpus.lowering(row.sessionId());
             if (lowering == null) {
@@ -1768,22 +1345,10 @@ final class FlipQuery {
             return value;
         }
 
-        /** Renames one recorded term into query variables, declaring and
-         *  enqueueing its symbols. */
         private String rename(String term, String sessionId,
                               Set<String> unknown) {
             lowered.add(sessionId);
             Map<String, String> rename = renamesOf(sessionId);
-            // THE CLOSURE: a term's symbols are those REACHABLE through the
-            // subterms it names (SmtLowering, as the closure planner asks), not
-            // only visible ones.  What a container subterm RESTS ON (the
-            // read rows of the state it is the value of) is the closure's
-            // demand, not a variable of this query: the join inlined that
-            // state's chain, so no text names the read, and a variable bound
-            // to its writers' states would constrain nothing (for any choice
-            // of writer the variable is that writer's state) while its
-            // equalities over lambda-built states took z3 out of what it
-            // decides.
             SmtLowering lowering = corpus.lowering(sessionId);
             for (String token : lowering.reachedSymbols(
                     Collections.singletonList(term))) {
@@ -1808,11 +1373,6 @@ final class FlipQuery {
             return held;
         }
 
-        /** The query variable one session's symbol stands for: a root is ONE
-         *  variable corpus-wide (arm guards state each replay's reading), a
-         *  clock one per session, a handoff one per INTERACTION (both
-         *  endpoints), a state read one per read event (versions are
-         *  session-local). */
         private String variable(String sessionId, String symbol) {
             switch (corpus.symbolKind(sessionId, symbol)) {
                 case ROOT: {
@@ -1823,9 +1383,6 @@ final class FlipQuery {
                             : "root|" + row.rootId();
                     String name = names.name(key, (clock ? "clk_" : "r_")
                             + row.rootId() + (clock ? "_" + sessionId : ""));
-                    // Recorded here for the margin rule; every name of a
-                    // demanded conjunct passes through here first (see
-                    // #rename).
                     if (clock) {
                         clockCells.put(name,
                                 ClockMargin.margin(row.clockNanos()));
@@ -1870,7 +1427,6 @@ final class FlipQuery {
             }
         }
 
-        /** The one variable of a READ event the text names. */
         private String readVariable(String sessionId, ReadRow row) {
             return names.name("read|" + sessionId + "|"
                             + row.endpoint().id(),
@@ -1878,10 +1434,6 @@ final class FlipQuery {
                             + row.endpoint().siteIndex().hash());
         }
 
-        /** The sort the runtime declared a value at: {@link JavaSmtSorts} and
-         *  {@link VmTermLowering.Sort#smt}, as in the composed query (a second
-         *  vocabulary would refuse Ref reads). Only an unknown descriptor
-         *  refuses. */
         private String sortOf(String javaType, String name, String subject) {
             VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
             if (sort != VmTermLowering.Sort.UNKNOWN) return sort.smt;
@@ -1917,7 +1469,6 @@ final class FlipQuery {
             if (!literal.isEmpty()) recorded.put(variable, literal);
         }
 
-        /** A root with no window, pinned to its recorded value. */
         private void pin(String variable, String recorded, String why) {
             String literal = SmtText.literal(recorded, sorts.get(variable));
             if (literal.isEmpty()) {
@@ -1929,10 +1480,6 @@ final class FlipQuery {
             rootFacts.add("(= " + variable + " " + literal + ")");
         }
 
-        /** A recorded symbol the query would declare and bind to nothing: the
-         *  query must be CAUSALLY CLOSED (every symbol stated by a family or a
-         *  pin), so it is refused by that symbol's name.  Asked of what the
-         *  query keeps ({@link #cone}): a name it drops is not declared. */
         private String unbound(List<String> asserted) {
             SmtNames.Named texts = SmtNames.named(asserted);
             for (String sessionId : lowered) {
@@ -1960,9 +1507,6 @@ final class FlipQuery {
                     detail, flipped);
         }
 
-        /** A refusal filed where the fact belongs: about the RECORDING, that
-         *  session's and BLOCKING; about the wave's question, EXPLORATION's and
-         *  DIAGNOSTIC. Either way the query is not sent. */
         private Built refuse(GapKind kind, GapClass cls, String sessionId,
                              String subject, String detail,
                              DecisionRow flipped) {
@@ -1970,7 +1514,6 @@ final class FlipQuery {
             return refused(kind.name() + ":" + subject, flipped);
         }
 
-        /** No query, for the named reason. */
         private Built refused(String reason, DecisionRow flipped) {
             return new Built("", Collections.<String>emptyList(), reason,
                     new ArrayList<Control>(controls.values()),
@@ -1978,15 +1521,8 @@ final class FlipQuery {
                     Collections.<WriterChoice>emptyList(), sorts, gaps);
         }
 
-        /** The flipped decision's predicate, in this query's names. */
         private String flippedText = "";
 
-        /**
-         * Whether the flipped predicate reaches a variable of this query:
-         * one it names, or one a definition it rests on names (the
-         * declarations its text reaches, {@link
-         * FlipQueryText#statedDeclarations}).
-         */
         private Set<String> flipCone() {
             Set<String> cone = new LinkedHashSet<String>(
                     SmtNames.names(flippedText));
@@ -2005,7 +1541,6 @@ final class FlipQuery {
             return named;
         }
 
-        /** Whether a variable of this query is in the cone. */
         private boolean moves(Set<String> cone) {
             for (String name : cone) {
                 if (sorts.containsKey(name)) return true;
@@ -2013,9 +1548,6 @@ final class FlipQuery {
             return false;
         }
 
-        /** The flipped occurrence's reads of a version no row of the
-         *  corpus wrote, as location@version: each HELD at what it read
-         *  ({@code Composer#statedReads}). */
         private List<String> heldReads() {
             List<String> held = new ArrayList<String>();
             for (ReadRow row : ownReads.values()) {
@@ -2027,8 +1559,6 @@ final class FlipQuery {
             return held;
         }
 
-        /** The framed leaves ({@link SmtLowering#framedLeaves}) in the
-         *  cone. */
         private Set<String> framed(Set<String> cone) {
             Set<String> found = new LinkedHashSet<String>();
             for (String sessionId : lowered) {
@@ -2041,10 +1571,6 @@ final class FlipQuery {
             return found;
         }
 
-        /** Every text this query ASSERTS (assertions, root facts, stated
-         *  facts): what the facts are stated over and the cone is cut from
-         *  ({@link #cone}), which renders, reaches declarations and is
-         *  checked closed. */
         private List<String> asserted() {
             List<String> texts = new ArrayList<String>(assertions);
             texts.addAll(rootFacts);
@@ -2052,9 +1578,6 @@ final class FlipQuery {
             return texts;
         }
 
-        /** What the recording states about declared names, renamed into query
-         *  variables; a fact over an undeclared name is dropped with a named
-         *  gap. */
         private void stateFacts() {
             SmtNames.Named texts = SmtNames.named(asserted());
             for (String sessionId : lowered) {

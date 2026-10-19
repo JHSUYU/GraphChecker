@@ -27,47 +27,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * THE KEY GATE: every flip a recorded run asked, keyed again by this build
- * ({@link ObligationFactory#obligationId} over {@link
- * ObligationFactory#dependence}), and every key read for what it folds: the
- * merge gate of any change to an arm's key (OPERATIONS §6).  One
- * key is one question to the ledger ({@link Frontier}): its first answer
- * settles every other ask under it.  So a key is SOUND only where its asks
- * agree on what the solver can say: no key may hold an ask whose query was
- * satisfiable (ADMITTED, or a model its replay then did not take) beside an
- * UNSAT one -- unless the UNSAT one stands in a world that strictly extends
- * the satisfiable one's (its inherited flips' prefixes, which no key names,
- * only add conjuncts, and the smaller world is offered first: NESTED, by
- * design).  Every other such key is a DEFECT: the key folds two questions
- * the flip query tells apart, and whichever lands first settles the other.
- * A key whose first SETTLING ask ({@link ObligationResult#settlesArm}) --
- * smallest world, then round -- did not take the arm while another did is
- * UNSAFE (a world this build never forms); an ask of the claimed witness's
- * world folded under a key whose first ask is another is LOST from the
- * witness chain.  Beside them, how many ids the run gave its arms and how
- * many keys this build gives them.
- *
- * <pre>
- *   KeyGate --iteration &lt;iteration-0000&gt; [--root-domains &lt;file&gt;]
- *           [--claim &lt;claim.json&gt;] --out &lt;keys.json&gt;
- * </pre>
- *
- * Exit 0 when no key is a DEFECT or UNSAFE and the witness chain is whole,
- * else 1.  Pairing and FORCE asks name no decision and are not keyed.
- */
 public final class KeyGate {
     private KeyGate() {
     }
 
-    /** What an ask's query was, as its worker's files say. */
     enum Answer {
-        /** The flipped arm taken by its replay. */
         ADMITTED,
-        /** A model, its replay not taking the arm. */
         SAT,
         UNSAT,
-        /** Refused, undecided or unanswered: no fact about the query. */
         NONE;
 
         boolean satisfiable() {
@@ -75,7 +42,6 @@ public final class KeyGate {
         }
     }
 
-    /** One asked flip, re-keyed. */
     static final class Asked {
         final String round;
         final String obligationId;
@@ -84,7 +50,6 @@ public final class KeyGate {
         final String sessionId;
         final Set<String> world;
         final Answer answer;
-        /** Whether its answer settles the arm in the ledger. */
         final boolean settles;
         final String detail;
 
@@ -141,15 +106,12 @@ public final class KeyGate {
         }
     }
 
-    /** The gate's report over one corpus and its workers. */
     static JsonObject gate(Corpus corpus, Path iteration, Path claim)
             throws IOException {
         Map<String, List<Asked>> byKey = new LinkedHashMap<String, List<Asked>>();
         Set<String> arms = new LinkedHashSet<String>();
         Set<String> idsBefore = new LinkedHashSet<String>();
         int asked = 0;
-        // One task object per id, as a round has: a key is held by it
-        // (Corpus#dependence), and a task is costly to make.
         Map<String, Task> tasks = new LinkedHashMap<String, Task>();
         for (Path worker : ObligationDir.workerDirs(iteration)) {
             Asked arm = rekeyed(corpus, worker, byKey, tasks);
@@ -225,9 +187,6 @@ public final class KeyGate {
         return report;
     }
 
-    /** Whether every UNSAT ask of a key stands in a world (its flips) that
-     *  strictly extends some satisfiable ask's: the inherited flips'
-     *  conjuncts the key does not name explain it. */
     static boolean nestedOnly(List<Set<String>> satisfiable,
                               List<Set<String>> unsat) {
         for (Set<String> no : unsat) {
@@ -250,8 +209,6 @@ public final class KeyGate {
         return row;
     }
 
-    /** One worker's asked flip, filed under its key; null when it is no
-     *  decision's flip, or its task or path is no longer in the corpus. */
     private static Asked rekeyed(Corpus corpus, Path worker,
                                  Map<String, List<Asked>> byKey,
                                  Map<String, Task> tasks)
@@ -314,8 +271,6 @@ public final class KeyGate {
         return null;
     }
 
-    /** The obligations the claimed witness's world was made of: its
-     *  session's flips, its own among them; none without a SAT claim. */
     private static Set<String> witnessChain(Corpus corpus, Path claim)
             throws IOException {
         Set<String> chain = new LinkedHashSet<String>();

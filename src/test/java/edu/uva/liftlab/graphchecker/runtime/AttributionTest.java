@@ -18,13 +18,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * THE attribution rule, one case per rule: an explicit scope, then the
- * innermost registered receiver on the stack, then the starter by reference
- * (its node by the same rules, its inherited node included) -- and nothing
- * when all fail; what a node's startup starts or creates is the node's; the
- * scope and window index a thread inherits.
- */
 @RunWith(FreshStatics.class)
 public class AttributionTest {
     private static final SourceRef NN =
@@ -59,9 +52,6 @@ public class AttributionTest {
         Identity.exitFrame(frame);
     }
 
-    /** A NameNode handler serving Server.call is the RPC server's, on
-     *  whatever pool thread it runs; with all three rules failing, nothing
-     *  names the node and the planner counts it unregistered. */
     @Test
     public void theInnermostRegisteredReceiverOnTheStackAnswers() {
         Object server = new Object();
@@ -84,12 +74,6 @@ public class AttributionTest {
                 RuntimeTraceContext.activationSource(null).key());
     }
 
-    /**
-     * A thread starts in its creator's scope, a pool's worker does not (the
-     * pool creates it while one caller submits, and it outlives that task);
-     * a child inherits the engine's state from its creator in Thread.init,
-     * on the creator, which keeps its own.
-     */
     @Test
     public void aThreadInheritsItsCreatorsScopeAndAPoolsWorkerDoesNot()
             throws Exception {

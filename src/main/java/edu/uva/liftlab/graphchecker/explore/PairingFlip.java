@@ -28,58 +28,22 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * THE PAIRING FLIP (PIPELINE §7.4, SYMBOL-SCOPE §6.4): a read of a node's
- * VIEW of a store location takes an older decode of that node.  A node
- * decides on whichever decode its view held, and a view is late by the
- * delivery of a watch; what a stale view changes is often no value a term
- * names -- a key absent from an older document, a replica a loop skips --,
- * so no decision's flip reaches it.  The flip asks the path as its
- * session ran it, up to the read, with the read paired to the node's
- * decode of the older version, and plants that pairing: CONFIRM's rows
- * hold it (ConfirmMain#holding, a VIEW_HOLD per pairing, PIPELINE §7.5), and the replay
- * is admitted when the read observed that version.
- *
- * <p>Candidates (one task path): the VIEW reads of its occurrence, and
- * those its node made under its causal context before it opened -- a
- * routed alias captures its node's view in the request's role work and
- * writes it in a store door's region -- where the occurrence writes a STORE
- * version or is the declared anchor's (a stale view sits at the reader
- * too).  Per read of a view (its earliest in that work), each older version
- * the node decoded before it in the session, newest first, at most {@link
- * #PER_READ}; past them a {@code pairing-bound} gap, counted in result.json
- * {@code bounded}.</p>
- */
 final class PairingFlip {
-    /** The most older decodes one read of a view is offered. */
     static final int PER_READ = 8;
-    /** The bound's name, in its gap's subject ({@code campaign_bounds}). */
     static final String BOUND = "pairing-bound";
-    /** The dependence every pairing flip's id carries: the question is the
-     *  read and the version, whatever the guards. */
     private static final String DEPENDENCE = "VIEW";
 
     private PairingFlip() {
     }
 
-    /** A pairing flip's site: {@link Obligation#PAIRING} and its read. */
     static String site(ReadRow read) {
         return Obligation.PAIRING + Confirmation.id(read.endpoint());
     }
 
-    /** A pairing flip's ordinal: the version it asks plus one, an ordinal
-     *  being 1-based ({@link Obligation#pairedVersion}). */
     static int ordinal(long version) {
         return Math.toIntExact(version + 1L);
     }
 
-    /**
-     * The pairing flips one path of {@code task} offers, newest version
-     * first per read; a read offered more than {@link #PER_READ} files the
-     * bound's gap.  None older than a decode the reader's own work made
-     * before the read: the hold never defers the reader's own publications
-     * ({@code Confirmation#publishing}), so the view is at least that one's.
-     */
     static List<ObligationFactory.Candidate> candidates(Corpus corpus,
             Task task, Corpus.RecordedPath path, List<GapRow> gaps) {
         List<ObligationFactory.Candidate> offered =
@@ -138,17 +102,10 @@ final class PairingFlip {
         return offered;
     }
 
-    /** Whether the node held this decode before the read: the view's
-     *  INITIAL (what it held when the window opened), or a decode before it
-     *  on the session's order ({@link RowOrder}). */
     private static boolean decodedBefore(WriteRow decode, ReadRow read) {
         return decode.initial() || RowOrder.before(decode, read);
     }
 
-    /**
-     * Whether a task offers pairing flips: its occurrence writes a STORE
-     * version in this session, or it is the declared anchor's.
-     */
     private static boolean offers(Corpus corpus, Task task,
                                   SessionReader session) {
         if (!corpus.targetsOn(task.focused()).isEmpty()) return true;
@@ -161,16 +118,6 @@ final class PairingFlip {
         return false;
     }
 
-    /**
-     * The view reads a task's path offers: its occurrence's, and those of
-     * its role prefix ({@link Corpus#rolePrefix}: its node's under its
-     * causal context in role work before it opened, by the one order -- a
-     * role's view read and the store write that opens the occurrence may
-     * share a seq: round SG3A tra, the seed's read at (538, 12), its alias
-     * update's write at (538, 24); by seq alone the seed offered no pairing
-     * flip, and the one session that did carried a root its replay never
-     * minted), the earliest per view.
-     */
     private static List<ReadRow> reads(Corpus corpus, Task task,
                                        SessionReader session) {
         OccurrenceAddress focused = task.focused();
@@ -195,8 +142,6 @@ final class PairingFlip {
         return new ArrayList<ReadRow>(earliest.values());
     }
 
-    /** The pairing flip a published obligation names on its path, or
-     *  null where the path states no such read. */
     static ObligationFactory.Candidate locate(Corpus corpus, Task task,
                                               Corpus.RecordedPath path,
                                               Obligation obligation) {
@@ -212,13 +157,6 @@ final class PairingFlip {
         return null;
     }
 
-    /**
-     * One pairing flip, solved: no query is asked -- the path is the one its
-     * session ran, up to the read -- and the world is the session's with the
-     * read paired to the decode of the asked version, held by CONFIRM's rows
-     * over that session ({@link ConfirmMain#holding}); or the answer of the
-     * same question a worker settled.
-     */
     static ObligationFactory.Outcome solve(Corpus corpus,
             ObligationFactory.Candidate candidate, String given,
             Map<String, ObligationDir.Answer> answered) {
@@ -254,7 +192,6 @@ final class PairingFlip {
             return ObligationFactory.refused(candidate, Verdict.NOT_ADMITTED,
                     unheld.getMessage(), "", gaps, question, true);
         }
-        // The inherited roots are planted at their mints, as a flip's are.
         Map<String, String> mints = new LinkedHashMap<String, String>();
         Set<String> assigned = new LinkedHashSet<String>(
                 inherited.rootAssignments.keySet());
@@ -280,9 +217,6 @@ final class PairingFlip {
                 true, false, null);
     }
 
-    /** The question a pairing flip asks: the flip, then a digest of the
-     *  world it extends, the pairing, the focus, the factor, the seed and
-     *  what the replay is given ({@code ObligationFactory#question}). */
     private static String question(ObligationFactory.Candidate candidate,
                                    Corpus.World world,
                                    Map<String, String> paired, String given) {

@@ -19,33 +19,6 @@ import java.util.stream.BaseStream;
 
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 
-/**
- * The one invocation of a workload test a case names: {@code m} for a plain
- * test method, {@code m[k]} for the k-th invocation of a Jupiter {@code
- * @ParameterizedTest} m or of a {@code @ParameterizedClass}, {@code m[i][j]}
- * when both are (the class's invocation, then the method's).  k counts from
- * 1 in the order of the argument sources, as JUnit numbers the invocations
- * it shows as {@code [k]}; several sources follow one another in the order
- * they are declared, a repeated one included.  A name names as many
- * invocations as the test has parameterized levels: a parameterized test
- * named bare is refused, never run for every invocation.
- *
- * <p>The arguments are resolved before anything of the test runs, so before
- * the window and alike in both passes, provided a factory states its
- * arguments in one order; the run states which invocation it resolved, its
- * arguments rendered alike in both passes ({@link #stated}), and a replay of
- * a run that resolved another is refused by name ({@code
- * ScheduleLog#invocation}).  A source that throws, yields no invocation or has
- * no k-th one is refused by name: a session would otherwise be published for
- * a workload that never ran.  The sources resolved are {@code @MethodSource}
- * (a static factory, by name or {@code Class#name}, the test method's own
- * name by default; a stream, an iterable, an iterator or an array of {@code
- * Arguments}, of {@code Object[]} or of single values), {@code @ValueSource}
- * and {@code @EnumSource}; any other argument source is refused by name, as
- * is an argument its parameter cannot take as it is (nothing is converted).
- * A method's arguments go to its leading parameters, a class's to its one
- * constructor or to its {@code @Parameter(i)} fields.</p>
- */
 final class JUnitInvocation {
     private static final String PARAMS = "org.junit.jupiter.params.";
     private static final String PROVIDER = PARAMS + "provider.";
@@ -53,32 +26,21 @@ final class JUnitInvocation {
     private static final String PARAMETERIZED_CLASS =
             PARAMS + "ParameterizedClass";
     private static final String PARAMETER = PARAMS + "Parameter";
-    /** A class invocation's own lifecycle, which this runner does not run. */
     private static final String[] CLASS_INVOCATION_LIFECYCLE = {
             PARAMS + "BeforeParameterizedClassInvocation",
             PARAMS + "AfterParameterizedClassInvocation"};
     private static final Pattern NAMED =
             Pattern.compile("([^\\[\\]]+)((?:\\[[1-9][0-9]*\\])*)");
     private static final Pattern PICK = Pattern.compile("\\[([0-9]+)\\]");
-    /** The one parameter type answered after a test method's arguments. */
     private static final String TEST_INFO = "org.junit.jupiter.api.TestInfo";
 
-    /** The test method's name. */
     final String method;
-    /** Which invocation of each parameterized level, from 1. */
     private final List<Integer> picks;
-    /** The class invocation's arguments; null where the class is plain. */
     private Object[] ofClass;
-    /** The method invocation's arguments; null where the method is plain. */
     private Object[] ofMethod;
-    /** JUnit's display name of the innermost invocation, or null. */
     private String display;
-    /** The invocation as the run states it: the method, then per level its
-     *  pick and its arguments ({@link #rendered}). */
     private final StringBuilder stated = new StringBuilder();
-    /** A class invocation's {@code @Parameter} fields; none else. */
     private List<Field> fields = new ArrayList<>();
-    /** The constructor a class invocation's arguments go to, else null. */
     private Constructor<?> constructor;
 
     private JUnitInvocation(String method, List<Integer> picks) {
@@ -86,7 +48,6 @@ final class JUnitInvocation {
         this.picks = picks;
     }
 
-    /** {@code m}, {@code m[k]} or {@code m[i][j]} (class comment). */
     static JUnitInvocation parse(String named) {
         Matcher matcher = NAMED.matcher(named == null ? "" : named);
         if (!matcher.matches()) {
@@ -102,12 +63,10 @@ final class JUnitInvocation {
         return new JUnitInvocation(matcher.group(1), picks);
     }
 
-    /** Whether the name picks no invocation at all. */
     boolean plain() {
         return picks.isEmpty();
     }
 
-    /** The bracketed picks, as the name states them. */
     String picked() {
         StringBuilder label = new StringBuilder();
         for (int pick : picks) {
@@ -116,22 +75,14 @@ final class JUnitInvocation {
         return label.toString();
     }
 
-    /** JUnit's display name of the invocation, or null for a plain test. */
     String display() {
         return display;
     }
 
-    /** The resolved invocation as the run states it, e.g. {@code
-     *  testSimpleEditLog[1](false)}; null for a plain test. */
     String stated() {
         return plain() ? null : method + stated;
     }
 
-    /**
-     * Resolves the named invocation of {@code testMethod} of {@code
-     * testClass}: what each parameterized level passes this run, checked
-     * against the parameters it goes to.
-     */
     void resolve(Class<?> testClass, Method testMethod) {
         Class<?> parameterized = declaring(testClass, PARAMETERIZED_CLASS);
         boolean methodLevel = has(testMethod.getDeclaredAnnotations(),
@@ -176,7 +127,6 @@ final class JUnitInvocation {
         fits(testMethod, methodArguments(), true);
     }
 
-    /** A new test instance: the class invocation's, else a plain one. */
     Object newTest(Class<?> testClass) throws Throwable {
         if (constructor != null) {
             return construct(constructor, ofClass);
@@ -190,11 +140,6 @@ final class JUnitInvocation {
         return test;
     }
 
-    /**
-     * The test method's arguments: the invocation's to its leading
-     * parameters, {@code rest} answering each parameter after them (a
-     * {@code TestInfo}: {@link #resolve} refused anything else).
-     */
     Object[] arguments(Method testMethod, Function<Class<?>, Object> rest) {
         Object[] values = methodArguments();
         Class<?>[] types = testMethod.getParameterTypes();
@@ -209,7 +154,6 @@ final class JUnitInvocation {
         return ofMethod == null ? new Object[0] : ofMethod;
     }
 
-    /** The {@code @Parameter} fields of the class and its superclasses. */
     private static List<Field> parameterFields(Class<?> testClass) {
         List<Field> fields = new ArrayList<>();
         for (Class<?> type = testClass; type != null && type != Object.class;
@@ -223,7 +167,6 @@ final class JUnitInvocation {
         return fields;
     }
 
-    /** The one constructor a class invocation's arguments go to. */
     private static Constructor<?> theConstructor(Class<?> testClass) {
         List<Constructor<?>> declared = new ArrayList<>();
         for (Constructor<?> each : testClass.getDeclaredConstructors()) {
@@ -238,7 +181,6 @@ final class JUnitInvocation {
         return declared.get(0);
     }
 
-    /** The argument a {@code @Parameter} field takes, checked. */
     private Object argument(Field field) {
         int index = (Integer) attribute(annotation(
                 field.getDeclaredAnnotations(), PARAMETER), "value");
@@ -253,12 +195,6 @@ final class JUnitInvocation {
         return checked(field.getType(), ofClass[index], where);
     }
 
-    /**
-     * Whether {@code values} fit the leading parameters of {@code target};
-     * a parameter after them is a {@code TestInfo} where {@code testInfo},
-     * else refused.  More values than parameters are left unused, as JUnit
-     * leaves them.
-     */
     private static void fits(Executable target, Object[] values,
                              boolean testInfo) {
         Class<?>[] types = target.getParameterTypes();
@@ -287,8 +223,6 @@ final class JUnitInvocation {
         }
     }
 
-    /** {@code value} as a {@code type} takes it, or refused: nothing is
-     *  converted. */
     private static Object checked(Class<?> type, Object value, String where) {
         if (value == null ? !type.isPrimitive()
                 : boxed(type).isInstance(value)) {
@@ -318,18 +252,10 @@ final class JUnitInvocation {
         return sets.get(k - 1);
     }
 
-    /** JUnit's display name of invocation {@code k}: {@code [k] } and its
-     *  arguments ({@link #rendered}). */
     private static String display(int k, Object[] arguments) {
         return "[" + k + "] " + rendered(arguments);
     }
 
-    /**
-     * Arguments as both passes render them alike: a value by its own {@code
-     * toString}, an array element by element, and a value whose class has no
-     * {@code toString} of its own by its run-stable class name (an identity
-     * hash would differ in every run).
-     */
     static String rendered(Object value) {
         if (value == null) return "null";
         if (value instanceof Object[]) {
@@ -354,12 +280,10 @@ final class JUnitInvocation {
                 return String.valueOf(value);
             }
         } catch (NoSuchMethodException unreachable) {
-            // Every class has a public toString.
         }
         return JvmNames.stable(value.getClass().getName());
     }
 
-    /** The argument sets of every source in {@code marks}, in order. */
     private static List<Object[]> sets(Annotation[] marks, Class<?> testClass,
                                        Method testMethod,
                                        Class<?> firstParameter,
@@ -395,14 +319,12 @@ final class JUnitInvocation {
         return sets;
     }
 
-    /** Whether {@code type} is a JUnit argument source. */
     private static boolean source(Class<? extends Annotation> type) {
         return type.getName().equals(PROVIDER + "ArgumentsSource")
                 || has(type.getDeclaredAnnotations(),
                 PROVIDER + "ArgumentsSource", PROVIDER + "ArgumentsSources");
     }
 
-    /** The sources a repeated source's container holds, else null. */
     private static Annotation[] repeated(Annotation mark) {
         try {
             Method value = mark.annotationType().getDeclaredMethod("value");
@@ -449,8 +371,6 @@ final class JUnitInvocation {
         return sets;
     }
 
-    /** The static zero-argument factory {@code name} or {@code Class#name}
-     *  names, most derived first. */
     private static Method factory(Class<?> testClass, String name,
                                   String where) {
         Class<?> owner = testClass;
@@ -488,7 +408,6 @@ final class JUnitInvocation {
                 + " names no static zero-argument factory: " + name);
     }
 
-    /** What a factory made, one item per invocation. */
     private static List<Object> items(Object made, Method factory) {
         List<Object> items = new ArrayList<>();
         if (made instanceof BaseStream) {
@@ -512,8 +431,6 @@ final class JUnitInvocation {
         return items;
     }
 
-    /** One item as JUnit spreads it: {@code Arguments}, an {@code Object[]},
-     *  else one value. */
     private static Object[] argumentSet(Object item) {
         if (item instanceof Object[]) return (Object[]) item;
         if (item != null && implementsArguments(item.getClass())) {
@@ -540,7 +457,6 @@ final class JUnitInvocation {
         return false;
     }
 
-    /** {@code @ValueSource}: its one non-empty array, a value each. */
     private static List<Object[]> valueSets(Annotation mark, String where) {
         List<Object[]> sets = null;
         for (Method attribute : mark.annotationType().getDeclaredMethods()) {
@@ -564,8 +480,6 @@ final class JUnitInvocation {
         return sets;
     }
 
-    /** {@code @EnumSource}: the constants its range, names and mode select,
-     *  in declaration order. */
     private static List<Object[]> enumSets(Annotation mark,
                                            Class<?> firstParameter,
                                            String where) {
@@ -631,7 +545,6 @@ final class JUnitInvocation {
                 + " names no constant " + name);
     }
 
-    /** A class invocation's own lifecycle is refused, never skipped. */
     private static void refuseClassInvocationLifecycle(Class<?> testClass) {
         for (Class<?> type = testClass; type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -648,8 +561,6 @@ final class JUnitInvocation {
         }
     }
 
-    /** The marks of the nearest class in the hierarchy declaring a source
-     *  (sources are inherited, as the parameterized class is). */
     private static Annotation[] sourced(Class<?> testClass) {
         for (Class<?> type = testClass; type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -663,7 +574,6 @@ final class JUnitInvocation {
         return new Annotation[0];
     }
 
-    /** The nearest class of the hierarchy declaring {@code annotation}. */
     private static Class<?> declaring(Class<?> testClass, String annotation) {
         for (Class<?> type = testClass; type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -699,8 +609,6 @@ final class JUnitInvocation {
         }
     }
 
-    /** A string attribute a JUnit version may lack ({@code @EnumSource}'s
-     *  range came in 5.12), "" then. */
     private static String optional(Annotation mark, String name) {
         try {
             mark.annotationType().getMethod(name);

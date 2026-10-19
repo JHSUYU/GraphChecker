@@ -1,12 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §1, IDENTITY §9: what a case declaration selects, before
- * resolution ({@link OccurrenceAddress#parseSelector}).  This type answers
- * only "is this occurrence a candidate"; the scheduler picks the k-th in
- * seed order.  The node is optional but kept when spelled.  Never an
- * address: only resolved ids reach exploration and composition.
- */
 public final class Selector extends Value {
     private final String regionId;
     private final String api;
@@ -29,26 +22,18 @@ public final class Selector extends Value {
         return regionId;
     }
 
-    /** The selector's {@code @api} segment, or {@code null}. */
     public String api() {
         return api;
     }
 
-    /** Which match, in the seed session's order. */
     public int k() {
         return k;
     }
 
-    /** The component the declaration named, or {@code null}. */
     public NodeId node() {
         return node;
     }
 
-    /**
-     * Whether {@code occurrence} is a candidate.  {@code rpcSiteApi} comes
-     * from the caller, since the contract cannot parse an RPC site; an api
-     * selector matches only ANCHOR occurrences.
-     */
     public boolean matches(OccurrenceAddress occurrence, String rpcSiteApi) {
         if (occurrence == null || !regionId.equals(occurrence.regionId())) {
             return false;
@@ -59,7 +44,6 @@ public final class Selector extends Value {
                 && api.equals(rpcSiteApi);
     }
 
-    /** The selector as a case declaration spells it. */
     public String render() {
         return (node == null ? "" : node.render())
                 + OccurrenceAddress.REGION_MARKER + regionId

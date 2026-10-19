@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# round-verify.sh <round> [case...]: per finished case, how EXPLORE ended, the claim, z3 on the exported candidate.smt2
-# (both arithmetic engines raced, tools/lib/z3-race.sh), the blocking gaps, whether a SAT moved roots, and the formula's
-# leaf symbols (roots, reads, handoffs: every declared constant but the formula's own selectors and named identities);
-# an UNSAT over none (NO-SYMBOL) decided nothing that moves, a scope hole to read before it counts. BOUNDED:<keys> names
-# the declared bounds that cut the case's search (result.json's `bounded`, RULES: a named, rare last resort), and the
-# round's last line counts those cases. UNBOUND:<n> counts the distinct boundary variables a fatal condition names that
-# no message family binds (cone.py's `unbound`: a broken causal chain, so the case is not done whatever its verdict);
-# the last line counts those cases too. HOLD:<n> counts COMPOSE's holds, the STATE locations whose run writer had no
-# arm, held by the observed arm (ComposedFamilies' DIAGNOSTIC row "... whose arm states nothing ..."): the reads keep
-# their joins, the writer's closure and store-state choices are not offered, so an UNSAT resting on one is read at
-# that location before it counts (CHECKING §1); the last line counts those cases. No case: every finished case of the
-# round.
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 # shellcheck source=../lib/z3-race.sh

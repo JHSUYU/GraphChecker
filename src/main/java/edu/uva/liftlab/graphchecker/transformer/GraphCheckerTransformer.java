@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.util.Map;
 
 public class GraphCheckerTransformer extends SceneTransformer {
-    /** The one whole-program pack phase GraphChecker registers. */
     public static final String PHASE_PACK = "wjtp";
     public static final String PHASE_NAME = "wjtp.graphchecker";
 

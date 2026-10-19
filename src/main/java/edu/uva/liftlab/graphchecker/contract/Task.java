@@ -2,11 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 
-/**
- * CONTRACT-SPEC §3: one unit of exploration, one focused occurrence (the rest
- * runs concretely).  {@code factor}: state-connected co-occurrences run
- * symbolically with it, usually empty.
- */
 public final class Task extends Value {
     private final String taskId;
     private final OccurrenceAddress focused;
@@ -33,17 +28,14 @@ public final class Task extends Value {
         return taskId;
     }
 
-    /** The occurrence this task explores symbolically. */
     public OccurrenceAddress focused() {
         return focused;
     }
 
-    /** State-connected co-occurrences explored with it; may be empty. */
     public List<OccurrenceAddress> factor() {
         return factor;
     }
 
-    /** The session whose recording this task was planned from. */
     public String seedSessionId() {
         return seedSessionId;
     }

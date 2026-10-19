@@ -6,19 +6,6 @@ import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * A map keyed by object identity that holds its keys weakly: an entry goes
- * once its key is collected, so no table of the runtime keeps an
- * application object alive.  An object nothing references any more is never
- * asked about again, so dropping its entry changes no answer.
- *
- * <p>hdfs-adhoc-49 (TestSnapshot, 36 MiniDFSClusters one after another):
- * the recorder's object ids and the registered sources, with the HDFS
- * adapter's own registry, kept every NameNode and DataNode the test had shut
- * down alive -- 1.8 GB of the recording's 4 GB heap -- and the recording
- * collected for minutes on end.  Thread-safe; each operation first drops the
- * entries of collected keys.</p>
- */
 final class WeakIdentityMap<V> {
     private final Map<Object, V> entries = new ConcurrentHashMap<>();
     private final ReferenceQueue<Object> collected = new ReferenceQueue<>();
@@ -50,7 +37,6 @@ final class WeakIdentityMap<V> {
     void clear() {
         entries.clear();
         while (collected.poll() != null) {
-            // Their entries went with the table.
         }
     }
 
@@ -68,8 +54,6 @@ final class WeakIdentityMap<V> {
         return key;
     }
 
-    /** A stored key: weak, by identity.  Once collected it equals only
-     *  itself, which is how {@link #sweep} removes it. */
     private static final class Key extends WeakReference<Object> {
         private final int identity;
 
@@ -93,7 +77,6 @@ final class WeakIdentityMap<V> {
         }
     }
 
-    /** A lookup: the object itself, matched by identity, never stored. */
     private static final class Probe {
         private final Object value;
 

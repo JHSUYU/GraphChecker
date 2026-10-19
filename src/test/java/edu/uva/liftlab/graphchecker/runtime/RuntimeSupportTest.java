@@ -25,12 +25,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * The runtime's support pieces, each held to the run's determinism or its
- * isolation from the workload: the engine's console, directory listings,
- * weak identity tables, replay key pairs, run-only names, ambient handoff
- * keys, and the WIRE stores' lock order.
- */
 @RunWith(FreshStatics.class)
 public class RuntimeSupportTest {
     @Before
@@ -39,15 +33,6 @@ public class RuntimeSupportTest {
         Security.removeProvider("CausynthReplayKeys");
     }
 
-    /**
-     * The two class monitors of the WIRE stores are taken in ONE order:
-     * {@link Interactions} then {@link InteractionRefusals}.  On 11741
-     * campaign #4 the reverse edge existed ({@code synchronized
-     * InteractionRefusals.filedProducers}) and a focused replay hung forever
-     * in a Java-level deadlock.  This races both paths and asks the VM what
-     * that dump answered; with the {@code synchronized} put back it hangs
-     * within the first thousands of iterations.
-     */
     @Test
     public void theTwoStoresAreLockedInOneOrder() throws Exception {
         int filed = 2000;
@@ -65,10 +50,7 @@ public class RuntimeSupportTest {
         AtomicInteger sending = new AtomicInteger();
         AtomicInteger rendering = new AtomicInteger();
         AtomicReference<Throwable> failure = new AtomicReference<>();
-        // Both loop until the overlap elapses: a monitor is held for
-        // microseconds, so what catches an order violation is overlap.
         Runnable[] paths = {() -> {
-            // Holds Interactions, takes InteractionRefusals.
             long end = System.nanoTime() + overlapMs * 1000000L;
             for (int k = 0; System.nanoTime() < end; k++) {
                 Endpoint producer = producer(filed + k);
@@ -78,8 +60,6 @@ public class RuntimeSupportTest {
                 sending.incrementAndGet();
             }
         }, () -> {
-            // Takes Interactions from inside InteractionRefusals, owning
-            // nothing of its own when it does.
             long end = System.nanoTime() + overlapMs * 1000000L;
             while (System.nanoTime() < end) {
                 InteractionRefusals.endpoint(lookup);
@@ -99,7 +79,6 @@ public class RuntimeSupportTest {
                     failure.compareAndSet(null, thrown);
                 }
             }, "interactions-" + at);
-            // A test that deadlocks fails on its own clock.
             threads[at].setDaemon(true);
             threads[at].start();
         }
@@ -135,7 +114,6 @@ public class RuntimeSupportTest {
                 sending.get() > 0 && rendering.get() > 0);
     }
 
-    /** One producer endpoint, built the way the runtime builds one. */
     private static Endpoint producer(int k) {
         OccurrenceAddress occurrence = OccurrenceAddress.of(
                 NodeId.of("dn" + (k % 4), 0), "REGION.wire",

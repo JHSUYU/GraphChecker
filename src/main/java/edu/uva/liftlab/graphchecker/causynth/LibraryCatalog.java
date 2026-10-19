@@ -24,85 +24,21 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * The libraries' environment boundaries, shipped with the engine in one file
- * ({@value #RESOURCE}) rather than declared per case: a library is the same
- * wherever a system calls it (SYMBOL-SCOPE §4.2).  One row per line; each
- * states {@code schemaVersion} 1 and its {@code kind}, and is keyed by where
- * it was read ({@code library-catalog.jsonl:<line>}).  A malformed
- * row, a member its kind does not have and a row stated twice are refused,
- * naming the row, never skipped.
- *
- * <ul>
- *   <li>{@code DOOR} ({@code transport, direction, method?, before | after,
- *       faults | result, sites?}): a transport's fault point ({@link
- *       DoorWeave}), at the first call of {@code before} or {@code after} in
- *       {@code method}, one marker per fault kind in order.  A door with
- *       {@code sites} {@value #DATA_FLOW} (a shared store's read: ZooKeeper's
- *       {@code getData}, {@code exists}, {@code getChildren}) is woven as
- *       any door at a method, but roots no region and is asked only where
- *       the fetch lies on the traced data flow (PLAN: {@code
- *       RuntimeSelectedRegionFinalizer#crossStore}); every cluster-state
- *       read and every poll of a queue would be one.  Rows of one
- *       door method (its transport, direction, class and name) are that
- *       method's signatures on different library lines (Hadoop IPC's
- *       response wait is a {@code CompletableFuture} on trunk, a monitor on
- *       3.4).  A door with no {@code method} is a library call whose outcome
- *       each caller reads where it makes it (a DataTransfer op's response,
- *       parsed by every side that sent the op): it sits at the first call of
- *       its anchor in every analysed method making one -- or, with {@code
- *       sites} {@value #DEMANDED}, only at the calls the root demand chose
- *       ({@link DemandedDoors}: a local file operation, {@code LOCAL_IO};
- *       a timed wait, {@code TIMED_WAIT}), before the call, so a failed
- *       operation never happens.  Such a door states either the kinds it
- *       throws or the failing {@code result} the call returns instead
- *       ({@code false}, {@code null}, {@code 0}: {@code File#renameTo},
- *       {@code File#list}, a timed wait's timeout -- {@code
- *       CountDownLatch#await}'s false, {@code Condition#awaitNanos}'s 0).</li>
- *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
- *       configuration getter, argument {@code keyArg} (a String) its key and
- *       {@code defaultArg} its default ({@link ConfigRoots}).</li>
- *   <li>{@code CONFIG_FIELD_OWNER} ({@code class}): a class whose every
- *       field is configuration, each its own key: a configuration object
- *       built from a file no getter of the catalog reads (Solr's {@code
- *       NodeConfig}, {@code CloudConfig}).</li>
- * </ul>
- */
 public final class LibraryCatalog {
     static final String RESOURCE =
             "/edu/uva/liftlab/graphchecker/library-catalog.jsonl";
-    /** The system property naming a system's own HOOK rows (its {@code
-     *  experiments/<system>/doors.jsonl}), which place catalog doors after
-     *  the system's own message or store hook. */
     public static final String SYSTEM_DOORS = "causynth.system.doors";
     static final int SCHEMA_VERSION = 1;
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
     static final String CONFIG_FIELD_OWNER = "CONFIG_FIELD_OWNER";
-    /** A codec: the classes that serialize a message -- the wire, never
-     *  scope ({@code plan.ScopeGrowth}). */
     static final String CODEC = "CODEC";
-    /** A system's own row: where its hook sits relative to a catalog door. */
     static final String HOOK = "HOOK";
-    /**
-     * A system's own row ({@code transport, path}): a node's view of the
-     * store paths {@code path} names ({@code *} one path segment) is
-     * published through {@code runtime.MessageDoors#publishing}, so a
-     * pairing's hold can defer it; a view of any other path has no such
-     * hook and no pairing of it is asked ({@link #publishedView}).
-     */
     static final String PUBLISHED_VIEW = "PUBLISHED_VIEW";
-    /** A door's {@code sites}: only the calls the root demand chose. */
     static final String DEMANDED = "DEMANDED";
-    /** The timed waits' transport: a planted timeout only where the call
-     *  could time out ({@code DoorWeave#guard}). */
     static final String TIMED_WAIT = "TIMED_WAIT";
-    /** A ZooKeeper fault kind planted only as a real expiry of the door's
-     *  session ({@code DoorWeave#guard}, {@code runtime.Sessions}). */
     static final String SESSION_EXPIRED =
             "org.apache.zookeeper.KeeperException$SessionExpiredException";
-    /** A door's {@code sites}: woven at its method, asked only where the
-     *  fetch lies on the traced data flow. */
     static final String DATA_FLOW = "DATA_FLOW";
 
     private static final Map<String, Set<String>> MEMBERS =
@@ -119,24 +55,18 @@ public final class LibraryCatalog {
         MEMBERS.put(PUBLISHED_VIEW, names("transport", "path"));
     }
 
-    /** A transport or direction name. */
     private static final Pattern NAME = Pattern.compile("[A-Z][A-Z0-9_]*");
-    /** A Soot method signature: its class, name and parameter types. */
     private static final Pattern SIGNATURE = Pattern.compile(
             "<([^:\\s]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
-    /** A class name, nested ({@code $}) or not. */
     private static final Pattern CLASS =
             Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+");
 
-    /** The engine's catalog, read once. */
     private static volatile Contents shipped;
-    /** Its doors, each placed after its system's hook. */
     private static volatile List<Door> doors;
 
     private LibraryCatalog() {
     }
 
-    /** One catalog's rows, by kind, in file order. */
     static final class Contents {
         final List<Door> doors;
         final List<ConfigSource> configSources;
@@ -154,13 +84,9 @@ public final class LibraryCatalog {
         }
     }
 
-    /** One configuration getter of a library. */
     public static final class ConfigSource {
-        /** Its Soot signature. */
         public final String method;
-        /** The argument that is the key, a String. */
         public final int keyArg;
-        /** The argument that is the default, or -1. */
         public final int defaultArg;
 
         private ConfigSource(String method, int keyArg, int defaultArg) {
@@ -170,37 +96,18 @@ public final class LibraryCatalog {
         }
     }
 
-    /** What a demanded door's call returns instead of failing by a
-     *  throw: nothing (it throws its kinds), {@code false}, {@code null} or
-     *  {@code 0}. */
     public enum Result { NONE, FALSE, NULL, ZERO }
 
-    /** One fault point of a library transport. */
     public static final class Door {
         public final String transport;
         public final String direction;
-        /** The Soot signature of the method the door is woven into; null
-         *  for a door at every call of its anchor ({@link #atCalls}). */
         public final String method;
-        /** The call the door sits at, and on which side of it. */
         public final String anchor;
         public final boolean after;
-        /** The kinds thrown, in order; none for a failing result. */
         public final List<String> faults;
-        /** Woven only at the calls the root demand chose ({@value
-         *  #DEMANDED}). */
         public final boolean demanded;
-        /** Woven at its method, asked only on the traced data flow
-         *  ({@value #DATA_FLOW}). */
         public final boolean dataFlow;
-        /** The failing result, or {@link Result#NONE}. */
         public final Result result;
-        /**
-         * The catalog's door method a system's hook moved this door from
-         * ({@link #placed}), or null: every other call the hook's class
-         * family makes of it is a door too, after the hook's next call
-         * ({@code DoorWeave}).
-         */
         public final String relocated;
 
         private Door(String transport, String direction, String method,
@@ -219,45 +126,32 @@ public final class LibraryCatalog {
             this.relocated = relocated;
         }
 
-        /** {@code FAULT:<TRANSPORT>:<DIRECTION>}, the markers' stem. */
         public String name() {
             return "FAULT:" + transport + ":" + direction;
         }
 
-        /** Whether the door sits at every analysed call of its anchor
-         *  rather than in one door method. */
         public boolean atCalls() {
             return method == null;
         }
 
-        /** The outermost class of the door method: the unit a scope
-         *  takes, with its nested classes. */
         public String family() {
             String owner = owner(method);
             int nested = owner.indexOf('$');
             return nested < 0 ? owner : owner.substring(0, nested);
         }
 
-        /** The door method this row is one library line's signature of. */
         String doorMethod() {
             Matcher member = SIGNATURE.matcher(method);
             member.matches();
             return name() + " at " + member.group(1) + "#" + member.group(2);
         }
 
-        /** Where the door sits: its method, every call of its anchor, or
-         *  the demanded ones. */
         String place() {
             return demanded ? "the demanded calls of " + anchor
                     : atCalls() ? "every call of " + anchor : method;
         }
     }
 
-    /**
-     * Every DOOR this run weaves, in file order: the engine's catalog, each
-     * placed after its system's own hook where the system states one
-     * ({@value #SYSTEM_DOORS}, {@link #placed}).
-     */
     public static List<Door> doors() {
         List<Door> known = doors;
         if (known == null) {
@@ -278,17 +172,8 @@ public final class LibraryCatalog {
         return known;
     }
 
-    /** The system file the published views were read from, and them. */
     private static volatile Object[] publishedViews;
 
-    /**
-     * Whether a node's view of {@code path} over {@code transport} is
-     * published through the publication door, so a pairing's hold can
-     * defer it: a PUBLISHED_VIEW row of the system's doors file ({@value
-     * #SYSTEM_DOORS}) names it.  Solr publishes a collection's state.json
-     * and its aliases so; its legacy clusterstate.json and a snapshot's
-     * metadata no hook publishes.  None without a system file.
-     */
     public static boolean publishedView(String transport, String path) {
         String system = System.getProperty(SYSTEM_DOORS, "").trim();
         Object[] known = publishedViews;
@@ -330,28 +215,18 @@ public final class LibraryCatalog {
         return false;
     }
 
-    /** The configuration getters of the libraries, in file order. */
     public static List<ConfigSource> configSources() {
         return shipped().configSources;
     }
 
-    /** The classes whose every field is configuration. */
     public static Set<String> configFieldOwners() {
         return shipped().configFieldOwners;
     }
 
-    /**
-     * The codecs' classes, as patterns over a class name ({@code CODEC}
-     * rows: each states globs, {@code *} any run of characters): protobuf's
-     * runtimes and the messages generated on them, SolrJ's JavaBin.  A value
-     * crosses a codec through its doors' staged exports, never through the
-     * codec's internals, so no codec class is scope.
-     */
     public static List<Pattern> codecClasses() {
         return shipped().codecClasses;
     }
 
-    /** The engine's catalog ({@value #RESOURCE}), read once. */
     private static Contents shipped() {
         Contents known = shipped;
         if (known != null) return known;
@@ -372,30 +247,12 @@ public final class LibraryCatalog {
         return known;
     }
 
-    /**
-     * One system's HOOK row: the catalog door ({@code transport},
-     * {@code direction}, {@code door}, its method) is woven in {@code method}
-     * after the first call of {@code after} -- or before the first call of
-     * {@code before} -- the system's own message or store hook, instead of
-     * at its library anchor; and, in every other method of {@code method}'s
-     * class family, at the call of the hook that a call of the door method
-     * there reaches by control flow, after it or before it (with the door
-     * moved out of {@code ZooKeeper#create}, a system method making the
-     * call itself would carry none: Solr's {@code SolrZkClient#makePath}
-     * did, before it made each node by {@code create}).
-     * A store read's door goes before its hook: a read that fails never
-     * reaches the server, so it registers no watch.  It states where the
-     * hook sits, nothing else: the door's kinds are the catalog's, and a
-     * door no hook names keeps its anchor.
-     */
     static final class Hook {
         final String transport;
         final String direction;
         final String door;
         final String method;
-        /** The hook call. */
         final String anchor;
-        /** Whether the door goes after the hook call, else before it. */
         final boolean after;
 
         private Hook(String transport, String direction, String door,
@@ -415,14 +272,6 @@ public final class LibraryCatalog {
         }
     }
 
-    /**
-     * The catalog's doors, each a system hook names placed at that hook, so
-     * the fault keeps the pairing the hook files (Solr's ZooKeeper writes
-     * after {@code SolrZkClient#causynthWrote}, its reads before {@code
-     * SolrZkClient#causynthReading}, a data read's before {@code
-     * #causynthReplied}).  A hook naming no catalog door is
-     * refused by name.
-     */
     static List<Door> placed(List<Door> catalog, List<Hook> hooks) {
         List<Door> doors = new ArrayList<>();
         Set<Hook> used = new LinkedHashSet<>();
@@ -448,8 +297,6 @@ public final class LibraryCatalog {
         return Collections.unmodifiableList(doors);
     }
 
-    /** A system's HOOK rows; any other kind there but its
-     *  PUBLISHED_VIEW rows is refused. */
     static List<Hook> hooks(Map<String, JsonObject> rows) {
         List<Hook> hooks = new ArrayList<>();
         for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
@@ -481,16 +328,10 @@ public final class LibraryCatalog {
         return hooks;
     }
 
-    /** Whether a marker name is a door's that roots no region: a demanded
-     *  door's ({@code FAULT:<TRANSPORT>:..} of a transport whose doors are
-     *  demanded) or a data-flow door's ({@link #dataFlowMarker}). */
     public static boolean rootsNothing(String name) {
         return doorMarker(name, true) || dataFlowMarker(name);
     }
 
-    /** Whether a marker name is a data-flow door's ({@code
-     *  FAULT:<TRANSPORT>:<DIRECTION>..} of a {@value #DATA_FLOW} door):
-     *  asked only where its fetch lies on the traced data flow. */
     public static boolean dataFlowMarker(String name) {
         String[] parts = name == null ? new String[0] : name.split(":", -1);
         if (parts.length < 3 || !"FAULT".equals(parts[0])) return false;
@@ -503,15 +344,10 @@ public final class LibraryCatalog {
         return false;
     }
 
-    /** Whether a marker name is a message door's ({@code
-     *  FAULT:<TRANSPORT>:..} of a transport whose doors are not demanded):
-     *  its fault ends an exchange, a local file operation's ends none. */
     public static boolean exchangeMarker(String name) {
         return doorMarker(name, false);
     }
 
-    /** Whether a marker name is a door's of a transport whose doors are
-     *  {@code demanded}, or are not. */
     private static boolean doorMarker(String name, boolean demanded) {
         String[] parts = name == null ? new String[0] : name.split(":", -1);
         if (parts.length < 2 || !"FAULT".equals(parts[0])) return false;
@@ -524,7 +360,6 @@ public final class LibraryCatalog {
         return false;
     }
 
-    /** The demanded door at calls of {@code callee}, or null. */
     public static Door demandedDoor(String callee) {
         for (Door door : doors()) {
             if (door.demanded && door.anchor.equals(callee)) return door;
@@ -532,15 +367,12 @@ public final class LibraryCatalog {
         return null;
     }
 
-    /** The door transports: a {@code FAULT:<TRANSPORT>:...} marker is a
-     *  door's exactly when its transport is one of these. */
     public static Set<String> transports() {
         Set<String> found = new LinkedHashSet<>();
         for (Door door : doors()) found.add(door.transport);
         return found;
     }
 
-    /** A catalog's rows, each keyed by {@code <file>:<line>}. */
     static Map<String, JsonObject> rows(BufferedReader reader, String file)
             throws IOException {
         Map<String, JsonObject> rows = new LinkedHashMap<>();
@@ -562,7 +394,6 @@ public final class LibraryCatalog {
         return rows;
     }
 
-    /** A catalog's rows by kind, every row checked by its kind. */
     static Contents read(Map<String, JsonObject> rows) {
         List<Door> doors = new ArrayList<>();
         List<ConfigSource> configSources = new ArrayList<>();
@@ -694,8 +525,6 @@ public final class LibraryCatalog {
                 after != null, faults, demanded, dataFlow, result, null);
     }
 
-    /** A door's {@code result}: {@code false}, {@code null} or {@code 0}
-     *  when stated. */
     private static Result result(JsonElement value, boolean stated) {
         if (!stated) return Result.NONE;
         if (value.isJsonNull()) return Result.NULL;
@@ -711,7 +540,6 @@ public final class LibraryCatalog {
                 + value);
     }
 
-    /** One CONFIG_SOURCE row, checked. */
     private static ConfigSource configSource(JsonObject row) {
         Matcher method = signature(text(row, "method"));
         List<String> parameters = method.group(3).isEmpty()
@@ -730,7 +558,6 @@ public final class LibraryCatalog {
         return new ConfigSource(method.group(), key, fallback);
     }
 
-    /** An argument index below {@code arity}, or -1 when absent. */
     private static int index(JsonObject row, String member, int arity) {
         JsonElement value = row.get(member);
         if (value == null) return -1;
@@ -765,7 +592,6 @@ public final class LibraryCatalog {
         return stated;
     }
 
-    /** A string member, or null when absent. */
     private static String optionalText(JsonObject row, String member) {
         JsonElement value = row.get(member);
         return value == null ? null : string(value, member);
@@ -780,7 +606,6 @@ public final class LibraryCatalog {
         return value.getAsString();
     }
 
-    /** The declaring class of a Soot method signature. */
     private static String owner(String signature) {
         return signature.substring(1, signature.indexOf(": "));
     }

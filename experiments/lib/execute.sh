@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# execute.sh <case-dir> <case-id> -- one workload JVM: the recording when the
-# campaign names a trace directory, a concolic replay when it names a task
-# plan.  The same script for every case.
 set -euo pipefail
 lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
 jar=${GRAPHCHECKER_JAR:?missing GraphChecker jar}
 cp=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
-# The scratch directory this script made, removed when it exits.
 scratch_owned=""
 
 if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
@@ -23,15 +19,10 @@ if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
   )
 else
   classes=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?missing instrumented classes}
-  # The recording's own temp and data: nothing reads them after it.
   work=$(mktemp -d "/tmp/${tag}-trace.XXXXXX")
   scratch_owned=${work}
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
-  # A native reproduction plants CONFIRM's world (runtime.RecordingPlant):
-  # the plant-run agent hands it the returns of the calls the plant reads
-  # (runtime.PlantAgent), and each ORDER is held at most
-  # CAUSYNTH_ORDER_TIMEOUT_MS (runtime.Confirmation).
   properties=(
     "-Dcausynth.trace.test=${test_name}"
     "-Dcausynth.trace.start.paused=true"
@@ -39,17 +30,9 @@ else
     ${CAUSYNTH_ORDER_TIMEOUT_MS:+"-Dcausynth.confirm.order.timeout.ms=${CAUSYNTH_ORDER_TIMEOUT_MS}"})
 fi
 
-# The case's window, the same in the recording and every replay
-# (case-env.sh recording_window; runtime.RecordingWindow#atStartup), and
-# where its wall duration goes when it closes: beside workload_rss_mb, the
-# campaign's measure of the VM's slowdown over the recording (run_engine.sh
-# campaign_view_hold_max).
 [[ -z ${recording_window} ]] \
   || properties+=("-Dcausynth.recording.window=${recording_window}")
 properties+=("-Dcausynth.window.ms.file=${trace:-${work}}/window_ms")
-# A view hold's realism bound in this JVM's wall ms (runtime.Confirmation
-# #VIEW_HOLD_MAX_PROPERTY): a replay's scaled by that slowdown, a native
-# run's VIEW_HOLD_MAX itself.
 [[ -z ${CAUSYNTH_VIEW_HOLD_MAX_MS:-} ]] \
   || properties+=("-Dcausynth.view.hold.max.ms=${CAUSYNTH_VIEW_HOLD_MAX_MS}")
 [[ -z ${CAUSYNTH_VIEW_HOLD_MAX_RECORDED_MS:-} ]] \
@@ -57,13 +40,6 @@ properties+=("-Dcausynth.window.ms.file=${trace:-${work}}/window_ms")
 
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 
-# Where the JVM puts its temp files and the cluster its data
-# (system_jvm_properties): a replay's on its host's local disk, under the
-# CAUSYNTH_LOCAL_SCRATCH its campaign hands it (one fsync-heavy little
-# filesystem per concurrent replay on the shared NFS mount, otherwise), a
-# recording's in its own temp directory.  Nothing downstream reads either:
-# what a replay PUBLISHES is its session and its result rows, both under the
-# worker directory.  A scratch root that cannot be made fails the JVM by name.
 remove_local_scratch() {
   [[ -z ${scratch_owned} ]] || rm -rf -- "${scratch_owned}"
 }
@@ -84,37 +60,12 @@ else
   classpath="${classes}:${cp}:${jar}"
 fi
 
-# Extra JVM options for every workload JVM of a run, recording and replays
-# alike -- a debugging switch, empty by default.
 extra=()
 [[ -z ${CAUSYNTH_WORKLOAD_JAVA_OPTS:-} ]] \
   || read -r -a extra <<<"${CAUSYNTH_WORKLOAD_JAVA_OPTS}"
 
-# What its host was charged for this JVM (CAUSYNTH_CHARGED_MB: a replay's,
-# run_engine.sh campaign_replay; a native reproduction's; none for a
-# recording).  The heap is half of it, the other half the VM's native
-# symbolic state -- but 4 GB at least: the charge is where a JVM starts, and
-# one that outgrows it is granted more where the host's real memory has room
-# (campaign_watch_workload), so the heap must not stop it first (Solr seed
-# replays of SplitShardTest and ReindexCollectionTest ran out of a 2 GB heap
-# at a 2500 MB charge, round a40s).
 charged_mb=${CAUSYNTH_CHARGED_MB:-0}
-# A replay starts with a charge capped at half a host's ceiling (run_engine.sh
-# campaign_replay_charge_mb); its heap is half its whole need
-# (CAUSYNTH_HEAP_BASIS_MB), so the cap places it and the ledger grants its
-# growth, but the heap never stops it first.
 
-# noInflation: a reflective call is served by a generated accessor from its
-# first call, not by the native one for fifteen calls and a generated one
-# after, so one write through reflection names one site in every run.
-# The JVM is watched until it ends (run_engine.sh campaign_watch_workload):
-# one that outgrows its charge asks its host's ledger for the excess, and is
-# ended only when the host cannot take it; its peak is said at its end (i2/m1,
-# sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and HDFS cases, 1.6 GB
-# for SOLR-18406) and goes to workload_rss_mb: a recording's in its trace
-# directory, what a native run of it is charged (REPRODUCE); a replay's in its
-# worker directory, the campaign's measured replay need (run_engine.sh
-# campaign_replay_measured).
 out_of_heap=()
 [[ ${CAUSYNTH_TRACE_MODE:-} != replay-context ]] \
   || out_of_heap=(-XX:+ExitOnOutOfMemoryError)

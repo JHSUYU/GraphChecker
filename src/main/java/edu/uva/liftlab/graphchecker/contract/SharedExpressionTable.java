@@ -30,17 +30,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.textString;
 
-/**
- * Content-addressed storage for immutable symbolic-expression DAGs.
- *
- * <p>JSON has no references, so expanding shared VM nodes as trees restated the
- * whole upstream history at every use. At artifact boundaries a value is an
- * {@code EXPR.v1.<sha256>} reference and each node is defined once. Anchors are
- * Merkle identities (children hashed first). Deduplicates values only; never
- * infers causality or ownership.</p>
- */
 public final class SharedExpressionTable {
-    /** The table's artifact member name. */
     public static final String FIELD = "sharedExpressionTable";
     private static final int SCHEMA_VERSION = 1;
     private static final String KIND = "CONTENT_ADDRESSED_EXPRESSION_TABLE";
@@ -54,10 +44,6 @@ public final class SharedExpressionTable {
     private SharedExpressionTable() {
     }
 
-    /**
-     * One store of verified anchors: decodes envelopes, each definition
-     * expanded once however many envelopes name it.
-     */
     public static final class Codec {
         private final Resolver resolver = new Resolver();
 
@@ -80,7 +66,6 @@ public final class SharedExpressionTable {
         return !type.isEmpty() && !REFERENCE_TYPE.equals(type);
     }
 
-    /** Artifact readers accept references, never inline expression trees. */
     private static void requirePortableArtifact(JsonElement value) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
             return;
@@ -135,7 +120,6 @@ public final class SharedExpressionTable {
                 + CanonicalJson.render(definition));
     }
 
-    /** Parses and hash-checks rows not already verified. */
     private static void readTable(JsonElement encoded,
                                   Map<String, JsonObject> verified,
                                   Map<String, JsonObject> incoming) {
@@ -205,13 +189,6 @@ public final class SharedExpressionTable {
         }
     }
 
-    /**
-     * THE DAG CHECK of every expression table: each key a walk reaches is
-     * defined ({@code definition} answers null otherwise) and none lies on a
-     * cycle. {@code references} visits the keys one value names.  Depth
-     * first on a stack: a definition chain is as deep as the VM's
-     * expression chain.
-     */
     static final class Dag<K> {
         private final String noun;
         private final Function<K, JsonObject> definition;
@@ -264,22 +241,8 @@ public final class SharedExpressionTable {
         }
     }
 
-    /**
-     * THE EXPANSION of every expression table: a copy of one value in which
-     * each reference is its definition's expansion, each definition expanded
-     * once, so the copy shares what the table shares.  On a stack: a
-     * reference chain is as deep as the VM's expression chain, and the
-     * recursion along it needed the publication thread's 512 MB stack.
-     *
-     * <p>Threads may expand at once, with no lock: a walk keeps its state to
-     * itself, and of two walks that expand one node at the same time the
-     * first to hold it wins and the other takes the winner's expansion, so
-     * every walk shares one expansion per node.</p>
-     */
     abstract static class Expansion<K> {
         private final String noun;
-        /** Concurrent: walks run at once, and {@link #expanded(Object)} is
-         *  asked by any thread. */
         private final Map<K, JsonElement> expanded =
                 new ConcurrentHashMap<>();
 
@@ -287,31 +250,17 @@ public final class SharedExpressionTable {
             this.noun = noun;
         }
 
-        /** Whether {@code key}'s definition has been expanded, which then
-         *  answers for it. */
         final boolean expanded(K key) {
             return expanded.containsKey(key);
         }
 
-        /** The key {@code object} references, or null for a plain object;
-         *  {@code root}: it is the artifact itself. */
         abstract K reference(JsonObject object, boolean root);
 
-        /** What the copy of a plain object holds for one member, still to
-         *  expand; null drops the member. */
         abstract JsonElement member(String name, JsonElement value);
 
-        /** {@code key} is expanded now, by the walk that held it first:
-         *  its definition is no longer read. */
         void expandedNow(K key) {
         }
 
-        /**
-         * {@code root} expanded, each key not expanded yet defined by
-         * {@code definitions} (null: none).  A key it does not define is
-         * looked up expanded once more before the walk refuses it: another
-         * walk may have expanded it and let its definition go meanwhile.
-         */
         final JsonElement expand(JsonElement root,
                                  Function<K, JsonObject> definitions) {
             Deque<Copy<K>> copies = new ArrayDeque<>();
@@ -340,8 +289,6 @@ public final class SharedExpressionTable {
             return done;
         }
 
-        /** A value's copy when it is whole already, else null with the copy
-         *  it needs pushed. */
         private JsonElement enter(JsonElement value, boolean root,
                                   Deque<Copy<K>> copies, Set<K> active,
                                   Function<K, JsonObject> definitions) {
@@ -371,14 +318,11 @@ public final class SharedExpressionTable {
         }
     }
 
-    /** One copy in progress: a plain object or array, or one key's value. */
     private static final class Copy<K> {
-        /** The key whose definition this copy expands, or null. */
         private final K key;
         private final Iterator<JsonElement> items;
         private final Iterator<Map.Entry<String, JsonElement>> members;
         private JsonElement result;
-        /** The member the next value fills. */
         private String name;
 
         private Copy(JsonElement plain) {
@@ -401,7 +345,6 @@ public final class SharedExpressionTable {
             members = null;
         }
 
-        /** The next value to expand into this copy, or null when whole. */
         private JsonElement next(Expansion<K> expansion) {
             if (items != null) return items.hasNext() ? items.next() : null;
             while (members.hasNext()) {
@@ -427,9 +370,6 @@ public final class SharedExpressionTable {
         }
     }
 
-    /** Visits the key of every reference object {@code keyOf} recognizes
-     *  (null: not a reference) in one value, each shared subtree once, never
-     *  inside a {@code skipped} member. */
     static <K> void eachReference(JsonElement value, String skipped,
                                   Function<JsonObject, K> keyOf,
                                   Consumer<K> visit, Set<JsonElement> seen) {
@@ -454,7 +394,6 @@ public final class SharedExpressionTable {
         }
     }
 
-    /** The check over portable anchors. */
     private static Dag<String> anchors(
             Function<String, JsonObject> definition) {
         return new Dag<>("shared expression", definition,
@@ -494,8 +433,6 @@ public final class SharedExpressionTable {
             collectTables(value, incoming, scanned);
             validateIncoming(incoming);
             for (Map.Entry<String, JsonObject> entry : incoming.entrySet()) {
-                // Copy: callers keep their artifact; verified definitions stay
-                // immutable.
                 definitions.put(entry.getKey(), entry.getValue().deepCopy());
             }
             collected.addAll(scanned);
@@ -523,8 +460,6 @@ public final class SharedExpressionTable {
             }
         }
 
-        /** A verified definition's closure was checked when it arrived, so
-         *  it stands for no further dependency. */
         private void validateIncoming(Map<String, JsonObject> incoming) {
             Dag<String> dag = anchors(anchor -> definitions.containsKey(anchor)
                     ? new JsonObject() : incoming.get(anchor));

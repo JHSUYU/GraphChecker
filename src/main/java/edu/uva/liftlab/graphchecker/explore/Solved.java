@@ -17,45 +17,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
-/**
- * THE SOLVER KEY: z3's answers by query text, one iteration's
- * ({@code <iteration>/solved/<sha256>.json}).  A flip's ask is the text its
- * solver sends (body, check-sat, get-value: {@link Z3#modelQuery}), and what
- * z3 decides of it -- unsat, or sat and a model's values of the symbols the
- * text names -- is a fact of that text alone, whatever obligation, world,
- * task, focus or plan generation built it: the first decided answer is kept
- * under the text's sha256, and every later ask of the same text, by any
- * solver of the iteration on any host, the hard lane's too, is answered with
- * it and runs no z3 (SOLR-18413 b05: 312 of 519 solver-decided asks were
- * texts asked before).  What a question settles and what its replay is
- * given stay its own ({@code ObligationFactory#question}, the replay key):
- * the answer is mapped for each ask as z3's own would be, so a kept answer
- * writes the files a z3 run deciding the same writes.
- *
- * <p>A kept model is ONE model of the text, as a z3 run gives one: each run
- * races two engines and answers with the one that decided first ({@link
- * Z3}), so which model a run gives was never fixed by the text.  ONLY A
- * WHOLE ANSWER OF THE TEXT IS KEPT, OR ANSWERS ONE ({@link #whole}): unsat,
- * or sat with a value for every symbol the text asks the model of.  A sat
- * whose separate model run timed out, hit its cap or said unknown carries
- * no values or some (Z3#ask keeps the verdict), and its ask's run alone says
- * so; kept, every later ask of the text would read an empty model, plant
- * nothing and be refused for good.  A timeout, a memout, unknown, an error
- * or engines that disagree say nothing of the text either, and the next ask
- * runs z3 again at its own budget and room.  A kept answer carries no core:
- * every ask it answers asks none.</p>
- *
- * <p>An entry is written whole or not at all (a file of its own, moved into
- * place), and two asks deciding one text at once each write a decided answer
- * of it; a reader on another host that does not see an entry yet asks z3,
- * as before the store.  KEEPING IS BEST EFFORT: an entry that cannot be
- * written (NFS) leaves the question z3 answered answered, and the next ask
- * of the text runs z3.</p>
- */
 final class Solved {
-    /** Its directory, in the iteration. */
     static final String DIR = "solved";
-    /** Keeps nothing: an ask whose record names no store. */
     static final Solved NONE = new Solved(null);
 
     private final Path dir;
@@ -64,27 +27,18 @@ final class Solved {
         this.dir = dir;
     }
 
-    /** One iteration's store. */
     static Solved in(Path iteration) {
         return new Solved(iteration.resolve(DIR));
     }
 
-    /** A store by its directory, as a hard-lane record names it; null:
-     *  {@link #NONE}. */
     static Solved at(Path dir) {
         return dir == null ? NONE : new Solved(dir);
     }
 
-    /** Its directory, or null for {@link #NONE}. */
     Path dir() {
         return dir;
     }
 
-    /**
-     * z3's answer to the text of this sha256, which asks the model of
-     * {@code modelSymbols}: the one kept, else what {@code z3} answers, kept
-     * once whole ({@link #whole}).
-     */
     Z3.Answer answer(String querySha256, Collection<String> modelSymbols,
                      Supplier<Z3.Answer> z3) throws IOException {
         Z3.Answer kept = kept(querySha256);
@@ -106,22 +60,18 @@ final class Solved {
         return answer;
     }
 
-    /** Whether an answer is all the text says: unsat, or sat with a value
-     *  of every symbol it asks the model of. */
     static boolean whole(Z3.Answer answer, Collection<String> modelSymbols) {
         if (answer.unsat()) return true;
         return answer.sat() && (modelSymbols == null
                 || answer.values().keySet().containsAll(modelSymbols));
     }
 
-    /** The answer kept for this text, or null. */
     private Z3.Answer kept(String querySha256) throws IOException {
         if (dir == null) return null;
         JsonObject json;
         try {
             json = ExploreCodec.readObject(dir.resolve(querySha256 + ".json"));
         } catch (FileSystemException unread) {
-            // None kept, or a store that cannot be read: z3 is asked.
             return null;
         }
         if (!querySha256.equals(JsonFields.primitiveString(json,

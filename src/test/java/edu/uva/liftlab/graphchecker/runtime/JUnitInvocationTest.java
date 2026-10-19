@@ -29,13 +29,6 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-/**
- * The one invocation of a parameterized test a case names, {@code m[k]}
- * ({@link JUnitInvocation}), run by the workload runner: which arguments
- * reach the method, the constructor and the {@code @Parameter} fields, and
- * what is refused by name before anything of the test runs; and which
- * method the adapter may run as the named test ({@link JUnitLifecycle}).
- */
 @RunWith(FreshStatics.class)
 public class JUnitInvocationTest {
     private static final List<String> LOG = new ArrayList<>();
@@ -93,8 +86,6 @@ public class JUnitInvocationTest {
         }
     }
 
-    /** A replay held to a run of another invocation is refused by name; one
-     *  of the same invocation runs. */
     @Test
     public void aReplayRunsTheInvocationItsRunRan() throws Exception {
         Path order = Files.createTempFile("schedule_prefix", ".jsonl");
@@ -125,8 +116,6 @@ public class JUnitInvocationTest {
         }
     }
 
-    /** An argument without a toString of its own renders by its class, not
-     *  by an identity hash no other run shares. */
     @Test
     public void argumentsRenderAlikeInEveryRun() {
         assertEquals("null, 2, [1, 2], " + Methods.class.getName(),
@@ -134,8 +123,6 @@ public class JUnitInvocationTest {
                         new int[] {1, 2}, new Methods()}));
     }
 
-    /** {test class, method, accepted}: Lucene's runner takes public
-     *  test*() methods, JUnit 4's the marked ones. */
     @Test
     public void aTestMethodIsWhatTheClassRunnerTakes() throws Exception {
         Object[][] rows = {
@@ -155,7 +142,6 @@ public class JUnitInvocationTest {
         }
     }
 
-    /** A provider of JUnit 3 style methods, by its name. */
     public static final class FakeJUnit3MethodProvider {
     }
 

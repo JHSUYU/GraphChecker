@@ -38,33 +38,14 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
-/**
- * The exception target a case declares by source line:
- * {@code exception_target: <name> <binary class name> <line> [<thrown type>]}.
- *
- * <p>The site is the one {@code throw new T(...)} javac compiled at that line
- * of the class or of a class nested in it.  A lambda body is a method of its
- * enclosing class ({@code lambda$m$N}) and an anonymous class is {@code C$N};
- * both keep the source's LineNumberTable, and neither keeps a type annotation
- * on its {@code new} (javac 8 drops it in lambda bodies), so the line is the
- * one name every throw has.  A case therefore needs no annotation and no
- * rebuild of its tree.
- *
- * <p>The identity is the class-file one the analyzer matches on Jimple:
- * method, thrown type, and the {@code NEW}'s ordinal among the method's
- * {@code NEW}s of that type ({@link ExceptionTargetSite#stableIdentity}).
- * A line that holds no such throw, or several, is refused by name.
- */
 final class ExceptionTargetLineResolver {
     private ExceptionTargetLineResolver() {
     }
 
-    /** One declared target: its name, class, source line and thrown type. */
     static final class TargetLine {
         final String name;
         final String className;
         final int line;
-        /** Trailing name segments of the thrown class; empty when unstated. */
         final String thrownType;
 
         TargetLine(String name, String className, int line,
@@ -75,7 +56,6 @@ final class ExceptionTargetLineResolver {
             this.thrownType = thrownType;
         }
 
-        /** {@code <name> <binary class name> <line> [<thrown type>]}. */
         static TargetLine parse(String value) throws IOException {
             String[] fields = value.trim().split("\\s+");
             if (fields.length < 3 || fields.length > 4
@@ -89,10 +69,6 @@ final class ExceptionTargetLineResolver {
                     fields.length == 4 ? fields[3] : "");
         }
 
-        /**
-         * Whether the internal name {@code a/b/C$D} is the stated type: the
-         * binary name, or its trailing segments ({@code D}, {@code C.D}).
-         */
         boolean throwsType(String internalName) {
             if (thrownType.isEmpty()) {
                 return true;
@@ -117,7 +93,6 @@ final class ExceptionTargetLineResolver {
         }
     }
 
-    /** The declared site, with its method's Soot signature. */
     static ExceptionTargetSite resolve(List<String> inputs, TargetLine target)
             throws IOException {
         ExceptionTargetSite site = locate(inputs, target);
@@ -127,7 +102,6 @@ final class ExceptionTargetLineResolver {
                 site.exceptionConstructionOrdinal);
     }
 
-    /** The declared site in the class files, without Soot. */
     static ExceptionTargetSite locate(List<String> inputs, TargetLine target)
             throws IOException {
         List<ClassNode> family = classFamily(inputs, target.className);
@@ -159,12 +133,6 @@ final class ExceptionTargetLineResolver {
         return found.get(0);
     }
 
-    /**
-     * Every {@code NEW T} at the line that its own {@code T.<init>} hands
-     * straight to {@code ATHROW} -- javac's {@code throw new T(args)},
-     * whatever the arguments construct -- with its ordinal among the
-     * method's {@code NEW T}s.
-     */
     private static void collect(ClassNode owner, MethodNode method,
                                 TargetLine target,
                                 List<ExceptionTargetSite> found) {
@@ -191,7 +159,6 @@ final class ExceptionTargetLineResolver {
         }
     }
 
-    /** Whether the {@code <init>} matching this NEW is followed by ATHROW. */
     private static boolean thrownOnConstruction(TypeInsnNode creation) {
         int nested = 0;
         for (AbstractInsnNode instruction = creation.getNext();
@@ -206,7 +173,6 @@ final class ExceptionTargetLineResolver {
                     && "<init>".equals(((MethodInsnNode) instruction).name)) {
                 if (nested-- == 0) {
                     AbstractInsnNode next = instruction.getNext();
-                    // Labels, line numbers and frames are not instructions.
                     while (next != null && next.getOpcode() < 0) {
                         next = next.getNext();
                     }
@@ -217,7 +183,6 @@ final class ExceptionTargetLineResolver {
         return false;
     }
 
-    /** {@code C.class} and every {@code C$*.class} of the inputs. */
     private static List<ClassNode> classFamily(List<String> inputs,
                                                String className)
             throws IOException {

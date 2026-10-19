@@ -1,23 +1,8 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 
-/**
- * CONTRACT-SPEC §1, IDENTITY §1: the one address of a region occurrence,
- * {@code node#epochN/region/REGION.x/ctx:<why>/idx:<where>} -- node and epoch,
- * static region, the {@link CausalContext} that started it, and the
- * {@link ExecutionIndex} from scope root to region entry.  Nothing else (no
- * thread id, object address or ordinal: an ordinal shifts when a flip inserts
- * an unrelated invocation).  Two occurrences are the same iff their
- * {@link #id()}s are equal.
- *
- * <p>Cases declare a {@link Selector} ({@link #parseSelector}), which the
- * scheduler resolves against the seed; it never becomes an address by
- * parsing.</p>
- */
 public final class OccurrenceAddress extends Value {
-    /** The one spelling of the region separator in a rendered address. */
     public static final String REGION_MARKER = "/region/";
-    /** The region slot of work under no region: {@code ROLE.<role>}. */
     public static final String ROLE_REGION = "ROLE.";
     private static final String CONTEXT_MARKER = "/ctx:";
     private static final String INDEX_MARKER = "/idx:";
@@ -26,10 +11,6 @@ public final class OccurrenceAddress extends Value {
     private final String regionId;
     private final CausalContext context;
     private final ExecutionIndex index;
-    /**
-     * {@link #id()}, cached: admission asks it per comparison.  Unsynchronized
-     * on purpose; racing threads compute the same string.
-     */
     private String id;
 
     private OccurrenceAddress(NodeId node, String regionId,
@@ -53,7 +34,6 @@ public final class OccurrenceAddress extends Value {
                 Fields.required(index, "index"));
     }
 
-    /** Reads {@link #render()}; refuses anything else, never half-parses. */
     public static OccurrenceAddress parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int context = value.indexOf(CONTEXT_MARKER);
@@ -74,11 +54,6 @@ public final class OccurrenceAddress extends Value {
                         value.substring(index + INDEX_MARKER.length())));
     }
 
-    /**
-     * Reads a case's v1 selector ({@code node#epochN/region/REGION.x@api#k}
-     * or {@code .../REGION.x#k}); without a node prefix it selects on every
-     * component.
-     */
     public static Selector parseSelector(String v1) {
         String value = v1 == null ? "" : v1.trim();
         int region = value.lastIndexOf(REGION_MARKER);
@@ -98,7 +73,6 @@ public final class OccurrenceAddress extends Value {
                 node);
     }
 
-    /** The component instance and epoch this occurrence ran on. */
     public NodeId node() {
         return node;
     }
@@ -107,25 +81,18 @@ public final class OccurrenceAddress extends Value {
         return regionId;
     }
 
-    /** Why this occurrence ran. */
     public CausalContext context() {
         return context;
     }
 
-    /** Where in the component's control structure it ran. */
     public ExecutionIndex index() {
         return index;
     }
 
-    /** Whether this is work under no region, named by its role. */
     public boolean role() {
         return regionId.startsWith(ROLE_REGION);
     }
 
-    /**
-     * This occurrence as every delivery of its stored message is addressed
-     * ({@link CausalContext.Anchor#anyDelivery}); itself for any other.
-     */
     public OccurrenceAddress anyDelivery() {
         if (!(context instanceof CausalContext.Anchor)) return this;
         CausalContext.Anchor delivered =
@@ -141,7 +108,6 @@ public final class OccurrenceAddress extends Value {
                 : new OccurrenceAddress(node, regionId, turned, index);
     }
 
-    /** Whether the context is {@link CausalContext.Lost} (derived). */
     public boolean lineageLost() {
         return context.isLost();
     }
@@ -151,7 +117,6 @@ public final class OccurrenceAddress extends Value {
                 + context.render() + INDEX_MARKER + index.render();
     }
 
-    /** The id every row joins on; uses the index's fold, so constant-size. */
     public String id() {
         String digested = id;
         if (digested == null) {

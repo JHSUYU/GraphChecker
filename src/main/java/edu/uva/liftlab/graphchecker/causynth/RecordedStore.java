@@ -12,27 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-/**
- * The shared store of the recording (IDENTITY §7.2), read off its STORE
- * trace rows: which occurrence made each version of each location, which
- * version each decoded object was parsed from, and which occurrence read,
- * decoded or was called back on each location.  What PLAN asks of it: the
- * versions a set of objects holds ({@link #versionsOf}), and the writers a
- * version rests on ({@link #writersUpTo}) -- the one that made it and those
- * of every earlier version of its location, since a store keeps one document
- * per location and each write modifies the one before it (owner 2026-10-15:
- * for ZooKeeper, uniformly, the versions up to the one read) -- and the
- * ZooKeeper causal graph's two sides ({@link #consumedBy}, {@link
- * #consumersOf}, {@link #decodesUpTo}, {@code ZkCausalGraph}).  And which fetch made each decode: the occurrence that
- * read the version and when, whose store-read doors PLAN asks where the
- * fetch lies on the data flow ({@link #fetchesOf}).  A decode of a version its
- * own occurrence wrote (Solr's aliases parsed from the bytes a compare-and-
- * set just stored) fetched nothing: its objects hold the version, and no
- * read door is on their flow.
- */
 public final class RecordedStore {
-    /** One STORE trace row: a write, a decode, a read that decoded
-     *  nothing, or a watch callback. */
     public static final class Event {
         enum Kind { WRITE, DECODE, READ, FIRED, LEAVES }
 
@@ -40,28 +20,12 @@ public final class RecordedStore {
         final boolean write;
         final String transport;
         final String location;
-        /** The version written, decoded or read; -1 for a callback, whose
-         *  version is the next read's. */
         final long version;
-        /** A write's occurrence address, rendered; a decode's fetch's, or
-         *  "" (a provenance site's derived object); a read's or a
-         *  callback's own. */
         final String occurrence;
-        /** The row's trace seq: a decode's comes right after its fetch. */
         final long seq;
-        /** A decode's objects, or a LEAVES row's leaf objects, renamed as
-         *  every row names them. */
         public final int[] objects;
-        /** A LEAVES row's pointers, parallel to {@link #objects} (CONTENT
-         *  port spelling, '|' for '/'); null: past the bound, the whole
-         *  document. */
         final String[] pointers;
-        /** A LEAVES row's side: what a write serialized (else a parse). */
         final boolean serialized;
-        /** The location as session rows spell it ({@code
-         *  MessageDoors#storeLocation}'s slot, stated at record time while
-         *  the run's names are known); the raw location where the row
-         *  states none. */
         private String slot;
 
         private Event(Kind kind, String transport, String location,
@@ -87,8 +51,6 @@ public final class RecordedStore {
             this.slot = location;
         }
 
-        /** This event, its location spelled {@code slot} in session rows
-         *  ("" keeps the raw location). */
         public Event slot(String slot) {
             if (slot != null && !slot.isEmpty()) this.slot = slot;
             return this;
@@ -108,16 +70,12 @@ public final class RecordedStore {
                     seq, objects);
         }
 
-        /** A read that decoded nothing (getData, exists, getChildren). */
         public static Event read(String transport, String location,
                                  long version, String occurrence, long seq) {
             return new Event(Kind.READ, transport, location, version,
                     occurrence, seq, new int[0]);
         }
 
-        /** The leaves one write serialized ({@code write}) or one parse
-         *  read, each pointer with its leaf object; {@code pointers} null
-         *  past the bound (the whole document). */
         public static Event leaves(boolean write, String transport,
                                    String location, long version,
                                    String occurrence, long seq,
@@ -127,7 +85,6 @@ public final class RecordedStore {
                     pointers, write);
         }
 
-        /** A watch callback on {@code location}, in {@code occurrence}. */
         public static Event fired(String transport, String location,
                                   String occurrence, long seq) {
             return new Event(Kind.FIRED, transport, location, -1L,
@@ -139,18 +96,11 @@ public final class RecordedStore {
         }
     }
 
-    /** One fetch of a version, as its decode states it. */
     static final class Fetch {
-        /** transport + location. */
         final String location;
         final long version;
-        /** The fetching occurrence's address, rendered. */
         final String occurrence;
-        /** Its decode's trace seq: the fetch is the store read just before. */
         final long seq;
-        /** The seq of the store event its occurrence made last before this
-         *  decode (another decode, a write), or 0: the fetch's read came
-         *  after it. */
         final long since;
 
         private Fetch(Event decode, long since) {
@@ -162,38 +112,21 @@ public final class RecordedStore {
         }
     }
 
-    /** transport + location -> version -> the occurrences that made it. */
     private final Map<String, TreeMap<Long, Set<String>>> writers =
             new HashMap<>();
-    /** object -> the versions (transport + location -> version) it holds. */
     private final Map<Integer, Map<String, Long>> decoded = new HashMap<>();
-    /** object -> the fetch whose decode registered it first. */
     private final Map<Integer, Fetch> fetchedBy = new HashMap<>();
-    /** occurrence -> the locations it read, decoded or was called back on,
-     *  each with the highest version it read or decoded there (-1: only
-     *  called back). */
     private final Map<String, Map<String, Long>> consumed = new HashMap<>();
-    /** transport + location -> version -> the occurrences that decoded
-     *  it. */
     private final Map<String, TreeMap<Long, Set<String>>> decodes =
             new HashMap<>();
-    /** transport + location -> the occurrences that consumed it. */
     private final Map<String, Set<String>> consumers = new HashMap<>();
-    /** transport + location -> its session-row slot. */
     private final Map<String, String> slots = new HashMap<>();
-    /** Leaf object -> each (location, pointer, occurrence) a parse read it
-     *  at. */
     private final Map<Integer, List<Leaf>> parsedLeaves = new HashMap<>();
-    /** transport + location -> pointer -> each (occurrence, leaf object) a
-     *  write serialized there. */
     private final Map<String, Map<String, List<Leaf>>> writtenLeaves =
             new HashMap<>();
-    /** Locations some LEAVES row states whole (past the bound). */
     private final Set<String> whole = new java.util.HashSet<>();
-    /** Locations some LEAVES row states leaf by leaf. */
     private final Set<String> leafed = new java.util.HashSet<>();
 
-    /** One leaf of one LEAVES row. */
     static final class Leaf {
         final String location;
         final String pointer;
@@ -227,7 +160,6 @@ public final class RecordedStore {
                             ignored -> new LinkedHashSet<>())
                     .add(event.occurrence);
         }
-        // occurrence -> the seq of its last store event so far.
         Map<String, Long> last = new HashMap<>();
         for (Event event : ordered) {
             Long since = event.occurrence.isEmpty() ? null
@@ -253,8 +185,6 @@ public final class RecordedStore {
                     : new Fetch(event, since == null ? 0L : since);
             for (int object : event.objects) {
                 if (object == 0) continue;
-                // The first decode that registered it keeps it (runtime.
-                // Provenance): a later row naming it again names no object.
                 decoded.computeIfAbsent(object, ignored -> new HashMap<>())
                         .putIfAbsent(event.key(), event.version);
                 if (fetch != null) fetchedBy.putIfAbsent(object, fetch);
@@ -262,7 +192,6 @@ public final class RecordedStore {
         }
     }
 
-    /** Indexes one LEAVES row. */
     private void leaves(Event event) {
         if (event.pointers == null) {
             whole.add(event.key());
@@ -285,15 +214,11 @@ public final class RecordedStore {
         }
     }
 
-    /** Each (location, pointer, occurrence) a parse read {@code object}
-     *  at. */
     List<Leaf> parsedAs(int object) {
         return parsedLeaves.getOrDefault(object,
                 Collections.<Leaf>emptyList());
     }
 
-    /** Each write's leaf at {@code pointer} of {@code location}, of the
-     *  versions up to {@code version}. */
     List<Leaf> writtenAt(String location, String pointer, long version) {
         Map<String, List<Leaf>> at = writtenLeaves.get(location);
         List<Leaf> found = new ArrayList<>();
@@ -305,25 +230,20 @@ public final class RecordedStore {
         return found;
     }
 
-    /** Whether a location's leaves were ever stated, and never past the
-     *  bound: a field-level chain over it is exact. */
     boolean leafStated(String location) {
         return !whole.contains(location) && leafed.contains(location);
     }
 
-    /** Whether a decode's occurrence made the version it decoded. */
     private boolean wrote(Event decode) {
         TreeMap<Long, Set<String>> made = writers.get(decode.key());
         Set<String> at = made == null ? null : made.get(decode.version);
         return at != null && at.contains(decode.occurrence);
     }
 
-    /** No STORE row: nothing to cross. */
     boolean isEmpty() {
         return writers.isEmpty() && decoded.isEmpty();
     }
 
-    /** The versions {@code objects} were decoded from, by location. */
     Map<String, Long> versionsOf(Collection<Integer> objects) {
         Map<String, Long> versions = new HashMap<>();
         for (Integer object : objects) {
@@ -336,7 +256,6 @@ public final class RecordedStore {
         return versions;
     }
 
-    /** The fetches whose decodes registered {@code objects}. */
     List<Fetch> fetchesOf(Collection<Integer> objects) {
         Set<Fetch> found = new LinkedHashSet<>();
         for (Integer object : objects) {
@@ -346,16 +265,10 @@ public final class RecordedStore {
         return new ArrayList<>(found);
     }
 
-    /** The occurrences (rendered addresses) that made {@code location}'s
-     *  (transport + location) versions up to {@code version}, the latest
-     *  first. */
     List<String> writersUpTo(String location, long version) {
         return upTo(writers.get(location), version);
     }
 
-    /** The occurrences that decoded {@code location}'s versions up to
-     *  {@code version}, the latest first: what a view read at {@code
-     *  version} may be re-pointed to. */
     List<String> decodesUpTo(String location, long version) {
         return upTo(decodes.get(location), version);
     }
@@ -373,25 +286,17 @@ public final class RecordedStore {
         return found;
     }
 
-    /** The locations (transport + location) {@code occurrence} read,
-     *  decoded or was called back on, each with the highest version it read
-     *  or decoded (-1: only called back): a ZooKeeper-carried occurrence
-     *  where any. */
     Map<String, Long> consumedBy(String occurrence) {
         return consumed.getOrDefault(occurrence,
                 Collections.<String, Long>emptyMap());
     }
 
-    /** {@code location}'s (transport + location) spelling in session
-     *  rows. */
     String slotOf(String location) {
         String slot = slots.get(location);
         return slot != null ? slot
                 : location.substring(location.indexOf('\n') + 1);
     }
 
-    /** The occurrences that read, decoded or were called back on {@code
-     *  location} (transport + location). */
     Set<String> consumersOf(String location) {
         return consumers.getOrDefault(location,
                 Collections.<String>emptySet());

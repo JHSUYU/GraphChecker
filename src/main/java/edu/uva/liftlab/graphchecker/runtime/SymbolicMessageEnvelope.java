@@ -9,81 +9,30 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Message-carried symbolic values shared by every request/response transport.
- *
- * <p>A transport drains the producer thread before sending and installs that
- * exact string on the receiver thread; correlation ids are never an
- * expression lookup.</p>
- *
- * <p>Each leaf is addressed by {@code (port, ordinal)}, and a decode looks its
- * element up rather than consuming a queue head: one port carries many
- * unrelated values, so head-of-queue pairing shifts every pairing after the
- * first asymmetry.  The k-th element of a port is the port's k-th field in
- * the door's walk of the message ({@link MessageCodec}), which both sides
- * walk alike, staged or not ({@link #skip}), or a declared row's k-th
- * capture; a disagreement is reported (a leaf nothing looked up, a lookup
- * with no leaf), never absorbed.</p>
- *
- * <p>The wire carries only what the receiver cannot derive: handle and
- * position.  Plan data does not travel; both sides load the same plan.
- * Refusing a wire is a named row, never an exception into the workload.</p>
- */
 public final class SymbolicMessageEnvelope {
     private static final String SCHEMA = "CSE6";
-    /**
-     * How many values one message may carry: the only bound on a wire.  Do
-     * not add a length bound; it would be a second authority over the same
-     * thing.
-     */
     private static final int MAX_ENTRIES = 64;
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
 
-    /** The message this thread is building. */
     private static final ThreadLocal<Outbound> OUTBOUND = new ThreadLocal<>();
-    /** The message this thread is decoding. */
     private static final ThreadLocal<Inbound> INBOUND = new ThreadLocal<>();
 
     private SymbolicMessageEnvelope() {
     }
 
-    /**
-     * A {@link #take} that found no element: the sender staged nothing for
-     * this element of the port on this message.
-     */
     static final long ABSENT = -1L;
 
-    /**
-     * Adds one declared port to the next message sent by this thread, with
-     * the export that staged it ({@code producer}, which stays here).
-     *
-     * <p>Only the staged handle and its position travel; the plan's
-     * occurrences for the port do not, since both sides hold the plan and
-     * the attach names its own activation
-     * ({@code HandoffMint.attachConsumerRegion}).</p>
-     */
     static boolean stage(String portId, long handle, Endpoint producer) {
         if (empty(portId) || handle < 0L) return false;
         return outbound().stage(portId, handle, producer);
     }
 
-    /**
-     * Counts one element of {@code portId} the next message carries none
-     * for, so the elements after it keep the ordinals the receiver's walk
-     * gives them.
-     */
     static void skip(String portId) {
         if (!empty(portId)) outbound().count(portId);
     }
 
-    /**
-     * Files the exports staged on the message this thread is about to send,
-     * as that message's ({@link Interactions#carried}): the door calls it
-     * with the message's correlation and half just before it drains the
-     * envelope ({@link #takeOutbound}).
-     */
     static void carriedBy(String correlationId, String half) {
         Outbound message = OUTBOUND.get();
         if (message == null) return;
@@ -102,10 +51,6 @@ public final class SymbolicMessageEnvelope {
         return message;
     }
 
-    /**
-     * Removes and serializes the entries staged for the next outbound message.
-     * An empty string means the message carries no symbolic envelope.
-     */
     public static String takeOutbound() {
         Outbound message = OUTBOUND.get();
         OUTBOUND.remove();
@@ -118,13 +63,6 @@ public final class SymbolicMessageEnvelope {
         return wire.toString();
     }
 
-    /**
-     * Replaces the receiver thread's current message with this exact wire.
-     *
-     * <p>A displaced message ends like a closed one and reports what nothing
-     * looked up (on a client half nothing else closes it), unless the same
-     * wire is reinstalled: that is one message crossing several legs.</p>
-     */
     public static void installInbound(String wire) {
         Inbound displaced = INBOUND.get();
         INBOUND.remove();
@@ -132,9 +70,6 @@ public final class SymbolicMessageEnvelope {
         try {
             entries = decode(wire);
         } catch (IllegalArgumentException refused) {
-            // A refused wire is a named row, never an exception: thrown, it
-            // breaks the workload's IPC.  Nothing is installed, so every
-            // decode answers no element and the claim fails on the values.
             if (displaced != null) displaced.reportUnattached();
             RowRuntime.messageContextRefused(
                     "inbound symbolic message envelope",
@@ -150,39 +85,26 @@ public final class SymbolicMessageEnvelope {
         INBOUND.set(message);
     }
 
-    /**
-     * Clears a receiver when the concrete message has no envelope header;
-     * its unclaimed leaves are reported here, once.
-     */
     public static void clearInbound() {
         Inbound message = INBOUND.get();
         INBOUND.remove();
         if (message != null) message.reportUnattached();
     }
 
-    /**
-     * Takes the element this port is decoding next, by ordinal: its handle
-     * (0 for a concrete one), or {@link #ABSENT} when the message carries
-     * none, rather than borrowing the next value.
-     */
     static long take(String portId) {
         Inbound message = INBOUND.get();
         if (message == null || empty(portId)) return ABSENT;
         return message.take(portId);
     }
 
-    /** Clears thread state at a session boundary; nothing is reported. */
     static void clear() {
         OUTBOUND.remove();
         INBOUND.remove();
     }
 
-    /** Per port, the next ordinal one side counts: both sides count
-     *  alike. */
     private static class Ordinals {
         private final Map<String, Integer> next = new LinkedHashMap<>();
 
-        /** Counts one element of {@code portId}. */
         int count(String portId) {
             Integer held = next.get(portId);
             int ordinal = held == null ? 0 : held;
@@ -191,7 +113,6 @@ public final class SymbolicMessageEnvelope {
         }
     }
 
-    /** One decoded message and how much of it has been looked up. */
     private static final class Inbound extends Ordinals {
         private final List<Entry> entries;
         private final boolean[] lookedUp;
@@ -216,10 +137,6 @@ public final class SymbolicMessageEnvelope {
             return ABSENT;
         }
 
-        /**
-         * Names every element nothing looked up, once each: what it fed
-         * names no producer, and the fix is the port's decode.
-         */
         void reportUnattached() {
             for (int index = 0; index < entries.size(); index++) {
                 if (lookedUp[index]) continue;
@@ -233,7 +150,6 @@ public final class SymbolicMessageEnvelope {
         }
     }
 
-    /** One message being built. */
     private static final class Outbound extends Ordinals {
         private final List<Entry> entries = new ArrayList<>();
 
@@ -298,8 +214,6 @@ public final class SymbolicMessageEnvelope {
                 "malformed symbolic message envelope");
     }
 
-    /** One staged or decoded leaf: its port, handle and position, and the
-     *  export that staged it (the sender's side only; it never travels). */
     private static final class Entry {
         private final String portId;
         private final long handle;

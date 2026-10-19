@@ -33,35 +33,6 @@ import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * THE ZOOKEEPER CHAIN'S FIELDS, exact (owner 2026-10-15): the store leaves
- * the declared occurrence's question rests on, read off the seed replay's
- * own composition -- its path's conditions and fatal arm, and every family
- * binding a handoff it read, each arm under its producer's path condition --
- * and off the decisions of every occurrence the anchor's values came from
- * ({@link #handedOn}), so a decision another occurrence made over a leaf
- * (CREATESNAPSHOT asking whether a replica is active, which decides what the
- * snapshot the backup reads lists) is in them as much as the leaf the anchor
- * read.  PLAN keyed the chain by leaf identity over the recording; these are
- * the leaves the seed's formula names.
- *
- * <p>The iteration's chain ({@code zk_chain.jsonl}, {@link ZkChain}) is
- * rekeyed with them: each occurrence PLAN keyed holds, of every path, the
- * pointers the seed names there (none: the path's leaves cross as
- * constants), and each task row stating {@value ZkChain#CONTENT_KEYS} states
- * its occurrence's keys of the rekeyed chain -- the plan the replays after
- * the seed run (runtime.StoreContent).  EXPLORE flips no decision over
- * off-chain store values alone ({@code explore.ZkKeys}).
- *
- * <pre>
- *   --sessions &lt;dir&gt;          the iteration's sessions (the seed)
- *   --anchor &lt;addr&gt;           the declared occurrence
- *   --static-scope-map &lt;file&gt;
- *   --root-domains &lt;file&gt;     optional
- *   --zk-chain &lt;file&gt;         the iteration's chain, rekeyed in place
- *   --plan &lt;file&gt;             the iteration's plan, rekeyed in place
- * </pre>
- */
 public final class ZkKeysMain {
     private ZkKeysMain() {
     }
@@ -82,8 +53,6 @@ public final class ZkKeysMain {
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 1, StaticScopeMap.read(options.path("static-scope-map")));
         if (composition.disjuncts().isEmpty()) {
-            // The seed's formula names nothing to read keys off: PLAN's
-            // stand.
             System.out.println("zk keys: the seed composes no path to the"
                     + " anchor, PLAN's keys kept");
             return;
@@ -110,8 +79,6 @@ public final class ZkKeysMain {
                 + rows + " task row(s) rekeyed");
     }
 
-    /** The CONTENT leaf ports whose attach symbols {@code body} names (an
-     *  export of the leaf is the same port: the writer side follows). */
     public static Set<String> ports(Corpus corpus, String body) {
         Set<String> named = new HashSet<String>(SmtNames.names(body));
         Set<String> ports = new TreeSet<String>();
@@ -127,16 +94,6 @@ public final class ZkKeysMain {
         return ports;
     }
 
-    /**
-     * CONTROL THROUGH HANDOFFS: the leaves the decisions of every occurrence
-     * the anchor's values came from decide on -- backward from the anchor
-     * over the values it and they read (a handoff to its producer, a read
-     * to its writer), each such occurrence's decisions' leaves.  A decision
-     * of a producer decides what it handed on (CREATESNAPSHOT asking whether
-     * a replica is active decides which replicas the snapshot the backup
-     * reads lists) even where the formula holds what it handed on
-     * concretely.
-     */
     static Set<String> handedOn(Corpus corpus, String session,
                                 OccurrenceAddress anchor) {
         Set<String> ports = new TreeSet<String>();
@@ -168,8 +125,6 @@ public final class ZkKeysMain {
         return ports;
     }
 
-    /** The CONTENT leaf ports one recorded term names, through what its
-     *  lowering reaches. */
     static Set<String> leafPorts(Corpus corpus, String session,
                                  SmtLowering lowering, String term) {
         Set<String> ports = new TreeSet<String>();
@@ -192,8 +147,6 @@ public final class ZkKeysMain {
         return ports;
     }
 
-    /** Each path's (its row slot's) leaf pointers among {@code ports}, as a
-     *  plan's content keys spell them. */
     static Map<String, Set<String>> pointers(Set<String> ports) {
         Map<String, Set<String>> pointers =
                 new LinkedHashMap<String, Set<String>>();
@@ -206,12 +159,6 @@ public final class ZkKeysMain {
         return pointers;
     }
 
-    /**
-     * The rekeyed chain's {@value ZkChain#KEYS} rows: every (occurrence,
-     * path) PLAN keyed, now with the pointers the seed names of the path
-     * (none: it crosses as constants), and every occurrence keyed -- by PLAN
-     * or by its task row -- with each path the seed names leaves of.
-     */
     static List<JsonObject> keys(ZkChain chain, List<JsonObject> plan,
                                  Map<String, Set<String>> pointers) {
         Map<String, String> locations = new HashMap<String, String>();

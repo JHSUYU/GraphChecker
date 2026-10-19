@@ -4,12 +4,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-/**
- * CONTRACT-SPEC §3: one path prefix plus one flipped decision, with the
- * valuation meant to produce it: {@code rootAssignments} at the mints,
- * {@code answers} keyed by attach {@link Endpoint#id()} (one attach, not a
- * port).  {@code unproducible} attaches are answered anyway and reported.
- */
 public final class Obligation extends Value {
     private final String obligationId;
     private final String taskId;
@@ -20,7 +14,6 @@ public final class Obligation extends Value {
     private final Map<String, String> rootAssignments;
     private final Map<String, String> answers;
     private final List<String> unproducible;
-    /** A FORCE run ({@link #forcing}). */
     private final boolean force;
 
     private Obligation(String obligationId, String taskId, String pathId,
@@ -53,10 +46,6 @@ public final class Obligation extends Value {
                 Fields.copy(answers), Fields.copy(unproducible), false);
     }
 
-    /**
-     * A CONFIRM run: plants a SAT model and holds the schedule but flips
-     * nothing ({@link #flips()} false, empty site, ordinal 0).
-     */
     public static Obligation confirming(String obligationId, String taskId,
                                         String pathId,
                                         Map<String, String> rootAssignments,
@@ -68,11 +57,6 @@ public final class Obligation extends Value {
                 Fields.copy(answers), Fields.copy(unproducible), false);
     }
 
-    /**
-     * A FORCE run (PIPELINE §7.10): the seed's world replayed with the
-     * declared occurrence's branches forced to the throw; it flips nothing
-     * and plants nothing.
-     */
     public static Obligation forcing(String obligationId, String taskId,
                                      String pathId) {
         return new Obligation(Fields.text(obligationId, "obligationId"),
@@ -82,41 +66,28 @@ public final class Obligation extends Value {
                 Collections.<String>emptyList(), true);
     }
 
-    /** Whether this is a FORCE run ({@link #forcing}). */
     public boolean force() {
         return force;
     }
 
-    /** Whether this obligation owes a decision the other arm at all, or a
-     *  read another writer ({@link #pairing}). */
     public boolean flips() {
         return !siteId.isEmpty();
     }
 
-    /**
-     * A PAIRING FLIP's site (PIPELINE §7.4): {@code PAIRING:<reader>}, the
-     * read of a node's view as CONFIRM names its endpoint, its ordinal the
-     * older version of the view the read is to take plus one ({@link
-     * #pairedVersion}).  No decision has it.
-     */
     public static final String PAIRING = "PAIRING:";
 
-    /** Whether {@code siteId} is a pairing flip's ({@link #PAIRING}). */
     public static boolean pairing(String siteId) {
         return siteId != null && siteId.startsWith(PAIRING);
     }
 
-    /** Whether this obligation is a pairing flip ({@link #PAIRING}). */
     public boolean pairing() {
         return pairing(siteId);
     }
 
-    /** The version of the view a pairing flip's read is to take. */
     public long pairedVersion() {
         return ordinal - 1L;
     }
 
-    /** A pairing flip's read, as CONFIRM names its endpoint; else "". */
     public String pairedReader() {
         return pairing() ? siteId.substring(PAIRING.length()) : "";
     }
@@ -129,37 +100,30 @@ public final class Obligation extends Value {
         return taskId;
     }
 
-    /** The path whose prefix this obligation keeps. */
     public String pathId() {
         return pathId;
     }
 
-    /** The decision site being flipped. */
     public String siteId() {
         return siteId;
     }
 
-    /** The k-th decision of that site, 1-based. */
     public int ordinal() {
         return ordinal;
     }
 
-    /** The arm the replay must take instead. */
     public boolean flippedOutcome() {
         return flippedOutcome;
     }
 
-    /** Root symbol to value, applied at the mints. */
     public Map<String, String> rootAssignments() {
         return rootAssignments;
     }
 
-    /** Attach {@link Endpoint#id()} to value, applied at the attaches. */
     public Map<String, String> answers() {
         return answers;
     }
 
-    /** Attach endpoint ids answered without a producer arm. */
     public List<String> unproducible() {
         return unproducible;
     }

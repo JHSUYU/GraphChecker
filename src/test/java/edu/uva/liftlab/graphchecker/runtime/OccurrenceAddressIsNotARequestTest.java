@@ -28,11 +28,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * An occurrence is (node, epoch, region, k-th activation) -- not a request.
- * The difference a request makes is still described; it does not withhold
- * the address.
- */
 @RunWith(FreshStatics.class)
 public class OccurrenceAddressIsNotARequestTest {
     private static final String PLAN_ROW =
@@ -49,8 +44,6 @@ public class OccurrenceAddressIsNotARequestTest {
     private static final String TARGET = "hdfs-17899/target-dn";
     private static final String SPS = "hdfs-17899/sps";
 
-    /** The address a select computes reads the thread's identity and
-     *  lineage: another test's must not leak into it. */
     @Before
     public void startFromNoIdentity() {
         Lineage.resetForTests();
@@ -63,19 +56,6 @@ public class OccurrenceAddressIsNotARequestTest {
         RuntimeTraceContext.resetForTests();
     }
 
-    /**
-     * An occurrence is its address, and admission asks nothing else: the
-     * message an activation was reached by is provenance, not a second
-     * identity that may veto the first.  The refusal names the component
-     * that parted BEFORE the two addresses (hdfs-17960 #3: 13 rows differed
-     * in one number inside ~2500 identical characters), an anchor's
-     * differing INPUT read back from the producer this run filed; the
-     * address is minted where the attribution rule says the root ran
-     * (IDENTITY §5; b20h: startActiveServices under the test's
-     * transitionToActive); a loop body naming no k is refused at PLAN; a
-     * receiver this run never registered leaves the address to decide, the
-     * task keeping the one invocation it was admitted for.
-     */
     @Test
     @FreshStatics.Rows(2)
     public void theAddressIsTheOnlyAdmission() throws Exception {
@@ -123,8 +103,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 + "causal anchor (planned " + sender.id() + ", which no "
                 + "message of this run minted; ran " + resent.id() + ", which"
                 + " no message of this run minted); planned "));
-        // An envelope decides which v_H the attach mints, never which
-        // activation this is.
         assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L, null));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
@@ -170,9 +148,6 @@ public class OccurrenceAddressIsNotARequestTest {
             assertTrue(refused.getMessage(), refused.getMessage().startsWith(
                     "ROOT_LOOP_OCCURRENCE_UNADDRESSED"));
         }
-        // A unique planner-authored OUT anchor once excused the missing
-        // registration and let any invocation under the planned request
-        // answer any k of that region.
         ConcolicTaskPlan.RuntimeTask deferred = loopBodyTask(1);
         ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
                 Arrays.asList(deferred, loopBodyTask(2)));
@@ -202,15 +177,6 @@ public class OccurrenceAddressIsNotARequestTest {
         assertEquals(11L, deferred.enclosingInvocationEvent());
     }
 
-    /**
-     * A value arriving over the wire does not say where the receiver ran:
-     * execution context is set by execution-scope events only, never by the
-     * SENDER's source out of the message header; the scope the workload
-     * opens is what the send hangs off, and a refusal names which of
-     * source, request key and request api was absent -- never the thread
-     * (the refusal is a GapRow, and a row keyed by a pool thread compares
-     * across no two replays).
-     */
     @Test
     public void executionContextIsNotProvenance() throws Exception {
         Object nameNode = new Object();
@@ -227,7 +193,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 "block-report");
         assertEquals(TARGET + "#epoch0",
                 RuntimeTraceContext.currentSource().key());
-        // The value arrives through an owner nobody registered.
         long inbound = RuntimeTraceContext.enterInbound(header, "IPC",
                 "corr-1", "attempt-1", "REQUEST", new Object(), "");
         assertEquals("the thread still runs as the DataNode",
@@ -264,7 +229,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 "the call carried no scope at all",
                 "the thread it is sent on carries no", "requestKey",
                 "!" + Thread.currentThread().getName());
-        // The root activation's own frame carries its receiver (rule 2).
         Identity.enterFrame("<a.Nnc: void run()>", nnc);
         RuntimeTraceContext.enterRoot(nnc);
         Object partial = RuntimeTraceContext.captureScope();
@@ -274,7 +238,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 "!requestKey=");
     }
 
-    /** The send refuses, naming each fragment ({@code !x}: not naming it). */
     private static void refuses(String why, Runnable send, String... says) {
         try {
             send.run();
@@ -309,12 +272,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 ExecutionIndex.empty());
     }
 
-    /**
-     * One occurrence of the balancer region, distinguished by where it ran:
-     * identity v3 has no activation ordinal, so the fixture varies the
-     * index.  Index 0 is the address no activation has -- an empty index
-     * under an unattributable scope.
-     */
     private static OccurrenceAddress balancerAddress(int ordinal) {
         if (ordinal <= 0) {
             return address(BALANCER, BALANCER_REGION,
@@ -326,13 +283,11 @@ public class OccurrenceAddressIsNotARequestTest {
                         "o.a.h.h.s.b.Balancer#dispatch#4", ordinal))));
     }
 
-    /** One producer endpoint of the balancer, at its {@code k}-th send. */
     private static Endpoint producerAt(int iteration) {
         return Endpoint.of(balancerAddress(3), PORT, ExecutionIndex.of(
                 singletonList(Frame.of("a.P#send#2", iteration))), 0);
     }
 
-    /** The occurrence a message from {@code producer} anchors. */
     private static OccurrenceAddress anchoredAddress(Endpoint producer) {
         return OccurrenceAddress.of(NodeId.parse(BALANCER), BALANCER_REGION,
                 CausalContext.of(producer.id(), "a.B#run#9"),
@@ -340,15 +295,12 @@ public class OccurrenceAddressIsNotARequestTest {
                         "o.a.h.h.s.b.Balancer#dispatch#4", 1))));
     }
 
-    /** One task planned at that anchored occurrence. */
     private static ConcolicTaskPlan.RuntimeTask anchoredTask(
             Endpoint producer) {
         return runtime(encoded("TASK.anchor", BALANCER, BALANCER_REGION,
                 "<a.B: void run()>", anchoredAddress(producer).render(), 1));
     }
 
-    /** The lane's own producer plan row, addressed at one enclosing
-     *  invocation. */
     private static ConcolicTaskPlan.RuntimeTask loopBodyTask(int ordinal)
             throws Exception {
         JsonObject encoded = row();
@@ -365,7 +317,6 @@ public class OccurrenceAddressIsNotARequestTest {
         return runtime(encoded);
     }
 
-    /** One planned occurrence with one selected IN communication handoff. */
     private static ConcolicTaskPlan.RuntimeTask handoffTask(int ordinal) {
         JsonObject encoded = encoded("TASK.SEED.address", BALANCER,
                 BALANCER_REGION, "<a.B: void run()>",
@@ -379,7 +330,6 @@ public class OccurrenceAddressIsNotARequestTest {
         return runtime(encoded);
     }
 
-    /** One plan row: the fields {@code ExecutionTask.decode} requires. */
     private static JsonObject encoded(String taskId, String sourceKey,
             String regionId, String rootMethod, String occurrenceId,
             int ordinal) {

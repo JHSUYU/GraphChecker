@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# snapshot-gc.sh <snapshot>... -- removes GraphChecker snapshot worktrees
-# (~/gc-run/<name>, `git worktree add --detach`) that nothing uses any more.
-#
-# A snapshot is kept, and said so, while a process on some lift names it
-# (tools/lib/alive.sh), or when a lift did not answer.  Exits 1 when any
-# named snapshot was kept.
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 (( $# > 0 )) || { echo "usage: snapshot-gc.sh <snapshot>..." >&2; exit 2; }

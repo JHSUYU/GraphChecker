@@ -21,39 +21,23 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-/**
- * One replay session's rows, one file per kind, read once and whole (symbols,
- * versions and expression refs are session-local and joined across kinds).
- * The one reader of the corpus layout; interprets and lowers nothing.
- *
- * <p>Its reads and writes are held as read, or -- taken into a {@link
- * RowHold} -- let go of by the hold and read again from their files when
- * next asked for, value for value the rows read first.</p>
- */
 public final class SessionReader {
     private final SessionDir directory;
     private final List<ActivationRow> activations;
     private final List<DecisionRow> decisions;
     private final List<ExportRow> exports;
     private final List<AttachRow> attaches;
-    /** Its reads and writes, null while its hold has let them go. */
     private volatile State state;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
-    /** The gaps a corpus reads ({@link #HELD_GAPS}), by kind. */
     private final Map<GapKind, List<GapRow>> gaps;
     private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
     private final String incomplete;
-    /** The hold that may let its rows go ({@link RowHold#take}); null:
-     *  held for good. */
     private volatile RowHold hold;
-    /** What its reads and writes decode to; -1 until asked ({@link
-     *  #heldBytes}). */
     private volatile long stateBytes = -1L;
 
-    /** Its reads and writes: what a hold holds of it. */
     private static final class State {
         final List<WriteRow> writes;
         final List<ReadRow> reads;
@@ -64,24 +48,10 @@ public final class SessionReader {
         }
     }
 
-    /**
-     * THE GAPS A CORPUS READS of a session, each kind where its one reader
-     * stands: {@link GapKind#ADDRESS_UNSTABLE} ({@link #answered}), {@link
-     * GapKind#BOUND_INSUFFICIENT} ({@code compose.RestsOn#cutOf}), {@link
-     * GapKind#UNPLANNED_INPUT} ({@code explore.ClosurePlanner#unplanned}),
-     * {@link GapKind#UNSTATED_VALUE} ({@code compose.SmtLowering#frames}).
-     * A session's other gap rows are read and not held: what the run noted
-     * for EMIT, which reads the gap files themselves ({@code
-     * GapLedgerMain}) -- SGF8-adhoc-05 round 5's 342 sessions held 1.7 GB of
-     * their text (TASK_UNANSWERED's and UNATTRIBUTED_STORE's details), 29 %
-     * of the planner's heap after its corpus read.
-     */
     private static final Set<GapKind> HELD_GAPS = Collections.unmodifiableSet(
             EnumSet.of(GapKind.ADDRESS_UNSTABLE, GapKind.BOUND_INSUFFICIENT,
                     GapKind.UNPLANNED_INPUT, GapKind.UNSTATED_VALUE));
 
-    /** The held gaps of a read ({@code null} for one not held), by kind,
-     *  each kind's in the file's order. */
     private static Map<GapKind, List<GapRow>> held(List<GapRow> read) {
         Map<GapKind, List<GapRow>> byKind =
                 new EnumMap<GapKind, List<GapRow>>(GapKind.class);
@@ -121,11 +91,6 @@ public final class SessionReader {
         this.expressions = expressions;
     }
 
-    /**
-     * Sessions read one by one with one pool among them ({@link RowPool}),
-     * as {@link #readAll} reads them all: a corpus that holds only some of
-     * its sessions' rows ({@link RowHold}) reads them a few at a time.
-     */
     public static final class Pooled {
         private final RowPool pool = new RowPool();
 
@@ -134,23 +99,15 @@ public final class SessionReader {
         }
     }
 
-    /** Reads one session directory of an iteration. */
     public static SessionReader read(Path iteration, String sessionId)
             throws IOException {
         return read(SessionDir.of(iteration, sessionId));
     }
 
-    /**
-     * Reads one session directory.  A file the codec refuses is recorded in
-     * {@link #incomplete()}, not thrown; IMPORT refuses it as
-     * SESSION_INCOMPLETE.
-     */
     public static SessionReader read(SessionDir dir) throws IOException {
         return read(dir, new RowPool());
     }
 
-    /** One session, its values shared with every session read with the
-     *  same pool ({@link RowPool}). */
     private static SessionReader read(SessionDir dir, RowPool pool)
             throws IOException {
         Partial partial = new Partial(pool);
@@ -170,8 +127,6 @@ public final class SessionReader {
                 json -> RowCodec.readRootMint(json, pool));
         List<TargetRow> targets = partial.rows(dir.targets(),
                 json -> RowCodec.readTarget(json, pool));
-        // Every row read whole (one that will not read makes the session
-        // incomplete), only those a corpus reads held.
         List<GapRow> gaps = partial.rows(dir.gaps(), json -> {
             GapRow gap = RowCodec.readGap(json);
             return HELD_GAPS.contains(gap.kind()) ? gap : null;
@@ -188,10 +143,6 @@ public final class SessionReader {
                 expressions, manifest, partial.reason);
     }
 
-    /**
-     * One session's manifest and root rows only: what an epoch-wide check
-     * needs of every session before it reads any one of them whole.
-     */
     public static SessionReader readHeader(SessionDir dir) throws IOException {
         RowPool pool = new RowPool();
         Partial partial = new Partial(pool);
@@ -211,7 +162,6 @@ public final class SessionReader {
                 ExpressionTable.empty(), manifest, partial.reason);
     }
 
-    /** One session's read, and the first file of it that would not read. */
     private static final class Partial {
         private final RowPool pool;
         private String reason = "";
@@ -226,7 +176,6 @@ public final class SessionReader {
                     Collections.<T>emptyList());
         }
 
-        /** The file as {@code reader} reads it, else {@code unread}. */
         private <T> T read(Path file, PathReader<T> reader, T unread)
                 throws IOException {
             try {
@@ -247,22 +196,15 @@ public final class SessionReader {
         T read(Path file) throws IOException;
     }
 
-    /**
-     * The session's schedule in run order, read on demand (never held by the
-     * corpus).  An unreadable line ends the read: events after a hole are no
-     * prefix.
-     */
     public static List<ScheduleEvent> readSchedule(SessionDir dir)
             throws IOException {
         return readSchedule(dir.schedule());
     }
 
-    /** This session's schedule, read on demand. */
     public List<ScheduleEvent> schedule() throws IOException {
         return readSchedule(directory);
     }
 
-    /** The same read, of a schedule file wherever it stands. */
     public static List<ScheduleEvent> readSchedule(Path file)
             throws IOException {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
@@ -272,10 +214,6 @@ public final class SessionReader {
         return events;
     }
 
-    /**
-     * Occurrence id to the position of the first schedule event after it
-     * opened (the prefix cut); same tolerance as the events.
-     */
     public static Map<String, Long> readScheduleMarks(Path file)
             throws IOException {
         Map<String, Long> marks = new LinkedHashMap<String, Long>();
@@ -289,11 +227,6 @@ public final class SessionReader {
         return marks;
     }
 
-    /**
-     * The invocation of a parameterized test a schedule file states it ran
-     * ({@link ScheduleEvent#INVOCATION}), its row whole; null when it states
-     * none.
-     */
     public static JsonObject readScheduleInvocation(Path file)
             throws IOException {
         JsonObject[] stated = new JsonObject[1];
@@ -306,8 +239,6 @@ public final class SessionReader {
         return stated[0];
     }
 
-    /** The startup marks a schedule file states ({@link
-     *  ScheduleEvent#STARTUP}), whole, in their order. */
     public static List<JsonObject> readScheduleStartup(Path file)
             throws IOException {
         List<JsonObject> marks = new ArrayList<JsonObject>();
@@ -320,7 +251,6 @@ public final class SessionReader {
         return marks;
     }
 
-    /** Each row of a schedule file, up to the first one that will not read. */
     private static void schedulePrefix(Path file, Consumer<JsonObject> each)
             throws IOException {
         RowCodec.eachLine(file, line -> {
@@ -333,15 +263,6 @@ public final class SessionReader {
         });
     }
 
-    /**
-     * Every session of one iteration -- or those {@code named} names, a
-     * corpus stated by its list ({@link SessionDir#named}); null names every
-     * session the iteration holds -- in the layout's own order, sharing one
-     * pool (the sessions of a corpus spell the same call sites), each session
-     * {@code held} already read from the same directory taken as it is: a
-     * landed session's rows never change (it lands whole, in one rename),
-     * and reading them is what a corpus read costs.
-     */
     public static List<SessionReader> readAll(Path iteration,
                                               List<SessionReader> held,
                                               Collection<String> named)
@@ -387,7 +308,6 @@ public final class SessionReader {
         return state().reads;
     }
 
-    /** Its reads and writes, read again where its hold let them go. */
     private State state() {
         State held = state;
         RowHold holding = hold;
@@ -407,8 +327,6 @@ public final class SessionReader {
         return held;
     }
 
-    /** Its reads and writes read again, the two files side by side (about
-     *  as large: SGF8-adhoc-07's 7.7 and 7.0 GB). */
     @SuppressWarnings("unchecked")
     private State reread() {
         RowPool pool = new RowPool();
@@ -427,8 +345,6 @@ public final class SessionReader {
         return new State((List<WriteRow>) read[0], (List<ReadRow>) read[1]);
     }
 
-    /** One file of rows its hold let go of, read again: what it read first
-     *  read whole, so a failure now is a fault of the files, thrown. */
     private static <T> List<T> again(Path file, Function<JsonObject, T> reader,
                                      RowPool pool) {
         try {
@@ -442,18 +358,14 @@ public final class SessionReader {
         }
     }
 
-    /** Taken into {@code hold}, which may let its rows go from now on. */
     void heldBy(RowHold hold) {
         this.hold = hold;
     }
 
-    /** Lets its reads and writes go (its hold's call, {@link
-     *  RowHold#loaded}): read again when next asked for. */
     void release() {
         state = null;
     }
 
-    /** What its reads and writes decode to, as their files state. */
     long heldBytes() {
         long bytes = stateBytes;
         if (bytes < 0L) {
@@ -471,8 +383,6 @@ public final class SessionReader {
         return targets;
     }
 
-    /** What the run refused or noted of one kind a corpus reads ({@link
-     *  #HELD_GAPS}), each on the subject it names, in the file's order. */
     public List<GapRow> gaps(GapKind kind) {
         if (!HELD_GAPS.contains(kind)) {
             throw new IllegalArgumentException("a session's " + kind
@@ -482,13 +392,6 @@ public final class SessionReader {
         return rows == null ? Collections.<GapRow>emptyList() : rows;
     }
 
-    /**
-     * The occurrences this run answered by their shape (IDENTITY §9): the
-     * planned address each of its {@code ADDRESS_UNSTABLE} rows names
-     * ({@code runtime.RowRuntime#answered}).  Each ran under a chain of the
-     * planned one's shape whose counts differ, so whom it was paired with is
-     * that chain's, not the recorded one's.
-     */
     public Set<String> answered() {
         Set<String> occurrences = new LinkedHashSet<String>();
         for (GapRow gap : gaps(GapKind.ADDRESS_UNSTABLE)) {
@@ -497,19 +400,12 @@ public final class SessionReader {
         return occurrences;
     }
 
-    /** The replay's verdicts, one per obligation run; the only authority. */
     public List<ObligationResult> obligations() {
         return obligations;
     }
 
-    /**
-     * Only an admitted replay states a topology.  True for the SEED, or when
-     * every own result row is {@link Verdict#ADMITTED} (no rows: false).
-     * Never read the wave's aggregate file instead.
-     */
     public boolean admitted() {
         if (seed()) return true;
-        // A forced world is no world: its rows are its forced path's alone.
         if (forced() || obligations.isEmpty()) return false;
         for (ObligationResult result : obligations) {
             if (result.verdict() != Verdict.ADMITTED) return false;
@@ -521,33 +417,27 @@ public final class SessionReader {
         return expressions;
     }
 
-    /** The role this session states, or null; read, never inferred. */
     public SessionManifest manifest() {
         return manifest;
     }
 
-    /** Whether this session states it is the recording. */
     public boolean seed() {
         return manifest != null && manifest.seed();
     }
 
-    /** Whether this session states it ran forced (PIPELINE §7.10). */
     public boolean forced() {
         return manifest != null && manifest.forced();
     }
 
-    /** Why this session could not be read whole, or {@code ""}. */
     public String incomplete() {
         return incomplete;
     }
 
-    /** The one session stating SEED, or null unless exactly one does. */
     public static String seedSessionId(List<SessionReader> sessions) {
         List<String> stated = seedSessionIds(sessions);
         return stated.size() == 1 ? stated.get(0) : null;
     }
 
-    /** Every session that states SEED: what such a refusal names. */
     public static List<String> seedSessionIds(List<SessionReader> sessions) {
         List<String> stated = new ArrayList<String>();
         if (sessions == null) return stated;

@@ -24,21 +24,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * WHERE and BY WHOM one VM-logged event happened: its bytecode site, its
- * performing activation, and its site index.  Keyed by the session-wide
- * event id, because a {@code ReadFromExpression} names its read event id but
- * not its activation.  {@link RowPublication} owns what an activation
- * observed.
- */
 final class LoggedEventSites {
     private LoggedEventSites() {
     }
 
-    /**
-     * Indexes every logged event of one location's read-out record, the one
-     * every activation already performs.
-     */
     static void index(JsonObject record) {
         JsonObject envelope = object(record, "envelope");
         for (JsonElement element : array(envelope, "versions")) {
@@ -51,7 +40,6 @@ final class LoggedEventSites {
         }
     }
 
-    /** One logged event, by the id the VM numbered it with. */
     private static void index(JsonObject node, String idKey, boolean write) {
         long id = optionalLongInteger(node, idKey, -1L);
         if (id < 0L) return;
@@ -59,26 +47,15 @@ final class LoggedEventSites {
         LOGGED.putIfAbsent(Long.valueOf(id), logged);
         long activation = activationOf(node, id);
         OccurrenceAddress performer = RowRuntime.occurrenceAt(activation);
-        // Every record that states the site files the event, not only the
-        // first to name its id: that one may be a record with no site.
         if (performer == null || !logged.states()) return;
         AT_SITE.computeIfAbsent(group(performer, logged.site(write)),
                 key -> new Group()).add(id, activation);
     }
 
-    /**
-     * An endpoint without its k: the occurrence that performed the event and
-     * its site.  Never the activation: a loop's stores after a folded callee
-     * region returns are stated under that callee's activation, one per turn.
-     */
     private static String group(OccurrenceAddress performer, String site) {
         return performer.id() + "|" + site;
     }
 
-    /**
-     * Where one logged event ran, and under which activation.  Only these
-     * fields: keeping the record would retain its whole value expression.
-     */
     private static final class Logged {
         private final long activation;
         private final String className;
@@ -104,18 +81,11 @@ final class LoggedEventSites {
             return !className.isEmpty() && !method.isEmpty();
         }
 
-        /** The method half of {@link #site}, a scope map row's
-         *  {@code vmSite}: {@code <class>#<method><descriptor>}. */
         private String method() {
             String site = site(false);
             return site.substring(0, site.lastIndexOf('#'));
         }
 
-        /**
-         * The one spelling of the site, and the one place a VM class name is
-         * converted to source form.  Stabilised BEFORE slashes become dots:
-         * in {@code <Outer>$$Lambda$14/123} the slash separates the hash.
-         */
         private String site(boolean write) {
             return Endpoint.stateSite(
                     JvmNames.stable(className).replace('/', '.'), method,
@@ -123,18 +93,12 @@ final class LoggedEventSites {
         }
     }
 
-    /** Every logged event of this session, by version or read event id. */
     private static final Map<Long, Logged> LOGGED =
             new ConcurrentHashMap<Long, Logged>();
 
-    /** One occurrence's logged events at one site. */
     private static final Map<String, Group> AT_SITE =
             new ConcurrentHashMap<String, Group>();
 
-    /**
-     * One {@link #AT_SITE} group: event id -&gt; activation, and how many
-     * (a skip list counts itself by walking, once per row it ranked).
-     */
     private static final class Group {
         private final NavigableMap<Long, Long> events =
                 new ConcurrentSkipListMap<Long, Long>();
@@ -147,12 +111,6 @@ final class LoggedEventSites {
         }
     }
 
-    /**
-     * One {@link #AT_SITE} group ranked: each event's frames
-     * ({@link FrameJournal}; null is an event this run cannot place) and k.
-     * An event's k counts only the events before it, so a group that grew
-     * after its last ranked event is ranked on from there.
-     */
     private static final class Ranked {
         private int size;
         private long last = Long.MIN_VALUE;
@@ -161,7 +119,6 @@ final class LoggedEventSites {
                 new HashMap<Long, ExecutionIndex>();
         private final Map<Long, Integer> ranks = new HashMap<Long, Integer>();
 
-        /** Ranks the group's events after the last one ranked. */
         private void extend(Group group) {
             for (Map.Entry<Long, Long> logged
                     : group.events.tailMap(last, false).entrySet()) {
@@ -179,15 +136,9 @@ final class LoggedEventSites {
         }
     }
 
-    /** Each group ranked once, again only after it grew. */
     private static final Map<String, Ranked> RANKED =
             new ConcurrentHashMap<String, Ranked>();
 
-    /**
-     * A logged event's site ({@link Logged#site}); the descriptor separates
-     * overloads.  An event with no stated site is a gap spelled by its
-     * location.
-     */
     static String site(JsonObject node, String locationKey,
                                      long eventId, boolean write) {
         Logged own = node == null ? null : new Logged(node);
@@ -207,25 +158,16 @@ final class LoggedEventSites {
         return site.site(write);
     }
 
-    /** The site a version node states its store ran at, or "" (no gap: the
-     *  caller names what it lacks). */
     static String statedSite(JsonObject node) {
         Logged own = node == null ? null : new Logged(node);
         return own != null && own.states() ? own.site(true) : "";
     }
 
-    /** The method a logged event states it ran in, as a scope map row's
-     *  {@code vmSite} spells it; "" when it states no site. */
     static String method(JsonObject node) {
         Logged own = node == null ? null : new Logged(node);
         return own != null && own.states() ? own.method() : "";
     }
 
-    /**
-     * The occurrence that performed one logged event, or null with a gap.
-     * The VM-stated activation, never whichever occurrence published the
-     * location's log.
-     */
     static OccurrenceAddress performer(JsonObject node,
                                                String locationKey,
                                                long eventId, boolean write) {
@@ -241,7 +183,6 @@ final class LoggedEventSites {
         return null;
     }
 
-    /** The activation the event states, its own or its log record's. */
     private static long activationOf(JsonObject node, long eventId) {
         long activation = optionalLongInteger(node, "regionEnterEventId", -1L);
         if (activation > 0L) return activation;
@@ -250,16 +191,6 @@ final class LoggedEventSites {
         return record == null ? -1L : record.activation;
     }
 
-    /**
-     * The site index of one logged event: the frames it stood on, then the
-     * event itself as {@code (site, k)}, k its rank by event id among its
-     * occurrence's logged events at {@code site} on the same frames -- DEI's
-     * count per (site, stack).  Counted over every logged event, published
-     * or not, so a flip that changes which reads are symbolic moves no k;
-     * without it one loop's reads at one bytecode share one endpoint id.
-     * Frames the journal cannot place are {@code ""}, with a gap.
-     * Synchronized: a {@link Ranked} grows in place.
-     */
     static synchronized String siteIndex(JsonObject node, String locationKey,
                                          long eventId, String site,
                                          boolean write) {
@@ -273,7 +204,6 @@ final class LoggedEventSites {
             int size = atSite.size.get();
             if (ranked != null && ranked.size != size) {
                 ranked.extend(atSite);
-                // One arrived before the last ranked: every later k moves.
                 if (ranked.size != size) ranked = null;
             }
             if (ranked == null) {
@@ -297,10 +227,8 @@ final class LoggedEventSites {
                             + "; the endpoint carries no frames");
             frames = ExecutionIndex.empty();
         }
-        // An event the VM log never named counts none before it.
         int k = ranked == null ? 0 : ranked.ranks.get(eventId);
         List<Frame> index = new ArrayList<Frame>(frames.frames());
-        // A frame's site carries no '/': the descriptor's, in source form.
         index.add(Frame.of(site.replace('/', '.'), k));
         return ExecutionIndex.of(index).render();
     }

@@ -36,7 +36,6 @@ for entry in value.split(os.pathsep):
     name = os.path.basename(entry)
     if not entry or name.startswith("GraphChecker-"):
         continue
-    # The tree's own artifacts, which its class directories above replace.
     if "/org/apache/zookeeper/zookeeper" in entry:
         continue
     if os.path.exists(entry) and entry not in entries:

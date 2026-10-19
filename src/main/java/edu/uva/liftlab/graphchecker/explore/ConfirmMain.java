@@ -61,90 +61,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
-/**
- * CONFIRM: one focused replay that asks the program whether it agrees with
- * a SAT claim's model.
- *
- * <pre>
- *   --iteration &lt;dir&gt;   the iteration whose sessions the claim composed
- *   --claim &lt;file&gt;      final/claim.json
- *   --manifest &lt;file&gt;   final/candidate_composition_manifest.json
- *   --output &lt;dir&gt;      the worker directory the replay is run from
- *
- *   or, with --iteration, --claim and --manifest, a native
- *   reproduction's plant ({@link #writePlant}):
- *   --plant &lt;file&gt;      what the confirmation's world plants and holds,
- *                        and the target's fatal arms at the claim's anchor
- *   --static-scope-map &lt;file&gt;   the campaign's, whose TARGET_SITE guards
- *                        state those arms
- *   --confirmed-session &lt;dir&gt;   the session CONFIRM saw (the selected one
- *                        when it realized the claim, else its replay's),
- *                        whose realized order the plant holds
- *
- *   once the replay has published, the decision ({@link #decide}), printed
- *   as final/confirm.json:
- *   --claim &lt;file&gt; --output &lt;dir&gt; --sessions &lt;dir&gt;
- * </pre>
- *
- * <p>THE RULE (PIPELINE §10). SAT says the model satisfies our formula;
- * CONFIRM says the program agrees: re-run the world the selected path's own
- * session ran (its planted roots, answers and pairings, the pairings held by
- * the rows its replay was held to, {@link #holding}) overlaid with the model's
- * moved roots, its clocks the model's jumps alone ({@link Moved}), with no
- * flip forced, and require
- * (a) every edge the model chose is taken and (b) the fatal at the anchor.
- * The schedule is written UNHELD ({@link SchedulePrefix#write} with {@code
- * held} false): every event is the rest, only a WAKE still waits for what it
- * followed; the model's order is held by the {@code ORDER} rows of
- * {@code expected_edges.jsonl} ({@code runtime.Confirmation}). The model's
- * instants are the published witness, not what the run is held to (solvers
- * sit on boundaries). Written, in shapes the replay already reads:</p>
- * <ul>
- *   <li>{@code focused_task.jsonl}: a focus row with {@code flip: null} on
- *       the anchor, the selected session's obligation world, no inherited
- *       flips;</li>
- *   <li>{@code schedule_prefix.jsonl} (empty) / {@code
- *       schedule_suffix.jsonl} (the whole schedule);</li>
- *   <li>{@code expected_edges.jsonl}: {@code WIRE} per consumer of each
- *       selected message arm, {@code STATE} per read of the anchor's join
- *       closure at a location the selected path's fatal rests on (the
- *       manifest's {@code restsOn}; the write the model chose, else the
- *       observed one: a
- *       {@code writer_arm__}'s write for a read of its location, and for a
- *       query through a re-pointable reference the state of the delivered
- *       object its nested selector chose, the arm's {@code
- *       referentStates}), {@code ORDER} per held join (the writer's
- *       activation exits before the last activation the reader entered
- *       before its read, {@code StateClosure#holdBefore}; every other writer
- *       of the location the held write is of before the writer or after the
- *       reader), {@code
- *       MARKER} per planted marker, {@code ANCHOR}.</li>
- * </ul>
- *
- * <p>The path and arms come from the claim's valuation ({@code selectedPathId},
- * {@code selectedSessionId}, {@code selectedArms}); nothing is re-solved.  The
- * selected path's closure runs to where it decided, the manifest's {@code
- * cutoff}: its target row, or -- a witness whose path left the way to the
- * throw at a symbolic guard, which never reached the anchor -- that guard;
- * such a witness is planted and judged as any other, by the fatal at the
- * declared occurrence, and no target row of its own run is asked for.  An
- * unrunnable confirmation is refused by name (exit 1, "CONFIRM refused:"):
- * a defect of the rows (RUN_DEFECT), never a refutation, since no replay
- * ran the model -- except a claim that is the run as recorded, which no
- * replay could make a counterfactual, refuted by name ("CONFIRM refutes:",
- * {@link Refused#refutes}).</p>
- *
- * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
- * its session published a readable gaps file with no {@code
- * CONFIRM_MISMATCH}, and a target row at the claim's own anchor occurrence id
- * reached it and observed the fatal; any other replay refutes the claim, a
- * false positive (owner 2026-10-08).</p>
- */
 public final class ConfirmMain {
-    /** The one obligation id a confirmation carries. */
     static final String OBLIGATION_ID = "CONFIRM";
-    /** Written instead of a replay when the selected session already realized
-     *  the claim ({@link #realizedBy}). */
     static final String REALIZED = "realized.json";
 
     private ConfirmMain() {
@@ -181,8 +99,6 @@ public final class ConfirmMain {
                     confirmed, plant)
                     : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
-            // The driver reads which: "refutes" excludes the model, "refused"
-            // is a defect of the run (run_engine.sh campaign_confirm_claim).
             System.err.println("CONFIRM " + (refused.refutes ? "refutes"
                     : "refused") + ": " + refused.getMessage());
             JsonObject row = new JsonObject();
@@ -196,16 +112,7 @@ public final class ConfirmMain {
         System.out.println(ExploreMain.pretty(summary));
     }
 
-    /**
-     * A confirmation nothing can run, named.  A DEFECT of the rows or the
-     * claim -- a selector, a cutoff, a schedule, a pairing, a moved root
-     * they do not state -- refutes nothing: no replay ran the model, so the
-     * claim is RUN_DEFECT.  Only a claim that is the run as recorded is
-     * refuted without a replay ({@link #refutes}): no run of it is a
-     * counterfactual, so the campaign excludes it and decides again.
-     */
     static final class Refused extends RuntimeException {
-        /** Whether the claim itself is refuted, not the run defective. */
         final boolean refutes;
 
         Refused(String reason) {
@@ -217,23 +124,17 @@ public final class ConfirmMain {
             this.refutes = refutes;
         }
 
-        /** The claim is no counterfactual: excluded, never a defect. */
         static Refused noCounterfactual(String reason) {
             return new Refused(reason, true);
         }
     }
 
-    /** Writes the worker's three inputs; returns what was written. */
     static JsonObject write(Path iteration, Path claimFile,
                             Path manifestFile, Path out) throws IOException {
         Files.createDirectories(out);
         Witness witness = Witness.of(iteration,
                 ExploreCodec.readObject(claimFile),
                 ExploreCodec.readObject(manifestFile));
-        // The run as recorded is no counterfactual (owner 2026-10-04: a
-        // claim moving no root is never a finding), whatever a replay of it
-        // observes: refused by name, so the campaign excludes it.  A forced
-        // path's world is the recording's (PIPELINE §7.10).
         if ((witness.sessionId.equals(witness.seedSessionId)
                 || witness.session.forced())
                 && object(witness.decided, "movedRoots").size() == 0
@@ -244,10 +145,6 @@ public final class ConfirmMain {
                     + "path, every root and clock as recorded, every arm its "
                     + "own delivery -- so no run of it is a counterfactual");
         }
-        // A session that already took every chosen edge at the model's root
-        // values and observed the fatal IS the confirmation; re-running it
-        // only tests a race twice. A model mixing sessions' deliveries, or
-        // choosing a write its reads did not see, needs the replay below.
         String realized = realizedBy(witness.moved, witness.world,
                 witness.sessionId, witness.arms, witness.session,
                 witness.anchor, witness.sawChosen);
@@ -261,15 +158,8 @@ public final class ConfirmMain {
             return summary;
         }
 
-        // The selected path's world, values only, nothing forced, under the
-        // model's.
         World world = witness.planted();
 
-        // The schedule half: the recorded order is not held (only a WAKE
-        // still waits for what it followed); the model's order is held by
-        // the ORDER rows of the edges.  A forced path's session ran a forced
-        // world to its forced target: its schedule is the recording's, not
-        // that one's (PIPELINE §7.10).
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
                 witness.session.forced() ? witness.seedSessionId
                         : witness.sessionId,
@@ -281,7 +171,6 @@ public final class ConfirmMain {
         List<JsonObject> edges = witness.edges(iteration, world);
         RowCodec.writeJsonl(out.resolve(Confirmation.FILE), edges);
 
-        // An obligation that flips nothing: the values drive every decision.
         JsonObject focus = ExploreCodec.writeFocusRow(witness.anchor,
                 witness.anchor, witness.seedSessionId,
                 Collections.<OccurrenceAddress>emptyList(),
@@ -301,17 +190,6 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /**
-     * The witness a claim's model chose, read off the claim, its manifest
-     * and the sessions: the selected path and its arms, the session whose
-     * world it runs in, the anchor's join closure up to where the path
-     * decided and the writes the model chose there that the fatal rests on,
-     * and the model's moved roots.  CONFIRM's replay ({@link #write}) and a
-     * native reproduction's plant ({@link #writePlant}) are both made of
-     * it: a native run plants a subset of CONFIRM's rows -- the world's
-     * roots, and of its holds those of what the model chose and of the
-     * world's pairings ({@link #history}).
-     */
     static final class Witness {
         final JsonObject decided;
         final JsonObject manifest;
@@ -320,7 +198,6 @@ public final class ConfirmMain {
         final String sessionId;
         final String seedSessionId;
         final OccurrenceAddress anchor;
-        /** Where the selected path decided ({@link StateClosure}). */
         final long cutoff;
         final List<JsonObject> arms;
         final SessionReader session;
@@ -328,28 +205,12 @@ public final class ConfirmMain {
         final StateClosure closure;
         final Map<String, WriteRow> chosen;
         final Set<String> restsOn;
-        /** The selected session's obligation world (its focus row). */
         final JsonObject world;
         final Moved moved;
-        /** Whether the session's reads saw every write the model chose. */
         final boolean sawChosen;
-        /** The claim's cone as {@link #edges} names it: the anchor, both
-         *  ends of each WIRE, the writers and readers of its STATE rows and
-         *  the occurrences of its ORDER rows' activations. */
         final Set<OccurrenceAddress> cone =
                 new LinkedHashSet<OccurrenceAddress>();
-        /** The ORDERs of {@link #edges} that hold a read the model chose no
-         *  writer for to the write it joined, as "before\nafter": the
-         *  selected session's own history, which a native plant does not
-         *  hold ({@link #writePlant}). */
         final Set<String> history = new LinkedHashSet<String>();
-        /** The locations the model chose at, by key: a writer arm's -- it
-         *  binds every read of its location, though its interactions name
-         *  the first ({@code compose.ComposedFamilies#writerArms}) -- and a
-         *  selected observed arm's, the run as it happened chosen over the
-         *  location's concurrent writers ({@code observed_arm__}, group
-         *  {@code observed:<key>}, {@code ComposedFamilies#observedArm}).
-         *  Their reads' ORDERs are the model's, no history. */
         final Set<String> chosenAt = new LinkedHashSet<String>();
 
         private Witness(JsonObject claim, JsonObject manifest, Path iteration)
@@ -370,8 +231,6 @@ public final class ConfirmMain {
                 throw new Refused("the claim states no parseable anchor");
             }
             seedSessionId = optionalString(claim, "seedSessionId");
-            // Only the selected path's arms (others are free in the model),
-            // joined by the path ordinal in the composer's selector names.
             String ordinalOfPath = "";
             restsOn = new LinkedHashSet<String>();
             boolean stated = false;
@@ -403,16 +262,8 @@ public final class ConfirmMain {
             }
             session = SessionReader.read(iteration, sessionId);
             recording = SessionReader.read(iteration, seedSessionId);
-            // The writes the model chose for the anchor's join closure, up
-            // to where the path decided: its target row, or the way guard
-            // it left the way to the throw at -- a witness that turns that
-            // guard never reached the anchor in its own run, and is planted
-            // and judged as any other.
             closure = new StateClosure(session, anchor, cutoff);
             chosen = closure.chosen(arms);
-            // A choice at a location the fatal does not rest on is the
-            // solver's free pick among the formula's alternatives, not the
-            // witness.
             chosen.keySet().removeIf(reader -> !restsOn.contains(
                     SmtLowering.locationKey(closure.readers.get(reader)
                             .location())));
@@ -437,8 +288,6 @@ public final class ConfirmMain {
             return new Witness(claim, manifest, iteration);
         }
 
-        /** The world the claim is confirmed in: the selected session's own
-         *  obligation world under the model's moved roots ({@link Moved}). */
         World planted() {
             World planted = new World(world);
             moved.plant(planted.assignments, planted.clockDeltas,
@@ -446,13 +295,6 @@ public final class ConfirmMain {
             return planted;
         }
 
-        /**
-         * The edges the model chose over {@code planted}: WIRE per consumer
-         * of each selected message arm, STATE and ORDER over the join
-         * closure at the locations the fatal rests on, the rows that hold
-         * the pairings the world plants ({@link #holding}), MARKER per
-         * planted marker, ANCHOR.
-         */
         List<JsonObject> edges(Path iteration, World planted)
                 throws IOException {
             Map<String, SessionReader> armSessions =
@@ -481,9 +323,6 @@ public final class ConfirmMain {
                     false);
             edges.addAll(state.edges);
             cone.addAll(state.cone);
-            // The pairings the selected session's world planted are its
-            // world as much as its roots: held by the rows its replay was
-            // held to.
             Holding pairings = holding(session, ExploreCodec.map(object(world,
                     "pairings")));
             edges.addAll(pairings.edges);
@@ -500,7 +339,6 @@ public final class ConfirmMain {
             return edges;
         }
 
-        /** Where every root of the world is minted, and what it is. */
         Map<String, RootCategory> categories() {
             Map<String, RootCategory> categories =
                     new LinkedHashMap<String, RootCategory>();
@@ -517,8 +355,6 @@ public final class ConfirmMain {
         }
     }
 
-    /** What a confirmation plants: root values, clock skews, the occurrence
-     *  each root is minted at, and the answers at attach endpoints. */
     static final class World {
         final Map<String, String> assignments;
         final Map<String, String> clockDeltas;
@@ -533,47 +369,6 @@ public final class ConfirmMain {
         }
     }
 
-    /**
-     * A native reproduction's plant ({@code runtime.RecordingPlant}): what
-     * CONFIRM's world plants and holds ({@link Witness}), as rows a run of
-     * the recording weave on a stock JDK applies, each numbered so the run
-     * can say it applied it:
-     * <ul>
-     *   <li>a ROOT per root the world assigns or skews, naming the occurrence
-     *   id it is minted at: a FAULT marker answered true or false at the call
-     *   site its plan input action names; a tree HOOK's field written; a
-     *   CONFIG root's value returned by its getter calls; a READ root's by
-     *   its accessor call; a CLOCK root's skew, a jump of its node's clock
-     *   at its call -- a value at a call's return, which the plant-run agent
-     *   intercepts ({@code runtime.PlantAgent}, {@link PlantSites});</li>
-     *   <li>a CLOCK_SITE per declared clock reading of the plan, when the
-     *   world skews a clock: every such reading runs on its node's clock;</li>
-     *   <li>an ANSWER per attach the world answers, at its port's call-return
-     *   capture: the endpoint, the call and the regions declaring it;</li>
-     *   <li>the world's ORDER and VIEW_HOLD rows as CONFIRM holds them, each
-     *   once, but an ORDER only a read's own join needs (the selected
-     *   session's history, {@link Witness#history}): what the model chose
-     *   and the world's pairings are held, the run's history is the native
-     *   run's own;
-     *   and the order the session CONFIRM saw ran in from the roots' mint
-     *   occurrences on, ORDER rows of events ({@link RealizedOrder}), which
-     *   a native run holds as CONFIRM holds its own: a run on the
-     *   recording's timing plants the roots and runs another order;</li>
-     *   <li>one TARGET per guard of the scope map's TARGET_SITE rows, its
-     *   fatal arm at the claim's anchor: the one question a native run
-     *   answers.</li>
-     * </ul>
-     * Whatever CONFIRM decided, and whether or not it replayed.  A world the
-     * native run cannot plant is refused by name ({@code
-     * NATIVE_PLANT_UNSUPPORTED}): a root minted other than at a call's return
-     * (a parameter, a field or static read: the recording weave states no
-     * read there), a marker of no single site or no boolean value, a root
-     * with no mint, an answer whose capture is no call's return or whose
-     * value a message getter's element carries (a codec port: which getter
-     * call attaches is the decode's binding, MessageCodec, which only a
-     * replay keeps); so is one that plants nothing, which would repeat the
-     * recording, and a scope map that states no fatal arm.
-     */
     static JsonObject writePlant(Path iteration, Path claimFile,
                                  Path manifestFile, Path scopeMap,
                                  Path confirmedSession, Path out)
@@ -590,10 +385,6 @@ public final class ConfirmMain {
                 : world.assignments.entrySet()) {
             String value = assigned.getValue().trim();
             RootCategory category = categories.get(assigned.getKey());
-            // A fault marker at false is the run as recorded (a native run
-            // answers every marker false without a plant): no row, or a run
-            // that never reaches its door would count as not planted
-            // (solr-bugs-reindex-cleanup VC1: 39 of 40 rows such, 0/10).
             if (category == RootCategory.FAULT && "false".equals(value)) {
                 continue;
             }
@@ -607,22 +398,6 @@ public final class ConfirmMain {
         if (!world.answers.isEmpty()) {
             rows.addAll(answers(world.answers, witness, sites));
         }
-        // One row per order: CONFIRM's closure and its pairings may state
-        // one twice, and a run holds it once.  A pairing at a placeholder
-        // (a mint read) holds no order in CONFIRM either, and natively
-        // nothing checks the version it read: counted, not planted.  An
-        // ORDER only a join needs (Witness#history) is the selected
-        // session's own history, which a native run makes on its own
-        // timing, by its own paths: CONFIRM holds it, a native run does
-        // not (HV1 solr-bugs-snapshot-no-active: 178 of 179 rows were joins,
-        // most ordering ZkStateReader.collectionWatches' writers and
-        // readers; natively a waitForState took its fast path and
-        // registered no watcher, or another watch notification decoded the
-        // state, and the first row waiting for an activation that never
-        // came released every hold, 0/10).  A VIEW_HOLD is planted, a
-        // join's too: it only defers a node's publications of the view
-        // until its reader's work ends, at most VIEW_HOLD_MAX, and names
-        // no activation the run must make.
         Set<String> orders = new LinkedHashSet<String>();
         int placeholders = 0;
         for (JsonObject edge : witness.edges(iteration, world)) {
@@ -644,9 +419,6 @@ public final class ConfirmMain {
             throw new Refused("the session CONFIRM saw (" + confirmedSession
                     + ") is not there, so its order cannot be held");
         }
-        // The order from the roots on: from where the occurrences their ROOT
-        // rows are minted at opened; held only on the claim's cone, the
-        // occurrences CONFIRM's own rows name (Witness#cone).
         Set<OccurrenceAddress> mints = new LinkedHashSet<OccurrenceAddress>();
         for (JsonObject row : rows) {
             if (RecordingPlant.ROOT.equals(optionalString(row,
@@ -711,7 +483,6 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /** The ROOT row of one root the world assigns a value. */
     private static JsonObject assignedRoot(String rootId, String value,
                                            RootCategory category,
                                            World world, PlantSites sites) {
@@ -736,8 +507,6 @@ public final class ConfirmMain {
         JsonObject row = root(category, rootId, mint);
         if (category == RootCategory.FAULT) {
             row.addProperty(RecordingPlant.SITE, marked.iterator().next());
-            // The marker's call it answers in its occurrence: a grown
-            // invocation is a root of its own (PIPELINE §7.8).
             row.addProperty(RecordingPlant.INVOCATION,
                     sites.invocation(rootId, mint));
         } else if (category == RootCategory.READ) {
@@ -757,8 +526,6 @@ public final class ConfirmMain {
         return row;
     }
 
-    /** The ROOT row of one clock the world skews: a jump of its node's
-     *  clock at the call it is read at, under its mint occurrence. */
     private static JsonObject clockRoot(String rootId, String skew,
                                         World world, PlantSites sites) {
         OccurrenceAddress mint = mintOf(world, rootId);
@@ -784,10 +551,6 @@ public final class ConfirmMain {
         return row;
     }
 
-    /**
-     * The ANSWER rows of the attaches the world answers: each endpoint as
-     * its session states it, at its port's call-return capture.
-     */
     private static List<JsonObject> answers(Map<String, String> answers,
                                             Witness witness,
                                             PlantSites sites) {
@@ -831,8 +594,6 @@ public final class ConfirmMain {
         return rows;
     }
 
-    /** The occurrence the world mints a root at, or null when it states
-     *  none it can name. */
     private static OccurrenceAddress mintOf(World world, String rootId) {
         String rendered = world.mints.getOrDefault(rootId, "");
         try {
@@ -853,8 +614,6 @@ public final class ConfirmMain {
         return row;
     }
 
-    /** One call as a plant names it: its site, callee, JVM type and, for a
-     *  clock, its clock; {@code kind} when it is a row of its own. */
     private static JsonObject callRow(String kind, PlantSites.Call call) {
         JsonObject row = new JsonObject();
         if (kind != null) row.addProperty(RecordingPlant.KIND, kind);
@@ -876,8 +635,6 @@ public final class ConfirmMain {
         return array;
     }
 
-    /** The claim's moved roots over the manifest's clock readings (every
-     *  CLOCK root it anchors), as {@link Moved} names them. */
     private static Moved moved(JsonObject decided, JsonObject manifest,
                                SessionReader session,
                                SessionReader recording) {
@@ -893,23 +650,6 @@ public final class ConfirmMain {
                 readings, session, recording);
     }
 
-    /**
-     * The decision, off the session the confirmation replay published: the
-     * rule's conditions in order, the first one failing named.  The replay
-     * was ADMITTED (roots planted); (a) its session published its gaps and
-     * none is a CONFIRM_MISMATCH -- an edge the model chose that the run did
-     * not take, an ORDER it could not hold in time; (b) a target row AT THE
-     * CLAIM'S ANCHOR reached it and observed the fatal.  A fatal at another
-     * occurrence of the target site is another question (11741 v93's
-     * confirming session had two fatal target rows), and an occurrence is
-     * named by its id, which only this address computes.  A replay that
-     * fails any of them -- not ADMITTED, no readable session, a mismatch, a
-     * plant it did not make ({@link #unplanted}), no fatal at the anchor --
-     * did not reach the exception: it REFUTES the model, a false positive
-     * (owner 2026-10-08: "如果replay跑不到exception。或者超时卡死，就直接定义
-     * 为false positive"), its reason naming which.  Only a claim stating no
-     * parseable anchor decides nothing: a defect of the claim.
-     */
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
         List<JsonObject> results =
@@ -986,13 +726,6 @@ public final class ConfirmMain {
                 : why + ", and " + unplanted, sessionId);
     }
 
-    /**
-     * What of the claim's model a confirmation run did not plant, or "": a plant
-     * it refused ({@code ASSIGNMENT_UNPLANTED}), or a root the claim moved
-     * that it minted at no row, or (not a clock) at another value than the
-     * model's.  A moved root is named as the claim names it, by root id or
-     * by its cell's symbol.
-     */
     static String unplanted(JsonObject claim, List<JsonObject> gaps,
                             List<JsonObject> roots) {
         for (JsonObject gap : gaps) {
@@ -1025,8 +758,6 @@ public final class ConfirmMain {
         return "";
     }
 
-    /** A session file's rows; one the replay did not publish is refused (its
-     *  publisher creates every file at open, so absent is "not published"). */
     private static List<JsonObject> published(Path file) throws IOException {
         if (!Files.isReadable(file)) {
             throw new IOException("it published no readable " + file);
@@ -1034,11 +765,6 @@ public final class ConfirmMain {
         return RowCodec.readJsonl(file);
     }
 
-    /**
-     * The one shape of final/confirm.json; {@code refutes}: the confirmation
-     * did not reach the fatal at the anchor, a false positive the campaign
-     * excludes ({@code compose.Refutations}).
-     */
     private static JsonObject confirmation(boolean confirmed, boolean refutes,
                                            String reason, String sessionId) {
         JsonObject confirmation = new JsonObject();
@@ -1051,7 +777,6 @@ public final class ConfirmMain {
         return confirmation;
     }
 
-    /** What either kind of confirmation task states first. */
     private static JsonObject summary(OccurrenceAddress anchor, String pathId,
                                       String sessionId, int ordinal) {
         JsonObject summary = new JsonObject();
@@ -1063,15 +788,6 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /** Why the selected session is itself the confirming run, or "": all
-     *  chosen arms are its own deliveries and its reads saw every write the
-     *  model chose ({@code sawChosen}, {@link StateClosure#ran}: another
-     *  writer, or another state of a delivered object, is a run a replay
-     *  has to make), a target row of it at the anchor reached it and
-     *  observed the fatal ({@link #decide}'s rule), and it ran the model's
-     *  world ({@link Moved#ranBy}: no pairing planted, every moved root at
-     *  the model's value, no other root planted off its recorded value, its
-     *  clocks the model's jumps and nothing else). */
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              OccurrenceAddress anchor, boolean sawChosen) {
@@ -1093,7 +809,6 @@ public final class ConfirmMain {
                 + ", and observed the fatal at the anchor";
     }
 
-    /** Whether every arm the model chose is a delivery of this session. */
     private static boolean ownDeliveries(String sessionId,
                                          List<JsonObject> arms) {
         for (JsonObject arm : arms) {
@@ -1104,8 +819,6 @@ public final class ConfirmMain {
         return true;
     }
 
-    /** The focus row of the obligation whose replay is {@code sessionId}; empty
-     *  for the recording. */
     static JsonObject obligationWorld(Path iteration, String sessionId)
             throws IOException {
         JsonObject world = ObligationDir.worlds(
@@ -1113,7 +826,6 @@ public final class ConfirmMain {
         return world == null ? new JsonObject() : world;
     }
 
-    /** One MARKER edge per planted marker root the manifest names. */
     private static List<JsonObject> markerEdges(
             JsonObject manifest, Map<String, String> assignments) {
         List<JsonObject> markers = new ArrayList<JsonObject>();
@@ -1134,14 +846,6 @@ public final class ConfirmMain {
         return markers;
     }
 
-    /** One WIRE edge per consumer of each selected message arm, paired as that
-     *  arm's session recorded; a held leaf's (a consumer of the anchor) with
-     *  the text the model's valuation of it delivers ({@code texts},
-     *  COMPOSE's);
-     *  a consumer of the anchor's, where the arm's own session answered the
-     *  anchor by its question, with its producer's question
-     *  ({@link #question}): only there did another chain of the question's
-     *  shape carry the delivery the model chose. */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions,
             OccurrenceAddress anchor, Set<OccurrenceAddress> cone)
@@ -1180,9 +884,6 @@ public final class ConfirmMain {
                     edge.add(Confirmation.PRODUCER_QUESTION,
                             question(paired.producer(), producerSession));
                 }
-                // A held leaf: what must arrive there, each name its nodes
-                // had only in the arm's run named by its node, as the run
-                // that compares it names what arrives (Confirmation#attached).
                 JsonObject texts = object(arm, ComposeMain.TEXTS);
                 if (texts.has(consumerId)) {
                     edge.add("value", named(texts.get(consumerId),
@@ -1194,12 +895,6 @@ public final class ConfirmMain {
         return edges;
     }
 
-    /**
-     * A held leaf's text with each name its nodes had only in {@code
-     * manifest}'s run named by the node ({@link RunSpellings#name}: {@code
-     * 127.0.0.1:41564_solr} is {@code {auto0/node1}}); a text no spelling
-     * names, or a session that stated none, as it is.
-     */
     static JsonElement named(JsonElement text, SessionManifest manifest) {
         if (manifest == null || !text.isJsonPrimitive()) return text;
         String raw = text.getAsString();
@@ -1207,16 +902,6 @@ public final class ConfirmMain {
         return named.equals(raw) ? text : new JsonPrimitive(named);
     }
 
-    /**
-     * The question {@code producer} answers (IDENTITY §9): its occurrence,
-     * its site, site index and attempt, and its context's shape over the
-     * SEND stances of the session that paired it, as a replay shapes its own
-     * ({@code runtime.ScheduleLog#shape}).  The anchor is answered by its question,
-     * so a delivery into it is too: which turn of a daemon or an iteration
-     * carried the message to it is the run's timing (hdfs-11741 V6: the
-     * witness's second move to dn1 rode the balancer's next dispatcher
-     * iteration, its CONFIRM run the first, as recorded).
-     */
     private static JsonObject question(Endpoint producer,
                                        SessionReader session)
             throws IOException {
@@ -1245,40 +930,23 @@ public final class ConfirmMain {
         return question;
     }
 
-    /**
-     * The anchor's join closure in the selected session, COMPOSE's P3
-     * closure ({@code compose.RestsOn#closure}, the anchor's reads cut where
-     * the path decided -- its target row, or its way guard): every read of
-     * each reached occurrence before its cutoff with the write it joined,
-     * the reads past it; every write of the session, by location and by
-     * version.
-     */
     private static final class StateClosure {
         private final Map<String, WriteRow> writes =
                 new LinkedHashMap<String, WriteRow>();
         private final Map<String, List<WriteRow>> byLocation =
                 new LinkedHashMap<String, List<WriteRow>>();
-        /** Reader endpoint id -> its read, in closure order. */
         private final Map<String, ReadRow> readers =
                 new LinkedHashMap<String, ReadRow>();
-        /** Reader endpoint id -> the write its version was, when one. */
         private final Map<String, WriteRow> joined =
                 new LinkedHashMap<String, WriteRow>();
-        /** The reads of a reached occurrence at or past its cutoff. */
         private final Set<String> past = new LinkedHashSet<String>();
-        /** Occurrence id -> the session's activation of it. */
         private final Map<String, ActivationRow> activations =
                 new LinkedHashMap<String, ActivationRow>();
-        /** The session's hand-off tasks that served a queue ({@code
-         *  SessionManifest#servingTasks}): held at their sends. */
         private final Set<String> servingTasks;
-        /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
-        /** Occurrence id -> the seq of its last recorded event. */
         private final Map<String, Long> last = new HashMap<String, Long>();
 
-        /** One event's activation frames and its place in the order. */
         private static final class Placed {
             private final List<Frame> frames;
             private final long seq;
@@ -1300,29 +968,11 @@ public final class ConfirmMain {
             last.merge(occurrence.id(), seq, Math::max);
         }
 
-        /**
-         * The close of an occurrence as an ORDER waits for it: entered at
-         * its opening, exited at its close ({@code runtime.Identity}), which
-         * the session ran at its last recorded event -- so a writer the
-         * session ran before that, whose ORDER puts it after, is reordered
-         * ({@link #order}).
-         */
         private Exit closing(OccurrenceAddress occurrence) {
             return new Exit(occurrence, Collections.<Frame>emptyList(),
                     last.get(occurrence.id()));
         }
 
-        /**
-         * The activation {@code first} names exits before {@code then}'s
-         * event, unless one occurrence holds both: it runs on one thread,
-         * whose program order already orders them.  The hold is the last
-         * activation entry before the event on its thread
-         * ({@link #holdBefore}), or the send that started claimed work
-         * ({@link #held}).  Where the session ran {@code then} first, the
-         * order moves the held occurrence's events after {@code first}'s:
-         * it is {@code reordered}.  Returns the ORDER as "before\nafter",
-         * null where it holds nothing.
-         */
         private String order(Holding holding, Exit first, Endpoint then,
                              long thenSeq) {
             if (first.occurrence.id().equals(then.occurrence().id())) {
@@ -1339,8 +989,6 @@ public final class ConfirmMain {
             return order;
         }
 
-        /** What an ORDER waits for to exit, the occurrence it is of, and
-         *  where the session ran it. */
         private static final class Exit {
             private final String activation;
             private final OccurrenceAddress occurrence;
@@ -1355,24 +1003,12 @@ public final class ConfirmMain {
             }
         }
 
-        /**
-         * What an ORDER after this event waits for: the activation it stood
-         * in, or -- where that is its occurrence's outermost
-         * ({@link #outermost}) -- the occurrence's close.  The outermost
-         * activation of a loop body's occurrence is the loop's method, which
-         * spans every turn and never exits while the loop runs
-         * (hdfs-bugs-slowdisk-zero SD8: the anchor held until the detector's
-         * {@code run()} exited, past the order's timeout); a method's
-         * occurrence closes as its root activation exits.
-         */
         private Exit exit(Endpoint event, long seq) {
             return outermost(event) ? closing(event.occurrence())
                     : new Exit(event.occurrence(), event.activationFrames(),
                     seq);
         }
 
-        /** Whether an event stood in its occurrence's outermost activation:
-         *  no event of the occurrence stood on fewer frames. */
         private boolean outermost(Endpoint event) {
             int depth = event.activationFrames().size();
             List<Placed> events = placed.get(event.occurrence().id());
@@ -1383,8 +1019,6 @@ public final class ConfirmMain {
             return true;
         }
 
-        /** Where an event is held: the activation entry, and the
-         *  occurrence it is of. */
         private static final class Hold {
             private final OccurrenceAddress occurrence;
             private final String activation;
@@ -1396,19 +1030,6 @@ public final class ConfirmMain {
             }
         }
 
-        /**
-         * Where {@code event} is held: before it in its own occurrence
-         * ({@link #holdBefore}) -- also as a task its executor handed to a
-         * worker of its own that served no queue (an Overseer command's
-         * Runner) -- or, where that runs as a queued task, a queue item or a
-         * hand-off task that serves a queue (a ConcurrentUpdate client's
-         * Runner), at the entry of the send that started it ({@link
-         * Confirmation#submitter}, the one rule): ZooKeeper's server applies
-         * a getData on the thread that must apply the delete ordered before
-         * it, so the client's getData is held.  Held in place, the task
-         * holds what it holds there -- an Overseer command its task lock, a
-         * pool worker its pool's room -- until the order's timeout.
-         */
         private Hold held(Endpoint event, long seq) {
             Endpoint send;
             try {
@@ -1421,21 +1042,6 @@ public final class ConfirmMain {
                     : new Hold(send.occurrence(), send.activationFrames());
         }
 
-        /**
-         * Where a run is held so that an event comes after what the model
-         * orders before it: the entry of the last activation its thread
-         * entered before the event -- the last call the event's own
-         * activation made before it, else that activation's entry.  An
-         * activation that runs while what it waits for is made (SOLR-18413
-         * s13a: MigrateCmd#migrateKey offers the routing rule, then polls
-         * the cluster state until the watcher's parse of it lands) cannot be
-         * held at its own entry: the writer follows that entry, and holding
-         * it there waits out the order's timeout.  The last call before the
-         * read (the poll's {@code getRoutingRules}) is entered after.  With
-         * no such call, an event in its occurrence's outermost activation
-         * is held at the occurrence's opening: a loop body's turn enters no
-         * activation of its own ({@link #exit}).
-         */
         private Hold holdBefore(Endpoint event, long seq) {
             List<Frame> own = event.activationFrames();
             List<Frame> hold = own;
@@ -1457,8 +1063,6 @@ public final class ConfirmMain {
             return new Hold(event.occurrence(), hold);
         }
 
-        /** Where the session's events sat, and its writes: what an ORDER is
-         *  built from ({@link #order}), with no closure. */
         private StateClosure(SessionReader session) {
             servingTasks = session.manifest() == null
                     ? Collections.<String>emptySet()
@@ -1480,11 +1084,6 @@ public final class ConfirmMain {
                 last(decision.occurrence(), decision.seq());
             }
             for (WriteRow write : session.writes()) {
-                // An INITIAL is no event of the access its row stands at
-                // (Endpoint#initialSite): its frames name no activation the
-                // run enters, so no hold is placed by it (hdfs-bugs-
-                // slowdisk-zero SD4: the reconfiguration held at a
-                // reflective accessor's frame, which never waits).
                 if (!write.initial()) place(write.endpoint(), write.seq());
                 writes.put(version(write.location(), write.version()), write);
                 byLocation.computeIfAbsent(SmtLowering.locationKey(
@@ -1502,8 +1101,6 @@ public final class ConfirmMain {
                 readsOn.computeIfAbsent(read.endpoint().occurrence().id(),
                         key -> new ArrayList<ReadRow>()).add(read);
             }
-            // COMPOSE's closure over this session's rows, the anchor's own
-            // reads cut where the path decided (RestsOn#closure).
             RestsOn.closure(new RestsOn.Log() {
                 @Override
                 public List<ReadRow> readsOn(String occurrenceId) {
@@ -1524,8 +1121,6 @@ public final class ConfirmMain {
             }, anchor, anchor, cutoff, null, false, new RestsOn.Reads() {
                 @Override
                 public void joined(ReadRow read, WriteRow write) {
-                    // A version no row wrote (a store outside every region)
-                    // joins nothing; the model may still choose its writer.
                     readers.put(read.endpoint().id(), read);
                     if (write != null) joined.put(read.endpoint().id(), write);
                 }
@@ -1537,17 +1132,6 @@ public final class ConfirmMain {
             });
         }
 
-        /**
-         * The write the MODEL chose for each read it chose one for, by the
-         * selected state arms: a {@code writer_arm__} fills STATE
-         * interactions ({@code smt.Arms#stateArms}), each one write to one
-         * read -- not its groupId, which names the writer OCCURRENCE -- and
-         * its {@code referentStates} hold each read a query through a
-         * re-pointable reference answered to the write of the state of the
-         * delivered object the model's nested selector chose
-         * ({@code compose.SmtLowering#stateChoices}).  A state no read of
-         * this closure can be held to is refused by name.
-         */
         private Map<String, WriteRow> chosen(List<JsonObject> arms) {
             Map<String, WriteRow> chosen = new LinkedHashMap<String, WriteRow>();
             for (JsonObject arm : arms) {
@@ -1556,9 +1140,6 @@ public final class ConfirmMain {
                 Set<String> fills = new LinkedHashSet<String>(
                         strings(arm, "interactionIds"));
                 for (ReadRow read : readers.values()) {
-                    // The arm's write, as smt.Arms#stateArms chose it among
-                    // one endpoint's writes of the location: the one the
-                    // read observed, else the last.
                     WriteRow held = null;
                     for (WriteRow write : byLocation.getOrDefault(
                             SmtLowering.locationKey(read.location()),
@@ -1594,7 +1175,6 @@ public final class ConfirmMain {
                                 + "run can be held to it");
                     }
                     if (!readers.containsKey(reader)) {
-                        // Past its cutoff, no edge the fatal rests on.
                         if (past.contains(reader)) continue;
                         throw new Refused(subject + " at read " + reader
                                 + ", which is no read of the anchor's join "
@@ -1612,7 +1192,6 @@ public final class ConfirmMain {
             return chosen;
         }
 
-        /** Whether the run's own reads saw every write the model chose. */
         private boolean ran(Map<String, WriteRow> chosen) {
             for (Map.Entry<String, WriteRow> each : chosen.entrySet()) {
                 if (!each.getValue().equals(joined.get(each.getKey()))) {
@@ -1623,38 +1202,19 @@ public final class ConfirmMain {
         }
     }
 
-    /**
-     * The rows that hold a replay to pairings, and the occurrences the
-     * order they need moves: {@code reordered}, each held where the session
-     * ran it before what the order puts first.
-     */
     static final class Holding {
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
-        /** The first row (by its seq, a VM event) the order the session ran
-         *  moves where it is no occurrence's start: a node's decode a view
-         *  hold waits, which the schedule cut stops before
-         *  ({@code SchedulePrefix#write}). */
         long cutBefore = Long.MAX_VALUE;
-        /** The occurrences its STATE and ORDER rows name: the writers,
-         *  readers and activations the claim rests on. */
         final Set<OccurrenceAddress> cone =
                 new LinkedHashSet<OccurrenceAddress>();
-        /** Each ORDER as "before\nafter", once. */
         private final Set<String> orders = new LinkedHashSet<String>();
-        /** The ORDERs a read the model chose at needs -- its writer, or its
-         *  location ({@code Witness#chosenAt}); all of a world's
-         *  pairings': the rest order reads to the writes they joined, the
-         *  run's own history ({@link #history}). */
         private final Set<String> chosenOrders = new LinkedHashSet<String>();
 
         private void order(String order, boolean chosen) {
             if (order != null && chosen) chosenOrders.add(order);
         }
 
-        /** The ORDERs only a read's own join needs, as "before\nafter":
-         *  CONFIRM holds them, a native plant does not
-         *  ({@link #writePlant}). */
         Set<String> history() {
             Set<String> history = new LinkedHashSet<String>(orders);
             history.removeAll(chosenOrders);
@@ -1662,31 +1222,6 @@ public final class ConfirmMain {
         }
     }
 
-    /**
-     * STATE and ORDER edges for {@code reads}: CONFIRM's over the join
-     * closure at the locations the fatal rests on, an obligation's over the
-     * reads its world pairs ({@link #holding}).  Each read is held to the
-     * write chosen for it or else the one it joined -- the run is held to no
-     * recorded order, so a pinned join is the model's as much as a choice.
-     * A read elsewhere holds no value the witness needs; under a moved root
-     * the run may make it at another endpoint or not at all (r7 hdfs-17960:
-     * the fsimage's name maps, re-serialized after the flip).  A read no
-     * row answers is held only where a writer was chosen for it; otherwise
-     * its outside store is the run's own -- and so is an INITIAL the run
-     * joined ({@link WriteRow#initial}).  A chosen INITIAL is the version
-     * the read must observe ({@link Confirmation#INITIAL}), and every write
-     * of its location goes after the read -- after its activation, or, a
-     * {@code block}, after its occurrence closes: a flip query binds the
-     * reads one occurrence made of a location as one choice (IDENTITY §4),
-     * and the flipped world may read it again after the recorded read
-     * (hdfs-bugs-slowdisk-zero SD5: the detector turn's {@code limit(max)}
-     * re-read the bound after the reconfiguration had landed, so the turn
-     * read 1 at its guard and 0 at its limit).  Endpoints and activations
-     * are named as every delivery of their stored message is
-     * ({@link Confirmation#id}).  The ORDERs of a read the model chose no
-     * writer for, at a location it chose at nowhere ({@code chosenAt}),
-     * are {@link Holding#history}.
-     */
     private static Holding stateEdges(StateClosure closure,
                                       List<ReadRow> reads,
                                       Map<String, WriteRow> chosen,
@@ -1694,35 +1229,21 @@ public final class ConfirmMain {
                                       boolean block) {
         Holding holding = new Holding();
         for (ReadRow read : reads) {
-            // What a writer the read must precede waits for: the read's
-            // activation, or, where the reads of the location are a block,
-            // its whole occurrence -- a read the flip adds after the one
-            // recorded is the block's too.
             StateClosure.Exit reading = block
                     ? closure.closing(read.endpoint().occurrence())
                     : closure.exit(read.endpoint(), read.seq());
             String reader = read.endpoint().id();
             WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)
                     : closure.joined.get(reader);
-            // A join to the INITIAL the run took holds nothing: no
-            // occurrence wrote it, only whichever access first observed the
-            // location, which is the run's own history.
             if (held == null || !chosen.containsKey(reader)
                     && held.initial()) {
                 continue;
             }
             String location = SmtLowering.locationKey(held.location());
-            // A mint read lands on whichever racing occurrence reads the cell
-            // first, so it is checked by the writer and the location
-            // (runtime/Confirmation), not the reader, and holds no order: a
-            // placeholder at the anchor joins the write it was laid over, so
-            // a family may choose the location's INITIAL for it.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
-            // A view's paired read is checked exactly: a read of the view at
-            // another turn of the accessor's site is another read.
             if (read.location().kind() != LocationKind.VIEW) {
                 edge.addProperty("readerAnyTurn",
                         Confirmation.anyTurn(read.endpoint()));
@@ -1736,28 +1257,8 @@ public final class ConfirmMain {
             if (!held.initial()) {
                 holding.cone.add(held.endpoint().occurrence());
             }
-            // A store's version is compared, not ordered: the store's own
-            // turn at the location orders its reads and writes (ScheduleLog's
-            // WRITE and READ events, runtime.MessageDoors#turn; a native run's
-            // realized order), and an ORDER naming a store write's activation
-            // is no event a native run's weave states (solr-18413 Y8: 84 of
-            // 96 plant rows unheld, native 0/10).
             if (mint || held.location().kind() == LocationKind.STORE) continue;
-            // A node's view: its decodes run in work no activation hook
-            // holds (watch deliveries, request handlers), so the pairing
-            // defers the node's publications of the view past the paired
-            // version, but the reader's work's own, until that work's
-            // region exits (Confirmation#publishing) -- and orders nothing
-            // else.
             if (held.location().kind() == LocationKind.VIEW) {
-                // A view no publication hook publishes (no PUBLISHED_VIEW)
-                // is never held.  At the version the selected session's
-                // read observed, the row above is all: the session read it
-                // with no hold, and the run must read that version of that
-                // location again (Confirmation#taken; SGF5
-                // snapshot-no-active: the Overseer's read of a snapshot's
-                // metadata its own fetch decoded).  Any other version no run
-                // can be held to.
                 if (!Confirmation.hookPublishes(held.location())) {
                     if (held.location().equals(read.location())
                             && held.version() == read.observedVersion()) {
@@ -1780,18 +1281,10 @@ public final class ConfirmMain {
                 hold.addProperty("readerContext",
                         Confirmation.contextKey(readBy));
                 hold.addProperty("reader", Confirmation.id(read.endpoint()));
-                // A read in role work no hook closes: its hold ends at the
-                // first region its work closes after the read, in the run.
                 hold.addProperty("until", readBy.role() ? ""
                         : Confirmation.activation(readBy,
                         ExecutionIndex.empty()));
                 holding.edges.add(hold);
-                // The node's decodes past the paired version: the hold acts
-                // on them, so their work is the claim's cone.  Those that
-                // came before the read: the schedule cut stops before the
-                // first of them -- the decode itself, in work that runs on
-                // -- or its prefix replays the recorded order against the
-                // hold.
                 for (WriteRow decode : closure.byLocation.getOrDefault(
                         location, Collections.<WriteRow>emptyList())) {
                     if (decode.version() <= held.version()
@@ -1806,9 +1299,6 @@ public final class ConfirmMain {
                 }
                 continue;
             }
-            // A read the model chose a writer for, or one at a location it
-            // chose at (Witness#chosenAt), needs its ORDERs; any other
-            // read's are the run's own history (Holding#history).
             boolean model = chosen.containsKey(reader)
                     || chosenAt.contains(location);
             if (!held.initial()) {
@@ -1816,9 +1306,6 @@ public final class ConfirmMain {
                         held.endpoint(), held.seq()), read.endpoint(),
                         read.seq()), model);
             }
-            // No other writer of the location it reads between the two: one
-            // recorded before the write goes before it, any other after the
-            // read.
             for (WriteRow other : closure.byLocation.get(location)) {
                 if (other.endpoint().equals(held.endpoint())
                         || other.initial()) {
@@ -1845,13 +1332,6 @@ public final class ConfirmMain {
         return holding;
     }
 
-    /**
-     * One read, one writer: the model's choice and the world's pairing
-     * holding one read to two writers is no model a run can take, refused
-     * by name ({@code STATE_CONFLICT}), never the later row's.
-     *
-     * @throws Refused naming the read and its writers
-     */
     private static void heldOnce(List<JsonObject> edges) {
         Map<String, String> writers = new LinkedHashMap<String, String>();
         for (JsonObject edge : edges) {
@@ -1869,19 +1349,6 @@ public final class ConfirmMain {
     }
 
 
-    /**
-     * What holds an obligation replay to the pairings its world plants
-     * ({@code ObligationFactory}: reader -> writer, each as {@link #writer}
-     * names it): CONFIRM's rows ({@link #stateEdges}) over the session its
-     * path was cut from, which the replay compares and holds
-     * ({@code runtime.Confirmation}).  A pairing's write is the reader's
-     * location's write by that writer, the one the read observed else the
-     * last ({@code smt.Arms#stateArms}), or its INITIAL; the reader's reads
-     * of the location are a block ({@link #stateEdges}).
-     *
-     * @throws Refused naming a pairing whose read or write the session does
-     *         not state
-     */
     static Holding holding(SessionReader session,
                            Map<String, String> pairings) {
         StateClosure closure = new StateClosure(session);
@@ -1927,12 +1394,10 @@ public final class ConfirmMain {
                 Collections.<String>emptySet(), true);
     }
 
-    /** One version of one location. */
     private static String version(LocationId location, long version) {
         return SmtLowering.locationKey(location) + "@" + version;
     }
 
-    /** The valuation row the claim rests on. */
     private static JsonObject valuation(JsonObject claim, int ordinal) {
         for (JsonElement element : array(claim, "valuations")) {
             JsonObject row = element.getAsJsonObject();

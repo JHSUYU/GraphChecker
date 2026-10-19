@@ -19,45 +19,11 @@ import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.plan.StaticScopeMap.text;
 
-/**
- * Where the fatal slice stops at the analysis scope (SYMBOL-SCOPE §2.4), the
- * input of {@link ScopeGrowth}:
- * <ul>
- *   <li>{@code CALLEE}: a callee whose return the slice demands but whose body
- *       is not the analysed program's (its class is out of scope, or it is
- *       abstract and no class in scope implements it);</li>
- *   <li>{@code FIELD}: a field the slice reads or stores, since its owner or
- *       one of its writers may be out of scope;</li>
- *   <li>{@code FORMAL}: a method whose primitive or string formal the slice
- *       demands only through a field -- a writer's value, whose callers are
- *       writers too.  A formal of any other type hands over an object whose
- *       state is its own frontier, or bytes to decode: a payload, F3's.</li>
- * </ul>
- * A formal the throw depends on without a field in between is on the target's
- * own call chain: its callers would move the region root, the identity of the
- * occurrence under test, so it stays pinned to its recording.  A clock or a
- * configuration getter is a root, not a frontier (grown into, hdfs-17960's
- * {@code Configuration} made every {@code get} a region anchor: 533
- * occurrences against the 128-job cap), and a cell the throw does not depend
- * on (a declared wire flow's or fault's own seed) is no part of the slice.
- *
- * <p>Each row carries its {@code distance}, the edges from its cell to the
- * throw's guards (the thrown value's own construction, its message, is not
- * the fatal condition).  A row the root demand found to be the nearest
- * boundary of a path to the target's guards (causynth.RootDemand: a SCOPE
- * callee or formal, a PRE_WINDOW field) states its class as {@code demand};
- * a call into the system where a local file fault could stand (an IO
- * frontier: it escapes before a demanded store, or a handler deciding a
- * demanded site catches it) is a {@code CALLEE} row of class IO though the
- * slice demands no return of it.  Demanded rows come first, then the rest,
- * each nearest first, and scope growth takes them in that order.</p>
- */
 public final class ScopeFrontier {
     public static final String FILE = "scope_frontier.jsonl";
     public static final String CALLEE = "CALLEE";
     public static final String FIELD = "FIELD";
     public static final String FORMAL = "FORMAL";
-    /** The root demand's class of an IO frontier row. */
     static final String IO = "IO";
     private static final Pattern FORMAL_CELL = Pattern.compile(
             "(<[^>]+>)\\.param\\d+:(boolean|byte|char|short|int|long|float"
@@ -66,13 +32,6 @@ public final class ScopeFrontier {
     private ScopeFrontier() {
     }
 
-    /**
-     * @param analysed    whether a callee's body is the analysed program's:
-     *                    a concrete method of a class in scope
-     * @param rootCallees the clocks and configuration getters: roots
-     * @param demanded    the root demand's frontier signatures, each with
-     *                    its boundary class and distance
-     */
     public static List<JsonObject> rows(
             List<Map<String, Object>> edges, Predicate<String> analysed,
             Collection<String> rootCallees,
@@ -130,8 +89,6 @@ public final class ScopeFrontier {
         return rows;
     }
 
-    /** Each cell's edges to a sink, walking back from the sinks and never
-     *  past a cell of {@code barriers}. */
     private static Map<String, Integer> walk(Map<String, List<String>> into,
                                              Set<String> sinks,
                                              Set<String> barriers) {

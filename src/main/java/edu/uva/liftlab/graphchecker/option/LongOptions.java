@@ -8,12 +8,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * An engine main's {@code --name value} options ({@code --name=value} too; a
- * bare {@code --flag} is {@code "true"}).  Anything not starting with
- * {@code --} is skipped.  An option given more than once has every value in
- * {@link #all}, and its last one everywhere else.
- */
 public final class LongOptions {
     private final Map<String, List<String>> values;
 
@@ -44,28 +38,23 @@ public final class LongOptions {
         return new LongOptions(values);
     }
 
-    /** The option's value; {@code fallback} when absent or blank. */
     public String value(String name, String fallback) {
         List<String> given = values.get(name);
         String value = given == null ? null : given.get(given.size() - 1);
         return value == null || value.trim().isEmpty() ? fallback : value;
     }
 
-    /** Every value the option was given, in order; none when absent. */
     public List<String> all(String name) {
         List<String> given = values.get(name);
         return given == null ? Collections.<String>emptyList()
                 : Collections.unmodifiableList(given);
     }
 
-    /** The option as a path; null when absent or blank. */
     public Path path(String name) {
         String value = value(name, null);
         return value == null ? null : Paths.get(value);
     }
 
-    /** The option as a number; {@code fallback} when absent or blank. A passed
-     *  value that is not a number is refused, never read as the default. */
     public long number(String name, long fallback) {
         String value = value(name, null);
         if (value == null) return fallback;

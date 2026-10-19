@@ -9,11 +9,6 @@ import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 
-/**
- * A store version's content, leaf by leaf (PIPELINE §8): the leaves a
- * document is walked into, how each crosses, and the value a rendered leaf
- * crosses as.  The VM's export and mint are the smokes'.
- */
 public class StoreContentTest {
     @Test
     public void aDocumentIsItsLeavesByJsonPointer() {

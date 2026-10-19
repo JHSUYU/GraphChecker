@@ -42,66 +42,16 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/**
- * EMIT's gap ledger (PIPELINE §11): every gap this campaign raised, in one
- * document, {@code final/gaps.json}, each row classed by the row itself.
- *
- * <pre>
- *   --iteration &lt;dir&gt;     every gaps.jsonl.gz (a session's, a round's) and
- *                          gaps.jsonl (a worker's) under it, and its own
- *                          campaign_gaps.jsonl
- *   --composition &lt;file&gt;  the composition manifest: its refusals, its gaps
- *                          and its claim's gaps
- *   --static &lt;file&gt;       the static catalog's communication_gaps.jsonl.gz
- *   --plan &lt;file&gt;         the runtime region plan, whose first row (the
- *                          catalog's) states the planning gaps
- *   --provenance &lt;json&gt;   the campaign's provenance
- *   --out &lt;file&gt;          the ledger, final/gaps.json
- *   --read &lt;file&gt;         what EMIT itself reads of it ({@link #readByEmit}):
- *                          the same document with every BLOCKING row and the
- *                          counts, of the DIAGNOSTIC rows those EMIT selects,
- *                          and the ledger's own bytes and sha256 as written
- *                          ({@code published})
- * </pre>
- *
- * <p>A GapRow states its own kind and class (CONTRACT-SPEC §2.5): the stage
- * that raised it knows what it could not do, and no later stage is in a
- * position to overrule that.  So this is a partition, not a classification:
- * a row that states no class is BLOCKING.  This main and the {@code accepted}
- * conjunction it feeds ({@code run_engine.sh campaign_emit}) are the ONE
- * reader of a gap's class in the campaign; classReason says which of the two
- * rules answered.</p>
- *
- * <p>The ledger holds one row per distinct (stage, source, code, subject,
- * detail), the first raised kept, in {@link Row#compare}'s order; the BLOCKING rows as {@code gaps}, the DIAGNOSTIC
- * as {@code telemetryGaps}, their counts, and the BLOCKING rows by stage and
- * by code.  That jq read each gap file in a jq of its own and slurped the
- * rows whole (SGF8-adhoc-07: 1047 files, 3.2 M rows, 5.6 GB of text: 520 s
- * and a 10 GB jq), and each later reader of EMIT parsed the 3.8 GB document
- * again (~50 s each, five of them); here the files are read side by side,
- * once, their texts held as the UTF-8 bytes they are, and EMIT reads
- * {@code --read}.</p>
- */
 public final class GapLedgerMain {
     private static final Gson GSON = new GsonBuilder().serializeNulls()
             .disableHtmlEscaping().create();
-    /** A session's, a round's and a worker's gap rows (SessionDir,
-     *  ExploreMain, ObligationSolverMain). */
     static final String GAPS = SessionDir.GAPS;
-    /** The campaign's own gap rows, appended by whoever raises them. */
     static final String CAMPAIGN_GAPS = "campaign_gaps.jsonl";
 
-    /** A session's rows: {@code *}{@code /sessions/*}{@code /gaps.jsonl.gz},
-     *  a withdrawn exposing session's under {@code before-*}{@code
-     *  /sessions/} included. */
     private static final Pattern REPLAY_FILE =
             Pattern.compile(".*/sessions/.*/gaps\\.jsonl\\.gz", Pattern.DOTALL);
-    /** A worker's or a round's: anything under {@code obligations-*}{@code
-     *  /}, a session withdrawn to {@code timed-out-sessions/} or {@code
-     *  refused-sessions/} included. */
     private static final Pattern EXPLORE_FILE = Pattern.compile(
             ".*/obligations-.*/gaps\\.jsonl(\\.gz)?", Pattern.DOTALL);
-    /** The rows {@code campaign_emit} counts for {@code undeclaredHookCount}. */
     private static final Text HOOK_UNDECLARED = Text.of("HOOK_UNDECLARED");
 
     private static final String STATED = "the row states its own class";
@@ -110,7 +60,6 @@ public final class GapLedgerMain {
     private static final String REFUSAL =
             "a composition refusal withholds its own claim";
 
-    /** The fields a gap file's row is read for, by these indices. */
     private static final List<String> ROW_FIELDS = Arrays.asList(
             "stage", "sessionId", "kind", "subject", "detail", "cls");
     private static final int STAGE = 0;
@@ -131,7 +80,6 @@ public final class GapLedgerMain {
             throw new IllegalArgumentException("Missing --provenance");
         }
         JsonElement stated = JsonParser.parseString(provenance);
-        // A head step, one JVM on its host after the case's last replay.
         Parallel.width(Parallel.HOST_CORES);
         Ledger ledger = read(required(options, "iteration"),
                 required(options, "composition"),
@@ -159,8 +107,6 @@ public final class GapLedgerMain {
         return path;
     }
 
-    /** Every gap of the campaign, read once: the gap files under {@code
-     *  iteration} side by side, then the composer's and the plan's. */
     static Ledger read(Path iteration, Path composition, Path statics,
                        Path plan) throws IOException {
         Strings strings = new Strings();
@@ -185,10 +131,6 @@ public final class GapLedgerMain {
         return new Ledger(files.size(), raised);
     }
 
-    /**
-     * The gap files under {@code iteration}, in the order of their paths'
-     * bytes ({@code find -type f | LC_ALL=C sort}).
-     */
     static List<Path> gapFiles(Path iteration) throws IOException {
         try (Stream<Path> walk = Files.walk(iteration)) {
             List<Path> files = walk.filter(path -> {
@@ -202,7 +144,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /** The stage a gap file's rows were raised at, by where it lies. */
     static String stageOf(Path file) throws IOException {
         String path = file.toString();
         if (REPLAY_FILE.matcher(path).matches()) return "REPLAY";
@@ -211,8 +152,6 @@ public final class GapLedgerMain {
                 + " campaign writes: " + path);
     }
 
-    /** A gap file's rows: each at the stage it states, else {@code
-     *  stage}; its source the session that raised it, else RUNTIME. */
     static List<Row> stageRows(Path file, String stage, Strings strings)
             throws IOException {
         List<Row> rows = new ArrayList<Row>();
@@ -242,12 +181,6 @@ public final class GapLedgerMain {
         return rows;
     }
 
-    /**
-     * {@link #ROW_FIELDS} of one row, each {@code .field // null}: null
-     * where absent, null or false, a {@link Text} for a string, else its
-     * element.  Every other field is skipped unread; a null row is all
-     * absent, as jq takes it.
-     */
     private static void read(String line, Path file, int number,
                              Object[] fields, Strings strings)
             throws IOException {
@@ -286,11 +219,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /**
-     * The composer's rows: its refusals, each BLOCKING by construction, and
-     * its own gap rows and its claim's, each as it states its class (none
-     * stated: BLOCKING, which is what an unregistered code means).
-     */
     static List<Row> composeRows(Path composition, Strings strings)
             throws IOException {
         JsonElement composed;
@@ -322,7 +250,6 @@ public final class GapLedgerMain {
         return rows;
     }
 
-    /** A static catalog's or the runtime plan's row, at PLAN. */
     static Row declaredRow(JsonElement row, Strings strings) {
         JsonElement subject = Jq.or(Jq.field(row, "subject"),
                 Jq.field(row, "siteId"));
@@ -332,7 +259,6 @@ public final class GapLedgerMain {
                 strings.or(subject, ""), strings);
     }
 
-    /** A row whose class is the one it states, BLOCKING when none. */
     private static Row statedRow(Object stage, Object source, Object code,
                                  JsonElement row, Object subject,
                                  Strings strings) {
@@ -343,8 +269,6 @@ public final class GapLedgerMain {
                 cls == null || Jq.isString(cls, "") ? UNSTATED : STATED);
     }
 
-    /** The planning gaps the runtime plan's first row, its catalog's,
-     *  carries ({@code head -n 1 | jq '.gaps // []'}). */
     static List<JsonElement> planGaps(Path plan) throws IOException {
         String first;
         try (BufferedReader reader = text(plan)) {
@@ -356,7 +280,6 @@ public final class GapLedgerMain {
         return Jq.array(Jq.or(Jq.field(parse(first, plan, 1), "gaps"), null));
     }
 
-    /** Every JSON value of a JSONL file, a line each, blank lines skipped. */
     static List<JsonElement> jsonl(Path file) throws IOException {
         List<JsonElement> rows = new ArrayList<JsonElement>();
         try (BufferedReader reader = text(file)) {
@@ -386,12 +309,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /**
-     * One gap row as published: the five fields that name it, its class
-     * and why.  Two rows that name the same five are one, the first raised
-     * kept.  A field is a {@link Text}, or the JSON element of a value that
-     * is no string.
-     */
     static final class Row {
         final Object stage;
         final Object source;
@@ -418,9 +335,6 @@ public final class GapLedgerMain {
             this.hash = 31 * h + String.valueOf(detail).hashCode();
         }
 
-        /** The order of {@code [stage, source, code, subject, detail]}: a
-         *  text before any other value, texts by their UTF-8 bytes, other
-         *  values by their JSON text. */
         static int compare(Row one, Row other) {
             int order = order(one.stage, other.stage);
             if (order == 0) order = order(one.source, other.source);
@@ -448,7 +362,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /** A document's size and digest, as it was written. */
     static final class Written {
         final long bytes;
         final String sha256;
@@ -459,8 +372,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /** The rows, distinct and in {@link Row#compare}'s order, split by
-     *  class. */
     static final class Ledger {
         final int files;
         final long raised;
@@ -485,13 +396,6 @@ public final class GapLedgerMain {
             }
         }
 
-        /**
-         * The document, at {@code out} in one atomic write: the published
-         * one in jq's pretty text, or (given what was {@code published})
-         * what EMIT reads of it, compact: of the DIAGNOSTIC rows only those
-         * {@link #readByEmit} names, and the published one's bytes and
-         * sha256.
-         */
         Written write(Path out, JsonElement provenance, boolean pretty,
                       Written published) throws IOException {
             List<Row> telemetry = diagnostic;
@@ -566,7 +470,6 @@ public final class GapLedgerMain {
             }
         }
 
-        /** A count per value of {@code key}, in {@link Text}'s order. */
         private static void counts(JsonWriter print, List<Row> rows,
                                    Function<Row, Object> key)
                 throws IOException {
@@ -587,15 +490,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /**
-     * Whether EMIT reads this DIAGNOSTIC row of the ledger: a hook no task
-     * declared ({@code undeclaredHookCount}); a row whose subject names a
-     * bound, {@code <name>=<count>} at the end of a line, or is no string
-     * (one {@code campaign_bounds}' {@code test(" " + $bound + "=[0-9]+$")}
-     * selects, or fails EMIT on, as it did over the whole ledger).  Every
-     * BLOCKING row is read.  A reader of the DIAGNOSTIC rows added to EMIT
-     * selects here too.
-     */
     static boolean readByEmit(Row row) {
         if (HOOK_UNDECLARED.equals(row.code)) return true;
         if (!(row.subject instanceof Text)) return true;
@@ -612,10 +506,6 @@ public final class GapLedgerMain {
         return false;
     }
 
-    /**
-     * One instance of each text the rows carry: the same subject and detail
-     * recur in every session that raised them.
-     */
     static final class Strings {
         static final Text DIAGNOSTIC = Text.of(GapClass.DIAGNOSTIC.name());
         private final Map<Text, Text> held =
@@ -631,7 +521,6 @@ public final class GapLedgerMain {
             return of(value);
         }
 
-        /** A value as a row holds it: a {@link Text} for a string. */
         Object value(JsonElement element) {
             if (element.isJsonPrimitive()
                     && element.getAsJsonPrimitive().isString()) {
@@ -640,14 +529,12 @@ public final class GapLedgerMain {
             return element;
         }
 
-        /** {@code element // fallback}. */
         Object or(JsonElement element, String fallback) {
             JsonElement stated = Jq.or(element, null);
             return stated == null ? of(fallback) : value(stated);
         }
     }
 
-    /** A string as jq holds it: its UTF-8 bytes, ordered as bytes. */
     static final class Text implements Comparable<Text> {
         final byte[] utf8;
         private final int hash;
@@ -689,13 +576,6 @@ public final class GapLedgerMain {
         }
     }
 
-    /**
-     * The bytes on their way to the file, counted, digested and written on
-     * threads of their own, so the printing, the digest and the write run
-     * side by side: SHA-256 takes this JVM 7.7 s a GB, about the write's own
-     * time over NFS (109 MB/s from a lift; SGF8-adhoc-07's 3.8 GB: 29 and
-     * 35 s), and EMIT's run manifest names the ledger by its digest.
-     */
     private static final class Counted extends OutputStream {
         private static final byte[] END = new byte[0];
         private final MessageDigest digest = ArtifactIO.sha256Digest();
@@ -752,7 +632,6 @@ public final class GapLedgerMain {
             bytes += length;
         }
 
-        /** What was written, once every byte is digested and written. */
         Written written() throws IOException {
             hand(toDigest, END);
             hand(toWrite, END);
@@ -778,13 +657,10 @@ public final class GapLedgerMain {
         }
     }
 
-    /** The ledger's reads of its inputs, as jq's {@code //} and {@code
-     *  .name} read them. */
     static final class Jq {
         private Jq() {
         }
 
-        /** {@code a // b}: {@code a} unless absent, null or false. */
         static JsonElement or(JsonElement a, JsonElement b) {
             if (a == null || a.isJsonNull()) return b;
             if (a.isJsonPrimitive() && a.getAsJsonPrimitive().isBoolean()
@@ -794,7 +670,6 @@ public final class GapLedgerMain {
             return a;
         }
 
-        /** {@code .name}: absent on null, a failure on any non-object. */
         static JsonElement field(JsonElement value, String name) {
             if (value == null || value.isJsonNull()) return null;
             if (!value.isJsonObject()) {
@@ -804,7 +679,6 @@ public final class GapLedgerMain {
             return value.getAsJsonObject().get(name);
         }
 
-        /** {@code value // []} as an array; a failure on any other. */
         static List<JsonElement> array(JsonElement value) {
             if (value == null) return Collections.emptyList();
             if (!value.isJsonArray()) {

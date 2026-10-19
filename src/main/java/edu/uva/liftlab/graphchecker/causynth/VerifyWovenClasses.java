@@ -14,25 +14,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * The INSTRUMENT stage's verifier gate: every woven class links and verifies
- * here, not first inside a replay.
- *
- * <p>The loader mirrors {@code execute.sh}'s {@code ${classes}:${jar}:${cp}}.
- * {@code Class.forName(name, false, loader)} runs no static initializer; the
- * reflective read after it links the class, which runs the verifier.</p>
- *
- * <p>The gate judges the weave.  A woven class that fails as the class the
- * classpath holds fails unwoven -- the same throwable with the same message,
- * or both a {@code NoClassDefFoundError} for types no entry of the layout
- * holds (Jetty, for ZooKeeper's admin server under a recipe's workload; which
- * missing type linking meets first depends on the method order, which the
- * weave rewrites) -- is a class the workload cannot link either way: it is
- * listed {@code UNLINKED}, and does not fail the gate.</p>
- *
- * <p>Usage: {@code VerifyWovenClasses <instrumented-classes-dir>
- * [<classpath>]}.  Exit 0 all verified, 1 one did not, 2 could not ask.</p>
- */
 public final class VerifyWovenClasses {
     private VerifyWovenClasses() {
     }
@@ -42,7 +23,6 @@ public final class VerifyWovenClasses {
             refuse("usage: VerifyWovenClasses <instrumented-classes-dir> "
                     + "[<classpath>]");
         }
-        // A disabled verifier answers "fine" to everything.
         for (String argument : ManagementFactory.getRuntimeMXBean()
                 .getInputArguments()) {
             if ("-Xverify:none".equals(argument)
@@ -118,7 +98,6 @@ public final class VerifyWovenClasses {
                 + " class(es) link on this classpath neither woven nor as built"));
     }
 
-    /** Why {@code name} does not load and link from {@code loader}, or null. */
     private static Throwable linkError(String name, ClassLoader loader) {
         try {
             Class.forName(name, false, loader).getDeclaredMethods();
@@ -129,13 +108,6 @@ public final class VerifyWovenClasses {
         }
     }
 
-    /**
-     * Whether the class the classpath itself holds under {@code name} fails
-     * to link as its woven copy did: the same throwable class, and the same
-     * message or, both missing a class, types that no entry of the woven
-     * layout ({@code loader}) holds.  A class the classpath does not hold is
-     * the weave's alone.
-     */
     private static boolean failsAlike(Throwable woven, String name,
                                       ClassLoader built, ClassLoader loader) {
         if (built.getResource(resource(name)) == null) return false;
@@ -151,7 +123,6 @@ public final class VerifyWovenClasses {
                 && loader.getResource(resource(originalMessage)) == null;
     }
 
-    /** The class file of a binary or internal class name. */
     private static String resource(String name) {
         return name.replace('.', '/') + ".class";
     }
@@ -161,7 +132,6 @@ public final class VerifyWovenClasses {
         System.exit(2);
     }
 
-    /** The replay's class loading layout, the woven tree (if any) first. */
     private static ClassLoader replayLoader(Path classes, String classpath)
             throws MalformedURLException {
         List<URL> urls = new ArrayList<>();
@@ -180,12 +150,10 @@ public final class VerifyWovenClasses {
                 .replace(File.separatorChar, '.');
     }
 
-    /** The method and offset a {@code VerifyError} names, or "-". */
     private static String location(String message) {
         return lineAfter(message, "Location:");
     }
 
-    /** The reason a {@code VerifyError} names, or its own first line. */
     private static String reason(String message) {
         String reason = lineAfter(message, "Reason:");
         return "-".equals(reason) ? message.split("\n")[0].trim() : reason;

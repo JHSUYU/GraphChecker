@@ -1,108 +1,10 @@
 #!/usr/bin/env bash
-# offline-ab.sh -- the offline regression gate: does a candidate jar compute
-# anything different from a baseline jar on recorded campaigns?
-#
-#   tools/regress/offline-ab.sh --round TAG|DIR [--round TAG|DIR]... <baseline-jar> <candidate-jar> [case...]
-#
-# No workload and no concolic replay runs.  Every stage below is a pure
-# function of what a campaign recorded, run once per jar with the arguments
-# run_engine.sh passes it (the function named beside it), and the two sides'
-# outputs are compared by tools/regress/ab_compare.py:
-#
-#   chain     stage       mirrors                       reads
-#   SEED      SEED.static do_analyze (static pass) in   the case's scope, copied again from its tree,
-#                         campaign_analyze_grown_scope's the library doors' classes it calls and the
-#                         loop (door step, pass, scope  classes its frontier grows (within the
-#                         growth, until none is added)  case's causynth_scope_growth_budget)
-#             SEED.trace  do_workload's aggregation     the recording's runtime/ + one set of static
-#                                                       artifacts for both sides (ab_seed)
-#             PLAN        do_schedule                   this side's SEED.trace plan
-#             EXPLORE.0   campaign_explore, round 0     the seed session + this side's PLAN
-#             SOLVE.0     campaign_solve_obligation     each EXPLORE.0 obligation (z3), no replay,
-#                                                       one served solver at the first lane's
-#                                                       60 s (no hard lane)
-#   IMPORT    IMPORT      campaign_import_gate          the recorded final corpus
-#   EXPLORE.N EXPLORE.N   campaign_explore, last round  the recorded final corpus, verdicts, slots
-#   COMPOSE   COMPOSE     do_compose (+SOLVE, DECIDE)   the recorded final corpus (z3)
-#             CONFIRM     campaign_confirm's ConfirmMain this side's COMPOSE claim, no replay
-#
-# The chain SEED.static is SEED's static pass alone: what a slice change
-# costs (wall, edges, methods, scope rows, chosen keys) on cases whose
-# recording no later stage of this checkout reads.  The chains EXPLORE.drift
-# and EXPLORE.serve replay the run's landing order (ab_stage_landings): every
-# recorded round planned again, in one iteration that evolves as the run's
-# did, over the sessions landed before its planner started, with no answer
-# and nothing in flight, so every flip it offers is keyed.  EXPLORE.drift
-# plans each round in a JVM of its own on both sides: a flip offered under
-# two ids is an arm the run asks again -- what a change to an arm's key does
-# to the re-asks (the run's own answers are keyed by the jar that recorded
-# it).  EXPLORE.serve's baseline side plans each round in a JVM of its own
-# and its candidate side asks every round of ONE served planner (ExploreMain
-# --serve): whether a served planner's rounds are a fresh planner's (pass one
-# jar as both); each side's per-round walls are its walls.tsv.
-#
-# The recorded runs are the rounds named (--round, at least one; the first
-# holding a case wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without
-# hdfs->, as tools/rounds writes them; a DIR is an accept.sh output
-# (DIR/out/<case>).  AB_STAGES=SEED.static reads no recording, so a case no
-# round recorded runs too.  A round is read as the current engine reads it, so name
-# rounds recorded by a build whose row contract HEAD still reads (sessions and a
-# round's large files gzip, CONTRACT-SPEC §2.1-2.2: a round recorded before is
-# read through a compressed copy of it, OPERATIONS §7).
-#
-# A stage that reads an iteration reads a private one: the recorded sessions
-# and obligation rounds linked (a round's slot-table changes with it, so the
-# closing round folds the rounds before it), the iteration's files copied,
-# so nothing under a recorded run is ever written.  A stage's slot table is
-# compared folded (ab_compare.py).  Both jars are
-# copied into the output first (a rebuild under a running gate changes
-# nothing) and run under THIS checkout's case declarations and harness
-# (experiments/): the jar is the one variable -- unless AB_BASELINE_REPO
-# gives the baseline its own checkout's, for a change that moves a
-# declaration's format together with the jar (a target spec).  The workload
-# classpath is the one the run froze when it states one (its tree's report
-# may be gone).
-#
-# Each case is one task, both sides inside it, run here.  Gates run beside
-# live rounds, so every engine JVM of a stage is placed through the host
-# ledger every campaign charges (run_engine.sh campaign_host_try_start): on
-# the host of AB_HOSTS with the most room for its heap, charged that for its
-# whole run, and waited for when none has it -- no host passes
-# CAUSYNTH_HOST_MAX_USED_PCT (70) percent, and a campaign's starts see the
-# gate's JVMs as theirs (two 16 GB composers of one case once shared a lift
-# placed for 20 GB, at 91 %).
-#
-# Prints one table (case | stage | identical/DIFFERS/ERROR | baseline vs the
-# recorded artifact | wall | summary) and writes it to $AB_OUT/report.tsv,
-# the differing files' diffs to $AB_OUT/diffs/.  Exit 0: every gating stage
-# identical; 1: one differs; 2: none differs but one could not be checked
-# (it failed or timed out on the baseline too, lacked a recorded input, or
-# never ran).
-#
-# Environment
-#   AB_OUT        output root (default $GC_BULK/ab/<timestamp>), on a
-#                 filesystem every lift shares
-#   AB_HOSTS      the hosts an engine JVM may be placed on (default LIFTS,
-#                 tools/lib/gc-env.sh; localhost: this machine only)
-#   AB_HEAP_MB    engine JVM heap cap (default 8192; a case's engine_memory_mb
-#                 above it is lowered to it)
-#   AB_STAGE_TIMEOUT_S  wall bound of one JVM (default 1800)
-#   AB_STAGES     the chains to run (default "SEED IMPORT EXPLORE.N COMPOSE";
-#                 SEED.static: the static pass alone)
-#   AB_ACCEPT_ROOT  where round TAGs live (default $GC_OUT, tools/lib/gc-env.sh)
-#   AB_Z3         the z3 both sides use (default: the case's z3_bin)
-#   AB_BASELINE_REPO  the checkout whose experiments/ declare the baseline's
-#                 cases (default: this one)
-#   AB_FRESH_SLICE  1: each side's SEED.trace, PLAN and EXPLORE.0 read its own
-#                 fresh SEED.static (default 0: one shared set, ab_seed)
 set -uo pipefail
 
 ab_self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
 ab_self_repo=$(cd "$(dirname "${ab_self}")/../.." && pwd -P)
 # shellcheck source=../lib/gc-env.sh
 source "${ab_self_repo}/tools/lib/gc-env.sh"
-# The host ledger's helpers (campaign_host_try_start and its kin), as
-# tools/adhoc/fanout.sh takes them.
 # shellcheck source=../../run_engine.sh
 source "${ab_self_repo}/run_engine.sh"
 # shellcheck source=../../experiments/lib/case-id.sh
@@ -112,44 +14,26 @@ set +e
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
 AB_CHAINS=(SEED IMPORT EXPLORE.N COMPOSE)
-# Chains AB_STAGES may name beside the default ones.
 AB_EXTRA_CHAINS=(SEED.static EXPLORE.drift EXPLORE.serve)
 AB_SIDES=(baseline candidate)
 
 ab_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 ab_die() { ab_log "offline-ab: $*"; exit 2; }
 
-# ---------------------------------------------------------------------------
-# One case, both sides (run here or on a lift)
-# ---------------------------------------------------------------------------
 
-# The value of one key of this side's normalized workflow config.
 ab_cfg() {
   sed -n "s/^$1=//p" "${ab_case_dir}/config.txt" | head -n 1
 }
 
-# The smaller of a case's stated heap (empty: the launcher's 8 GB) and the cap.
 ab_heap() {
   local stated=${1:-8192}
   (( stated < AB_HEAP_MB )) && echo "${stated}" || echo "${AB_HEAP_MB}"
 }
 
-# ab_java <stage-dir> <heap-mb> <classpath> <main> [args...]: one engine JVM
-# through the case's java_bin as run_java_main starts it (the loop bound, the
-# system's own doors file -- which views its system publishes,
-# LibraryCatalog#publishedView, decides COMPOSE's and CONFIRM's held views:
-# without it a Solr COMPOSE offered no node view a version choice -- then
-# ab_props), in the stage directory, bounded, on the host ab_place
-# charged its heap on (every path it reads and writes is shared); its exit,
-# wall time, peak RSS and host go to <stage-dir>/status.
 ab_props=()
 ab_java() {
   local dir=$1 heap=$2 cp=$3 main=$4 code=0 wall rss zheap room
   shift 4
-  # A main that starts z3 is placed with its z3 room beside its heap and
-  # given what its host admits then, as the campaign places it (run_engine.sh
-  # campaign_z3_room_mb, campaign_z3_room_grant): a composer's for the heap
-  # the case's composer starts at, whatever AB_HEAP_MB caps this one's at.
   zheap=${heap}
   [[ "${main}" != *.ComposeMain ]] \
     || zheap=$(engine_memory_mb=$(ab_cfg engine_memory_mb) \
@@ -185,10 +69,6 @@ ab_java() {
   return "${code}"
 }
 
-# ab_place <need-mb>: the host of AB_HOSTS with the most room for <need-mb>
-# on the ledger (run_engine.sh campaign_host_room), charged it until ab_java
-# releases it; waited for while no host has it.  The host
-# is ab_placed_host, its charge ab_placed_charge.
 ab_placed_host=""
 ab_placed_charge=""
 ab_place() {
@@ -211,14 +91,12 @@ ab_place() {
   done
 }
 
-# A stage that did not run, and why.
 ab_skip() {
   mkdir -p "$1"
   printf 'exit=skipped reason=%s host=%s\n' "$2" "$(hostname -s)" >"$1/status"
   return 1
 }
 
-# A fresh directory for one stage.
 ab_stage_dir() {
   rm -rf -- "${ab_case_dir:?}/$1"
   mkdir -p "${ab_case_dir}/$1"
@@ -227,14 +105,6 @@ ab_stage_dir() {
 
 ab_ok() { [[ "$(sed -n 's/^exit=\([^ ]*\).*/\1/p' "${ab_case_dir}/$1/status" 2>/dev/null)" == 0 ]]; }
 
-# ab_iteration <dst> full|wave0 [plan | round left out]: a private iteration
-# over the recorded one.  full: every session and obligation round linked
-# (but the one named, which the stage writes), the iteration's files
-# copied, the models CONFIRM refuted or gave no verdict on among them (the
-# final COMPOSE excluded them) but the last claim's own.  wave0: the sessions round 0 was planned over -- the seed alone,
-# the one session whose manifest states SEED -- the recorded schedule, and
-# this side's PLAN as the iteration plan; no round, no slot table.  A
-# round's output goes inside, where the planner reads the round before it.
 ab_iteration() {
   local dst=$1 mode=$2 extra=${3:-} name file wave
   mkdir -p "${dst}"
@@ -260,8 +130,6 @@ ab_iteration() {
   for file in execution_task_plan.jsonl slots.jsonl.gz obligation_results.jsonl; do
     [[ -f "${ab_acc_it}/${file}" ]] && cp "${ab_acc_it}/${file}" "${dst}/"
   done
-  # The models CONFIRM refuted, which the last COMPOSE excluded: all but the
-  # last claim's own row, written after that COMPOSE.
   local last="" final
   final=$(dirname "${ab_acc_it}")/final
   [[ ! -s "${final}/claim.json" ]] \
@@ -276,7 +144,6 @@ ab_iteration() {
   touch "${dst}/obligation_results.jsonl"
 }
 
-# The explore bounds and root domains exactly as campaign_explore passes them.
 ab_explore_args() {
   local value
   ab_explore=(--target-occurrence "${ab_declared}")
@@ -301,14 +168,10 @@ ab_stage_seed_static() {
   grown=${dir}/scope-classes
   growth=$(ab_cfg causynth_scope_growth_budget)
   heap=$(ab_heap "$(ab_cfg engine_memory_mb)")
-  # The scope, copied out of the case's tree into this stage, never into the
-  # per-host directory a running campaign of the case weaves from.
   (cd "${ab_case_decl}" && env CAUSYNTH_ANALYSIS_CLASSES_DIR="${classes}" \
       bash "${ab_side_repo}/experiments/lib/prepare-analysis.sh" \
       "${ab_case_decl}" "${ab_case_arg}") >"${dir}/prepare.log" 2>&1 \
     || ab_skip "${dir}" "the scope copy failed (prepare.log)" || return
-  # campaign_kind_digest tree: whether the tree still holds the classes the
-  # recording was seeded from (the base~acc column reads it).
   sha=$(cd "${classes}" && find . -type f -print0 | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')
   printf '%s\n' "${sha}" >"${dir}/classes.sha256"
@@ -324,11 +187,6 @@ ab_stage_seed_static() {
     "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || pass+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
-  # campaign_analyze_grown_scope: the door step, then the static pass and
-  # scope growth over its frontier until nothing is added or the budget is
-  # spent, the door step again after every growth; a pass that chose more
-  # demanded doors runs again over them.  The stage's wall is the whole
-  # loop's; each step's directory names what it grew.
   local doors=0 chosen
   pass+=("-Dcausynth.io.doors=${out}/io_doors.jsonl")
   ab_seed_doors "${dir}/doors" || { ab_props=(); return; }
@@ -365,23 +223,15 @@ ab_stage_seed_static() {
     at=pass
   done
   ab_props=()
-  # A loop that ended anywhere but its fixpoint (nothing grown, or no growth
-  # asked) left the last finished pass's exit=0 over a half-grown scope: the
-  # stage is cut, never ok (a stopped batch read as a scope map that differs
-  # between runs of one jar).
   if [[ "${ended}" != fixpoint ]] && ab_ok SEED.static; then
     printf 'exit=cut step=%s host=%s\n' "${at}" "$(hostname -s)" \
       >"${dir}/status"
   fi
-  # The loop's wall in place of the last pass's.
   [[ ! -f "${dir}/status" ]] || sed -i "s/ wall_s=[^ ]* / wall_s=${ab_seed_total} /" \
     "${dir}/status"
   ab_seed_total=0
 }
 
-# The door step (campaign_scope_doors) into the stage's grown scope: the
-# class families of the library doors the analysis scope calls join it
-# (<dir>/stdout.txt names them).  A jar that ships no catalog has no doors.
 ab_seed_doors() {
   local step=$1
   (( ${#roots[@]} > 0 )) && unzip -Z1 "${ab_jar}" \
@@ -397,7 +247,6 @@ ab_seed_doors() {
   cp "${step}/stdout.log" "${step}/stdout.txt"
 }
 
-# Adds one step's wall (its time.txt) to the SEED.static loop's.
 ab_seed_total=0
 ab_seed_wall() {
   local wall
@@ -406,7 +255,6 @@ ab_seed_wall() {
     'BEGIN {printf "%.2f", a + b}')
 }
 
-# The recording's trace, aggregated over the static artifacts in ${ab_static}.
 ab_stage_seed_trace() {
   local dir
   dir=$(ab_stage_dir SEED.trace)
@@ -457,11 +305,6 @@ ab_stage_explore0() {
     --output-dir "${dir}/iteration-0000/obligations-0000" "${ab_explore[@]}"
 }
 
-# Round 0's obligations asked of ONE served solver (run_engine.sh
-# campaign_solve_obligation, the campaign's own first ask), over the
-# iteration EXPLORE.0 left (its slot table included), each into its own
-# worker directory: a failure is that obligation's outcome, compared by each
-# worker's own status.  The replay half is what this gate is not.
 ab_stage_solve0() {
   local dir wave id start=${SECONDS} code
   local -a ids=()
@@ -493,15 +336,11 @@ ab_stage_solve0() {
     "$(( SECONDS - start ))" "$(hostname -s)" "${#ids[@]}" >"${dir}/status"
 }
 
-# The recorded corpus a stage over the final iteration needs, or a skip.
 ab_corpus() {
   [[ -n "$(ls -A "${ab_acc_it}/sessions" 2>/dev/null)" ]] \
     || ab_skip "$1" "the run published no session"
 }
 
-# The import gate's list of every session of <iteration>'s corpus, one per
-# line, each a tab after it the workers whose answers name it, in wave and
-# name order (ImportGateMain --gate-list).
 ab_gate_list() {
   local iteration=$1 worker session
   local -A by=()
@@ -523,8 +362,6 @@ ab_stage_import() {
   dir=$(ab_stage_dir IMPORT)
   ab_corpus "${dir}" || return
   ab_iteration "${dir}/iteration-0000" full
-  # Every session of the recorded final corpus, gated at once with no ledger,
-  # each beside the worker whose answer names it (its focus rows).
   ab_gate_list "${dir}/iteration-0000" >"${dir}/gate.list"
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
     edu.uva.liftlab.graphchecker.contract.ImportGateMain \
@@ -535,8 +372,6 @@ ab_stage_import() {
   return "${code}"
 }
 
-# The closing round over the corpus as the campaign left it, and under the
-# static map that corpus was explored with.
 ab_stage_exploren() {
   local dir last
   dir=$(ab_stage_dir EXPLORE.N)
@@ -554,10 +389,6 @@ ab_stage_exploren() {
     --output-dir "${dir}/iteration-0000/${last}" "${ab_explore[@]}"
 }
 
-# The landing order replayed (EXPLORE.drift, EXPLORE.serve): this side's
-# whole loop (ab_landings) on the host of AB_HOSTS with the most room for
-# the planner's heap, charged that while it runs (ab_place) -- there, since a
-# host lists at once only the links it made itself in the iteration.
 ab_stage_landings() {
   local chain=$1 dir heap mode=fresh code=0
   dir=$(ab_stage_dir "${chain}")
@@ -581,16 +412,6 @@ ab_stage_landings() {
   return "${code}"
 }
 
-# --landings <out> <side> <case> <chain> fresh|served <heap_mb>: the
-# landing order replayed, here.  Before each recorded round its iteration
-# gains what the run had when that round's planner started: the sessions
-# landed by then (a session lands by a rename, so its directory's ctime is
-# its landing; the round's in_flight.jsonl is copied as its planner starts),
-# the workers of the round before (linked into this replay's own round
-# directory), the plan generation then current.  fresh: the round planned
-# by a JVM of its own; served: asked of the one planner served from the
-# start (run_engine.sh campaign_planner_ask).  Each round's wall, from its
-# start to its files, is a row of walls.tsv.
 ab_landings() {
   local out=$1 side=$2 case_id=$3 chain=$4 mode=$5 heap=$6
   local dir it wave round start name plan prev="" t0 served="" code=0
@@ -643,9 +464,6 @@ ab_landings() {
     mkdir -p "${it}/${round}"
     t0=$(date +%s.%N)
     if [[ "${mode}" == served ]]; then
-      # The round's corpus, named as the run's head names it: the sessions
-      # landed (linked) by then, beside the planner's questions, out of what
-      # the two sides compare.
       ls -1 "${it}/sessions" | LC_ALL=C sort >"${served}/corpus-${round}.txt"
       campaign_planner_ask "${it}/sessions" ab \
         "$((10#${round#obligations-}))" "" "${it}/${round}" \
@@ -666,8 +484,6 @@ ab_landings() {
   return "${code}"
 }
 
-# The served planner of ab_landings, ended with its loop (or the loop's
-# shell): a planner left serving holds a host's memory no ledger charges.
 ab_served_jvm=""
 ab_served_dir=""
 ab_landings_end() {
@@ -699,10 +515,6 @@ ab_stage_compose() {
     --z3 "${ab_z3}" "${selection[@]}"
 }
 
-# CONFIRM's planning half: what the confirmation replay would be handed, or
-# that the selected session already realized the claim.  A refusal (exit 1,
-# "CONFIRM refused:", or "CONFIRM refutes:" for the run as recorded) is an
-# outcome, compared like any other.
 ab_stage_confirm() {
   local dir compose=${ab_case_dir}/COMPOSE claim code=0
   dir=$(ab_stage_dir CONFIRM)
@@ -723,7 +535,6 @@ ab_stage_confirm() {
   return "${code}"
 }
 
-# One side of one case: its jar, its recorded run and its config.
 ab_side_env() {
   local out=$1 side=$2 case_id=$3
   ab_case_dir=${out}/${side}/${case_id}
@@ -740,17 +551,11 @@ ab_side_env() {
   ab_project_cp=$(ab_cfg project_classpath)
   ab_root_domains=$(ab_cfg causynth_root_domains)
   ab_z3=${AB_Z3:-$(ab_cfg z3_bin)}
-  # Every stage after the seed's aggregation reads the declaration as the
-  # recorded PLAN resolved it (campaign_plan_read): a sweep's "first", a
-  # selector's k-th match among the observed target occurrences -- handed on
-  # raw, a selector was matched again against every activation of its
-  # region (zk-bugs-election-offer's "#2" named a create, not a getData).
   ab_declared=""
   [[ ! -d "${ab_acc_it}" ]] || ab_declared=$(jq -r '.target.occurrenceId' \
     "${ab_acc_it}/runtime_workflow_schedule_index.json")
 }
 
-# The rest of a side's SEED chain after SEED.trace, over ${ab_static}.
 ab_trace_rest() {
   ab_ok SEED.trace || ab_skip "${ab_case_dir}/PLAN" "SEED.trace failed" \
     || ab_skip "${ab_case_dir}/EXPLORE.0" "SEED.trace failed" \
@@ -764,15 +569,6 @@ ab_trace_rest() {
   ab_stage_solve0
 }
 
-# The SEED chain: each side's static pass, then each side's trace chain
-# over ONE set of static artifacts -- the recording's own when the baseline
-# still aggregates the trace over them, else the baseline's fresh ones (a
-# v92 run's skeletons declare ports main refuses, while 17960's fresh ones
-# open a region its v92 trace never addressed) -- or, with AB_FRESH_SLICE=1,
-# over each side's own fresh slice: what a slice change does to the region
-# plan and PLAN's closure.  By default neither side reads its own, so a
-# change of the slice and a change of what follows it are seen apart (the
-# pass itself is deterministic: completed runs of one jar are byte-identical).
 ab_seed() {
   local out=$1 case_id=$2 side fresh
   for side in "${AB_SIDES[@]}"; do
@@ -799,7 +595,6 @@ ab_seed() {
   wait
 }
 
-# --task <out> <case>: every chain AB_STAGES names, for both sides.
 ab_task() {
   local out=$1 case_id=$2 side chain
   # shellcheck source=/dev/null
@@ -827,11 +622,7 @@ ab_task() {
   wait
 }
 
-# ---------------------------------------------------------------------------
-# The driver
-# ---------------------------------------------------------------------------
 
-# The recorded run of a case: the first round naming one.
 ab_recorded_run() {
   local case_id=$1 round dir
   for round in "${ab_rounds[@]}"; do
@@ -845,8 +636,6 @@ ab_recorded_run() {
   return 1
 }
 
-# The workload classpath the run froze (EMIT's manifest, else the iteration
-# manifest EXPLORE left), or nothing.
 ab_recorded_classpath() {
   local file
   for file in "$1/schedule/final/run-manifest.json" \
@@ -885,7 +674,6 @@ ${AB_EXTRA_CHAINS[*]}"
   mkdir -p "${AB_OUT}/jars" "${AB_OUT}/logs"
   local t0=${SECONDS}
 
-  # Both jars, frozen, and what every task reads.
   cp "${baseline}" "${AB_OUT}/jars/baseline.jar"
   cp "${candidate}" "${AB_OUT}/jars/candidate.jar"
   printf 'AB_HEAP_MB=%q\nAB_STAGE_TIMEOUT_S=%q\nAB_STAGES=%q\nAB_HOSTS=%q\nAB_FRESH_SLICE=%q\n' \
@@ -898,12 +686,7 @@ ${AB_EXTRA_CHAINS[*]}"
     "$(readlink -f "${baseline}")" "${base_repo}" \
     "$(readlink -f "${candidate}")" "${ab_self_repo}" >"${AB_OUT}/sides.tsv"
 
-  # Each case: its recorded run, each side's declarations of it, and the
-  # config run_engine.sh reads -- with the classpath the run froze, when it
-  # states one.
   for case_id in "${cases[@]}"; do
-    # The static pass alone reads no recording: a case no round recorded
-    # runs against none (its base~acc is "-").
     acc=$(ab_recorded_run "${case_id}") || acc=-
     [[ "${acc}" != - || "${AB_STAGES}" == SEED.static ]] \
       || ab_die "no round of ${ab_rounds[*]} recorded ${case_id}"
@@ -920,11 +703,6 @@ ${AB_EXTRA_CHAINS[*]}"
       mkdir -p "${dir}"
       printf '%s %s %s %s\n' "${acc}" "${decl}" "${arg}" "${repo}" \
         >"${dir}/inputs.txt"
-      # run.sh derives the target spec of a case its tree marks into the
-      # output directory it is given (declared-target.yaml): one no stage
-      # clears, or SEED.static's fresh directory deletes the spec it reads.
-      # GC_TREES kept: a case's tree is the one its round ran on (a Solr
-      # round's sg3h-trees), never gc-env's default under a clean env.
       (cd "${decl}" && env -i HOME="${HOME}" PATH="${PATH}" \
           GC_TREES="${GC_TREES}" \
           CAUSYNTH_OUTPUT_DIR="${dir}/declared" "${override[@]}" \
@@ -935,14 +713,11 @@ ${AB_EXTRA_CHAINS[*]}"
     done
   done
 
-  # One task per case, heaviest corpus first, all here: each places its
-  # JVMs (ab_java).
   ab_log "offline A/B: ${#cases[@]} case(s) [${AB_STAGES}] from rounds \
 ${ab_rounds[*]} -> ${AB_OUT}"
   trap 'kill ${pids[*]} 2>/dev/null; exit 130' INT TERM
   for case_id in $(for case_id in "${cases[@]}"; do
         acc=$(awk -F'\t' -v c="${case_id}" '$1 == c {print $2}' "${AB_OUT}/accepted.tsv")
-        # A recording no session came of (a SEED-only run) weighs 0.
         printf '%s %s\n' "$(du -sk "${acc}/schedule/iteration-0000/sessions/" \
           2>/dev/null | cut -f1 | grep . || echo 0)" "${case_id}"
       done | sort -rn | awk '{print $2}'); do
@@ -960,7 +735,6 @@ ${ab_rounds[*]} -> ${AB_OUT}"
   return "${verdict}"
 }
 
-# Sourced (the shell test), it only defines.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 if [[ "${1:-}" == --task ]]; then
   shift

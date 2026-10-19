@@ -20,38 +20,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/**
- * The instrumentation ABI: every hook {@code HookCatalog.concolic()} and
- * {@code HookCatalog.trace()} weave into application bytecode must exist as
- * a public static method of {@code ConcolicRegionRuntime} or {@code
- * CausynthTraceRecorder} with exactly the woven signature.
- *
- * <p>Both catalogs, because the identity is computed in both passes: the
- * recording states an occurrence address at the entry hook of a region root
- * and files a start frame at the work-start hook, so a trace hook whose
- * signature drifts costs the recording its addresses -- at campaign SEED,
- * with a NoSuchMethodError from woven bytecode.</p>
- *
- * <p>Soot resolves those references lazily against a phantom class, so a
- * rename or a moved method fails only in a full campaign run. This test
- * reads the catalog out of the pipeline source and resolves every entry
- * reflectively instead.</p>
- *
- * <p>The launcher is the third half of the same boundary: {@code
- * JUnitMethodRunner} drives every workload's lifecycle by reflection against
- * annotations it names as strings, so an annotation it stops recognizing, or
- * a lifecycle it stops invoking, is a workload that quietly never ran -- and,
- * like the woven hooks, that shows up only at campaign SEED. The fixtures
- * below stand in for the workload classes, in both vocabularies the corpus's
- * checkouts use.</p>
- *
- * <p>The other half of the ABI is not woven at all: the system trees call
- * GraphChecker (the message doors) from their own source,
- * compiled against an older jar, so a {@code git grep} of this repository
- * returns empty for every one of them and the reference resolves only at
- * campaign SEED.
- * {@code external-callers.txt} is that list.</p>
- */
 public class ConcolicHookAbiTest {
     private static final String PIPELINE_SOURCE =
             "src/main/java/edu/uva/liftlab/graphchecker/causynth/"
@@ -60,14 +28,11 @@ public class ConcolicHookAbiTest {
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private static final String RECORDER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
-    /** The class every {@code execute.sh} launches, by name. */
     private static final String RUNNER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner";
-    /** The reflective JUnit lifecycle that runner drives. */
     private static final String LIFECYCLE_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.JUnitLifecycle";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
-    /** APIs called from outside this repository; see the class javadoc. */
     private static final String EXTERNAL_CALLERS =
             "src/test/resources/external-callers.txt";
 
@@ -75,9 +40,6 @@ public class ConcolicHookAbiTest {
     public void everyWovenHookAndCalledApiResolves() throws Throwable {
         assertEquals("the custom VM keeps three java.lang.System hooks",
                 3, resolveCatalog("concolic", RUNTIME_CLASS));
-        // The recording's own hooks, against the recorder: startWork files
-        // the start frame and enterMethod states the occurrence address of
-        // a region root, and both are woven into application bytecode.
         assertEquals("no java.lang.System hook is woven by the trace pass",
                 0, resolveCatalog("trace", RECORDER_CLASS));
         assertEveryTimedWaitHasItsStandIn();
@@ -85,13 +47,6 @@ public class ConcolicHookAbiTest {
         assertTheRunnerDrivesTheJupiterLifecycle();
     }
 
-    /**
-     * The calls the weave REPLACES: every timed-wait shape has its stand-in
-     * on the class the weave names, with exactly the signature it calls --
-     * the receiver first, the call's own parameters, the site last, and the
-     * call's return type.  A mismatch is a NoSuchMethodError inside a
-     * replay, which is the one place it cannot be seen.
-     */
     private static void assertEveryTimedWaitHasItsStandIn() throws Exception {
         Class<?> owner = Class.forName(WorkStartSites.TIMED_WAITS_CLASS);
         for (WorkStartSites.TimedWait shape : WorkStartSites.timedWaits()) {
@@ -108,17 +63,11 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** A type as a Java signature spells it: a primitive, else a class. */
     private static Class<?> declaredType(String name)
             throws ClassNotFoundException {
         return name.contains(".") ? Class.forName(name) : javaType(name);
     }
 
-    /**
-     * Resolves one catalog's hooks against {@code ownerClass}.
-     *
-     * @return how many of its entries are woven on {@code java.lang.System}
-     */
     private static int resolveCatalog(String factory, String ownerClass)
             throws Exception {
         Class<?> owner = Class.forName(ownerClass);
@@ -152,16 +101,6 @@ public class ConcolicHookAbiTest {
         return wovenOnSystem;
     }
 
-    /**
-     * The launcher half of the ABI: the runner drives a workload class.
-     *
-     * <p>Three things a replay depends on and nothing else states: the whole
-     * lifecycle runs in order, in either annotation vocabulary the corpus
-     * uses (five checkouts are Jupiter, hdfs-17960's is JUnit 4); a failing
-     * test surfaces its own throwable after teardown still ran; and a method
-     * name no workload declares is refused by name instead of publishing a
-     * session for a workload that never ran.</p>
-     */
     private static void assertTheRunnerDrivesTheJupiterLifecycle()
             throws Throwable {
         for (Class<?> workload : Arrays.asList(
@@ -175,10 +114,6 @@ public class ConcolicHookAbiTest {
                     new ArrayList<>(LIFECYCLE));
         }
 
-        // What a Jupiter class states about its own set-up: a directory in
-        // each @TempDir field, an extension's callbacks around the methods
-        // of its role, a TestInfo parameter, and the @Test among same-named
-        // methods.
         LIFECYCLE.clear();
         runWorkloadMethod(SetUpWorkload.class, "theWorkloadBody");
         assertEquals(Arrays.asList("beforeAll:SetUpWorkload",
@@ -211,11 +146,8 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** Calls the runner's one lifecycle driver, unwrapping reflection. */
     private static void runWorkloadMethod(Class<?> workload, String method)
             throws Throwable {
-        // The runner owns main and the session's lifetime; the lifecycle
-        // it drives is its own class, and this is that class's one entry.
         assertNotNull(Class.forName(RUNNER_CLASS)
                 .getDeclaredMethod("main", String[].class));
         Method run = Class.forName(LIFECYCLE_CLASS)
@@ -229,10 +161,8 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** What each fixture's lifecycle invocation appends, in order. */
     private static final List<String> LIFECYCLE = new ArrayList<>();
 
-    /** A workload class, as five of the six checkouts are. */
     private static class JupiterWorkload {
         @org.junit.jupiter.api.BeforeAll
         static void beforeAll() {
@@ -247,8 +177,6 @@ public class ConcolicHookAbiTest {
         @org.junit.jupiter.api.Test
         @org.junit.jupiter.api.Timeout(1)
         void theWorkloadBody() {
-            // The @Timeout the campaign owns instead: a one-second limit the
-            // runner obeyed would kill every replay it exists to record.
             LIFECYCLE.add("theWorkloadBody");
         }
 
@@ -263,7 +191,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** A workload class in the other vocabulary, as the sixth is. */
     private static class JUnit4Workload {
         @org.junit.BeforeClass
         public static void beforeAll() {
@@ -277,8 +204,6 @@ public class ConcolicHookAbiTest {
 
         @org.junit.Test(timeout = 1L)
         public void theWorkloadBody() {
-            // The declared timeout the campaign owns instead, here in the
-            // form the JUnit 4 checkout writes it.
             LIFECYCLE.add("theWorkloadBody");
         }
 
@@ -293,7 +218,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** Names what each callback is handed, as Hadoop's TestName does. */
     public static class NamingExtension implements
             org.junit.jupiter.api.extension.BeforeAllCallback,
             org.junit.jupiter.api.extension.BeforeEachCallback,
@@ -320,7 +244,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** A workload stating its own set-up the Jupiter way. */
     private static class SetUpWorkload {
         @org.junit.jupiter.api.extension.RegisterExtension
         static NamingExtension perClass = new NamingExtension();
@@ -329,13 +252,11 @@ public class ConcolicHookAbiTest {
         @org.junit.jupiter.api.io.TempDir
         java.nio.file.Path own;
 
-        /** As ZooKeeper's ZKTestCase#starting names the test it starts. */
         @org.junit.jupiter.api.BeforeEach
         void starting(org.junit.jupiter.api.TestInfo test) {
             LIFECYCLE.add("starting:" + test.getTestMethod().get().getName());
         }
 
-        /** A helper sharing the test's name is not the test. */
         void theWorkloadBody(int ignored) {
             throw new AssertionError("the helper ran");
         }
@@ -347,7 +268,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** The same, failing the way a detected bug fails. */
     private static class FailingJupiterWorkload {
         @org.junit.jupiter.api.BeforeEach
         void beforeEach() {
@@ -366,7 +286,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /** The external half of the ABI: what the system trees call. */
     private static void assertExternalCallersResolve() throws Exception {
         for (String row : Files.readAllLines(Paths.get(EXTERNAL_CALLERS),
                 StandardCharsets.UTF_8)) {
@@ -392,10 +311,6 @@ public class ConcolicHookAbiTest {
         }
     }
 
-    /**
-     * One {@code String[]} per {@code .add(...)} of the named catalog
-     * factory: owner variable, method name, result type, parameter types.
-     */
     private static List<String[]> catalogEntries(String factory)
             throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(

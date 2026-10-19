@@ -62,13 +62,7 @@ public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
-    /** The rows of one decision at one site a frame writes: two keep
-     *  "decided here more than once" (a loop that iterated) and the
-     *  first decision; later repeats are numbered and not written. */
     private static final int DECISION_ROWS_PER_FRAME = 2;
-    /** Each observed object's exact process-local id (an identity hash
-     *  collides), held weakly: a collected object is never observed again,
-     *  and its id is never reused. */
     private static final WeakIdentityMap<Integer> OBJECT_IDS =
             new WeakIdentityMap<>();
     private static int nextObjectId = 1;
@@ -76,42 +70,23 @@ public final class CausynthTraceRecorder {
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
             ThreadLocal.withInitial(ArrayDeque::new);
-    /**
-     * The call id a standing call's rows state where it is not its own: a
-     * call standing in a region a hop named states itself again under the
-     * occurrence ({@link #regionNamed}), and once more under its own chain
-     * when the hop ends ({@link #regionUnnamed}).
-     */
     private static final ThreadLocal<Map<Long, Long>> STATED_IDS =
             ThreadLocal.withInitial(HashMap::new);
-    /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
 
     private static volatile File outputDir;
-    /** The digest of the static artifacts the recording weave decided this
-     *  recording's rows on ({@code causynth.TracedRows#DIGEST_RESOURCE},
-     *  beside the woven classes), or "" where it left none. */
     private static volatile String tracedRowsDigest = "";
     private static volatile String testName;
-    /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
-    /** Gaps stated before the recording window opened ({@link
-     *  #recordingGap}), written when it opens; guarded by {@link #LOCK}. */
     private static final List<GapRow> BEFORE_WINDOW = new ArrayList<GapRow>();
-    /** The most {@link #BEFORE_WINDOW} keeps: a door that faults on every
-     *  call before the window says so in its first rows. */
     private static final int BEFORE_WINDOW_MAX = 256;
-    /** The gaps {@link #BEFORE_WINDOW} dropped past its cap, counted by
-     *  kind and class (a dropped BLOCKING row still blocks), named when the
-     *  window opens; guarded by {@link #LOCK}. */
     private static final Map<String, Integer> BEFORE_WINDOW_DROPPED =
             new LinkedHashMap<String, Integer>();
 
     private CausynthTraceRecorder() {
     }
 
-    /** Opens the workload-defined trace boundary after source initialization. */
     public static void startRecording() {
         initialize();
         RecordingWindow.open();
@@ -135,16 +110,9 @@ public final class CausynthTraceRecorder {
                             + " stated before the window opened were dropped"
                             + " past the first " + BEFORE_WINDOW_MAX);
         }
-        // Enforced prefix: running timed waits are held to their turns.
         if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
     }
 
-    /**
-     * The workload's test is over: its teardown (a cluster shutting its
-     * nodes down) is no part of what either run controls, and neither
-     * records nor holds it.  A concolic replay ends here ({@code
-     * JUnitMethodRunner#endAtWindowClose}): this call does not return.
-     */
     public static void stopRecording() {
         if (!RecordingWindow.opened()) return;
         RecordingWindow.close();
@@ -154,27 +122,11 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Whether this JVM runs a world the engine chose -- a concolic replay,
-     * or a native reproduction planting one ({@link RecordingPlant}) --
-     * rather than the recording or a native run; workload checks of the
-     * recording's world do not hold here.
-     */
     public static boolean replaying() {
         return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT
                 || RecordingPlant.planting();
     }
 
-    /**
-     * Aggregates the recording for the case's target: {@code --trace-dir
-     * --test}, {@code --target <name>=<candidate-graph>,<static-scope-map>,
-     * <region-skeletons>,<output-dir>} (its static slice, and where its
-     * runtime region plan goes) and optionally {@code --target-occurrence}
-     * (the case's declaration, resolved here against the observed target
-     * occurrences; {@code first} when not stated).  Exits 1, naming why on
-     * stderr, when the trace cannot be read or the recording does not serve
-     * the target.
-     */
     public static void main(String[] args) {
         LongOptions options = LongOptions.parse(args);
         File directory = new File(required(options, "trace-dir"));
@@ -196,9 +148,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** The target of an aggregation: its name, its static slice (candidate
-     *  graph, scope map, candidate region skeletons) and where its runtime
-     *  region plan goes. */
     private static final class AggregationTarget {
         final String name;
         final File graph;
@@ -215,8 +164,6 @@ public final class CausynthTraceRecorder {
             this.outputDir = outputDir;
         }
 
-        /** {@code <name>=<candidate-graph>,<static-scope-map>,
-         *  <region-skeletons>,<output-dir>}. */
         static AggregationTarget parse(String spec) {
             int equals = spec.indexOf('=');
             String[] files = equals < 0 ? new String[0]
@@ -232,14 +179,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Rich method-entry event used by graph-directed symbolic
-     * instrumentation.
-     *
-     * @param openedRegionId the region this method is the ROOT of, or
-     *                       {@code ""}; the row states an occurrence address
-     *                       exactly where the replay does
-     */
     public static long enterMethod(String method, Object receiver,
                                    String openedRegionId) {
         if (method == null) {
@@ -264,26 +203,17 @@ public final class CausynthTraceRecorder {
                 : context.source != null && context.source.equals(
                 RuntimeTraceContext.sourceFor(receiver));
         String region = nonNull(openedRegionId);
-        // No frame push here: #enterMethodFrame already opened this level
-        // (IDENTITY §3); a second push would shift every address below it.
         String address = "";
         boolean folded = false;
         if (!region.isEmpty()) {
-            // No start claim here: #claimStart is the one claim point.
             String node = RuntimeTraceContext.activationSource(receiver).key();
             address = occurrenceAddress(node, region);
-            // IDENTITY §1: an entry that opened no occurrence (a fold, or
-            // unnamed work's) is no activation; the trace states it as
-            // regionFolded.  Asked of the identity, not read off the empty
-            // address: a node-less entry is a hole PLAN refuses, not a fold
-            // it skips.
             folded = Identity.openedNone();
         }
         calls.push(new ActiveCall(id, parentCallId, parentSiteId, method,
                 receiver, context.spanId, parent == null,
                 region.isEmpty() ? -1 : Identity.regionDepth() - 1,
                 address));
-        // Asked once the entry stands: a root's own row is its occurrence's.
         if (!written()) return id;
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
@@ -300,32 +230,13 @@ public final class CausynthTraceRecorder {
         return id;
     }
 
-    /**
-     * The address of the activation entering here, by {@code
-     * Identity.occurrence} -- the same function a replay calls -- so both
-     * passes take the same fold ({@code Identity#fold}, paper SS3.1.2).
-     */
     private static String occurrenceAddress(String nodeKey, String regionId) {
         OccurrenceAddress address =
                 Identity.occurrence(nodeKey, regionId, true);
-        // IDENTITY §1: an entry that opened no occurrence states no address
-        // (a fold's would be a second activation of one occurrence, unnamed
-        // work's one its siblings share); the call above must still run to
-        // push the marker.
         if (Identity.openedNone()) return "";
         return address == null ? "" : address.render();
     }
 
-    /**
-     * A hop named the region at position {@code region} of this thread's
-     * region stack ({@code Identity#hopOpened}): its root's call and every
-     * call standing above it state themselves again under the occurrence --
-     * an entry row each under a new id, the root's with the address -- and
-     * their rows state those ids while the occurrence stands, so the
-     * aggregation reads it as an activation of its own, keyed by its
-     * address, with what ran under the hop as its calls.  The real entry
-     * stood earlier, outside the window or under no name.
-     */
     static void regionNamed(int region, OccurrenceAddress address) {
         if (!INITIALIZED.get() || contextOnlyConcolicReplay) return;
         List<ActiveCall> standing = standingFrom(region);
@@ -333,13 +244,6 @@ public final class CausynthTraceRecorder {
         restate(standing, standing.get(0).parentCallId, address.render());
     }
 
-    /**
-     * The occurrence a hop named ends with the region still standing: the
-     * standing calls' rows close under it and state themselves once more
-     * under the root's own chain; the root's own id is its own again.
-     * Nothing stands when the root itself exited, its exit row already
-     * stated under the occurrence.
-     */
     static void regionUnnamed(int region) {
         if (!INITIALIZED.get() || contextOnlyConcolicReplay) return;
         List<ActiveCall> standing = standingFrom(region);
@@ -354,12 +258,6 @@ public final class CausynthTraceRecorder {
         restate(standing.subList(1, standing.size()), root.callId, "");
     }
 
-    /**
-     * Writes an entry row for each call, outermost first, each under the
-     * one before it and the first under {@code parentCallId}; the first
-     * states {@code address}.  A call that entered a region states it folded,
-     * as its own entry did: it is work of the occurrence below it.
-     */
     private static void restate(List<ActiveCall> calls, long parentCallId,
                                 String address) {
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
@@ -388,10 +286,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The calls standing from the root call of the region at position
-     * {@code region} up, outermost first; empty when it does not stand.
-     */
     private static List<ActiveCall> standingFrom(int region) {
         List<ActiveCall> standing = new ArrayList<>();
         for (ActiveCall call : ACTIVE_CALLS.get()) {
@@ -401,49 +295,30 @@ public final class CausynthTraceRecorder {
         return Collections.emptyList();
     }
 
-    /** The recording's half of {@link RowRuntime#claimStart}. */
     public static long claimStart(Object carrier) {
         return RowRuntime.claimStart(carrier);
     }
 
-    /** The recording's half of {@link RowRuntime#endClaim}. */
     public static void endClaim(long claim) {
         RowRuntime.endClaim(claim);
     }
 
-    /** The recording's half of {@link RowRuntime#claimItem}. */
     public static void claimItem(Object item) {
         RowRuntime.claimItem(item);
     }
 
-    /** The recording's half of {@link RowRuntime#startWork}. */
     public static void startWork(String startSiteId, Object carrier,
                                  Object submittedTo) {
         RowRuntime.startWork(startSiteId, carrier, submittedTo);
     }
 
-    /** {@code event} of one gap the RECORDING states. */
     static final String GAP_EVENT = "GAP";
-    /** {@code event} of one version a shared store's write made. */
     static final String STORE_WRITE_EVENT = "STORE_WRITE";
-    /** {@code event} of the objects one fetch of a version was parsed
-     *  into. */
     static final String STORE_DECODED_EVENT = "STORE_DECODED";
-    /** {@code event} of a store read that decoded nothing (getData,
-     *  exists, getChildren): the ZooKeeper causal trace's reader. */
     static final String STORE_READ_EVENT = "STORE_READ";
-    /** {@code event} of a watch callback on a store location. */
     static final String WATCH_FIRED_EVENT = "WATCH_FIRED";
-    /** {@code event} of the leaves one write serialized or one parse read,
-     *  each JSON pointer with its leaf object: the causal trace's
-     *  fields. */
     static final String STORE_LEAVES_EVENT = "STORE_LEAVES";
 
-    /**
-     * The recording's half of a store write ({@link MessageDoors#stored}):
-     * the version and the occurrence that made it, which PLAN crosses to
-     * from a demanded read of it ({@code causynth.RecordedStore}).
-     */
     static void storeWritten(String transport, String location, long version,
                              OccurrenceAddress writer) {
         if (!tracing() || writer == null) return;
@@ -460,13 +335,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The recording's half of a store read at the store's call ({@link
-     * MessageDoors#storeRead}): the version the call returned -- a
-     * getData's or an exists' data version, a getChildren's child version,
-     * -1 for no node -- and the occurrence it ran in, which PLAN joins with
-     * the version's write ({@code causynth.ZkCausalGraph}).
-     */
     static void storeRead(String transport, String location, long version,
                           String op, OccurrenceAddress occurrence) {
         if (!tracing()) return;
@@ -484,12 +352,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The recording's half of a store notification ({@link
-     * MessageDoors#notified}): its location and type, the zxid of the change
-     * that fired it (-1: the store states none), and the occurrence its
-     * callback ran in.
-     */
     static void watchFired(String transport, String location, String type,
                            long zxid, OccurrenceAddress occurrence) {
         if (!tracing()) return;
@@ -507,16 +369,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The recording's half of a document a store version carries, leaf by
-     * leaf ({@code StoreContent}): as its writer serialized it ({@code
-     * write}) or a reader parsed it, each leaf {@code [pointer, object]},
-     * stated flat -- the pointers, as a content port spells them, joined by
-     * a TAB, and parallel to them the objects by the identity a FIELD_READ
-     * names its value by, joined by a comma -- which PLAN follows field by
-     * field ({@code causynth.ZkCausalGraph}); {@code whole} and no pointers
-     * past the walk's bound ({@code leaves} null): the whole document.
-     */
     static void storeLeaves(boolean write, String transport, String location,
                             long version, OccurrenceAddress occurrence,
                             List<Object[]> leaves) {
@@ -539,8 +391,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** A document's leaves flat ({@link #storeLeaves}): the pointers
-     *  joined by a TAB, the objects' identities joined by a comma. */
     static String[] flat(List<Object[]> leaves) {
         StringBuilder pointers = new StringBuilder();
         StringBuilder objects = new StringBuilder();
@@ -555,19 +405,11 @@ public final class CausynthTraceRecorder {
         return new String[] {pointers.toString(), objects.toString()};
     }
 
-    /** A store location as session rows spell it, named while RunNames
-     *  knows the run's names ({@link MessageDoors#storeLocation}). */
     private static String slot(String transport, String location) {
         return MessageDoors.storeLocation(nonNull(transport),
                 nonNull(location)).slot();
     }
 
-    /**
-     * Whether this JVM writes its trace now: the recording, inside its
-     * window.  A replay counts from the same window ({@link
-     * RecordingWindow}) and writes no trace row, so nothing a row would
-     * state -- an occurrence, a document's leaves -- is built there.
-     */
     static boolean tracing() {
         return traceWriter != null && RecordingWindow.opened();
     }
@@ -576,12 +418,6 @@ public final class CausynthTraceRecorder {
         return occurrence == null ? "" : occurrence.render();
     }
 
-    /**
-     * The recording's half of a provenance site in a constructor (SYMBOL-
-     * SCOPE §5.7): the object it builds from a decoded receiver holds that
-     * version, stated as a decode of it alone, which PLAN joins with the
-     * objects a target read a field on.
-     */
     public static void observeProvenance(String siteId, Object receiver,
                                          Object holder) {
         boolean[] derived = new boolean[1];
@@ -592,15 +428,6 @@ public final class CausynthTraceRecorder {
                 Collections.singletonList(holder), null);
     }
 
-    /**
-     * The recording's half of a decode ({@link MessageDoors#decoded}): the
-     * objects it registered, by the identity every other row names them by,
-     * which PLAN joins with the objects an occurrence read a field on; and,
-     * for a fetch's decode, the occurrence that fetched it, which PLAN asks
-     * the store read's doors of where the fetch lies on the data flow
-     * ({@code RuntimeSelectedRegionFinalizer#crossStore}).  A provenance
-     * site's derived object was fetched by no one ({@code fetch} null).
-     */
     static void storeDecoded(String transport, String location, long version,
                              List<Object> objects, OccurrenceAddress fetch) {
         if (!tracing() || objects.isEmpty()) return;
@@ -624,11 +451,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * A gap row's subject: {@code named}, else this thread's source key, else
-     * the thread itself -- never a blank the row door would replace with the
-     * session.
-     */
     private static String lineageSubject(String named) {
         String subject = nonNull(named);
         if (!subject.isEmpty()) return subject;
@@ -644,18 +466,11 @@ public final class CausynthTraceRecorder {
                 + "#" + current.getId();
     }
 
-    /**
-     * States one gap of the recording as a trace row; {@code RowRuntime.gap}
-     * routes here while no session is open, and {@link #readStateTrace}
-     * hands it to the plan's gap list.
-     */
     static void recordingGap(
             GapKind kind,
             GapClass cls,
             String subject, String detail) {
         if (!RecordingWindow.opened()) {
-            // Before the window (a door fault while a test builds its
-            // cluster): stated once it opens (#startRecording), never lost.
             synchronized (LOCK) {
                 if (BEFORE_WINDOW.size() < BEFORE_WINDOW_MAX) {
                     BEFORE_WINDOW.add(GapRow.of("recording", kind, cls,
@@ -680,12 +495,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The trace hooks below take {@code traced}: whether SEED's aggregation
-     * reads the row ({@code causynth.TracedRows}, decided at the weave).  An
-     * untraced row, or one outside every occurrence ({@link #written}), is
-     * numbered like any other and not written.
-     */
     public static void recordMethodArgument(long callId, int argumentIndex,
                                             String declaredType, Object value,
                                             String primitiveValue,
@@ -701,8 +510,6 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
-    /** {@code traced} covers every row of the call: its enter, return and
-     *  unwinding rows. */
     public static long beginCall(long ownerCallId, String caller, int unitIndex,
                                  String declaredCallee, Object receiver,
                                  boolean traced) {
@@ -718,7 +525,6 @@ public final class CausynthTraceRecorder {
             event.objectId = identity(receiver);
             emitExecutionEvent(event);
         }
-        // No scope capture here: Identity.startWork owns it in both passes.
         ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                 event.siteId, event.method, event.declaredCallee, traced));
         return event.id;
@@ -739,27 +545,14 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
-    /**
-     * Enters the execution-index level of ONE application-scope method.
-     *
-     * <p>The one frame rule: every application-scope method opens a level at
-     * entry and closes it at every exit, in both passes ({@code
-     * CausynthPipeline.instrumentApplicationScope}, IDENTITY §3).  Counts
-     * are keyed by (level, root hop, site), never by node ({@code
-     * Identity.State#nextSiteEvent}).</p>
-     *
-     * @return the token that closes exactly the level this opened
-     */
     public static long enterMethodFrame(String callSiteId, Object receiver) {
         return Identity.enterFrame(nonNull(callSiteId), receiver);
     }
 
-    /** Leaves the level {@link #enterMethodFrame} opened. */
     public static void exitMethodFrame(long token) {
         Identity.exitFrame(token);
     }
 
-    /** The exceptional edge of {@link #enterMethodFrame}. */
     public static void throwMethodFrame(long token, Throwable thrown) {
         Identity.exitFrame(token);
     }
@@ -778,7 +571,6 @@ public final class CausynthTraceRecorder {
         removeCallSite(invocationId);
     }
 
-    /** Closes one exact call-site activation on its exceptional edge. */
     public static void throwCall(long invocationId) {
         closeCallSite(activeCallSite(invocationId), "CALL_SITE_THROW");
     }
@@ -791,13 +583,6 @@ public final class CausynthTraceRecorder {
         RecordingPlant.decided(event.siteId, event.outcome);
     }
 
-    /**
-     * Writes a decision unless its frame already wrote this decision at this
-     * site twice: every reader takes the decisions of a frame as a set, its
-     * first one, or whether it decided a loop's control site more than once
-     * (hdfs-adhoc-49: two thirds of the BRANCH rows repeated one in their
-     * frame).
-     */
     private static void emitDecision(long callId, ExecutionEvent event,
                                      String outcome) {
         if (!written()) return;
@@ -808,7 +593,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** One branch row at the exact unit of the method that executed it. */
     private static ExecutionEvent branchEvent(long callId, String method,
                                               int unitIndex) {
         ExecutionEvent event = newExecutionEvent("BRANCH",
@@ -817,7 +601,6 @@ public final class CausynthTraceRecorder {
         return event;
     }
 
-    /** Records one exact case/default successor of a JVM switch. */
     public static void recordSwitchBranch(long callId, String method,
                                           int unitIndex, String expression,
                                           int successorIndex,
@@ -836,7 +619,6 @@ public final class CausynthTraceRecorder {
         RecordingPlant.decided(event.siteId, event.outcome);
     }
 
-    /** Normal exit resolved from the current thread-local call stack. */
     public static void exitActiveMethod(Object returnValue,
                                         String primitiveValue,
                                         boolean traced) {
@@ -845,7 +627,6 @@ public final class CausynthTraceRecorder {
         closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
                 call == null ? "" : call.method, resolvedCallId);
-        // Asked before the call closes: a root's exit is its occurrence's.
         if (traced && written()) {
             event.runtimeType = runtimeType(returnValue);
             event.objectId = identity(returnValue);
@@ -855,7 +636,6 @@ public final class CausynthTraceRecorder {
         closeCall(call, resolvedCallId, null);
     }
 
-    /** Ends one activation: its region and root context close with it. */
     private static void closeCall(ActiveCall call, long resolvedCallId,
                                   Throwable thrown) {
         removeCall(resolvedCallId);
@@ -867,11 +647,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Exceptional-exit hook that resolves the call id from the thread-local
-     * stack; the handler cannot read the synthetic long local, which some
-     * JVM/Soot stack maps do not keep live there.
-     */
     public static void throwActiveMethod(Throwable throwable) {
         ActiveCall call = activeCall(0L);
         long resolvedCallId = call == null ? 0L : call.callId;
@@ -916,82 +691,48 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The request scope of the calling thread, to travel with the work it
-     * creates (e.g. a Hadoop {@code Call} written by a pooled sender
-     * thread).
-     */
     public static Object captureScope() {
         initialize();
         return RuntimeTraceContext.captureScope();
     }
 
-    /**
-     * Sends one exchange leg and returns its message-carried trace context:
-     * for work carrying the scope it was made in ({@code carriedScope}, or
-     * null), its message naming the operation it asks for ({@code verb}, ""
-     * for none): its site ({@code Endpoint#messageSite}) names its producer
-     * endpoint and its SEND.
-     */
     public static String outboundExchange(String transport,
                                           String correlationId,
                                           String attemptId, String half,
                                           Object localOwner,
                                           Object carriedScope, String verb) {
         initialize();
-        // The exports staged on this message are its: filed by it before
-        // the door drains them, whatever its header becomes.
         SymbolicMessageEnvelope.carriedBy(correlationId, half);
-        // A start before the next receipt hands this request off.
         Identity.requestInHand(verb);
         String header;
         try {
             header = RuntimeTraceContext.outboundHeader(localOwner,
                     carriedScope);
         } catch (IllegalStateException noFlow) {
-            // Refusal is a named row; the send goes out without a header.
             RowRuntime.messageContextRefused("outbound "
                     + nonNull(transport) + " "
                     + nonNull(half), noFlow.getMessage());
             return "";
         }
-        // IDENTITY §4: the message's producer endpoint is filed in-JVM by
-        // correlation (the header does not carry it); one mint for
-        // both passes.  A response was given its endpoint and its stance
-        // where its request was received, whichever thread sends it.
         Receipt receipt = RESPONSE.equals(half) ? RECEIPTS.remove(
                 receiptKey(transport, correlationId, attemptId)) : null;
-        // A response keeps the endpoint its request's receipt minted, named
-        // by its transport and half alone; a verb names what a message
-        // minted here asks for.
         String site = Endpoint.messageSite(nonNull(transport),
                 nonNull(half), receipt == null ? verb : "");
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half, site,
                 receipt == null ? null : receipt.response);
-        // The schedule's SEND, naming the minted producer.  A response
-        // stands where its request was received: a receipt in a context that
-        // makes no event (ScheduleLog#unordered) answers with none, so what
-        // the reply causes makes none either.
         if (receipt == null || receipt.stance != null) {
             ScheduleLog.observe(ScheduleEvent.Kind.SEND, site,
                     producer == null ? "" : producer.id(),
                     receipt == null ? null : receipt.stance);
         }
-        // The row states the endpoint's components, not only its digest.
         refuseSharedProducer(transport, correlationId, half, producer);
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner, carriedScope, producer);
         return header;
     }
 
-    /**
-     * Names the cause when two messages carry ONE producer endpoint (so their
-     * consumers share one causal anchor), typically two unclaimed threads
-     * under one degraded occurrence.  DIAGNOSTIC, like invariant 4: no stage
-     * can repair an index that cannot separate two events.
-     */
     private static void refuseSharedProducer(String transport,
                                              String correlationId,
                                              String half, Endpoint producer) {
@@ -1009,7 +750,6 @@ public final class CausynthTraceRecorder {
                 producer.id(), detail);
     }
 
-    /** Installs a received message context until {@link #endInboundExchange}. */
     public static long inboundExchange(String header, String transport,
                                        String correlationId,
                                        String attemptId, String half,
@@ -1018,35 +758,23 @@ public final class CausynthTraceRecorder {
                 half, localOwner, true, "");
     }
 
-    /**
-     * @param awaited whether the schedule holds this receipt: a read of a
-     *                shared store is not, since how many times a reader
-     *                reads one version is the store's timing
-     *                ({@link MessageDoors#fetched})
-     * @param via     the receiving side's own name for where it arrived (a
-     *                store notification's watcher), "" for none
-     */
     public static long inboundExchange(String header, String transport,
                                        String correlationId,
                                        String attemptId, String half,
                                        Object localOwner, boolean awaited,
                                        String via) {
         initialize();
-        // A receipt ends the request this thread had in hand.
         Identity.requestInHand("");
         long token;
         try {
             token = RuntimeTraceContext.enterInbound(header, transport,
                     correlationId, attemptId, half, localOwner, via);
         } catch (IllegalArgumentException refused) {
-            // Same refusal as outbound; 0 means no scope installed.
             RowRuntime.messageContextRefused("inbound "
                     + nonNull(transport) + " "
                     + nonNull(half), refused.getMessage());
             return 0L;
         }
-        // The schedule's RECV, under the scope the message opened; an
-        // unawaited receipt's work is no part of the order.
         if (awaited) {
             ScheduleLog.observe(ScheduleEvent.Kind.RECV,
                     nonNull(transport) + "#" + nonNull(half));
@@ -1061,9 +789,7 @@ public final class CausynthTraceRecorder {
                                     .ownedSource(localOwner).key(),
                                     transport, RESPONSE)));
         }
-        // recordExchange's argument refusal stays an exception, not a row.
         try {
-            // The receiving leg mints no producer.
             recordExchange("RECEIVE", transport, correlationId, attemptId,
                     half, localOwner, null, null);
             return token;
@@ -1073,14 +799,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * A message received into the thread's own context, which it does not
-     * anchor (a DataTransfer op, taken in by its DataNode's turn): the
-     * schedule's RECV names the producer endpoint it took in, which the
-     * control producers read as the message that made the context; the
-     * trace's RECEIVE leg binds the receiver's captures to the message.  No
-     * response endpoint is minted: nothing answers it through a door.
-     */
     public static void receivedExchange(String transport,
                                         String correlationId,
                                         String attemptId, String half,
@@ -1096,15 +814,6 @@ public final class CausynthTraceRecorder {
     private static final String REQUEST = "REQUEST";
     private static final String RESPONSE = "RESPONSE";
 
-    /**
-     * A request's receipt: the endpoint and schedule stance of its response.
-     * A response belongs to the call it answers, not to the thread that
-     * happens to send it: a deferred RPC response is sent by whichever of
-     * the handler and the thread it handed the call to finishes last (the
-     * NameNode's edit-log sync thread), a race the recording and a replay
-     * decide differently.  Minted where the request was received, it is the
-     * same in both.
-     */
     private static final class Receipt {
         private final ScheduleLog.Stance stance;
         private final Endpoint response;
@@ -1128,10 +837,6 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.exitInbound(scopeToken);
     }
 
-    /**
-     * Records one transport-neutral message boundary, attributed to the
-     * scope the work carries, stating the producer endpoint a SEND minted.
-     */
     private static void recordExchange(String direction, String transport,
                                       String correlationId, String attemptId,
                                       String half, Object localOwner,
@@ -1181,7 +886,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Registers one stable cluster/application source for trace discovery. */
     public static void registerSource(Object anchor, String kind,
                                       String role, String sourceId,
                                       long epoch) {
@@ -1192,7 +896,6 @@ public final class CausynthTraceRecorder {
                 identity(anchor));
     }
 
-    /** Opens one node's construction ({@code MessageDoors#beginNodeStartup}). */
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
         initialize();
@@ -1200,20 +903,17 @@ public final class CausynthTraceRecorder {
                 new SourceRef(kind, role, sourceId, 0L));
     }
 
-    /** Opens one startup of a registered node, or none. */
     public static long beginNodeStartup(Object node) {
         initialize();
         return RuntimeTraceContext.beginNodeStartup(
                 RuntimeTraceContext.sourceFor(node));
     }
 
-    /** Ends it. */
     public static void endNodeStartup(long token) {
         initialize();
         RuntimeTraceContext.endNodeStartup(token);
     }
 
-    /** Binds a service/handler object to an already registered source. */
     public static void registerSourceAlias(Object alias, Object anchor) {
         initialize();
         SourceRef source = RuntimeTraceContext.registerSourceAlias(alias,
@@ -1223,18 +923,6 @@ public final class CausynthTraceRecorder {
                 identity(alias));
     }
 
-    /**
-     * Enters the scope a queued unit of work carried: the dequeue half of
-     * {@link #captureScope()} (e.g. Hadoop IPC {@code Server.Call}, which no
-     * inheritable context reaches).
-     *
-     * @param carriedScope the value {@link #captureScope()} returned
-     * @param roleName     what the workload calls the scope kind serving
-     *                     it; that name IS the role
-     *                     ({@code contract.Role})
-     * @param apiName      the api being served, or {@code null}
-     * @return the token to hand {@link #exitCarriedScope(long)}, or 0
-     */
     public static long enterCarriedScope(Object carriedScope,
                                          String roleName, String apiName) {
         initialize();
@@ -1242,49 +930,32 @@ public final class CausynthTraceRecorder {
                 apiName);
     }
 
-    /** Leaves the scope {@link #enterCarriedScope} entered. */
     public static void exitCarriedScope(long token) {
         RuntimeTraceContext.exitCarriedScope(token);
     }
 
-    /**
-     * Opens one daemon tick as a root of its own, named by role plus the
-     * k-th tick in the recording window, so timer work is addressable.
-     *
-     * @param owner    an object whose registered source names the node, or
-     *                 {@code null} to take the thread's own
-     * @param roleName what the workload calls this timer's scope kind;
-     *                 that name IS the role ({@code contract.Role})
-     * @return the token to hand {@link #endDaemonTick(long)}
-     */
     public static long beginDaemonTick(Object owner, String roleName) {
         initialize();
         return RuntimeTraceContext.beginTick(owner, roleName);
     }
 
-    /** Whether the tick {@link #beginDaemonTick} opened is a vacant turn. */
     public static boolean vacantDaemonTick(long token) {
         return RuntimeTraceContext.vacantTick(token);
     }
 
-    /** {@code who} begins startup {@code step} ({@link
-     *  StartupOrder#begin}). */
     public static Object startupStep(String step, String who) {
         initialize();
         return StartupOrder.begin(step, who);
     }
 
-    /** The step {@link #startupStep} began completed. */
     public static void startupDone(Object pass) {
         StartupOrder.done((String[]) pass);
     }
 
-    /** Closes the tick {@link #beginDaemonTick} opened. */
     public static void endDaemonTick(long token) {
         RuntimeTraceContext.endTick(token);
     }
 
-    /** Starts an external API request without changing the application data. */
     public static long beginSourceRequest(Object sourceAnchor,
                                           String apiName) {
         initialize();
@@ -1296,19 +967,6 @@ public final class CausynthTraceRecorder {
         return requestId;
     }
 
-    /**
-     * One call the workload itself makes -- a client operation of the test
-     * thread, or of a thread it started -- as a request root of its own,
-     * named by its api: {@code Root(CLIENT/api, k)} counts that api's calls
-     * only.  A test that polls (a status request until an async task
-     * completes, a query until a replica caught up) sends as many polls as
-     * the run's timing gives it; under one request for the whole test every
-     * later call's index moved with them, and so did every occurrence it
-     * caused on the nodes.
-     *
-     * @return the request to end, or 0 when the thread runs no workload
-     *         scope (a node's own thread, or before the window)
-     */
     public static long beginWorkloadCall(String apiName) {
         initialize();
         SourceRef source = RuntimeTraceContext.explicitSource();
@@ -1320,7 +978,6 @@ public final class CausynthTraceRecorder {
         return requestId;
     }
 
-    /** The kind a workload registers its own clients under. */
     public static final String WORKLOAD_KIND = "EXTERNAL_APP";
 
     public static void endSourceRequest(long requestId, String apiName) {
@@ -1330,7 +987,6 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.endRequest(requestId);
     }
 
-    /** Advances a stable logical source slot to a new lifecycle epoch. */
     public static void restartSource(Object stableAnchor, String kind,
                                      String role, String sourceId,
                                      long epoch) {
@@ -1351,27 +1007,9 @@ public final class CausynthTraceRecorder {
         event.kind = nonNull(kind);
         event.method = nonNull(method);
         event.callId = stated(callId);
-        // No index or context: only METHOD_ENTER and exchange rows are read
-        // for them, and computing them per event dominated recording cost.
         return event;
     }
 
-    /** Writes one execution row unless this JVM is a context-only replay. */
-    /**
-     * Whether a method or field row is written: in the recording, only while
-     * this thread stands in an opened occurrence ({@link
-     * Identity#inOccurrence}: an activation, a fold into one, unnamed work
-     * inside one -- what the aggregation attributes to an occurrence).
-     * Method and field events count only there (activations, the demand walk
-     * over the methods that ran in an occurrence, recorded writers), so a row
-     * outside every occurrence could become no closure task and no row a
-     * claim uses -- a method shared by region roots and other callers, run
-     * per document on a request thread (solr-bugs-reindex-cleanup MB2: 1.78
-     * of a 2.0 GB trace, JavaBin's encode and decode most of it).  No root's
-     * own entry is among them: every entry that is no fold opens an
-     * occurrence.  Exchange, gap and source rows are always written; the
-     * rows left out are counted and said when the recording ends.
-     */
     private static boolean written() {
         if (contextOnlyConcolicReplay) return false;
         if (Identity.inOccurrence()) return true;
@@ -1379,8 +1017,6 @@ public final class CausynthTraceRecorder {
         return false;
     }
 
-    /** The method and field rows the recording left out ({@link
-     *  #written}). */
     private static final AtomicLong OUTSIDE = new AtomicLong();
 
     private static void emitExecutionEvent(ExecutionEvent event) {
@@ -1411,15 +1047,12 @@ public final class CausynthTraceRecorder {
         return null;
     }
 
-    /** Exact currently executing instrumented call site, or {@code null}. */
     public static ActiveCallSiteContext currentCallSiteContext() {
         ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
         return site == null ? null : new ActiveCallSiteContext(
                 site.siteId, site.declaredCallee);
     }
 
-    /** The occurrences this thread's region entries opened, rendered,
-     *  innermost first. */
     static List<String> enclosingOccurrences() {
         List<String> occurrences = new ArrayList<>();
         for (ActiveCall call : ACTIVE_CALLS.get()) {
@@ -1428,8 +1061,6 @@ public final class CausynthTraceRecorder {
         return occurrences;
     }
 
-    /** One root a plant planted, or failed to ({@link RecordingPlant}):
-     *  its row, the marker or root, where, and the value, as a trace row. */
     static void plantRoot(String event, int row, String planted,
                           String occurrence, String value) {
         synchronized (LOCK) {
@@ -1444,8 +1075,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** What one ORDER row of a plant came to ({@link
-     *  RecordingPlant#ordered}), as a trace row. */
     static void plantOrdered(String event, int row, String after,
                              String waitingFor) {
         synchronized (LOCK) {
@@ -1459,9 +1088,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** One decision of the planted world's fatal arm at a target guard
-     *  ({@link RecordingPlant#decided}), as a trace row: the occurrence it
-     *  was decided in -- the anchor's when {@code atAnchor} -- or "". */
     static void plantFatal(String siteId, String occurrence,
                            boolean atAnchor) {
         synchronized (LOCK) {
@@ -1475,10 +1101,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Correlates a field hook inside an accessor body with the exact caller
-     * callsite that selected that accessor.
-     */
     public static boolean currentCallParentSiteMatches(
             String callerMethod, int callerUnitIndex, String callerSiteId,
             String declaredCallee) {
@@ -1504,7 +1126,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** The id {@code callId}'s rows state ({@link #STATED_IDS}). */
     private static long stated(long callId) {
         Long stated = STATED_IDS.get().get(callId);
         return stated == null ? callId : stated;
@@ -1536,7 +1157,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** One execution event attributed to an exact recorded call site. */
     private static ExecutionEvent callSiteEvent(String kind,
                                                 ActiveCallSite site,
                                                 long invocationId) {
@@ -1641,8 +1261,6 @@ public final class CausynthTraceRecorder {
             String configuredTestName = firstNonBlank(
                     setting("causynth.trace.test", "CAUSYNTH_TRACE_TEST"),
                     "unknown-test");
-            // Which pass this JVM is is DECLARED by the campaign, never
-            // inferred from which output keys happen to be set.
             boolean configuredContextOnly = RuntimeTraceMode.configured()
                     == RuntimeTraceMode.REPLAY_CONTEXT;
             File configuredOutputDir = configuredContextOnly ? null
@@ -1654,7 +1272,6 @@ public final class CausynthTraceRecorder {
             BufferedWriter configuredWriter = null;
             try {
                 if (configuredContextOnly) {
-                    // Keep the method/call-site TLS alive; publish nothing.
                     testName = configuredTestName;
                     traceWriteFailure = false;
                     outputDir = null;
@@ -1673,27 +1290,21 @@ public final class CausynthTraceRecorder {
                     throw new IOException("Unable to create trace output directory: "
                             + configuredOutputDir);
                 }
-                // A killed replacement run must not inherit CLOSED evidence
-                // from an older trace in the same directory.
                 Files.deleteIfExists(new File(configuredOutputDir,
                         "streaming_trace_manifest.json").toPath());
                 configuredWriter = new BufferedWriter(new FileWriter(
                         configuredTraceFile, false));
 
-                // INITIALIZED is the release publication for every field
-                // above.
                 testName = configuredTestName;
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
                 tracedRowsDigest = wovenTracedRowsDigest();
                 contextOnlyConcolicReplay = false;
-                // The recording's schedule, in the replay's shape.
                 ScheduleLog.installFile(configuredOutputDir);
                 INITIALIZED.set(true);
             } catch (IOException | RuntimeException failure) {
                 closeQuietly(configuredWriter);
-                // A later call may retry once the cause is repaired.
                 INITIALIZED.set(false);
                 throw new IllegalStateException(
                         "Failed to initialize Causynth trace recorder at "
@@ -1712,14 +1323,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Closes the recording's trace, by the run's one end ({@code
-     * JUnitMethodRunner#exit}) and nothing else: flushed, closed and its
-     * manifest CLOSED, the window's duration stated.  A JVM that ends any
-     * other way (killed, or told to end before its run did) leaves no CLOSED
-     * manifest, and SEED reads its trace as cut.  Nothing for a JVM that
-     * recorded no trace (a replay).
-     */
     static void closeTrace() {
         RecordingWindow.measured();
         synchronized (LOCK) {
@@ -1728,7 +1331,6 @@ public final class CausynthTraceRecorder {
                     traceWriter.flush();
                     traceWriter.close();
                 } catch (IOException failure) {
-                    // Complete only once flushed and closed.
                     traceWriteFailure = true;
                 }
                 traceWriter = null;
@@ -1744,8 +1346,6 @@ public final class CausynthTraceRecorder {
                         objectWithoutNulls(
                                 "schemaVersion", TRACED_ROWS_MANIFEST,
                                 "kind", "STREAMING_RUNTIME_TRACE",
-                                // INCOMPLETE means a crash or a failed
-                                // write, nothing else.
                                 "status", traceWriteFailure
                                         ? "INCOMPLETE" : "CLOSED",
                                 "tracedRows", tracedRowsDigest));
@@ -1753,7 +1353,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** The recording's trace, read and its objects named. */
     private static TraceData readStateTrace(File directory, String test)
             throws IOException {
         synchronized (LOCK) {
@@ -1765,24 +1364,14 @@ public final class CausynthTraceRecorder {
             trace.schedule.addAll(SessionReader.readSchedule(new File(
                     directory, ScheduleLog.RECORDING_FILE).toPath()));
             trace.sort();
-            // No offline reattribution: runtime.Attribution stamped every
-            // METHOD_ENTER live, as the replay does.
             nameObservedObjectsFromContent(trace);
             return trace;
         }
     }
 
-    /**
-     * The target's runtime region plan, written to its output directory: the
-     * regions of its skeletons the recording exercised, then its activations,
-     * closure and plan over its slice.
-     */
     private static void aggregateTarget(
             TraceData trace, AggregationTarget target,
             String declaredOccurrence) throws IOException {
-        // Regions exercised: root entered and an anchor reached, anchors
-        // narrowed to those reached.  Asked of entries folded or not: a fold
-        // is about occurrences, this is about the region having run.
         List<RuntimeRegionPlanner.MethodEvent> entries =
                 new ArrayList<>(trace.methods.size());
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
@@ -1811,13 +1400,11 @@ public final class CausynthTraceRecorder {
                 "region_skeletons.jsonl");
         writeSelectedSkeletons(target.skeletons, selectedSkeletons,
                 exercised.runtimeInstances);
-        // Decoded once for planner and finalizer.
         List<StaticProgram.RegionRow> skeletons =
                 StaticProgram.regionRows(
                         MapFields.readRows(selectedSkeletons),
                         RuntimeSelectedRegionFinalizer.SKELETON_KIND,
                         selectedSkeletons);
-        // Parsed once: planner reads DECLARED_SITE, finalizer WRITE_SITE.
         StaticScopeMap scopeMap = readScopeMap(target.scopeMap);
         List<Map<String, Object>> graph = MapFields.readRows(target.graph);
         Map<String, String> fieldCalls =
@@ -1835,10 +1422,6 @@ public final class CausynthTraceRecorder {
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
             observedMethods.add(event.method);
         }
-        // The finalizer reads the candidate graph itself
-        // (StaticProgram#skeletonRegionsHolding).  It marks the target
-        // occurrences and binds their fatal-branch evidence on these
-        // activations, which the plan below reads.
         RuntimeSelectedRegionFinalizer.Result closure =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(
                         graph, skeletons,
@@ -1853,7 +1436,6 @@ public final class CausynthTraceRecorder {
                                 trace.fields, trace.execution,
                                 activationGraph.runtimeInstances,
                                 storingCalls, fieldCalls));
-        // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);
         writeRuntimeRegionPlans(target.outputDir, closure.regions, trace,
@@ -1862,9 +1444,6 @@ public final class CausynthTraceRecorder {
                 edu.uva.liftlab.graphchecker.contract.ZkChain.FILE).toPath());
     }
 
-    /** The recorded decisions as the finalizer reads them (its branch
-     *  order: {@code RuntimeSelectedRegionFinalizer#orderedBranchObservations}),
-     *  one compact row per BRANCH event. */
     private static List<Map<String, Object>> branchObservations(
             Collection<RuntimeRegionPlanner.RuntimeEvent> events,
             Collection<RuntimeRegionPlanner.MethodEvent> methods) {
@@ -1910,10 +1489,6 @@ public final class CausynthTraceRecorder {
         return result;
     }
 
-    /**
-     * The selected skeleton of an entered region is its candidate skeleton
-     * with the observed anchor names; every other member is the candidate's.
-     */
     private static void writeSelectedSkeletons(
             File candidates, File output,
             Collection<Map<String, Object>> runtimeInstances)
@@ -1933,13 +1508,10 @@ public final class CausynthTraceRecorder {
                 }
             }
         }
-        // Streamed through: reading what we truncate must fail first.
         if (candidates.getCanonicalFile().equals(output.getCanonicalFile())) {
             throw new IOException("selected region skeletons must not "
                     + "overwrite the candidate skeletons: " + candidates);
         }
-        // Staged and moved atomically: a mid-stream throw leaves the old
-        // file intact.
         ArtifactIO.atomicReplace(output.toPath(), writer -> {
             try (BufferedReader reader = MapFields.rowReader(candidates)) {
                 String line;
@@ -1976,11 +1548,6 @@ public final class CausynthTraceRecorder {
         });
     }
 
-    /**
-     * The manifest of a closed trace.  Schema 1 is a recording before the
-     * weave pruned its rows (every row written); schema {@value
-     * #TRACED_ROWS_MANIFEST} states the digest its rows were decided on.
-     */
     private static JsonObject requireClosedTrace(File manifestFile)
             throws IOException {
         if (!manifestFile.isFile()) {
@@ -2003,16 +1570,8 @@ public final class CausynthTraceRecorder {
         return manifest;
     }
 
-    /** The manifest schema that states {@code tracedRows}. */
     private static final int TRACED_ROWS_MANIFEST = 2;
 
-    /**
-     * Refuses to aggregate a pruned recording over other static artifacts
-     * than the weave decided its rows on, or one traced by another row rule
-     * ({@code TracedRows#RULE}): a declared site or port they add would find
-     * no rows, and an older rule lacks rows a reader reads, silently.  A
-     * schema-1 recording wrote every row.
-     */
     static void requireTracedOver(JsonObject manifest, File scopeMap,
                                   File graph, File skeletons)
             throws IOException {
@@ -2035,7 +1594,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** What the recording weave left beside the classes it wove, or "". */
     private static String wovenTracedRowsDigest() {
         try (InputStream in = CausynthTraceRecorder.class.getClassLoader()
                 .getResourceAsStream(TracedRows.DIGEST_RESOURCE)) {
@@ -2052,12 +1610,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Renames every observed object by the content of its first observation
-     * ({@link RuntimeObjectIdentity}): the {@code identity()} counter is
-     * per-run, so no published artifact may carry it.  Runs before any
-     * planner reads the events.
-     */
     private static void nameObservedObjectsFromContent(TraceData trace) {
         RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
         Map<Long, String> sourceKeyByCall = sourceKeyByCall(trace);
@@ -2085,10 +1637,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * The logical source of each recorded frame, walking the parent chain
-     * for frames with none of their own.
-     */
     private static Map<Long, String> sourceKeyByCall(TraceData trace) {
         Map<Long, String> own = new LinkedHashMap<>();
         Map<Long, Long> parents = new LinkedHashMap<>();
@@ -2114,10 +1662,6 @@ public final class CausynthTraceRecorder {
         return resolved;
     }
 
-    /**
-     * Every object slot of every recorded event, merged on sequence so
-     * "first observation" is load-order independent.
-     */
     private static List<TraceObservation> orderedObservations(
             TraceData trace) {
         List<TraceObservation> observations = new ArrayList<>();
@@ -2148,7 +1692,6 @@ public final class CausynthTraceRecorder {
                             : event.source.key()), event.kind, "", "", -1,
                     "", "", "objectId", 0L));
         }
-        // Slot breaks seq ties (a field access's receiver vs value).
         observations.sort((left, right) -> {
             int bySeq = Long.compare(left.seq, right.seq);
             return bySeq != 0 ? bySeq : left.slot.compareTo(right.slot);
@@ -2156,7 +1699,6 @@ public final class CausynthTraceRecorder {
         return observations;
     }
 
-    /** One object slot of one recorded event. */
     private static final class TraceObservation {
         private final long seq;
         private final int objectId;
@@ -2211,7 +1753,6 @@ public final class CausynthTraceRecorder {
         traceWriter = null;
     }
 
-    /** Number of worker threads used by offline trace aggregation parsing. */
     private static int aggregationThreads() {
         return Math.max(1, Math.min(8,
                 Runtime.getRuntime().availableProcessors() - 2));
@@ -2234,7 +1775,6 @@ public final class CausynthTraceRecorder {
                 });
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
-            // Parsed concurrently, merged in file order.
             ArrayDeque<Future<TraceData>> pending = new ArrayDeque<>();
             int batchCapacity = 16384;
             List<String> batch = new ArrayList<>(batchCapacity);
@@ -2274,7 +1814,6 @@ public final class CausynthTraceRecorder {
             throws IOException {
         pending.addLast(executor.submit(() -> parseTraceBatch(batch,
                 firstLineNumber, file, test, pool)));
-        // Bound in-flight batches; merging the head keeps file order.
         while (pending.size() > threads * 2) {
             mergeBatch(trace, pending.removeFirst());
         }
@@ -2290,7 +1829,6 @@ public final class CausynthTraceRecorder {
             trace.execution.addAll(part.execution);
             trace.protocol.addAll(part.protocol);
             trace.sources.addAll(part.sources);
-            // Every list the parse fills, gaps included.
             trace.lineageGaps.addAll(part.lineageGaps);
             trace.store.addAll(part.store);
         } catch (InterruptedException interrupted) {
@@ -2437,7 +1975,6 @@ public final class CausynthTraceRecorder {
                 || "SOURCE_ALIAS".equals(eventKind)
                 || "SOURCE_RESTART".equals(eventKind)) {
             SourceRef source = sourceRef(row, "source");
-            // The related source is refused like the source, and not kept.
             sourceRef(row, "relatedSource");
             trace.sources.add(new SourceTraceEvent(row.longValue("seq", 0L),
                     eventKind, source, row.intValue("objectId", 0)));
@@ -2476,7 +2013,6 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
-        // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
@@ -2498,23 +2034,17 @@ public final class CausynthTraceRecorder {
                 "sourceId", sourceId(event.source),
                 "sourceEpoch", sourceEpoch(event.source),
                 "sourceKey", sourceKey(event.source),
-                // Flags are absent rather than false (per-call row size).
                 "receiverAttributed", event.receiverAttributed ? 1 : null,
                 "requestKey", event.requestKey,
                 "requestApi", event.requestApi,
-                // Identity v3 (Identity.occurrence); region-root entries
-                // only.
                 "occurrenceAddress", event.occurrenceAddress.isEmpty()
                         ? null : event.occurrenceAddress,
-                // IDENTITY §1: folded entry, no activation.
                 "regionFolded", event.regionFolded ? 1 : null,
-                // The window a request key's ordinal counts in.
                 "window", event.window);
     }
 
     private static void writeFieldTraceLine(
             RuntimeRegionPlanner.FieldAccessEvent event) {
-        // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
@@ -2532,11 +2062,9 @@ public final class CausynthTraceRecorder {
 
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
-        // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
-                // SEND or RECEIVE: #recordExchange refuses any other.
                 "event", "EXCHANGE_" + event.direction,
                 "seq", event.seq,
                 "transport", event.transport,
@@ -2559,8 +2087,6 @@ public final class CausynthTraceRecorder {
                 "sourceKey", sourceKey(event.source),
                 "requestKey", event.requestKey,
                 "requestApi", event.requestApi,
-                // Sender's minted endpoint, digest and components; absent
-                // on a delivery.
                 "producerEndpointId", event.producerEndpointId.isEmpty()
                         ? null : event.producerEndpointId,
                 "producerEndpoint", event.producerEndpoint.isEmpty()
@@ -2601,7 +2127,6 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
-        // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
@@ -2632,12 +2157,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * A plant's row, flushed as it is written: a native run its bound
-     * kills is read off its plant rows ({@code run_engine.sh
-     * campaign_reproduce_run}), and no hook of the engine's flushes the
-     * trace of a JVM that does not reach its run's end.
-     */
     private static void writePlantRow(Object... fields) {
         writeTraceRow(fields);
         if (traceWriter == null) return;
@@ -2656,7 +2175,6 @@ public final class CausynthTraceRecorder {
         return value.trim();
     }
 
-    /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
             File directory,
             List<Map<String, Object>> regions, TraceData trace,
@@ -2669,7 +2187,6 @@ public final class CausynthTraceRecorder {
                                 .toPath());
     }
 
-    /** The epoch's scope map, refused when it states no site at all. */
     private static StaticScopeMap readScopeMap(File staticScopeMap)
             throws IOException {
         StaticScopeMap map = StaticScopeMap.read(staticScopeMap.toPath());
@@ -2680,10 +2197,6 @@ public final class CausynthTraceRecorder {
         return map;
     }
 
-    /**
-     * The scope map's declared-value sites, as {@code <siteId>\n<callee>}:
-     * exactly the static pass's, never re-derived here.
-     */
     private static Set<String> declaredSites(StaticScopeMap map) {
         Set<String> sites = new LinkedHashSet<>();
         for (StaticScopeMap.Site site : map.declaredSites()) {
@@ -2704,7 +2217,6 @@ public final class CausynthTraceRecorder {
         try {
             writeFile(file, value);
         } catch (IOException ignored) {
-            // Best effort at shutdown; aggregation uses the throwing writer.
         }
     }
 
@@ -2736,12 +2248,8 @@ public final class CausynthTraceRecorder {
         final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
                 new ArrayList<>();
         final List<SourceTraceEvent> sources = new ArrayList<>();
-        /** The recording's schedule ({@code schedule.jsonl} beside the
-         *  trace): where each message was sent and taken in. */
         final List<ScheduleEvent> schedule = new ArrayList<>();
-        /** Lineage gaps the recording stated, as plan-gap rows. */
         final List<Map<String, Object>> lineageGaps = new ArrayList<>();
-        /** The shared store's writes and decodes ({@code RecordedStore}). */
         final List<RecordedStore.Event> store = new ArrayList<>();
 
         private void sort() {
@@ -2758,7 +2266,6 @@ public final class CausynthTraceRecorder {
         private final long seq;
         private final String kind;
         private final SourceRef source;
-        /** Registered object's identity, or 0; renamed after load. */
         private int objectId;
 
         private SourceTraceEvent(long seq, String kind, SourceRef source,
@@ -2772,24 +2279,17 @@ public final class CausynthTraceRecorder {
 
     private static final class ActiveCall {
         private final long callId;
-        /** The id its entry row stated as its caller's. */
         private final long parentCallId;
         private final long parentSiteId;
         private final String method;
         private final Object receiver;
         private final long spanId;
         private final boolean rootContext;
-        /** Whether this activation pushed an execution-index frame. */
         private final boolean regionFrame;
-        /** Its region entry's position on the thread's region stack
-         *  ({@code Identity}), or -1 with none. */
         private final int region;
-        /** The occurrence this entry opened, rendered; "" for none. */
         private final String occurrence;
-        /** Decisions this frame took, by site and outcome: how often. */
         private Map<String, Integer> decisions;
 
-        /** How often this frame has now taken {@code decision}. */
         private int decided(String decision) {
             if (decisions == null) decisions = new HashMap<>();
             return decisions.merge(decision, 1, Integer::sum);
@@ -2812,12 +2312,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * One STORE_LEAVES row ({@link #STORE_LEAVES_EVENT}), flat as every
-     * trace row is: {@code side} (WRITE or DECODE), {@code pointers} (the
-     * JSON pointers, tab-separated), {@code objects} (their leaf objects,
-     * comma-separated, parallel), or {@code whole} true past the bound.
-     */
     private static RecordedStore.Event storeLeavesOf(FlatJsonRow row) {
         String[] pointers = null;
         int[] objects = new int[0];
@@ -2841,10 +2335,6 @@ public final class CausynthTraceRecorder {
                 .slot(row.stringValue("slot"));
     }
 
-    /**
-     * One flat JSON trace row: an object whose values are only strings,
-     * numbers, booleans, or null.
-     */
     private static final class FlatJsonRow {
         private final JsonObject row;
 
@@ -2873,7 +2363,6 @@ public final class CausynthTraceRecorder {
                     value = new JsonPrimitive(
                             intern(pool, value.getAsString()));
                 }
-                // Later duplicate keys win, matching JsonObject.add.
                 interned.add(intern(pool, member.getKey()), value);
             }
             return new FlatJsonRow(interned);
@@ -2928,7 +2417,6 @@ public final class CausynthTraceRecorder {
         private final String siteId;
         private final String caller;
         private final String declaredCallee;
-        /** Whether its rows are written ({@link #beginCall}). */
         private final boolean traced;
 
         private ActiveCallSite(long invocationId, long ownerCallId,
@@ -2943,7 +2431,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Immutable public view of one exact active call-site invocation. */
     public static final class ActiveCallSiteContext {
         private final String siteId;
         private final String declaredCallee;

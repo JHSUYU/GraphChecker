@@ -46,33 +46,8 @@ as a reported signal.  Nothing gates on them.
 """
 import glob, json, os, re, sys
 
-# ---- the mechanism each case is known to fail by --------------------------
-# DATA, declared once, for the cases this harness runs; the only place a case
-# id appears in the gate, and a case it does not name cannot pass.
-#
-#   kinds  -- the witness kinds this case may conclude with.
-#   root   -- a root that must appear in movedRoots with that value, declared
-#             where its spelling is stable (17960's configured Boolean, its
-#             tree hook's source; CONFIG:<key>, causynth.ConfigRoots, once
-#             the tree drops the hook).
-#   fault  -- the moved roots must include a fault marker flipped to true
-#             whose declared site is a door of one of these client classes,
-#             a tuple of class names (the plan's input action states the
-#             site of every marker root).
-#   clocks -- False: no clock cell may move.  The witness is the fault alone,
-#             with every clock where the recording read it.
-#
-# Every tree of the block-key family carries 11741's expiry check, so a key
-# goes stale there ONLY through a failed RPC -- the request that never reached
-# the NameNode, or the NameNode's reply to a DataNode or to an application
-# that was lost after the NameNode applied it.  A clock witness for them moves
-# one node's clock hours past another's inside one JVM, which no run of the
-# cluster does: it is not a pass.  11741 is the bug that check fixes, so a
-# branch flip reaches its fatal with no fault; 17960's mechanism is its
-# configured Boolean.
 RPC_FAILURE = {"kinds": ("MARKER_FLIPPED",),
                "fault": ("org.apache.hadoop.ipc.Client",), "clocks": False}
-# A Solr transport fault: an HTTP exchange or a ZooKeeper call.
 SOLR_TRANSPORT_FAULT = {
     "kinds": ("MARKER_FLIPPED",),
     "fault": ("org.apache.solr.client.solrj.impl.HttpSolrClient",
@@ -84,8 +59,6 @@ EXPECTED_MECHANISM = {
     "hdfs-17960":      {"kinds": ("MARKER_FLIPPED",),
                         "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
                         "value": "false"},
-    # 11741 has no expiry check: a flipped branch with no fault already
-    # reaches its fatal, and an RPC fault may too.
     "hdfs-11741":      {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
     "hdfs-17899-bug1": RPC_FAILURE,
     "hdfs-17899-bug2": RPC_FAILURE,
@@ -94,32 +67,9 @@ EXPECTED_MECHANISM = {
     "hdfs-17967-pathA": RPC_FAILURE,
     "hdfs-17967-pathB": RPC_FAILURE,
     "hdfs-17967-pathC": RPC_FAILURE,
-    # Solr 8.11 fails by a clock.  SOLR-18413: the MIGRATE routing rule has
-    # not expired yet (RoutingRule.isExpired, expireAt against
-    # currentTimeMillis) when the source leader's update comes after the
-    # target collection's deletion, so the update looks the deleted target
-    # up.  SOLR-18406: the leader's commit reservation runs out before the
-    # follower's filecontent request, so the leader has deleted the
-    # generation the follower asks for.
     "solr-18413":      {"kinds": ("CLOCK_SKEW",)},
     "solr-18406":      {"kinds": ("CLOCK_SKEW",)},
-    # Bug study #04: a REINDEXCOLLECTION that fails after its alias step
-    # cleans up by deleting its target, which an alias still names
-    # (DeleteCollectionCmd.checkAliasReference), so the source stays
-    # read-only.  What fails it is a transport fault after that step: an
-    # HTTP exchange (an operator's request) or a ZooKeeper write.
     "solr-bugs-reindex-cleanup": SOLR_TRANSPORT_FAULT,
-    # The other Solr bug checks (docs/handover/TODO.md "Solr"): each fails
-    # by a transport fault, or by a node's cluster-state view re-paired with
-    # an older version.  migrate-buffer-leak: a fault at a door after the
-    # first MIGRATE's buffer step leaves the target BUFFERING, so the retried
-    # MIGRATE is refused.  overseer-lock-leak: a ZooKeeper ConnectionLoss past
-    # the retries at markTaskAsRunning's runningMap.put leaks the collection
-    # lock.
-    # restore-construction: a failed first RESTORE leaves the shards in
-    # CONSTRUCTION.  snapshot-no-active and tra-start-overwrite: the
-    # Overseer's view of a replica, the routing node's aliases, at a version
-    # before the write that changed them.
     "solr-bugs-migrate-buffer-leak": SOLR_TRANSPORT_FAULT,
     "solr-bugs-overseer-lock-leak": {
         "kinds": ("MARKER_FLIPPED",),
@@ -129,23 +79,12 @@ EXPECTED_MECHANISM = {
     "solr-bugs-restore-construction": SOLR_TRANSPORT_FAULT,
     "solr-bugs-snapshot-no-active": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     "solr-bugs-tra-start-overwrite": {"kinds": ("STATE_PAIRING_FLIPPED",)},
-    # ZooKeeper 3.9.  zk-bugs-quota-init: createQuota's limit node is
-    # written and its client sees the request fail (a ZooKeeper write door's
-    # fault), so the stat node is never created and the retried call's
-    # update branch reads it; the witness is the fault alone.
-    # zk-bugs-election-offer: the server's lookup of an offer the election
-    # listed is paired with a competitor's delete of it.
     "zk-bugs-quota-init": {"kinds": ("MARKER_FLIPPED",),
                            "fault": ("org.apache.zookeeper.ZooKeeper",),
                            "clocks": False},
     "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
-    # HDFS bug study #15: a detector turn that reads the slow-disk bound
-    # before the reconfiguration to 0 lands (its INITIAL, 1) publishes the
-    # SSD, which no later turn clears, so the ALL_SSD write has no volume.
     "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
 }
-# A rule's door list is a tuple of class names: a plain string there would be
-# matched as one, or iterated as its characters.
 for _case, _rule in EXPECTED_MECHANISM.items():
     if not isinstance(_rule.get("fault", ()), tuple):
         raise SystemExit("report.py: %s's fault rule must be a tuple of class"
@@ -238,9 +177,6 @@ polarity = polarity_doc()
 probes = probe_rows()
 claim = result.get("claim", "MISSING")
 final_status = result.get("finalStatus", "MISSING")
-# THE criterion's gap half is gaps.json, the one document every stage's gaps
-# land in with the class their producer stated: a PLAN or REPLAY blocker is
-# not in result.json's composer blockers.
 gaps_doc = load("gaps.json")
 blocking = [g for g in (gaps_doc.get("gaps") or [])
             if g.get("class", "BLOCKING") == "BLOCKING"]
@@ -249,27 +185,13 @@ for gap in blocking:
     stage = gap.get("stage", "?")
     blocking_by_stage[stage] = blocking_by_stage.get(stage, 0) + 1
 gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
-# ...and the campaign's own acceptance: a candidate the campaign withheld is
-# not a pass whatever else the result says.
 withheld = result.get("accepted") is not True
-# CONFIRM (PIPELINE §10): SAT says the model satisfies the formula, the
-# confirmation replay says whether the program agrees.  EMIT copies
-# confirm.json into result.json: a claim it did not confirm -- refuted, or
-# decided by no replay -- is SAT_UNCONFIRMED; a result with no confirmation
-# at all is not confirmed.
 confirmation = result.get("confirmation") or {}
 confirmed = confirmation.get("confirmed") is True
-# WHICH mechanism the composition concluded, and the condition it rests on.
-# EMIT copies both out of the ClaimPolicy decision; "MISSING" here means the
-# run published no result, and is reported as itself rather than read as a
-# default.
 finding_kind = result.get("findingKind", "MISSING")
 polarity_decides = result.get("polarityDecides", False)
 valuation_ordinal = result.get("valuationOrdinal", "?")
 moved_roots = result.get("movedRoots", {}) or {}
-# The arms the claimed valuation took that are no pairing the selected
-# path's own run had, as COMPOSE states them (Composition#repaired): what a
-# pairing kind moved.
 repaired_arms = next((row.get("repairedArms") or []
                       for row in result.get("valuations") or []
                       if row.get("ordinal") == valuation_ordinal), [])
@@ -277,27 +199,11 @@ plain = probes.get("plain", "-")
 buggy = probes.get("buggy", "-")
 other = probes.get("other", "-")
 
-# ---- the witness findings the claim layer published ------------------------
-# result.json is the one source: EMIT copies the ClaimPolicy decision into it,
-# so there is nothing to fall back to and no second document to reconcile.
 findings = result.get("witnessFindings") or []
 
 
-# ---- PASS criterion -------------------------------------------------------
-# The claim layer is the whole gate: the conditions below, all read off
-# result.json (and the cone gate's cone.json), none of them re-derived here.
-#
-# The five mechanisms a composition may conclude.  FORMULA_SAT (a satisfiable
-# formula no mechanism names, which CONFIRM judges) and NO_SUPPORTED_WITNESS
-# (the honest answer that nothing in the corpus supports a witness) are the
-# other ClaimKinds and deliberately not among them: a named case that reaches
-# one has not passed.
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
                      "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED"}
-# What a pairing kind moves is a pairing, not a root: ClaimPolicy names it
-# only where pinning the path's observed reads (or arrivals) refutes the
-# witness, and the claimed valuation names the arms it re-paired
-# (repairedArms), which CONFIRM held the run to.
 PAIRING_FINDINGS = {"MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED"}
 
 def spell_kinds(kinds):
@@ -306,10 +212,6 @@ def spell_kinds(kinds):
 
 expected = EXPECTED_MECHANISM.get(case_id)
 reasons = []
-# A recording its watcher ended -- its trace past its bound, or nothing
-# written for minutes -- left its marker beside the trace, the reason first
-# (run_engine.sh campaign_watch_workload): the verdict names it, before the
-# claim it never reached.
 end_marker = os.path.join(case_dir, "runtime", "RECORDING_ENDED")
 if os.path.isfile(end_marker):
     with open(end_marker) as marker:
@@ -326,8 +228,6 @@ if withheld:
 if not confirmed:
     reasons.append("unconfirmed: %s" % (
         confirmation.get("reason") or "no confirmation published"))
-# The claims CONFIRM refuted before this one: filtered false positives,
-# reported whatever the case concluded (## Refuted claims).
 refuted = result.get("refutedClaims") or []
 if final_status != "FINAL_READY":
     reasons.append("finalStatus=%s" % final_status)
@@ -337,42 +237,26 @@ if finding_kind == "NO_SUPPORTED_WITNESS":
 elif finding_kind not in ACCEPTED_FINDINGS:
     reasons.append("findingKind=%s" % finding_kind)
 elif not polarity_decides:
-    # The recording does not decide the mechanism, so the mechanism explains
-    # nothing about the difference between the run that failed and the run
-    # that did not.
     reasons.append("polarityDecides=false: the formula is satisfiable at the"
                    " recorded valuation, so %s explains nothing"
                    % finding_kind)
 
-# The mechanism is read off the table, never off the run: a case the table
-# does not name cannot be passed by this harness.
 if expected is None:
     reasons.append("no expected mechanism declared for %s" % case_id)
 else:
     if finding_kind not in expected["kinds"]:
         reasons.append("findingKind %s != expected %s"
                        % (finding_kind, spell_kinds(expected["kinds"])))
-    # A CLOCK HAS A FLOOR AND NO WINDOW, so there is no perturbed valuation
-    # for it to sit at: the witness stands at the recorded valuation and the
-    # difference it names is which clock cells the model placed elsewhere,
-    # which is exactly movedRoots.  Ordinal 0 is legitimate for CLOCK_SKEW
-    # and a pairing kind (PAIRING_FINDINGS: it moves a pairing, the arm the
-    # valuation selected) and for nothing else; any other kind's movedRoots
-    # must still be non-empty, because a finding that moves nothing at
-    # valuation 0 is the recording restated whatever kind it carries.
     pairing = finding_kind in PAIRING_FINDINGS
     ordinal_ok = (finding_kind == "CLOCK_SKEW" or pairing
                   or (isinstance(valuation_ordinal, int)
                       and not isinstance(valuation_ordinal, bool)
                       and valuation_ordinal >= 1))
     if pairing and not moved_roots:
-        # The pairing alone moved: the valuation must name what it re-paired.
         if not repaired_arms:
             reasons.append("valuation %s names no re-paired arm"
                            % valuation_ordinal)
     elif not moved_roots:
-        # Valuation 0 is the recording.  A finding that moves nothing there
-        # explains nothing, so it does not matter which kind it carries.
         reasons.append("valuation %s moved no root" % valuation_ordinal)
     else:
         if not ordinal_ok:
@@ -409,11 +293,6 @@ else:
                                " clock where the recording read it"
                                % len(clocks))
 
-# THE CAUSALITY the witness rests on, checked in the formula itself
-# (cone.py): every root it moved must be in the causal cone of the path the
-# claim selected, and no fatal condition may name a boundary variable that no
-# family binds.  A claim whose mechanism the fatal does not depend on, or
-# whose fatal rests on a value no producer made, is not a finding.
 try:
     with open(os.path.join(work, "cone.json")) as handle:
         cone = json.load(handle)
@@ -427,10 +306,6 @@ else:
     if outside:
         reasons.append("moved root(s) outside the witness path's causal"
                        " cone: %s" % ", ".join(outside))
-    # An open chain under a SAT CONFIRM confirmed is named, not failed: the
-    # witness was confirmed first and its chain grown meanwhile (owner
-    # 2026-10-15, best effort; RULES), and the replay that reached the fatal
-    # with the model planted is the finding.
     if cone.get("unbound") and not confirmed:
         reasons.append("%d boundary variable(s) in a fatal condition that no"
                        " family binds" % len(cone["unbound"]))
@@ -438,10 +313,6 @@ else:
 verdict = "PASS" if not reasons else "FAIL"
 reason = "; ".join(reasons) if reasons else "-"
 
-# The finding column: the mechanism the composition concluded, the valuation
-# that carried it, and the roots that had to move -- in the composer's own
-# words, read off result.json.  It is deliberately not assembled from the
-# probe's two polarities: the probe reports, the composer decides.
 note = "%s at valuation %s" % (finding_kind, valuation_ordinal)
 if moved_roots:
     note += " moving %s" % ", ".join(
@@ -454,18 +325,13 @@ if cone and cone.get("unbound") and confirmed:
 note += (" | the recorded valuation refutes the recording"
          if polarity_decides
          else " | the recorded valuation does not refute the recording")
-# A declared bound that cut the search (result.json bounded, RULES: a named,
-# rare last resort) comes before the reason, so the cut cell keeps it.
 bounded = result.get("bounded") or {}
 if bounded:
     note += " | BOUNDED by %s" % ",".join(bounded.get("by", []))
 if claim != "SAT_CANDIDATE" and result.get("claimReason"):
     note += " | %s" % result["claimReason"]
-# The probe stays a reported signal, never a gate.
 if buggy != "-" or other != "-":
     note += " | probe buggy=%s other=%s" % (buggy, other)
-# One TSV cell, so one line and a bounded one. The whole narrative, with every
-# mechanism row and every freedom, is in the report's "Witness findings".
 note = " ".join(note.split())
 if len(note) > 180:
     note = note[:177] + "..."
@@ -485,7 +351,6 @@ with open(os.path.join(work, "row.tsv"), "w") as handle:
         plain, buggy, other,
         verdict, reason, note]) + "\n")
 
-# ---- the readable report --------------------------------------------------
 out = ["# %s" % case_id, "",
        "**%s** -- %s at valuation %s, polarity %s"
        % (verdict, finding_kind, valuation_ordinal,
@@ -512,8 +377,6 @@ else:
             " cannot pass it" % case_id, ""]
 if reason != "-":
     out += ["> %s" % reason, ""]
-# The probe is reported, never required: it gates nothing, and on a corpus it
-# cannot read it says so rather than contributing a dash to the verdict line.
 if (plain, buggy, other) != ("-", "-", "-"):
     out += ["probe: plain `%s` | buggy `%s` | other `%s` (reported, not a"
             " gate)" % (plain, buggy, other), ""]
@@ -545,9 +408,6 @@ if polarity.get("terms"):
             "    * source **%s**" % polarity.get("source", "-"),
             "    * %s" % polarity.get("sourceDetail", "-")]
     if polarity.get("acceptedFindingKind"):
-        # The mechanism the claim rests on, by name. A witness that names
-        # none is not a finding, and the claim layer blocks it; printing the
-        # kind here is what lets a reader see which of the four it was.
         out += ["    * finding kind **%s**"
                 % polarity["acceptedFindingKind"]]
     if unstated:
@@ -584,13 +444,6 @@ if blocking:
     out.append("")
 
 concrete = result.get("concrete") or []
-# The witness's rows come first and are never cut (a reader checking the
-# witness's chain needs every value it rests on): its path's own and those of
-# the arms it chose (a row inside an arm names it, "arm"); then the rows that
-# name no path (EXPLORE's concrete anchors); the other paths' own rows are cut
-# at CONCRETE_SHOWN, their count stated (hdfs-17899-bug2: a held arrival on
-# every one of its paths).  A row in an arm no witness chose is counted only
-# (hdfs-11741 PS1: 12 HELD rows of arms the witness did not take).
 CONCRETE_SHOWN = 20
 WORDS = {"FREE": "free (over-approximated)",
          "HELD": "held at its recorded value",
@@ -703,8 +556,6 @@ if cone:
     out.append("* %d declared root(s) in the cone; %d unbound boundary"
                " variable(s)" % (len(cone.get("coneRoots") or []),
                                  len(cone.get("unbound") or [])))
-    # A SAT is judged on the path it claims: the other paths' open links
-    # are information, stated, never gating.
     off = cone.get("unboundOffWitness") or []
     if off:
         out.append("* %d unbound boundary variable(s) on paths the witness"
@@ -727,8 +578,6 @@ if refuted:
                       or "nothing", row.get("reason", "")))
     out.append("")
 
-# The valuations the composer enumerated and what z3 answered for each.
-# Read off result.json, which EMIT copies from the composition manifest.
 valuations = result.get("valuations") or []
 if valuations:
     out += ["## Valuations", ""]

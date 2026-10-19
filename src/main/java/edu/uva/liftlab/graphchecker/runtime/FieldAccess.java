@@ -11,10 +11,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.List;
 
-/**
- * Stateless reflective access to the exact cell a declared input names.
- * {@link MissingValue} means "no such cell", distinct from a {@code null}.
- */
 final class FieldAccess {
     private FieldAccess() {
     }
@@ -113,7 +109,6 @@ final class FieldAccess {
                 declared.name(), javaTypeDescriptor(declared.type()), true);
     }
 
-    /** Exact live field named by a VM handoff export. */
     static Field declaredInstanceField(
             Object owner, String declaringClass, String fieldName,
             String descriptor) {
@@ -121,10 +116,6 @@ final class FieldAccess {
                 descriptor, false);
     }
 
-    /**
-     * The non-static, descriptor-matching field; {@code inherited} (never for
-     * an exact VM export) also accepts one the declaring class inherits.
-     */
     private static Field declaredInstanceField(
             Object owner, String declaringClass, String fieldName,
             String descriptor, boolean inherited) {

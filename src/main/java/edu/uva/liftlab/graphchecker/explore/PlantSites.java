@@ -25,24 +25,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * Where a native reproduction meets the values a replay mints, read off the
- * task plan (PIPELINE §10b): per input port, the call sites its value is the
- * return of -- an external call's ({@code CALL_RETURN}: a clock, a
- * configuration getter) or an unwoven accessor's -- each with its callee, its
- * JVM type, its declared clock and the region declaring it; per input port,
- * every location its actions name and every call site; per IN port, its
- * capture.  A site is the plan's own spelling, {@code <method>#u<unit>}
- * ({@link SiteId}), the one the recording weave states a call by.
- */
 final class PlantSites {
-    /** One call whose return is a port's value. */
     static final class Call {
         final String siteId;
         final String callee;
         final String javaType;
-        /** A declared clock reading's clock (the replay mints it on its
-         *  node's clock), else null. */
         final Clock clock;
         final String region;
 
@@ -55,14 +42,12 @@ final class PlantSites {
             this.region = region;
         }
 
-        /** The call it is, whatever region declares it. */
         String key() {
             return siteId + "\n" + callee + "\n"
                     + (clock == null ? "" : clock.toString());
         }
     }
 
-    /** One IN port's capture: where its value arrives. */
     static final class Capture {
         final String kind;
         final String siteId;
@@ -86,8 +71,6 @@ final class PlantSites {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Capture> captures =
             new LinkedHashMap<String, Capture>();
-    /** {@code <port>|<occurrence id>} -> the invocation its input action
-     *  plans there ({@code replayOccurrence}). */
     private final Map<String, Integer> invocations =
             new LinkedHashMap<String, Integer>();
 
@@ -136,8 +119,6 @@ final class PlantSites {
         Call call = null;
         if ("CALL_RETURN".equals(location) && !site.isEmpty()
                 && !optionalString(action, "declaredCallee").isEmpty()) {
-            // A clock is a declared reading only where the recording read it
-            // (SymbolizeAction#declaresWallClockRead).
             long nanos = optionalLongInteger(action,
                     InputActionCatalog.DECLARED_WALL_CLOCK, 0L);
             Clock clock = nanos > 0L && optionalBool(action, "observed", false)
@@ -164,17 +145,13 @@ final class PlantSites {
             invocations.put(port + "|" + OccurrenceAddress.parse(occurrence)
                     .id(), planned);
         } catch (IllegalArgumentException notAnAddress) {
-            // A task of no occurrence address plans no invocation of one.
         }
     }
 
-    /** The invocation a port's input action plans in an occurrence: its
-     *  {@code replayOccurrence} there, else the first. */
     int invocation(String port, OccurrenceAddress occurrence) {
         return invocations.getOrDefault(port + "|" + occurrence.id(), 1);
     }
 
-    /** The calls a port's value is the return of, one per call. */
     List<Call> calls(String port) {
         Map<String, Call> distinct = new LinkedHashMap<String, Call>();
         for (Call call : calls.getOrDefault(port,
@@ -184,12 +161,10 @@ final class PlantSites {
         return new ArrayList<Call>(distinct.values());
     }
 
-    /** Every location a port's input actions name. */
     Set<String> locations(String port) {
         return locations.getOrDefault(port, Collections.<String>emptySet());
     }
 
-    /** Every call site a port's input actions name. */
     Set<String> sites(String port) {
         return sites.getOrDefault(port, Collections.<String>emptySet());
     }
@@ -198,11 +173,6 @@ final class PlantSites {
         return captures.get(port);
     }
 
-    /**
-     * Every declared clock reading of the plan, by call, with the regions
-     * declaring it: a native run's clock readings that run on their node's
-     * clock (the replay mints each).
-     */
     Map<Call, Set<String>> clockReadings() {
         Map<String, Call> byKey = new LinkedHashMap<String, Call>();
         Map<String, Set<String>> regions =

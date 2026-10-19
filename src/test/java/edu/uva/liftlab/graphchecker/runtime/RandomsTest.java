@@ -12,12 +12,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * What a draw is keyed by (SYMBOL-SCOPE §4.5): inside the window its schedule
- * context, site and count; before it its node, handoffs, site and count; the
- * counts restart at each window, and a region woven around a draw moves
- * nothing.
- */
 @RunWith(FreshStatics.class)
 public class RandomsTest {
     private static final String SITE =
@@ -47,11 +41,6 @@ public class RandomsTest {
                 "2#" + context + "#" + SITE + "#0", Randoms.key(SITE));
     }
 
-    /**
-     * A draw keyed by its site draws, in a fresh run, what the first drew;
-     * the bounded draws keep ThreadLocalRandom's contract: in [origin,
-     * bound), and a bad bound refused.
-     */
     @Test
     @FreshStatics.Rows(2)
     public void aSiteKeyedDrawRepeatsInEveryPassWithinItsBounds() {

@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/** A session's expression log as a run writes it, for synthetic sessions. */
 public final class ExpressionLogs {
     private ExpressionLogs() {
     }

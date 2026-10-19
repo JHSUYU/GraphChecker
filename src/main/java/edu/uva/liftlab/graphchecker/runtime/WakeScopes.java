@@ -5,16 +5,6 @@ import java.util.Deque;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * One turn of a service loop (heartbeat, monitor, key updater) is one root
- * scope, so daemon traffic is not all addressed {@code Lost}.
- *
- * <p>The WAKE of a timed wait opens the turn (role {@code WAKE}, api = the
- * loop's site, k = the k-th turn of that loop on that node in the window);
- * the next wait closes it.  Only on threads attributed to a node.  A turn
- * scope that is not innermost at the wait is left standing and closes the
- * next time it is.</p>
- */
 final class WakeScopes {
     private static final ThreadLocal<Deque<Long>> OPEN =
             new ThreadLocal<Deque<Long>>() {
@@ -27,7 +17,6 @@ final class WakeScopes {
     private WakeScopes() {
     }
 
-    /** The loop waits: the turn it was running is over. */
     static void waiting() {
         ScheduleLog.mute();
         try {
@@ -37,13 +26,11 @@ final class WakeScopes {
                 open.pop();
             }
         } catch (Throwable ignored) {
-            // A hook never turns a wait into a failure.
         } finally {
             ScheduleLog.unmute();
         }
     }
 
-    /** The wait returned: the loop's next turn begins. */
     static void woke(String site) {
         if (!RecordingWindow.opened()) return;
         ScheduleLog.mute();
@@ -56,7 +43,6 @@ final class WakeScopes {
         }
     }
 
-    /** {@code Class.method} of the wait: two waits of one loop are one loop. */
     static String api(String site) {
         String value = trimmed(site);
         int open = value.indexOf('<');

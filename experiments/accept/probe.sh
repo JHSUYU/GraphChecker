@@ -1,78 +1,4 @@
 #!/usr/bin/env bash
-# probe.sh <case> <case-dir> <work-dir>
-#
-# The PLAIN probe: z3 on the composition's own candidate.smt2, unpinned and with
-# no case frontier fixed, so the verdict is a statement about the formula the
-# campaign published rather than about a slice of it.
-#
-# Three runs per case: plain, the buggy polarity of the case's declared root,
-# and the other polarity. What the probe is asked for is the buggy polarity:
-# satisfiable on the composition's own formula, not only on the slice the
-# campaign solved.
-#
-# "The buggy polarity" is THE ASSIGNMENT THE CLAIM LAYER ACCEPTED, whether or
-# not it moves anything. That is the whole of the rule, and it is not a
-# synonym for "some root flipped". The claim layer publishes three kinds of
-# accepted witness and two of them move no root at all:
-#
-#   FLIPPED_PLANTED_MARKER          a planted Debug.makeSymbolicBoolean marker
-#                                   moved off what it recorded (17899)
-#   RECORDED_ROOT_VALUES_REPRODUCED every declared root sits at its recorded
-#                                   value and the target is still reached --
-#                                   the witness REPRODUCES the recording
-#                                   rather than counterfactualising it
-#                                   (17960: the epoch-1 NameNode recorded
-#                                   dfs.namenode.snapshot.deletion.ordered =
-#                                   false, and false is the polarity that
-#                                   reaches the target)
-#   UNPLANTED_ROOT_MOVED            a root that is not a planted marker moved
-#
-# A probe that hard-wired "buggy = something flipped" would read 17960 exactly
-# backwards: it would flip ordered to true, get unsat, and fail a run the claim
-# layer accepted while the formula is right (false sat, true unsat). So the
-# accepted assignment is read from result.json and asserted as it stands, and
-# a run that accepted NO witness falls back to
-#
-#   (b) each single-marker flip in turn, which is the question "is this marker
-#       the mechanism" asked once per marker. An experiment may plant more than
-#       one and they need not all be the bug: hdfs-17899-bug1 plants two on the
-#       Balancer, and failing the constructor's updateBlockKeys aborts the test,
-#       so asserting "every marker true" asks a question whose answer is unsat
-#       for a reason that has nothing to do with the bug.
-#
-# A flip is a move off a recorded value, so that fallback needs one: where the
-# manifest states no recorded value for a declared root the probe writes
-# source UNSTATED_RECORDED_VALUE and asks nothing. There is no per-case
-# declared polarity either: a run whose claim layer accepted nothing is a run
-# the policy refused, and asserting a hard-coded polarity there can only
-# manufacture a PASS.
-#
-# The other polarity is the complement of the buggy assignment where the case
-# has a single Boolean root (17960: ordered=true), and the all-recorded
-# valuation where it has several -- with two markers the world as recorded is
-# one valuation and not one per marker. It is run and reported and is not
-# required to be unsat. Under the acceptance ruling a witness there is a
-# legitimate finding whenever every mechanism it names is something the world
-# does -- a key-rotation race, clock drift inside the recorded window -- and
-# ClaimPolicy has already withheld the claim if any satisfying witness rested
-# on freedom nobody accounted for. A probe that demanded unsat here would
-# refuse, on a weaker reading of the same evidence, runs the policy accepted;
-# report.py prints what the polarity named instead.
-#
-# A case whose manifest declares no Boolean root (hdfs-11741: its mechanism
-# is wall-clock skew) has no second polarity to spell: the probe says NO_ROOT
-# and the claim layer's CLOCK_SKEW finding, which report.py reads out of
-# result.json, is the answer.
-#
-# Writes probe.tsv (label, verdict, seconds) and probe/polarity.json (what each
-# polarity asserted and where it came from, which report.py reads back); it
-# touches only copies of the published formula and never the case directory.
-#
-# Environment: Z3_BIN (default tools/lib/gc-env.sh's), Z3_TIMEOUT_SECONDS (default
-# 600, z3's own -T: budget; the outer timeout is a hard backstop for a z3 that
-# wedges before it arms its own timer) and PROBE_WHOLE_SECONDS (default 60,
-# at most Z3_TIMEOUT_SECONDS): the budget of each question asked whole before
-# it is asked one path at a time, as ClaimPolicy#byDisjunct does.
 set -uo pipefail
 
 # shellcheck source=../../tools/lib/gc-env.sh
@@ -90,12 +16,6 @@ mkdir -p "$work/probe"
 : >"$work/probe.tsv"
 
 [[ -s "$C" ]] || { echo "no candidate.smt2 for $case_id" >&2; exit 1; }
-# UNPINNED, which is what the header above says this probe is.  The composer
-# writes the valuation it was asked about into the file it publishes --
-# `(assert (! (= <root> true) :named valuation__<root>))` -- so a probe that
-# kept those pins would ask about ONE valuation and not about the formula, and
-# asserting the other polarity on top of it would be unsat whatever the
-# formula says.  Each polarity below asserts its own.
 grep -av '^(check-sat' "$C" | grep -av '^(get-value' \
   | grep -av ':named valuation__' >"$work/probe/body.smt2"
 
@@ -105,12 +25,6 @@ solve() {  # solve <file> <seconds>: z3's verdict line, both arithmetic engines 
   printf '%s' "${out:-NO_OUTPUT}"
 }
 
-# One path's text per path selector of the manifest, as ClaimPolicy asks a
-# disjunction z3 left undecided whole (Composition#sharedQuery and
-# #scopeQuery, one scope of its scoped z3s, read here as one text): the body
-# without the commands another path's selector guards -- (assert (=> <sel>
-# ...)), named or not, vacuous once the partition forces that selector
-# false -- and with its own selector asserted.  Written once, on first need.
 split_paths() {
   [[ -e "$work/probe/paths/done" ]] && return
   mkdir -p "$work/probe/paths"
@@ -182,10 +96,6 @@ open("%s/done" % out, "w").close()
 PY
 }
 
-# run <label> <assert-file-or-empty>: the whole formula within
-# PROBE_WHOLE_SECONDS; undecided, one path at a time, each within z3's full
-# budget: the first sat path answers, else the first undecided verdict, else
-# unsat.  One row either way, as the engine's valuation asks are one answer.
 run() {
   local label=$1 extra=${2:-} f t0 out name each verdict undecided
   name=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
@@ -223,18 +133,6 @@ run() {
 echo "== $case_id plain probe"
 run plain ""
 
-# Read the accepted assignment out of the claim layer's own output and
-# spell it as asserts.
-#
-# The declared roots are the field the composer publishes: manifest.roots,
-# one {rootId, kind, recordedValue} row per declared root.  recordedValue
-# is the recording's own observation.
-#
-# Whether the recorded valuation refutes the recording is
-# ClaimPolicy.polarityDecides, computed by the composer that holds the
-# formula, the domains and the arms.  This probe is a reported signal; it
-# does not gate, and it does not re-derive the composer's answer from its
-# artifacts.
 python3 - "$final/result.json" "$M" "$C" "$work/probe" "$case_id" \
          <<'PY'
 import json, os, re, sys
@@ -491,8 +389,6 @@ NO_ROOT)
   exit 0
   ;;
 UNSTATED_RECORDED_VALUE)
-  # Nothing observed what a declared root held, so there is no polarity to
-  # call buggy and none to call other. Reported as the open question it is.
   printf 'buggy\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
   printf 'other\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
   exit 0
@@ -501,9 +397,6 @@ ACCEPTED_WITNESS)
   run buggy "$work/probe/buggy.assert"
   ;;
 SINGLE_MARKER_ENUMERATION)
-  # Every flip is reported under its own marker, and "buggy" is the
-  # question the case asks: is there a way to move one marker that reaches
-  # the target. sat from any one of them answers it.
   best=unsat
   while IFS=$'\t' read -r index identity; do
     [[ -n "$index" ]] || continue
@@ -516,8 +409,6 @@ SINGLE_MARKER_ENUMERATION)
       *) [[ "$best" == unsat ]] && best=$verdict ;;
     esac
   done <"$work/probe/flips.txt"
-  # One row named "buggy", so a reader and the report agree on what the
-  # case's own question answered; the per-marker rows stay beside it.
   printf 'buggy\t%s\t0\n' "$best" >>"$work/probe.tsv"
   printf 'PROBE %-22s %-10s (from single-marker flips)\n' buggy "$best"
   ;;

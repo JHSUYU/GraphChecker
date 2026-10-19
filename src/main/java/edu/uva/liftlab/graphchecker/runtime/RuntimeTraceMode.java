@@ -5,15 +5,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
 import java.util.Locale;
 
-/**
- * Which pass this JVM is.  Declared, never inferred from other keys.
- *
- * <p>{@link #REPLAY_CONTEXT} keeps the exact stacks accessors need and
- * writes no trace: that workload's trace is the seed's.</p>
- */
 public enum RuntimeTraceMode {
     DISCOVERY,
-    /** The recording: rich hooks over every candidate region. */
     REGION_STATE,
     REPLAY_CONTEXT;
 

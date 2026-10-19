@@ -12,7 +12,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Canonical, Soot-CFG-independent identity for one conditional successor. */
 final class CausynthBranchShape {
     static final String IF = "IF";
     static final String TABLE_SWITCH = "TABLE_SWITCH";

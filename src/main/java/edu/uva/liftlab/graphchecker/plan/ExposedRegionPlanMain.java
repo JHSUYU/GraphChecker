@@ -29,23 +29,9 @@ import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** GROW's planner (PIPELINE §7.8): the next generation's whole plan, {@code
- *  --iteration <dir> --plan <the generation's plan> --growth <growth.jsonl>
- *  --output <jsonl> [--zk-chain <the chain> --zk-chain-output <jsonl>]}.
- *  Its rows are the plan's, each UNPLANNED_INPUT row's invocation added to
- *  its task as an input of its own ({@link #grown}), then one row per
- *  EXPOSED_REGION row, and per {@value ZkChain#EDGE} row whose occurrence
- *  the plan holds no task for and whose region is a candidate skeleton: a
- *  region-path task on that exact address, with static inputs only (cut
- *  ports, declared CALL_RETURN sites), sharing the plan's {@code
- *  replayGroupId}.  The generation's ZooKeeper chain is the one before it
- *  with each ZK_EDGE row's path and occurrence appended ({@link
- *  ZkChain#grown}), a seed's edge (no session) as well as a replay's. */
 public final class ExposedRegionPlanMain {
-    /** The growth row kinds this main answers. */
     public static final String EXPOSED_REGION = "EXPOSED_REGION";
     public static final String UNPLANNED_INPUT = "UNPLANNED_INPUT";
-    /** Prefix of the admission basis of an exposed occurrence's row. */
     public static final String EXPOSED_BY = "EXPOSED_BY:";
 
     private static final Gson GSON = new Gson();
@@ -66,8 +52,6 @@ public final class ExposedRegionPlanMain {
         List<JsonObject> rows = ArtifactIO.readJsonl(growth);
         List<JsonObject> generation = grown(ArtifactIO.readJsonl(plan), rows);
         generation.addAll(plan(iteration, scopeMap, rows, generation));
-        // A chain the plan states, or one its edges start: a system with
-        // none (no ZooKeeper) gets none.
         ZkChain chain = ZkChain.read(values.containsKey("zk-chain")
                 ? ConcolicScheduler.requiredPath(values, "zk-chain")
                 : null).grown(rows);
@@ -79,13 +63,6 @@ public final class ExposedRegionPlanMain {
         ArtifactIO.replaceJsonl(output, generation);
     }
 
-    /**
-     * Each task row of a {@value ZkChain#EDGE} row's occurrence states the
-     * leaf prefixes the grown chain keys it by ({@value
-     * ZkChain#CONTENT_KEYS}, added to any it stated): a leaf outside them
-     * crosses as its value.  The chain stating none for it, the row keeps
-     * what it had (no member: the whole document).
-     */
     static void keyed(List<JsonObject> generation, List<JsonObject> growth,
                       ZkChain chain) {
         Set<String> edged = new LinkedHashSet<>();
@@ -109,15 +86,6 @@ public final class ExposedRegionPlanMain {
         }
     }
 
-    /**
-     * {@code plan}'s rows with each UNPLANNED_INPUT row's invocation planned
-     * in its task: the input the row names, again, as {@link
-     * UnplannedInput#grown} -- its own symbol and port, its invocation
-     * {@code k}, observed in no recording -- so the k-th call of the marker
-     * in that occurrence is a root of its own.  It is added to the task's
-     * row, never a second row of the occurrence, which would compete for
-     * its claim.  A row naming no task or no input of it is refused.
-     */
     static List<JsonObject> grown(List<JsonObject> plan,
                                   List<JsonObject> growth) throws IOException {
         List<JsonObject> rows = new ArrayList<>();
@@ -162,15 +130,9 @@ public final class ExposedRegionPlanMain {
         return rows;
     }
 
-    /** What an input states of the call the recording observed it at: no
-     *  grown invocation was observed. */
     private static final String[] RECORDED = {
         "primitiveValue", "eventSeq", "callId"};
 
-    /** Growth runs mid-exploration: the scope map is the one the wave
-     *  planner read, never the iteration manifest (written only once the
-     *  exploration ends).  {@code planned}: the generation's rows so far,
-     *  whose occurrences a ZK_EDGE row plans no second task for. */
     static List<JsonObject> plan(Path iteration, Path scopeMapFile,
                                  List<JsonObject> growth,
                                  List<JsonObject> planned)
@@ -206,8 +168,6 @@ public final class ExposedRegionPlanMain {
         String replayGroupId = replayGroupId(
                 iteration.resolve("execution_task_plan.jsonl"));
 
-        // Plan all exposed occurrences before selecting: selection scopes over
-        // planned regions.
         List<JsonObject> regionCatalog = frozen.regions();
         List<RegionInstancePlan> regionPlans = new ArrayList<>(
                 frozen.regionPlans());
@@ -229,9 +189,6 @@ public final class ExposedRegionPlanMain {
             if (!seen.add(address.render())) continue;
             StaticProgram.RegionRow skeleton = skeletons.get(regionId);
             if (skeleton == null && edge) {
-                // Work under no candidate region (a role's, a test
-                // thread's) runs as recorded: its path joins the chain,
-                // and no task can hold it.
                 System.out.println(ZkChain.EDGE + " " + address.render()
                         + ": no candidate skeleton is " + regionId
                         + ", so no task holds it; its path joins the chain");
@@ -254,7 +211,6 @@ public final class ExposedRegionPlanMain {
         ConcolicScheduler.SymbolicInputSelection inputs =
                 ConcolicScheduler.SymbolicInputSelection.read(scopeMap,
                         regionCatalog);
-        // Over every plan, as the seed plan's is: one campaign, one policy.
         LoopBoundPolicy loopBound = ConcolicScheduler.declaredLoopBounds(
                 LoopBoundPolicy.declaredDefault(), regionPlans);
         List<JsonObject> rows = new ArrayList<>();
@@ -274,8 +230,6 @@ public final class ExposedRegionPlanMain {
             task.addProperty(ConcolicScheduler.REPLAY_GROUP_ID, replayGroupId);
             task.addProperty(RuntimeSelectedRegionFinalizer.ADMISSION_BASIS,
                     EXPOSED_BY + exposedBy.get(index));
-            // A region the system declares heavy runs for its doors alone
-            // here as in the seed's plan (DoorsOnlyRoots).
             if (task.has("rootSelector") && heavy.holds(
                     JsonFields.optionalString(task.getAsJsonObject(
                             "rootSelector"), "method"))) {
@@ -290,8 +244,6 @@ public final class ExposedRegionPlanMain {
         return rows;
     }
 
-    /** The region-plan row of an exposed occurrence: RuntimeRegionPlanner's
-     *  shape minus recorded facts. */
     private static Map<String, Object> planRow(
             StaticProgram.RegionRow skeleton, OccurrenceAddress address,
             String sessionId) {
@@ -309,8 +261,6 @@ public final class ExposedRegionPlanMain {
                 skeleton.regionId).get(0);
         RuntimeRegionPlanner.declareCutPortCells(region);
 
-        // The selector names root method and anchor node, no receiver class;
-        // the anchor is the node its address names, by the planner's rule.
         Map<String, Object> rootSelector = new LinkedHashMap<>();
         rootSelector.put("method", skeleton.rootMethod);
         rootSelector.put("kind", "GLOBAL_INVOCATION");
@@ -366,7 +316,6 @@ public final class ExposedRegionPlanMain {
         return plan;
     }
 
-    /** The one ledger every task of the iteration's plan names. */
     private static String replayGroupId(Path plan) throws IOException {
         String group = "";
         for (JsonObject task : ArtifactIO.readJsonl(plan)) {

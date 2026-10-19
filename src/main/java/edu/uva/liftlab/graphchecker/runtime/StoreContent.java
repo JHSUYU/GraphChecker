@@ -25,67 +25,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
-/**
- * THE CONTENT A STORE VERSION CARRIES (PIPELINE §8, a store's content): a
- * JSON document a node writes to a shared store and another node parses,
- * leaf by leaf -- MessageCodec's analogue for a store's JSON codec.
- *
- * <p>The system's codec hands over what it serialized and what it parsed
- * (Solr's {@code Utils.toJSON}, {@code Utils.fromJSON}): the bytes, with the
- * document as the writer saw it -- a tree of maps, lists and leaves built as
- * the serializer walked it, each leaf the object the writer holds, so its
- * expression comes with it ({@link #written}) -- and the tree the parser
- * built ({@link #parsed}).  The store's doors pass the same arrays: a write
- * of bytes the codec wrote exports each leaf of that document on the
- * version it made ({@link #stored}); a fetch names the version its bytes
- * are ({@link #fetched}), and a parse of those bytes mints each leaf of the
- * tree on its entry, paired with the export of that version and the leaf's
- * JSON pointer: CORRELATION_PORT, the port the location and the pointer.
- * Either table is keyed weakly by the array, so a document no store write or
- * fetch takes (an HTTP response, a log line) is dropped with its bytes.</p>
- *
- * <p>A leaf is a String, a number or a boolean.  A String whose text is
- * Java's decimal rendering of a long, or a boolean's, crosses as that value
- * (DEC_LONG, BOOL: the parse mints the rendering of a fresh number), and its
- * export is the value rendered (a {@code toString} the writer's expression
- * is) or the text read; any other String crosses as a String (STR), a number
- * or a boolean leaf as its box's value (NUM), a number widened as the parser
- * reads it back ({@link #wide}).  The writer's kind decides the
- * reader's, so the two ends of one leaf are declared alike; a leaf the
- * reader cannot mint so mints by its own text, unpaired.  At most
- * {@link #MAX_LEAVES} leaves and {@link #MAX_DEPTH} levels of one document
- * are walked; past them a DIAGNOSTIC gap names the location, and the rest
- * crosses as constants.  Both sides capture wherever a replay runs them
- * ({@link #capturing}), at the activation running there or, outside every
- * one, at the thread's occurrence stated unselected (HandoffMint's entry
- * rule): the Overseer's state writer and queue offers write, and a node's
- * watcher parses, outside every opened occurrence (solr-18413 Z2B: 142,295
- * attaches and 332 exports, no expiry exported, when a writer captured only
- * inside one).</p>
- */
 final class StoreContent {
-    /** The most leaves one document is walked for. */
     static final int MAX_LEAVES = 1024;
-    /** The deepest one document is walked. */
     static final int MAX_DEPTH = 16;
 
-    /** The document the codec serialized, by the bytes it returned. */
     private static final Map<byte[], Object> WRITTEN =
             Collections.synchronizedMap(new WeakHashMap<byte[], Object>());
-    /** The version a fetch read, by the bytes it returned. */
     private static final Map<byte[], String> FETCHED =
             Collections.synchronizedMap(new WeakHashMap<byte[], String>());
-    /** Per version (transport and key) written, each leaf's export. */
     private static final Interactions.Bounded<Map<String, Exported>>
             EXPORTS = Interactions.bounded();
 
     private StoreContent() {
     }
 
-    /** How a leaf crosses: the template the reader mints it by. */
     enum Kind { STR, DEC_LONG, BOOL, NUM }
 
-    /** One leaf's export: its endpoint, how it crosses and its type. */
     private static final class Exported {
         private final Endpoint producer;
         private final Kind kind;
@@ -98,18 +53,14 @@ final class StoreContent {
         }
     }
 
-    /** Whether this thread captures a document now: in a replay. */
     static boolean capturing() {
         return RowRuntime.open();
     }
 
-    /** The codec serialized {@code document} into {@code bytes}. */
     static void written(byte[] bytes, Object document) {
         if (bytes != null && document != null) WRITTEN.put(bytes, document);
     }
 
-    /** A fetch of {@code key} returned {@code bytes}: in a replay, or in
-     *  the recording's window, which states the parse's leaves. */
     static void fetched(String transport, String key, byte[] bytes) {
         if (bytes != null && (RowRuntime.open()
                 || CausynthTraceRecorder.tracing())) {
@@ -117,22 +68,13 @@ final class StoreContent {
         }
     }
 
-    // ---- the writer's side -----------------------------------------------
 
-    /**
-     * A write of {@code bytes} made version {@code key}: each leaf of the
-     * document the codec serialized them from is exported on it, in a
-     * replay.
-     *
-     * @return that document, or null
-     */
     static Object stored(String transport, String key, byte[] bytes) {
         Object document = bytes == null ? null : WRITTEN.remove(bytes);
         if (document == null || !capturing()) return document;
         try {
             export(transport, key, document, contentKeys(transport, key));
         } catch (Throwable failed) {
-            // A door never throws into the workload: what failed is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     trimmed(transport) + " " + key, "the version's content"
                             + " was not exported: "
@@ -141,12 +83,8 @@ final class StoreContent {
         return document;
     }
 
-    /** Exports each leaf of {@code document} on version {@code key}:
-     *  symbolically at or under {@code keys}' prefixes, as its value
-     *  elsewhere; every leaf symbolically where {@code keys} is null. */
     static void export(String transport, String key, Object document,
                        List<String> keys) {
-        // A write that keeps no leaf of the chain exports none.
         if (keys.isEmpty()) return;
         String location = MessageDoors.location(key);
         Map<String, Exported> leaves = new LinkedHashMap<String, Exported>();
@@ -177,13 +115,6 @@ final class StoreContent {
             String serialized = engine().exportLeaf(leaf.parent,
                     leaf.slotKind(), leaf.slot);
             answer = JsonParser.parseString(serialized).getAsJsonObject();
-            // Through the VM's expression store, as every engine read of an
-            // expression is (ConcolicRegionRuntime#engineExpression): a node
-            // the VM states by reference is its definition.  Taken raw, a
-            // leaf's expression was a bare VmExpressionReference no session
-            // table resolves, so no export of a store's content lowered
-            // (solr-18413 Z2R: 4,152 refusals, every state.json leaf of the
-            // witness's chain FREE or HELD).
             expression = ConcolicRegionRuntime.engineExpression(serialized);
         } catch (Throwable refused) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, port,
@@ -224,12 +155,6 @@ final class StoreContent {
                 : new Exported(endpoint, kind, javaType);
     }
 
-    /**
-     * A leaf outside the writing occurrence's content keys
-     * ({@link #contentKeys}) goes out as its recorded value, a constant:
-     * the readers that pair with it read that value, whatever the writer's
-     * expression of it was.
-     */
     private static Exported exportConstant(OccurrenceAddress producer,
                                            String transport, String location,
                                            Leaf leaf) {
@@ -270,22 +195,6 @@ final class StoreContent {
                 : new Exported(endpoint, kind, javaType);
     }
 
-    /**
-     * The content keys of the occurrence running here for the version
-     * {@code key} (a plan row's {@code contentKeys}: the leaves of a chain
-     * location the question's slice reads, by pointer prefix).  THE CHAIN
-     * ALONE (owner 2026-10-15: "有限的zookeeper字段追踪，基于我们的因果追踪"):
-     * the only store values that cross symbolically are the (znode, field)
-     * the causal trace put on the anchor's chain: a planned occurrence's own
-     * keys -- none for a row that states none, or one that states them
-     * elsewhere; a doors-only one's too, since a chain writer the plan runs
-     * for its doors still writes the chain's fields (solr-bugs-snapshot:
-     * CreateCollectionCmd's configName, exported by no one, left its reader's
-     * leaf open) --, and outside every planned occurrence (a
-     * role's parse: a watcher callback a view is re-pointed by) the chain's
-     * keys of the location over the whole plan.  Every other leaf runs as
-     * its value, untracked.
-     */
     private static List<String> contentKeys(String transport, String key) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active != null && active.activation.contentKeys == null) {
@@ -299,19 +208,10 @@ final class StoreContent {
         return prefixes == null ? Collections.<String>emptyList() : prefixes;
     }
 
-    /** Whether a leaf at {@code pointer} lies at or under one of
-     *  {@code keys}' prefixes. */
     static boolean under(List<String> keys, String pointer) {
         return ContentPort.covers(keys, ContentPort.pointer(pointer));
     }
 
-    /**
-     * What a rendered leaf crosses as: the value a lone rendering
-     * ({@code toString} of an integral or a boolean) the writer's expression
-     * is renders, else the text read -- as a constant where the expression
-     * is one, else as the parse of the expression.  Null for a BOOL leaf
-     * the writer computed otherwise: it crosses as its String.
-     */
     static JsonObject rendered(JsonObject expression, Kind kind,
                                String text) {
         boolean bool = kind == Kind.BOOL;
@@ -322,8 +222,6 @@ final class StoreContent {
         String type = bool ? "Z" : "J";
         if (VmExpressionIr.exactStringLiteral(expression,
                 any -> true) != null) {
-            // The VM spells a boolean constant 1 or 0 (Y_Z_1), never its
-            // text: Y_Z_false lowered to nothing (solr-18413 Z2U).
             return constant(type, !bool ? text : "true".equals(text) ? "1"
                     : "0");
         }
@@ -338,12 +236,6 @@ final class StoreContent {
         return parse;
     }
 
-    /**
-     * The type a number leaf crosses at: a JSON number has no width, and the
-     * parser makes a {@code long} of every integral one and a {@code double}
-     * of every other, so a writer's {@code int}, {@code short} or {@code
-     * byte} crosses as a long and its {@code float} as a double.
-     */
     static String wide(String javaType) {
         switch (javaType) {
             case "I": case "S": case "B": return "J";
@@ -352,15 +244,6 @@ final class StoreContent {
         }
     }
 
-    /**
-     * {@code expression} of {@code javaType} as the parser reads it back
-     * ({@link #wide}): an integral one widened; a constant {@code float},
-     * which the serializer writes as its decimal text and the parser reads
-     * as the {@code double} that text is, as that double.  A symbolic float
-     * crosses as nothing (null), named DIAGNOSTIC: no theory here renders a
-     * float's decimal text, so its readers pair with no export and mint
-     * their own.
-     */
     static JsonObject widened(JsonObject expression, String javaType,
                               Object value, String port) {
         if ("F".equals(javaType)) {
@@ -384,7 +267,6 @@ final class StoreContent {
         return cast;
     }
 
-    /** A primitive constant as the VM spells one. */
     private static JsonObject constant(String type, String text) {
         JsonObject constant = new JsonObject();
         constant.addProperty("_type", "ConstExpr");
@@ -393,16 +275,7 @@ final class StoreContent {
         return constant;
     }
 
-    // ---- the reader's side -----------------------------------------------
 
-    /**
-     * The parser built {@code tree} from {@code bytes}: when the bytes are
-     * a version a fetch read, in a replay, each leaf is minted on its
-     * entry, paired with that version's export of it.
-     *
-     * @return the version read, as {@code transport\nkey}, or null for
-     *         bytes no fetch named
-     */
     static String parsed(byte[] bytes, Object tree) {
         String version = bytes == null ? null : FETCHED.remove(bytes);
         if (version == null || tree == null) return null;
@@ -410,15 +283,12 @@ final class StoreContent {
         int cut = version.indexOf('\n');
         String transport = version.substring(0, cut);
         String key = version.substring(cut + 1);
-        // A watcher can parse a version before its writer files it: the
-        // write in flight files its leaves first (MessageDoors#stored).
         MessageDoors.filed(transport, key);
         Map<String, Exported> exports;
         synchronized (EXPORTS) {
             exports = EXPORTS.get(version);
         }
         List<String> keys = contentKeys(transport, key);
-        // A parse that keeps no leaf walks none.
         if (keys.isEmpty()) return version;
         try {
             attach(transport, key, exports, tree, keys);
@@ -431,11 +301,6 @@ final class StoreContent {
         return version;
     }
 
-    /**
-     * Mints the parsed leaves of version {@code key} at or under
-     * {@code keys}' prefixes, each paired with {@code exports}' leaf at its
-     * pointer; every other leaf crosses as the value parsed, no attach.
-     */
     static void attach(String transport, String key,
                        Map<String, Exported> exports, Object tree,
                        List<String> keys) {
@@ -509,11 +374,6 @@ final class StoreContent {
                 answer);
     }
 
-    /**
-     * Whether a leaf the reader holds can cross as {@code export} says: a
-     * String as a String, a rendering as the value rendered, a box as a
-     * value of its own type (the writer's number widened, {@link #wide}).
-     */
     private static boolean fits(Exported export, Object value) {
         Kind own = kindOf(value);
         if (own == null) return false;
@@ -522,12 +382,6 @@ final class StoreContent {
                 || export.javaType.equals(boxType(value)));
     }
 
-    /**
-     * Mints {@code leaf} as {@code kind}'s template, its one hole labelled
-     * {@code label}: the hole, or null.  A refusal landing on the leaf
-     * object (a JVM-wide box, a String another mint claimed) is answered
-     * by a fresh equal object, stored in its place.
-     */
     private static JsonObject mint(Leaf leaf, Kind kind, String label) {
         String template = template(kind, leaf.value, label);
         for (int attempt = 0; attempt < 2; attempt++) {
@@ -553,7 +407,6 @@ final class StoreContent {
         return null;
     }
 
-    /** {@code System#mintLeaf}'s template of one hole. */
     private static String template(Kind kind, Object value, String label) {
         JsonObject part = new JsonObject();
         part.addProperty("hole", kind == Kind.STR ? "STR"
@@ -568,7 +421,6 @@ final class StoreContent {
         return template.toString();
     }
 
-    /** How {@code value} crosses, or null for no leaf. */
     static Kind kindOf(Object value) {
         if (value instanceof String) {
             String text = (String) value;
@@ -582,7 +434,6 @@ final class StoreContent {
         return null;
     }
 
-    /** Whether {@code text} is Java's rendering of a long. */
     static boolean decimalLong(String text) {
         try {
             return Long.toString(Long.parseLong(text)).equals(text);
@@ -591,7 +442,6 @@ final class StoreContent {
         }
     }
 
-    /** The descriptor a box's value is, or "" for no modeled box. */
     private static String boxType(Object value) {
         return value instanceof Long ? "J" : value instanceof Integer ? "I"
                 : value instanceof Double ? "D" : value instanceof Float ? "F"
@@ -599,7 +449,6 @@ final class StoreContent {
                 ? "S" : value instanceof Byte ? "B" : "";
     }
 
-    /** The leaf a wave's answer plants, as the parser would hold it. */
     private static Object planted(Kind kind, Object value, String answer) {
         try {
             switch (kind) {
@@ -633,22 +482,18 @@ final class StoreContent {
         }
     }
 
-    /** A fresh object equal to {@code value}, or null. */
     private static Object freshCopy(Object value) {
         if (value instanceof String) return new String((String) value);
         String type = boxType(value);
         return type.isEmpty() ? null : box(type, String.valueOf(value));
     }
 
-    // ---- the documents ---------------------------------------------------
 
-    /** The port one leaf of a location crosses ({@link ContentPort}). */
     static String port(String transport, String location, String pointer) {
         return ContentPort.of(trimmed(transport), MessageDoors.storeLocation(
                 transport, location).slot(), pointer);
     }
 
-    /** One leaf of a document: its holder, its slot and its pointer. */
     static final class Leaf {
         final Object parent;
         final Object slot;
@@ -667,7 +512,6 @@ final class StoreContent {
                     : ConcolicVmBroker.SlotKind.POSITION;
         }
 
-        /** Stores {@code value} in this leaf's slot; whether it could. */
         @SuppressWarnings("unchecked")
         boolean replace(Object value) {
             try {
@@ -683,12 +527,6 @@ final class StoreContent {
         }
     }
 
-    /**
-     * The leaves of {@code document} depth first, each map's entries in its
-     * own order and each list's elements in theirs, at most
-     * {@link #MAX_LEAVES} of them at most {@link #MAX_DEPTH} deep; past
-     * either bound a DIAGNOSTIC gap names the location.
-     */
     static List<Leaf> leaves(String transport, String location,
                              Object document) {
         List<Leaf> leaves = new ArrayList<Leaf>();
@@ -741,17 +579,10 @@ final class StoreContent {
         }
     }
 
-    /** A JSON pointer's reference token (RFC 6901). */
     private static String escaped(String token) {
         return token.replace("~", "~0").replace("/", "~1");
     }
 
-    /**
-     * The leaves of {@code document} as a recording states them
-     * ({@code CausynthTraceRecorder#storeLeaves}): each {@code [pointer,
-     * leaf object]}, the pointer as a content port spells it; null past the
-     * walk's bound, named, which reads as the whole document.
-     */
     static List<Object[]> leafRows(String transport, String location,
                                    Object document) {
         List<Object[]> rows = new ArrayList<Object[]>();
@@ -774,7 +605,6 @@ final class StoreContent {
         return rows;
     }
 
-    /** The occurrence a door event runs in, as WireExport names one. */
     private static OccurrenceAddress occurrenceHere(String transport) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active != null && active.d3Address != null) {

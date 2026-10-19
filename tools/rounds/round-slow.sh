@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# round-slow.sh <round> <baseline-round>: one line when a running case passes 2x (and 4x) its baseline time (or 30/60 min
-# with no baseline row). Per-case state under $out/.watch-<round>, so a re-armed watcher does not repeat itself.
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 out=${GC_OUT}

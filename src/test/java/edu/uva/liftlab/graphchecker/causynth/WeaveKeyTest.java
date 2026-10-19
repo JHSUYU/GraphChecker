@@ -17,12 +17,6 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 
-/**
- * GROW weaves a generation only where its plan's weave key is not its tree's
- * (run_engine.sh campaign_stream_grow): the key is what the weave reads of a
- * plan -- the tasks' instrumentation values, a repeated one once -- and
- * nothing per occurrence.
- */
 public class WeaveKeyTest {
     private static final String ROOT =
             "<a.Queue: java.util.List peekElements(int)>";
@@ -38,12 +32,6 @@ public class WeaveKeyTest {
         System.clearProperty("causynth.concolic.campaign.max.tasks");
     }
 
-    /**
-     * SGF8-adhoc-19 g4-g11: more planned occurrences of a region whose hook
-     * the plan holds, a grown input at a hook it holds, a doors-only mark
-     * dropped -- the tree woven before; a new branch method, a new region or
-     * a new local is a new tree.
-     */
     @Test
     public void theKeyIsWhatTheWeaveReads() throws IOException {
         JsonObject first = row("T.1", "R#62", BRANCHES, "$z0", 12);
@@ -82,8 +70,6 @@ public class WeaveKeyTest {
         return ConcolicInstrumentationSelections.weaveKeyFromEnvironment();
     }
 
-    /** A task of region R rooted at {@link #ROOT}, its occurrence {@code
-     *  occurrence}, one symbolic input at {@code local}'s definition. */
     private static JsonObject row(String task, String occurrence,
                                   String branchMethod, String local,
                                   int unit) {

@@ -33,12 +33,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
-/**
- * CONTRACT-SPEC §2.2: the one codec for the row kinds, one method pair per kind.
- * JSONL, one kind per file.  A nullable field is omitted when null; every
- * other field is always written, so absence never means false or zero.
- * Occurrences are written as parts, not as their render.
- */
 public final class RowCodec {
     private static final Gson GSON = new Gson();
 
@@ -53,7 +47,6 @@ public final class RowCodec {
     private static final String SITE_INDEX = "siteIndex";
     private static final String FORM = "form";
     private static final String ROLE = "role";
-    /** The api a root context's window index was counted under. */
     private static final String ROOT_API = "api";
     private static final String CALL_SITE = "callSite";
     private static final String ITERATION = "iteration";
@@ -63,9 +56,7 @@ public final class RowCodec {
     private RowCodec() {
     }
 
-    // ---- shared parts -------------------------------------------------
 
-    /** An address as its four parts; the render is for people, not rows. */
     public static JsonObject writeOccurrence(OccurrenceAddress occurrence) {
         JsonObject json = new JsonObject();
         json.addProperty(NODE, occurrence.node().render());
@@ -79,8 +70,6 @@ public final class RowCodec {
         return readOccurrence(json, new RowPool());
     }
 
-    /** An occurrence, held once per pool: a session's rows name a few
-     *  hundred occurrences on tens of thousands of rows. */
     private static OccurrenceAddress readOccurrence(JsonObject json,
                                                     RowPool pool) {
         return pool.shared(OccurrenceAddress.of(
@@ -89,7 +78,6 @@ public final class RowCodec {
                 readIndex(array(json, INDEX), pool)));
     }
 
-    /** A causal context as {@code {form, ...}}: one shape per form. */
     private static JsonObject writeContext(CausalContext context) {
         JsonObject json = new JsonObject();
         json.addProperty(FORM, context.form().name());
@@ -103,7 +91,6 @@ public final class RowCodec {
             case ROOT:
                 CausalContext.Root root = (CausalContext.Root) context;
                 json.addProperty(ROLE, root.role().name());
-                // Omitted when undeclared (a daemon tick).
                 if (!root.api().isEmpty()) {
                     json.addProperty(ROOT_API, root.api());
                 }
@@ -133,7 +120,6 @@ public final class RowCodec {
         }
     }
 
-    /** An execution index as its frames, outermost first. */
     private static JsonArray writeIndex(ExecutionIndex index) {
         JsonArray frames = new JsonArray();
         for (Frame frame : index.frames()) {
@@ -145,7 +131,6 @@ public final class RowCodec {
         return frames;
     }
 
-    /** An index and each of its frames, held once per pool. */
     private static ExecutionIndex readIndex(JsonArray frames, RowPool pool) {
         List<Frame> read = new ArrayList<>();
         for (JsonElement frame : frames) {
@@ -165,10 +150,6 @@ public final class RowCodec {
         return json;
     }
 
-    /** An endpoint, held once per pool, its id with it: a session's rows
-     *  name each a few times (SGF8-adhoc-05 round 5: 4.6 M endpoints and
-     *  4.3 M ids held, 0.36 M distinct), and a slot table's pairings the
-     *  same frames (19.9 M frames, 15 K distinct). */
     public static Endpoint readEndpoint(JsonObject json, RowPool pool) {
         return pool.shared(Endpoint.of(readOccurrence(object(json,
                 OCCURRENCE), pool), string(json, "site"),
@@ -184,15 +165,12 @@ public final class RowCodec {
         return json;
     }
 
-    /** A location, held once per pool, its key with it ({@link
-     *  LocationId#key}). */
     private static LocationId readLocation(JsonObject json, RowPool pool) {
         return pool.shared(LocationId.of(
                 LocationKind.valueOf(string(json, "kind")),
                 string(json, "owner"), string(json, "slot")));
     }
 
-    // ---- one pair per row kind ----------------------------------------
 
     public static JsonObject writeActivation(ActivationRow row) {
         JsonObject json = row(row.sessionId());
@@ -210,8 +188,6 @@ public final class RowCodec {
         return json;
     }
 
-    /** One row, its parts taken from the pool of the read it is part of;
-     *  so for each kind below. */
     static ActivationRow readActivation(JsonObject json, RowPool pool) {
         JsonObject producer = optionalObject(json, ANCHOR_PRODUCER);
         return ActivationRow.of(string(json, SESSION_ID),
@@ -247,10 +223,8 @@ public final class RowCodec {
         return json;
     }
 
-    /** The calling frame a decision states (DecisionRow#via). */
     private static final String VIA = "via";
 
-    /** A FORCED row's mark (DecisionRow#forced, TargetRow#forced). */
     private static final String FORCED = "forced";
 
     static DecisionRow readDecision(JsonObject json, RowPool pool) {
@@ -300,7 +274,6 @@ public final class RowCodec {
             json.add("producer", writeEndpoint(row.producer()));
         }
         json.addProperty("correlationId", row.correlationId());
-        // Absent = unstated, distinct from either answer.
         if (row.pairedBy() != null) {
             json.addProperty("pairedBy", row.pairedBy());
         }
@@ -362,8 +335,6 @@ public final class RowCodec {
                 .withTie(tie(json));
     }
 
-    /** A row's tie among the engine's rows of its seq ({@link RowOrder}):
-     *  0 where none is stated, as a VM row's and an older corpus's. */
     private static int tie(JsonObject json) {
         return json.has(TIE) ? Math.toIntExact(number(json, TIE)) : 0;
     }
@@ -388,7 +359,6 @@ public final class RowCodec {
         if (row.concreteValue() != null) {
             json.addProperty("concreteValue", row.concreteValue());
         }
-        // Stated only when true, so every other read spells as it did.
         if (row.unnamedWriter()) {
             json.addProperty("unnamedWriter", true);
         }
@@ -506,7 +476,6 @@ public final class RowCodec {
         return json.has(FORCED) ? row.forced() : row;
     }
 
-    /** A target row's open decider arm (TargetRow.OpenArm). */
     private static final String OPEN_ARM = "openArm";
 
     public static JsonObject writeGap(GapRow row) {
@@ -525,7 +494,6 @@ public final class RowCodec {
                 string(json, "detail"));
     }
 
-    /** What one obligation settled; every writer and reader uses this pair. */
     public static JsonObject writeObligationResult(ObligationResult row) {
         JsonObject json = row(row.sessionId());
         json.addProperty("schemaVersion", 1);
@@ -547,7 +515,6 @@ public final class RowCodec {
                 refutation == null ? null : readRefutation(refutation));
     }
 
-    /** A result row's {@link WorldRefutation}. */
     private static final String REFUTATION = "refutation";
 
     public static JsonObject writeRefutation(WorldRefutation refutation) {
@@ -574,7 +541,6 @@ public final class RowCodec {
                 optionalString(json, "testFrame"));
     }
 
-    /** One scheduling event; no session id (prefixes cross sessions). */
     public static JsonObject writeScheduleEvent(ScheduleEvent event) {
         JsonObject json = new JsonObject();
         json.addProperty(SEQ, event.seq());
@@ -592,14 +558,8 @@ public final class RowCodec {
         return json;
     }
 
-    /** A schedule event's VM event id ({@code ScheduleEvent#vmEvent}). */
     private static final String VM_EVENT = "vmEvent";
 
-    /**
-     * A schedule mark: where occurrence {@code id} opened, or
-     * {@link ScheduleEvent#WITNESS}; not an event, so readers of events skip
-     * it ({@code SessionReader#readSchedule}).
-     */
     public static JsonObject writeScheduleMark(String id, long at) {
         JsonObject json = new JsonObject();
         json.addProperty("mark", id);
@@ -607,18 +567,12 @@ public final class RowCodec {
         return json;
     }
 
-    /**
-     * The mark of the invocation of a parameterized test the run is, as its
-     * arguments render ({@link ScheduleEvent#INVOCATION}): {@code of}.
-     */
     public static JsonObject writeScheduleInvocation(String stated) {
         JsonObject json = writeScheduleMark(ScheduleEvent.INVOCATION, 0L);
         json.addProperty("of", stated);
         return json;
     }
 
-    /** The mark of {@code who} completing startup {@code step} ({@link
-     *  ScheduleEvent#STARTUP}). */
     public static JsonObject writeScheduleStartup(String step, String who) {
         JsonObject json = writeScheduleMark(ScheduleEvent.STARTUP, 0L);
         json.addProperty("step", step);
@@ -636,23 +590,9 @@ public final class RowCodec {
                 json.has(VM_EVENT) ? number(json, VM_EVENT) : 0L);
     }
 
-    // ---- files ---------------------------------------------------------
 
-    /** How many rows one rendering of {@link #writeAll} takes. */
     private static final int ROWS_AT_ONCE = 1024;
 
-    /**
-     * Writes one kind's file: one object per line, nothing else in it, each
-     * row's object made as its line is written, never all held -- the rows
-     * {@link #ROWS_AT_ONCE} at a time, each run rendered on a core of its
-     * own ({@link Parallel#stream}; {@code writer} is asked side by side)
-     * and written in order: what is left is the disk's (SGF8-adhoc-05 round
-     * 5's slot table, 6.6 GB of rows: 52 -> 17-23 s to a local disk; to NFS
-     * ~74 s either way, its link's).  A gzip file's ({@link
-     * ArtifactIO#GZIP}) runs are each deflated on the core that rendered
-     * it, one member each, and a file of no rows is one empty member: the
-     * link carries SGF8-adhoc-05 round 4's 6.6 GB slot table as 152 MB.
-     */
     public static <T> void writeAll(Path file, List<T> rows,
                                     Function<T, JsonObject> writer)
             throws IOException {
@@ -679,17 +619,10 @@ public final class RowCodec {
         });
     }
 
-    /** What {@link #writeWhole} writes, into the file's stream. */
     private interface Body {
         void write(OutputStream out) throws IOException;
     }
 
-    /**
-     * A file written whole or not at all: a JVM ended mid-write (a planner
-     * past its heap, run again at twice it) leaves the last whole file.
-     * CC3-07: the rerun read the half a dead planner wrote of slots.jsonl,
-     * and the exploration's every later round failed on it.
-     */
     private static void writeWhole(Path file, Body body) throws IOException {
         Path parent = file.toAbsolutePath().getParent();
         Files.createDirectories(parent);
@@ -707,13 +640,6 @@ public final class RowCodec {
         }
     }
 
-    /**
-     * ONE KIND'S FILE AS ITS ROWS COME, one line at a time ({@link #add}),
-     * never all held: each run of {@link #ROWS_AT_ONCE} lines, as it fills,
-     * is held as {@link #writeAll} writes it -- for a gzip file deflated,
-     * one member -- and the file is written whole at {@link #write}, byte
-     * for byte {@link #writeAll}'s of the same rows.  One thread adds.
-     */
     public static final class Runs {
         private final boolean gzip;
         private final List<byte[]> written = new ArrayList<byte[]>();
@@ -722,12 +648,10 @@ public final class RowCodec {
         private int lines;
         private boolean any;
 
-        /** The runs of {@code file}'s kind: gzip by its name. */
         public Runs(Path file) {
             this.gzip = ArtifactIO.gzipped(file);
         }
 
-        /** One row's line ({@link #toLine}), UTF-8, without its newline. */
         public void add(byte[] line) throws IOException {
             run.write(line);
             run.write('\n');
@@ -735,7 +659,6 @@ public final class RowCodec {
             if (++lines == ROWS_AT_ONCE) close();
         }
 
-        /** The run being filled, as it is written. */
         private void close() throws IOException {
             if (lines == 0) return;
             byte[] bytes = run.toByteArray();
@@ -744,8 +667,6 @@ public final class RowCodec {
             lines = 0;
         }
 
-        /** Writes {@code file} whole: every run, a gzip file of no rows one
-         *  empty member. */
         public void write(Path file) throws IOException {
             close();
             writeWhole(file, out -> {
@@ -755,24 +676,12 @@ public final class RowCodec {
         }
     }
 
-    /** Reads one kind's file; a file that is not there is no rows. */
     public static <T> List<T> readAll(Path file,
                                       Function<JsonObject, T> reader)
             throws IOException {
         return readAll(file, new RowPool(), reader);
     }
 
-    /**
-     * The same read, its strings from {@code pool}, each line read into its
-     * row as it is parsed: a file's parsed lines are never all held.  The
-     * file is read in blocks of whole lines ({@link Lines}), each parsed on
-     * a core of its own ({@link Parallel#stream}; {@code reader} is asked
-     * side by side), the rows in the file's order: what is left is the
-     * disk's (SGF8-adhoc-05 round 4's 6.6 GB of slot changes, which a
-     * planner of its own reads whole: 104-117 -> 39-54 s from a local disk;
-     * from NFS its link's).  A line that does not read fails the read as
-     * the first such line of the file.
-     */
     static <T> List<T> readAll(Path file, RowPool pool,
                                Function<JsonObject, T> reader)
             throws IOException {
@@ -781,16 +690,11 @@ public final class RowCodec {
         return rows;
     }
 
-    /** {@link #readAll(Path, Function)}, each row handed to {@code each} in
-     *  the file's order as its block is parsed, none held. */
     public static <T> void readEach(Path file, Function<JsonObject, T> reader,
                                     Consumer<T> each) throws IOException {
         readEach(file, new RowPool(), reader, each);
     }
 
-    /** {@link #readEach(Path, Function, Consumer)}, its strings from
-     *  {@code pool}: a read of several files, or rows built of parts the
-     *  pool holds once ({@link #readEndpoint(JsonObject, RowPool)}). */
     public static <T> void readEach(Path file, RowPool pool,
                                     Function<JsonObject, T> reader,
                                     Consumer<T> each) throws IOException {
@@ -813,14 +717,9 @@ public final class RowCodec {
         }
     }
 
-    /** How many bytes of a file one block of {@link Lines} holds, at
-     *  least. */
     private static final int BLOCK = 1 << 18;
 
-    /** A file's bytes as blocks of whole lines, read in order, decoded where
-     *  they are parsed ({@link #readAll(Path, RowPool, Function)}). */
     private static final class Lines implements Parallel.Source<Lines.Block> {
-        /** Whole lines of the file, as read. */
         static final class Block {
             private final byte[] bytes;
             private final int length;
@@ -830,8 +729,6 @@ public final class RowCodec {
                 this.length = length;
             }
 
-            /** The block's text, refused where it is no UTF-8, as a reader
-             *  of the file refuses it. */
             String text() throws IOException {
                 return StandardCharsets.UTF_8.newDecoder()
                         .onMalformedInput(CodingErrorAction.REPORT)
@@ -842,7 +739,6 @@ public final class RowCodec {
         }
 
         private final InputStream in;
-        /** What the last block read after its last line. */
         private byte[] carry = new byte[0];
         private boolean ended;
 
@@ -870,7 +766,6 @@ public final class RowCodec {
                     carry = Arrays.copyOfRange(block, end + 1, filled);
                     return new Block(block, end + 1);
                 }
-                // One line longer than the block: the block grows.
                 block = Arrays.copyOf(block, 2 * block.length);
             }
         }
@@ -881,7 +776,6 @@ public final class RowCodec {
         writeAll(file, rows, row -> row);
     }
 
-    /** Every line of a JSONL file, their strings shared ({@link RowPool}). */
     public static List<JsonObject> readJsonl(Path file) throws IOException {
         RowPool pool = new RowPool();
         List<JsonObject> rows = new ArrayList<>();
@@ -889,12 +783,6 @@ public final class RowCodec {
         return rows;
     }
 
-    /**
-     * Hands each non-blank line of a JSONL file to {@code each} in order,
-     * until it returns false; a file that is not there has no lines.  Read
-     * through the one opener ({@link ArtifactIO#lines}: gzip by name, a
-     * stream its writer never finished read as far as it was written).
-     */
     static void eachLine(Path file, Predicate<String> each)
             throws IOException {
         if (file == null || !Files.isRegularFile(file)) return;
@@ -907,20 +795,15 @@ public final class RowCodec {
         }
     }
 
-    /** The role this session states, as one JSON object. */
     public static void writeManifest(Path file, SessionManifest manifest)
             throws IOException {
         writeObject(file, manifest.toJson());
     }
 
-    /** The role this session states; none is refused, never defaulted. */
     public static SessionManifest readManifest(Path file) throws IOException {
         return readManifest(file, new RowPool());
     }
 
-    /** The same read, its strings from {@code pool}: the manifests of a
-     *  corpus spell the same occurrences (SGF8-adhoc-05 round 5's 342: 40 K
-     *  rendered occurrences, 765 distinct, 111 MB held). */
     static SessionManifest readManifest(Path file, RowPool pool)
             throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
@@ -932,14 +815,6 @@ public final class RowCodec {
                 file.toString()));
     }
 
-    /**
-     * One JSON object, whole or not at all: written with java.io (a channel
-     * write on a thread the program interrupts closes with
-     * ClosedByInterruptException after truncating -- the runtime writes from
-     * workload threads, and hdfs-17899-bug1 v82 kept two sessions whose
-     * expressions.json was empty) to a sibling renamed over the file, so a
-     * killed replay leaves the last whole table.
-     */
     private static void writeObject(Path file, JsonObject json)
             throws IOException {
         Path parent = file.toAbsolutePath().getParent();
@@ -952,7 +827,6 @@ public final class RowCodec {
                 StandardCopyOption.ATOMIC_MOVE);
     }
 
-    /** One row as one line: compact, and never containing a newline. */
     public static String toLine(JsonObject row) {
         return GSON.toJson(row);
     }
@@ -961,12 +835,10 @@ public final class RowCodec {
         return parse(new JsonReader(new StringReader(line)), "row");
     }
 
-    /** One line, each of its strings taken from {@code pool}. */
     static JsonObject fromLine(String line, RowPool pool) {
         return parse(pool.reader(line), "row");
     }
 
-    // ---- reading fields -------------------------------------------------
 
     private static JsonObject row(String sessionId) {
         JsonObject json = new JsonObject();
@@ -980,8 +852,6 @@ public final class RowCodec {
         return json;
     }
 
-    /** One JSON object read as {@link JsonParser#parseString} reads one:
-     *  leniently, and nothing after it. */
     private static JsonObject parse(JsonReader reader, String what) {
         JsonElement parsed;
         try {
@@ -1044,7 +914,6 @@ public final class RowCodec {
         return value == null ? null : value.getAsJsonObject();
     }
 
-    /** The member, or null when absent or JSON null. */
     private static JsonElement optional(JsonObject json, String name) {
         JsonElement value = json == null ? null : json.get(name);
         return value == null || value.isJsonNull() ? null : value;

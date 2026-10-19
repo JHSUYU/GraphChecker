@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# prepare-trees.sh [<tree name>...] -- the Solr trees the cases run, made from
-# the Solr fork: each tree of trees.tsv (default: all) is cloned at
-# $GC_TREES/<name> on its branch, built with Ant on Java 8 against this
-# checkout's GraphChecker jar, and runs the workload of every case of
-# solr-cases.tsv whose case.sh names it, once natively (build.sh), under the
-# case's seed.  A tree already there is not cloned again, only built.  Run it
-# from a built system/solr checkout (`mvn package`), one tree per host:
-# `tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh <name>`.  Ant
-# resolves the tree's libraries into ~/.ivy2 (a first build downloads them;
-# `ant ivy-bootstrap` once on a fresh host).
-#
-#   SOLR_FORK  the fork to clone (default https://github.com/JHSUYU/solr.git)
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
@@ -20,8 +8,6 @@ source "${graphchecker}/tools/lib/gc-env.sh"
 source "${graphchecker}/experiments/lib/case-id.sh"
 fork=${SOLR_FORK:-https://github.com/JHSUYU/solr.git}
 
-# Each case's tree, seed and workload, as its declarations state them: the
-# workloads of one tree, grouped by seed, each workload once.
 declare -A workloads=()
 while IFS=$'\t' read -r id _; do
   [[ -n "${id}" && "${id}" != \#* ]] || continue

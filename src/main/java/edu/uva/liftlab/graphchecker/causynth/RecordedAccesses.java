@@ -6,21 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Every access of a cell the recording states, per cell in seq order, each
- * with the call it ran in and whether it stored: the trace's field reads and
- * stores, the calls at a store site that mutates through a call ({@link
- * RuntimeSelectedRegionFinalizer#storingCalls}) and those at a site that
- * returns a field ({@link RuntimeSelectedRegionFinalizer
- * #fieldAccessingCalls}).  Built once by the trace aggregation ({@code
- * runtime.RuntimeRegionPlanner#recordedAccesses}); the demand walk asks it
- * whether an occurrence stored a demanded cell, and whether anyone else
- * touched one between two equivalent deciders ({@link
- * RuntimeSelectedRegionFinalizer#DECIDER_CLASS}).
- */
 public final class RecordedAccesses {
-    /** Cell -> its accesses' seqs, ascending; at the same positions the
-     *  calls they ran in, and whether each stored. */
     private final Map<String, long[]> seqs;
     private final Map<String, long[]> calls;
     private final Map<String, boolean[]> stores;
@@ -33,19 +19,11 @@ public final class RecordedAccesses {
         this.stores = stores;
     }
 
-    /**
-     * Whether a call outside {@code own} accessed one of {@code cells} at a
-     * seq in {@code [from, to]}.
-     */
     boolean touched(Collection<String> cells, long from, long to,
                     Set<Long> own) {
         return any(cells, from, to, own, false);
     }
 
-    /**
-     * Whether a call in {@code own} stored one of {@code cells} at a seq in
-     * {@code [from, to]}.
-     */
     boolean stored(Collection<String> cells, long from, long to,
                    Set<Long> own) {
         return any(cells, from, to, own, true);
@@ -74,9 +52,7 @@ public final class RecordedAccesses {
         return false;
     }
 
-    /** Collects accesses in any order; {@link #build} sorts each cell's. */
     public static final class Builder {
-        /** Cell -> (seq, call, stored 0/1) triples, as added. */
         private final Map<String, long[]> added = new HashMap<>();
         private final Map<String, Integer> sizes = new HashMap<>();
 

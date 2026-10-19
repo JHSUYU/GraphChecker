@@ -45,19 +45,16 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Execution-task parsing and immutable instrumentation selections. */
 public final class ConcolicInstrumentationSelections {
     private ConcolicInstrumentationSelections() {
     }
 
-    /** Whether this JVM was asked to rewrite a scheduled concolic campaign. */
     public static boolean instrumentationRequested() {
         return Boolean.parseBoolean(JsonFields.firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 "false"));
     }
 
-    /** The campaign this instrumentation pass must cover, in plan order. */
     static List<InstrumentationPlan> instrumentationCampaignFromEnvironment() {
         String planValue = stringValue(System.getProperty(
                 "causynth.concolic.task.plan"));
@@ -78,20 +75,6 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /**
-     * WHAT THE WEAVE OF THIS JVM'S PLAN WEAVES, as a digest: every value of
-     * each task's {@link InstrumentationPlan}, in plan order, a value a later
-     * task repeats counted once.  The plan reaches the weave only as that
-     * list (CausynthPipeline#instrumentConcolicCampaign), whose every reader
-     * unions it -- sets, maps whose first entry wins, LoopBoundPolicy#union
-     * -- so a repeated value weaves nothing more, and two plans of one key
-     * weave one tree over the same classes.  The parse is the weave's own,
-     * so a plan the weave refuses is refused here.  GROW weaves a
-     * generation only where its key is not its tree's (campaign_stream_grow):
-     * SGF8-adhoc-19's GROW wove 8 of its 11 generations byte-identical to
-     * the tree before them, a growing count of planned occurrences of
-     * regions whose hooks were woven, 62 s each in the head's hands.
-     */
     static String weaveKeyFromEnvironment() {
         MessageDigest digest = ArtifactIO.sha256Digest();
         Set<String> seen = new LinkedHashSet<>();
@@ -109,14 +92,6 @@ public final class ConcolicInstrumentationSelections {
         return ArtifactIO.hex(digest.digest());
     }
 
-    /**
-     * A value of a plan by every instance field its class and superclasses
-     * declare, by name: text, numbers, booleans and enums as they read, JSON
-     * as written, collections and maps in the order the weave iterates them.
-     * A field added to a plan's value is in the key with no line here; a
-     * value of a class outside the engine is refused, as no field of it is
-     * vouched for.
-     */
     static void canonical(Object value, StringBuilder out) {
         if (value == null) {
             out.append("null");
@@ -181,32 +156,19 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /** One immutable view of the scheduler-selected execution task. */
     static final class InstrumentationPlan {
-        /** The woven entry this task's region opens at
-         *  ({@code ExecutionTask#rootHookGroup}). */
         private final String rootHookGroup;
-        /** The enclosing entry a loop-body root's iterations are addressed
-         *  under, else "" ({@code ExecutionTask#loopRootHookGroup}). */
         private final String loopRootHookGroup;
         private final String rootMethod;
-        /** Methods whose conditional branches this task's weave covers. */
         private final Set<String> branchMethods;
         private final LoopBoundPolicy loopBound;
-        /** Array-indexed loops whose concrete cardinality is not a K_L. */
         private final Set<String> fixedCountLoopSites;
-        /**
-         * The re-rooted loop body's method, or empty; see
-         * {@link LoopBoundPolicy#LOOP_BODY_ROOT}.
-         */
         private final String rootLoopMethod;
         private final int rootLoopHeaderUnitIndex;
         private final int rootLoopDemandedUnitIndex;
         private final Set<String> rootLoopControlSites;
         private final ConcolicMaterializationSelection materializations;
-        /** Where this occurrence hands a port to the VM or takes one. */
         private final List<CommunicationHandoffSpec> communicationHandoffs;
-        /** Complete replay-call catalog, including unselected landmarks. */
         private final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
         private final Set<String> instrumentationMethods;
@@ -244,7 +206,6 @@ public final class ConcolicInstrumentationSelections {
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 methods.add(site.method());
             }
-            // A declaration may live in a helper the root calls.
             for (ConfiguredSourcePhaseContract.Occurrence phase
                     : configuredSourcePhases) {
                 methods.add(phase.declarationMethod());
@@ -260,7 +221,6 @@ public final class ConcolicInstrumentationSelections {
             }
             Path normalized = taskPlan.toAbsolutePath().normalize();
             Set<String> selected = campaignTaskIds(selectedTasks);
-            // The same bound the replay JVM applies; never a second copy.
             int maxTasks = ExecutionTask.maxCampaignTasks();
             List<InstrumentationPlan> campaign = new ArrayList<>();
             Set<String> covered = new LinkedHashSet<>();
@@ -354,10 +314,6 @@ public final class ConcolicInstrumentationSelections {
             return loopRootHookGroup;
         }
 
-        /**
-         * The named branch methods plus every retained loop's exit-decision
-         * owners (replay-address boundaries even without an SMT predicate).
-         */
         private static Set<String> branchMethodsOf(ExecutionTask task) {
             Set<String> methods = new LinkedHashSet<>();
             for (JsonElement element : task.branchMethods()) {
@@ -404,17 +360,14 @@ public final class ConcolicInstrumentationSelections {
             return rootLoopMethod;
         }
 
-        /** Original unit index of that loop's dominance-proved header. */
         int rootLoopHeaderUnitIndex() {
             return rootLoopHeaderUnitIndex;
         }
 
-        /** Original unit the selected iteration must reach. */
         int rootLoopDemandedUnitIndex() {
             return rootLoopDemandedUnitIndex;
         }
 
-        /** Iteration-control sites the region's exits are installed on. */
         Set<String> rootLoopControlSites() {
             return rootLoopControlSites;
         }
@@ -436,11 +389,6 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationMethods;
         }
 
-        /**
-         * The per-task envelope, before the replay entry: the
-         * methods whose effects a delayed engine arm may not skip, then the
-         * root, the instrumented methods and the target.
-         */
         Set<String> envelopeMethods() {
             Set<String> methods = new LinkedHashSet<>(branchMethods);
             methods.addAll(materializations.localMethods());
@@ -465,7 +413,6 @@ public final class ConcolicInstrumentationSelections {
                 : new FieldTarget(field.owner(), field.name());
     }
 
-    /** The concrete Jimple values a scheduled activation exposes to the VM. */
     static final class ConcolicMaterializationSelection {
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
@@ -476,16 +423,9 @@ public final class ConcolicInstrumentationSelections {
         private final Map<String, FieldTarget> fields = new LinkedHashMap<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
-        /** Planned observed stores of a declared input's cell, by site. */
         private final Map<String, ObservedSite> observedSitesBySite =
                 new LinkedHashMap<>();
 
-        /**
-         * The campaign's observed sites ({@code StaticScopeMap
-         * #observedSites}): every access of a tracked cell, woven once for
-         * the whole campaign, since whichever occurrence reaches a cell
-         * first starts its log.
-         */
         static ConcolicMaterializationSelection observed(JsonArray sites)
                 throws IOException {
             ConcolicMaterializationSelection result =
@@ -509,7 +449,6 @@ public final class ConcolicInstrumentationSelections {
             if (fieldTarget != null
                     && SharedFieldFlow.compilerSwitchDispatchField(
                     fieldTarget.name)) {
-                // A compiler switch-map table is neither input nor state.
                 return;
             }
             addAccessorCallTarget(action);
@@ -566,16 +505,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /**
-         * Registers the planned observed sites of tracked cells (a by-value
-         * cell has no version log until observed): a call storing into an
-         * atomic's value, a {@code putfield} ({@code declaredCallee} empty),
-         * or a {@code getfield} ({@code read}), each observing its cell
-         * ({@code field}); and a read of a cell holding a container or a
-         * container mutation through one, observing that container's state
-         * ({@code container}).  One site naming two cells is refused, and so
-         * is a row observing nothing.
-         */
         private void addObservedSites(JsonArray sites)
                 throws IOException {
             for (JsonElement element : sites == null
@@ -612,7 +541,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /** Records {@code target}; true when a different one holds its site. */
         private boolean conflicts(ObservedSite target) {
             ObservedSite held = observedSitesBySite.putIfAbsent(
                     target.siteId, target);
@@ -627,13 +555,10 @@ public final class ConcolicInstrumentationSelections {
             Map<String, Set<Integer>> locals =
                     localsByMethod.computeIfAbsent(method,
                             ignored -> new LinkedHashMap<>());
-            // ANY_SITE is a member, not an empty set: a union with one
-            // site must not narrow "any" to it.
             locals.computeIfAbsent(local, ignored -> new LinkedHashSet<>())
                     .add(unitIndex >= 0 ? unitIndex : ANY_SITE);
         }
 
-        /** A local selected at every definition site. */
         private static final int ANY_SITE = -1;
 
         private void addAccessorCallTarget(JsonObject action)
@@ -668,7 +593,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /** Records {@code target}; true when a different one holds its site. */
         private boolean conflicts(AccessorCallTarget target) {
             AccessorCallTarget previous = accessorCallsBySite.get(
                     target.callSiteId);
@@ -723,13 +647,6 @@ public final class ConcolicInstrumentationSelections {
                     && (sites.contains(ANY_SITE) || sites.contains(unitIndex));
         }
 
-        /**
-         * Whether a plan action named this field, by the class declaring it,
-         * in a shape a hook can carry.  A getstatic has no receiver: only a
-         * primitive static read is materializable (on its consuming local);
-         * any other stays concrete, not refused, or it would kill the whole
-         * campaign.
-         */
         boolean matches(SootFieldRef field) {
             if (field.isStatic() && !(field.type() instanceof PrimType)) {
                 return false;
@@ -751,10 +668,6 @@ public final class ConcolicInstrumentationSelections {
             return false;
         }
 
-        /**
-         * Unions another task's selections: hooks are keyed by site, not task,
-         * so two tasks naming one site want one rewrite.
-         */
         void mergeFrom(ConcolicMaterializationSelection other) {
             mergeNested(localsByMethod, other.localsByMethod);
             mergeSets(methodArguments, other.methodArguments);
@@ -778,25 +691,16 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /** One access of a tracked cell that the replay observes. */
     static final class ObservedSite {
         final String method;
         final int unitIndex;
         final String siteId;
         final String declaredCallee;
         final String cell;
-        /** A read ({@code getfield}/{@code getstatic}) rather than a store. */
         final boolean read;
-        /** A static cell: observed on its declaring class's mirror. */
         final boolean staticField;
-        /** The cell, on its holder, before the access. */
         final boolean field;
-        /** The state of the container the access reaches: after a read, on
-         *  its referent; before a mutator call, on its receiver. */
         final boolean container;
-        /** A construction-only field's read: which store version its
-         *  object holds, on the read's receiver before it (runtime.
-         *  Provenance). */
         final boolean provenance;
 
         ObservedSite(String method, int unitIndex, String siteId,

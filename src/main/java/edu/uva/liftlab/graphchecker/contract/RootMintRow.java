@@ -1,15 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §2.2: a root the session minted, with its domain already
- * resolved to absolute bounds (both null: pinned).  An undeclared root is
- * evidence, not a degree of freedom.  {@code seq} keeps a root minted after an
- * export from being read as carried by it.
- */
 public final class RootMintRow extends Value {
-    /** The member a CLOCK row states its skew in; absent when 0. */
     public static final String CLOCK_SKEW = "clockSkew";
-    /** The member a CLOCK row states its JVM clock in; absent when none. */
     public static final String CLOCK_SOURCE = "clockSource";
 
     private final String sessionId;
@@ -49,13 +41,6 @@ public final class RootMintRow extends Value {
         this.valid = valid;
     }
 
-    /**
-     * @param category  where the root's value enters the world; the CLOCK
-     *                  category is exactly the CLOCK kind
-     * @param clock     a CLOCK's clock, null for any other root
-     * @param clockSkew how far a CLOCK's node clock ran off the host's
-     *                  reading here ({@link #clockSkew}); 0 for any other
-     */
     public static RootMintRow of(String sessionId, long seq,
                                  OccurrenceAddress occurrence, String rootId,
                                  String symbol, RootKind kind,
@@ -93,9 +78,6 @@ public final class RootMintRow extends Value {
                 declared, clock, clockSkew, Validity.ANY);
     }
 
-    /** This row with what the configuration's own validation admits
-     *  ({@link Validity}): the domain a world moves it in never leaves it
-     *  ({@link RootDomain#resolved}). */
     public RootMintRow validated(Validity admitted) {
         return new RootMintRow(sessionId, seq, occurrence, rootId, symbol,
                 kind, category, recordedValue, domainMin, domainMax,
@@ -103,8 +85,6 @@ public final class RootMintRow extends Value {
                 admitted == null ? Validity.ANY : admitted);
     }
 
-    /** What the configuration's own validation admits; {@link
-     *  Validity#ANY} for any other root. */
     public Validity valid() {
         return valid;
     }
@@ -125,7 +105,6 @@ public final class RootMintRow extends Value {
         return rootId;
     }
 
-    /** The solver name of this root: one name per root, everywhere. */
     public String symbol() {
         return symbol;
     }
@@ -134,68 +113,38 @@ public final class RootMintRow extends Value {
         return kind;
     }
 
-    /** Where the root's value enters the world: a decision reaching a FAULT
-     *  marker is a fault flip site, one reaching a CONFIG flag is not. */
     public RootCategory category() {
         return category;
     }
 
-    /**
-     * The value the region ran the root at; for a CLOCK the instant its
-     * node's clock read there, which is {@link #hostReading} moved by
-     * {@link #clockSkew}.
-     */
     public String recordedValue() {
         return recordedValue;
     }
 
-    /** The resolved absolute lower bound, or {@code null} when pinned. */
     public String domainMin() {
         return domainMin;
     }
 
-    /** The resolved absolute upper bound, or {@code null} when pinned. */
     public String domainMax() {
         return domainMax;
     }
 
-    /** Whether the case declared this root. */
     public boolean declared() {
         return declared;
     }
 
-    /** A CLOCK's clock: the JVM clock it wraps and its tick; null for
-     *  any other root. */
     public Clock clock() {
         return clock;
     }
 
-    /**
-     * A CLOCK's tick: the nanoseconds one unit of its reading is (1 for
-     * {@code nanoTime}, 1,000,000 for {@code currentTimeMillis}); 0 for any
-     * other root.  A clock's window and margin are spans of time, stated in
-     * its own ticks.
-     */
     public long clockNanos() {
         return clock == null ? 0L : clock.nanos();
     }
 
-    /**
-     * How far a CLOCK's node clock ran off the host's reading at this cell
-     * (a replay's plant, or the jump before it the clock ran on from,
-     * {@code runtime.NodeClocks}); 0 for the host's own instant and for any
-     * other root.
-     */
     public long clockSkew() {
         return clockSkew;
     }
 
-    /**
-     * What the host's clock read at this cell: {@link #recordedValue} less
-     * {@link #clockSkew}.  A clock's counterfactual is a skew off it (the
-     * focus row's {@code clockDeltas}); the seed plants nothing, so there
-     * it is the recorded value.
-     */
     public String hostReading() {
         if (clockSkew == 0L) return recordedValue;
         return new java.math.BigInteger(recordedValue.trim())

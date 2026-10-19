@@ -22,15 +22,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * A focused replay's verdicts ({@link FocusedReplay}): when it is DECIDED
- * ({@code #refusedAt}) -- at the first refusal after which every obligation
- * it carries is NOT_ADMITTED whatever the run does next, never at a flip --
- * and the FORCE run ({@link ForcedArms}, PIPELINE §7.10): armed only in the
- * declared occurrence; a decision the VM forced off its arm opens the forced
- * world; the forced target on its fatal arm is ADMITTED, one that closed
- * first or took its healthy arm FORCE_DIVERGED.
- */
 @RunWith(FreshStatics.class)
 public class FocusedReplayTest {
     private static final String FOCUS =
@@ -63,7 +54,6 @@ public class FocusedReplayTest {
         RecordingWindow.reset();
     }
 
-    /** {@code members} of a flip of {@link #SITE}#{@code ordinal} to true. */
     private static String flip(int ordinal, String members) {
         return focusRow(FOCUS, "'flip':{'siteId':'" + SITE + "','ordinal':"
                 + ordinal + ",'outcome':true}" + members);
@@ -74,8 +64,6 @@ public class FocusedReplayTest {
         focus(folder.newFolder().toPath(), rows);
     }
 
-    /** Flip {@link #SITE}#1 at {@link #FOCUS}, holding {@link #PARENT_SITE}
-     *  #1 true at {@link #PARENT}. */
     private void handed() throws Exception {
         hand(flip(1, "," + INHERITS));
     }
@@ -89,13 +77,6 @@ public class FocusedReplayTest {
                 1, outcome);
     }
 
-    /**
-     * A stall is NOT_ADMITTED for the questions still open, once, naming
-     * whether a schedule hold was live: before any flip it decides the
-     * replay; after one, the flips taken keep their verdicts and the session
-     * stands.  Never the seed's replay, a confirmation's, or one whose
-     * workload ended.
-     */
     @Test
     public void aStallLeavesTheFlipsTakenAndRefusesTheQuestionsOpen()
             throws Exception {
@@ -139,7 +120,6 @@ public class FocusedReplayTest {
         assertEquals("and decides nothing", "", FocusedReplay.refusedAt());
         assertEquals(Verdict.ADMITTED, only("s").verdict());
 
-        // Asked two flips, one taken: the stall refuses only the other.
         hand(flip(1, ",'obligationId':'OB1'"), flip(2, ",'obligationId':"
                 + "'OB2'"));
         decide(FOCUS, SITE, true);
@@ -158,8 +138,6 @@ public class FocusedReplayTest {
                         + " flip it was asked was taken"));
     }
 
-    /** A publication the run ended without admits nothing, and decides
-     *  nothing; a decided session withdraws itself, never recreated. */
     @Test
     public void aPublicationTheRunEndedWithoutAdmitsNothing() throws Exception {
         handed();
@@ -189,20 +167,11 @@ public class FocusedReplayTest {
                 Files.exists(dir));
     }
 
-    /**
-     * WORLD_REFUTED: an open decider arm's flip whose replay ran its world
-     * faithfully and never entered the flip's occurrence refutes that world
-     * -- all four conditions or a plain NOT_ADMITTED: (a) every assignment
-     * minted, no prefix abandoned, every inherited flip taken, (b) no hold
-     * gave way, (c) the world acted in the window before any slot was given
-     * up, (d) the workload ended by itself.  Never any other flip.
-     */
     @Test
     public void aFaithfulRunThatNeverEnteredAnOpenArmRefutesItsWorld()
             throws Exception {
         Throwable thrown = new java.io.IOException("Unable to close file");
         Object[][] rows = {
-            // open arm, ended, entered, steps, refuted
             {true, true, false, "act", true},
             {true, true, false, "act depart", true},
             {true, true, false, "", false},
@@ -258,7 +227,6 @@ public class FocusedReplayTest {
     public void aWindowsCloseEndsTheRunAsTheWorkloadsEnd() throws Exception {
         String still = "nothing new for 300 s";
         Object[][] rows = {
-            // closed, concluded before, refuted, its exception
             {false, false, false, ""},
             {true, false, true, "java.io.IOException: boom"},
             {true, true, false, ""}};
@@ -301,9 +269,6 @@ public class FocusedReplayTest {
         }
     }
 
-    /** The declared occurrence's activation, its table forcing the guard
-     *  and the target to jump; {@code guards} and {@code force} more of
-     *  its {@code targetBranch}. */
     private static ActiveRegion declared(long token, String at,
                                          String guards, String force) {
         ActiveRegion active = Fixtures.region(token, Fixtures.taskRow(

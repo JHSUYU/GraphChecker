@@ -35,20 +35,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * Publishes one finished activation as contract rows: decisions, writes,
- * reads and the anchor.  It reads only what the activation already
- * published, so it never changes the execution.
- *
- * <p>{@link #publish} is the one entry point.  {@link RowPlaceholderMint}
- * answers what the activation minted; {@link LoggedEventSites} answers where
- * and by whom a logged event happened.</p>
- */
 final class RowPublication {
     private RowPublication() {
     }
 
-    /** Every row this activation can state, in the contract's shapes. */
     static void publish(ActiveRegion active) {
         if (active == null || !RowRuntime.open()) return;
         OccurrenceAddress occurrence = active.d3Address;
@@ -61,13 +51,6 @@ final class RowPublication {
         publishKind("target", occurrence, () -> target(active, occurrence));
     }
 
-    /**
-     * The mints of an abandoned activation, whose other rows are withheld.
-     *
-     * <p>Its mints are already in the VM; a symbol with no row reads
-     * downstream as "nobody's".  Every mint is either refused at the mint
-     * ({@code RootMint#mintUnattributed}) or rowed here.</p>
-     */
     static void publishMints(ActiveRegion active) {
         if (active == null || !RowRuntime.open()) return;
         OccurrenceAddress occurrence = active.d3Address;
@@ -76,17 +59,11 @@ final class RowPublication {
                 () -> RowPlaceholderMint.mints(active, occurrence));
     }
 
-    /**
-     * One kind, and its own refusal: a kind that cannot be built is that
-     * kind's gap only, so a failed read never suppresses the anchor row.
-     */
     private static void publishKind(String kind, OccurrenceAddress occurrence,
                                     Runnable publish) {
         try {
             publish.run();
         } catch (RuntimeException failure) {
-            // A failed translation must not end the run; the gap tells
-            // "published no writes" apart from "made none".
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     occurrence.render(),
                     "the " + kind + " rows of this activation could not be"
@@ -95,31 +72,16 @@ final class RowPublication {
         }
     }
 
-    /**
-     * One row per decision, with the predicate the taken arm satisfied (as
-     * published, never negated a second time) and which arm that was.
-     *
-     * <p>I3: the row is addressed by the occurrence that performed the
-     * branch, {@code active.d3Address} ({@code Identity#currentOccurrence}
-     * at entry), the same answer {@code LoggedEventSites#performer} gives a
-     * write.  The ordinal is counted on that occurrence
-     * ({@code Identity#nextBranchOrdinal}), so (occurrence, site, ordinal)
-     * is the address a flip is written at.</p>
-     */
     private static void decisions(ActiveRegion active,
                                   OccurrenceAddress occurrence) {
         for (JsonObject mapping : active.branchMappings) {
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
-            // One branch event, one row: the VM's event range overlaps every
-            // enclosing activation.
             if (!RowRuntime.claimEvent("decision",
                     seq + "#" + siteId + "#" + ordinal)) {
                 continue;
             }
-            // Site, arm and predicate as written; nothing applies one to the
-            // other (CONTRACT-SPEC §2.2).
             JsonObject written = object(mapping, "siteCondition");
             RowRuntime.decision(occurrence, seq, siteId, ordinal,
                     optionalBool(mapping, "outcome", false),
@@ -131,10 +93,6 @@ final class RowPublication {
         }
     }
 
-    /**
-     * The VM's constant spelling as its literal: {@code Y_I_119992} is the
-     * int 119992 ({@code Y}, JVM type letter, value).
-     */
     static String literal(String value) {
         String stated = nonNull(value);
         if (stated.length() > 4 && stated.charAt(0) == 'Y'
@@ -144,56 +102,11 @@ final class RowPublication {
         return stated;
     }
 
-    /**
-     * One row per write version, one per read node
-     * ({@code ReadFromExpression}) the published expressions contain, and
-     * one per logged read of a READ_SITE's method none of them states
-     * ({@link #loggedReads}).
-     *
-     * <p>Site from the VM log, index from the frame journal (IDENTITY §4).
-     * A row belongs to the activation that PERFORMED the event
-     * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
-     *
-     * <p>A record an earlier publication walked whole ({@link
-     * SharedStateCapture.Filed#walked}: an enclosing activation's read-out
-     * stated the location again unchanged) is not walked again: that walk
-     * adds nothing.  Every row and gap it can state is claimed once per
-     * session, first publisher wins ({@link RowRuntime#claimEvent}), the
-     * event index and the stores outside every region keep what they hold
-     * ({@link LoggedEventSites#index}, {@link RowRuntime#storedOutside}),
-     * and what else it reads only grows before the record exists: a mint's
-     * label is filed before its store ({@link RowRuntime#declaredMintLabel}),
-     * the READ_SITE methods at session open ({@link #installReadSites}), an
-     * activation's performer at its region entry, before any event of it
-     * ({@link RowRuntime#journalRegion}).  It stays in the activation's
-     * map: its mint stores and referents are this activation's question
-     * ({@link RowPlaceholderMint#mintStores}, {@link #unrowedReferent}).</p>
-     *
-     * <p>THE WALK RULE, which that skip rests on: every effect of walking a
-     * record is a session-wide claim ({@link RowRuntime#claimEvent}: a row,
-     * a gap), an idempotent filing ({@link LoggedEventSites#index},
-     * {@link RowRuntime#storedOutside}), or reads only what the record and
-     * the session already held when the record existed.  An effect that
-     * depends on the publishing activation -- or is made without a claim --
-     * does not go inside the per-record walks below: it goes in a loop of
-     * its own over every record, walked or not (as {@link
-     * RowPlaceholderMint#mintStores} reads them), or the skip would drop it
-     * silently.  A change to these walks names in its review how it keeps
-     * the rule; the check build of RO1 (PERFORMANCE §3) is how it was
-     * measured.</p>
-     */
     private static void writes(ActiveRegion active) {
-        // One read node is reachable from many versions: count it once.
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
-        // Mint stores by (location, version): a declared input is a READ and
-        // states no WriteRow.  Key by the store, never the symbol spelling
-        // (the mint row says `P_L'...'`, the VM version `M_L'...'`).
         Map<String, String> mints = RowPlaceholderMint.mintStores(active);
-        // Index every location's log first: a read node inside one value
-        // reads ANOTHER location, and only its log record names the
-        // activation that ran it (by event id).
         for (SharedStateCapture.Filed filed
                 : active.sharedStateRecords.values()) {
             if (!filed.walked) LoggedEventSites.index(filed.record);
@@ -211,8 +124,6 @@ final class RowPublication {
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
                 if (!rowed(version, locationKey, mints)) {
-                    // No occurrence wrote it: no row, but its readers are
-                    // named at the close (RowRuntime#storedOutside).
                     if (id >= 0L && SharedStateCapture.unattributed(version)) {
                         RowRuntime.storedOutside(location, id,
                                 LoggedEventSites.statedSite(version));
@@ -251,32 +162,16 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
-        // After every expression: a read one states keeps its node's row.
         for (SharedStateCapture.Filed filed
                 : active.sharedStateRecords.values()) {
             if (!filed.walked) loggedReads(filed.record, published);
         }
-        // Whole: a walk a failure cut short leaves its records unwalked.
         for (SharedStateCapture.Filed filed
                 : active.sharedStateRecords.values()) {
             filed.walked = true;
         }
     }
 
-    /**
-     * Every observed READ_SITE access is a row (SYMBOL-SCOPE §5.2): a
-     * logged read in the method of a scope map READ_SITE, as its log record
-     * states it ({@code SharedStateCapture#writeLogRecord}: the version its
-     * plan chose, how far that is the value it read), through the one read
-     * path ({@link #readFrom}), so a read an expression states too is one
-     * row.  Without it a read whose value reached no published expression
-     * -- a reference compared with a constant, an enum state test
-     * (hdfs-adhoc-45's {@code FSEditLog.state} in {@code isSegmentOpen}) --
-     * was no row, and neither the closure nor a STATE family saw it.  An
-     * exact read returned its version's word, so the version's value rides
-     * along as the node's would.  A log the VM cut at its bound names the
-     * reads it dropped as missing, once per location.
-     */
     private static void loggedReads(JsonObject record,
                                     Set<String> published) {
         Set<String> methods = readSiteMethods;
@@ -297,10 +192,6 @@ final class RowPublication {
                             version.getAsJsonObject().get("expression"));
                 }
             }
-            // The version as its read-from node states it, with that
-            // version's value: a read of a version the log does not list
-            // (dropped at its bound) would pair with nothing, so it is
-            // named, never published.
             long version = VmRows.recordedVersion(read);
             if (!values.containsKey(version)) {
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -327,14 +218,9 @@ final class RowPublication {
         }
     }
 
-    /** The {@code vmSite} of every READ_SITE of the session's scope map
-     *  ({@link #installReadSites}): where a logged read is an observed
-     *  READ_SITE access. */
     private static volatile Set<String> readSiteMethods =
             java.util.Collections.emptySet();
 
-    /** Installs the READ_SITE methods of the session's scope map rows, read
-     *  once with the guarded-store table ({@code GuardedStoreSites}). */
     static void installReadSites(List<JsonObject> rows) {
         Set<String> found = new java.util.HashSet<String>();
         for (JsonObject row : rows) {
@@ -348,12 +234,6 @@ final class RowPublication {
         readSiteMethods = java.util.Collections.unmodifiableSet(found);
     }
 
-    /**
-     * Whether a logged version is a write row: a store outside every region
-     * has no performer to row, and a declared input is a mint.  An INITIAL
-     * is one, flagged (WriteRow#initial): no occurrence wrote it, and its
-     * performer is the access that first observed the location.
-     */
     private static boolean rowed(JsonObject version, String locationKey,
                                  Map<String, String> mints) {
         long id = optionalLongInteger(version, "fieldVersionId", -1L);
@@ -361,15 +241,6 @@ final class RowPublication {
                 && !SharedStateCapture.unattributed(version);
     }
 
-    /**
-     * Why the container state a reference version names is no row, or
-     * {@code ""}: a referent's version must be a write of its session
-     * (IMPORT invariant 12).  Its log is in this read-out whenever the
-     * version came after the activation began; the read-out refused that
-     * log (a base the VM could not walk, a truncated envelope), or the log
-     * holds the version as no row.  A log the read-out did not select was
-     * published by an earlier activation's.
-     */
     static String unrowedReferent(
             Map<String, String> refusals,
             Map<String, SharedStateCapture.Filed> records, JsonObject version,
@@ -395,8 +266,6 @@ final class RowPublication {
         return "VERSION_NOT_RETAINED";
     }
 
-    /** The container state a reference version states it stored, or
-     *  null ({@link SharedStateCapture#REFERENT_STATE}). */
     private static WriteRow.Referent referent(JsonObject version) {
         JsonObject state = object(version, SharedStateCapture.REFERENT_STATE);
         LocationId location = locationId(
@@ -405,11 +274,6 @@ final class RowPublication {
                 optionalLongInteger(state, "fieldVersionId", -1L));
     }
 
-    /**
-     * Every read one expression tree states.  Iterative on purpose: a
-     * container's expression can nest hundreds deep, and a depth guard would
-     * drop reads silently.
-     */
     private static void collect(JsonElement root, Set<String> published,
                                 Map<JsonElement, Boolean> seen) {
         if (root == null) return;
@@ -442,13 +306,11 @@ final class RowPublication {
         }
     }
 
-    /** A read the write log covers: the location, and the version it saw. */
     private static void readFrom(JsonObject node, Set<String> published) {
         readAt(node, SharedStateCapture.locationKeyOf(
                 object(node, "location")), published);
     }
 
-    /** {@link #readFrom} at a location its record names. */
     private static void readAt(JsonObject node, String locationKey,
                                Set<String> published) {
         LocationId location = locationId(locationKey);
@@ -459,12 +321,9 @@ final class RowPublication {
         if (!published.add(identity)) return;
         String symbol = optionalString(node, "_exp");
         if (symbol.isEmpty()) {
-            // A guarded read has no symbol: name the version it read.
             symbol = versionSymbol(RowRuntime.sessionId(), locationKey,
                     "v" + observed);
         }
-        // What the read returned (VM f11: every scalar and String read
-        // states it), which a read whose write no row lowers is pinned to.
         String value = nonNull(ReadRow.returned(node));
         if (observed < 0L && value.isEmpty()) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -476,12 +335,6 @@ final class RowPublication {
                 symbol, value, VmRows.unnamedWriter(node));
     }
 
-    /**
-     * A read the log does not cover: the object and what its field held.
-     * The value may nest another read, which supplies version
-     * and location.  The row states the version or the literal, never
-     * neither, and spells the location as the write log does so they join.
-     */
     private static void fieldAccess(JsonObject node,
                                     Set<String> published) {
         JsonElement value = node.get("concreteValue");
@@ -491,9 +344,6 @@ final class RowPublication {
                 : SharedStateCapture.locationKeyOf(object(read, "location"));
         LocationId location = locationId(locationKey);
         if (location == null) {
-            // The location is the VM's or none: one built from ownerClass
-            // and fieldOffset would never join the `INSTANCE_FIELD/<rid>#<slot>`
-            // spelling of the writes.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     optionalString(node, "ownerClass") + "#"
                             + optionalInteger(node, "fieldOffset", -1),
@@ -501,10 +351,6 @@ final class RowPublication {
                             + " cannot say which storage it read");
             return;
         }
-        // The row's location is the nested read's, so its version is too,
-        // joinability included: the projection's own observedVersion states
-        // no unnamedWriter, and once VM f11 found a location incomplete
-        // the two spelled one read event as two rows (SOLR-18406 s48).
         long observed = VmRows.joinedVersion(read);
         long event = eventOf(node);
         if (event < 0L) event = eventOf(value);
@@ -521,7 +367,6 @@ final class RowPublication {
         if (!published.add(identity)) return;
         String projected = optionalString(node, "_exp");
         if (projected.isEmpty()) {
-            // One symbol per READ, not per field.
             projected = versionSymbol(RowRuntime.sessionId(), locationKey,
                     observed >= 0L ? "v" + observed : "e" + event);
         }
@@ -529,10 +374,6 @@ final class RowPublication {
                 projected, stated, VmRows.unnamedWriter(read));
     }
 
-    /**
-     * One read row, claimed once, at the occurrence that performed it; a
-     * read the write log names is no placeholder, so it has no mint version.
-     */
     private static void publishRead(JsonObject node, String identity,
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
@@ -550,39 +391,21 @@ final class RowPublication {
                 ReadRow.UNKNOWN_VERSION, unnamedWriter);
     }
 
-    /**
-     * The name of a read the VM named nothing: the version (or event) it
-     * read, in this session.  A rid and a version count within one run, so
-     * without the session two replays that diverged spell two objects alike
-     * -- hdfs-17897 v67: {@code INSTANCE_FIELD/203#24@v927} a Long's value
-     * in one session and a Boolean's in another, one name at two sorts.
-     */
     static String versionSymbol(String session, String locationKey,
                                 String version) {
         return locationKey + "@" + version + "@" + session;
     }
 
-    /**
-     * One read event, wherever it is reached from.  The first activation to
-     * publish it wins, which is the innermost (activations finish innermost
-     * first).
-     */
     private static String readIdentity(String locationKey, long observed,
                                        long event) {
         return locationKey + "#" + observed + "#" + event;
     }
 
-    /** The VM event a node names, or {@code -1} ({@link VmRows#readEvent},
-     *  the one rule COMPOSE finds a node's row by). */
     private static long eventOf(JsonElement node) {
         return node == null || !node.isJsonObject() ? -1L
                 : VmRows.readEvent(node.getAsJsonObject());
     }
 
-    /**
-     * The read a value node states under the VM's boundary wrappers,
-     * however many: cut at depth 8, a deeper one was a gap and no read.
-     */
     static JsonObject nestedRead(JsonElement value) {
         for (JsonElement cursor = value;
              cursor != null && cursor.isJsonObject();
@@ -595,12 +418,6 @@ final class RowPublication {
         return null;
     }
 
-    /**
-     * The literal a value node states under the VM's wrappers: its own
-     * spelling, else its expression's, else its concrete value's.  Each node
-     * once, on a stack: cut at depth 8, a deeper one was a gap and no
-     * value.
-     */
     private static String leaf(JsonElement value) {
         List<JsonElement> pending = new ArrayList<JsonElement>();
         Set<JsonElement> walked = ExpressionWalk.identitySet();
@@ -623,13 +440,6 @@ final class RowPublication {
         return "";
     }
 
-    /**
-     * The anchor row: the predicate of the arm this run took, plus whether
-     * that arm is the fatal one the task declares.  No reader re-derives a
-     * polarity (a second negation is the trap).  A reached anchor always
-     * states phi: a concrete fatal condition as the constant of the arm it
-     * took ({@link RowRuntime#fatalTerm}); an unreached one states none.
-     */
     private static void target(ActiveRegion active,
                                OccurrenceAddress occurrence) {
         ConcolicTaskPlan.RuntimeTask task = active.activation;
@@ -637,7 +447,6 @@ final class RowPublication {
         if (!task.declaresTargetBranch() && reach == null) return;
         boolean reached = reach != null;
         boolean observed = reached && optionalBool(reach, "outcome", false);
-        // An undeclared seed task states the arm it observed.
         boolean fatalArm = task.declaresTargetBranch()
                 ? task.targetBranchRequiredOutcome : observed;
         String anchor = task.declaresTargetBranch()
@@ -656,7 +465,6 @@ final class RowPublication {
                 continue;
             }
             JsonObject witness = object(mapping, "witness");
-            // The arm this run took, as the VM published it.
             JsonElement satisfied = witness.get("sourceSatisfiedPredicate");
             if (satisfied != null && satisfied.isJsonObject()) {
                 condition = satisfied.getAsJsonObject();
@@ -676,9 +484,6 @@ final class RowPublication {
             phi = arms.isEmpty() ? "false" : arms.size() == 1 ? arms.get(0)
                     : "(or " + String.join(" ", arms) + ")";
         }
-        // A FORCE run's target (ForcedArms): phi is the forced path
-        // condition, every decision from the first one forced against its
-        // concrete arm on, and the row stands there.
         long forcedFrom = reached ? ForcedArms.forcedFrom(active) : 0L;
         if (forcedFrom > 0L) {
             long from = Math.min(forcedFrom, at);
@@ -686,10 +491,6 @@ final class RowPublication {
                     reach, "vmEventId", 0L), phi);
             at = from;
         }
-        // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
-        // last VM event, ActiveRegion#recordConcreteDecision).  The composer
-        // cuts the prefix before target.seq() (PIPELINE §8), so at 0 pi_p
-        // would be empty and too weak; state a BLOCKING gap instead.
         if (at <= 0L && reached) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
                     "this run reached the anchor on a decision the VM gave"
@@ -701,15 +502,6 @@ final class RowPublication {
                 reached, stated.openArm, forcedFrom > 0L);
     }
 
-    /**
-     * A forced target's phi: the conjunction of each decision the
-     * activation took from {@code from} up to the target's own ({@code
-     * target}, which {@code phi} states) -- as taken, forced or not, so the
-     * conjunction is one path to the throw -- and {@code phi}.  A decision
-     * stating no predicate is the constant of its arm: one forced against
-     * its concrete arm is {@code false} (that world cannot take it), the
-     * target's own included, any other adds nothing.
-     */
     static String forced(List<JsonObject> mappings, long from, long target,
                          String phi) {
         List<String> conjuncts = new ArrayList<String>();
@@ -735,8 +527,6 @@ final class RowPublication {
                 : "(and " + String.join(" ", conjuncts) + ")";
     }
 
-    /** A reached target's phi, the event it stands at, and the open decider
-     *  arm it leaves out, if any. */
     static final class Phi {
         final String phi;
         final long at;
@@ -749,16 +539,6 @@ final class RowPublication {
         }
     }
 
-    /**
-     * A reached target's phi in the fatal polarity: the branch's own
-     * condition as the run stated it, the arm it took ({@code observed})
-     * against the fatal one; or, where it tests what a helper returned
-     * (causynth.BooleanReturns), the condition of the helper decision that
-     * chose the return ({@link #decided}), standing where the earliest
-     * decision that condition rests on stands, so the prefix is cut before
-     * it.  An open arm the run did not take leaves phi the run's own and the
-     * decision on the path, and is named on the row.
-     */
     static Phi phi(List<JsonObject> mappings,
                    List<StaticScopeMap.Guard> deciders, JsonObject condition,
                    boolean observed, boolean fatalArm, long at) {
@@ -774,9 +554,6 @@ final class RowPublication {
                 : not(decided.condition), decided.at, null);
     }
 
-    /** A guard's condition as {@link #decided} states it, the event of the
-     *  earliest decision it rests on and that decision (what a flip of it
-     *  asks); or, instead, the open arm it could not state. */
     static final class Decided {
         final String condition;
         final long at;
@@ -794,27 +571,6 @@ final class RowPublication {
         }
     }
 
-    /**
-     * The condition of a guard testing what a helper returned
-     * (causynth.BooleanReturns) -- a term over the VM's expressions, true
-     * where the guard's jump is taken -- from the decision that chose the
-     * return: the latest one before {@code before} in the helper's method,
-     * the deciders', when it is one of their branches.  It is {@code
-     * ite(the decision as it held, the arm it took, the other arm)}, an
-     * arm being its verdict, or, open and taken, {@code own}, the guard's
-     * condition as the run stated it.  The decision is its own predicate;
-     * concrete, it tested a nested helper's return, and its condition is the
-     * one that helper's deciders give, in turn.  Where the other arm is open
-     * the run states nothing of what it returns: the result names that arm
-     * ({@link Decided#open}), with the decision whose flip runs it -- this
-     * one where it states a predicate, else the nested one its condition
-     * rests on -- and the guard stays its own condition.  Null -- the guard
-     * is its own condition -- where the latest decision is no decider's, a
-     * constant arm it took is not what the guard observed ({@code observed}),
-     * or a concrete one has nothing below it.  This call's decisions, not an
-     * earlier call's: the latest in the helper's method is the one its return
-     * ran from.
-     */
     static Decided decided(List<JsonObject> mappings,
                            List<StaticScopeMap.Guard> deciders, long before,
                            String own, boolean observed) {
@@ -846,7 +602,6 @@ final class RowPublication {
         Decided nested = !held.isEmpty() || took.deciders().isEmpty() ? null
                 : decided(mappings, took.deciders(), at,
                 String.valueOf(outcome), outcome);
-        // An open arm below leaves this decision's own condition unstated.
         if (nested != null && nested.open != null) return nested;
         String askedSite = !held.isEmpty() ? site
                 : nested == null ? "" : nested.askedSiteId;
@@ -868,7 +623,6 @@ final class RowPublication {
                 null);
     }
 
-    /** The decider arm of {@code site} at {@code outcome}, or null. */
     private static StaticScopeMap.Guard arm(
             List<StaticScopeMap.Guard> deciders, String site,
             boolean outcome) {
@@ -881,8 +635,6 @@ final class RowPublication {
         return null;
     }
 
-    /** {@code (ite c a b)}, a constant arm pair spelled as {@code c} or its
-     *  negation. */
     static String ite(String condition, String then, String otherwise) {
         if (then.equals(otherwise)) return then;
         if ("true".equals(then) && "false".equals(otherwise)) {
@@ -894,7 +646,6 @@ final class RowPublication {
         return "(ite " + condition + " " + then + " " + otherwise + ")";
     }
 
-    /** A term's negation, a negation's operand itself. */
     static String not(String term) {
         if ("true".equals(term)) return "false";
         if ("false".equals(term)) return "true";
@@ -904,7 +655,6 @@ final class RowPublication {
         return Arms.conjunct(term, false);
     }
 
-    /** Whether a term's first parenthesis closes at its last character. */
     private static boolean closes(String term) {
         int depth = 0;
         for (int index = 0; index < term.length(); index++) {
@@ -915,20 +665,6 @@ final class RowPublication {
         return false;
     }
 
-    /**
-     * A disjunctive guard ({@code a || b}) as one evaluation decided it:
-     * every test jumps to the throw, so phi is the OR of their fatal arms,
-     * each test's first decision from the target branch's on.  The target
-     * stands at that first test, so none of them is in the prefix.  A test
-     * decided concretely is the constant of its arm: one that took its
-     * healthy arm adds nothing ({@code false}), one that took its fatal arm
-     * ends the evaluation and is the whole disjunction ({@code true}); no
-     * arm at all is {@code false}.
-     *
-     * @return whether a test took its fatal arm
-     */
-    /** {@link #disjunction} from the test this occurrence reached the
-     *  target at, which need not be the one the recording did. */
     static boolean tookDisjunct(ActiveRegion active, List<String> arms) {
         JsonObject reach = active.targetReach;
         return reach != null && disjunction(active.branchMappings,

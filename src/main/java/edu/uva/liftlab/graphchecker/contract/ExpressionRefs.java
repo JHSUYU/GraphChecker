@@ -12,18 +12,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * CONTRACT-SPEC §2.3: the ref a session's rows name an expression by, {@code
- * EXPR.} and the 16 hex of a 64-bit Merkle hash over the expression DAG.  A
- * node's hash folds its member names in sorted order, each scalar's text and
- * each child's hash, so equal expressions have equal refs in every session;
- * each node (by identity) is hashed once, however often it is shared.
- *
- * <p>No SHA-256 over a canonical rendering: the replay runs in the concolic
- * interpreter, where that cost 2.1 ms a node (SOLR-18406's publication spent
- * minutes in it).  Sixteen hex of the SHA-256 were 64 bits too; the
- * collision space is the same.</p>
- */
 public final class ExpressionRefs {
     public static final String PREFIX = "EXPR.";
     private static final long SEED_OBJECT = 0x6f626a6563742e31L;
@@ -37,7 +25,6 @@ public final class ExpressionRefs {
     private final Map<JsonElement, Long> hashes =
             new IdentityHashMap<JsonElement, Long>();
 
-    /** The ref of one expression. */
     public synchronized String ref(JsonObject expression) {
         String hex = Long.toHexString(hash(expression));
         StringBuilder ref = new StringBuilder(PREFIX);
@@ -45,7 +32,6 @@ public final class ExpressionRefs {
         return ref.append(hex).toString();
     }
 
-    /** Post-order and iterative: a chain nests thousands deep. */
     private long hash(JsonElement root) {
         Deque<JsonElement> pending = new ArrayDeque<JsonElement>();
         Deque<Boolean> expanded = new ArrayDeque<Boolean>();
@@ -102,7 +88,6 @@ public final class ExpressionRefs {
                 : node.getAsJsonObject().asMap().values();
     }
 
-    /** A child's hash, already folded, or a scalar's. */
     private long value(JsonElement value) {
         if (composite(value)) return hashes.get(value);
         if (value == null || value.isJsonNull()) return TAG_NULL;
@@ -114,7 +99,6 @@ public final class ExpressionRefs {
                 text(scalar.getAsString()));
     }
 
-    /** FNV-1a over the UTF-16 units, finished by {@link #mix}. */
     private static long text(String value) {
         long hash = 0xcbf29ce484222325L;
         for (int index = 0; index < value.length(); index++) {
@@ -124,7 +108,6 @@ public final class ExpressionRefs {
         return mix(hash, value.length());
     }
 
-    /** Folds one value into a running hash (murmur3's 64-bit finalizer). */
     private static long mix(long hash, long value) {
         long mixed = hash * 0x9e3779b97f4a7c15L + value;
         mixed ^= mixed >>> 33;

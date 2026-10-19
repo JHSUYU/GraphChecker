@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# stop-run.sh <round>-<case without hdfs-> ... -- stops acceptance runs
-# everywhere they run.
-#
-#   tools/rounds/stop-run.sh v23-17899-bug1 v23-17967-pathC
-#
-# A run is not one process group: accept.sh's case runs under `timeout`, which
-# takes a group of its own, and run_engine gives every replay and every
-# remote worker its own group too.  So the run is named by what its processes
-# share -- its output directory, $GC_OUT/accept-<suffix>: on the command line
-# of everything below the harness, and as OUT in the environment of the
-# harness itself (its group id is $OUT/pgid, a number that means something
-# only on the head) -- and every group that has such a process, on every
-# lift, is sent TERM, then KILL for whatever is still there after the grace.
 set -euo pipefail
 
 (( $# > 0 )) || { echo "usage: stop-run.sh <round>-<case> ..." >&2; exit 2; }
@@ -24,8 +11,6 @@ for suffix in "$@"; do
   dirs+=("${out}/accept-${suffix}")
 done
 
-# signal_groups <host> <signal>: signals the run's groups on <host> and prints
-# how many of its processes were there.
 signal_groups() {
   ssh -o BatchMode=yes -o ConnectTimeout=20 "$1" bash -s -- "$2" "${dirs[@]}" <<'REMOTE'
 signal=$1; shift

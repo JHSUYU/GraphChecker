@@ -2,11 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
-/**
- * CONTRACT-SPEC §1: one causal-graph edge, named by both endpoints.  A family
- * is keyed by the interaction (CONTRACT-SPEC §5): same port, other
- * endpoint contributes nothing.
- */
 public final class Interaction extends Value {
     private final InteractionKind kind;
     private final Endpoint producer;

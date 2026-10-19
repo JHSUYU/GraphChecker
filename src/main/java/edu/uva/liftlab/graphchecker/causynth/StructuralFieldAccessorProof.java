@@ -18,18 +18,10 @@ import soot.jimple.ThisRef;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-/** Static proof that a no-argument getter is one exact field read. */
 final class StructuralFieldAccessorProof {
     private StructuralFieldAccessorProof() {
     }
 
-    /**
-     * A JDK atomic's {@code get()}: the value field it reads, off {@link
-     * SharedFieldFlow#atomicRead}'s table rather than a body, which a JDK
-     * class need not have loaded -- {@code AtomicReference.get()} is its
-     * {@code value}, {@code AtomicBoolean.get()} its {@code value != 0}.
-     * Null for any other call, or when the field does not resolve.
-     */
     static SootField atomicField(String accessor) {
         String field = SharedFieldFlow.atomicRead(accessor);
         return field.isEmpty() ? null : Scene.v().grabField(field);
@@ -113,7 +105,6 @@ final class StructuralFieldAccessorProof {
         return field;
     }
 
-    /** True when {@code source}, through any cast, is one of the aliases. */
     private static boolean aliasOf(Value source, Set<Local> aliases) {
         Value operand = source instanceof CastExpr
                 ? ((CastExpr) source).getOp() : source;

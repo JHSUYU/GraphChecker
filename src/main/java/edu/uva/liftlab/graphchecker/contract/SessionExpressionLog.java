@@ -18,21 +18,9 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
-/**
- * CONTRACT-SPEC §2.3: a session's {@code expressions.jsonl}, the DAG its rows'
- * refs name, appended as the replay files it: a header line, then each
- * expression node once (children first, a child named by its session-local
- * node number), and one line per ref naming its node.
- *
- * <p>Append-only, so a killed replay keeps every line it flushed and nothing
- * is ever written twice.  The table was one JSON object rewritten whole
- * every 30 s, content-addressed by SHA-256 in the concolic interpreter; the
- * rewrites and the hashing were most of a large replay's publication.</p>
- */
 public final class SessionExpressionLog {
     public static final String KIND = "SESSION_EXPRESSION_LOG";
     public static final int SCHEMA_VERSION = 1;
-    /** An expression's child, named by its node number. */
     static final String NODE_TYPE = "SessionExpressionNode";
     private static final String NODE = "node";
     private static final String REF = "ref";
@@ -41,7 +29,6 @@ public final class SessionExpressionLog {
     private SessionExpressionLog() {
     }
 
-    /** The first line of every log. */
     public static JsonObject header() {
         JsonObject header = new JsonObject();
         header.addProperty("kind", KIND);
@@ -49,7 +36,6 @@ public final class SessionExpressionLog {
         return header;
     }
 
-    /** An expression node: an object that names its {@code _type}. */
     static boolean expression(JsonElement value) {
         if (value == null || !value.isJsonObject()) return false;
         JsonElement type = value.getAsJsonObject().get("_type");
@@ -58,16 +44,10 @@ public final class SessionExpressionLog {
                 && !NODE_TYPE.equals(type.getAsString());
     }
 
-    /** Numbers the nodes one session's log has written, by identity. */
     public static final class Writer {
         private final Map<JsonElement, Long> numbers =
                 new IdentityHashMap<JsonElement, Long>();
 
-        /**
-         * The lines that file one ref: each node of {@code expression} not
-         * yet written, children first, then the ref's own line.  Iterative:
-         * a chain nests thousands deep.
-         */
         public List<JsonObject> lines(String ref, JsonObject expression) {
             List<JsonObject> lines = new ArrayList<JsonObject>();
             Deque<JsonObject> pending = new ArrayDeque<JsonObject>();
@@ -110,7 +90,6 @@ public final class SessionExpressionLog {
             return lines;
         }
 
-        /** The node's own members, each child node by its number. */
         private JsonObject numbered(JsonObject node) {
             JsonObject copy = new JsonObject();
             for (Map.Entry<String, JsonElement> member : node.entrySet()) {
@@ -140,8 +119,6 @@ public final class SessionExpressionLog {
         }
     }
 
-    /** The expression nodes one node holds, through its own arrays and
-     *  plain objects. */
     private static List<JsonObject> children(JsonObject node) {
         List<JsonObject> found = new ArrayList<JsonObject>();
         Deque<JsonElement> inline = new ArrayDeque<JsonElement>(
@@ -161,14 +138,6 @@ public final class SessionExpressionLog {
         return found;
     }
 
-    /**
-     * The table one log states.  A session opens its log with the header
-     * ({@code SessionPublisher}), so a missing or headless file was never
-     * published, and is refused: read as the empty table, every row's ref
-     * came out UNSTATED_VALUE and hid the missing file (hdfs-17960's
-     * offline compose).  Its strings come from {@code pool}; each line is
-     * taken into the table as it is read ({@link ExpressionTable.Builder}).
-     */
     static ExpressionTable read(Path file, RowPool pool) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException(
@@ -202,8 +171,6 @@ public final class SessionExpressionLog {
         return table.build();
     }
 
-    /** One line after the header, into {@code table}: a ref naming a node,
-     *  or a node, each child by the number of an earlier line's node. */
     static void take(ExpressionTable.Builder table, JsonObject row) {
         if (row.has(REF)) {
             table.ref(primitiveString(row, REF), row.get(NODE).getAsLong());
@@ -218,8 +185,6 @@ public final class SessionExpressionLog {
         table.node(number, expression.getAsJsonObject());
     }
 
-    /** The node number an object names when it stands for a child node
-     *  ({@code {"_type": NODE_TYPE, "node": n}}), else null. */
     static Long childNumber(JsonObject value) {
         return NODE_TYPE.equals(primitiveString(value, "_type"))
                 ? Long.valueOf(value.get(NODE).getAsLong()) : null;

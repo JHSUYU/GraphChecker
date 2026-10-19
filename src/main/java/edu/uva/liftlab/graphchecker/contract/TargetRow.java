@@ -1,20 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §2.2: the anchor, as the runtime published it.  {@code phiTerm}
- * is in the FATAL polarity and the composer never re-derives it: two places
- * deciding polarity end up asserting the healthy arm.
- */
 public final class TargetRow extends Value {
-    /**
-     * The arm of the helper decision that chose what a reached target tested
-     * when this run took its constant sibling and the arm itself is OPEN
-     * (causynth.BooleanReturns): it runs on to a value no constant states,
-     * so phi states nothing of it.  {@code asked} is the decision whose flip
-     * runs it -- the decision itself where it states a predicate, else the
-     * nested helper decision its condition rests on -- or empty where none
-     * does (a concrete decision over nothing that moves).
-     */
     public static final class OpenArm extends Value {
         private final String siteId;
         private final int ordinal;
@@ -31,7 +17,6 @@ public final class TargetRow extends Value {
             this.askedOrdinal = askedOrdinal;
         }
 
-        /** {@code askedSiteId} empty: no decision's flip runs the arm. */
         public static OpenArm of(String siteId, int ordinal, boolean outcome,
                                  String askedSiteId, int askedOrdinal) {
             String asked = askedSiteId == null ? "" : askedSiteId.trim();
@@ -42,22 +27,18 @@ public final class TargetRow extends Value {
                             "openArm.askedOrdinal"));
         }
 
-        /** The deciding branch. */
         public String siteId() {
             return siteId;
         }
 
-        /** Its decision's ordinal in the occurrence. */
         public int ordinal() {
             return ordinal;
         }
 
-        /** The open arm: the outcome this run did not take. */
         public boolean outcome() {
             return outcome;
         }
 
-        /** The decision whose flip runs the arm, or {@code ""}. */
         public String askedSiteId() {
             return askedSiteId;
         }
@@ -87,10 +68,7 @@ public final class TargetRow extends Value {
     private final String phiTerm;
     private final boolean observedFatal;
     private final boolean reachedAnchor;
-    /** Null unless phi left an open decider arm out ({@link OpenArm}). */
     private final OpenArm openArm;
-    /** Whether a forced replay reached the anchor by forcing a branch
-     *  against its concrete arm ({@link #forced}). */
     private final boolean forced;
 
     private TargetRow(String sessionId, long seq, OccurrenceAddress occurrence,
@@ -121,12 +99,6 @@ public final class TargetRow extends Value {
                 reachedAnchor, openArm, false);
     }
 
-    /**
-     * This row, reached by a FORCED replay (PIPELINE §7.10): the run forced
-     * a branch on the way against its concrete arm, so it observed no fatal
-     * ({@code observedFatal} false) and {@code phiTerm} is the forced path
-     * condition from the first such decision on, which the row stands at.
-     */
     public TargetRow forced() {
         return new TargetRow(sessionId, seq, occurrence, anchorSiteId,
                 phiTerm, false, reachedAnchor, openArm, true);
@@ -144,19 +116,10 @@ public final class TargetRow extends Value {
         return occurrence;
     }
 
-    /** The fatal read this anchor is about: the target branch's label,
-     *  {@code site#k} as the runtime states it ({@code
-     *  RowPublication#target}). */
     public String anchorSiteId() {
         return anchorSiteId;
     }
 
-    /**
-     * The target branch's site: the label without the occurrence ordinal
-     * the runtime appends ({@code <method>#u11#1} -> {@code <method>#u11}),
-     * as a scope map's guards and forcing tables name it; a label with no
-     * ordinal is its own site.
-     */
     public String site() {
         int hash = anchorSiteId.lastIndexOf('#');
         if (hash <= 0 || hash == anchorSiteId.length() - 1) {
@@ -170,27 +133,22 @@ public final class TargetRow extends Value {
         return anchorSiteId.substring(0, hash);
     }
 
-    /** phi, in the fatal polarity, as published. */
     public String phiTerm() {
         return phiTerm;
     }
 
-    /** Whether this session observed the fatal arm. */
     public boolean observedFatal() {
         return observedFatal;
     }
 
-    /** Whether this session reached the anchor at all. */
     public boolean reachedAnchor() {
         return reachedAnchor;
     }
 
-    /** The open decider arm phi left out, or null. */
     public OpenArm openArm() {
         return openArm;
     }
 
-    /** Whether a forced replay reached the anchor so ({@link #forced()}). */
     public boolean isForced() {
         return forced;
     }

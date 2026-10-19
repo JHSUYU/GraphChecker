@@ -12,33 +12,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * The call sites the root demand chose for the catalog's demanded doors
- * (SYMBOL-SCOPE §4.2, §4.6: a local file operation whose result or failure
- * flows into what the slice traces), {@value #FILE} beside the scope map.
- * The static pass writes it; every pass weaves it before any analysis
- * ({@link DoorWeave}), read from {@value #PROPERTY}.  A call is named by its
- * caller, its callee and its ordinal among the caller's calls of that callee
- * in body order -- never by a unit index, which a woven door shifts.
- */
 final class DemandedDoors {
     static final String FILE = "io_doors.jsonl";
-    /** The file every pass weaves. */
     static final String PROPERTY = "causynth.io.doors";
     static final String KIND = "DEMANDED_DOOR";
 
-    /** One chosen call site. */
     static final class Site {
         final String caller;
         final String callee;
         final int ordinal;
-        /** Edges from the target's path guards, as the demand measured. */
         final int distance;
-        /** How its outcome reaches the slice: VALUE, ESCAPE, HANDLER. */
         final String reach;
-        /** The methods from the demanded site's down to the caller: the
-         *  regions holding the first hold them all
-         *  ({@code SymbolicRegionPlanner#fold}). */
         final List<String> via;
 
         Site(String caller, String callee, int ordinal, int distance,
@@ -51,7 +35,6 @@ final class DemandedDoors {
             this.via = Collections.unmodifiableList(new ArrayList<>(via));
         }
 
-        /** The call's identity: caller, callee and ordinal. */
         String key() {
             return caller + "|" + callee + "|" + ordinal;
         }
@@ -75,16 +58,12 @@ final class DemandedDoors {
     private DemandedDoors() {
     }
 
-    /** The sites this run weaves ({@value #PROPERTY}); none when unset or
-     *  not yet written. */
     static List<Site> woven() {
         String file = System.getProperty(PROPERTY, "").trim();
         return file.isEmpty() ? Collections.<Site>emptyList()
                 : read(Paths.get(file));
     }
 
-    /** A file's sites; a row of another kind or missing a member is
-     *  refused by name. */
     static List<Site> read(Path file) {
         List<Site> sites = new ArrayList<>();
         if (!Files.isRegularFile(file)) return sites;

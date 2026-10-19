@@ -175,8 +175,6 @@ def main():
         moved = json.load(open(os.path.join(sched, 'final', 'claim.json'))).get('claim', {}).get('movedRoots', {}) or {}
     except Exception:
         pass
-    # The value the composition anchored each root at (the seed's reading): a selected session may have run a
-    # clock already skewed by its own world, so its row's value is not the recording's (solr-18406 SG1: 402 s off).
     anchored = {}
     try:
         for root in json.load(open(os.path.join(sched, 'final', 'candidate_composition_manifest.json'))).get('roots', []):

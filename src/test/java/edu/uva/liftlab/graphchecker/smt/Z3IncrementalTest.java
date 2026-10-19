@@ -26,15 +26,6 @@ public class Z3IncrementalTest {
             + "(declare-const y Int)\n"
             + "(assert (! (>= x 0) :named shared_nonneg))\n";
 
-    /**
-     * A SCOPE ANSWERS AS ITS QUESTION ASKED ALONE, and leaves nothing to the
-     * next: asked in order of one set of scoped z3s, each question's
-     * verdict, model and core are those of the shared part and its scope
-     * asked of a z3 of its own -- an assertion, a name or a declaration of
-     * one scope is gone in the next, so a symbol two scopes declare with
-     * two sorts is two symbols.  {scope, the symbols asked, core wanted,
-     * status, values, core}.
-     */
     @Test
     public void aScopeAnswersAsItsQuestionAskedAlone() throws IOException {
         Object[][] rows = {
@@ -55,8 +46,6 @@ public class Z3IncrementalTest {
                         "{t=true}", null},
         };
         Z3 solver = new Z3(z3(), 30000L, 4096);
-        // In a room of its own: one-shot asks in the scopes' room would
-        // take it from them between questions, their z3s started afresh.
         Z3 one = new Z3(z3(), 30000L, 4096);
         try (Z3Incremental scopes = new Z3Incremental(solver,
                 output -> output.write(SHARED), 1)) {
@@ -87,17 +76,6 @@ public class Z3IncrementalTest {
         assertTrue(solver.errors().toString(), solver.errors().isEmpty());
     }
 
-    /**
-     * A z3 THAT ENDS MID-QUESTION ANSWERS IT NOTHING, and the questions
-     * after it are asked of a fresh one: the fixture z3 runs out of memory
-     * where a scope says so -- on its check, its model or its core -- as
-     * both engines do.  A memout is undecided, a sat whose model was cut
-     * too; an unsat whose core was cut stands, its core unknown.  A z3
-     * that ran out of memory after answering others asks the question
-     * again of a fresh one, once ({@code agedoom}: only a z3 that answered
-     * before runs out).
-     * {scope, symbols, core wanted, status, values, core known}.
-     */
     @Test
     public void aZ3ThatEndsMidQuestionAnswersItNothing() throws IOException {
         Object[][] rows = {
@@ -129,12 +107,6 @@ public class Z3IncrementalTest {
         assertTrue(solver.errors().toString(), solver.errors().isEmpty());
     }
 
-    /**
-     * TWO DECIDED ANSWERS THAT DIFFER ARE AN ERROR, NEVER A VERDICT: engine
-     * 6 says unsat at once and engine 2, within its grace, sat with its
-     * model.  The question is undecided and named among the solver's
-     * errors, which refuse a claim over it by name.
-     */
     @Test
     public void twoAnswersThatDifferAreAnErrorNeverAVerdict()
             throws IOException {
@@ -149,12 +121,6 @@ public class Z3IncrementalTest {
         assertEquals(solver.errors().toString(), 1, solver.errors().size());
     }
 
-    /**
-     * A HOST WHOSE sshd REFUSES THE FIRST CONNECTIONS (MaxStartups under a
-     * burst: SGF8-adhoc-39, 15 of 102 pairs) is asked again: a z3 that
-     * ended before its shell printed its pid is started again, at most
-     * {@link Z3Incremental#SSH_ATTEMPTS} times, and its pair answers.
-     */
     @Test
     public void aHostThatRefusesItsFirstConnectionsIsAskedAgain()
             throws Exception {
@@ -172,14 +138,6 @@ public class Z3IncrementalTest {
                 ssh.resolveSibling("ssh.busy")).get(0).trim()) > 2);
     }
 
-    /**
-     * EIGHT PAIRS ON ONE HOST, ITS ssh STARTS IN WAVES OF
-     * {@link Z3Incremental#SSH_STARTS_PER_HOST}: a wave's slot is given back
-     * as each shell prints its pid, whatever its pair's driver does, so
-     * every engine starts and every question is answered (CAN9-adhoc-13: a
-     * slot given back only by its pair's driver, itself waiting for a slot,
-     * left 4 z3s a host started and the decide waiting for ever).
-     */
     @Test(timeout = 120000L)
     public void eightPairsOnOneHostStartInWavesAndAllAnswer()
             throws Exception {
@@ -210,27 +168,6 @@ public class Z3IncrementalTest {
         return fake(folder.newFile("unused.log").toPath());
     }
 
-    /**
-     * A z3 answering scopes as their {@code ; <word>} comments say, and a
-     * SIGINT as z3 4.14.1 does: inside a check it ends the check, unknown,
-     * "interrupted from keyboard"; anywhere else it ends z3.  It searches
-     * running, as z3 does, so a SIGINT is sent to it there.  A shared
-     * part saying {@code slowread} takes 12 s to read.  {@code oom} runs out of
-     * memory on the check, {@code agedoom} on a z3 that answered a check
-     * before, {@code modelcut} on its model, {@code corecut} on its core;
-     * {@code slow} searches a minute under engine 6 unless cancelled, a
-     * second under engine 2, then unsat; {@code late2} searches a minute
-     * under engine 2 unless cancelled, under engine 6 0.3 s, then sat;
-     * {@code only6} is sat under engine 6, unknown under 2; {@code deaf}
-     * and {@code deafdie} search 1.5 s under engine 6 deaf to SIGINT, then
-     * unsat (0.5 s under 2), and the signal lands later: on the next check,
-     * cancelling it, or (deafdie) on the next scope, ending z3;
-     * {@code split} is unsat under 6 at once, sat under 2 after 0.2 s;
-     * {@code nap} unsat after a second; else {@code sat} ({@code ((x 1))})
-     * or unsat (core {@code (c)}), engine 6 searching 0.3 s first.  Each
-     * start logged, and each check, tracking or plain, beside it
-     * ({@code .checks}), and its pid ({@code .pids}).
-     */
     private Path fake(Path log) throws IOException {
         Path script = folder.newFile("z3-scoped.py").toPath();
         Files.write(script, Arrays.asList("#!/usr/bin/env python3",

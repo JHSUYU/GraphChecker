@@ -13,12 +13,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 
-/**
- * IDENTITY §7.2: each application object a decode's product holds is the
- * version it was parsed from; a later product holding an older object
- * leaves it its own; values, lambdas and an inner object's outer one are
- * none.
- */
 @RunWith(FreshStatics.class)
 public class ProvenanceTest {
     private static final String PATH = "/collections/t/state.json";
@@ -37,7 +31,6 @@ public class ProvenanceTest {
         List<Object> registered = Provenance.register(
                 new Provenance.Version(STATE, PATH, 3L), first);
         Decoded.Slice two = new Decoded.Slice("shard2", "construction");
-        // A later parse that still holds the first slice.
         Decoded.Collection later = new Decoded.Collection(client, one, two);
         Provenance.register(new Provenance.Version(STATE, PATH, 4L), later);
         Object[][] rows = {

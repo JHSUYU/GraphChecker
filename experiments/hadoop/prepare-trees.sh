@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# prepare-trees.sh [<tree name>...] -- the HDFS trees the 46 cases run, made
-# from the Hadoop fork: each tree of trees.tsv (default: all four) is cloned
-# at $GC_TREES/<name> on its branch, built against this checkout's
-# GraphChecker jar with its own Maven repository $GC_M2/<name>, and runs the
-# workload of every case of hdfs-cases.tsv whose case.sh names it, once
-# natively (build.sh).  A tree already there is not cloned again, only built.
-# Run it from a built system/hdfs1 checkout (`mvn package`), one tree per
-# host: `tools/onlift.sh -g 8 experiments/hadoop/prepare-trees.sh <name>`.
-#
-#   HADOOP_FORK  the fork to clone (default https://github.com/JHSUYU/hadoop.git)
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
@@ -18,7 +8,6 @@ source "${graphchecker}/tools/lib/gc-env.sh"
 source "${graphchecker}/experiments/lib/case-id.sh"
 fork=${HADOOP_FORK:-https://github.com/JHSUYU/hadoop.git}
 
-# Each case's tree and workload, as its declarations state them.
 declare -A workloads=()
 while IFS=$'\t' read -r id _; do
   [[ -n "${id}" && "${id}" != \#* ]] || continue

@@ -45,45 +45,22 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-/**
- * The obligations of one task, and the solving of one of them.
- *
- * <p>An obligation is the path as its replay ran it with exactly one decision
- * negated; never the fatal predicate (the composition's question) nor another
- * region's path (its own task). Planning ({@link ExploreMain}) and solving
- * ({@link ObligationSolverMain}, one worker per obligation) run in separate
- * processes: a round's queries are independent.</p>
- */
 public final class ObligationFactory {
-    /** How many refuted worlds one open arm's flip is asked again past:
-     *  the named valve of the WORLD_REFUTED re-ask (result.json
-     *  {@code bounded} {@code open_arm_max_refuted_worlds}). */
     static final int MAX_REFUTED_WORLDS = 8;
-    /** The reason a flip past {@link #MAX_REFUTED_WORLDS} is refused. */
     static final String REFUTED_BOUND = "OPEN_ARM_MAX_REFUTED_WORLDS";
 
-    /** How many recorded paths of one task a round proposes flips from. */
     public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
-    /** How many flips one path may offer in one round. */
     public static final int DEFAULT_MAX_FLIPS_PER_PATH = 32;
-    /** The most flips a cut path's world may already hold: the nesting bound.
-     *  Each wave (a generation of worlds, PIPELINE §7.9) nests one more flip,
-     *  so without it the search grows per world;
-     *  the deepest known witness chain is two flips. */
     public static final int DEFAULT_MAX_WORLD_DEPTH = 3;
 
     private ObligationFactory() {
     }
 
-    /** What a round may propose per task. */
     public static final class Bounds {
         public final int maxPathsPerTask;
         public final int maxFlipsPerPath;
-        /** Most flips a cut path's world may hold; 0 cuts from the seed only.
-         */
         public final int maxWorldDepth;
 
-        /** A negative {@code maxWorldDepth} is the default. */
         public Bounds(int maxPathsPerTask, int maxFlipsPerPath,
                       int maxWorldDepth) {
             this.maxPathsPerTask = maxPathsPerTask <= 0
@@ -95,30 +72,19 @@ public final class ObligationFactory {
         }
     }
 
-    /** One flip a round proposes: the path, the decision, and its identity;
-     *  or a PAIRING FLIP ({@link PairingFlip}): the path, a read of a node's
-     *  view and the older version of it the read is to take, no decision. */
     public static final class Candidate {
         public final String obligationId;
         public final Task task;
         public final Corpus.RecordedPath path;
-        /** The flipped decision's index, -1 for a pairing flip. */
         public final int index;
-        /** The flipped decision, null for a pairing flip. */
         public final DecisionRow decision;
-        /** A forced path's flip ({@link #forced(Corpus, Task)}): the arm it
-         *  asks is the forced one, with the whole forced path condition. */
         public final boolean forced;
-        /** A pairing flip's read of a node's view, else null. */
         public final ReadRow pairedRead;
-        /** The version of the view a pairing flip's read is to take. */
         public final long pairedVersion;
 
         private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index,
                           boolean forced) {
-            // A forced flip asks the whole way to the throw: another
-            // question than the flip of its decision alone.
             this(task, path, index, obligationId(task.taskId(),
                     path.decisions.get(index).siteId(),
                     path.decisions.get(index).ordinal(),
@@ -139,7 +105,6 @@ public final class ObligationFactory {
             this.pairedVersion = -1L;
         }
 
-        /** A pairing flip ({@link PairingFlip}). */
         Candidate(Task task, Corpus.RecordedPath path, ReadRow read,
                   long version, String obligationId) {
             this.task = task;
@@ -152,33 +117,24 @@ public final class ObligationFactory {
             this.pairedVersion = version;
         }
 
-        /** Whether it is a pairing flip. */
         public boolean pairing() {
             return pairedRead != null;
         }
 
-        /** The site it asks at: the decision's, or a pairing flip's read
-         *  ({@link PairingFlip#site}). */
         public String siteId() {
             return pairing() ? PairingFlip.site(pairedRead)
                     : decision.siteId();
         }
 
-        /** The decision's ordinal, or a pairing flip's ({@link
-         *  PairingFlip#ordinal}: an ordinal is 1-based, a version not). */
         public int ordinal() {
             return pairing() ? PairingFlip.ordinal(pairedVersion)
                     : decision.ordinal();
         }
 
-        /** The arm it asks: the recorded one's other, or a forced flip's
-         *  forced one; a pairing flip's is taken. */
         public boolean flippedOutcome() {
             return pairing() || decision.outcome() == forced;
         }
 
-        /** The row a round publishes: what to flip, no model yet (the solver
-         *  writes values). */
         public Obligation proposal() {
             return Obligation.of(obligationId, task.taskId(), path.pathId,
                     siteId(), ordinal(),
@@ -189,45 +145,19 @@ public final class ObligationFactory {
         }
     }
 
-    /** One obligation solved: the query, the verdict, and what to apply. */
     public static final class Outcome {
-        /** Null unless the query is satisfiable and the flip can be run. */
         public final Obligation obligation;
         public final ObligationResult result;
         public final String smt2;
-        /** root id -> clock skew ({@code model - recorded}) as a decimal: every
-         *  run reads a clock differently, so the replay adds this to its own
-         *  reading. */
         public final Map<String, String> clockDeltas;
-        /** root id -> the rendered occurrence the recording mints it at, for
-         *  every assigned root. Focused beside the flipped path: a replay
-         *  plants only at a FOCUSED mint ({@code
-         *  ConcolicRegionRuntime#focusedRootValue}), so an unfocused mint reads
-         *  the recorded value. */
         public final Map<String, String> rootMints;
-        /** Inherited flips (the parent's own, then its inherited ones), each
-         *  with its ORIGINAL obligation id; the replay is held to all ({@code
-         *  runtime/FocusedReplay}). */
         public final List<Corpus.Flip> inheritedFlips;
-        /** Reader -> writer, the world's pairings (the model's moved writer
-         *  choices over the parent's), each as a confirmation names it. */
         public final Map<String, String> pairings;
-        /** The rows that hold the replay to them ({@code
-         *  runtime.Confirmation}) and the occurrences their order moves,
-         *  where the schedule prefix ends ({@link ConfirmMain#holding}). */
         public final ConfirmMain.Holding holding;
         public final List<GapRow> gaps;
-        /** The question asked ({@link #question}). */
         public final String question;
-        /** Whether this verdict settles it: a solver's own decided one;
-         *  never a timeout, an undecided solver, or a reused answer (the
-         *  obligation it reused settles it). */
         public final boolean settles;
-        /** Whether the flip runs an open decider arm ({@link
-         *  Corpus#openArmFlip}): its replay may refute its world. */
         public final boolean openArm;
-        /** Its hard-lane ask, where its first ask was undecided at its budget
-         *  by time or by z3's memory cap; else null. */
         final HardAsk owed;
 
         Outcome(Obligation obligation, ObligationResult result,
@@ -259,8 +189,6 @@ public final class ObligationFactory {
         }
     }
 
-    /** Every outcome but a satisfied one: no obligation to run, nothing to
-     *  apply. */
     private static Outcome refused(Candidate candidate, Verdict verdict,
                                    String detail, String query,
                                    List<GapRow> gaps, String question) {
@@ -289,21 +217,8 @@ public final class ObligationFactory {
                 settles, false, owed);
     }
 
-    /** How a hard lane's model over another query than the one the corpus
-     *  now builds is refused ({@link #solve}). */
     static final String HARD_MODEL_STALE = "HARD_MODEL_STALE";
 
-    /**
-     * What an answer to {@code ask} settles of its flip without a model: an
-     * UNSAT, which settles its question, or no verdict by name -- the budget
-     * spent ({@code SOLVER_TIMEOUT}), z3 at its memory cap ({@code
-     * SOLVER_MEMOUT}), or neither sat nor unsat -- each of the first two
-     * owing its hard-lane ask (the outcome's {@code owed}); null for a sat
-     * answer, which only the corpus finishes.  The one mapping both the
-     * corpus's ask ({@link #solve}) and the hard lane's ({@code
-     * ObligationSolverMain --decide}) answer by, so their files are the same
-     * ({@code query} null: the hard lane keeps the first ask's).
-     */
     static Outcome settled(HardAsk ask, Z3.Answer answer, long budget,
                            Z3 solver, String query) {
         List<GapRow> gaps = new ArrayList<GapRow>(ask.gaps);
@@ -316,8 +231,6 @@ public final class ObligationFactory {
                     "SOLVER_TIMEOUT after " + budget + "ms", query, gaps,
                     ask.question, false, ask);
         }
-        // At its memory cap: no verdict, by name, as a timeout is (its
-        // campaign asks it again with a larger cap, in the hard lane).
         if (answer.memOut()) {
             gaps.add(GapRow.of(ask.gapSession, GapKind.SOLVER_MEMOUT,
                     GapClass.DIAGNOSTIC, ask.obligationId,
@@ -327,8 +240,6 @@ public final class ObligationFactory {
                     "SOLVER_MEMOUT at " + solver.capMb() + " MB", query, gaps,
                     ask.question, false, ask);
         }
-        // Neither sat nor unsat (error/unknown) is no verdict: refused by name,
-        // never read as UNSAT.
         if (!answer.decided()) {
             return refused(ask.obligationId, Verdict.NOT_ADMITTED,
                     "the solver did not decide this flip: " + answer.status()
@@ -345,8 +256,6 @@ public final class ObligationFactory {
         return null;
     }
 
-    /** {@code reading + skew} as a decimal, or "" if either is not one: the
-     *  instant a skew puts a clock at ({@link #skew}'s inverse). */
     static String instant(String reading, String skew) {
         if (reading == null || skew == null) return "";
         try {
@@ -357,7 +266,6 @@ public final class ObligationFactory {
         }
     }
 
-    /** {@code model - recorded} as a decimal, or "" if either is not one. */
     static String skew(String model, String recorded) {
         if (model == null || recorded == null) return "";
         try {
@@ -369,9 +277,6 @@ public final class ObligationFactory {
         }
     }
 
-    /** One WHOLE WORLD digest: all its flips, sorted, so order is irrelevant;
-     *  the seed's is {@code ""}. Labels slot and graph rows; arm keys use
-     *  {@link #dependence} instead. */
     public static String worldDigest(Corpus.World world) {
         if (world == null || world.flips.isEmpty()) return "";
         List<String> held = new ArrayList<String>();
@@ -383,9 +288,6 @@ public final class ObligationFactory {
         return ArtifactIO.digest(String.join("/", held), 16);
     }
 
-    /** A world as a question and a refutation spell it: its roots, skews,
-     *  answers and pairings, sorted, then its flips in order, each by its
-     *  decision (never the id it was first asked under: ids drift). */
     static String worldText(Corpus.World world) {
         StringBuilder text = new StringBuilder()
                 .append(new TreeMap<String, String>(world.rootAssignments))
@@ -400,59 +302,16 @@ public final class ObligationFactory {
         return text.toString();
     }
 
-    /** One whole world, digested ({@link #worldText}): how a refuted world
-     *  is named ({@link Corpus.Refuted}). */
     static String wholeWorldDigest(Corpus.World world) {
         return ArtifactIO.digest(worldText(world), 16);
     }
 
-    /**
-     * WHAT ONE FLIPPED GUARD DEPENDS ON, digested: the part of an arm's key
-     * besides the arm itself. Shared by {@link Candidate} and {@link
-     * Frontier}, which must agree.
-     *
-     * <ul>
-     *   <li><b>Its own path condition</b>: the task's earlier decisions on
-     *       the path that share a variable with the guard, directly or
-     *       through one another or the task's own reads ({@link
-     *       Independence#ofGuard}), each as its occurrence and {@code
-     *       siteId=outcome} with how many different conditions it decided
-     *       there ({@link Corpus#decisionShape}): a poll deciding the same
-     *       condition again is one (semantic counts only: an ordinal is
-     *       how many times it ran, and shifts with every earlier poll),
-     *       a loop's iterations over another bound are not.  Any other
-     *       conjunct holds at its recorded values whatever the flip's model
-     *       is, so two paths differing only there ask the same
-     *       question.</li>
-     *   <li><b>Its world, by its effect at the task</b>: what the world
-     *       delivered the query ({@link Corpus#inputShape}): the handoffs
-     *       the guard and its kept conditions state, by what binds them, and
-     *       the factor members that wrote at the locations they read, by
-     *       what they wrote and what fed them.</li>
-     * </ul>
-     *
-     * <p>Never the session, and never the inherited flips' prefixes, which
-     * {@link FlipQuery} still asserts: a prefix only adds conjuncts to the
-     * query, so a world's arm whose own path and input shape equal another's
-     * -- the input shape stating what each feeder wrote at the guard's
-     * locations as the guard reads it -- is UNSAT where that one is
-     * (solr-adhoc-07 IB1: a fault at the task's own {@code makePath} later
-     * in the occurrence kept 13 decisions after the arm and re-asked 979
-     * seed arms).  LIMIT:
-     * a NOT_ADMITTED answer in the reduced world stands for the parent
-     * world's arm too (an open decider arm whose every ask came back so
-     * still ends {@code OPEN_ARM_UNANSWERED}).  Trap: the world stays even
-     * where the guard names none of it (hdfs-11741's witness, see {@link
-     * Corpus#inputShape}).</p>
-     */
     public static String dependence(Corpus corpus, Task task,
                                     Corpus.RecordedPath path, int index) {
         return corpus.dependence(task, path.pathId + "#" + index,
                 () -> keyed(corpus, task, path, index));
     }
 
-    /** One recorded decision of a task's path whose arm is keyed, or the
-     *  whole path ({@link #OFFERED}). */
     static final class Keyed {
         final Task task;
         final Corpus.RecordedPath path;
@@ -465,25 +324,8 @@ public final class ObligationFactory {
         }
     }
 
-    /**
-     * {@link #dependence} of each of {@code arms}, at its index, on every core
-     * of the host ({@link Parallel#grouped}): one session's arms in their
-     * order on one thread -- a key asks its session's lowering, leaf sets
-     * and names, and they remember the order they were asked in (a lowering
-     * names its refused constructs by count; rows sharing a seq share the
-     * leaf set the first of them was asked for) -- the sessions side by
-     * side.  What a key asks of every session -- the literals a recorded
-     * decision compares an integral configuration with, its domain ({@link
-     * Corpus#comparedLiterals}), each decision lowered by its own session's
-     * lowering -- is asked first, on the same terms ({@link
-     * Corpus#configurationLiterals}).  What a session's keys named and
-     * lowered goes with its last one ({@link Corpus#keysDone}).
-     * hdfs-adhoc-07 EX1's keys were ~260 s of a ~900 s round, SGF8-adhoc-05
-     * round 5's 262 s, on one core.
-     */
     static List<String> dependences(Corpus corpus, List<Keyed> arms) {
         corpus.configurationLiterals();
-        // What a session's keys hold goes with its last (Corpus#keysDone).
         Map<String, Keyed> last = new HashMap<String, Keyed>();
         for (Keyed arm : arms) last.put(arm.path.sessionId, arm);
         try {
@@ -500,7 +342,6 @@ public final class ObligationFactory {
         }
     }
 
-    /** {@link #dependence}, computed. */
     private static String keyed(Corpus corpus, Task task,
                                 Corpus.RecordedPath path, int index) {
         DecisionRow flipped = path.decisions.get(index);
@@ -511,17 +352,9 @@ public final class ObligationFactory {
         Independence rests = Independence.ofGuard(corpus, path.sessionId,
                 flipped.term(), predicates,
                 corpus.readsOn(path.sessionId, task.focused()));
-        // Per occurrence, site and outcome, the different conditions decided
-        // there.
         Map<String, Set<String>> kept = new TreeMap<String, Set<String>>();
-        // The terms the query states: the guard's, then its kept conditions'
-        // (Corpus#inputShape names the handoffs they read by what binds
-        // them).
         List<String> stated = new ArrayList<String>();
         stated.add(flipped.term());
-        // The domain of every integral configuration the guard or a kept
-        // condition names: a corpus that widens it owes the arm again
-        // (Corpus#domainOf).
         Set<String> domains = new TreeSet<String>();
         domains(corpus, path.sessionId, flipped.term(), domains);
         for (DecisionRow condition : predicates) {
@@ -544,8 +377,6 @@ public final class ObligationFactory {
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 
-    /** Each integral configuration {@code term} names, with its domain:
-     *  the one kind of root whose domain the corpus widens. */
     private static void domains(Corpus corpus, String sessionId, String term,
                                 Set<String> into) {
         for (String symbol : corpus.termSymbols(sessionId, term)) {
@@ -559,48 +390,24 @@ public final class ObligationFactory {
         }
     }
 
-    /** The flip a question is about, digested: task, path, site, ordinal
-     *  and the outcome asked for -- the first half of its {@link
-     *  #question}, and what holds an arm in flight from being proposed again
-     *  ({@code Frontier#inFlight}): an id drifts, a flip does not. */
     public static String flip(Candidate candidate) {
         return flip(candidate.task.taskId(), candidate.path.pathId,
                 candidate.siteId(), candidate.ordinal(),
                 candidate.flippedOutcome());
     }
 
-    /** {@link #flip(Candidate)} of an obligation row's fields. */
     static String flip(String taskId, String pathId, String siteId,
                        int ordinal, boolean flippedOutcome) {
         return ArtifactIO.digest(taskId + "|" + pathId + "|" + siteId + "#"
                 + ordinal + " -> " + flippedOutcome, 16);
     }
 
-    /**
-     * THE QUESTION one flip asks, its REPLAY KEY, as {@code
-     * <flip>:<content>}: the flip ({@link #flip}), then a digest of
-     * everything its answer rests on -- its SOLVER KEY, the query's sha256 as
-     * its solver is asked it (or the refusal that leaves none: {@code
-     * solverKey}), and all its replay is given: the world it plants (its
-     * path's, inherited whole), the focused occurrence, the factor (a set)
-     * and the seed session (the focus row, whose factor grows as sessions
-     * land and no query reads), and {@code given} (the declared occurrence
-     * and the plan generation its class tree is woven from, which GROW
-     * moves); the schedule cut is the path's session cut at the focus and
-     * factor.  An obligation's id drifts as sessions land; its question does
-     * not while all of this reads the same (SOLR-18413 r5: 185 questions
-     * asked 717 times; 118 of the 166 re-asked with byte-identical queries).
-     * Its solver reuses the answer of one a worker settled ({@code
-     * ObligationDir#answered}); z3's answer to its query alone is reused by
-     * the solver key, whatever else the question names ({@link Solved}).
-     */
     static String question(Candidate candidate, Corpus.World world,
                            String solverKey, String given) {
         StringBuilder text = new StringBuilder();
         text.append(solverKey).append('\n').append(worldText(world));
         text.append("\nfocused ").append(candidate.task.focused().id())
                 .append("\nseed ").append(candidate.task.seedSessionId());
-        // A set: the order the corpus lists it in moves as sessions land.
         Set<String> factor = new TreeSet<String>();
         for (OccurrenceAddress member : candidate.task.factor()) {
             factor.add(member.id());
@@ -610,16 +417,6 @@ public final class ObligationFactory {
         return flip(candidate) + ":" + ArtifactIO.digest(text.toString(), 16);
     }
 
-    /**
-     * One obligation's id: planned occurrence ({@link ClosurePlanner#taskId}),
-     * the arm, and what its guard depends on ({@link #dependence}).
-     *
-     * <p>Never the session: a {@code pathId} in the key gives one arm as many
-     * ids as sessions (the row still carries it; the query is built over it).
-     * The dependence lets flip chains deepen and keeps a known path under new
-     * inputs owed (hdfs-11741: the same expiry compare over four keys instead
-     * of five), never the same question twice.</p>
-     */
     public static String obligationId(String taskId, String siteId,
                                       int ordinal, boolean flippedOutcome,
                                       String dependence) {
@@ -627,39 +424,11 @@ public final class ObligationFactory {
                 + flippedOutcome + "|" + dependence, 16);
     }
 
-    /**
-     * The flips the tasks offer, task by task in their order, recording
-     * every already-settled candidate.
-     *
-     * <p>PIPELINE §7.4: only decisions at sites the closure demanded for a
-     * member (target guards for the anchor, own guards for a writer/producer).
-     * Cut only from the paths of sessions that may parent ({@link
-     * Branches#parents}): a child inherits the parent's world (PIPELINE
-     * §7.5), a NOT_ADMITTED replay ran no world, and one whose branch
-     * stopped ran none the question is asked in. Such sessions still attest
-     * arms ({@link Frontier}).  Every path is keyed; {@code
-     * maxPathsPerTask} bounds the paths that offer an owed arm no round has
-     * in flight, so it defers new work only, to the next round.  What a path
-     * offers asks its session's lowering ({@link #offered}): one session's
-     * paths in the tasks' order on one thread, the sessions side by side
-     * ({@link Parallel#grouped}, as {@link #dependences}); the ledger is
-     * asked after, in order.</p>
-     *
-     * @param flipSites task id -> the site ids its demand names
-     * @param branches  which sessions a path may be cut from
-     * @param owed      the one ledger of owed arms ({@link Frontier})
-     * @param gaps      receives settled candidates, so a shrinking round is
-     * explained
-     * @param keys      the ZooKeeper chain's: a decision over off-chain store
-     *                  values alone is no flip
-     */
     public static List<Candidate> candidates(Corpus corpus, List<Task> tasks,
                                              Map<String, Set<String>> flipSites,
                                              Bounds bounds, Branches branches,
                                              Frontier owed,
                                              List<GapRow> gaps, ZkKeys keys) {
-        // Every task's paths to cut from, smallest world first; how many
-        // stand past the nesting bound, counted into a gap below.
         List<List<Corpus.RecordedPath>> cut =
                 new ArrayList<List<Corpus.RecordedPath>>();
         List<Integer> tooDeep = new ArrayList<Integer>();
@@ -670,7 +439,6 @@ public final class ObligationFactory {
             int deep = 0;
             for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                     corpus.pathsOf(task.focused()))) {
-                // Only a parent's paths are cut (see above).
                 if (!branches.parents(path.sessionId)) continue;
                 if (corpus.world(path.sessionId).flips.size()
                         > bounds.maxWorldDepth) {
@@ -704,21 +472,14 @@ public final class ObligationFactory {
         return candidates;
     }
 
-    /** A {@link Keyed} that names a whole path, every decision it offers
-     *  ({@link #offered}). */
     private static final int OFFERED = -1;
 
-    /** What one path offers before the ledger is asked: its flippable
-     *  decisions at the task's flip sites, fault decisions first, and its
-     *  pairing flips; how many decide on off-chain store values alone; the
-     *  gaps its pairing flips name. */
     private static final class Offered {
         final List<Candidate> asked = new ArrayList<Candidate>();
         final List<GapRow> gaps = new ArrayList<GapRow>();
         int offChain;
     }
 
-    /** {@link Offered} of one task's path. */
     private static Offered offered(Corpus corpus, Task task,
                                    Set<String> flipSites,
                                    Corpus.RecordedPath path, ZkKeys keys) {
@@ -737,14 +498,11 @@ public final class ObligationFactory {
             }
             offered.asked.add(new Candidate(corpus, task, path, index, false));
         }
-        // And the reads of a node's view the path may re-pair.
         offered.asked.addAll(PairingFlip.candidates(corpus, task, path,
                 offered.gaps));
         return offered;
     }
 
-    /** One task's candidates, from what its paths offer ({@code paths} and
-     *  {@code offers}, in its paths' order), the ledger asked. */
     private static List<Candidate> candidates(Task task,
                                               List<Corpus.RecordedPath> paths,
                                               List<Offered> offers,
@@ -761,11 +519,6 @@ public final class ObligationFactory {
             Offered of = offers.get(at);
             offChain += of.offChain;
             gaps.addAll(of.gaps);
-            // Its owed arms: each arm once (the same arm from another path is
-            // the same obligation; the first path -- smallest world, fewest
-            // inherited constraints -- is its prefix), fault flips first
-            // (PIPELINE §7.4: cheap, and they grow the graph), at most
-            // maxFlipsPerPath of them.
             List<Candidate> owedHere = new ArrayList<Candidate>();
             List<Candidate> flying = new ArrayList<Candidate>();
             int unflipped = 0;
@@ -781,8 +534,6 @@ public final class ObligationFactory {
                             reason));
                     continue;
                 }
-                // Queued or running: owed, but not this round's to ask
-                // (Frontier#open holds it), so it holds no path slot.
                 if (owed.flying(candidate)) {
                     flying.add(candidate);
                     continue;
@@ -797,14 +548,6 @@ public final class ObligationFactory {
                 offered.add(candidate.obligationId);
                 candidates.add(candidate);
             }
-            // The path bound counts new work, never repetition: a path whose
-            // arms are all settled, in flight or offered by a path before it
-            // is no path to cut from (hdfs-adhoc-08 HG8F: of 15995 paths past
-            // the bound, 15670 offered nothing owed).  Smallest-world-first
-            // means the bound keeps the paths closest to the recording.  It
-            // DEFERS, never drops: every round reads the task's paths again,
-            // and once the paths before them are answered or in flight, the
-            // ones it left are the first that count (gap below).
             if (owedHere.isEmpty()) continue;
             if (cut >= bounds.maxPathsPerTask) {
                 unread++;
@@ -858,7 +601,6 @@ public final class ObligationFactory {
         return candidates;
     }
 
-    /** The decision indexes of one path, its fault decisions first. */
     private static List<Integer> faultFirst(Corpus corpus,
                                             Corpus.RecordedPath path) {
         List<Integer> faults = new ArrayList<Integer>();
@@ -871,10 +613,6 @@ public final class ObligationFactory {
         return faults;
     }
 
-    /** Paths of one occurrence, SMALLEST WORLD FIRST (stable). A candidate
-     *  inherits its path's whole world, so the representative of an arm is the
-     *  path with the fewest flips: same question, fewest constraints. The seed
-     *  is first. */
     private static List<Corpus.RecordedPath> smallestWorldFirst(
             final Corpus corpus, List<Corpus.RecordedPath> paths) {
         List<Corpus.RecordedPath> ordered =
@@ -884,23 +622,18 @@ public final class ObligationFactory {
         return ordered;
     }
 
-    /** What one model plants, or why no replay can plant it. */
     private static final class Planted {
         final Map<String, String> roots = new LinkedHashMap<String, String>();
         final Map<String, String> clockDeltas =
                 new LinkedHashMap<String, String>();
         final Map<String, String> answers =
                 new LinkedHashMap<String, String>();
-        /** Reader -> writer: the writer choices the model moved off the
-         *  recording ({@link Confirmation#writer}). */
         final Map<String, String> pairings =
                 new LinkedHashMap<String, String>();
         final List<String> unproducible = new ArrayList<String>();
-        /** Why no replay can run it, or "". */
         String refusal = "";
     }
 
-    /** The roots, clock skews, answers and pairings one model assigns. */
     private static Planted planted(Corpus corpus, Candidate candidate,
                                    FlipQuery.Built built,
                                    Map<String, String> values,
@@ -911,9 +644,6 @@ public final class ObligationFactory {
             String value = values.get(variable.getKey());
             if (value != null) planted.roots.put(variable.getValue(), value);
         }
-        // A clock's model is an instant of the recording's window; the replay
-        // is owed the difference from the host's reading there (a skew, as
-        // the replay plants it: RootMintRow#hostReading).
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
@@ -930,8 +660,6 @@ public final class ObligationFactory {
                                 + "instant"));
                 continue;
             }
-            // Fail closed: a skew or instant outside a Java long can never be
-            // applied (clockDomain's ceiling should make this unreachable).
             BigInteger skewed = new BigInteger(delta);
             BigInteger instant =
                     skewed.add(new BigInteger(recorded.trim()));
@@ -969,11 +697,6 @@ public final class ObligationFactory {
                 planted.unproducible.add(control.attachEndpointId);
             }
         }
-        // A writer the model chose that is not the recording's pairing (the
-        // writer its reads observed, or the run's own choice) is a pairing
-        // the replay is held to, the location's
-        // INITIAL among them; a read another session made is no event of
-        // the world this replay runs.
         for (FlipQuery.WriterChoice choice : built.choices) {
             String chosen = "";
             for (String selector : choice.writes.keySet()) {
@@ -1000,21 +723,6 @@ public final class ObligationFactory {
         return planted;
     }
 
-    /**
-     * Why this model plants nothing its path's own session did not already
-     * run, or "": no clock moved, no handoff answered, no writer choice
-     * moved off the recording, and every assigned root at the value that
-     * session ran it at (none assigned included) -- its mint's, or, where it
-     * read the root and minted none, its stated reading ({@link
-     * Corpus#rootValue}).  The replay it asks for then runs the world that
-     * session ran -- its path's world, inherited whole -- and a replay sets
-     * nothing else: a container's state ({@code st__*}) follows its writer's
-     * and a term the lowering refused ({@code unsupported__*}) is the run's,
-     * never planted.  A moved clock is a counterfactual of its own and is
-     * checked FIRST (a pinned root beside moved clocks is not that replay).
-     * Asked of the model's own skews, roots, answers and pairings, before
-     * the parent's world is laid under them.
-     */
     private static String plantsNothing(Corpus corpus, Candidate candidate,
                                         FlipQuery.Built built,
                                         Map<String, String> values,
@@ -1071,15 +779,6 @@ public final class ObligationFactory {
                 + (run.size() > 8 ? ", ..." : "") + ")");
     }
 
-    /**
-     * The query with every writer choice held to the recording's pairing
-     * ({@link FlipQuery.WriterChoice#recorded}: the writer its reads
-     * observed, or the run's own choice where that is no one writer's
-     * arm); a container
-     * state follows its writer's.  A term the lowering refused ({@code
-     * unsupported__*}) has no recorded value and stays free.  "" when the
-     * query has no writer choice to hold.
-     */
     private static String heldToRecording(FlipQuery.Built built,
                                           String pins) {
         StringBuilder held = new StringBuilder();
@@ -1092,8 +791,6 @@ public final class ObligationFactory {
         return held.length() == 0 ? "" : built.smt2 + pins + held;
     }
 
-    /** Whether any clock skew is non-zero; a non-integer delta counts as no
-     *  movement. */
     private static boolean movesAClock(Map<String, String> clockDeltas) {
         if (clockDeltas == null) return false;
         for (String delta : clockDeltas.values()) {
@@ -1109,12 +806,6 @@ public final class ObligationFactory {
         return false;
     }
 
-    /** Finds the flip one published obligation names, from the corpus alone,
-     *  under the id its ROUND gave it.  Never recomputed: a solver reads the
-     *  corpus as it stands, where sessions landed since the round grow a
-     *  task's factor and so its dependence -- a second id for one
-     *  obligation, whose answer the ledger then never meets (hdfs-17967
-     *  pathA v82: 24 of 169 workers). */
     public static Candidate locate(Corpus corpus, Obligation obligation) {
         Task task = ClosurePlanner.taskOf(corpus, obligation.taskId());
         if (task == null) return null;
@@ -1140,12 +831,6 @@ public final class ObligationFactory {
         return null;
     }
 
-    /**
-     * THE FORCED FLIP of one task's occurrence (PIPELINE §7.10), one per
-     * forced path of it: its first decision forced against its concrete arm,
-     * asked at the forced arm with the whole forced path condition ({@link
-     * FlipQuery#buildForced}).  Empty where no forced path reached it.
-     */
     public static List<Candidate> forced(Corpus corpus, Task task) {
         List<Candidate> candidates = new ArrayList<Candidate>();
         for (Corpus.RecordedPath path
@@ -1163,16 +848,6 @@ public final class ObligationFactory {
         return candidates;
     }
 
-    /**
-     * Solves one candidate: its query, its verdict and its model; or reuses
-     * the answer of the same question a worker settled.
-     *
-     * @param solved   z3's answers by query text, which every ask reads
-     *                 first and keeps a decided answer in
-     * @param given    what the replay is given besides the corpus, as
-     *                 {@link #question} keys it
-     * @param answered the questions this iteration's workers settled
-     */
     public static Outcome solve(Corpus corpus, Candidate candidate,
                                 Z3 solver, Solved solved, String given,
                                 Map<String, ObligationDir.Answer> answered,
@@ -1190,8 +865,6 @@ public final class ObligationFactory {
         boolean openArm = !candidate.forced && corpus.openArmFlip(
                 candidate.task.focused(), decision.siteId(),
                 decision.ordinal(), !decision.outcome());
-        // An open arm's flip is asked without each world a replay of it
-        // refuted (WORLD_REFUTED): exactly that world, never the arm.
         List<Corpus.Refuted> refuted = openArm
                 ? corpus.refutedWorlds(flip(candidate))
                 : Collections.<Corpus.Refuted>emptyList();
@@ -1200,17 +873,12 @@ public final class ObligationFactory {
                     refuted));
         }
         Corpus.World inherited = corpus.world(candidate.path.sessionId);
-        // The query as asked (body plus the driver's question), for the
-        // artifact; its sha256 is the solver key.
         String query = built.ok()
                 ? Z3.modelQuery(built.smt2, built.modelSymbols) : "";
         String querySha256 = ArtifactIO.sha256(query);
         String question = question(candidate, inherited, built.ok()
                 ? "query " + querySha256 : "refused: " + built.refusal, given);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
-        // The named valve: an open arm's flip is not asked again past
-        // MAX_REFUTED_WORLDS refuted worlds (a clock or a wide integral may
-        // offer one world per value); result.json `bounded` names it.
         int distinct = Corpus.distinctWorlds(refuted);
         if (distinct >= MAX_REFUTED_WORLDS) {
             return refused(candidate, Verdict.NOT_ADMITTED, REFUTED_BOUND
@@ -1219,13 +887,8 @@ public final class ObligationFactory {
                     + MAX_REFUTED_WORLDS, "", gaps, question, false);
         }
         ObligationDir.Answer earlier = answered.get(question);
-        // A refuted world answers nothing of its question's arm: never
-        // reused (the corpus that excludes it may be one session behind);
-        // nor does a replay that did not run its world (asked once more,
-        // Frontier#consume).
         if (earlier != null && earlier.result.refutation() == null
                 && !earlier.result.worldUnrefuted()) {
-            // A refusal at the arm is the arm's, under whichever id asks.
             String detail = (earlier.result.armRefusal() != null
                     ? ObligationResult.ARM_REFUSED + ": " : "")
                     + "question " + question + " was settled "
@@ -1239,8 +902,6 @@ public final class ObligationFactory {
                     + earlier.result.detail();
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id, detail));
-            // Settled by that obligation, never by this one: were it taken
-            // back, a reuse of a reuse would stand on nothing.
             return refused(candidate, earlier.result.verdict(), detail, "",
                     gaps, question, false);
         }
@@ -1278,11 +939,8 @@ public final class ObligationFactory {
             answer = solved.answer(querySha256, asked.modelSymbols,
                     () -> solver.ask(asked.smt2, asked.modelSymbols, false));
         } else if (decided.querySha256.equals(ask.querySha256)) {
-            // The hard lane's model, over this very query.
             answer = Z3.Answer.decided("sat", decided.values);
         } else {
-            // The corpus moved under the model: refused by name, no replay
-            // and no re-ask (a world-only answer, as any refusal of its world).
             return refused(candidate, Verdict.NOT_ADMITTED, HARD_MODEL_STALE
                     + ": the hard lane decided query " + decided.querySha256
                     + ", and this corpus builds " + ask.querySha256, query,
@@ -1309,11 +967,6 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED, planted.refusal,
                     query, gaps, question);
         }
-        // A pairing is planted only where the recorded ones take no flip:
-        // a model that moves a writer choice is asked again with every
-        // choice held to the writer the recording's reads observed, and one
-        // that then plants something is the one run -- a root moved under
-        // the run's own pairings, which no order has to realize.
         if (!planted.pairings.isEmpty()) {
             String held = heldToRecording(built, nearest.pins);
             String heldQuery = Z3.modelQuery(held, built.modelSymbols);
@@ -1332,10 +985,6 @@ public final class ObligationFactory {
                 }
             }
         }
-        // A model that plants nothing its path's session did not run asks
-        // for that session's replay again (PIPELINE §7: exploration collects
-        // arms the corpus lacks).  DIAGNOSTIC under EXPLORATION, never
-        // BLOCKING in the recording's ledger.
         String nothing = plantsNothing(corpus, candidate, built,
                 answer.values(), planted);
         if (!nothing.isEmpty()) {
@@ -1345,10 +994,6 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED, nothing, query,
                     gaps, question);
         }
-        // The world this flip extends ({@link Corpus.World}): the parent's
-        // values are the floor, the model overlays them (model wins), and the
-        // parent's flips travel whole (enforced by FocusedReplay, asserted by
-        // FlipQuery).
         Map<String, String> roots =
                 overlay(inherited.rootAssignments, planted.roots);
         Map<String, String> clockDeltas =
@@ -1357,8 +1002,6 @@ public final class ObligationFactory {
                 overlay(inherited.answers, planted.answers);
         Map<String, String> pairings =
                 overlay(inherited.pairings, planted.pairings);
-        // A world a replay of this flip refuted is never run again, even
-        // where the query could not state it whole.
         if (!refuted.isEmpty()) {
             List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
             flips.add(new Corpus.Flip(candidate.task.focused().id(),
@@ -1378,8 +1021,6 @@ public final class ObligationFactory {
                 }
             }
         }
-        // The world's pairings held as CONFIRM holds a model's, over the
-        // session the path was cut from (ConfirmMain#holding).
         ConfirmMain.Holding holding;
         try {
             holding = ConfirmMain.holding(
@@ -1392,9 +1033,6 @@ public final class ObligationFactory {
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
                 candidate.flippedOutcome(), roots, answers,
                 planted.unproducible);
-        // The focused set: each assigned root's mint occurrence, as the
-        // RECORDING states it (the run every address is written about). A root
-        // the recording mints nowhere cannot be planted: refused by name.
         Map<String, String> mints = new LinkedHashMap<String, String>();
         Set<String> assigned = new LinkedHashSet<String>(roots.keySet());
         assigned.addAll(clockDeltas.keySet());
@@ -1432,21 +1070,6 @@ public final class ObligationFactory {
                 holding, gaps, question, false, openArm, null);
     }
 
-    /**
-     * Each refuted world of this flip as an exclusion of the query, exactly
-     * the world its replay ran: {@code (not (and ...))} over every choice
-     * the query offers -- each writer choice at the selector the world
-     * moved it to, else at the recording's ({@link
-     * FlipQuery.WriterChoice#recorded}); each root at the world's value,
-     * else at the reading its path's session ran; each clock at the instant
-     * the world's skew put it at, else at its host reading; each control at
-     * the world's answer -- as the claim loop excludes a refuted model
-     * ({@code compose.Composer#refutations}).  A world of which the query
-     * cannot state every choice (no recorded selector, no value or reading,
-     * no mint row, an unanswered control) is a comment only: a conjunction
-     * missing one would exclude worlds no replay ran.  {@link #solve}'s
-     * digest refusal holds it then.
-     */
     private static List<String> excluded(Corpus corpus, Candidate candidate,
                                          FlipQuery.Built built,
                                          List<Corpus.Refuted> refuted) {
@@ -1516,9 +1139,6 @@ public final class ObligationFactory {
         return assertions;
     }
 
-    /** {@code (= variable value)} into {@code chosen}, where the value is a
-     *  literal of the variable's sort; else the variable into
-     *  {@code unstated}. */
     private static void equal(List<String> chosen, List<String> unstated,
                               String variable, String value, String sort) {
         String literal = value == null || value.isEmpty() ? ""
@@ -1530,19 +1150,12 @@ public final class ObligationFactory {
         }
     }
 
-    /**
-     * A model's value of one control as a replay is answered with it: a
-     * String's as its JSON string literal, which the replay plants verbatim, the way a read row spells
-     * a String; any other sort's as the model prints it.  Null when a
-     * String's value is no string literal.
-     */
     static String answer(String sort, String value) {
         if (!VmTermLowering.Sort.STRING.smt.equals(sort)) return value;
         String text = Z3.javaString(value);
         return text == null ? null : new JsonPrimitive(text).toString();
     }
 
-    /** {@code base} with {@code over} laid on top: {@code over} wins. */
     static Map<String, String> overlay(Map<String, String> base,
                                                Map<String, String> over) {
         Map<String, String> merged = new LinkedHashMap<String, String>(base);

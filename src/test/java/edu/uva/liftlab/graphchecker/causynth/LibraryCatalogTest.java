@@ -10,11 +10,6 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-/**
- * SYMBOL-SCOPE §4.2: the engine's library catalog -- its doors, one
- * transport direction's library lines as one door method -- and the rows it
- * refuses by name.
- */
 public class LibraryCatalogTest {
     private static final String IPC = "<org.apache.hadoop.ipc.Client: "
             + "org.apache.hadoop.io.Writable getRpcResponse(";
@@ -25,9 +20,6 @@ public class LibraryCatalogTest {
         assertEquals(Arrays.asList("HADOOP_IPC", "HDFS_SASL",
                 "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "ZOOKEEPER",
                 "LOCAL_IO", "TIMED_WAIT"), transports);
-        // A local file operation is a door only at the calls the root
-        // demand chose, before the call; it throws the kind the JDK call
-        // declares, or returns its failing result.
         LibraryCatalog.Door open = LibraryCatalog.demandedDoor(
                 "<java.io.FileOutputStream: void <init>(java.io.File)>");
         LibraryCatalog.Door rename = LibraryCatalog.demandedDoor(
@@ -39,8 +31,6 @@ public class LibraryCatalogTest {
                         + rename.faults + " " + rename.result);
         assertEquals(null, LibraryCatalog.demandedDoor(
                 "<java.io.File: boolean exists()>"));
-        // A timed wait whose result the slice reads returns its timeout at
-        // once on the fault arm; a future's throws it.
         String unit = "long,java.util.concurrent.TimeUnit)>";
         Object[][] waits = {
             {"<java.util.concurrent.CountDownLatch: boolean await(" + unit,
@@ -62,9 +52,6 @@ public class LibraryCatalogTest {
                     + door.result);
         }
         assertTrue(LibraryCatalog.rootsNothing("FAULT:TIMED_WAIT:AWAIT"));
-        // A store read is a door at its method, before its request (a
-        // failed read registers no watch), asked only on the data flow; it
-        // roots no region, as a demanded door does not.
         List<String> reads = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
             if (door.dataFlow) {
@@ -105,12 +92,9 @@ public class LibraryCatalogTest {
                 dataTransfer.add(door.direction + " " + door.place());
             }
         }
-        // trunk's and 3.4's signatures are one door method.
         assertEquals(Arrays.asList("FAULT:HADOOP_IPC:RESPONSE at "
                         + "org.apache.hadoop.ipc.Client#getRpcResponse"),
                 new ArrayList<>(response));
-        // An op leaves in Sender#send; each side that sent one reads its
-        // response or ack where it calls the parse.
         String proto = "org.apache.hadoop.hdfs.protocol.proto."
                 + "DataTransferProtos$";
         assertEquals(Arrays.asList("REQUEST <org.apache.hadoop.hdfs.protocol."

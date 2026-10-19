@@ -23,28 +23,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
-/**
- * CONTRACT-SPEC §2.3: the session's expressions, ref to the VM's expression
- * object unchanged.  Rows carry refs into this shared DAG, never inlined
- * trees; the file holds it as a DAG too ({@link SessionExpressionLog}).
- *
- * <p>HELD COMPACT, MATERIALIZED ON DEMAND.  The table holds the DAG as its
- * log states it, each node once: one byte string of varint-tagged values
- * over the session's strings (each held once, from the read's pool), a node
- * naming each child by its index.  A node a reader asks for -- by its ref,
- * or as a child of one it holds -- is built then as the Gson object the log
- * line parses to (its members in order, a number by its spelling), and
- * stays THE object of that node while anything holds it: the table keeps
- * it weakly, a node holds its children, and so every walk and memo that
- * goes by node identity ({@code smt.ExpressionWalk}, {@code
- * compose.SmtLowering}'s memo) sees one object per node.  Once nothing
- * holds it, it is released, and a later ask builds it again -- an object
- * no one can compare with the one before, which nobody holds.  As Gson
- * trees, solr-adhoc-39 PV7's 208 sessions' tables held 3.2 GB of the
- * planner's heap (a map per node; 40.9 M map entries); on disk 1.6 GB.</p>
- */
 public final class ExpressionTable extends Value {
-    /** Value tags: a varint's low three bits; the rest its payload. */
     private static final int OBJECT = 0;
     private static final int ARRAY = 1;
     private static final int STRING = 2;
@@ -56,27 +35,16 @@ public final class ExpressionTable extends Value {
 
     private static final ExpressionTable EMPTY = new Builder().build();
 
-    /** Every string the nodes name: member names, strings, number
-     *  spellings. */
     private final String[] strings;
-    /** The nodes, one encoded object each. */
     private final byte[] code;
-    /** node index -> where it starts in {@link #code}. */
     private final int[] offsets;
-    /** The refs, in the order the log stated them, and each one's node. */
     private final String[] refs;
     private final int[] refNodes;
-    /** Open addressing over {@link #refs}: a ref's index + 1, 0 none. */
     private final int[] slots;
-    /** node index -> the object built for it, while anything holds it. */
     private Live[] live;
-    /** The objects the collector let go of: their slots are emptied as
-     *  the next node is asked for (SGF8-adhoc-05 round 5's 342 tables held
-     *  5.2 M cleared references, 167 MB, beside 13 live objects). */
     private final ReferenceQueue<JsonObject> released =
             new ReferenceQueue<JsonObject>();
 
-    /** One built object, weakly, with its node's index. */
     private static final class Live extends WeakReference<JsonObject> {
         final int index;
 
@@ -102,19 +70,16 @@ public final class ExpressionTable extends Value {
         }
     }
 
-    /** The empty table: a session that propagated nothing. */
     public static ExpressionTable empty() {
         return EMPTY;
     }
 
-    /** The expression behind one reference, or {@code null}. */
     public JsonObject expression(String ref) {
         if (ref == null) return null;
         int at = indexOf(ref);
         return at < 0 ? null : node(refNodes[at]);
     }
 
-    /** The refs, in the order the log stated them. */
     public Set<String> refs() {
         return new AbstractSet<String>() {
             @Override
@@ -135,8 +100,6 @@ public final class ExpressionTable extends Value {
         };
     }
 
-    /** Every ref's expression, built: a whole-table reader's view (IMPORT's
-     *  gate, a log written again). */
     public Map<String, JsonObject> expressions() {
         Map<String, JsonObject> all = new LinkedHashMap<String, JsonObject>();
         for (int at = 0; at < refs.length; at++) {
@@ -167,13 +130,6 @@ public final class ExpressionTable extends Value {
         return -1;
     }
 
-    /**
-     * The object of one node: the one built while anything still holds it,
-     * else built now -- its children likewise, each object registered as it
-     * is made and filled from a work list (a chain nests thousands deep).
-     * One table's nodes are built under its lock: a node is never built
-     * twice at once.
-     */
     private synchronized JsonObject node(int index) {
         for (Live gone = (Live) released.poll(); gone != null;
              gone = (Live) released.poll()) {
@@ -260,7 +216,6 @@ public final class ExpressionTable extends Value {
         }
     }
 
-    /** Reads the varints of {@link #code} from one offset on. */
     private final class Cursor {
         private int at;
 
@@ -284,14 +239,7 @@ public final class ExpressionTable extends Value {
         }
     }
 
-    /**
-     * A table as its log states it, line by line ({@link
-     * SessionExpressionLog#take}): each node once, children first, a child
-     * named by its log number; each ref naming one.  A ref stated again
-     * names its last node, where it was first stated.
-     */
     static final class Builder {
-        /** log node number -> node index. */
         private final Map<Long, Integer> numbered = new HashMap<Long, Integer>();
         private final Map<String, Integer> stringIndex =
                 new HashMap<String, Integer>();
@@ -303,8 +251,6 @@ public final class ExpressionTable extends Value {
         private final Map<String, Integer> refs =
                 new LinkedHashMap<String, Integer>();
 
-        /** One node line: {@code number}'s expression, each child an object
-         *  naming an earlier node by its number ({@code isChild}). */
         void node(long number, JsonObject expression) {
             if (numbered.containsKey(number)) {
                 throw new IllegalArgumentException(
@@ -318,7 +264,6 @@ public final class ExpressionTable extends Value {
             numbered.put(number, nodes++);
         }
 
-        /** One ref line: {@code ref} names node {@code number}. */
         void ref(String ref, long number) {
             refs.put(ref, index(number));
         }

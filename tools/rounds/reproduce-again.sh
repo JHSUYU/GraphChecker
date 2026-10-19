@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# reproduce-again.sh <finished run dir> <case-id> <copy dir> -- REPRODUCE
-# alone, again, over a finished campaign (PIPELINE §10b): the case's output
-# directory of <finished run dir> (accept-<round>-<n>, out/<case-id>) copied
-# into <copy dir> -- what REPRODUCE reads linked (the woven classes, the
-# scope map, the recording's directory, the iteration, and the replays
-# CONFIRM ran, one of which is the session it saw: run_engine.sh
-# campaign_confirmed_session), what it writes
-# beside made fresh (final/ with the claim, manifest and confirmation EMIT
-# published) -- then `run.sh <case> reproduce` from this checkout with the
-# copy as its output directory, so the finished run is never written.
-# Prints final/reproduce.json.  The case runs on the tree this checkout's
-# case.sh names (a campaign made on another: OPERATIONS §5, edit it in a
-# snapshot) with this checkout's jar, which must call the runtime the
-# finished run's woven classes call.
 set -euo pipefail
 checkout=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=../../experiments/lib/case-id.sh

@@ -51,11 +51,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * CONFIRM's inputs, off a claim, its manifest and the sessions the witness
- * rests on: the focus row that flips nothing, the schedule cut at the
- * anchor, and the edges the model chose.
- */
 public class ConfirmMainTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -81,7 +76,6 @@ public class ConfirmMainTest {
     private final Endpoint after = endpoint(ANCHOR, "a.Handler#h()#14:READ");
     private final Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
 
-    /** The confirmation rows a worker was handed in {@code out}. */
     private static List<JsonObject> edges(Path out) throws Exception {
         return RowCodec.readJsonl(out.resolve(Confirmation.FILE));
     }
@@ -101,7 +95,6 @@ public class ConfirmMainTest {
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L);
     }
 
-    /** The recording and the selected session, as the corpus holds them. */
     private Path iteration() throws Exception {
         Path iteration = folder.newFolder("iteration-0000").toPath();
         SessionDir seed = SessionDir.of(iteration, "seed").create();
@@ -137,7 +130,6 @@ public class ConfirmMainTest {
                         + "#40@v5", "I", "3"),
                 ReadRow.of("sel", 31L, unknown, CELL, -1L, "INSTANCE_FIELD/1"
                         + "#40@v?", "I", "3"),
-                // After the target (seq 40): a fatal run throws before it.
                 ReadRow.of("sel", 45L, after, CELL, 5L, "INSTANCE_FIELD/1"
                         + "#40@v5", "I", "3")), RowCodec::writeRead);
         RowCodec.writeAll(sel.attaches(), Collections.singletonList(
@@ -155,7 +147,6 @@ public class ConfirmMainTest {
         schedule.add(event(3, "d", ""));
         RowCodec.writeJsonl(sel.schedule(), schedule);
         manifest(sel, SessionManifest.Role.FOCUSED);
-        // The obligation whose replay published "sel": the world it ran.
         Path worker = Files.createDirectories(
                 iteration.resolve("obligations-0000").resolve("w1"));
         JsonObject result = new JsonObject();
@@ -167,8 +158,6 @@ public class ConfirmMainTest {
         assignments.addProperty("HDFS.SERIAL", "119980");
         assignments.addProperty("FAULT:IPC", "true");
         world.add("rootAssignments", assignments);
-        // A skew on a cell the composition does not anchor: outside the
-        // model, so the world keeps it.
         JsonObject deltas = new JsonObject();
         deltas.addProperty("CLOCK.gone", "7000");
         world.add("clockDeltas", deltas);
@@ -183,7 +172,6 @@ public class ConfirmMainTest {
         return iteration;
     }
 
-    /** The selected session's world, planting nothing: the recording's. */
     private static void plantNothing(Path iteration) throws Exception {
         Path focus = iteration.resolve("obligations-0000").resolve("w1")
                 .resolve(ObligationDir.FOCUSED_TASK);
@@ -237,9 +225,6 @@ public class ConfirmMainTest {
                 + consumer.id() + "\"],\"sessionId\":\"sel\","
                 + "\"producerPathId\":\"p9\",\"interactionIds\":[\"i1\"],"
                 + "\"expressionRefs\":[\"EXPR.e\"],\"attested\":true},"
-                // A free arm of a path the model did NOT select: its
-                // selector was unconstrained, so z3 may set it, and it
-                // is no edge of the selected path.
                 + "{\"selector\":\"message_arm__2__zzz\","
                 + "\"family\":\"message_family__2__zzz\",\"groupId\":\"g\","
                 + "\"attachEndpointIds\":[\"" + consumer.id() + "\"],"
@@ -250,10 +235,6 @@ public class ConfirmMainTest {
         return file;
     }
 
-    /** The claim's model, choosing {@code writer}'s write for
-     *  {@code reader}'s read: a writer arm as the composer spells it -- the
-     *  writer's OCCURRENCE; the interaction it fills is what names the
-     *  write. */
     private static void chose(Path claim, Endpoint writer, Endpoint reader)
             throws Exception {
         JsonObject document = ExploreCodec.readObject(claim);
@@ -274,7 +255,6 @@ public class ConfirmMainTest {
                 "MAP/30#-3");
     }
 
-    /** The composition manifest, anchoring one more clock cell. */
     private Path manifestAnchoring(String rootId, String reading)
             throws Exception {
         Path file = manifest();
@@ -288,13 +268,10 @@ public class ConfirmMainTest {
         return file;
     }
 
-    /** The composition manifest, its selected path resting on these and
-     *  decided at its target row (seq 40). */
     private Path manifest(String... restsOn) throws Exception {
         return manifestCut(40L, restsOn);
     }
 
-    /** The same, its selected path decided at {@code cutoff}. */
     private Path manifestCut(long cutoff, String... restsOn)
             throws Exception {
         Path file = Files.createTempFile(folder.getRoot().toPath(),
@@ -320,13 +297,6 @@ public class ConfirmMainTest {
         return file;
     }
 
-    /**
-     * A store read the path rests on is held to the version the session
-     * read (a STATE row, review B2: a run whose reader read another version
-     * does not confirm), and ordered by nothing: the store's own turn orders
-     * its reads and writes, and a native run's weave states no store
-     * write's activation (solr-18413 Y8: native 0/10 on such ORDER rows).
-     */
     @Test
     public void aStoreReadIsComparedByItsVersionAndOrderedByNothing()
             throws Exception {
@@ -358,11 +328,6 @@ public class ConfirmMainTest {
                 + Confirmation.id(reader) + "@3"), held);
     }
 
-    /**
-     * A forced path's claim (PIPELINE §7.10) is confirmed unforced, on the
-     * recording's schedule: its session ran a forced world to its forced
-     * target, and that tail is no order a run takes.
-     */
     @Test
     public void aForcedPathIsConfirmedUnforcedOnTheRecordingsSchedule()
             throws Exception {
@@ -387,18 +352,6 @@ public class ConfirmMainTest {
                 && focus.get("force").getAsBoolean());
     }
 
-    /**
-     * A selected session that took every edge the model chose, ran the
-     * moved root at the model's value, ran the model's clocks and observed
-     * the fatal IS the run that confirms the claim -- unless its world
-     * planted a pairing: a choice its run took under an order its replay
-     * held, which CONFIRM makes again in a replay of its own, strict.  A
-     * planted answer, the moved root, or another root at its recorded value
-     * is the session's own run; another root planted at another value ran
-     * another model, which a replay decides; a skew planted on a
-     * clock cell the composition anchors is no clock of the model's, and
-     * its replay drops it and keeps one outside the composition.
-     */
     @Test
     public void aSessionIsItsConfirmationUnlessItsWorldPlantedAPairing()
             throws Exception {
@@ -413,7 +366,6 @@ public class ConfirmMainTest {
                 .resolve(ObligationDir.FOCUSED_TASK);
         plantNothing(iteration);
         JsonObject planted = RowCodec.readJsonl(focus).get(0);
-        // what the world planted (member -> key -> value), realized?
         Object[][] table = {
                 {null, null, null, true},
                 {"rootAssignments", "FAULT:IPC", "true", true},
@@ -473,8 +425,6 @@ public class ConfirmMainTest {
                 assertTrue("the world's pairing is held", held > 0);
             }
         }
-        // And with a world that planted nothing, a moved root the session
-        // ran at another value is a run a replay has to make.
         Path other = folder.newFolder("not-realized").toPath();
         ConfirmMain.write(iteration, claim("FAULT:IPC", "false"),
                 manifest(), other);
@@ -482,15 +432,6 @@ public class ConfirmMainTest {
                 && Files.exists(other.resolve(ObligationDir.FOCUSED_TASK)));
     }
 
-    /**
-     * The run as recorded is no counterfactual (owner 2026-10-04): a claim
-     * on the seed's own path that moves no root and takes only the seed's
-     * own deliveries is refuted by name before anything is planted or
-     * replayed -- hdfs-adhoc-32 (HG4) was confirmed by its seed replay,
-     * which had diverged from its recording into the fatal.  Rows that
-     * state no runnable model (here, a manifest stating no cutoff) are
-     * refused: a defect of the run, which refutes nothing.
-     */
     @Test
     public void theRunAsRecordedIsRefutedAndADefectRefusedByName()
             throws Exception {
@@ -508,7 +449,6 @@ public class ConfirmMainTest {
                 "uncut", ".json");
         Files.write(uncutFile, uncut.toString().getBytes(
                 StandardCharsets.UTF_8));
-        // manifest, the refusal's start, whether it refutes
         Object[][] table = {
                 {manifest(), "the claim moves nothing: its witness is the "
                         + "run as recorded", true},
@@ -528,11 +468,6 @@ public class ConfirmMainTest {
         }
     }
 
-    /**
-     * A healthy confirmation run refutes the model only where it ran it:
-     * every moved root minted at the model's value (a clock's cell minted)
-     * and no plant refused; else it names why it did not run the model.
-     */
     @Test
     public void aHealthyRunRefutesOnlyWhereItPlantedTheModel()
             throws Exception {
@@ -545,7 +480,6 @@ public class ConfirmMainTest {
         JsonObject refusedPlant = new JsonObject();
         refusedPlant.addProperty("kind", "ASSIGNMENT_UNPLANTED");
         refusedPlant.addProperty("subject", "PORT.x");
-        // roots minted, gaps, the reason's start ("" = it ran the model)
         Object[][] table = {
                 {Collections.singletonList(planted),
                         Collections.<JsonObject>emptyList(), ""},
@@ -642,11 +576,6 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(),
                 edges.get("ANCHOR").get("occurrence").getAsString());
         assertEquals(40L, edges.get("ANCHOR").get("seq").getAsLong());
-        // The reader's activation called another method before the read:
-        // the order holds that call's entry, the last one before the read,
-        // not the activation's own -- one that polls for what it caused to
-        // be written (SOLR-18413 s13a: MigrateCmd#migrateKey) is entered
-        // before the write and would wait out the order there.
         SessionDir sel = SessionDir.of(iteration, "sel");
         List<ReadRow> reads = new ArrayList<ReadRow>(
                 SessionReader.read(iteration, "sel").reads());
@@ -670,12 +599,6 @@ public class ConfirmMainTest {
         }
         assertEquals(1, held);
 
-        // A delivery into the anchor is held to the producer the arm's
-        // session paired; only where that session answered the anchor by
-        // its question (IDENTITY §9, an ADDRESS_UNSTABLE row naming it) did
-        // another chain of the question's shape carry it, and the edge
-        // states its producer's question, which CONFIRM compares by site,
-        // site index, attempt and shape.
         for (boolean answered : new boolean[]{false, true}) {
             if (answered) {
                 List<GapRow> gaps = new ArrayList<GapRow>(RowCodec.readAll(
@@ -704,11 +627,6 @@ public class ConfirmMainTest {
             }
         }
 
-        // A join the run took to an INITIAL holds nothing: no occurrence
-        // wrote it, only the access that first observed the location
-        // (SOLR-18413 stream7b: the leader's first lookup of the cluster
-        // state).  A write is a write.  Every STATE row names its reader at
-        // any turn too.
         for (boolean initial : new boolean[]{true, false}) {
             RowCodec.writeAll(sel.writes(), Collections.singletonList(initial
                     ? WriteRow.initial("sel", 10L, writer, CELL, 5L, "EXPR.w",
@@ -728,8 +646,6 @@ public class ConfirmMainTest {
             assertEquals("initial " + initial, initial ? 0 : 1, stated);
         }
 
-        // A join at a location the fatal does not rest on is no edge: under
-        // the moved root the run may read it elsewhere or not at all.
         Path unheld = folder.newFolder("unheld").toPath();
         ConfirmMain.write(iteration, claim("M_J_clock.sel"),
                 manifest("MAP/20#-3"), unheld);
@@ -739,18 +655,10 @@ public class ConfirmMainTest {
                     .getAsString()));
         }
 
-        // A model that moved a clock elsewhere (DECIDE leaves clocks free) is
-        // the world handed over, as the skew off the reading the composition
-        // anchored the cell to -- the model's instants are on that timeline,
-        // and the selected replay's host read 1000 later -- whichever
-        // session's symbol names the cell; a cell it anchors nowhere, or one
-        // the recording mints nowhere, is refused by name.
         String[][] clocks = {
                 {"M_J_clock.sel", "CLOCK.a", "49000"},
                 {"M_J_clock.b", "CLOCK.b", "49000"},
                 {"M_J_clock.b", "CLOCK.b", null},
-                // A cell only another session read: the recording mints it
-                // nowhere, so no replay can be focused to plant it.
                 {"M_J_clock.elsewhere", "CLOCK.c", null},
         };
         for (int index = 0; index < clocks.length; index++) {
@@ -772,18 +680,6 @@ public class ConfirmMainTest {
         }
     }
 
-    /**
-     * A native run's plant is CONFIRM's world: a ROOT per root it assigns
-     * (here a tree hook's, at the occurrence the recording mints it at), the
-     * ORDER rows CONFIRM holds for what the model chose, TARGET rows at the
-     * anchor, each numbered.  A read the model chose no writer for is held
-     * by CONFIRM to the write it joined, its rows the same as if the model
-     * had chosen that write; the plant holds none of them: the run's own
-     * history, which a native run makes by its own paths (HV1
-     * snapshot-no-active, 0/10).  A world the recording weave cannot plant
-     * is refused by name: a clock skew, a root of no plantable category, or
-     * nothing at all.
-     */
     @Test
     public void aNativePlantIsConfirmsWorld() throws Exception {
         Path iteration = iteration();
@@ -793,17 +689,11 @@ public class ConfirmMainTest {
         Files.write(iteration.resolve("execution_task_plan.jsonl"),
                 new byte[0]);
         Path scopeMap = targetScopeMap();
-        // The world, the claim's moved root and its value, then the plant's
-        // first ROOT row; null: refused.
         Object[][] worlds = {
                 {"{}", "HDFS.SERIAL", "119981", "ROOT HOOK HDFS.SERIAL "
                         + mint.id() + " 119981"},
                 {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", "119981", null},
-                // A marker no plan input calls: no site to answer at.
                 {"{}", "M_Z_fault", "119981", null},
-                // A marker at false is the run as recorded: never planted,
-                // and with the model choosing nothing the world plants
-                // nothing: refused.
                 {"{}", "M_Z_fault", "false", null},
         };
         for (Object[] row : worlds) {
@@ -832,8 +722,6 @@ public class ConfirmMainTest {
                     + root.get("rootId").getAsString() + " "
                     + root.get("occurrence").getAsString() + " "
                     + root.get("value").getAsString());
-            // CONFIRM's own ORDER rows, as its replay is held to them: the
-            // same whether the model chose the write the read joined or not.
             Path out = folder.newFolder().toPath();
             ConfirmMain.write(iteration, claim, manifest(), out);
             List<JsonObject> edges = edges(out);
@@ -868,8 +756,6 @@ public class ConfirmMainTest {
         }
     }
 
-    /** The scope map of one TARGET_SITE row: the anchor's region, its
-     *  guard's fatal arm false. */
     private Path targetScopeMap() throws Exception {
         Path scopeMap = folder.newFile().toPath();
         JsonObject site = new JsonObject();
@@ -886,7 +772,6 @@ public class ConfirmMainTest {
         return scopeMap;
     }
 
-    /** A plant's ORDER rows, without their row numbers. */
     private static List<JsonObject> ordersOf(List<JsonObject> rows) {
         List<JsonObject> held = new ArrayList<JsonObject>();
         for (JsonObject row : rows) {

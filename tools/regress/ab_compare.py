@@ -36,30 +36,17 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
                     "SOLVE.0"],
           "IMPORT": ["IMPORT"], "EXPLORE.N": ["EXPLORE.N"],
           "COMPOSE": ["COMPOSE", "CONFIRM"],
-          # SEED's static pass alone (offline-ab.sh AB_STAGES).
           "SEED.static": ["SEED.static"],
-          # The landing order replayed (offline-ab.sh ab_stage_landings):
-          # each round a fresh planner, or one served planner.
           "EXPLORE.drift": ["EXPLORE.drift"],
           "EXPLORE.serve": ["EXPLORE.serve"]}
 STAGES = list(dict.fromkeys(stage for chain in CHAINS.values()
                             for stage in chain))
 SIDES = ("baseline", "candidate")
-# A round's corpus_read says when its planner read its corpus (a signal to
-# the head's swaps, explore.ExploreMain#CORPUS_READ), no output.
 NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log",
               "walls.tsv", "planner.log", "corpus_read"}
-# The slot table (explore.SlotTable): each round's changes in its directory,
-# after the table an iteration recorded before the rounds wrote theirs.  Its
-# EXPLORE stages are compared by the table they leave, folded; where both
-# sides are one jar (EXPLORE.serve) by each round's own file as well, while
-# two jars may write it differently.
 SLOTS = "slots.jsonl.gz"
 FOLDED = "slots.folded"
 EXPLORE_STAGES = ("EXPLORE.0", "EXPLORE.N", "EXPLORE.drift", "EXPLORE.serve")
-# SEED.static's class output is the input scope copied in (classes/), the
-# door classes grown into it (scope-classes/, named by doors/stdout.txt) and
-# Soot's rewrite of it, not an artifact.
 NOT_COMPARED_DIRS = {"SEED.static": {"classes", "scope-classes",
                                      "instrumented-classes"}}
 
@@ -197,9 +184,6 @@ def pretty(data):
         return text.splitlines()
 
 
-# ---------------------------------------------------------------------------
-# What a stage computed, in one line (the summary cell).
-# ---------------------------------------------------------------------------
 
 def rows(path):
     try:
@@ -374,9 +358,6 @@ def outcome_exit(stage, d, status):
     return False
 
 
-# ---------------------------------------------------------------------------
-# The baseline against the accepted run (reading only).
-# ---------------------------------------------------------------------------
 
 def accepted_pairs(stage, d, acc):
     """(baseline file, accepted file) pairs this stage can be held to."""
@@ -402,7 +383,6 @@ def accepted_pairs(stage, d, acc):
             pairs.append((os.path.join(w, name),
                           os.path.join(it, os.path.basename(w), name)))
         if stage == "EXPLORE.N":
-            # The table the closing round leaves: the final one.
             pairs.append((FOLDED + ":" + os.path.join(d, "iteration-0000"),
                           FOLDED + ":" + it))
     elif stage == "SOLVE.0":
@@ -510,7 +490,6 @@ def walls(out, case, stage, dirs):
                 wall.get(side, "-") for side in SIDES) + "\n")
 
 
-# ---------------------------------------------------------------------------
 
 def main(argv):
     out = os.path.abspath(argv[1])
@@ -586,7 +565,6 @@ def main(argv):
                                  + "\n".join(drift) + "\n")
             if stage in ("EXPLORE.drift", "EXPLORE.serve"):
                 walls(out, case, stage, dirs)
-            # A gating stage skipped on both sides was not checked either.
             worst = max(worst, {"DIFFERS": 2, "ERROR": 1}.get(result, 0),
                         int(result == "skipped"))
             report.append((case, stage, result, acc, times, summary))

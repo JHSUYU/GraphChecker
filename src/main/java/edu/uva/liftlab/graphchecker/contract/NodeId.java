@@ -1,11 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §1: a component instance and its declared topology epoch,
- * rendered {@code <node>#epoch<N>} (the node name may carry slashes).
- */
 public final class NodeId extends Value {
-    /** The one spelling of the epoch separator. */
     public static final String EPOCH_MARKER = "#epoch";
 
     private final String node;
@@ -21,7 +16,6 @@ public final class NodeId extends Value {
                 Fields.nonNegative(epoch, "epoch"));
     }
 
-    /** Reads {@code <node>#epoch<N>}; refuses, never half-parses, the rest. */
     public static NodeId parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int marker = value.lastIndexOf(EPOCH_MARKER);
@@ -33,7 +27,6 @@ public final class NodeId extends Value {
         return of(value.substring(0, marker), epoch);
     }
 
-    /** The component instance, without its epoch. */
     public String node() {
         return node;
     }

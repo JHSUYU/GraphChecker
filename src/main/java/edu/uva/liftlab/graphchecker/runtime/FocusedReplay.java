@@ -29,14 +29,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * The focused-region replay: one occurrence (or one state-connected factor)
- * runs symbolic; every other region runs concretely with its rows still
- * recorded.
- *
- * <p>Admission is per focused occurrence: only its own prefix decides, so an
- * unrelated producer's prefix mismatch cannot reject the obligation.</p>
- */
 public final class FocusedReplay {
     private static final Object LOCK = new Object();
     private static boolean loaded;
@@ -46,40 +38,20 @@ public final class FocusedReplay {
     private static final Map<String, String> REFUSALS =
             new LinkedHashMap<String, String>();
     private static final Set<String> FLIPPED = new LinkedHashSet<String>();
-    /** The tasks this replay focuses, as the wave's plan rows name them. */
     private static final Set<String> FOCUSED_TASKS =
             new LinkedHashSet<String>();
-    /** The occurrences those tasks turned out to be. */
     private static final Set<String> FOCUSED_OCCURRENCES =
             new LinkedHashSet<String>();
-    /**
-     * The mint occurrence of each assigned root (focus row {@code rootMints}),
-     * by contract id.
-     *
-     * <p>Focused because an assignment is planted only at a focused MINT
-     * ({@code RootMint#focusedRootValue}); an unfocused mint reads the
-     * recording's value (ASSIGNMENT_UNPLANTED).</p>
-     */
     private static final Set<String> ROOT_MINTS =
             new LinkedHashSet<String>();
 
-    /**
-     * One flip this replay INHERITED down the focus-row chain.
-     *
-     * <p>The replay runs in the world of the session its path was cut from
-     * ({@code explore/Corpus.World}), so it is held to those flips with the
-     * same (occurrence, site, ordinal) join as its own; the result row stays
-     * the primary obligation's alone.</p>
-     */
     private static final class Inherited {
         private final String at;
         private final String siteId;
         private final int ordinal;
         private final boolean outcome;
         private final String obligationId;
-        /** Whether this replay has seen that occurrence take that arm. */
         private boolean taken;
-        /** Why it cannot have, once it has taken the other one. */
         private String refusal = "";
 
         private Inherited(String at, String siteId, int ordinal,
@@ -98,35 +70,17 @@ public final class FocusedReplay {
         }
     }
 
-    /** The flips this replay inherited, in the focus row's order. */
     private static final List<Inherited> INHERITED =
             new ArrayList<Inherited>();
 
-    /**
-     * The inherited flips' occurrences, by contract id: focused so they plant
-     * and publish, NEVER abandoned ({@link #complete}) -- a condition judged,
-     * not a prefix driven to.
-     */
     private static final Set<String> INHERITED_OCCURRENCES =
             new LinkedHashSet<String>();
 
     private FocusedReplay() {
     }
 
-    /**
-     * THE FOCUSED SET, its one implementation: the focused occurrence, its
-     * state-connected factor (explored apart they would invent a write),
-     * each assigned root's MINT ({@link #ROOT_MINTS}) and each inherited
-     * flip's occurrence.
-     */
-    /** The case's declared occurrence, as the focus row states it, or "". */
     private static String declaredTarget = "";
 
-    /**
-     * Whether this is the case's declared occurrence: a focused replay that
-     * observes the fatal there has answered its question
-     * ({@code ConcolicResultPublisher#concludeAtWitness}).
-     */
     static boolean declaredTarget(OccurrenceAddress occurrence) {
         load();
         if (occurrence == null) return false;
@@ -138,7 +92,6 @@ public final class FocusedReplay {
 
     public static boolean focused(OccurrenceAddress occurrence) {
         load();
-        // The seed focuses nothing.
         if (occurrence == null) return false;
         synchronized (LOCK) {
             if (FOCUSED_OCCURRENCES.contains(occurrence.render())
@@ -156,10 +109,6 @@ public final class FocusedReplay {
         return false;
     }
 
-    /**
-     * Whether this activation is focused.  The plan row names a TASK; its
-     * activation's address is learned here and focused from then on.
-     */
     public static boolean focused(String taskId, OccurrenceAddress occurrence) {
         load();
         if (occurrence == null) return false;
@@ -179,10 +128,6 @@ public final class FocusedReplay {
         return declared;
     }
 
-    /**
-     * The skew (a DIFFERENCE added to this replay's reading) the wave asks of
-     * this clock.  Zero is "the recording's instant"; null is "not asked".
-     */
     public static Long clockSkew(String rootId) {
         load();
         String stated = CLOCK_DELTAS.get(trimmed(rootId));
@@ -194,11 +139,9 @@ public final class FocusedReplay {
         }
     }
 
-    /** The skew the focus row states for each clock, by root id. */
     private static final Map<String, String> CLOCK_DELTAS =
             new LinkedHashMap<String, String>();
 
-    /** The value the wave assigned this root, or {@code ""}. */
     public static String rootAssignment(String rootId) {
         load();
         String id = trimmed(rootId);
@@ -210,7 +153,6 @@ public final class FocusedReplay {
         return "";
     }
 
-    /** The value the wave answered this attach endpoint with, or {@code ""}. */
     public static String answer(String endpointId) {
         load();
         String id = trimmed(endpointId);
@@ -222,18 +164,6 @@ public final class FocusedReplay {
         return "";
     }
 
-    /**
-     * States one decision; the flipped one must take the flipped arm, else
-     * it is a refusal naming its site.
-     *
-     * <p>Joined on (occurrence, site, ordinal) at the obligation's OWN
-     * occurrence: an ordinal restarts per activation, so (site, ordinal)
-     * alone matches the same code on every node, and {@link #focused} is too
-     * wide (the whole focused set).</p>
-     *
-     * @return whether this decision {@link #decide decided} the replay: it
-     *         contradicted a flip the replay inherited
-     */
     public static boolean observeDecision(OccurrenceAddress occurrence,
                                           String siteId, int ordinal,
                                           boolean outcome) {
@@ -245,8 +175,6 @@ public final class FocusedReplay {
             for (Obligation obligation : OBLIGATIONS) {
                 observe(obligation, at, siteId, ordinal, outcome);
             }
-            // Same join for inherited flips; they only condition the
-            // primary's admission ({@link #results}).
             for (Inherited flip : INHERITED) {
                 if (flip.taken || !flip.refusal.isEmpty()) continue;
                 if (!flip.at.equals(at)) continue;
@@ -269,72 +197,18 @@ public final class FocusedReplay {
         return decided;
     }
 
-    /**
-     * THE EARLY END: the refusal that decided every obligation this replay
-     * carries, or {@code ""} while one is still open.
-     *
-     * <p>Stated once, at the first refusal after which no obligation can end
-     * anything but NOT_ADMITTED, whatever the run does next: the prefix of an
-     * obligation's own occurrence abandoned ({@link #noteUnansweredTask}: it
-     * took the recorded arm, or closed without the decision), which
-     * {@link #unstated} holds against every flipped obligation, or a flip the
-     * replay inherited contradicted, which {@link #inherited} holds against
-     * every one.  A flipped obligation is never decided before its replay
-     * ends: its session is a corpus session, and later waves and COMPOSE read
-     * every row of it (the anchor, the fatal, writers after the anchor) --
-     * but at a stall before any flip it was asked was taken: a replay that
-     * made nothing new for {@code ConcolicResultPublisher
-     * #NO_NEW_EVENT_MILLIS} ({@link #noProgress}) is decided there, every
-     * obligation NOT_ADMITTED by {@link #REPLAY_NO_PROGRESS}.</p>
-     *
-     * <p>A replay decided here ends at once
-     * ({@code ConcolicResultPublisher#concludeAtRefusal}) and publishes no
-     * session: its verdict rows name none ({@code RowRuntime#closeSession}),
-     * and the campaign withdraws the directory it opened.  A NOT_ADMITTED
-     * replay ran no world ({@code explore.ObligationFactory}), and rows cut
-     * at the refusal are a prefix of a run no stage could tell from a whole
-     * one.</p>
-     */
     private static String refusedAt = "";
 
-    /** States the refusal that decided this replay, once; called under
-     *  {@link #LOCK}.  @return whether this call decided it. */
     private static boolean decide(String refusal) {
         if (!refusedAt.isEmpty() || OBLIGATIONS.isEmpty()) return false;
         refusedAt = refusal;
         return true;
     }
 
-    /** The name a stalled replay's verdicts open with ({@link
-     *  #noProgress}). */
     static final String REPLAY_NO_PROGRESS = "REPLAY_NO_PROGRESS";
 
-    /**
-     * The stall this replay ended at after a flip it was asked was taken
-     * ({@link #noProgress}), or {@code ""}: the obligations still open are
-     * NOT_ADMITTED by it, and those whose flip was taken keep what they
-     * settled ({@link #results}).
-     */
     private static String stalledAt = "";
 
-    /**
-     * Ends this replay at a stall ({@code
-     * ConcolicResultPublisher#watchProgress}): {@code what} says for how
-     * long the run made nothing new, and {@code held} the schedule's holds then
-     * ({@code ScheduleLog#holding}; "" for none), so a stall the engine's
-     * own hold made reads apart from one the workload made.  A stall is
-     * NOT_ADMITTED for the questions still open (the owner's
-     * simplification): before any flip was taken it decides the replay
-     * ({@link #decide}, the session withdrawn); after one, the flips taken
-     * keep their verdicts, never rewritten, and the session stands as the
-     * run made it up to the stall ({@link #stalledAt}).  Only a replay
-     * asked a flip -- never the seed's (no obligation), a confirmation's
-     * ({@link #confirming}: its verdict rules stand, and its timeout
-     * already refuses a stuck one), or one whose workload ended (it
-     * settles, on the settle's own bound).
-     *
-     * @return whether the replay ends here
-     */
     static boolean noProgress(String what, String held) {
         if (confirming()) return false;
         synchronized (LOCK) {
@@ -351,15 +225,12 @@ public final class FocusedReplay {
         }
     }
 
-    /** Whether a stall ended this replay after a flip was taken ({@link
-     *  #stalledAt}): its session stands. */
     static boolean stalledAfterFlip() {
         synchronized (LOCK) {
             return !stalledAt.isEmpty();
         }
     }
 
-    /** The refusal that decided every obligation of this replay, or "". */
     static String refusedAt() {
         load();
         synchronized (LOCK) {
@@ -372,7 +243,6 @@ public final class FocusedReplay {
                                 boolean outcome) {
         String id = trimmed(obligation.obligationId());
         if (REFUSALS.containsKey(id) || FLIPPED.contains(id)) return;
-        // Joined on the focus row's focusedOccurrenceId.
         if (!trimmed(FOCUS.get(id)).equals(trimmed(at))) return;
         if (!trimmed(obligation.siteId()).equals(trimmed(siteId))
                 || obligation.ordinal() != ordinal) {
@@ -388,19 +258,10 @@ public final class FocusedReplay {
                 + obligation.flippedOutcome());
     }
 
-    /**
-     * A read of a node's view ({@code RowRuntime#viewRead}): a pairing flip
-     * whose read it is ({@link Obligation#pairedReader}, as CONFIRM names
-     * its endpoint) is taken where it observed the version the flip asks,
-     * and refused -- PAIRING_UNTAKEN, the version it saw -- where it observed
-     * another.  Its first read decides.
-     */
     static void viewRead(Endpoint reader, long version) {
         load();
         if (task == null || reader == null) return;
         String id = Confirmation.id(reader);
-        // Asked before this lock: Confirmation's own lock is taken under
-        // its load, which asks this class (#pairs), so never inside ours.
         String because = Confirmation.untakenBecause(id);
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
@@ -424,19 +285,9 @@ public final class FocusedReplay {
         }
     }
 
-    /** Obligation id -> the occurrence id its flip is addressed at. */
     private static final Map<String, String> FOCUS =
             new LinkedHashMap<String, String>();
 
-    /**
-     * Whether this occurrence has contradicted ITS OWN obligation -- the one
-     * prefix matcher, over what {@link #observeDecision} saw.
-     *
-     * <p>I2: a refusal abandons only its own occurrence, joined through
-     * {@link #FOCUS} as {@link #observe} files it.  Trap: asking
-     * {@link #focused} instead lets one refusal abandon every other member
-     * of the focused set.</p>
-     */
     public static boolean contradicted(OccurrenceAddress occurrence) {
         load();
         if (task == null || occurrence == null) return false;
@@ -445,7 +296,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** Why it was refused, for the row that says so. */
     public static String refusal(OccurrenceAddress occurrence) {
         load();
         if (task == null || occurrence == null) return "";
@@ -454,10 +304,6 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * The refusal of an obligation addressed AT {@code at}, or {@code ""};
-     * never another occurrence's.  Called under {@link #LOCK}.
-     */
     private static String refused(String at) {
         for (Obligation obligation : OBLIGATIONS) {
             String id = trimmed(obligation.obligationId());
@@ -468,16 +314,6 @@ public final class FocusedReplay {
         return "";
     }
 
-    /**
-     * Whether this occurrence has taken the decision ITS OWN obligation
-     * flips; true when it has no obligation, or none is addressed at it.
-     *
-     * <p>The other half of I2, the same join as {@link #observe} (by id,
-     * IDENTITY §10).
-     * Trap: asked occurrence-blind, a root's mint or factor member is
-     * abandoned for a flip it was never asked to take, and all its rows
-     * (mint row included) are thrown away.</p>
-     */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();
         if (task == null || occurrence == null) return true;
@@ -493,26 +329,12 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * The gap that abandoned a prefix, if any.  An abandoned occurrence
-     * publishes no rows, so {@link #FLIPPED} alone would admit over a
-     * session missing its prefix.
-     */
     private static String unmatchedPrefix = "";
 
-    /** The reason a prefix abandonment opens its gap detail with. */
     private static final String PREFIX_UNMATCHED = "REPLAY_PREFIX_UNMATCHED";
 
-    /** The reason a verdict opens with when a pairing the obligation's
-     *  world plants was not taken: the run is not that world. */
     static final String PAIRING_UNTAKEN = "PAIRING_UNTAKEN";
 
-    /**
-     * Keeps the first prefix-abandonment gap, recognised by the reason word
-     * it opens with ({@code ConcolicResultPublisher#taskUnanswered}).
-     *
-     * @return whether it {@link #decide decided} the replay
-     */
     static boolean noteUnansweredTask(String detail) {
         String stated = trimmed(detail);
         if (!stated.startsWith(PREFIX_UNMATCHED)) return false;
@@ -524,22 +346,14 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * The publication the end of the run left running, if any
-     * ({@code ConcolicResultPublisher#awaitSelectedResultPublications}): its
-     * occurrence's rows may be partial, so the session carries no admission.
-     */
     private static String unsettledPublication = "";
 
-    /** Whether the run ended without a publication: its verdicts settle
-     *  no question ({@code ObligationDir#QUESTION}). */
     static boolean unsettled() {
         synchronized (LOCK) {
             return !unsettledPublication.isEmpty();
         }
     }
 
-    /** Notes the publication the run ended without; the first one stands. */
     static void noteUnsettledPublication(String detail) {
         load();
         synchronized (LOCK) {
@@ -549,14 +363,8 @@ public final class FocusedReplay {
         }
     }
 
-    /** The roots this session PUBLISHED a mint row for. */
     private static final Set<String> MINTED = new LinkedHashSet<String>();
 
-    /**
-     * Notes one root mint ROW published.  Not {@link #planted}: a plant
-     * survives an abandoned occurrence, the row does not, and the corpus
-     * reads the row.
-     */
     static void mintPublished(String rootId) {
         String id = trimmed(rootId);
         if (id.isEmpty()) return;
@@ -566,25 +374,10 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * What this replay settled, one row per obligation.  Topology divergence
-     * is EXPLORE's finding (PIPELINE §7.1), not decided here.
-     *
-     * <p>FAIL-CLOSED: ADMITTED is a claim about the SESSION's rows, so the
-     * flip alone does not admit -- an abandoned prefix, a missing mint row,
-     * a broken inherited flip or a pairing its world plants and the run did
-     * not take ({@link Confirmation#close}) is NOT_ADMITTED naming the gap.
-     * A decided replay ({@link #refusedAt}) admits nothing, and says in each
-     * detail that it ended there; one that stalled after a flip was taken
-     * ({@link #stalledAt}) keeps the verdicts of the flips taken, and every
-     * other obligation is NOT_ADMITTED by the stall.</p>
-     */
     public static List<ObligationResult> results(String sessionId) {
         load();
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         if (task == null) return results;
-        // Asked outside this class's lock: Confirmation reads its rows under
-        // its own, and asks this class whether it confirms.
         List<String> untaken = Confirmation.close();
         Confirmation.Held held = OPEN_ARMS.isEmpty() ? null
                 : Confirmation.held();
@@ -612,9 +405,6 @@ public final class FocusedReplay {
         return results;
     }
 
-    /** One verdict's detail, and where the replay decided by
-     *  {@link #refusedAt} ended; a stall's name first.  Called under
-     *  {@link #LOCK}. */
     private static String endedAtRefusal(String detail) {
         if (refusedAt.startsWith(REPLAY_NO_PROGRESS)) {
             return refusedAt + "; the replay ended there and published no"
@@ -627,7 +417,6 @@ public final class FocusedReplay {
                         + refusedAt);
     }
 
-    /** What each obligation settled; called under {@link #LOCK}. */
     private static List<ObligationResult> settled(String sessionId,
                                                   List<String> untaken,
                                                   Confirmation.Held held) {
@@ -640,10 +429,7 @@ public final class FocusedReplay {
                 results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, REFUSALS.get(id)));
             } else if (FLIPPED.contains(id)) {
-                // The one place ADMITTED is stated.
                 String unstated = unstated(obligation);
-                // And the inherited world has to hold, pairings and all
-                // (a CONFIRM run's edges are its decision's to read).
                 if (unstated.isEmpty()) unstated = inherited();
                 if (unstated.isEmpty() && obligation.flips()
                         && !untaken.isEmpty()) {
@@ -668,7 +454,6 @@ public final class FocusedReplay {
                         : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                                 sessionId, unstated));
             } else if (trimmed(FOCUS.get(id)).isEmpty()) {
-                // No occurrence stated: the ask is missing, not the run.
                 results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, "the focus row states no "
                         + "focusedOccurrenceId, so the flip at "
@@ -703,16 +488,8 @@ public final class FocusedReplay {
         return results;
     }
 
-    /** The reason a verdict opens with when the replay refuted its world. */
     static final String WORLD_REFUTED = "WORLD_REFUTED";
 
-    /**
-     * Why this replay did not run an obligation's world as asked, or "":
-     * (a) of {@link #refuted} -- every assignment minted and planted, no
-     * prefix abandoned and no refusal deciding the replay, and every flip it
-     * inherited reached and taken (the path it stands on ran).  Called under
-     * {@link #LOCK}.
-     */
     private static String unrun(Obligation obligation) {
         return firstNonBlank(unstated(obligation), refusedAt, inherited(),
                 unplantedLocked().isEmpty() ? ""
@@ -720,29 +497,6 @@ public final class FocusedReplay {
                         + unplantedLocked());
     }
 
-    /**
-     * Why this replay's world is no world of an open decider arm's flip
-     * (TargetRow.OpenArm), or null: it ran the world faithfully and never
-     * entered the flip's occurrence.  Faithful is all four, each named as
-     * it held:
-     * <ol type="a">
-     *   <li>every assigned root and clock skew was minted at its value
-     *       ({@link #unstated}, no assignment left unplanted) and no prefix
-     *       was abandoned;</li>
-     *   <li>no order hold gave way ({@link Confirmation#held}: none waited
-     *       out its timeout, no read observed another writer than its
-     *       pairing's), and a hold still in force at the end waits only on
-     *       the never-entered occurrence;</li>
-     *   <li>the recorded order held until the world first acted: no slot was
-     *       given up before the first plant, answer or hold
-     *       ({@link #worldActed}, {@link #departed});</li>
-     *   <li>the workload ended by itself ({@link #workloadEnded}) or its
-     *       window closed ({@link #windowClosed}), not at a bound, a witness
-     *       or a refusal.</li>
-     * </ol>
-     * Anything short of them stays a plain NOT_ADMITTED, the conditions
-     * that failed added to {@code unrefuted}.  Called under {@link #LOCK}.
-     */
     private static WorldRefutation refuted(Obligation obligation,
                                            Confirmation.Held held,
                                            List<String> unrefuted) {
@@ -811,33 +565,20 @@ public final class FocusedReplay {
         return WorldRefutation.of(conditions, endedBy, endedAt, endedInTest);
     }
 
-    /** Obligation ids whose flip asks an open decider arm (focus row
-     *  {@code openArm}): only these refute a world ({@link #refuted}). */
     private static final Set<String> OPEN_ARMS = new LinkedHashSet<String>();
 
-    /** Every occurrence an activation of this run began, by its id and its
-     *  any-delivery id ({@link #entered}). */
     private static final Set<String> ENTERED = ConcurrentHashMap.newKeySet();
 
-    /** Notes that an activation of {@code occurrence} began
-     *  ({@code RowRuntime#beginActivation}). */
     static void entered(OccurrenceAddress occurrence) {
         if (occurrence == null) return;
         ENTERED.add(occurrence.id());
         ENTERED.add(occurrence.anyDelivery().id());
     }
 
-    /** One tick per first act and first departure, so the two are ordered
-     *  without a lock (ScheduleLog and Confirmation call under their own). */
     private static final AtomicLong TICKS = new AtomicLong();
     private static final AtomicLong FIRST_ACT = new AtomicLong();
     private static final AtomicLong FIRST_DEPARTURE = new AtomicLong();
 
-    /** The world acted on the run inside its window: a plant that moved a
-     *  value or a clock ({@link #planted}), an answer that moved an arrival
-     *  ({@link #answered}), an order hold waiting ({@code
-     *  Confirmation#entering}).  The first one counts; one before the window
-     *  (a configuration planted at a startup read) does not. */
     static void worldActed() {
         if (!RecordingWindow.opened()) return;
         if (FIRST_ACT.get() == 0L) {
@@ -845,9 +586,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** The run departed from the recorded order: a slot was given up
-     *  ({@code ScheduleLog#giveUpLocked}, which names it).  The first one
-     *  counts. */
     static void departed(String slot) {
         if (FIRST_DEPARTURE.get() == 0L
                 && FIRST_DEPARTURE.compareAndSet(0L, TICKS.incrementAndGet())) {
@@ -855,24 +593,14 @@ public final class FocusedReplay {
         }
     }
 
-    /** The first slot given up, as the schedule names it. */
     private static volatile String firstDeparture = "";
 
-    /** Whether the workload ended by itself ({@link #workloadEnded}), or
-     *  its test was over at its window's close ({@link #windowClosed}). */
     private static volatile boolean workloadEnded;
     private static volatile boolean endedAtClose;
-    /** Its terminating throwable, its innermost frame and the test
-     *  method's frame it passed; "" where none. */
     private static volatile String endedBy = "";
     private static volatile String endedAt = "";
     private static volatile String endedInTest = "";
 
-    /**
-     * The workload's method ended by itself ({@code JUnitMethodRunner#main}):
-     * returned, or threw {@code failure}.  Not called when a bound, a witness
-     * or a refusal ends the run.
-     */
     static void workloadEnded(Throwable failure, String testClass) {
         noteFailure(failure, testClass);
         workloadEnded = true;
@@ -909,14 +637,6 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * What this replay's own question moved so far, each count bounded by
-     * its focus row, so a loop elsewhere moves none of them ({@code
-     * ConcolicResultPublisher#watched}): the focused occurrences entered --
-     * the obligations', the assigned roots' mints', the inherited flips' --,
-     * the flips taken, its own and inherited, the roots planted, and
-     * whether the world has acted.
-     */
     static long[] questionMoved() {
         load();
         synchronized (LOCK) {
@@ -935,10 +655,6 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * Why the inherited world did not hold, or {@code ""}: a flip took the
-     * other arm or was never reached.  Called under {@link #LOCK}.
-     */
     private static String inherited() {
         for (Inherited flip : INHERITED) {
             if (!flip.refusal.isEmpty()) return flip.refusal;
@@ -953,11 +669,6 @@ public final class FocusedReplay {
         return "";
     }
 
-    /**
-     * Why the session cannot carry an admission, or {@code ""}: an abandoned
-     * prefix, a publication the run ended without, or no mint row for an
-     * assigned root or clock skew.  Called under {@link #LOCK}.
-     */
     private static String unstated(Obligation obligation) {
         if (!unmatchedPrefix.isEmpty()) return unmatchedPrefix;
         if (!unsettledPublication.isEmpty()) return unsettledPublication;
@@ -980,23 +691,11 @@ public final class FocusedReplay {
                 + " the root(s) the obligation moves at";
     }
 
-    /** Where the campaign names this replay's execution task plan. */
     public static final String PLAN_PROPERTY = "causynth.concolic.task.plan";
-    /**
-     * Reads {@code focused_task.jsonl} ({@code explore.ObligationSolverMain}):
-     * {@code taskId, obligationId, pathId, focused, flip={siteId, ordinal,
-     * outcome}, rootAssignments, clockDeltas, rootMints, inheritedFlips,
-     * answers, unproducible}.
-     *
-     * <p>Trap: not {@code execution_task_plan.jsonl} -- that name is the
-     * PLAN's, and the session opener decodes whatever stands under it.</p>
-     */
     private static void loadPlanRows() {
         Path path = focusRow();
         if (path == null) return;
-        // The role is decided HERE: handed a focus row means FOCUSED.
         handedAFocusRow = true;
-        // The Task the focus row states, when it states one.
         Task focusedTask = null;
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
@@ -1007,17 +706,12 @@ public final class FocusedReplay {
                 }
                 if (row.get("flip").isJsonNull() && row.has(FORCE)
                         && row.get(FORCE).getAsBoolean()) {
-                    // A FORCE run (flip: null, force): nothing planted, no
-                    // decision owed; its verdict is ForcedArms'.
                     OBLIGATIONS.add(Obligation.forcing(obligationId,
                             optionalString(row, "taskId"),
                             optionalString(row, "pathId")));
                     FLIPPED.add(obligationId);
                     forcing = true;
                 } else if (row.get("flip").isJsonNull()) {
-                    // CONFIRM row (flip: null): roots planted, no decision
-                    // owed, so it counts as flipped at load; agreement with
-                    // the model is Confirmation's to read.
                     OBLIGATIONS.add(Obligation.confirming(obligationId,
                             optionalString(row, "taskId"),
                             optionalString(row, "pathId"),
@@ -1027,8 +721,6 @@ public final class FocusedReplay {
                     FLIPPED.add(obligationId);
                 } else {
                     JsonObject flip = row.getAsJsonObject("flip");
-                    // A flip missing ordinal or outcome is refused, never
-                    // defaulted, and stated as a shortfall at the close.
                     if (!flip.has("ordinal") || !flip.has("outcome")) {
                         SHORTFALLS.add("the focus row for obligation "
                                 + obligationId + " states a flip with no "
@@ -1056,16 +748,12 @@ public final class FocusedReplay {
                 }
                 pairs |= !strings(row, "pairings").isEmpty();
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
-                // Each assigned root's mint is focused too.
                 for (Map.Entry<String, String> mint
                         : strings(row, "rootMints").entrySet()) {
                     OccurrenceAddress at =
                             OccurrenceAddress.parse(mint.getValue());
-                    // By id(), not render(): a join across passes
-                    // (IDENTITY §10).
                     if (at != null) ROOT_MINTS.add(at.id());
                 }
-                // Inherited flips, parent's first (see Inherited).
                 if (row.has("inheritedFlips")
                         && !row.get("inheritedFlips").isJsonNull()) {
                     for (JsonElement element
@@ -1084,8 +772,6 @@ public final class FocusedReplay {
                                     + " from");
                             continue;
                         }
-                        // A pairing flip the world holds is a pairing of
-                        // this row's, compared as one (Confirmation).
                         if (Obligation.pairing(optionalString(carried,
                                 "siteId"))) {
                             continue;
@@ -1104,8 +790,6 @@ public final class FocusedReplay {
                 if (declaredTarget.isEmpty()) {
                     declaredTarget = optionalString(row, "declaredTarget");
                 }
-                // Task.of refuses a null focus, so a row without one makes
-                // no Task instead of throwing.
                 OccurrenceAddress focus = occurrence(row.get("focused"));
                 if (focus != null && focusedTask == null) {
                     List<OccurrenceAddress> members =
@@ -1125,7 +809,6 @@ public final class FocusedReplay {
                 }
             }
         } catch (RuntimeException | IOException unreadable) {
-            // Still FOCUSED with what it parsed; stated as a shortfall.
             SHORTFALLS.add("the focus row " + path + " could not be read"
                     + " whole (" + unreadable + "), so this session ran"
                     + " only the " + OBLIGATIONS.size() + " obligations it"
@@ -1136,13 +819,8 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * What the focus row asked and could not be read; published by
-     * {@code RowRuntime.closeSession}, since no publisher exists at load.
-     */
     private static final List<String> SHORTFALLS = new ArrayList<String>();
 
-    /** Every shortfall this replay's focus row left, in the order found. */
     static List<String> shortfalls() {
         load();
         synchronized (LOCK) {
@@ -1150,13 +828,8 @@ public final class FocusedReplay {
         }
     }
 
-    /** Whether this replay was handed a focus row at all. */
     private static boolean handedAFocusRow;
 
-    /**
-     * The manifest role: "handed a focus row", never "focused anything" --
-     * a replay whose occurrence never ran is still no recording.
-     */
     public static boolean focusedSession() {
         load();
         synchronized (LOCK) {
@@ -1164,8 +837,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** Whether this replay's world plants pairings (the focus row's {@code
-     *  pairings}): it owes the edges that hold it ({@link Confirmation}). */
     static boolean pairs() {
         load();
         synchronized (LOCK) {
@@ -1173,11 +844,8 @@ public final class FocusedReplay {
         }
     }
 
-    /** Whether the focus row stated a pairing. */
     private static boolean pairs;
 
-    /** Whether this replay confirms a claim: it was handed an obligation that
-     *  flips nothing ({@link Obligation#confirming}). */
     static boolean confirming() {
         load();
         synchronized (LOCK) {
@@ -1188,14 +856,10 @@ public final class FocusedReplay {
         }
     }
 
-    /** The focus row's mark of a FORCE run ({@code ExploreCodec#FORCE}). */
     static final String FORCE = "force";
 
-    /** Whether the focus row asks a FORCE run ({@link ForcedArms}). */
     private static boolean forcing;
 
-    /** Whether this replay is a FORCE run: the declared occurrence forced
-     *  to the throw (PIPELINE §7.10). */
     static boolean forcing() {
         load();
         synchronized (LOCK) {
@@ -1203,9 +867,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** A FORCE run decided FORCE_DIVERGED ({@link ForcedArms#finished}):
-     *  it ends there, and its session is withdrawn ({@link #refusedAt}).
-     *  @return whether this call decided it */
     static boolean decideForced(String divergence) {
         load();
         synchronized (LOCK) {
@@ -1213,7 +874,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** The obligations this replay was handed, by id, in the row's order. */
     public static List<String> obligationIds() {
         load();
         List<String> ids = new ArrayList<String>();
@@ -1226,28 +886,20 @@ public final class FocusedReplay {
         return ids;
     }
 
-    /**
-     * Records that a mint WROTE the wave's value; asking
-     * {@link #rootAssignment} and failing to write is a different fact.
-     */
     public static void planted(String rootId, boolean moved) {
         load();
         String id = trimmed(rootId);
         if (id.isEmpty()) return;
-        // The world acts where the plant moves what the run read.
         if (moved) worldActed();
         synchronized (LOCK) {
             PLANTED.add(id);
         }
     }
 
-    /** A handoff was answered ({@code HandoffMint}); {@code moved}: the
-     *  answer is not what arrived. */
     static void answered(boolean moved) {
         if (moved) worldActed();
     }
 
-    /** Notes that a mint of this root RAN, planted or not. */
     static void mintReached(String rootId) {
         String id = trimmed(rootId);
         if (id.isEmpty()) return;
@@ -1257,18 +909,8 @@ public final class FocusedReplay {
         }
     }
 
-    /** The roots a mint site of this replay ran for. */
     private static final Set<String> REACHED = new LinkedHashSet<String>();
 
-    /**
-     * Every assigned root whose mint RAN and did not plant the wave's value
-     * -- BLOCKING, stated by the replay because it did not run what was asked.
-     *
-     * <p>A mint that never ran is not one: the obligation's verdict names
-     * that ({@link #results}).  One rule over both spellings, an absolute
-     * {@code rootAssignment} and a {@code clockDelta} (reported as the skew
-     * asked).</p>
-     */
     public static Map<String, String> unplantedAssignments() {
         load();
         synchronized (LOCK) {
@@ -1276,7 +918,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** {@link #unplantedAssignments}; called under {@link #LOCK}. */
     private static Map<String, String> unplantedLocked() {
         Map<String, String> unplanted = new LinkedHashMap<String, String>();
         List<Map<String, String>> asked =
@@ -1298,27 +939,18 @@ public final class FocusedReplay {
         return unplanted;
     }
 
-    /** The roots a mint of this replay wrote the wave's value into. */
     private static final Set<String> PLANTED = new LinkedHashSet<String>();
 
-    /** Whether a mint of this root ran: it asked, or published its row. */
     private static boolean reachedLocked(String id) {
         return REACHED.contains(id) || MINTED.contains(id);
     }
 
-    /** The focus row's mark of a flip that asks an open decider arm
-     *  ({@code explore.ObligationFactory.Candidate#openArm}). */
     public static final String OPEN_ARM = "openArm";
 
-    /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
         return workerFile(ObligationDir.FOCUSED_TASK);
     }
 
-    /**
-     * One file the worker handed this replay (focus row, {@link Confirmation}
-     * edges), from the worker directory else beside the plan; or null.
-     */
     static Path workerFile(String name) {
         String worker = workerDir();
         if (!worker.isEmpty()) {
@@ -1331,7 +963,6 @@ public final class FocusedReplay {
         return beside == null ? null : readable(beside.resolve(name));
     }
 
-    /** The directory the campaign hands this replay's worker, or "". */
     static String workerDir() {
         return trimmed(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
     }
@@ -1340,7 +971,6 @@ public final class FocusedReplay {
         return Files.isReadable(file) ? file : null;
     }
 
-    /** Reads the focus row this replay was handed, once. */
     private static void load() {
         synchronized (LOCK) {
             if (loaded) return;

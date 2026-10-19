@@ -1,33 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §3: what one obligation produced, and from which session.  A
- * NOT_ADMITTED open-arm flip whose replay refuted its world states why
- * ({@link WorldRefutation}): its arm stays owed, asked again without that
- * world ({@code explore.Frontier#consume}).  One whose replay did not run
- * its world faithfully says so first ({@link #WORLD_UNREFUTED}): it is asked
- * once more.
- */
 public final class ObligationResult extends Value {
-    /** How a NOT_ADMITTED open-arm flip's detail opens when its replay never
-     *  reached the decision and did not run its world faithfully either
-     *  ({@code runtime.FocusedReplay#refuted}'s conditions failed). */
     public static final String WORLD_UNREFUTED = "WORLD_UNREFUTED";
-    /** How a NOT_ADMITTED opens when its replay ran its world as asked --
-     *  every assignment minted and planted, no prefix abandoned, no refusal
-     *  deciding it, every inherited flip taken -- and never reached the
-     *  decision ({@code runtime.FocusedReplay#unrun}): the one NOT_ADMITTED
-     *  that is a fact about the arm ({@link #settlesArm}). */
     public static final String WORLD_RAN = "WORLD_RAN";
-    /** How a NOT_ADMITTED opens when its query was refused for a cause in
-     *  what its arm's key names -- the flipped predicate, the reads it
-     *  rests on ({@code explore.FlipQuery.Built#atArm}) -- so every world
-     *  under that key is refused alike ({@link #settlesArm}). */
     public static final String ARM_REFUSED = "ARM_REFUSED";
-    /** How a NOT_ADMITTED opens when its replay was killed before it stated
-     *  anything -- past {@code replay_timeout_s}, or by a signal
-     *  ({@code run_engine.sh campaign_obligation_replay}): it answered
-     *  nothing, of its arm or of its world ({@link #replayBounded}). */
     public static final String REPLAY_BOUNDED = "REPLAY_BOUNDED";
 
     private final String obligationId;
@@ -51,8 +27,6 @@ public final class ObligationResult extends Value {
         return of(obligationId, verdict, sessionId, detail, null);
     }
 
-    /** {@code refutation} null unless the verdict is a NOT_ADMITTED that
-     *  refuted its world. */
     public static ObligationResult of(String obligationId, Verdict verdict,
                                       String sessionId, String detail,
                                       WorldRefutation refutation) {
@@ -74,7 +48,6 @@ public final class ObligationResult extends Value {
         return verdict;
     }
 
-    /** The replay session that produced this result, or {@code ""}. */
     public String sessionId() {
         return sessionId;
     }
@@ -83,23 +56,10 @@ public final class ObligationResult extends Value {
         return detail;
     }
 
-    /** Why the replay refuted its world, or null. */
     public WorldRefutation refutation() {
         return refutation;
     }
 
-    /**
-     * Whether this answer is a fact about its ARM, whatever world asks it
-     * ({@code explore.Frontier#consume}): ADMITTED, UNSAT, or a NOT_ADMITTED
-     * whose replay ran its world as asked ({@link #WORLD_RAN}) or whose
-     * query was refused at the arm ({@link #ARM_REFUSED}).  A replay killed
-     * past its bound answered nothing at all ({@link #replayBounded}).  Any
-     * other NOT_ADMITTED -- the replay did not run its world (a root not
-     * minted, an inherited flip not taken, a refusal, a stall, an unfinished
-     * worker), or the query was refused for what the world holds -- is a
-     * fact about its own world only, and a refuted world answers nothing of
-     * the arm.
-     */
     public boolean settlesArm() {
         return verdict == Verdict.ADMITTED || verdict == Verdict.UNSAT
                 || verdict == Verdict.NOT_ADMITTED && refutation == null
@@ -107,24 +67,17 @@ public final class ObligationResult extends Value {
                 || detail.startsWith(ARM_REFUSED + ":"));
     }
 
-    /** Whether its replay was killed before it stated anything ({@link
-     *  #REPLAY_BOUNDED}): no fact about its arm, nor about its world
-     *  ({@code explore.Frontier#consume} holds such a flip BOUNDED). */
     public boolean replayBounded() {
         return verdict == Verdict.NOT_ADMITTED
                 && detail.startsWith(REPLAY_BOUNDED + ":");
     }
 
-    /** The refusal an arm-refused answer names ({@link #ARM_REFUSED}),
-     *  or null. */
     public String armRefusal() {
         return verdict == Verdict.NOT_ADMITTED
                 && detail.startsWith(ARM_REFUSED + ":")
                 ? detail.substring(ARM_REFUSED.length() + 1).trim() : null;
     }
 
-    /** Whether this is an open-arm flip's replay that ran its world neither
-     *  into the decision nor faithfully ({@link #WORLD_UNREFUTED}). */
     public boolean worldUnrefuted() {
         return verdict == Verdict.NOT_ADMITTED && refutation == null
                 && detail.startsWith(WORLD_UNREFUTED + ":");

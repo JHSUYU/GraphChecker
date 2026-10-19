@@ -76,21 +76,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
-/**
- * The composition rule, on a corpus small enough to read.
- *
- * <p>Every fixture here is two or three sessions of one wire interaction:
- * a producer that exports an expression over a declared marker, and a
- * consumer that reads it at the anchor.  That is the smallest shape in
- * which the rules the evidence settled can be told apart -- per-path
- * arrivals from a global pin, two producers on one port from one family,
- * an attested arm from an unattested one, and a witness with polarity from
- * a formula that was satisfiable all along.</p>
- */
 public class ComposerTest {
-    /** A system declaring Solr's published views (PUBLISHED_VIEW): a read
-     *  of any other view offers no version choice
-     *  (ComposedFamilies#heldView). */
     @org.junit.Before
     public void publishedViews() {
         System.setProperty(edu.uva.liftlab.graphchecker.causynth
@@ -108,7 +94,6 @@ public class ComposerTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    /** The target region, started by the request the case is about. */
     private static final OccurrenceAddress ANCHOR = occurrence("case/dn0",
             "REGION.target",
             CausalContext.of("producer-endpoint", "case/client/read-block"),
@@ -126,25 +111,12 @@ public class ComposerTest {
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
     private static final String CLOCK = "clock_now";
     private static final String CLOCK_ROOT = "ROOT.NOW";
-    /**
-     * A declared region input, as the runtime publishes it: a READ
-     * placeholder, so the row states its value and nothing mints it.
-     */
     private static final String PLACEHOLDER =
             "M_I_field_REGION.target.in.count";
     private static final String NO_ROW = "M_I_field_REGION.target.in.absent";
-    /**
-     * One occurrence's SECOND declared port on one cell.
-     *
-     * <p>Two ports, two mints, two symbols -- and one location, which is
-     * why the location cannot be what a reader is matched by.</p>
-     */
     private static final String PLACEHOLDER_TWO =
             "M_I_field_REGION.target.in.count.port2";
 
-    // ------------------------------------------------------------------
-    // 1. Polarity: the recording is refuted, the flip reaches the failure.
-    // ------------------------------------------------------------------
 
     @Test
     public void theHealthyRecordingIsRefutedAndTheFlipIsTheWitness()
@@ -179,10 +151,6 @@ public class ComposerTest {
                         + "fatal arm", "s1",
                 decision.outcomes().get(1).selected().path().sessionId);
 
-        // The same composition, answered by a solver that ERRORS.  An
-        // "(error ...)" is z3 saying it could not READ the query, so
-        // nothing it printed is a verdict about this recording: named, and
-        // the claim stands on what z3 did answer -- here nothing.
         ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
                 new Z3(erroringSolver(), 30000L, 8192));
         assertEquals("an error is not a finding",
@@ -193,10 +161,6 @@ public class ComposerTest {
         assertFalse("nothing about the recording is decided by it",
                 errored.claim().polarityDecides());
 
-        // And the same composition answered `unknown`.  Undecided is not a
-        // refutation and not a witness, and it used to reach the manifest
-        // as a bare state=unknown with nothing to route: named, BLOCKING,
-        // and carrying the fragment z3 named.
         ClaimPolicy.Decision undecided = ClaimPolicy.decide(composition,
                 new Z3(undecidingSolver(), 30000L, 8192));
         assertEquals("an undecided valuation is not a finding",
@@ -212,34 +176,21 @@ public class ComposerTest {
         assertFalse("and decides nothing about the recording",
                 undecided.claim().polarityDecides());
 
-        // And answered by a z3 that WARNS first, as its optimizer does under
-        // quantifiers: the answer is the line after the warning.
         assertEquals("a warning is not the verdict", ClaimKind.MARKER_FLIPPED,
                 ClaimPolicy.decide(composition, new Z3(warningSolver(),
                         30000L, 8192)).claim().kind());
 
-        // 1b. The same claim where the marker reaches the target only
-        // through CONTROL dependence -- 17960's shape.  The marker gates a
-        // branch of ANOTHER occurrence, so no decision of the anchor names
-        // it and the anchor's own phi is CONCRETE: false as the seed ran
-        // (a counter that was written), true in the flip replay (the write
-        // was skipped).  What connects the two is that each path carries
-        // its own replay's valuation of the varied root.
         Path control = folder.newFolder("marker-control").toPath();
         for (String[] each : new String[][]{
                 {"s0", "true", "2", "false"}, {"s1", "false", "0", "true"}}) {
             Session session = new Session(control, each[0],
                     "true".equals(each[3]));
             session.marker(each[1]);
-            // The counter the anchor reads: concrete, and different in the
-            // two replays because the marker skipped the write.
             session.read(Endpoint.of(ANCHOR,
                             "<Manager: int count>#PLACEHOLDER#0:READ",
                             at("count#1", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
                     -1L, PLACEHOLDER, "I", each[2]);
-            // phi as the runtime publishes it: the FATAL polarity, over
-            // the value this replay read.  Concrete either way.
             session.expression("EXPR.0000000000000fc1", binary("!=",
                     integer("I", 2L), symbol(PLACEHOLDER, "I")));
             session.target("EXPR.0000000000000fc1", "true".equals(each[3]),
@@ -273,14 +224,6 @@ public class ComposerTest {
                 flipped.claim().movedRoots());
         assertTrue(flipped.claim().polarityDecides());
 
-        // 1e. The three-session 17960 shape, as the first real corpus has
-        // it: one seed (marker true) whose counter is written only by the
-        // createSnapshot occurrence, and TWO exploration replays (marker
-        // false) in which the deleteSnapshot occurrence writes it as well
-        // -- each write ReadFrom{previous} +- 1, the anchor's placeholder
-        // joining the last of them, and phi published AS TAKEN (the FATAL
-        // arm, observedFatal true) because those replays reached the
-        // failure.  Two anchor activations per session, so six paths.
         Path three = folder.newFolder("marker-three").toPath();
         OccurrenceAddress saver = occurrence("case/nn0", "REGION.saver",
                 CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
@@ -291,16 +234,9 @@ public class ComposerTest {
         OccurrenceAddress deleting = occurrence("case/nn0",
                 "REGION.delete", CausalContext.of(Role.CLIENT, "", 2),
                 frame("Manager#deleteSnapshot#31", 0));
-        // The anchor region's other activation: same region, same context,
-        // one execution-index frame apart (17960's saveFSImageInAllDirs#u36
-        // @0 and @1, the two storage directories' FSImageSaver threads).
         OccurrenceAddress sibling = occurrence("case/nn0", "REGION.saver",
                 CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Saver#serializeSnapshotSection#8", 1));
-        // The counter, owned the way the runtime writes an owner -- the
-        // VM's rid of the object -- so nothing about alternatives is
-        // withheld for the owner's spelling: what is asked here is the
-        // attestation rule.
         LocationId counter = LocationId.of(LocationKind.INSTANCE, "31",
                 "value");
         String owner = counter.owner();
@@ -314,7 +250,6 @@ public class ComposerTest {
             session.activation(saver, "thread#saver", flip);
             session.activation(creating, "thread#create", false);
             session.marker(each[1]);
-            // createSnapshot: 0 + 1, then that version + 1.
             session.expression("EXPR.000000000000c050", binary("+",
                     integer("I", 0L), integer("I", 1L)));
             session.expression("EXPR.000000000000c077", binary("+",
@@ -327,8 +262,6 @@ public class ComposerTest {
                             at("w#77", 0), 0), counter, 77L,
                     "EXPR.000000000000c077");
             if (flip) {
-                // deleteSnapshot ran the un-ordered arm -- the branch this
-                // case's marker gates -- and decremented twice.
                 session.activation(deleting, "thread#delete", false);
                 session.decision(deleting, "delete#u27", false, MARKER);
                 session.expression("EXPR.000000000000c125", binary("-",
@@ -344,24 +277,8 @@ public class ComposerTest {
                                 "Manager#delete#31:WRITE", at("w#141", 0), 0),
                         counter, 141L, "EXPR.000000000000c141");
             }
-            // The anchor's declared input, the way laneA4 found it: ONE
-            // occurrence declaring ONE cell under TWO ports, so two
-            // placeholder rows of the same location -- each with its own
-            // MINT VERSION, and each read's ReadFrom naming its own.  The
-            // (occurrence, location) bridge could not choose between them
-            // and refused both, taking the flip paths with it; the mint
-            // version is unique by construction, so each resolves to its
-            // own symbol and both paths stand.
             String[] port = {PLACEHOLDER, PLACEHOLDER_TWO};
             for (int activation = 0; activation < 2; activation++) {
-                // The SECOND row is published at the SIBLING activation of
-                // the same region, which is where the runtime puts it: the
-                // two FSImageSaver activations race on one AtomicInteger, so
-                // the one that mints installs the symbol and the one that
-                // closes first publishes the row -- under its own address.
-                // The anchor's phi still reads the version that mint
-                // created, and a mint's identity in a session is that
-                // version, so the row states it wherever it was published.
                 session.placeholder(Endpoint.of(
                                 activation == 0 ? saver : sibling,
                                 "INSTANCE_FIELD/counter#PLACEHOLDER#"
@@ -369,15 +286,11 @@ public class ComposerTest {
                                 at("count#" + activation, 0), 0),
                         counter, Long.parseLong(each[2]),
                         500L + activation, port[activation], "I", each[3]);
-                // phi over the version the MINT created, not over the
-                // symbol: the composer has to get there through the row.
                 session.expression("EXPR.0000000000000fe" + activation,
                         binary("!=", integer("I", 2L),
                                 read("INSTANCE_FIELD", owner, "value",
                                         500L + activation, "I")));
             }
-            // One phi, naming BOTH ports' reads: a fatal arm that rests on
-            // the counter however the occurrence declared it.
             session.target("(and EXPR.0000000000000fe0 "
                     + "EXPR.0000000000000fe1)", flip, true);
             session.target("(and EXPR.0000000000000fe0 "
@@ -413,18 +326,6 @@ public class ComposerTest {
                         + PLACEHOLDER_TWO)
                         || says(all.gaps(), GapKind.UNSTATED_VALUE,
                         "nothing binds it"));
-        // The counter read's writer is delivered and registered, one slot
-        // per replay that delivered it -- the deleteSnapshot occurrence
-        // whose write the anchor's placeholder joined.  In an exploration
-        // replay the createSnapshot occurrence is instrumented but is NOT
-        // the focused region, and ATTESTATION IS ABOUT THE ROWS AND NOT
-        // ABOUT THE FOCUS: this session states its activation and its
-        // decisions, so it is attested and it IS offered as an alternative
-        // writer (Arms.attested, Arms.stateArms).  That is the point of
-        // the rule -- the concurrent writer's prefix is a world the corpus
-        // states -- and it does NOT let the recorded valuation reach the
-        // fatal arm, which is what the asserts below measure: outcome 0 is
-        // still unsat and the polarity still decides.
         assertEquals("one slot per replay that delivered the counter: "
                         + all.families(), 2, all.families().size());
         assertTrue("so an alternative writer IS composed over the read",
@@ -447,9 +348,6 @@ public class ComposerTest {
                 three3.outcomes().get(1).selected().path().sessionId
                         .startsWith("s"));
 
-        // 1c. The negative: two replays that minted the marker the SAME
-        // way vary nothing, so no path carries a valuation of it, nothing
-        // declares it, and there is one question to ask.
         Path agreed = folder.newFolder("marker-agreed").toPath();
         for (String[] each : new String[][]{
                 {"s0", "2", "false"}, {"s1", "0", "true"}}) {
@@ -467,11 +365,6 @@ public class ComposerTest {
                     true);
             session.write();
         }
-        // 1d. And an ARM is guarded by the delivering replay's valuation
-        // of every varied root, not only by the roots its own expression
-        // names: the delivery happened under that replay's values, so it
-        // is available under them and under no other valuation.  This
-        // arm's expression names no root at all.
         Path guarded = folder.newFolder("marker-guarded").toPath();
         for (String[] each : new String[][]{{"s0", "true", "false"},
                 {"s1", "false", "true"}}) {
@@ -493,9 +386,6 @@ public class ComposerTest {
         }
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
-        // ONE arm on each path: the other run's carries its replay's
-        // value of the marker, which the path's own run read otherwise,
-        // so it is no sender there (PIPELINE §8).
         assertEquals(1, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
             assertTrue("an arm carries the delivering replay's valuation "
@@ -515,14 +405,6 @@ public class ComposerTest {
         assertEquals("and there is one question", 1,
                 same.valuations().size());
 
-        // 1f. The same control shape where the flip replay's MINT states
-        // no value.  It PLANTED the marker, so by rule it states no
-        // recordedValue -- a counterfactual is not a recording -- and what
-        // it ran under is stated by the obligation it ran under.  Read off
-        // the mint alone (05f4bf265), that valuation was stated nowhere: no
-        // path's formula named the marker, no valuation of it was asked,
-        // and 17960's composition published MESSAGE_PAIRING_FLIPPED at the
-        // recorded valuation over a corpus with no wire row in it.
         Path planted = folder.newFolder("marker-planted").toPath();
         for (String[] each : new String[][]{
                 {"s0", "true", "2", "false"}, {"s1", "", "0", "true"}}) {
@@ -551,11 +433,6 @@ public class ComposerTest {
                 planted3.claim().movedRoots());
         assertTrue(planted3.claim().polarityDecides());
 
-        // And leave the path out both ways.  Nothing states what the flip
-        // replay ran the declared root at: the path is REFUSED by name, its
-        // claim over the rest unblocked (best effort), because a
-        // disjunct free in a root the query enumerates is satisfiable at
-        // every valuation of it and reads as one that decided something.
         Path unstated = folder.newFolder("marker-unstated").toPath();
         for (String[] each : new String[][]{
                 {"s0", "true", "2", "false"}, {"s1", "", "0", "true"}}) {
@@ -570,11 +447,6 @@ public class ComposerTest {
                         "states no value it ran it at"));
         assertFalse("it blocks nothing", blocking(silent.gaps()));
 
-        // Both state it and they disagree: one replay ran the root at one
-        // value, so a corpus that names two is not one this path can
-        // carry.  This is the shape the leak had -- the reused mint read
-        // the plant back and published it as `recordedValue` -- and it is
-        // named rather than resolved by preferring one of them silently.
         Path twice = folder.newFolder("marker-twice").toPath();
         for (String[] each : new String[][]{
                 {"s0", "true", "2", "false"}, {"s1", "true", "0", "true"}}) {
@@ -592,7 +464,6 @@ public class ComposerTest {
         assertFalse("it blocks nothing", blocking(contradicted.gaps()));
     }
 
-    /** One session of the control-dependence marker fixture. */
     private void controlSession(Path iteration, String[] each)
             throws IOException {
         Session session = new Session(iteration, each[0],
@@ -610,18 +481,6 @@ public class ComposerTest {
         session.write();
     }
 
-    /**
-     * One obligation worker: the ask, the FOCUS ROW and the session its
-     * replay wrote.
-     *
-     * <p>The layout the campaign publishes, because that is what the
-     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} and the
-     * {@code focused_task.jsonl} the replay was driven by, beside the
-     * {@code obligation_result.jsonl} that names the session.  The WORLD a
-     * session ran in is read off the focus row -- it is the only row that
-     * states the whole of it -- so a fixture that wrote only the ask left
-     * the replay's valuation stated nowhere.</p>
-     */
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots)
             throws IOException {
@@ -629,7 +488,6 @@ public class ComposerTest {
                 Collections.<String>emptyList());
     }
 
-    /** The same, held to {@code site} and to the inherited flips. */
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots, String site,
                                    List<String> inherited)
@@ -638,7 +496,6 @@ public class ComposerTest {
                 Collections.<String, String>emptyMap());
     }
 
-    /** The same, its world planting {@code pairings} (reader -> writer). */
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots, String site,
                                    List<String> inherited,
@@ -698,7 +555,6 @@ public class ComposerTest {
                                 "the focused prefix reproduced"))));
     }
 
-    /** Whether any of these rows blocks. */
     private static boolean blocking(List<GapRow> gaps) {
         for (GapRow gap : gaps) {
             if (gap.blocking()) return true;
@@ -706,15 +562,6 @@ public class ComposerTest {
         return false;
     }
 
-    /** A solver that answers every question with an SMT-LIB read error. */
-    /**
-     * A solver that decides nothing, and says why.
-     *
-     * <p>z3 answers `unknown` on a formula in a fragment it is incomplete
-     * for, and it will name the fragment when asked: 17960's moved
-     * valuation came back "(incomplete quantifiers)" after 141 s, from the
-     * two `lambda` definitions the container preamble wrote.</p>
-     */
     private Path undecidingSolver() throws IOException {
         Path script = folder.newFile("z3-unknown.sh").toPath();
         Files.write(script, Arrays.asList("#!/bin/sh",
@@ -748,18 +595,9 @@ public class ComposerTest {
         return ScopedFixture.of(script);
     }
 
-    /**
-     * A model CONFIRM refuted ({@code refuted_claims.jsonl}: a false
-     * positive) is excluded from every later composition of the iteration,
-     * its arms matched by their digests at whatever path ordinal the claim
-     * spelled them ({@code Refutations#atPath}): the claim over it is another
-     * model, or none, and an UNSAT names it as what it rests on.  One whose
-     * path the corpus no longer composes states nothing.
-     */
     @Test
     public void anExcludedModelIsNoModelOfTheNextComposition()
             throws Exception {
-        // the path the model names, the arms' path ordinal moved
         Object[][] table = {
                 {"elsewhere", false},
                 {"claimed", false},
@@ -813,9 +651,6 @@ public class ComposerTest {
             ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
             assertEquals(detail, excluded ? ClaimKind.NO_SUPPORTED_WITNESS
                     : ClaimKind.MARKER_FLIPPED, again.claim().kind());
-            // An excluded model is no part of the run itself: a path it
-            // excludes does not contradict its own run, and the UNSAT names
-            // what it rests on.
             assertFalse(detail + ": " + again.claim().gaps(),
                     named(again.claim().gaps(),
                             GapKind.PATH_SELF_CONTRADICTORY));
@@ -826,9 +661,6 @@ public class ComposerTest {
             assertEquals(detail, name, claim.getAsJsonArray(
                     "restsOnRefutations").get(0).getAsJsonObject()
                     .get("name").getAsString());
-            // The free formula's core not known (its core run at its memory
-            // cap or past its budget): which refuted claims the UNSAT rests
-            // on is unknown -- a defect, never an empty list read as none.
             Path capped = folder.newFile("z3-core-capped-" + row[0] + "-"
                     + row[1]).toPath();
             Files.write(capped, Arrays.asList("#!/bin/bash",
@@ -854,15 +686,6 @@ public class ComposerTest {
         }
     }
 
-    /**
-     * A COMPOSITION OVER THE SAME INPUTS IS TAKEN, NOT MADE AGAIN
-     * ({@link CompositionInputs}, ComposeMain --reuse): the final COMPOSE
-     * over the corpus the accepted witness attempt composed copies its four
-     * files byte for byte and runs no z3; an input changed since (a refuted
-     * claim recorded, a session landed) composes anew; and an input changed
-     * while a composition read it (its z3 records a refuted claim) leaves
-     * that composition no digest, so nothing takes it.
-     */
     @Test
     public void aCompositionOverTheSameInputsIsTakenNotMadeAgain()
             throws Exception {
@@ -885,8 +708,6 @@ public class ComposerTest {
             session(iteration, "s1", true, "true", producer, consumer,
                     "vh", "true", null, true, true, "EXPR.v1.marker");
             Files.write(root.resolve("static_scope_map.jsonl"), new byte[0]);
-            // The real z3, each run counted; a "midway" file makes its
-            // first run record a refuted claim.
             Path runs = root.resolve("z3-runs");
             Path midway = root.resolve("midway");
             Path z3 = root.resolve("z3");
@@ -934,7 +755,6 @@ public class ComposerTest {
                         Files.readAllBytes(attempt.resolve(name)),
                         Files.readAllBytes(last.resolve(name))));
             }
-            // Made anew over inputs that held still, it states its own.
             assertTrue(change, Files.isRegularFile(last.resolve(
                     CompositionInputs.FILE)));
             assertEquals(change, taken, CompositionInputs.of(last)
@@ -942,8 +762,6 @@ public class ComposerTest {
         }
     }
 
-    /** ComposeMain's arguments as the campaign passes them, its files in
-     *  {@code out} and the static scope map beside the iteration. */
     private static ComposeMain.Arguments composeArguments(
             Path iteration, Path out, Path z3, Path reuse) {
         List<String> argv = new ArrayList<String>(Arrays.asList(
@@ -965,32 +783,13 @@ public class ComposerTest {
         return ComposeMain.Arguments.parse(argv.toArray(new String[0]));
     }
 
-    /**
-     * A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (PIPELINE §8, the claim;
-     * compose.Cone, cone.py): a SAT on the path it claims -- another path
-     * whose fatal condition rests on a value no attested producer made is
-     * stated (unboundOffWitness) and gates nothing -- an UNSAT on every path:
-     * one such path leaves no verdict, its open link named (openChain) with
-     * the producer GROW would plan.
-     */
     @Test
     public void aClaimIsJudgedOnThePathsItRestsOn() throws Exception {
-        // A symbol the body spells bare, and one it must bar-quote: the open
-        // link names its producer either way (solr-18413 Z2R: 40 String
-        // leaves, |M_L'String'_...|, named no producer).
         JsonObject expression = symbol(MARKER, "Z");
         for (String vh : new String[] {"M_Z_field_HOFF.key",
                 "M_Z_field_HOFF.k'ey"}) {
             judgedOnItsPaths(vh, "PORT.key", PRODUCER, expression, "OPEN");
         }
-        // A store content leaf whose producer no session attests at its port
-        // -- a role, a tick past the recording, or a region no session ran
-        // instrumented where it wrote the port (solr-18413 SG3C) -- settles
-        // by that producer's own export at the port (lead's rule (a), B-a,
-        // UNATTESTED): an expression binds it, a constant expression holds
-        // it as its version's constant -- past the daemon tick bound, that
-        // bound by name -- each named and no open link; with no export it
-        // stays an open link.
         String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
         OccurrenceAddress role = OccurrenceAddress.of(PRODUCER.node(),
                 OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
@@ -1015,22 +814,13 @@ public class ComposerTest {
         }
     }
 
-    /** How many {@link #judgedOnItsPaths} built: each its own folder. */
     private int judged;
 
-    /**
-     * @param exported what s2's producer {@code heldBy} exported at the
-     *                 port, none where null
-     * @param settles  how s2's arrival is stated: "OPEN" an open link, else
-     *                 the kind a producer refused by rule settles it as
-     */
     private void judgedOnItsPaths(String vh, String site,
                                   OccurrenceAddress heldBy,
                                   JsonObject exported, String settles)
             throws Exception {
         Path iteration = folder.newFolder("judged-" + judged++).toPath();
-        // The recording ran TICK #1 on the producer's node, the last, and
-        // PRODUCER's own IPC_HANDLER #1: only a TICK #2 is past it.
         List<JsonObject> recorded = new ArrayList<JsonObject>();
         for (String role : new String[] {"TICK", "IPC_HANDLER"}) {
             recorded.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
@@ -1048,8 +838,6 @@ public class ComposerTest {
                 "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer, vh,
                 "true", null, true, true, "EXPR.v1.marker");
-        // A replay paired with another export of the producer, which no
-        // session attests (it ran concretely): its arrival is held.
         Endpoint unattested = Endpoint.of(heldBy, site,
                 at("export#2", 0), 0);
         boolean refused = !"OPEN".equals(settles);
@@ -1071,8 +859,6 @@ public class ComposerTest {
                     .getAsJsonObject().get("symbol").getAsString());
         }
 
-        // The witness's model refuted: the formula is unsat, and rests on
-        // s2's path too, whose fatal condition names the held arrival.
         ClaimPolicy.Outcome claimed = decision.outcomes().get(
                 decision.claim().valuationOrdinal());
         JsonObject model = new JsonObject();
@@ -1108,8 +894,6 @@ public class ComposerTest {
                     unsat.has("openChain"));
             assertEquals(unsat.toString(), "UNSAT_CLOSED",
                     unsat.get("claim").getAsString());
-            // Named per producer, rule and kind; past the tick bound, as
-            // the bound the case rests on (campaign_bounds).
             String subject = SmtLowering.Unbound.BOUNDED.equals(settles)
                     ? heldBy.render() + " " + Composer.DAEMON_TICK_BOUND
                     + "=1" : heldBy.render();
@@ -1135,14 +919,6 @@ public class ComposerTest {
                 link.get("producer").getAsString());
     }
 
-    /**
-     * THE COMPOSER HOLDS WHAT THE PATH IT COMPOSES ASKS FOR (ComposeMain
-     * #HELD_ROWS, Corpus#holding): a corpus holding none of its sessions'
-     * reads and writes -- each read again from its files as asked --
-     * composes the formula, gaps, families and concrete rows of a corpus
-     * holding them all.  Three runs each deliver the anchor's handoff and
-     * write the location its fatal reads.
-     */
     @Test
     public void aComposerHoldingNoRowsComposesTheFormulaOfOneHoldingAll()
             throws Exception {
@@ -1198,14 +974,6 @@ public class ComposerTest {
         return rows;
     }
 
-    /**
-     * A FORCED path (PIPELINE §7.10): the recording took the healthy arm of
-     * a concrete guard, so its path is no world; the forced session, its
-     * guard forced, stands at that guard with the whole way to the throw as
-     * phi.  Composed beside it over the same root names, the forced
-     * disjunct is the witness -- the marker flipped AND the counter past 5,
-     * nested behind it.
-     */
     @Test
     public void aForcedPathStatesTheWholeWayToTheThrow() throws Exception {
         Path iteration = folder.newFolder("forced").toPath();
@@ -1220,7 +988,6 @@ public class ComposerTest {
         forced.forcedDecision(ANCHOR, "a#u1", MARKER);
         forced.forcedTarget(3L, "(and " + MARKER + " (> " + SERIAL + " 5))");
         forced.write();
-        // Pairs of moves are enumerated after the single ones.
         Composer.Composition composition = compose(iteration, 64);
         assertEquals("the seed's path and the forced one", 2,
                 composition.paths().size());
@@ -1237,11 +1004,6 @@ public class ComposerTest {
         return Files.readAllLines(log).size();
     }
 
-    /**
-     * THE DECIDE BUDGET IS A NAMED BOUND, NEVER A REFUTATION: past it no
-     * question starts, each answers undecided, and the claim names the
-     * bound; the formula is not unsat on it.
-     */
     @Test
     public void theDecideBudgetIsANamedBoundNeverARefutation()
             throws Exception {
@@ -1268,12 +1030,6 @@ public class ComposerTest {
                 "decide budget"));
     }
 
-    /**
-     * An arrival nothing binds and nothing pins is FREE, named -- never a
-     * dropped path: its producer attested by an export of it that does not
-     * lower (attested), or no producer and a received value the lowering
-     * places nowhere (unplaceable).
-     */
     @Test
     public void anArrivalNothingBindsIsFreeAndNamedNeverADroppedPath()
             throws Exception {
@@ -1307,14 +1063,6 @@ public class ComposerTest {
         }
     }
 
-    /**
-     * A READ OF A VERSION NO WRITE STATES IS HELD at what its row states
-     * (Composer#statedReads) -- unless its session is one whose GROW re-run
-     * did not land ({@link SessionDir#UNCAPTURED}, run_engine.sh
-     * campaign_stream_uncaptured): a grown region the session ran
-     * uninstrumented may have written that version, so the read is FREE,
-     * named, never HELD.
-     */
     @Test
     public void anUnstatedReadIsHeldUnlessItsSessionsReRunDidNotLand()
             throws Exception {
@@ -1347,19 +1095,7 @@ public class ComposerTest {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 8. A mechanism the recording does not decide is not a finding.
-    // ------------------------------------------------------------------
 
-    /**
-     * THE FORMULA DECIDES.  Three markers must all flip to reach the fatal
-     * arm: no single or pair move does, and the formula itself, every root
-     * free, is satisfiable -- so the claim is FORMULA_SAT at the formula's
-     * own model (all three moved), never a refutation over the moves the
-     * enumeration tried; the exported file is that formula with no
-     * valuation pinned, and the same corpus with a fourth, unflippable
-     * conjunct is unsat, closed by the formula's own answer.
-     */
     @Test
     public void theComposedFormulaDecidesNotTheEnumeration()
             throws Exception {
@@ -1403,14 +1139,6 @@ public class ComposerTest {
         }
     }
 
-    /**
-     * The run as recorded is no counterfactual (owner 2026-10-04: a claim
-     * moving no root is never a finding).  A seed replay that observed the
-     * fatal at the declared occurrence -- hdfs-adhoc-32 in HG4, published
-     * SAT at valuation 0 with nothing moved -- leaves no claim: BLOCKING
-     * SEED_OBSERVED_FATAL, and no witness is named although the formula is
-     * sat, so the campaign has no verdict (RUN_DEFECT).
-     */
     @Test
     public void aSeedThatObservedTheFatalIsNoClaim() throws Exception {
         Path iteration = folder.newFolder("seed-fatal").toPath();
@@ -1435,8 +1163,6 @@ public class ComposerTest {
         Path iteration = folder.newFolder("polarity").toPath();
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
-        // phi holds whatever the marker is: the run as it happened reaches
-        // the arm too, so moving the marker explains no difference.
         session.target("(or " + MARKER + " (not " + MARKER + "))", false,
                 true);
         session.write();
@@ -1457,20 +1183,9 @@ public class ComposerTest {
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
         assertFalse("which withholds no verdict", decision.claim().blocked());
 
-        // R2: A CLOCK IS PART OF THE WITNESS.  phi holds only where the
-        // clock sits past an instant this run did not read, and pinning the
-        // cell to what it DID read refutes it -- so the clock is necessary,
-        // the mechanism is CLOCK_SKEW, and the claim has to say WHERE the
-        // cell had to sit.  No valuation pins a clock and none can report
-        // one: the model is the only statement of it, and CLOCK_SKEW was
-        // published with
-        // movedRoots {} -- 11741 campaign #3's own claim -- about the one
-        // finding whose whole content is that something moved.
         Path skew = folder.newFolder("clock-skew").toPath();
         Session skewed = new Session(skew, "s0", false);
         skewed.clock("700");
-        // The predicate names the cell so the formula declares it, which is
-        // what makes the cell a cell of this composition at all.
         skewed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
                 + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
         skewed.target("(> " + CLOCK + " 1000)", false, true);
@@ -1498,11 +1213,6 @@ public class ComposerTest {
                         > 1000L + edu.uva.liftlab.graphchecker.explore
                         .ClockMargin.margin(1_000_000L));
 
-        // R2b: THE CLOCK RUNS ON FROM ITS JUMP.  A later reading of the same
-        // clock is no earlier than the cell before it, so the model moves it
-        // too; it runs on from the jump as a replay runs it, and the claim
-        // names the jump alone (SOLR-18406's cleanReserves clock, moved with
-        // delete()'s and outside the witness path's cone).
         Path runs = folder.newFolder("clock-runs-on").toPath();
         Session twice = new Session(runs, "s0", false);
         twice.clock("700");
@@ -1522,16 +1232,6 @@ public class ComposerTest {
                 Collections.singleton(CLOCK),
                 ranOn.claim().movedRoots().keySet());
 
-        // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
-        // AWAY.  Same clock, plus one declared counter the case gave a
-        // window: ordinal 0 is sat (a clock is free in every valuation),
-        // and so is every moved ordinal, because moving the counter does
-        // the clock witness no harm.  The moved-root loop asked
-        // `polarityDecides` of that and filed the blocking
-        // FORMULA_SAT_AT_RECORDED_VALUATION, so a clock-driven case with
-        // any other declared root could never publish CLOCK_SKEW -- which
-        // is the shape of hdfs-11741.  The clock pin is what decides a
-        // clock-driven recorded valuation, and it is asked once.
         Path driven = folder.newFolder("clock-driven").toPath();
         Session both = new Session(driven, "s0", false);
         both.clock("700");
@@ -1571,16 +1271,11 @@ public class ComposerTest {
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
     }
 
-    // ------------------------------------------------------------------
-    // 11. Which writer the read could have seen (IDENTITY §4).
-    // ------------------------------------------------------------------
 
     @Test
     public void anHbConcurrentWriterIsAnAlternativeAndAnAncestorIsNot()
             throws Exception {
         Path iteration = folder.newFolder("state").toPath();
-        // The reader's own request; a writer concurrent with it; and a
-        // writer that STARTED it, which is therefore ordered before it.
         OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
                 CausalContext.of(Endpoint.of(UPSTREAM, "PORT.rpc",
                         at("call#1", 0), 0).id(), "case/client/read"),
@@ -1588,14 +1283,7 @@ public class ComposerTest {
         OccurrenceAddress concurrent = occurrence("case/dn0",
                 "REGION.heartbeat", CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
-        // The map, named the way the runtime names an owner: the VM's rid
-        // of the object whose state this is, which inside one session is
-        // exactly one object.
         LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
-        // The same storage named by its class instead -- the other
-        // spelling the runtime writes, for a declared-field read with no
-        // VM location key: one name for every instance, so it names none
-        // of them.
         LocationId aliased = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
 
@@ -1605,21 +1293,11 @@ public class ComposerTest {
         session.activation(concurrent);
         session.activation(UPSTREAM);
         session.marker("false");
-        // The request that started the reader, as a row: without it the
-        // causal chain stops at an endpoint nothing places, and an
-        // unfollowable chain states no ordering at all.
         session.expression("EXPR.v1.rpc", symbol(MARKER, "Z"));
         session.export(Endpoint.of(UPSTREAM, "PORT.rpc", at("call#1", 0), 0),
                 "EXPR.v1.rpc", 1L, "false");
         session.expression("EXPR.v1.first", symbol(MARKER, "Z"));
         session.expression("EXPR.v1.second", symbol(MARKER, "Z"));
-        // R1: what the ancestor STORED is what it was handed over the wire,
-        // so the state join reaches a handoff variable the anchor has no
-        // attach of its own for.  Bound by nothing it is a free constant in
-        // the query -- hdfs-11741 #3 declared dn1's addKeys arrival twelve
-        // times inside the allKeys dag and asserted nothing about it -- so
-        // the path binds every handoff its own conjunction reaches, by the
-        // same three rules the anchor's attaches take.
         session.expression("EXPR.v1.ancestor", symbol("vh_wire", "Z"));
         session.expression("EXPR.v1.wired", symbol(MARKER, "Z"));
         session.activation(PRODUCER);
@@ -1630,8 +1308,6 @@ public class ComposerTest {
         session.export(wireProducer, "EXPR.v1.wired", 9L, "false");
         session.attach(Endpoint.of(UPSTREAM, "PORT.wire",
                 at("attach#1", 0), 0), "vh_wire", "false", wireProducer);
-        // The ancestor writes, then the concurrent tick writes, then the
-        // reader reads -- and observes the ancestor's version.
         session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
                 + MARKER + "))");
         session.write(Endpoint.of(UPSTREAM, "KeyManager#put#3:WRITE",
@@ -1642,8 +1318,6 @@ public class ComposerTest {
                 at("w#1", 0), 0), keys, 2L, "EXPR.v1.second");
         session.read(Endpoint.of(reader, "Reader#get#5:READ",
                 at("r#1", 0), 0), keys, 1L, "read_k", "false");
-        // The same two writers and the same read, on storage whose rows
-        // name only the CLASS.
         session.write(Endpoint.of(UPSTREAM, "KeyManager#put#4:WRITE",
                 at("w#2", 0), 0), aliased, 3L, "EXPR.v1.ancestor");
         session.write(Endpoint.of(concurrent, "Heartbeat#put#8:WRITE",
@@ -1661,8 +1335,6 @@ public class ComposerTest {
                 composition.body().contains("(= vh_wire " + MARKER + ")"));
         assertTrue("and the composition says which slots it filled",
                 composition.families().size() >= 2);
-        // The ancestor started the reader's request, so it is ordered before
-        // it and is never an interleaving the reader could have taken.
         assertFalse("an ancestor of the reader is not an alternative",
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null))
@@ -1671,8 +1343,6 @@ public class ComposerTest {
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null))
                         .concurrent(reader, concurrent, "s0"));
-        // A read that joined its version at a location whose writer set was
-        // not whole keeps the observed writer only.
         Endpoint readAt = Endpoint.of(reader, "Reader#get#5:READ",
                 at("r#1", 0), 0);
         edu.uva.liftlab.graphchecker.smt.Arms arms =
@@ -1683,9 +1353,6 @@ public class ComposerTest {
                 arms.stateArms(readAt, "s0", keysKey, 1L, true).size());
         assertEquals("a partial one only the writer the read observed", 1,
                 arms.stateArms(readAt, "s0", keysKey, 1L, false).size());
-        // PIPELINE §8: alternatives need an owner that names the
-        // storage.  The class-owned copy of the same state gets the
-        // delivery its own run gave it, and says so.
         assertTrue("the rid the runtime writes names the storage",
                 edu.uva.liftlab.graphchecker.smt.Arms.namedOwner(keys));
         assertFalse("a class on a heap location names every instance",
@@ -1702,20 +1369,6 @@ public class ComposerTest {
                         + ArtifactIO.digest(aliasedKey, 12)));
     }
 
-    /**
-     * SOLR-18406's shape (R3-REFCONT §4.3).  Each commit builds a fresh
-     * map, puts every commit whose deleted flag is false, and swaps it into
-     * {@code knownCommits}; a reader asks it for generation 5 and throws on
-     * an absent one.  Generation 5 is deleted when the clock passed its
-     * reservation ({@code nanoTime < reserves.getOrDefault(5, 0L)} failed,
-     * the deadline a reserver's clock plus its duration).  The seed's newer
-     * map holds 5; in the flipped replay the clock ran past the deadline,
-     * the flag was set, the put was skipped, and the reader threw.  The query is asked of the map the reference
-     * holds under each of its writers (one answer per candidate identity),
-     * the newer map rests on the decisions that built it (the construction
-     * guard names the flag), and the claim is CLOCK_SKEW with the clock
-     * moved and polarity deciding.
-     */
     @Test
     public void aQueryThroughAReplacedReferenceIsAskedOfTheMapItHolds()
             throws Exception {
@@ -1772,7 +1425,6 @@ public class ComposerTest {
         assertTrue("the reservation clock is what moved: "
                         + decision.claim().movedRoots(),
                 decision.claim().movedRoots().containsKey(NANO));
-        // Without the static fact, nothing ties the newer map to the flag.
         assertFalse(compose(iteration, reader, 4, StaticScopeMap.empty())
                 .body().contains("deleted5@w1"));
     }
@@ -1806,7 +1458,6 @@ public class ComposerTest {
                 -> fact.contains("defined_dag__")));
     }
 
-    /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
     private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
         valueOf.addProperty("_type", "MethodExpression");
@@ -1824,7 +1475,6 @@ public class ComposerTest {
         return valueOf;
     }
 
-    /** Whether key 5 of a map that stores {@code value} there is null. */
     private static JsonObject stored(JsonObject value) {
         JsonObject put = relation("ASSOCIATIVE", "PUT", "java/util/Map",
                 relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
@@ -1844,11 +1494,6 @@ public class ComposerTest {
     private static final String NANO = "M_J_nano_reserve";
     private static final String RESERVED = "M_J_nano_reserved";
 
-    /**
-     * One run of the replaced-map fixture: the older commit's map of 4 and
-     * 5, the newer commit's map of 6 and, unless the reservation of 5 ran
-     * out, 5; the reader's query of 5 through {@code knownCommits}.
-     */
     private void replacedMap(Path iteration, String id, boolean expired,
                              OccurrenceAddress reader,
                              OccurrenceAddress older,
@@ -1866,13 +1511,10 @@ public class ComposerTest {
             session.activation(at);
         }
         long seed = 1_000_000_000_000L;
-        // The reservation of 5: the reserver's clock plus 6000.
         LocationId reserves = LocationId.of(LocationKind.MAP, "50", "-3");
         session.roots.add(RootMintRow.of(id, ++session.seq, reserver,
                 "ROOT.RESERVED", RESERVED, RootKind.CLOCK, RootCategory.CLOCK,
                 Long.toString(seed - 1_000L), null, null, true, Clock.of(1L, Clock.MONOTONIC), 0L));
-        // As the VM publishes it: an arithmetic node states no Java type,
-        // and the deadline is a Long cell by its width alone.
         JsonObject deadline = binary("+", symbol(RESERVED, "J"),
                 integer("J", 6_000L));
         JsonObject reserved = relation("ASSOCIATIVE", "PUT", "java/util/Map",
@@ -1887,7 +1529,6 @@ public class ComposerTest {
                 "ROOT.RESERVE", NANO, RootKind.CLOCK, RootCategory.CLOCK, Long.toString(
                         expired ? seed + 10_000L : seed), null, null, true,
                 Clock.of(1L, Clock.MONOTONIC), 0L));
-        // The older commit's map, then its store.
         JsonObject base = relation("ASSOCIATIVE", "SNAPSHOT_BASE", map, null);
         JsonObject four = putCommit(base, 4L);
         JsonObject five = putCommit(four, 5L);
@@ -1906,8 +1547,6 @@ public class ComposerTest {
                 UPDATE + "#56:WRITE", at("kc#1", 0), 0), known, ++version,
                 "EXPR.00000000000000a4", "L", WriteRow.Referent.of(olderMap,
                         3L), null));
-        // The newer commit: the reservation of 5, the flag it set, the
-        // loop over 5 and 6, its map, its store.
         JsonObject reservation = read("MAP_STATE", 50L, -3L, 70L, "J");
         reservation.getAsJsonObject("observedVersion").add("expression",
                 relation("ASSOCIATIVE", "READ_OR_DEFAULT", "J", reserved,
@@ -1957,7 +1596,6 @@ public class ComposerTest {
                 UPDATE + "#56:WRITE", at("kc#2", 0), 0), known, stored,
                 "EXPR.00000000000000c4", "L", WriteRow.Referent.of(newerMap,
                         built), null));
-        // The reader: the reference, then the query through it.
         long reference = session.read(Endpoint.of(reader,
                 "Wrapper#getAndSave#3:READ", at("kc#3", 0), 0), known,
                 stored, "kc@" + id, "Ljava/util/Map;", "M_L'" + map + "'_30");
@@ -1977,7 +1615,6 @@ public class ComposerTest {
         session.write();
     }
 
-    /** One {@code put(Long.valueOf(generation), commit)} on a map state. */
     private static JsonObject putCommit(JsonObject state, long generation) {
         return relation("ASSOCIATIVE", "PUT", "java/util/Map", state,
                 integer("J", generation), symbol(
@@ -1986,18 +1623,6 @@ public class ComposerTest {
                         "org/apache/solr/core/IndexCommitWrapper"));
     }
 
-    /**
-     * Writers_W(l)'s writer at version 0, the location's INITIAL: a read
-     * that observed a later write may have run before every write it
-     * followed.  Each of those an HB-concurrent occurrence's, the INITIAL is
-     * an arm, and a map lookup at the anchor asked of the state before the
-     * put reaches the fatal the run's state did not (hdfs a40 V4h-2: the
-     * block pool looked up before the DataNode registered it).  A write
-     * made under construction -- in a constructor, or in a method one
-     * called on the writer's own thread -- or one the reader's own thread
-     * made before it, no read precedes; nor one past a version a read saw
-     * that no row states.  A thread a constructor started is not under it.
-     */
     @Test
     public void theInitialIsTheWriterAtVersionZero() throws Exception {
         String map = "java/util/concurrent/ConcurrentHashMap";
@@ -2077,20 +1702,6 @@ public class ComposerTest {
         }
     }
 
-    /**
-     * The recorded arm is the pairing the run took, else the pins' arm: the
-     * run is always a world of the formula.  (a) The observed writer wrote again after
-     * the read: its arm is the write read, not the later one.  (b) Two reads
-     * of one location saw two writes, which no writer arm is (each binds
-     * both reads), and (p) a second read saw a version no row wrote: the
-     * pins' arm, holding each read to its own join or pin, is the run,
-     * whichever read came first.  (c) The one writer read has a block
-     * stretched to its write of another location the run read from
-     * another writer (and its body rests on a decision nothing states):
-     * its selector would force that location's value too, so it is no arm
-     * of the run, which is held by the pins' arm -- the run as recorded is
-     * a world of the formula (hdfs-adhoc-16 HG5A).
-     */
     @Test
     public void theRecordedArmIsTheWriteReadOrThePinsArm()
             throws Exception {
@@ -2151,8 +1762,6 @@ public class ComposerTest {
                 session.read(Endpoint.of(reader, "Reader#get#5:READ",
                         at("r#1", 0), 0), keys, 1L, "read_k", "false");
                 if ("b".equals(shape) || "p".equals(shape)) {
-                    // The other writer's version, or one no row wrote (a
-                    // boolean returned is spelled 0 or 1).
                     long seen = "b".equals(shape) ? 2L : 9L;
                     session.read(Endpoint.of(reader, "Reader#get#7:READ",
                             at("r#3", 0), 0), keys, seen, "read_j", "0");
@@ -2179,7 +1788,6 @@ public class ComposerTest {
         }
     }
 
-    /** What z3 answers a lowering's facts asked with one more question. */
     private String answer(SmtLowering lowering, List<String> facts,
                           String question) {
         List<String> asked = new ArrayList<String>();
@@ -2192,9 +1800,6 @@ public class ComposerTest {
         return solver().ask(query.toString(), null, false).status();
     }
 
-    // ------------------------------------------------------------------
-    // 14. One thread is one order, and nothing else orders an activation.
-    // ------------------------------------------------------------------
 
     @Test
     public void aThreadOrdersItsOwnActivationsAndNothingElse()
@@ -2213,8 +1818,6 @@ public class ComposerTest {
 
         Session session = new Session(iteration, "s0", false);
         session.occurrence = earlier;
-        // Two activations of one thread, and a third on a thread of its
-        // own that no message and no thread key places.
         session.activation(earlier, "thread#actor", false);
         session.activation(later, "thread#actor", false);
         session.activation(started, "thread#task", false);
@@ -2234,33 +1837,12 @@ public class ComposerTest {
                         Corpus.read(iteration, null));
         assertFalse("two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
-        // A third occurrence on a thread of its own: the message chain does
-        // not reach it and no recording states a thread-creation edge
-        // (contract.ActivationRow), so nothing orders it and the rows say
-        // CONCURRENT.  The thread-start edge used to be read off
-        // ActivationRow.startedBy, which every producer passed as null --
-        // so this was already the answer for every real corpus, stated by
-        // a walk that could not fire.
         assertTrue("an occurrence nothing places is concurrent with all",
                 rule.concurrent(earlier, started, "s0"));
-        // Attestation: instrumented and symbolic in this session -- the seed
-        // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
                 rule.attested("s0", later));
     }
 
-    /**
-     * Every String operation the VM carries, against Java, row by row: each
-     * lowered over symbols s, t (String) and n, m, k (int) set to the row's
-     * values; a row Java answers is that answer and no other, a row Java
-     * throws on is no world.  Offsets below 0, inside, at and past the
-     * length; empty needles and prefixes; code points in the BMP,
-     * supplementary, a lone surrogate and invalid ones; equalsIgnoreCase
-     * against a literal, the chars Unicode folds into ASCII letters too
-     * (solr-str2: startsWith(String, int) refused 59 of 59 of SP6-39's
-     * paths).  A regionMatches whose ignoreCase flag may be true, and an
-     * equalsIgnoreCase of two symbolic sides, are named gaps.
-     */
     @Test
     public void everyStringOperationTheVmCarriesIsJavasOwn() {
         StringRows rows = new StringRows(solver());
@@ -2312,7 +1894,6 @@ public class ComposerTest {
                     .stringConstant(pair[0]), t), "", pair[1], 0, 0, 0,
                     () -> pair[0].equalsIgnoreCase(pair[1]));
         }
-        // One supplementary character, U+1F600, between "a" and "ba".
         String wide = "a\ud83d\ude00ba";
         for (int point : new int[] {'a', 0x1F600, 0xD83D, -1, 0x110000}) {
             rows.check(vmString("indexOf", s, n), wide, "", point, 0, 0,
@@ -2367,7 +1948,6 @@ public class ComposerTest {
         lowering.end();
     }
 
-    /** One table of String rows, each lowered and asked of z3. */
     private static final class StringRows {
         private final Z3 solver;
 
@@ -2399,8 +1979,6 @@ public class ComposerTest {
                     + literal(t) + " n=" + n + " m=" + m + " k=" + k;
             assertTrue(row + ": " + lowering.openRefusals(),
                     lowering.openRefusals().isEmpty());
-            // The conditions the lowering raised, the term's definedness and
-            // each input the term reads, set to the row's value.
             List<String> facts = new ArrayList<String>(lowering.end());
             facts.add(term.precondition);
             Set<String> read = SmtNames.symbols(term.text + " "
@@ -2445,7 +2023,6 @@ public class ComposerTest {
             return value < 0 ? "(- " + -value + ")" : Long.toString(value);
         }
 
-        /** A Java String as an SMT-LIB literal, z3's \\u{..} past ASCII. */
         private static String literal(String text) {
             StringBuilder literal = new StringBuilder("\"");
             for (char c : text.toCharArray()) {
@@ -2462,7 +2039,6 @@ public class ComposerTest {
         }
     }
 
-    /** The VM's {@code splitElement(s, d, i)} of {@code s.split(d)}. */
     private static JsonObject splitElement(JsonObject receiver,
                                            String delimiter, int index) {
         JsonObject call = new JsonObject();
@@ -2495,7 +2071,6 @@ public class ComposerTest {
         JsonObject emptied = relation("INDEXED", "SNAPSHOT_BASE",
                 relation("INDEXED", "STATE", symbol(
                         "M_L'java/util/ArrayList'_3", "java/util/ArrayList")));
-        // putAll(m) into an empty map, then a get of what m put.
         JsonObject empty = relation("ASSOCIATIVE", "SNAPSHOT_BASE", null);
         JsonObject all = relation("ASSOCIATIVE", "PUT_ALL", empty,
                 relation("ASSOCIATIVE", "PUT", empty, integer("J", 5L), n));
@@ -2554,43 +2129,11 @@ public class ComposerTest {
         }
     }
 
-    /** The ordinal one selector was made under. */
     private static String ordinal(String selector) {
         String[] parts = selector.split("__");
         return parts.length < 2 ? "" : parts[1];
     }
 
-    /**
-     * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
-     * node alike: JOIN, MINT, FREE or PIN, REFUSE; a refused join gives way
-     * to the mint, else, where what it rests on can move, the read is FREE
-     * and named with what it rests on ({@code SmtLowering#unbound}, a {@code
-     * Composer.Concrete} FREE), else the pin.  One case per row:
-     * <ul>
-     *   <li>pin: the write refuses over nothing that moves, and the row
-     *       states its value: the pin binds the read, and what the dropped
-     *       join raised (its recorded reading, its cut) went with it;</li>
-     *   <li>unstated: the same with no value stated: the read is free
-     *       (havoc), the join's refusal named beside the read's;</li>
-     *   <li>H1: the write is a call no lowering models over R, a declared
-     *       root (the review's {@code parseInt(valueOf(R))} is R now,
-     *       {@link #aMethodReturnIsItsCall}): the read is free, named with
-     *       R, so phi {@code x != R} is satisfiable, a witness CONFIRM is to
-     *       refute;</li>
-     *   <li>H2a: the node's own projection lowers where the write refused:
-     *       phi reads the projection, never the pinned constant;</li>
-     *   <li>H2b: the write joins and a STATE family may re-pair the read,
-     *       while the node's projection refuses: the read is free, named
-     *       with the re-paired read it rests on;</li>
-     *   <li>bound: the write refuses over a read of a field the reader
-     *       alone writes, one of whose versions no row wrote (the VM's
-     *       version bound dropped it): no read of it has another writer,
-     *       so nothing moves and the pin binds (hdfs-17960 e1c);</li>
-     *   <li>own: phi reads a version the reader wrote and one no row
-     *       wrote: each arm would be one read's own pairing, with no
-     *       HB-concurrent writer among them, so there is no family.</li>
-     * </ul>
-     */
     @Test
     public void theOneBindingRule() throws Exception {
         for (String name : new String[]{"pin", "unstated", "H1", "H2a",
@@ -2611,9 +2154,6 @@ public class ComposerTest {
             session.activation(reader);
             session.activation(first);
             session.serial("3", "0", "8");
-            // Refused over nothing that moves (an undeclared leaf here, a
-            // call no lowering models in EXPLORE's too), with what the run
-            // read of it: a side condition of the join.
             JsonObject unmodeled = new JsonObject();
             unmodeled.addProperty("_type", "MethodExpression");
             unmodeled.addProperty("_name", "org/apache/Foo bar");
@@ -2631,8 +2171,6 @@ public class ComposerTest {
             LocationId field = LocationId.of(LocationKind.INSTANCE, "11",
                     "name");
             if ("bound".equals(name)) {
-                // The reader parsed it: wrote v6, read it, then read v7,
-                // whose write the bound dropped.
                 refused = binary("+", read("INSTANCE_FIELD", field.owner(),
                         "name", 7L, "I"), unmodeled);
                 session.expression("EXPR.00000000000000b4",
@@ -2653,7 +2191,6 @@ public class ComposerTest {
                     "TickA#set#4:WRITE", at("w#1", 0), 0), stamp, 2L,
                     "EXPR.00000000000000b1");
             if ("H2b".equals(name)) {
-                // A concurrent writer: the read's STATE family re-pairs it.
                 OccurrenceAddress second = occurrence("case/nn0",
                         "REGION.tock", CausalContext.of(Role.of("TICK_B"),
                                 "", 1), frame("TickB#run#3", 0));
@@ -2672,7 +2209,6 @@ public class ComposerTest {
             JsonObject node = read("INSTANCE_FIELD", stamp.owner(), "value",
                     2L, "I");
             node.addProperty("readEventId", stamped);
-            // own: then a version no row wrote, which phi compares with it.
             JsonObject later = read("INSTANCE_FIELD", stamp.owner(), "value",
                     9L, "I");
             later.add("concreteValue", integer("I", 9L));
@@ -2682,14 +2218,12 @@ public class ComposerTest {
                         key + "@v9@s0", "I", "9");
             }
             if ("H2a".equals(name) || "H2b".equals(name)) {
-                // The node's own projection of the version it observed.
                 node.getAsJsonObject("observedVersion").add("expression",
                         "H2a".equals(name) ? integer("I", 1001L)
                                 : binary("-", symbol(NO_ROW, "I"),
                                 integer("I", 1L)));
             }
             if (!"unstated".equals(name) && !"H1".equals(name)) {
-                // What it returned: a literal no family moves.
                 node.add("concreteValue", integer("I",
                         "H2b".equals(name) || "own".equals(name) ? 2L
                                 : 1001L));
@@ -2717,9 +2251,6 @@ public class ComposerTest {
                             composition.body().contains("4242"));
                     assertFalse(name + ": and its cut is no gap (L3)",
                             named(gaps, "UndeclaredFreeSymbol:" + NO_ROW));
-                    // EXPLORE: the node's value stands in for the join, no
-                    // flip is built over it, and the closure still reaches
-                    // what the join reads, through the expressions (M1).
                     Corpus explore = Corpus.read(iteration, null);
                     SmtLowering.Lowered explored = explore.lowering("s0")
                             .lower("EXPR.00000000000000b3");
@@ -2731,8 +2262,6 @@ public class ComposerTest {
                                     .contains(NO_ROW));
                     break;
                 case "unstated":
-                    // Nothing binds the read: it is free, the path standing
-                    // on it (havoc, owner 2026-10-15).
                     assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
                     assertTrue(name + ": the write's refusal is named, "
@@ -2798,8 +2327,6 @@ public class ComposerTest {
         }
     }
 
-    /** What a composition rests on concretely, one "KIND subject=value
-     *  [movesWith]" each. */
     private static List<String> concrete(Composer.Composition composition) {
         List<String> rows = new ArrayList<String>();
         for (Composer.Concrete row : composition.concrete()) {
@@ -2809,7 +2336,6 @@ public class ComposerTest {
         return rows;
     }
 
-    /** A query stating what its call returned, under its answer id. */
     private static JsonObject answered(JsonObject query, JsonObject value,
                                        long id) {
         query.add("concreteValue", value);
@@ -2817,17 +2343,11 @@ public class ComposerTest {
         return query;
     }
 
-    /**
-     * One query defining each of {@code names} as what its expression
-     * lowers to over an Int symbol {@code n}, with every condition and
-     * assertion the lowering states.
-     */
     private static String streamQuery(String[] names,
                                       JsonObject... expressions) {
         return streamQuery(SmtLowering.NO_JOIN, names, expressions);
     }
 
-    /** The same, under {@code join}. */
     private static String streamQuery(SmtLowering.SessionJoin join,
                                       String[] names,
                                       JsonObject... expressions) {
@@ -2835,8 +2355,6 @@ public class ComposerTest {
                 join, false, names, expressions);
     }
 
-    /** The same, over {@code declared} symbols; {@code defined}: each
-     *  named term asserted defined where it is (its precondition). */
     private static String query(Map<String, VmTermLowering.Sort> declared,
                                 SmtLowering.SessionJoin join, boolean defined,
                                 String[] names, JsonObject... expressions) {
@@ -2858,7 +2376,6 @@ public class ComposerTest {
                     .append(truth ? " () Bool " : " () Int ")
                     .append(term.text).append(')');
         }
-        // Read before end(), which closes the conjunction they belong to.
         assertTrue(lowering.openRefusals().toString(),
                 lowering.openRefusals().isEmpty());
         List<String> conditions = lowering.end();
@@ -2875,7 +2392,6 @@ public class ComposerTest {
         return query.append(definitions).toString();
     }
 
-    /** A relation with its {@code guard}. */
     private static JsonObject guarded(JsonObject relation, JsonObject guard) {
         relation.add("guard", guard);
         return relation;
@@ -2912,13 +2428,9 @@ public class ComposerTest {
                                                 int maxValuations,
                                                 StaticScopeMap scope)
             throws IOException {
-        // COMPOSE's corpus, holding no session's reads, writes or gaps:
-        // each read again at every ask (ComposeMain#HELD_ROWS).
         Composer.Composition composition = Composer.compose(
                 Corpus.holding(iteration, null, 0L), anchor, maxValuations,
                 scope);
-        // Every composition: one name, one assertion (z3 answers a name
-        // defined twice with an error, hdfs-11741 m1).
         java.util.regex.Matcher named = java.util.regex.Pattern.compile(
                 ":named ([^ )]+)").matcher(composition.body());
         Set<String> names = new LinkedHashSet<String>();
@@ -2941,7 +2453,6 @@ public class ComposerTest {
         return Files.isExecutable(z3) ? z3 : Paths.get("z3");
     }
 
-    /** The one assertion that carries a path's own conjunction. */
     private static String fatalArm(Composer.Composition composition) {
         for (String line : composition.body().split("\n")) {
             if (line.contains("path_fatal__0")) return line;
@@ -2949,8 +2460,6 @@ public class ComposerTest {
         return "";
     }
 
-    /** Whether some gap names this subject. */
-    /** Whether a BLOCKING row of this subject was named. */
     private static boolean blocking(List<GapRow> gaps, String subject) {
         for (GapRow gap : gaps) {
             if (gap.blocking() && gap.subject().endsWith(subject)) {
@@ -2974,7 +2483,6 @@ public class ComposerTest {
         return false;
     }
 
-    /** Whether some gap of this kind says this. */
     private static boolean says(List<GapRow> gaps, GapKind kind,
                                 String fragment) {
         for (GapRow gap : gaps) {
@@ -2985,7 +2493,6 @@ public class ComposerTest {
         return false;
     }
 
-    /** One occurrence: component, region, why it ran, where in the code. */
     private static OccurrenceAddress occurrence(String node, String region,
                                                 CausalContext context,
                                                 Frame... frames) {
@@ -2997,13 +2504,11 @@ public class ComposerTest {
         return Frame.of(callSite, iteration);
     }
 
-    /** One site-local execution index, the k-th event's stand-in. */
     private static ExecutionIndex at(String callSite, int iteration) {
         return ExecutionIndex.of(Collections.singletonList(
                 Frame.of(callSite, iteration)));
     }
 
-    /** One recorded constant, as the VM serializes it. */
     private static JsonObject constant(String value) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "ConstExpr");
@@ -3020,12 +2525,10 @@ public class ComposerTest {
         return node;
     }
 
-    /** Java null, exactly as the VM serializes it on a symbolic leaf. */
     private static JsonObject vmNull() {
         return symbol("N", "");
     }
 
-    /** One recorded binary relation. */
     private static JsonObject binary(String operator, JsonObject left,
                                      JsonObject right) {
         JsonObject node = new JsonObject();
@@ -3036,20 +2539,12 @@ public class ComposerTest {
         return node;
     }
 
-    /** One read of one cell, naming the version it observed and nothing else. */
     private static JsonObject read(String kind, long owner, long slot,
                                    long version, String javaType) {
         return read(kind, Long.toString(owner), Long.toString(slot),
                 version, javaType);
     }
 
-    /**
-     * The same, where the owner NAMES the storage across replays.
-     *
-     * <p>An allocation endpoint id, not a session rid: the spelling a
-     * location needs before alternatives may be asked for it
-     * (PIPELINE §8, {@code Arms.namedOwner}).</p>
-     */
     private static JsonObject read(String kind, String owner, String slot,
                                    long version, String javaType) {
         JsonObject location = new JsonObject();
@@ -3068,22 +2563,12 @@ public class ComposerTest {
         return node;
     }
 
-    /**
-     * One reference-typed field read, as the VM serializes it.
-     *
-     * <p>The owner it read from, and -- when the VM stated them -- the
-     * pair that says what the read returned: the owner's identity and the
-     * identity of the object read, both in the rid spelling an identity
-     * leaf carries.  {@code concreteValue} null here is the VM stating
-     * neither, which is the projection no evidence values.</p>
-     */
     private static JsonObject fieldRead(String ownerClass, long offset,
                                         JsonObject owner,
                                         JsonObject concreteValue) {
         return fieldRead(ownerClass, offset, "L", owner, concreteValue);
     }
 
-    /** The same, of a field of this Java type. */
     private static JsonObject fieldRead(String ownerClass, long offset,
                                         String javaType, JsonObject owner,
                                         JsonObject concreteValue) {
@@ -3100,13 +2585,6 @@ public class ComposerTest {
         return node;
     }
 
-    /**
-     * One container relation, as the VM serializes it.
-     *
-     * <p>{@code CLEAR} with no receiver is the empty list the recording
-     * states the size of; {@code INSERT} and {@code REMOVE} are the
-     * mutations whose shift a lambda used to state.</p>
-     */
     private static JsonObject relation(String shape, String operation,
                                        JsonObject receiver,
                                        JsonObject... arguments) {
@@ -3114,7 +2592,6 @@ public class ComposerTest {
                 arguments);
     }
 
-    /** The same, where the relation answers a scalar rather than a list. */
     private static JsonObject relation(String shape, String operation,
                                        String javaType, JsonObject receiver,
                                        JsonObject... arguments) {
@@ -3130,7 +2607,6 @@ public class ComposerTest {
         return node;
     }
 
-    /** What a written query or artifact writes. */
     private static String text(ArtifactIO.Body body) throws IOException {
         java.io.StringWriter written = new java.io.StringWriter();
         try (java.io.BufferedWriter output =
@@ -3140,7 +2616,6 @@ public class ComposerTest {
         return written.toString();
     }
 
-    /** One integer literal, as the VM serializes it. */
     private static JsonObject integer(String javaType, long value) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "ConstExpr");
@@ -3149,13 +2624,11 @@ public class ComposerTest {
         return node;
     }
 
-    /** One session of the fixture, written the way the runtime writes it. */
     private static final class Session {
         private final Path iteration;
         private final String id;
         private final boolean explored;
         private OccurrenceAddress occurrence = ANCHOR;
-        /** The session's own monotonic event order. */
         private long seq;
         private final List<ActivationRow> activations =
                 new ArrayList<ActivationRow>();
@@ -3183,27 +2656,17 @@ public class ComposerTest {
             this.seq = 0L;
         }
 
-        /** What this replay states it settled; ignored for a SEED. */
         private ObligationResult settled;
 
-        /** The same session, stating this verdict of this obligation. */
         void settles(ObligationResult row) {
             settled = row;
         }
 
-        /** The same session, whose replay refused its own obligation. */
         void refused(String detail) {
             settled = ObligationResult.of("OBL." + id,
                     Verdict.NOT_ADMITTED, id, detail);
         }
 
-        /**
-         * One more activation, on a thread of its own.
-         *
-         * <p>Each occurrence gets its own thread unless a test says
-         * otherwise: sharing one would order every pair of them, which is
-         * true of a thread and not of this fixture.</p>
-         */
         void activation(OccurrenceAddress at) {
             activation(at, "thread#" + at.regionId(), explored);
         }
@@ -3220,7 +2683,6 @@ public class ComposerTest {
                     instrumented, threadKey, ActivationRow.ClaimKind.NONE, null));
         }
 
-        /** One more activation, placing the sender its anchor names. */
         void activation(OccurrenceAddress at, Endpoint anchorProducer) {
             activations.add(ActivationRow.of(id, at,
                     explored ? "task-flip" : "task-seed", explored, true,
@@ -3233,20 +2695,11 @@ public class ComposerTest {
                     RootKind.MARKER, RootCategory.FAULT, recorded, null, null, true, null, 0L));
         }
 
-        /**
-         * A declared CLOCK: the instant it read; the domain is the
-         * composer's ({@code Composer.clocks}).
-         *
-         * <p>A clock cell is not a root a valuation moves, and what names
-         * it in a composed query is the SYMBOL the session minted, which
-         * is what a decision's reading has to be joined to.</p>
-         */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
                     RootKind.CLOCK, RootCategory.CLOCK, recorded, null, null, true, Clock.of(1_000_000L, Clock.WALL), 0L));
         }
 
-        /** One decision, and the clock cells its predicate read. */
         void decision(OccurrenceAddress at, String site, String term,
                       String clockRoot, long reading) {
             decisions.add(DecisionRow.of(id, ++seq, at, site,
@@ -3254,20 +2707,15 @@ public class ComposerTest {
                     Collections.singletonMap(clockRoot, reading)));
         }
 
-        /** A declared counter, with its absolute window (a row's bounds
-         *  are absolute; only a case's declaration is relative). */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
                     SERIAL, RootKind.INTEGRAL, RootCategory.HOOK, recorded,
                     min, max, true, null, 0L));
         }
 
-        /** Root id -> occurrence -> what this replay read the root at
-         *  where it ran the occurrence concretely (its manifest's). */
         private final Map<String, Map<String, String>> readings =
                 new LinkedHashMap<String, Map<String, String>>();
 
-        /** The roots this replay found derived (its manifest's). */
         private final Set<String> derived = new LinkedHashSet<String>();
 
         void expression(String ref, JsonObject node) {
@@ -3296,11 +2744,6 @@ public class ComposerTest {
                     "corr-" + symbol);
         }
 
-        /**
-         * The same, on a NAMED message: one correlation id over several
-         * leaves is one arrival, which is the unit a family's selector
-         * stands for.
-         */
         void attach(Endpoint endpoint, String symbol, String javaType,
                     String arrival, Endpoint producer, String correlation) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
@@ -3308,10 +2751,6 @@ public class ComposerTest {
                     producer == null ? "" : "HANDLE"));
         }
 
-        /**
-         * An attach an OBLIGATION answered: the mint was planted with
-         * {@code answer} while its producer delivered {@code arrival}.
-         */
         void answered(Endpoint endpoint, String symbol, String javaType,
                       String arrival, String answer, Endpoint producer) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
@@ -3319,7 +2758,6 @@ public class ComposerTest {
                     producer == null ? "" : "HANDLE"));
         }
 
-        /** One root, minted where the fixture says. */
         void root(OccurrenceAddress at, String rootId, String symbol,
                   RootKind kind, String recorded) {
             roots.add(RootMintRow.of(id, ++seq, at, rootId, symbol, kind,
@@ -3331,7 +2769,6 @@ public class ComposerTest {
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
-        /** @return the session event this write was sequenced at. */
         long write(Endpoint endpoint, LocationId location, long version,
                    String ref) {
             writes.add(WriteRow.of(id, ++seq, endpoint, location, version,
@@ -3344,8 +2781,6 @@ public class ComposerTest {
             read(endpoint, location, version, symbol, "Z", concrete);
         }
 
-        /** @return the read's seq: the VM event its ReadFrom names
-         *  ({@code readEventId}). */
         long read(Endpoint endpoint, LocationId location, long version,
                   String symbol, String javaType, String concrete) {
             reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
@@ -3353,13 +2788,6 @@ public class ComposerTest {
             return seq;
         }
 
-        /**
-         * A PLACEHOLDER read, stating both of its versions.
-         *
-         * <p>{@code version} is the last real write the mint was laid over
-         * -- this row's own join -- and {@code mint} is the version the
-         * mint created, which is the one a reader's ReadFrom names.</p>
-         */
         void placeholder(Endpoint endpoint, LocationId location,
                          long version, long mint, String symbol,
                          String javaType, String concrete) {
@@ -3376,7 +2804,6 @@ public class ComposerTest {
             decision(at, site, outcome, term, "");
         }
 
-        /** One decision in a call from {@code via} (DecisionRow#via). */
         void decision(OccurrenceAddress at, String site, boolean outcome,
                       String term, String via) {
             decisions.add(DecisionRow.of(id, ++seq, at, site,
@@ -3389,11 +2816,8 @@ public class ComposerTest {
                     observedFatal, reached, null));
         }
 
-        /** The label its target rows state ({@link #target}). */
         String anchorLabel = ANCHOR_SITE;
 
-        /** A FORCE run's (PIPELINE §7.10): this session states it ran
-         *  forced, its decision forced off the arm its operands took. */
         void forcedDecision(OccurrenceAddress at, String site, String term) {
             forced = true;
             decisions.add(DecisionRow.of(id, ++seq, at, site,
@@ -3401,14 +2825,12 @@ public class ComposerTest {
                     Collections.<String, Long>emptyMap()).forced(false));
         }
 
-        /** A FORCE run's target, standing at {@code at}. */
         void forcedTarget(long at, String phi) {
             forced = true;
             targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
                     false, true, null).forced());
         }
 
-        /** Whether this session states it ran forced. */
         private boolean forced;
 
         void write() throws IOException {
@@ -3426,9 +2848,6 @@ public class ComposerTest {
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             ExpressionLogs.write(dir.expressions(), expressions);
-            // The fixture STATES the role, as a campaign's own session
-            // manifest does: an exploration replay is FOCUSED under the
-            // obligation it ran, the recording is SEED.
             RowCodec.writeManifest(dir.manifest(), SessionManifest.of(id,
                     forced ? SessionManifest.Role.FORCED : explored
                             ? SessionManifest.Role.FOCUSED
@@ -3441,9 +2860,6 @@ public class ComposerTest {
                             Collections.<String, String>emptyMap(),
                             Collections.<String>emptySet(),
                             Collections.<String>emptySet()));
-            // And the VERDICT, which the replay owns: a focused session
-            // that states none settled nothing, and the composition asks
-            // the session's own row rather than the wave's copy of it.
             RowCodec.writeAll(dir.obligations(), explored || forced
                             ? Collections.singletonList(settled)
                             : Collections.<ObligationResult>emptyList(),
@@ -3451,10 +2867,6 @@ public class ComposerTest {
         }
     }
 
-    /**
-     * One session of the marker fixture: a producer exporting the marker,
-     * a consumer reading it at the anchor.
-     */
     private void session(Path iteration, String id, boolean explored,
                          String marker, Endpoint producer, Endpoint consumer,
                          String symbol, String arrival, String answered,
@@ -3465,22 +2877,17 @@ public class ComposerTest {
                 symbol(MARKER, "Z"));
     }
 
-    /** The same, the producer's export {@code exported}, none where null. */
     private void session(Path iteration, String id, boolean explored,
                          String marker, Endpoint producer, Endpoint consumer,
                          String symbol, String arrival, String answered,
                          boolean attestProducer, boolean observedFatal,
                          String ref, JsonObject exported) throws IOException {
         Session session = new Session(iteration, id, explored);
-        // A producer the replay did not instrument is one that ran
-        // concretely: it states its delivery and attests nothing.
         session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                 explored, attestProducer);
         session.marker(marker);
         session.expression(ref, exported == null ? symbol(MARKER, "Z")
                 : exported);
-        // The producer decides, then exports: a family arm is guarded by
-        // the prefix its own session had taken by then.
         if (attestProducer) {
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
@@ -3492,8 +2899,6 @@ public class ComposerTest {
             session.answered(consumer, symbol, "Z", arrival, answered,
                     producer);
         }
-        // phi is published in the FATAL polarity by the runtime, healthy
-        // sessions included; the composer never re-derives it.
         session.target(symbol, observedFatal, true);
         session.write();
     }

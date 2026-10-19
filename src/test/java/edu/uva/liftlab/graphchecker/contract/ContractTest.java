@@ -29,11 +29,6 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/**
- * The contract, checked where two modules would otherwise disagree:
- * what an occurrence is called, what makes two occurrences the same one across
- * replays, what a case declaration selects, and what a row looks like on disk.
- */
 public class ContractTest {
     private static final NodeId DN0 = NodeId.of("hdfs-17897/dn0", 0);
     private static final NodeId NN0 = NodeId.of("hdfs-17897/nn0", 0);
@@ -46,7 +41,6 @@ public class ContractTest {
     private static final String BLOCK_KEY =
             "Lorg/apache/hadoop/hdfs/security/token/block/BlockKey;";
 
-    /** The three frames from the scope root to the region entry. */
     private static final String RUN = "o.a.h.h.s.d.DataXceiver#run#12";
     private static final String CHECKSUM =
             "o.a.h.h.s.d.DataXceiver#blockChecksum#48";
@@ -56,16 +50,6 @@ public class ContractTest {
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
-    /**
-     * A session's row files are gzip streams (CONTRACT-SPEC §2.1) every
-     * reader opens through one opener ({@code ArtifactIO#input}): a stream
-     * flushed at each row and never finished -- a replay killed before its
-     * close -- reads to its last row, as a plain file cut there; one cut
-     * inside a row's flush ends where the cut is, as a cut plain file; an
-     * empty file is no rows; a file of members ({@link RowCodec#writeAll})
-     * reads whole; a damaged stream is refused as a malformed row; and what
-     * a session's file weighs is its text ({@code ArtifactIO#decodedSize}).
-     */
     @Test
     public void aGzipRowFileReadsAsFarAsItWasWritten() throws IOException {
         Path dir = iteration.getRoot().toPath();
@@ -98,8 +82,6 @@ public class ContractTest {
         assertEquals("its trailer's count", text.length(),
                 ArtifactIO.decodedSize(open));
 
-        // Cut inside the last row's flush: the rows before it, then a cut
-        // line or nothing, as a plain file cut there.
         Path cut = dir.resolve("cut" + SessionDir.GAPS);
         Files.write(cut, Arrays.copyOf(unfinished,
                 (int) (flushedAt[1] + flushedAt[2]) / 2));
@@ -141,13 +123,6 @@ public class ContractTest {
         }
     }
 
-    /**
-     * The engine's own plumbing is never program state: a read a generated
-     * message's code (or the engine's) made is imported as the value of the
-     * version it observed, so no row and no HELD value can stand on it
-     * (hdfs-11741 AR1: the woven read-back of a wire carrier's leaf); a read
-     * the program made stays a read.
-     */
     @Test
     public void aReadThePlumbingMadeIsTheValueItObserved() {
         String message = "o/a/h/HdfsServerProtos$BlockKeyProto";
@@ -172,14 +147,6 @@ public class ContractTest {
         }
     }
 
-    /**
-     * A self-contained envelope of records (a branch window) is read one
-     * record at a time against its own table, which comes after its
-     * records: each record is expanded and handed on in page order, sharing
-     * the nodes the table shares (and the store's earlier envelopes'), the
-     * header states the rest and the count, an unadmitted envelope hands on
-     * nothing, and a record naming a node the table lacks is refused.
-     */
     @Test
     public void anEnvelopeOfRecordsIsReadOneRecordAtATime() {
         VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
@@ -208,14 +175,10 @@ public class ContractTest {
         store.importRecords(page.toString(), "records", stated -> false,
                 record -> read.add(record.getAsJsonObject()));
         assertTrue("an unadmitted page hands on no record", read.isEmpty());
-        // A node the store expanded is not read again: its expansion
-        // answers, whatever the envelope repeats of it.
         store.importRecords(vmPage(new JsonObject[] {second},
                 vmDefinition(1, symbol("M_I_other"))).toString(), "records",
                 stated -> true, record -> read.add(record.getAsJsonObject()));
         assertSame(earlier, read.get(0).getAsJsonObject("value"));
-        // A record is consumed outside the store's lock: another thread
-        // imports meanwhile.
         final JsonObject[] meanwhile = new JsonObject[1];
         store.importRecords(page.toString(), "records", stated -> true,
                 record -> {
@@ -230,9 +193,6 @@ public class ContractTest {
                     }
                 });
         assertNotNull("a page's consumer holds no lock", meanwhile[0]);
-        // Read off the text alike (a branch window too): blanks between
-        // members, strings holding quotes, backslashes and brackets, a
-        // member before the records whose string holds a brace.
         String compact = page.toString();
         String table = compact.substring(compact.indexOf(
                 ",\"" + VmExpressionTable.FIELD + "\""));
@@ -247,10 +207,6 @@ public class ContractTest {
         assertEquals(2, header.get(VmExpressionTable.RECORD_COUNT).getAsInt());
         assertEquals("a \"q\" } ] \\", read.get(0).get("note").getAsString());
         assertSame(earlier, read.get(1).getAsJsonObject("value"));
-        // Refused, never read past: a record naming a node the table lacks;
-        // a row spelled otherwise than the VM does (no row start the reader
-        // knows: it stays in the row before it, which then holds two); a
-        // count the rows do not meet; a table that does not close the page.
         JsonObject dangling = new JsonObject();
         dangling.add("value", vmReference(9));
         String twoRows = vmPage(new JsonObject[] {first},
@@ -284,19 +240,6 @@ public class ContractTest {
         }
     }
 
-    /**
-     * A session's read-out pages are one channel: each table states only
-     * what no earlier one stated and is imported in the VM's order, whatever
-     * becomes of its records -- a page withheld (unadmitted) still defines
-     * what a later page names; a record a page states again unchanged is
-     * decoded once; the records are decoded at once and handed on in page
-     * order, up to the first that fails, whose failure is thrown; a table
-     * whose row names a node only a lost table defined is still imported and
-     * the loss remembered; the truncation marker in a definition or a record
-     * marks the store.
-     * Refused by name: an older table, another session, a self-contained
-     * table, no table, a short count, a node no table defined.
-     */
     @Test
     public void aReadOutPageIsItsChannelsNextTable() throws Exception {
         java.util.concurrent.ExecutorService helpers =
@@ -328,9 +271,6 @@ public class ContractTest {
             JsonObject site = read.get(1).getAsJsonObject("value");
             assertSame(site, read.get(0).getAsJsonObject("value")
                     .get("_left"));
-            // Table 2 names node 2 from table 1 without restating it; page 3
-            // is withheld, its table imported all the same, so page 4 reads
-            // node 4; page 5 states page 1's records again unchanged.
             read.clear();
             store.importReadOutPage(channelPage(2L, new JsonObject[] {
                     record("third", vmReference(3))}, vmDefinition(3,
@@ -357,10 +297,6 @@ public class ContractTest {
                     decode, read::add, helpers, 3);
             assertEquals("held: decoded no more", before, decodes[0]);
             assertEquals(2, read.size());
-            // Tables 6-8 lost: table 9 is imported whole though a row of
-            // it names node 7, which only a lost table defined; a record
-            // naming that row fails, the records before it are handed on in
-            // page order, and the table's other row serves the next page.
             JsonObject[] many = new JsonObject[40];
             for (int index = 0; index < many.length; index++) {
                 many[index] = record("many" + index, vmReference(
@@ -376,7 +312,6 @@ public class ContractTest {
                         helpers, 3);
                 fail("a node only a lost table defined");
             } catch (IllegalArgumentException missing) {
-                // a record is never read against a node no table defined
             }
             assertFalse(store.readOutLosses().isEmpty());
             assertEquals("handed on in page order up to the failure", 17,
@@ -393,9 +328,6 @@ public class ContractTest {
             assertEquals("M_I_kept", read.get(0).getAsJsonObject("value")
                     .get("_exp").getAsString());
             String[] refusals = {
-                // an older table, another session, a self-contained table
-                // (an image whose read-out restates every definition), no
-                // table, a short count
                 channelPage(10L, new JsonObject[0]),
                 channelPage(11L, new JsonObject[0]).replace(
                         "\"sessionId\":1,\"sequence\"",
@@ -413,7 +345,6 @@ public class ContractTest {
                             record -> { }, helpers, 3);
                     fail("read: " + refused);
                 } catch (IllegalArgumentException expected) {
-                    // refused by name
                 }
             }
             assertFalse(store.truncationMarked());
@@ -440,7 +371,6 @@ public class ContractTest {
         }
     }
 
-    /** A read-out record: a name and a value. */
     private static JsonObject record(String name, JsonObject value) {
         JsonObject record = new JsonObject();
         record.addProperty("name", name);
@@ -448,7 +378,6 @@ public class ContractTest {
         return record;
     }
 
-    /** A read-out page whose table is its channel's {@code sequence}th. */
     private static String channelPage(long sequence, JsonObject[] records,
                                       JsonObject... definitions) {
         JsonObject page = vmPage(records, definitions);
@@ -467,7 +396,6 @@ public class ContractTest {
         return page.toString();
     }
 
-    /** A read-out page: its records, then its table, as the VM writes it. */
     private static JsonObject vmPage(JsonObject[] records,
                                      JsonObject... definitions) {
         JsonObject page = new JsonObject();
@@ -512,13 +440,6 @@ public class ContractTest {
         return definition;
     }
 
-    /**
-     * An integral configuration's domain joins the c - 1, c, c + 1 of every
-     * literal a recorded decision compared it with (minReplication against a
-     * live replica count of 1: [1, 1] becomes [0, 2]) and never leaves what
-     * its own validation admits ({@code minR <= 0} throws: [1, 2]); the
-     * case's declaration still wins, and no other root widens.
-     */
     @Test
     public void aComparedLiteralWidensAConfigurationWithinItsValidity() {
         OccurrenceAddress at = OccurrenceAddress.of(DN0, REGION,
@@ -529,12 +450,10 @@ public class ContractTest {
         Validity positive = Validity.of(java.math.BigInteger.ONE, null,
                 "<B: int init(C)>#u3");
         Object[][] rows = {
-            // root, category, validity, compared, domain
             {"CONFIG:min", RootCategory.CONFIG, Validity.ANY, "1",
                 "[0, 2]"},
             {"CONFIG:min", RootCategory.CONFIG, positive, "1", "[1, 2]"},
             {"CONFIG:min", RootCategory.CONFIG, positive, "", "[1, 1]"},
-            // a validation the recorded reading (1) fails clips nothing
             {"CONFIG:min", RootCategory.CONFIG, Validity.of(java.math
                     .BigInteger.valueOf(2), null, "<B: int init(C)>#u5"),
                 "1", "[0, 2]"},
@@ -578,17 +497,12 @@ public class ContractTest {
         OccurrenceAddress recorded =
                 OccurrenceAddress.of(DN0, REGION, started,
                         ExecutionIndex.of(path));
-        // The replay ran an unrelated extra invocation elsewhere: nothing on
-        // the path to the region moved, so it is the same occurrence -- which
-        // is the whole reason the index replaced the k-th-activation ordinal.
         OccurrenceAddress replayed =
                 OccurrenceAddress.of(DN0, REGION, started,
                         ExecutionIndex.of(Arrays.asList(frame(RUN, 0),
                                 frame(CHECKSUM, 2), frame(COMPUTE, 0))));
         assertEquals(recorded, replayed);
         assertEquals(recorded.id(), replayed.id());
-        // One more turn of a loop ON the path is a different occurrence, and
-        // so is the same path reached for another reason.
         assertNotEquals(recorded.id(), OccurrenceAddress.of(DN0, REGION,
                 started, index(frame(RUN, 0), frame(CHECKSUM, 3),
                         frame(COMPUTE, 0))).id());
@@ -596,8 +510,6 @@ public class ContractTest {
                 CausalContext.of(Role.CLIENT, "", 1),
                 ExecutionIndex.of(path)).id());
 
-        // Same port, same consumer: only the producer endpoint tells two
-        // deliveries apart, so only the interaction is a usable family key.
         ExecutionIndex site = index(frame("o.a.h.h.p.PBHelper#convert#31", 0));
         Endpoint attach = Endpoint.of(recorded, PORT, site, 0);
         Endpoint first = Endpoint.of(tick(1), PORT, site, 0);
@@ -619,10 +531,6 @@ public class ContractTest {
                         CausalContext.of(Role.UNKNOWN), site), PORT, site, 0),
                 attach).producer().occurrence().lineageLost());
 
-        // A store's re-delivery of one version to one watcher is its own
-        // activation (MessageDoors#fetched: KIND.n from the second on), and
-        // how many a run takes is the store's timing: every delivery is
-        // addressed alike for CONFIRM (anyDelivery), and nothing else is.
         String[][] deliveries = {
                 {"SOLR_ZK.ZKSTATEREADER$STATEWATCHER.2/OVERSEER_STATE_UPDATE",
                         "SOLR_ZK.ZKSTATEREADER$STATEWATCHER/OVERSEER_STATE_UPDATE"},
@@ -640,12 +548,6 @@ public class ContractTest {
                     notified.anyDelivery());
         }
 
-        // ONE owner spelling, the one the runtime writes: the VM's
-        // symbolic rid of the object whose state this is.  A join is per
-        // session, and inside one run two rids are two objects.  The
-        // allocation-endpoint owner this asked for is deleted -- no main
-        // code produced it, and the gate that admitted only it refused
-        // every row of both corpora.
         LocationId expiry = LocationId.of(LocationKind.INSTANCE, "12",
                 "expiryDate");
         assertEquals("12", expiry.owner());
@@ -676,13 +578,9 @@ public class ContractTest {
         Map<String, Long> clocks = new LinkedHashMap<>();
         clocks.put("clock_dn0", 1757700000000L);
 
-        // The sender its anchor names rides along, so a reader follows the
-        // causal chain past the anchor.
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
                 "task-1", true, true, "DataXceiver-7#41",
                 ActivationRow.ClaimKind.NONE, export);
-        // The session's own event order: export, attach, write, decision,
-        // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
                 "BlockTokenSecretManager#retrieve#61", 1, false,
                 "(= v_H_key_id 3)", clocks);
@@ -712,7 +610,6 @@ public class ContractTest {
 
         assertEquals(activation, RowCodec.readActivation(
                 reline(RowCodec.writeActivation(activation)), new RowPool()));
-        // A claimed task states its claim's kind: how an order holds it.
         ActivationRow handed = ActivationRow.of("s-17897-1", anchor,
                 "task-1", true, true, ActivationRow.CLAIMED + "s|k",
                 ActivationRow.ClaimKind.HANDOFF_TASK, null);
@@ -722,15 +619,12 @@ public class ContractTest {
         assertFalse("a hand-off task that served a queue",
                 handed.heldWhereItRuns(Collections.singleton(
                         handed.threadKey())));
-        // A claimed row from before claimKind reads as NONE and keeps the
-        // send rule.
         JsonObject legacy = RowCodec.writeActivation(handed);
         legacy.remove("claimKind");
         ActivationRow old = RowCodec.readActivation(reline(legacy),
                 new RowPool());
         assertEquals(ActivationRow.ClaimKind.NONE, old.claimKind());
         assertFalse(old.heldWhereItRuns(Collections.<String>emptySet()));
-        // Claimed work is keyed by its claimed start, never by its thread.
         try {
             ActivationRow.of("s-17897-1", anchor, "task-1", true, true,
                     "pool-1-thread-1#20", ActivationRow.ClaimKind.ITEM, null);
@@ -739,9 +633,6 @@ public class ContractTest {
             assertTrue(refused.getMessage(),
                     refused.getMessage().contains("claimed start"));
         }
-        // An activation a lightweight entry hook published carries no thread
-        // starter, and says the region was never instrumented -- so a reader
-        // that finds no decisions for it knows why.
         ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
                 false, false, "KeyManager-1#13", ActivationRow.ClaimKind.NONE, null);
         ActivationRow ambientBack = RowCodec.readActivation(
@@ -757,7 +648,6 @@ public class ContractTest {
                 reline(RowCodec.writeAttach(attached)), new RowPool()));
         assertEquals(written, RowCodec.readWrite(
                 reline(RowCodec.writeWrite(written)), new RowPool()));
-        // A reference write states its container's state, or why not.
         LocationId map = LocationId.of(LocationKind.MAP, "42", "-3");
         for (WriteRow reference : Arrays.asList(
                 WriteRow.of("s-17897-1", 11L, written.endpoint(),
@@ -773,14 +663,12 @@ public class ContractTest {
         assertFalse(RowCodec.writeWrite(written).has("referentState"));
         assertEquals(read, RowCodec.readRead(
                 reline(RowCodec.writeRead(read)), new RowPool()));
-        // A placeholder's mint version is part of the row it round-trips as.
         ReadRow placeholder = ReadRow.of("s-17897-1", 14L, read.endpoint(),
                 keys, 7L, "state_allKeys_7", BLOCK_KEY, null, 9L);
         assertEquals(placeholder, RowCodec.readRead(
                 reline(RowCodec.writeRead(placeholder)), new RowPool()));
         assertFalse("a stated mint version is not the unknown one",
                 placeholder.equals(read));
-        // So is an unnamed writer: the read joins, alternatives not.
         ReadRow partial = ReadRow.of("s-17897-1", 14L, read.endpoint(),
                 keys, 7L, "state_allKeys_7", BLOCK_KEY, null,
                 ReadRow.UNKNOWN_VERSION, true);
@@ -790,9 +678,6 @@ public class ContractTest {
         assertFalse(RowCodec.writeRead(read).has("unnamedWriter"));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
-        // A clock states the instant its node's clock ran it at and how far
-        // that ran off the host's reading, the reading a skew is off; a
-        // reading at the host's own instant states no skew.
         RootMintRow ranOn = RootMintRow.of("s-17897-1", 16067L, producer,
                 "CLOCK.nn0", "M_J_clock", RootKind.CLOCK, RootCategory.CLOCK,
                 "1790775789773", null, null, true,
@@ -804,9 +689,6 @@ public class ContractTest {
                 RootMintRow.CLOCK_SKEW));
         assertEquals(target, RowCodec.readTarget(
                 reline(RowCodec.writeTarget(target))));
-        // A FORCED run's rows (PIPELINE §7.10): a decision states the arm
-        // its operands decided, a target its forcing, which observed no
-        // fatal; a row of any other run states neither.
         DecisionRow forcedDecision = decision.forced(true);
         TargetRow forcedTarget = target.forced();
         assertEquals(forcedDecision, RowCodec.readDecision(
@@ -821,8 +703,6 @@ public class ContractTest {
         assertFalse(RowCodec.writeDecision(decision).has("forced")
                 || RowCodec.writeTarget(target).has("forced"));
         assertEquals(gap, RowCodec.readGap(reline(RowCodec.writeGap(gap))));
-        // The parts a reader joins on survive the line form: the context, the
-        // index, the site index, the session order and the declared sorts.
         AttachRow back = RowCodec.readAttach(
                 reline(RowCodec.writeAttach(attached)), new RowPool());
         assertEquals(attach.id(), back.endpoint().id());
@@ -838,7 +718,6 @@ public class ContractTest {
                 RowCodec.writeGap(GapRow.of("s-17897-1",
                         GapKind.SOLVER_TIMEOUT, GapClass.BLOCKING,
                         anchor.id(), "z3 gave no answer in 900s")))).kind());
-        // A nullable field that was null comes back null, not "" or "null".
         assertNull(RowCodec.readRead(reline(RowCodec.writeRead(read)),
                 new RowPool()).concreteValue());
 
@@ -851,13 +730,9 @@ public class ContractTest {
                 json -> RowCodec.readAttach(json, new RowPool()));
         assertEquals(2, rows.size());
         assertEquals(attached, rows.get(0));
-        // WHICH key paired it survives the round trip, and a blank one is
-        // UNSTATED rather than a third spelling: the unpaired row already
-        // says so with a null producer.
         assertEquals("HANDLE", rows.get(0).pairedBy());
         assertNull(rows.get(1).pairedBy());
         assertNull(rows.get(1).producer());
-        // Reading one kind never touches another kind's file.
         assertTrue(RowCodec.readAll(session.reads(),
                 json -> RowCodec.readRead(json, new RowPool())).isEmpty());
 
@@ -872,19 +747,9 @@ public class ContractTest {
         assertEquals(Collections.singletonList(session),
                 SessionDir.sessionsIn(root));
 
-        // ---- the row contract as a GATE (RowInvariants) ----------------
-        //
-        // One table, one row per rule: what a recording has to state, and
-        // what it is told when it does not.  This is the shape of the fix
-        // 17960 needed twice -- a decision whose outcome was the complement
-        // of its term's truth value, and a focused session whose expression
-        // table was empty -- so each rule is checked where every row passes
-        // through rather than in the stage that happened to trip over it.
         assertTrue("a recording that states everything states no violation: "
                         + names(gate(clean())),
                 gate(clean()).isEmpty());
-        // 1: exactly one seed session per epoch, and every row's occurrence
-        // ran in its own session.
         Rows second = clean();
         second.id = "s-two";
         assertInvariant(1, GapClass.BLOCKING, "epoch/sessions",
@@ -893,14 +758,11 @@ public class ContractTest {
         unactivated.activations.clear();
         assertInvariant(1, GapClass.BLOCKING, "field=occurrence",
                 unactivated);
-        // 2: never neither -- a read states a version or a value.
         Rows neither = clean();
         neither.reads.set(0, ReadRow.of("s-gate", 14L, neither.readAt, keys,
                 -1L, "state_allKeys_7", BLOCK_KEY, null));
         assertInvariant(2, GapClass.BLOCKING, "field=observedVersion",
                 neither);
-        // An attach is paired by the handle or by correlation+port; no
-        // stated key is unstated, not unpaired; any other key is refused.
         for (Object[] pairing : new Object[][] {
                 {AttachRow.HANDLE, true, ""},
                 {AttachRow.CORRELATION_PORT, true, ""},
@@ -919,8 +781,6 @@ public class ContractTest {
                 assertInvariant(2, GapClass.BLOCKING, refusal, paired);
             }
         }
-        // 3: a reference a row cites exists in its OWN session's table, and
-        // no other reference spelling appears.
         Rows empty = clean();
         empty.expressions.clear();
         assertInvariant(3, GapClass.BLOCKING, "field=term", empty);
@@ -928,8 +788,6 @@ public class ContractTest {
         spelled.decisions.set(0, DecisionRow.of("s-gate", 12L,
                 spelled.anchor, "Guard#u8", 1, true, "EXPR.v1.9f2c", clocks));
         assertInvariant(3, GapClass.BLOCKING, "EXPR.v1.9f2c", spelled);
-        // 4: one row per event; an endpoint two events share is the site
-        // index's failure and is recorded, not refused.
         Rows twice = clean();
         twice.reads.add(twice.reads.get(0));
         assertInvariant(4, GapClass.BLOCKING, "field=seq/location", twice);
@@ -938,9 +796,6 @@ public class ContractTest {
                 7L, "state_allKeys_7", BLOCK_KEY, null));
         assertInvariant(4, GapClass.DIAGNOSTIC, "site index missing",
                 collided);
-        // A target row that did not reach its anchor states no event, so
-        // two occurrences that both ran without reaching it are two rows;
-        // two rows at one reached event are still one event twice.
         Rows unreached = clean();
         OccurrenceAddress other = OccurrenceAddress.of(DN0, REGION,
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
@@ -953,8 +808,6 @@ public class ContractTest {
                 "", false, false, null));
         assertTrue("an unreached anchor is one row per occurrence: "
                 + names(gate(unreached)), noViolation(gate(unreached), 4));
-        // Nor does a concrete decision: it stands after the last VM event,
-        // which two occurrences can share.
         Rows decided = clean();
         decided.activations.add(ActivationRow.of("s-gate", other, "t",
                 false, true, "DataXceiver-8#42", ActivationRow.ClaimKind.NONE, null));
@@ -963,8 +816,6 @@ public class ContractTest {
                 true, null));
         assertTrue("two occurrences deciding concretely after one event: "
                 + names(gate(decided)), noViolation(gate(decided), 4));
-        // A store read is one reader's read of one version: two nodes'
-        // readers (or two versions) at one shared JVM event are two reads.
         LocationId stateJson = LocationId.of(LocationKind.STORE, "SOLR_ZK",
                 "/collections/c/state.json");
         for (Object[] each : new Object[][] {
@@ -995,9 +846,6 @@ public class ContractTest {
         reachedTwice.targets.add(reachedTwice.targets.get(0));
         assertInvariant(4, GapClass.BLOCKING,
                 "field=occurrence/seq/anchorSiteId", reachedTwice);
-        // A node's view of a store path is its version, as the store's own
-        // write is: two decodes of two versions with no VM event between
-        // them are two events; one version stated twice is one.
         LocationId view = LocationId.of(LocationKind.VIEW,
                 "SOLR_ZK@auto0/node0#epoch0", "/aliases.json");
         Rows decodes = clean();
@@ -1013,37 +861,27 @@ public class ContractTest {
         decodes.writes.add(decodes.writes.get(decodes.writes.size() - 1));
         assertInvariant(4, GapClass.BLOCKING, "field=seq/location/version",
                 decodes);
-        // 5: one name, one spelled sort, and a placeholder read's sort is the
-        // one its own row declares.
         Rows mixed = clean();
         mixed.reads.add(ReadRow.of("s-gate", 21L, mixed.placeholderAt, keys,
                 7L, "M_Z_field_" + REGION + ".in.a1", "I", "2"));
         assertInvariant(5, GapClass.BLOCKING, "field=symbol/javaType", mixed);
-        // 6: outcome says whether the published term HELD.
         Rows flipped = clean();
         flipped.decisions.set(0, DecisionRow.of("s-gate", 12L,
                 flipped.anchor, "Guard#u8", 1, false, "EXPR.0000000000000001",
                 clocks));
         assertInvariant(6, GapClass.BLOCKING, "field=outcome", flipped);
-        // 7: a version some row of the session states, and never a write
-        // whose whole expression is a placeholder's own symbol.
         Rows unstated = clean();
         unstated.writes.clear();
-        // and the mint states a different version, so nothing states v7
         unstated.reads.set(1, ReadRow.of("s-gate", 16L,
                 unstated.placeholderAt, keys, 7L,
                 "M_I_field_" + REGION + ".in.a1", "I", "2", 99L));
         assertInvariant(7, GapClass.DIAGNOSTIC, "field=observedVersion",
                 unstated);
-        // The mint's own store published as a write: the version the
-        // placeholder minted, whatever expression the row carries.
         Rows fabricated = clean();
         fabricated.writes.add(WriteRow.of("s-gate", 11L,
                 fabricated.writeAt, keys, 8L, "EXPR.0000000000000002",
                 BLOCK_KEY));
         assertInvariant(7, GapClass.BLOCKING, "field=version", fabricated);
-        // A legitimate copy: a later version of the cell assigned the minted
-        // symbol is a write of its own, whole expression that symbol or not.
         Rows copied = clean();
         copied.writes.add(WriteRow.of("s-gate", 11L, copied.writeAt, keys,
                 9L, "EXPR.0000000000000002", BLOCK_KEY));
@@ -1051,13 +889,6 @@ public class ContractTest {
                         + "symbol is no fabricated write: "
                         + names(gate(copied)),
                 noViolation(gate(copied), 7));
-        // Contract v2.4: a placeholder read states the version it mints, so
-        // a version no write carries is stated all the same -- and a
-        // placeholder that states none is refused, once the recording
-        // publishes the field at all.
-        // The mint's own version is NOT the version it observed: laneA5's
-        // placeholder observed 77 and minted 177, and keying the mint by the
-        // observed version refused a row whose field was right there in it.
         Rows mintStated = clean();
         mintStated.reads.set(1, ReadRow.of("s-gate", 16L,
                 mintStated.placeholderAt, keys, 7L,
@@ -1072,8 +903,6 @@ public class ContractTest {
                 unminted.placeholderAt, keys, 7L,
                 "M_I_field_" + REGION + ".in.a1", "I", "2"));
         assertInvariant(7, GapClass.BLOCKING, "field=mintVersion", unminted);
-        // 8: a RootMintRow is published for a declared root, and its reading
-        // is spelled the way its kind is read back.
         Rows undeclared = clean();
         undeclared.roots.set(0, RootMintRow.of("s-gate", 2L,
                 undeclared.anchor, "CASE.MARKER", "M_Z_marker",
@@ -1086,11 +915,6 @@ public class ContractTest {
                 "1", null, null, true, null, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
-        // 9: a reached anchor states phi in the FATAL polarity -- a term, or
-        // for a concrete fatal condition the constant of the arm it took
-        // (SOLR-18413 r9: the deleted target's lookup) -- and phi holds
-        // exactly on the fatal arm at the session's own root values (the
-        // marker ran true, so EXPR.1 holds).  {phi, observedFatal, class}.
         Object[][] nine = {
                 {"", true, GapClass.BLOCKING},
                 {"", false, GapClass.DIAGNOSTIC},
@@ -1114,14 +938,6 @@ public class ContractTest {
                         stated);
             }
         }
-        // 11 (R4): a root symbol without its RootMintRow.  WHICH quantities
-        // are roots is a fact about the SET -- CASE.MARKER is a root because
-        // some session of the epoch minted a row naming it -- and a session
-        // that NAMES that root's symbol while publishing no mint row of its
-        // own carries a quantity nothing of it attributes.  That is 11741
-        // campaign #4: the symbol reached the expressions out of an
-        // activation the run abandoned, and the composer met it as an arm it
-        // could not guard.
         Rows unattributed = clean();
         unattributed.id = "s-abandoned";
         unattributed.roots.clear();
@@ -1131,26 +947,12 @@ public class ContractTest {
                         + names(gate(clean(), unattributed)),
                 1, stating(gate(clean(), unattributed),
                         GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
-        // And the same corpus with the mint row present states none.
         Rows attributed = clean();
         attributed.id = "s-abandoned";
         assertEquals("a session that states the mint row is not refused: "
                         + names(gate(clean(), attributed)),
                 0, stating(gate(clean(), attributed),
                         GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
-        // Gated a session at a time, an epoch states exactly what one gate
-        // over all of it states, each row once: the later gate judges its
-        // own session, and the rules over the set (1, 11) against the one
-        // gated before -- which it reads again only for a root the later
-        // one brings (the mint second) -- and a gate of sessions the ledger
-        // holds judges nothing.
-        //
-        // The gate after the first reads nothing of the session it judged
-        // before but its record in the ledger (what it minted and named):
-        // that session's own files may be gone or staged elsewhere.  A
-        // session gated where it is staged, before it lands, and the corpus
-        // the next gate meets, file the same rows; a session GROW withdrew
-        // (withdrawn.txt) is no longer of the epoch.
         for (boolean mintFirst : new boolean[] {true, false}) {
             Path epoch = iteration.newFolder().toPath();
             clean().read(epoch);
@@ -1164,11 +966,9 @@ public class ContractTest {
             String later = mintFirst ? "s-abandoned" : "s-gate";
             ImportGateMain.gate(epoch, gates(epoch, first),
                     Collections.<String>emptySet(), ledger, stepped, "e");
-            // Staged elsewhere, as a replay's worker stages it.
             Path staged = epoch.resolve("worker/sessions/" + later);
             Files.createDirectories(staged.getParent());
             Files.move(SessionDir.of(epoch, later).dir(), staged);
-            // The first one's own files gone: its record answers for it.
             for (Path file : Files.newDirectoryStream(
                     SessionDir.of(epoch, first).dir())) {
                 Files.delete(file);
@@ -1189,10 +989,6 @@ public class ContractTest {
             assertEquals("invariants 1 and 11, each once: " + filed, 2,
                     filed.size());
             assertEquals(0, again.get("sessions").getAsInt());
-            // Withdrawn -- or replaced by a session gated now, as a re-run's
-            // is before its swap withdraws the one it replaces -- the first
-            // is no longer of the epoch: of the three sessions stating SEED,
-            // the epoch holds two.
             Set<String> replaced = Collections.<String>emptySet();
             if (mintFirst) {
                 Files.write(epoch.resolve(SessionDir.WITHDRAWN),
@@ -1213,10 +1009,6 @@ public class ContractTest {
                                     "2 of 2 sessions state role SEED"))
                             .count());
         }
-        // 12: a reference write's container state is an older write of the
-        // session (v7); a version no row states (the placeholder's minted
-        // v8) is evidence lost, not a malformed row; one not older than the
-        // store (v9) is.
         for (long named : new long[] {7L, 8L, 9L}) {
             Rows referring = clean();
             referring.writes.add(WriteRow.of("s-gate", 13L,
@@ -1234,12 +1026,6 @@ public class ContractTest {
         }
     }
 
-    /**
-     * A TIMED-WAIT LOOP'S TURN IS NAMED BY ITS FAMILY, its number left out
-     * (the schedule's turn family): a stable name and CONFIRM's activation
-     * key hold whatever wake the loop is at; any other root keeps its
-     * count.
-     */
     @Test
     public void aTimedWaitTurnIsNamedByItsFamily() {
         StableEventNames names = new StableEventNames();
@@ -1259,7 +1045,6 @@ public class ContractTest {
         assertEquals(third.anyTurn().id(), seventh.anyTurn().id());
         assertEquals(task.id(), task.anyTurn().id());
     }
-    /** How many rows of one kind and class a gate stated. */
     private static int stating(List<GapRow> gaps, GapKind kind,
                                GapClass cls) {
         int count = 0;
@@ -1269,7 +1054,6 @@ public class ContractTest {
         return count;
     }
 
-    /** No violation of that rule at all, whatever its class. */
     private static boolean noViolation(List<GapRow> gaps, int rule) {
         for (GapRow gap : gaps) {
             if (gap.detail().contains("invariant " + rule)) return false;
@@ -1277,7 +1061,6 @@ public class ContractTest {
         return true;
     }
 
-    /** One session's rows, as a recording a table row can bend. */
     private final class Rows {
         private String id = "s-gate";
 
@@ -1311,8 +1094,6 @@ public class ContractTest {
             RowCodec.writeAll(dir.attaches(), attaches,
                     RowCodec::writeAttach);
             ExpressionLogs.write(dir.expressions(), expressions);
-            // The fixture STATES the role, as a campaign's own session
-            // manifest does.
             boolean focused = false;
             for (ActivationRow activation : activations) {
                 if (activation.focused()) focused = true;
@@ -1329,7 +1110,6 @@ public class ContractTest {
         }
     }
 
-    /** A recording that states everything the contract asks of one. */
     private Rows clean() {
         Rows rows = new Rows();
         rows.anchor = OccurrenceAddress.of(DN0, REGION,
@@ -1345,7 +1125,6 @@ public class ContractTest {
                 site, 0);
         rows.activations.add(ActivationRow.of("s-gate", rows.anchor, "t", false,
                 true, "DataXceiver-7#41", ActivationRow.ClaimKind.NONE, null));
-        // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, RootCategory.FAULT,
                 "true", null, null, true, null, 0L));
@@ -1364,9 +1143,6 @@ public class ContractTest {
                 LocationId.of(LocationKind.MAP,
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
                 7L, "state_allKeys_7", BLOCK_KEY, null));
-        // The declared region input, as a placeholder read: the only row
-        // that mints it, so a write whose whole expression IS its symbol
-        // would be a value the two of them fabricated between them.
         rows.reads.add(ReadRow.of("s-gate", 16L, rows.placeholderAt,
                 LocationId.of(LocationKind.MAP,
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
@@ -1376,7 +1152,6 @@ public class ContractTest {
         return rows;
     }
 
-    /** The gate's list of the sessions {@code ids} of an epoch's corpus. */
     private static List<ImportGateMain.Gate> gates(Path epoch, String... ids) {
         List<ImportGateMain.Gate> gates = new ArrayList<>();
         for (String id : ids) {
@@ -1386,7 +1161,6 @@ public class ContractTest {
         return gates;
     }
 
-    /** The violations one set of sessions states. */
     private List<GapRow> gate(Rows... sessions) throws IOException {
         Path root = iteration.newFolder().toPath();
         for (Rows rows : sessions) rows.read(root);
@@ -1396,7 +1170,6 @@ public class ContractTest {
                 Collections.<String, List<JsonObject>>emptyMap()).gaps;
     }
 
-    /** That rule, that class, that subject -- and nothing silent. */
     private void assertInvariant(int rule, GapClass cls, String subject,
                                  Rows... sessions) throws IOException {
         List<GapRow> gaps = gate(sessions);
@@ -1452,14 +1225,12 @@ public class ContractTest {
         return ExecutionIndex.of(Arrays.asList(frames));
     }
 
-    /** The w-th key-manager tick of the name node. */
     private static OccurrenceAddress tick(int windowIndex) {
         return OccurrenceAddress.of(NN0, "REGION.a1b2",
                 CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", windowIndex),
                 index(frame("o.a.h.h.s.b.KeyManager#run#9", 0)));
     }
 
-    /** One row through the line form it is stored in and back. */
     private static JsonObject reline(JsonObject row) {
         return RowCodec.fromLine(RowCodec.toLine(row));
     }

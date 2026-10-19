@@ -32,16 +32,6 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/**
- * The configured sources each region can mint (SYMBOL-SCOPE §4.3), from the
- * text it runs -- its methods and their application callees: a tree's
- * {@code CausynthSymbolicSource.symbolize} call (one hook site per source
- * per region), and the engine's read ({@code getfield}) of a configuration
- * field {@link ConfigRoots} declares, every one of them.  A field a tree's
- * hook mints is the hook's: no read of it is the engine's.  The
- * configuration reads no root mints are published beside, as catalog gaps
- * ({@link ConfigRoots#gaps}).
- */
 final class StaticSymbolicSourceDiscovery {
     private static final String HOOK_CLASS_SIMPLE_NAME =
             "CausynthSymbolicSource";
@@ -50,7 +40,6 @@ final class StaticSymbolicSourceDiscovery {
     private StaticSymbolicSourceDiscovery() {
     }
 
-    /** One mint site a region's text holds. */
     private static final class Site {
         final Map<String, Object> declaration;
         final JsonObject phase;
@@ -73,13 +62,6 @@ final class StaticSymbolicSourceDiscovery {
         }
     }
 
-    /**
-     * Attaches declarations to every region that can execute a site, and
-     * names the configuration reads left concrete.
-     *
-     * @return the configuration field reads declared, each a plant of the
-     *         world's value ({@link ConfigRoots#keyRows})
-     */
     static Set<String> discover(StaticProgram program, ConfigRoots config)
             throws IOException {
         program.communicationGaps.addAll(config.gaps());
@@ -116,7 +98,6 @@ final class StaticSymbolicSourceDiscovery {
         return planted;
     }
 
-    /** The mint sites one region's text holds, in walk order. */
     private static List<Site> sitesOf(
             Map<String, Object> region, Set<String> regionRoots,
             Set<String> cutBoundaries, ConfigRoots config)
@@ -160,8 +141,6 @@ final class StaticSymbolicSourceDiscovery {
         return found;
     }
 
-    /** The region's declarations and phases, a hooked field's reads left
-     *  to its hook. */
     private static void attach(Map<String, Object> region, List<Site> sites,
                                Set<String> hooked) throws IOException {
         Map<String, Map<String, Object>> bySource = new LinkedHashMap<>();
@@ -192,7 +171,6 @@ final class StaticSymbolicSourceDiscovery {
         }
     }
 
-    /** A read of a declared configuration field at this unit, or null. */
     private static Site configRead(SootMethod method, Unit unit,
                                    int unitIndex, ConfigRoots config) {
         if (!(unit instanceof AssignStmt) || !(((AssignStmt) unit)
@@ -214,7 +192,6 @@ final class StaticSymbolicSourceDiscovery {
                 signature);
     }
 
-    /** A tree's hook call. */
     private static Site hook(SootMethod method, InvokeExpr invoke,
                              int unitIndex) throws IOException {
         if (invoke.getArgCount() != 3
@@ -270,11 +247,6 @@ final class StaticSymbolicSourceDiscovery {
                 + ": " + detail);
     }
 
-    /**
-     * One declaration per source and region: a source one field, a hook's
-     * one site.  A configuration source is read at every site that reads
-     * its field; its declaration names the first.
-     */
     private static void merge(
             Map<String, Map<String, Object>> bySource, Site site,
             Map<String, Object> region) throws IOException {

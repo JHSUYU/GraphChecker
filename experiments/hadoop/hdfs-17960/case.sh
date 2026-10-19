@@ -1,5 +1,3 @@
-# HDFS-17960: ordered snapshot deletion miscounts after a restart.
-# Declarations only.
 repo=${GC_TREES}/hadoop-hdfs-study-r7
 test_class=org.apache.hadoop.hdfs.server.namenode.snapshot.TestOrderedSnapshotDeletion
 test_method=testOrderedDeletionWithRestart

@@ -21,16 +21,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.required;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * The static mint sites of configured sources and the executions a recording
- * observed (SYMBOL-SCOPE §4.3).  A site is one of two, named by its row's
- * authority: a tree's {@code CausynthSymbolicSource.symbolize} call (a HOOK)
- * or the engine's read of a configuration field ({@code
- * causynth.ConfigRoots}, a CONFIG), whose integral domain the row states.  A
- * declared source is ONE symbol ({@link #engineLabel} is the source's alone),
- * so the number of executions bounds nothing a replay may read.  One codec:
- * rows are the plan wire's {@link JsonObject}s.
- */
 public final class ConfiguredSourcePhaseContract {
     public static final int SCHEMA_VERSION = 1;
     public static final String DECLARATION_FIELD =
@@ -40,10 +30,8 @@ public final class ConfiguredSourcePhaseContract {
     public static final String PLAN_FIELD = "configuredSourcePhases";
     public static final String DECLARATION_KIND =
             "CONFIGURED_SOURCE_PHASE_DECLARATION";
-    /** A tree's hook call. */
     public static final String DECLARATION_AUTHORITY =
             "EXACT_STATIC_SOURCE_HOOK_SITE_V1";
-    /** The engine's read of a configuration field. */
     public static final String CONFIG_DECLARATION_AUTHORITY =
             "EXACT_STATIC_CONFIG_READ_SITE_V1";
     public static final String PLAN_KIND = "CONFIGURED_SOURCE_PHASE";
@@ -55,14 +43,11 @@ public final class ConfiguredSourcePhaseContract {
             "schemaVersion", "kind", "authority", "phase", "sourceId",
             "fieldSignature", "declarationMethod", "declarationUnitIndex",
             "siteId");
-    /** A read's evidence is the read: no invocation. */
     private static final Set<String> CONFIG_OCCURRENCE_FIELDS = union(
             DECLARATION_FIELDS, "phaseId", "sourceOccurrenceId", "eventSeq",
             "runtimeDeclaredCallee", "enclosingCallIds");
     private static final Set<String> OCCURRENCE_FIELDS = union(
             CONFIG_OCCURRENCE_FIELDS, "invocationId");
-    /** A CONFIG row's integral domain, from its static anchors, and what
-     *  its own validation admits ({@link Validity}). */
     private static final Set<String> DOMAIN_FIELDS = names(
             "domainMin", "domainMax", Validity.MIN, Validity.MAX,
             Validity.BY);
@@ -70,10 +55,8 @@ public final class ConfiguredSourcePhaseContract {
     private ConfiguredSourcePhaseContract() {
     }
 
-    /** The one phase: a mint site, one fresh symbol for one declared field. */
     public static final String PUBLISH = "PUBLISH";
 
-    /** A tree's hook call of {@code sourceId} at {@code method#uunitIndex}. */
     public static JsonObject declaration(
             String sourceId, String fieldSignature,
             String method, int unitIndex) {
@@ -83,11 +66,6 @@ public final class ConfiguredSourcePhaseContract {
         return row;
     }
 
-    /**
-     * The engine's read of a configuration field at {@code
-     * method#uunitIndex}, with the integral domain its static anchors span
-     * ({@code ""}: none, a boolean).
-     */
     public static JsonObject configDeclaration(
             String sourceId, String fieldSignature, String method,
             int unitIndex, String domainMin, String domainMax,
@@ -141,8 +119,6 @@ public final class ConfiguredSourcePhaseContract {
         return Collections.unmodifiableList(result);
     }
 
-    /** Decodes an ordered runtime phase catalog: evidence of where, not a
-     *  budget. */
     public static List<Occurrence> occurrencesOf(JsonElement encoded) {
         if (encoded == null || encoded.isJsonNull()) {
             return Collections.emptyList();
@@ -168,8 +144,6 @@ public final class ConfiguredSourcePhaseContract {
         Set<Long> invocationIds = new LinkedHashSet<>();
         long previousSeq = -1L;
         for (Occurrence phase : phases) {
-            // The phase id repeats across executions; the execution (event seq)
-            // is unique.
             if (!eventSeqs.add(phase.runtimeEventSeq())
                     || phase.invocationId > 0L
                     && !invocationIds.add(phase.invocationId)
@@ -181,7 +155,6 @@ public final class ConfiguredSourcePhaseContract {
         }
     }
 
-    /** One recorded execution of a hook site: its call. */
     public static JsonObject occurrence(
             Declaration declaration, String occurrenceId,
             long runtimeEventSeq, long runtimeInvocationId,
@@ -198,8 +171,6 @@ public final class ConfiguredSourcePhaseContract {
         return row;
     }
 
-    /** One recorded execution of a configuration read site: the read of
-     *  {@code field}, its declared field. */
     public static JsonObject configOccurrence(
             Declaration declaration, String occurrenceId,
             long runtimeEventSeq, String field,
@@ -243,19 +214,9 @@ public final class ConfiguredSourcePhaseContract {
             for (Long callId : enclosingCallIds) ancestry.add(callId);
         }
         row.add("enclosingCallIds", ancestry);
-        // Built from a typed declaration; validateOccurrence is for decoded
-        // rows.
         return row;
     }
 
-    /**
-     * The identity of one mint site: its source and site, nothing else.
-     *
-     * <p>Every execution of the site is the same phase.  Trap: putting the
-     * reaching occurrence or execution into the identity splits one site
-     * into many, and a flip moves only one of them (hdfs-17960 lost its bug
-     * this way).</p>
-     */
     public static String phaseId(String sourceId, String siteId) {
         String identity = required(sourceId, "sourceId") + "\n"
                 + required(siteId, "siteId") + "\n" + PUBLISH;
@@ -263,11 +224,6 @@ public final class ConfiguredSourcePhaseContract {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The VM label every mint of one source asks the engine for: the
-     * source's alone, so every read of it, at any site, in any occurrence or
-     * session, is one symbol, and a flip moves them all.
-     */
     public static String engineLabel(String sourceId) {
         return "SRC." + ArtifactIO.sha256(required(sourceId, "sourceId"));
     }
@@ -284,7 +240,6 @@ public final class ConfiguredSourcePhaseContract {
         return validateSite(row, DECLARATION_FIELD, category);
     }
 
-    /** HOOK or CONFIG by the row's authority, or null for any other. */
     private static RootCategory categoryOf(JsonObject row, String hook,
                                            String config) {
         String authority = text(row, "authority");
@@ -293,8 +248,6 @@ public final class ConfiguredSourcePhaseContract {
         return null;
     }
 
-    /** Exactly the members a row of its category states; a CONFIG row may
-     *  state its domain. */
     private static boolean members(JsonObject row, Set<String> required,
                                    RootCategory category) {
         Set<String> stated = new LinkedHashSet<>(row.keySet());
@@ -309,7 +262,6 @@ public final class ConfiguredSourcePhaseContract {
                 && Integer.toString(SCHEMA_VERSION).equals(value.getAsString());
     }
 
-    /** The site half shared by declaration and occurrence rows. */
     private static Declaration validateSite(JsonObject row, String field,
                                             RootCategory category) {
         if (!PUBLISH.equals(text(row, "phase"))) {
@@ -385,7 +337,6 @@ public final class ConfiguredSourcePhaseContract {
                 eventSeq, invocationId, declaredCallee);
     }
 
-    /** An exact integral member, or -1 when absent or another shape. */
     private static long exactLong(JsonObject row, String field) {
         return exactLong(row.get(field));
     }
@@ -448,8 +399,6 @@ public final class ConfiguredSourcePhaseContract {
 
         public String siteId() { return siteId; }
 
-        /** HOOK: the site calls the tree's hook; CONFIG: it reads the
-         *  configuration field. */
         public RootCategory category() { return category; }
     }
 
@@ -458,7 +407,6 @@ public final class ConfiguredSourcePhaseContract {
         private final String phaseId;
         private final String sourceOccurrenceId;
         private final long runtimeEventSeq;
-        /** A hook execution's call; 0 for a read, which is none. */
         private final long invocationId;
         private final String runtimeDeclaredCallee;
 
@@ -492,19 +440,14 @@ public final class ConfiguredSourcePhaseContract {
 
         public long runtimeEventSeq() { return runtimeEventSeq; }
 
-        /** What runs at the site: the hook a HOOK site calls, the field a
-         *  CONFIG site reads. */
         public String runtimeDeclaredCallee() { return runtimeDeclaredCallee; }
 
         public RootCategory category() { return declared.category(); }
 
-        /** A CONFIG site's static domain bound, or {@code ""}. */
         public String domainMin() { return declared.domainMin; }
 
-        /** A CONFIG site's static domain bound, or {@code ""}. */
         public String domainMax() { return declared.domainMax; }
 
-        /** What a CONFIG site's own validation admits. */
         public Validity valid() { return declared.valid; }
     }
 }

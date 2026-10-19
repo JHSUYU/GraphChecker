@@ -37,15 +37,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * What PLAN states of a recording ({@link RuntimeRegionPlanner}, {@link
- * RuntimeSelectedRegionFinalizer}): the activations of a folded entry (IDENTITY
- * §1: a region entered synchronously inside a running occurrence opens none
- * of its own; the occurrence it folded into names it, owns its calls and
- * declares what it declares), the node a row names, the signature of what
- * an occurrence read, the heap the aggregation builds, and the artifacts a
- * pruned recording is aggregated over.
- */
 public class RuntimeRegionPlannerTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -71,7 +62,6 @@ public class RuntimeRegionPlannerTest {
     private static final String GUARD_SITE = LEAF + "#u5";
     private static final String PHASE_SITE = LEAF + "#u7";
 
-    /** A map of these keys and values, in order. */
     private static Map<String, Object> map(Object... entries) {
         Map<String, Object> map = new LinkedHashMap<>();
         for (int at = 0; at < entries.length; at += 2) {
@@ -80,7 +70,6 @@ public class RuntimeRegionPlannerTest {
         return map;
     }
 
-    /** {@code planSkeletonGraph} over these rows, nothing else recorded. */
     private static RuntimeRegionPlanner.Result graph(
             List<StaticProgram.RegionRow> skeletons,
             List<RuntimeRegionPlanner.MethodEvent> methods,
@@ -94,13 +83,6 @@ public class RuntimeRegionPlannerTest {
                 Collections.<String, String>emptyMap(), receiverReads);
     }
 
-    /**
-     * The occurrence that folded the nested region owns it: one activation,
-     * no activation of the folded region, the fold row saying where it ran,
-     * and every call below the folded entry -- frames the enclosing region's
-     * method set does not name -- its own.  The same recording without the
-     * flag plans two activations and no fold row.
-     */
     @Test
     public void aFoldedEntryBelongsToTheOccurrenceItFoldedInto() {
         RuntimeRegionPlanner.Result plan = tickPlan(true);
@@ -124,20 +106,12 @@ public class RuntimeRegionPlannerTest {
         }
     }
 
-    /**
-     * A DECLARED OCCURRENCE THE RECORDING THREW AT ASKS NOTHING: the run as
-     * recorded is the failure, and a claim moving no root is never a finding
-     * (owner 2026-10-04), so PLAN names the declaration, BLOCKING.  A guard
-     * reaching a declared throw on both arms states no fatal arm to judge
-     * the recording by: PLAN names that declaration too.
-     */
     @Test
     public void aRecordingThatThrewThereIsADeclarationDefect()
             throws Exception {
         RuntimeRegionPlanner.Result activations = activations(cutEvents(
                 RuntimeRegionPlanner.UNREGISTERED_SOURCE, true,
                 RuntimeRegionPlanner.UNREGISTERED_SOURCE, DN1));
-        // {threw, ambiguous, the BLOCKING kind PLAN names or ""}
         Object[][] table = {
             {false, false, ""},
             {true, false, "TARGET_FATAL_IN_RECORDING"},
@@ -156,7 +130,6 @@ public class RuntimeRegionPlannerTest {
         }
     }
 
-    /** The activations the cut fixture's recording planned. */
     private static RuntimeRegionPlanner.Result activations(
             List<RuntimeRegionPlanner.MethodEvent> events) {
         return graph(cutSkeletons(), events, cutRuntime(),
@@ -164,9 +137,6 @@ public class RuntimeRegionPlannerTest {
                 Collections.<String, Map<String, Boolean>>emptyMap());
     }
 
-    /** The finalized closure over those activations, the recording taking
-     *  the fatal arm at the guard or not, the guard reaching a second
-     *  declared throw on its other arm or not. */
     private RuntimeSelectedRegionFinalizer.Result closure(
             RuntimeRegionPlanner.Result activations, boolean threw,
             boolean ambiguous) throws IOException {
@@ -175,7 +145,6 @@ public class RuntimeRegionPlannerTest {
                 LEAF + "::r1", "toCell", LEAF + "#u5#exception:o.a.h.Invalid",
                 "method", LEAF, "siteId", GUARD_SITE, "unitIndex", 5,
                 "regionIds", Collections.singletonList(LEAF_REGION));
-        // The recording's own statement that the fatal guard was decided.
         Map<String, Object> branch = map("kind", "BRANCH", "eventSeq", 5L,
                 "method", LEAF, "callId", 20L, "siteId", GUARD_SITE,
                 "outcome", threw);
@@ -190,8 +159,6 @@ public class RuntimeRegionPlannerTest {
                 new RecordedHeap.Builder().build());
     }
 
-    /** The plan rows of that closure; this fixture declares no loop, so any
-     *  bound serves the plan builder, which invents none. */
     private static RuntimeRegionPlanner.Result plan(
             RuntimeSelectedRegionFinalizer.Result closure,
             RuntimeRegionPlanner.Result activations,
@@ -221,9 +188,6 @@ public class RuntimeRegionPlannerTest {
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
     }
 
-    /** The handler's skeleton names its own method only -- the weave stops
-     *  where a region roots another one -- and the leaf declares the cut and
-     *  the phase. */
     private static List<StaticProgram.RegionRow> cutSkeletons() {
         Map<String, Object> leaf = skeleton(LEAF_REGION, LEAF,
                 Collections.singletonList(LEAF));
@@ -251,8 +215,6 @@ public class RuntimeRegionPlannerTest {
                 Collections.singletonList(HANDLER)), leaf);
     }
 
-    /** The handler opens an occurrence on {@code node}; the leaf folds into
-     *  it.  Each entry carries the stamp it was recorded with. */
     private static List<RuntimeRegionPlanner.MethodEvent> cutEvents(
             SourceRef handlerStamp, boolean receiverAttributed,
             SourceRef leafStamp, String node) {
@@ -264,8 +226,6 @@ public class RuntimeRegionPlannerTest {
                 true, leafStamp, false));
     }
 
-    /** The fatal guard the leaf decided -- healthy, as a declared
-     *  occurrence's recording must -- and the hook site it executed. */
     private static List<RuntimeRegionPlanner.RuntimeEvent> cutRuntime() {
         return Arrays.asList(new RuntimeRegionPlanner.RuntimeEvent(5L,
                 "BRANCH", LEAF, 20L, 0L, GUARD_SITE, "", -1, "", 0, "",
@@ -275,9 +235,6 @@ public class RuntimeRegionPlannerTest {
                         "", 0, "", null, null, "", ""));
     }
 
-    /** The published scope map: the throw below {@link #GUARD_SITE}, which
-     *  decides it; {@code ambiguous}: a second declared throw (unit 9) on the
-     *  guard's other arm. */
     private StaticScopeMap cutScopeMap(boolean ambiguous) throws IOException {
         List<Map<String, Object>> throwsDeclared = new ArrayList<>();
         for (int unit : ambiguous ? new int[] {7, 9} : new int[] {7}) {
@@ -302,9 +259,6 @@ public class RuntimeRegionPlannerTest {
         return StaticScopeMap.read(file);
     }
 
-    /** The tick region holds its own method only, the nested region the
-     *  two the tick calls: nothing but the fold can give those frames an
-     *  occurrence.  One recorded tick, the nested entry folded or not. */
     private static RuntimeRegionPlanner.Result tickPlan(boolean folded) {
         List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
         methods.add(entry(10L, TICK, 0L, "wl/nn0#epoch0/region/" + TICK_REGION

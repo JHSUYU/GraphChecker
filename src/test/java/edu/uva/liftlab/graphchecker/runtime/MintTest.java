@@ -47,14 +47,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * The mint is the unit: what it publishes and what it owes.  Every mint
- * states the value it read (a manual mint once stated none: VM12's {@code
- * DelegationKey.expiryDate} RECORDED_ROOT_VALUE_UNSTATED) and owes the
- * placeholder read that states the version it installed; a model is applied
- * only where this run can place the mint; a clock reading runs on from its
- * node's jumps.
- */
 @RunWith(FreshStatics.class)
 public class MintTest {
     @Rule
@@ -76,22 +68,16 @@ public class MintTest {
             + REGION + "/ctx:Root:CLIENT#1/idx:" + TICK;
     private static final String CONCRETE_ADDRESS = NODE + "#epoch1/region/"
             + REGION + "/ctx:Root:CLIENT#2/idx:" + TICK;
-    /** The address the focus row names and the region carries. */
     private static final String PLANNED_ADDRESS =
             "hdfs/nn0#epoch1/region/" + MANUAL_REGION
                     + "/ctx:Root:CLIENT#1/idx:";
-    /** Where the recording mints the root the flip depends on (11741: the
-     *  SERIAL_NO minted in nn0's rotation, read by the balancer). */
     private static final String MINT_ADDRESS =
             "hdfs/dn1#epoch0/region/REGION.53092d3e/ctx:Root:CLIENT#1/idx:";
-    /** One the wave named nowhere, which merely runs alongside. */
     private static final String ALONGSIDE_ADDRESS =
             "hdfs/dn0#epoch0/region/REGION.094a8e3d/ctx:Root:CLIENT#1/idx:";
     private static final String KEY_MANAGER =
             "<" + KeyManager.class.getName() + ": ";
 
-    /** The placeholder fixture's woven clock mint: the cell, the version it
-     *  installed, the VM's name for it, the instant, its node's skew. */
     private static final String DN1 = "hdfs-11741/dn1#epoch0";
 
     private int opened;
@@ -123,8 +109,6 @@ public class MintTest {
                 + region + "'");
     }
 
-    /** {@code row} declaring the configured source's one phase at {@code
-     *  occurrence}, and (with {@code model}) the wave's value of it. */
     private static JsonObject phased(JsonObject row, String occurrence,
                                      boolean model) {
         JsonArray declarations = new JsonArray();
@@ -170,13 +154,11 @@ public class MintTest {
         return active;
     }
 
-    /** Hands this replay {@code rows} as its focus rows, afresh. */
     private void focus(String... rows) throws Exception {
         Fixtures.focus(folder.newFolder().toPath(), rows);
         FocusedReplay.resetForTests();
     }
 
-    /** One focus row flipping {@code site}#1 at {@code at}. */
     private static String flipAt(String at, String site, boolean outcome,
                                  String members) {
         return Fixtures.focusRow(at, "'taskId':'TASK.1','obligationId':"
@@ -196,15 +178,12 @@ public class MintTest {
                         Object.class}, active, rootId, observed);
     }
 
-    /** One frozen SYMBOLIC action, as the plan carries it. */
     private static JsonObject action(String symbol) {
         return json("{'symbol':'" + symbol + "','actionDigest':'DIGEST.1',"
                 + "'cell':'<org.apache.hadoop.util.Timer: long now()>.return',"
                 + "'mode':'SYMBOLIC','javaType':'J'}");
     }
 
-    /** The same action, as the plan carries a declared clock read (of
-     *  the wall clock, where {@code wall}). */
     private static JsonObject clockAction(String symbol, String value,
                                           boolean wall) {
         return Fixtures.with(action(symbol), "'rootKind':'CALL_RETURN',"
@@ -214,7 +193,6 @@ public class MintTest {
                 + "','eventSeq':7");
     }
 
-    /** The row the runtime publishes for one manual mint. */
     private JsonObject manualRow(JsonObject encoded, String recordedValue) {
         ActiveRegion active = manualRegion();
         lastManualRegion = active;
@@ -251,28 +229,12 @@ public class MintTest {
         return SessionReader.read(Fixtures.session(root())).writes();
     }
 
-    /** One declared cell of each kind a case declares a root at. */
     private static final class KeyManager {
         private int serialNo;
         private boolean ordered;
         private long now;
     }
 
-    /**
-     * A mint publishes the value it read -- every mint, a clock and a
-     * focused one included (INVARIANT 8): the seed replay IS the reference
-     * execution the deltas are relative to, and the value a mint states is
-     * the one it read BEFORE the plant (hdfs-17960's two focused sessions
-     * and 11741's six once stated an empty {@code recordedValue}, BLOCKING
-     * at IMPORT).  A flip is addressed at ONE occurrence (R4a: 6 of 11
-     * campaign-#3 flips landed on the wrong node), never abandons the mint
-     * of an assigned root (17960 lost 42 decision rows and its roots.jsonl
-     * that way), and admits only over a session that states every mint it
-     * moved and whose prefix was not abandoned.  A clock is asked for as a
-     * skew of this run's own reading; a field mint asks the same one
-     * decision (11741 stated SERIAL_NO 182907 under an obligation assigning
-     * 182910); a blank is named; the flips a replay inherited hold too.
-     */
     @Test
     public void aMintStatesTheValueItRead() throws Exception {
         JsonObject recorded = manualRow(action("PORT.now"), "1789358343989");
@@ -292,8 +254,6 @@ public class MintTest {
                 clock.get("observedValue").getAsString(),
                 clock.get("recordedValue").getAsString());
         assertEquals(7L, clock.get("eventSeq").getAsLong());
-        // I4: the mint files its clock cell where it runs, so a nested
-        // activation's decision (published first) resolves its symbol.
         assertEquals(Collections.singletonMap("PORT.now", 1789358344655L),
                 RowRuntime.clockReadings(term(clock.get("rawSymbol")
                         .getAsString())));
@@ -368,8 +328,6 @@ public class MintTest {
         keys.now = 1789358344655L;
         RuntimeTraceContext.registerSource(keys, new SourceRef("CLUSTER_NODE",
                 "NAMENODE", "hdfs-17899/nn0", 0L));
-        // R3: one rule over both spellings of what a wave asks of a root
-        // (11741 campaign #3: six deltas no mint planted, silently).
         Map<String, String> owed = new LinkedHashMap<String, String>();
         owed.put("CASE.SERIAL", "12");
         owed.put("CASE.ORDERED", "false");
@@ -377,7 +335,6 @@ public class MintTest {
         assertEquals("unplanted until a mint plants it", owed,
                 FocusedReplay.unplantedAssignments());
         Object[][] mints = {
-            // root, action, cell, type, read, stated, the region reads back
             {"CASE.SERIAL", action("CASE.SERIAL"), "int serialNo>", "I",
                 182907, "182907"},
             {"CASE.ORDERED", action("CASE.ORDERED"), "boolean ordered>", "Z",
@@ -413,8 +370,6 @@ public class MintTest {
         assertEquals("PORT.unspellable", gap().subject());
         assertTrue(gap().detail().contains("states no value it observed"));
 
-        // The flips this replay inherited are part of its world: the one
-        // result row is the primary obligation's, held to each of them.
         String inherited = ",'inheritedFlips':[{'focusedOccurrenceId':'"
                 + address(ALONGSIDE_ADDRESS).id() + "','siteId':'Rotate#u5',"
                 + "'ordinal':1,'outcome':true,'obligationId':'OBL.parent'}]";
@@ -443,7 +398,6 @@ public class MintTest {
                 && result("s-nested").detail().contains("Rotate#u5#1"));
     }
 
-    /** One decision term that reads {@code symbol}, as the VM spells it. */
     private static JsonObject term(String symbol) {
         JsonObject predicate = json("{'_type':'BinaryExpression','_op':'<',"
                 + "'_right':{'_type':'ConstExpr','_java_type':'J','_exp':"
@@ -452,12 +406,6 @@ public class MintTest {
         return predicate;
     }
 
-    /**
-     * I2: a refusal abandons only its own occurrence.  {@code contradicted}
-     * once asked {@link FocusedReplay#focused}, true of every member of the
-     * focused set, so one obligation's refusal abandoned the next focused
-     * activation at its first decision (10 of hdfs-11741's 40 nn0 sessions).
-     */
     @Test
     public void aRefusalAbandonsOnlyItsOwnOccurrence() throws Exception {
         String mint = ",'rootMints':{'CASE.SERIAL':'" + MINT_ADDRESS + "'}";
@@ -488,13 +436,6 @@ public class MintTest {
         assertFalse(FocusedReplay.contradicted(address(ALONGSIDE_ADDRESS)));
     }
 
-    /**
-     * A configured source mints where its occurrence runs SYMBOLIC
-     * (SYMBOL-SCOPE §1): a concretely run region contributes literals,
-     * never freedom.  On hdfs-11741 a concrete {@code updateKeys} minted
-     * three fresh INTEGRAL roots beside a literal expiry, decoupling it
-     * from its clock.  The seed focuses nothing, so it mints everywhere.
-     */
     @Test
     public void aHookMintsOnlyWhereItsOccurrenceRunsSymbolic()
             throws Exception {
@@ -532,8 +473,6 @@ public class MintTest {
             assertTrue(gap().detail().contains(CONCRETE_ADDRESS));
             assertEquals("one row per occurrence", 2, gaps().size());
 
-            // The focused occurrence mints: a concrete value this site's
-            // symbol, and an arrival carrying an expression of its own none.
             assertTrue(ActiveRegion.mintsUnderSymbolicOccurrence(focused,
                     SOURCE_ID, FIELD));
             RootMint.SourceSiteEntry entry =
@@ -565,7 +504,6 @@ public class MintTest {
         }
     }
 
-    /** A declared clock read of the plan's, read at this recorded event. */
     private static SymbolizeAction clock(long place, String source) {
         return new SymbolizeAction(json("{'symbol':'PORT.now." + place + "',"
                 + "'actionDigest':'DIGEST.1','cell':'<org.apache.hadoop.util."
@@ -576,7 +514,6 @@ public class MintTest {
                 + place + "}"));
     }
 
-    // ---- every mint owes the placeholder read that states it ----------
 
     private ActiveRegion placeholderRegion(String occurrence) {
         return placeholderRegion(task("REGION.ba3902cd", DN1, DN1
@@ -595,7 +532,6 @@ public class MintTest {
 
     private static final String OCCURRENCE = DN1 + "/region/REGION.ba3902cd#1";
 
-    /** One VM write-log record, as an activation reads one out. */
     private static JsonObject record(String locationKey,
                                      JsonObject... versions) {
         JsonObject record = json("{'locationKey':'" + locationKey + "',"
@@ -617,7 +553,6 @@ public class MintTest {
         return version;
     }
 
-    /** The version with the site and activation the VM logs on it. */
     private static JsonObject loggedAt(JsonObject version) {
         version.add("site", json("{'className':'sun/reflect/"
                 + "NativeMethodAccessorImpl','methodName':'invoke',"
@@ -641,8 +576,6 @@ public class MintTest {
                 new Class<?>[] {ActiveRegion.class}, active);
     }
 
-    /** Publishes {@code records} of one activation's read-out, with
-     *  {@code readSites} installed. */
     private void published(Map<String, JsonObject> records,
                            JsonObject... readSites) throws Exception {
         Fixtures.openSession(root());
@@ -660,11 +593,6 @@ public class MintTest {
         RowRuntime.closeSession();
     }
 
-    /**
-     * A location's INITIAL is a write row, flagged: Writers_W(l)'s writer at
-     * version 0, at the access that started the log and spelled as its own
-     * kind there -- a log a store starts states both at one event.
-     */
     @Test
     public void aLocationsInitialIsAFlaggedRowOfItsOwnSite()
             throws Exception {
@@ -688,12 +616,6 @@ public class MintTest {
                 rows.get(455L).endpoint().site());
     }
 
-    /**
-     * A refused envelope read out again unchanged is held as its refusal,
-     * decoded once: every activation whose read-out states it still files
-     * the location as refused and defers the gap with its own read-out
-     * ({@code SharedStateCapture#file}).
-     */
     @Test
     public void aHeldRefusalIsFiledWithEveryActivation() throws Exception {
         VmExpressionTable.Store store =

@@ -7,13 +7,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * The static pass's options, as run_engine.sh ({@code do_analyze}) and the
- * offline gate ({@code tools/regress/offline-ab.sh}) pass them: {@code -i
- * <classes directory>} (one or more), {@code -x <classpath>} and {@code -o
- * <output directory>}, each flag followed by its value.  Anything else is
- * refused by name.
- */
 public final class GraphCheckerOptions {
     private final List<String> inputList;
     private final String classPath;
@@ -61,9 +54,6 @@ public final class GraphCheckerOptions {
             throw new IllegalArgumentException("GraphCheckerMain states no "
                     + "-i <classes directory>");
         }
-        // Soot's classpath: GraphChecker's own classes (the runtime a weave
-        // calls), the analysed classpath, the inputs.  The pass's own JVM
-        // runs on GraphChecker's jar alone (run_engine.sh do_analyze).
         List<String> entries = new ArrayList<>();
         entries.add(GraphCheckerMain.class.getProtectionDomain()
                 .getCodeSource().getLocation().getPath());
@@ -77,6 +67,5 @@ public final class GraphCheckerOptions {
 
     public List<String> getInputList() { return inputList; }
 
-    /** The output directory, or null when none was given. */
     public String getOutputDir() { return outputDir; }
 }

@@ -24,11 +24,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * A CONFIRM replay: the focus row flips nothing, and the expected edges
- * are compared -- never enforced -- against what the run pairs and joins;
- * the views a world holds, and the order it is held to.
- */
 @RunWith(FreshStatics.class)
 public class ConfirmationTest {
     @Rule
@@ -62,8 +57,6 @@ public class ConfirmationTest {
         System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
     }
 
-    /** Hands the replay a worker directory holding its focus row and these
-     *  edges (single-quoted rows); null edges writes none. */
     private void handed(String focusRow, List<String> edges)
             throws Exception {
         Path worker = folder.newFolder().toPath();
@@ -79,7 +72,6 @@ public class ConfirmationTest {
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
     }
 
-    /** A CONFIRM row at {@link #ANCHOR}, with {@code members}. */
     private static String confirm(String members) {
         return Fixtures.focusRow(ANCHOR, "'schemaVersion':1,'kind':"
                 + "'FOCUSED_TASK','taskId':'CONFIRM','obligationId':'CONFIRM',"
@@ -98,7 +90,6 @@ public class ConfirmationTest {
                 : ",'value':'" + value + "'") + "}";
     }
 
-    /** One STATE row of the model's edges. */
     private static String state(Endpoint reader, String more, String writer,
                                 String version) {
         return "{'kind':'STATE','reader':'" + reader.id() + "'" + more
@@ -114,7 +105,6 @@ public class ConfirmationTest {
     @FreshStatics.Rows(2)
     public void theEdgesAreComparedAndNeverEnforced() throws Exception {
         if (FreshStatics.row() == 0) {
-            // A replay handed no edges compares nothing.
             Path plain = folder.newFolder("plain").toPath()
                     .resolve("execution_task_plan.jsonl");
             Files.write(plain, new byte[0]);
@@ -131,8 +121,6 @@ public class ConfirmationTest {
         Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
         Endpoint held = endpoint(ANCHOR, "XCH.2.resp.expire-at");
-        // A read in a loop that polls for its write: the model's at turn 2,
-        // this run's at turn 1 (SOLR-18413 stream7b: MigrateCmd's poll).
         Endpoint polled = turn(2);
         handed(confirm(""), Arrays.asList(wire(consumer, chosen, null),
                 wire(held, chosen, "2000"),
@@ -155,8 +143,6 @@ public class ConfirmationTest {
         mismatch = Confirmation.attached(held, chosen, "1999").mismatch;
         assertTrue(mismatch, mismatch.endsWith("the model's value is "
                 + "\"2000\", the run delivered \"1999\""));
-        // The writer of a version is published after the read that saw
-        // it, so the state edge is answered at the close.
         Confirmation.read(reader, CELL, 121L, ReadRow.UNKNOWN_VERSION);
         Confirmation.wrote(CELL, 121L, other, false);
         Confirmation.read(turn(1), CELL, 123L, ReadRow.UNKNOWN_VERSION);
@@ -171,7 +157,6 @@ public class ConfirmationTest {
                 && close.get(1).endsWith("the run never read here"));
     }
 
-    /** The poll's read at one turn of its loop. */
     private static Endpoint turn(int k) {
         return Endpoint.of(READER, "a.Handler#poll()#5:READ",
                 ExecutionIndex.of(Arrays.asList(Frame.of(
@@ -179,15 +164,6 @@ public class ConfirmationTest {
                         Frame.of("a.Handler#poll()#5:READ", 0))), 0);
     }
 
-    /**
-     * An obligation replay whose world pairs a read with its location's
-     * INITIAL is admitted only where that exact read observed the INITIAL's
-     * version.  hdfs-bugs-slowdisk-zero SD5: the guard read the INITIAL and
-     * the limit, the same accessor site one call later, the
-     * reconfiguration's 0; another turn's INITIAL says nothing of this one.
-     * A focus row with pairings and no edges compared nothing, and two
-     * writers for one read are no model: neither is admitted.
-     */
     @Test
     @FreshStatics.Rows(5)
     public void anObligationReplayIsAdmittedOnlyOverItsPairing()
@@ -202,8 +178,6 @@ public class ConfirmationTest {
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "48");
         String flipped = "<a.Detector: void run()>#u63";
         String initial = anyTurnState(guard, Confirmation.INITIAL);
-        // rows, the version each of guard and limit observed (0: no read),
-        // admitted?, what refused it
         Object[][] table = {
             {Arrays.asList(initial), 4L, 0L, true, ""},
             {Arrays.asList(initial), 5L, 0L, false, "STATE"},
@@ -244,9 +218,6 @@ public class ConfirmationTest {
                 + Confirmation.anyTurn(reader) + "'", writer, "4");
     }
 
-    /** A CONFIRM run that cannot read the edges the model chose compared
-     *  none, so its close says so -- a half-written file or a missing one --
-     *  and the fatal alone confirms nothing (it used to, silently). */
     @Test
     @FreshStatics.Rows(2)
     public void aConfirmationWithoutItsEdgesIsAMismatch() throws Exception {
@@ -265,9 +236,6 @@ public class ConfirmationTest {
                 + " no readable " + Confirmation.FILE));
     }
 
-    /** The ORDER a CONFIRM run is held to: the reader's activation enters
-     *  only once the writer's has exited; an order that cannot come is a
-     *  mismatch, not a hang. */
     @Test
     public void aReaderWaitsForItsWriterAndAnUnrealizableOrderIsAMismatch()
             throws Exception {
@@ -289,7 +257,6 @@ public class ConfirmationTest {
         read.join(5000L);
         assertTrue("the reader entered only after the writer exited",
                 entered[0] >= exited);
-        // Nothing ever exits `never`: the writer's entry times out.
         Confirmation.entering(writer);
         List<String> mismatches = Confirmation.close();
         assertEquals(1, mismatches.size());

@@ -16,42 +16,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-/**
- * Runs one workload test method by reflection, without a JUnit engine:
- * class setup, test setup, the test, test teardown, class teardown.  Setup
- * runs superclass first, teardown subclass first; an overridden method runs
- * once.
- *
- * <p>Roles are annotation names from both JUnit 4 and Jupiter.  An
- * unrecognized method is refused, never skipped (else a session is published
- * for a workload that never ran).  The workload's own throwable surfaces
- * unwrapped.  Declared timeouts are deliberately ignored: the caller owns the
- * wall clock.  Sessions are {@link JUnitMethodRunner}'s concern.</p>
- *
- * <p>What a Jupiter test class states about its own set-up is honoured too:
- * a {@code @TempDir} field gets a fresh directory, and an extension a
- * {@code @RegisterExtension} field holds gets its lifecycle callbacks around
- * the methods of the same role, with a context that answers what the test
- * is ({@link #context}).  A test method name a helper shares is the
- * {@code @Test} one.  A lifecycle or test method may take Jupiter's {@code
- * TestInfo}, which the same context answers (ZooKeeper's {@code
- * ZKTestCase#starting} logs the test it starts); any other parameter is
- * refused by name.  A parameterized test or class runs the one invocation
- * the case names, {@code m[k]} ({@link JUnitInvocation}): its arguments go to
- * the method's leading parameters and to the class's constructor or
- * {@code @Parameter} fields.</p>
- */
 final class JUnitLifecycle {
-    /** What marks the method the adapter names, in either vocabulary. */
     private static final String[] TEST = {
             "org.junit.jupiter.api.Test", "org.junit.Test"};
-    /** randomizedtesting's choice of the methods its runner takes as
-     *  tests (Lucene's and Solr's {@code LuceneTestCase}): a provider whose
-     *  name says JUnit 3 takes every public {@code test*()} method, marked
-     *  or not (Solr's {@code TestPullReplica#testAddDocs}). */
     private static final String METHOD_PROVIDERS =
             "com.carrotsearch.randomizedtesting.annotations.TestMethodProviders";
-    /** What marks a method run once per argument set. */
     private static final String[] PARAMETERIZED = {
             JUnitInvocation.PARAMETERIZED_TEST};
     private static final String[] TEMP_DIR = {
@@ -60,10 +29,8 @@ final class JUnitLifecycle {
             "org.junit.jupiter.api.extension.RegisterExtension"};
     private static final String EXTENSIONS =
             "org.junit.jupiter.api.extension.";
-    /** The one parameter type a lifecycle or test method may take. */
     private static final String TEST_INFO = "org.junit.jupiter.api.TestInfo";
 
-    /** The four roles; {@code onTheClass} roles are static. */
     private enum Lifecycle {
         BEFORE_ALL(true, true, "BeforeAllCallback",
                 "org.junit.jupiter.api.BeforeAll", "org.junit.BeforeClass"),
@@ -76,9 +43,6 @@ final class JUnitLifecycle {
 
         private final boolean onTheClass;
         private final boolean superclassFirst;
-        /** The extension callback of this role: an interface of {@link
-         *  #EXTENSIONS} whose one method is its name, uncapitalized and
-         *  without "Callback". */
         private final String callback;
         private final String[] annotations;
 
@@ -91,7 +55,6 @@ final class JUnitLifecycle {
         }
     }
 
-    /** The invocation this run is of: one per workload JVM. */
     private static JUnitInvocation running;
 
     private JUnitLifecycle() {
@@ -120,13 +83,10 @@ final class JUnitLifecycle {
             runWithItsRunner(testClass, testMethod.getName());
             return;
         }
-        // Before anything of the test runs, so before its window.
         named.resolve(testClass, testMethod);
         if (!named.plain()) ScheduleLog.invocation(named.stated());
         running = named;
         Throwable failure = null;
-        // A static field's extension is the class's; an instance field's,
-        // the test's alone.
         List<Object> classExtensions = new ArrayList<>();
         try {
             prepareFields(testClass, null, classExtensions);
@@ -156,7 +116,6 @@ final class JUnitLifecycle {
                         testClass, test, testMethod, extensions);
             }
         } catch (Throwable thrown) {
-            // Class setup or construction failed: class teardown still runs.
             failure = merge(failure, thrown);
         } finally {
             failure = alsoInvoke(failure, null,
@@ -168,10 +127,8 @@ final class JUnitLifecycle {
         rethrow(failure);
     }
 
-    /** What names a JUnit 4 class's own runner; it is inherited. */
     private static final String[] RUN_WITH = {"org.junit.runner.RunWith"};
 
-    /** Whether the class or a superclass names the runner that runs it. */
     private static boolean declaresRunner(Class<?> testClass) {
         for (Class<?> type = testClass; type != null;
              type = type.getSuperclass()) {
@@ -182,16 +139,6 @@ final class JUnitLifecycle {
         return false;
     }
 
-    /**
-     * Runs one method of a class that names its runner, by that runner
-     * ({@code RandomizedRunner} for every Lucene and Solr test): the rules,
-     * the randomized context and the threads the runner gives a test are the
-     * test's own, and reflection cannot stand in for them -- a Solr test
-     * calls {@code random()}, which only the runner's thread answers.  The
-     * runner is the workload's JUnit, reached reflectively.  A method the
-     * runner skipped is refused like a missing one: a session would be
-     * published for a workload that never ran.
-     */
     private static void runWithItsRunner(Class<?> testClass, String method)
             throws Exception {
         ClassLoader loader = testClass.getClassLoader();
@@ -222,11 +169,6 @@ final class JUnitLifecycle {
         }
     }
 
-    /**
-     * The named test method, most derived first so an override wins; a
-     * same-named helper is passed over; refused if missing or not marked a
-     * test.  What its parameters take is {@link JUnitInvocation#resolve}'s.
-     */
     static Method testMethod(Class<?> testClass, String methodName)
             throws NoSuchMethodException {
         boolean named = false;
@@ -253,11 +195,6 @@ final class JUnitLifecycle {
                 + methodName);
     }
 
-    /**
-     * The static fields ({@code test} null) or the instance fields of the
-     * class: a {@code @TempDir} gets a fresh directory, and a
-     * {@code @RegisterExtension}'s extension joins {@code extensions}.
-     */
     private static void prepareFields(Class<?> testClass, Object test,
                                       List<Object> extensions)
             throws Exception {
@@ -287,7 +224,6 @@ final class JUnitLifecycle {
         }
     }
 
-    /** The {@code role} callback of every extension that has one. */
     private static void around(Lifecycle role, Class<?> testClass,
                                Object test, Method testMethod,
                                List<Object> extensions) throws Throwable {
@@ -316,7 +252,6 @@ final class JUnitLifecycle {
         }
     }
 
-    /** The extension's callback interface for {@code role}, or null. */
     private static Class<?> callback(Lifecycle role, Object extension) {
         for (Class<?> type = extension.getClass(); type != null;
              type = type.getSuperclass()) {
@@ -330,13 +265,6 @@ final class JUnitLifecycle {
         return null;
     }
 
-    /**
-     * The extension context a callback is handed, or the {@code TestInfo} a
-     * method takes (a subset of the same questions): which class, instance
-     * and method the test is.  What it cannot answer is refused by name, so
-     * an extension that needs more fails the workload instead of seeing a
-     * lie.
-     */
     private static Object context(Class<?> contextType, Class<?> testClass,
                                   Object test, Method testMethod) {
         Object[] self = new Object[1];
@@ -401,7 +329,6 @@ final class JUnitLifecycle {
         return value;
     }
 
-    /** The methods of one role, in the order the role runs them. */
     private static List<Method> lifecycleMethods(Class<?> testClass,
                                                  Lifecycle role) {
         List<Method> methods = new ArrayList<>();
@@ -425,7 +352,6 @@ final class JUnitLifecycle {
                             : "lifecycle method is static: ") + role + " "
                             + type.getName() + "#" + method.getName());
                 }
-                // Already collected: this one is overridden.
                 if (!collected.add(method.getName())) {
                     continue;
                 }
@@ -433,7 +359,6 @@ final class JUnitLifecycle {
                 methods.add(method);
             }
         }
-        // Collected most derived first, which is teardown's direction.
         return role.superclassFirst
                 ? bySuperclassFirst(testClass, methods) : methods;
     }
@@ -451,9 +376,6 @@ final class JUnitLifecycle {
         return ordered;
     }
 
-    /** Whether the class's runner takes JUnit 3 style methods as tests: a
-     *  {@value #METHOD_PROVIDERS} on it or a superclass names a provider
-     *  whose class name says JUnit3. */
     private static boolean junit3Provided(Class<?> testClass) {
         for (Class<?> type : hierarchy(testClass, false)) {
             for (Annotation annotation : type.getDeclaredAnnotations()) {
@@ -477,8 +399,6 @@ final class JUnitLifecycle {
         return false;
     }
 
-    /** A JUnit 3 test: public, of the instance, named test*, no
-     *  parameters, returning nothing. */
     private static boolean junit3Test(Method method) {
         int modifiers = method.getModifiers();
         return method.getName().startsWith("test")
@@ -523,10 +443,6 @@ final class JUnitLifecycle {
         }
     }
 
-    /**
-     * Runs teardown even after a failure; the first throwable stands, later
-     * ones are suppressed under it.
-     */
     private static Throwable alsoInvoke(Throwable failure, Object receiver,
                                         List<Method> methods,
                                         Class<?> testClass,
@@ -552,7 +468,6 @@ final class JUnitLifecycle {
         return failure;
     }
 
-    /** Whether every parameter of {@code method} is a {@code TestInfo}. */
     private static boolean resolvable(Method method) {
         for (Class<?> parameter : method.getParameterTypes()) {
             if (!TEST_INFO.equals(parameter.getName())) return false;
@@ -560,10 +475,6 @@ final class JUnitLifecycle {
         return true;
     }
 
-    /**
-     * Calls {@code method} of the test {@code testMethod} names (null for a
-     * class role), a {@code TestInfo} parameter answered by its context.
-     */
     private static void invoke(Object receiver, Method method,
                                Class<?> testClass, Method testMethod)
             throws Throwable {
@@ -575,7 +486,6 @@ final class JUnitLifecycle {
         call(receiver, method, arguments);
     }
 
-    /** Calls {@code method}, the workload's own throwable unwrapped. */
     private static void call(Object receiver, Method method,
                              Object[] arguments) throws Throwable {
         try {

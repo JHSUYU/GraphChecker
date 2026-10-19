@@ -33,19 +33,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * One activation of a planned region ({@link ConcolicRegionRuntime},
- * {@link ActiveRegion}, {@link BranchObservation}): the rows a decision
- * writes, the target reach, loop budgets, folds, abandonment, the end of a
- * run, a doors-only occurrence's pause, and an expression read as a DAG.
- */
 @RunWith(FreshStatics.class)
 public class RegionRuntimeTest {
     private static final String METHOD = "<a.B: void run(int)>";
     private static final String DECLARED = METHOD + "#u4";
     private static final String NODE = "hdfs-11741/dn1#epoch0";
     private static final String MAP = "<a.B: java.util.Map m>";
-    /** A guard whose method takes two parameters, so its id has a comma. */
     private static final String COMMAS = "<a.B: void run(int,long)>#u9";
     private static final long STRANDED = 990001L;
     private static final String SYMBOLIC = "'mode':'SYMBOLIC','bindingMode':"
@@ -75,14 +68,12 @@ public class RegionRuntimeTest {
         Lineage.resetForTests();
     }
 
-    /** REGION.1 on dn0 rooted at {@link #METHOD}, its branches woven. */
     private static JsonObject task(String goal, String members) {
         return taskRow("dn0#epoch0", "REGION.1@dn0#epoch0#1", METHOD, false,
                 "'goalKind':'" + goal + "','branchMethods':['" + METHOD + "']"
                         + (members.isEmpty() ? "" : "," + members));
     }
 
-    /** One branch declared at u4, one loop boundary at u12, one target. */
     private static JsonObject declared() {
         return task("TARGET_REACH_CLOSURE", "'inputActions':[{'symbol':"
                 + "'sym.f'," + SYMBOLIC + "}],'retainedLoops':[{"
@@ -91,7 +82,6 @@ public class RegionRuntimeTest {
                 + "'requiredOutcome':true}");
     }
 
-    /** A doors-only task: a field input and a door marker's. */
     private static JsonObject doorsOnly() {
         return task("REGION_PATH_CLOSURE", "'inputActions':[{'symbol':"
                 + "'sym.f'," + SYMBOLIC + "},{'symbol':'sym.door','marker':"
@@ -101,20 +91,10 @@ public class RegionRuntimeTest {
 
     private int opened;
 
-    /** A fresh activation of {@code row}, innermost on this thread. */
     private ActiveRegion open(JsonObject row) {
         return pushed(region(900000L + ++opened, row));
     }
 
-    /**
-     * What a region writes down for one decision at a declared site: one
-     * row naming the site, the arm and the empty path-condition window, and
-     * the reach -- the binary branch and the multiway switch alike (one
-     * implementation, parameterised by the decision).  That site id is also
-     * what the VM's guarded-store table carries for each guard, verbatim,
-     * commas and all; the store named as the VM names it; a store into a
-     * field only its construction stores is no guarded store.
-     */
     @Test
     @FreshStatics.Rows(2)
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
@@ -139,8 +119,6 @@ public class RegionRuntimeTest {
         assertEquals(2, table.sites());
     }
 
-    /** One {@code WRITE_SITE} row storing {@code a.B.f} (by the callee when
-     *  one is named), with its guards. */
     private static JsonObject writeSite(String vmSite, String callee,
                                         String... guards) {
         return json("{'kind':'STATIC_SCOPE_SITE','role':'WRITE_SITE',"
@@ -150,8 +128,6 @@ public class RegionRuntimeTest {
                 + "','guards':['" + String.join("','", guards) + "']}");
     }
 
-    /** The transcript one concrete decision at u4 leaves in a fresh
-     *  region, its ordinal counted on the occurrence running here. */
     private String publishes(Object decision) throws Exception {
         ActiveRegion active = open(declared());
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
@@ -169,12 +145,6 @@ public class RegionRuntimeTest {
                 + (returned == null ? "null" : "observation") + "\n";
     }
 
-    /**
-     * IDENTITY §1: a folded entry starts no activation.  The fold already
-     * stands when admission would be asked, so this call is a method call
-     * INSIDE the running occurrence; an activation would be a second one of
-     * it.  The control, no fold standing, does reach admission.
-     */
     @Test
     public void aFoldedEntryStartsNoActivation() throws Exception {
         installPlan();
@@ -199,8 +169,6 @@ public class RegionRuntimeTest {
         }
     }
 
-    /** The same region entered at a scope root: an occurrence of its own,
-     *  whose entry reaches admission. */
     @Test
     public void anUnfoldedEntryReachesAdmission() throws Exception {
         installPlan();
@@ -213,7 +181,6 @@ public class RegionRuntimeTest {
                 ConcolicRegionRuntime.enterRegionFrame("sel", METHOD, null,
                         new Object[0]);
             } catch (Throwable withoutAVm) {
-                // No VM to start a region in: reaching admission is enough.
             }
             assertNotNull("the control did reach admission",
                     get(ConcolicVmBroker.class, "engineApi"));
@@ -227,17 +194,11 @@ public class RegionRuntimeTest {
                 Collections.singletonList(Fixtures.runtimeTask(declared()))));
     }
 
-    /**
-     * The end of a run: its settle gives up only on a grace in which nothing
-     * moved; a stranded activation is settled in one step, its own terminal
-     * still finding it; a terminal that wins leaves nothing to strand.
-     */
     @Test
     public void aStrandIsOneStepAndTheOwnersTerminalStillTakesIt() {
         ConcolicResultPublisher.Grace grace = new ConcolicResultPublisher
                 .Grace(100L, 0L, new long[] {1L, 0L});
         long[][] table = {
-            // now, progress..., remaining
             {0L, 1L, 0L, 100L}, {60L, 1L, 0L, 40L}, {70L, 1L, 5L, 100L},
             {150L, 1L, 5L, 20L}, {180L, 1L, 5L, -10L}};
         for (long[] row : table) {
@@ -261,22 +222,13 @@ public class RegionRuntimeTest {
         assertSame(active, ConcolicRegionRuntime.STRANDED.get(STRANDED));
         assertFalse("once", ConcolicRegionRuntime.strand(active));
         try {
-            // Its own terminal closes the VM region this JVM has none of.
             ConcolicRegionRuntime.finish(STRANDED, "NORMAL", "", null);
         } catch (RuntimeException noVm) {
-            // The region it tried to close is the VM's.
         }
         assertFalse("its terminal took it",
                 ConcolicRegionRuntime.STRANDED.containsKey(STRANDED));
     }
 
-    /**
-     * An early end strands the live before its settle waits, so the settle
-     * waits only for the publications the session owes; a read-out still
-     * reading then reads no more pages, and a page of a read-out the
-     * session withholds (unsubmitted by the end, or submitted after) files
-     * nothing (its table is still the read-out channel's).
-     */
     @Test(timeout = 60000L)
     public void anEarlyEndStrandsTheLiveAndDecodesNothingWithheld() {
         JsonObject run = taskRow("hdfs/nn0#epoch0",
@@ -291,7 +243,6 @@ public class RegionRuntimeTest {
             assertFalse("no page read after the end",
                     ConcolicResultPublisher.awaitDecodeRoom(1L));
             long[][] table = {
-                // ordinal, withheld (1 = yes)
                 {0L, 1L}, {1L, 0L}, {2L, 0L}, {3L, 1L}};
             for (long[] row : table) {
                 SharedStateCapture.SharedStateReadOut readOut =
@@ -305,8 +256,6 @@ public class RegionRuntimeTest {
                     ConcolicRegionRuntime.STRANDED.get(STRANDED));
             assertEquals(0, get(ConcolicResultPublisher.class,
                     "liveSelectedRegions"));
-            // A withdrawn session (a stall before any flip) waits for none,
-            // not even a publication still running.
             set(ConcolicResultPublisher.class, "strandedAtEnd", false);
             set(ConcolicResultPublisher.class, "concluded",
                     ConcolicResultPublisher.Conclusion.AT_NO_PROGRESS);
@@ -327,7 +276,6 @@ public class RegionRuntimeTest {
         }
     }
 
-    /** The pause calls and container observations the "VM" was asked. */
     public static final class Vm {
         static int pauses;
         static int resumes;
@@ -357,7 +305,6 @@ public class RegionRuntimeTest {
         }
     }
 
-    /** A VM that records the pause calls it is asked. */
     private static void installVm() throws Exception {
         Vm.pauses = 0;
         Vm.resumes = 0;
@@ -374,15 +321,6 @@ public class RegionRuntimeTest {
         set(ConcolicVmBroker.class, "engineApi", broker);
     }
 
-    /**
-     * A doors-only occurrence ({@code RuntimeSelectedRegionFinalizer
-     * #DOORS_ONLY}) keeps its door markers' inputs alone and reads no tracked
-     * state from entry; its VM base pause is taken at the end of its entry
-     * hook's bracket, lifted before a named container mutation and at a door
-     * decision, never at a read, restored at the next hook and released at
-     * the close: pauses and resumes balance.  The hook after a mutation on a
-     * thread outside every region marks the log and throws nothing.
-     */
     @Test
     public void aDoorsOnlyOccurrenceRunsPausedButForItsDoors()
             throws Exception {
@@ -439,13 +377,6 @@ public class RegionRuntimeTest {
         assertEquals("[false, false]", Vm.OBSERVED.toString());
     }
 
-    /**
-     * THE RULE: a door window opens only inside a woven observation bracket;
-     * asked for outside one it is not opened, an ENGINE_FAULT; so is an
-     * activation whose VM refused observation resumes.  A woven branch the
-     * VM gives no event while its occurrence records is an UNATTESTED_ARM,
-     * named once; under the base pause the VM owes no event.
-     */
     @Test
     public void aWindowOutsideEveryBracketAndARefusedResumeAreNamed()
             throws Exception {

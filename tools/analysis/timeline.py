@@ -140,8 +140,6 @@ def worker_times(worker):
     replay_start = first("replay-host.txt", "replay-stderr.log")
     replay_end = mtime(os.path.join(worker, "replay.log"))
     end = mtime(os.path.join(worker, "obligation_result.jsonl"))
-    # A run pruned before host.txt was kept states its logs' last writes
-    # only: the earliest of them, never past its answer, is the nearest.
     start = mtime(os.path.join(worker, "host.txt")) or min(
         [t for t in (mtime(os.path.join(worker, "stderr.log")),
                      mtime(os.path.join(worker, "stdout.log")), end) if t] or [None])
@@ -334,11 +332,8 @@ def report(root, label):
             summary = dict(zip(lines[0], lines[-1]))
     running = running[-1] if running and running[-1] not in done and not summary else None
     seed_start = mtime(os.path.join(root, ".seed-started"))
-    # The stages before SEED: all that finished, while SEED runs.
     before_seed = sum(w for n, w in stages[:done.index("SEED") if "SEED" in done else len(done)])
     at = (seed_start - before_seed) if seed_start else None
-    # A campaign with no summary row is running or was stopped: its last
-    # log line is the last thing it did.
     last = max([t for t in [mtime(log_path) if log_path else None, mtime(root)]
                 + [mtime(p) for p in glob.glob(os.path.join(root, "iteration-0000", "*"))]
                 if t] or [None])
@@ -435,7 +430,6 @@ def report(root, label):
                 ("EXPLORE planners waiting for memory", planner_waits),
                 ("EXPLORE import gates", sum(g or 0 for g, _ in gates)),
                 ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
-        # The head's JVM time: its steps, which run beside the pool.
         busy = sum(t or 0 for t, _, _ in steps)
         explore = dict(stages).get("EXPLORE")
         if explore is not None:

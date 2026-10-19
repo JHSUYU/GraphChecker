@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# alive.sh <path>... -- which of the paths a process of this user still names
-# on some lift (LIFTS, gc-env.sh): in its command line (as "<path>/..."), as
-# its working directory, or as OUT in its environment (accept.sh's harness
-# names its run so).  Prints "alive <path>" once per path some lift runs, and
-# "silent <host>" for a lift that did not answer, which says nothing either
-# way.  Every lift is asked at once.  The scan's own shell names every path
-# (without the trailing slash) and is never counted.
 set -uo pipefail
 # shellcheck source=gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/gc-env.sh"

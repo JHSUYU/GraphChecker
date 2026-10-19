@@ -35,12 +35,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * A native reproduction's plant ({@link RecordingPlant}): which rows a
- * plant file may hold, which enclosing occurrence a row plants at, the
- * values calls return in the planted world, the agent that rewrites those
- * calls, and the plants a run cannot make real -- refused by name.
- */
 @RunWith(FreshStatics.class)
 public class RecordingPlantTest {
     @Rule
@@ -61,7 +55,6 @@ public class RecordingPlantTest {
         Thread.interrupted();
     }
 
-    /** One plant row, written with single quotes. */
     private static String row(String text) {
         return text.replace('\'', '"') + "\n";
     }
@@ -72,8 +65,6 @@ public class RecordingPlantTest {
         return RecordingPlant.read(plant);
     }
 
-    /** A plant file: its markers, hooks, fatal arms and anchor, or
-     *  refused. */
     @Test
     public void aPlantHoldsRootsOrdersAndOneTarget() throws Exception {
         String marker = row("{'kind':'ROOT','category':'FAULT','rootId':"
@@ -92,7 +83,6 @@ public class RecordingPlantTest {
                 Collections.singletonMap(SITE, Collections.singletonMap(ID,
                         Collections.singletonMap(1,
                                 new RecordingPlant.Root(0, "true"))));
-        // A grown root answers its own invocation of the marker's call.
         Map<Integer, RecordingPlant.Root> invocations = new LinkedHashMap<>();
         invocations.put(1, new RecordingPlant.Root(0, "true"));
         invocations.put(2, new RecordingPlant.Root(4, "true"));
@@ -105,36 +95,27 @@ public class RecordingPlantTest {
                     + "\"value\"").replace("\"row\":0", "\"row\":4") + hook
                     + target, Collections.singletonMap(SITE,
                     Collections.singletonMap(ID, invocations)), hooks},
-            // One invocation stated twice, or a k below 1.
             {marker + marker.replace("\"row\":0", "\"row\":4") + target,
                 null, null},
             {marker.replace("\"value\"", "\"invocation\":0,\"value\"")
                     + target, null, null},
             {order + target, none, none},
-            // The confirmed world's realized order, between events.
             {realized + target, none, none},
-            // A root of a category no native run plants, a marker without
-            // its call site or with no boolean, a row without its number.
             {marker.replace("FAULT", "CONFIG") + target, null, null},
             {marker.replace(SITE, "") + target, null, null},
             {marker.replace("\"true\"", "\"1\"") + target, null, null},
             {hook.replace(",\"row\":1", "") + target, null, null},
-            // One root stated twice, an order naming no activation, an
-            // event without its k.
             {hook + hook.replace("\"row\":1", "\"row\":4") + target, null,
                 null},
             {order.replace("\"b|\"", "\"\"") + target, null, null},
             {realized.replaceFirst(",\"k\":0", "") + target, null, null},
             {row("{'kind':'CLOCK','row':0}") + target, null, null},
-            // A clock root without its skew, a configuration without its
-            // getters, one site named with two callees.
             {clock("", 0) + target, null, null},
             {row("{'kind':'ROOT','category':'CONFIG','rootId':'CONFIG:k',"
                     + "'occurrence':'" + ID + "','value':'7','sites':[],"
                     + "'row':0}") + target, null, null},
             {clock("5", 0) + reading("<a.Other: long now()>", 1) + target,
                 null, null},
-            // No target: the run could not tell what it reproduced.
             {marker, null, null},
             {marker + target + target("other", "true", 4), null, null}};
         for (Object[] file : files) {
@@ -146,7 +127,6 @@ public class RecordingPlantTest {
                 assertEquals(Collections.singletonMap(GUARD, false),
                         read.fatalArms);
                 assertEquals(ID, read.anchor);
-                // The anchor and every root's mint occurrence are focused.
                 assertEquals(Collections.singleton(ID), read.focused);
             } catch (IOException refused) {
                 if (file[1] != null) throw refused;
@@ -182,13 +162,6 @@ public class RecordingPlantTest {
                 ExecutionIndex.empty()).render();
     }
 
-    /**
-     * A plant takes only where the run can make it real: a timed wait's
-     * timeout where the real call could time out (SYMBOL-SCOPE §4.2), a
-     * SessionExpired as a real expiry of the door's session at its server
-     * ({@link Sessions#expires}, the system's expirer).  Otherwise the world
-     * is impossible, refused by name and BLOCKING, and the call runs.
-     */
     @Test
     public void aPlantTheRunCannotMakeRealIsRefused() throws Exception {
         Path root = folder.getRoot().toPath();
@@ -203,7 +176,6 @@ public class RecordingPlantTest {
         rw.writeLock().lock();
         String free = "the lock is free or held by this thread";
         Object[][] rows = {
-            // what is waited on, the permits asked, why it answers at once
             {open, 1, "the latch is open"},
             {closed, 1, null},
             {CompletableFuture.completedFuture("x"), 1, "the future is done"},

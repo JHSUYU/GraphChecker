@@ -3,15 +3,9 @@ package edu.uva.liftlab.graphchecker.causynth;
 import java.util.Locale;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/** Default semantics for one versioned static data-flow edge row. */
 public final class StaticDataflowEdgeSchema {
     static final int VERSION = 3;
 
-    /**
-     * The one kind for every edge that carries a value forward; only kinds a
-     * reader tests by name (GUARD, EXCEPTION, HEAP_WRITE, HEAP_READ,
-     * VALUE_PASS, DYNAMIC_DISPATCH) get their own.
-     */
     public static final String VALUE_TRANSFER = "VALUE_TRANSFER";
 
     private StaticDataflowEdgeSchema() {
@@ -42,7 +36,6 @@ public final class StaticDataflowEdgeSchema {
                 .find()) {
             return "HEAP_READ";
         }
-        // A map mutation is a heap write; a map read or re-encoding is not.
         if (mapOperation(text, "put", "putall", "remove", "clear", "replace",
                 "replaceall", "compute", "computeifabsent",
                 "computeifpresent", "merge")) {
@@ -67,7 +60,6 @@ public final class StaticDataflowEdgeSchema {
             return VALUE_TRANSFER;
         }
         if (normalizedKind.contains("local_def_use")) {
-            // VALUE_PASS is an exact copy only (read by exactLocalPass).
             return invoke != null && !invoke.trim().isEmpty()
                     || computation(unit) ? VALUE_TRANSFER : "VALUE_PASS";
         }

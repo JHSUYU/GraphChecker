@@ -33,14 +33,6 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * Writes one replay session's rows, one file per kind, through the
- * contract's codec, each file one gzip stream ({@link ArtifactIO#appending}).
- * Every row is flushed at once, to a sync point of its stream: the JVM is
- * halted with no shutdown hook, and a lost row reads as a site that never
- * ran; {@link #close} finishes the streams, and one never finished reads up
- * to its last flush.
- */
 public final class SessionPublisher {
     private static final Object LOCK = new Object();
     private static final Map<String, SessionPublisher> SESSIONS =
@@ -49,36 +41,22 @@ public final class SessionPublisher {
     private final SessionDir layout;
     private final Map<String, BufferedWriter> writers =
             new LinkedHashMap<String, BufferedWriter>();
-    /** The refs filed, each once. */
     private final Set<String> expressionRefs = new HashSet<String>();
-    /** Numbers the nodes the expression log holds. */
     private final SessionExpressionLog.Writer expressionLog =
             new SessionExpressionLog.Writer();
-    /**
-     * Statements written under the key the contract makes them one row by:
-     * a root per (occurrence, rootId), an unreached target per (occurrence,
-     * anchor).  A LOOP_BODY_ROOT's bodies share one address, and a door read
-     * again mints its one symbol again ({@code RootMint#configuredSource}),
-     * so both restate a written row; a restatement that differs is written,
-     * for IMPORT to name (invariants 4 and 8).
-     */
     private final Set<String> stated = new HashSet<String>();
     private boolean failed;
-    /** The manifest {@link #open} wrote. */
     private SessionManifest manifest;
-    /** Closed: the run ended ({@link #close}), so nothing is written. */
     private boolean closed;
 
     private SessionPublisher(SessionDir layout) {
         this.layout = layout;
     }
 
-    /** The publisher of one session, created once per JVM. */
     public static SessionPublisher of(Path iteration, String sessionId) {
         return at(SessionDir.of(iteration, sessionId));
     }
 
-    /** The publisher of one session under an explicit sessions root. */
     static SessionPublisher at(SessionDir layout) {
         String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
@@ -92,11 +70,6 @@ public final class SessionPublisher {
         }
     }
 
-    /**
-     * Creates every file empty (an absent file means "not published", not
-     * "none") and writes the manifest now, not at close, since a halted JVM
-     * never closes.  The role is what {@link FocusedReplay} was handed.
-     */
     private void open() {
         synchronized (LOCK) {
             try {
@@ -151,10 +124,6 @@ public final class SessionPublisher {
         if (row != null) append(layout.reads(), RowCodec.writeRead(row));
     }
 
-    /**
-     * One root mint row in {@code roots.jsonl}.  Domains come from the case's
-     * {@code --root-domains}, not from here.
-     */
     public void rootMint(RootMintRow row) {
         if (row != null && once(row.occurrence().id() + "|" + row.rootId()
                 + "|" + row.symbol() + "|" + row.recordedValue())) {
@@ -169,7 +138,6 @@ public final class SessionPublisher {
         }
     }
 
-    /** Whether this statement is written for the first time. */
     private boolean once(String key) {
         synchronized (LOCK) {
             return stated.add(key);
@@ -180,13 +148,6 @@ public final class SessionPublisher {
         if (row != null) append(layout.gaps(), RowCodec.writeGap(row));
     }
 
-    /**
-     * Restates the manifest at the run's end with what no row can state
-     * ({@link SessionManifest}): the region entries unnamed work made, the
-     * declared roots read where none was minted, those found derived, and
-     * the names the run's nodes had only in it, the occurrences run for
-     * their doors alone, and the hand-off tasks that served a queue.
-     */
     public void atClose(Map<String, Integer> entries,
                         Map<String, Map<String, String>> readings,
                         Set<String> derived, Map<String, String> spelled,
@@ -203,20 +164,16 @@ public final class SessionPublisher {
         }
     }
 
-    /** One scheduling event, in the order the run made it. */
     public void schedule(JsonObject event) {
         if (event != null) append(layout.schedule(), event);
     }
 
-    /** What one obligation's focused replay settled. */
     public void obligationResult(ObligationResult row) {
         if (row == null) return;
         append(layout.obligations(),
                 RowCodec.writeObligationResult(row));
     }
 
-    /** Files one expression under the ref the rows name it by: the nodes
-     *  the log does not hold yet, then the ref. */
     public void expression(String ref, JsonObject expression) {
         String key = trimmed(ref);
         if (key.isEmpty() || expression == null) return;
@@ -230,10 +187,6 @@ public final class SessionPublisher {
         append(file, Collections.singletonList(row));
     }
 
-    /** The rows, each a line of its file, as engine work ({@link
-     *  ConcolicVmBroker#asEngineWork}): serialized before the session's
-     *  lock, which every thread that states a row takes, so it is held only
-     *  while the lines are written. */
     private void append(Path file, List<JsonObject> rows) {
         ConcolicVmBroker.asEngineWork(() -> {
             List<String> lines = new ArrayList<String>(rows.size());
@@ -255,8 +208,6 @@ public final class SessionPublisher {
         });
     }
 
-    /** The manifest as it stands, as engine work ({@link
-     *  ConcolicVmBroker#asEngineWork}). */
     private void writeManifest() throws IOException {
         IOException[] failed = new IOException[1];
         ConcolicVmBroker.asEngineWork(() -> {
@@ -269,7 +220,6 @@ public final class SessionPublisher {
         if (failed[0] != null) throw failed[0];
     }
 
-    /** The open writer of one row file, or null once withdrawn. */
     private BufferedWriter writer(Path file) throws IOException {
         String key = file.toString();
         BufferedWriter writer = writers.get(key);
@@ -281,45 +231,25 @@ public final class SessionPublisher {
         return fresh;
     }
 
-    /**
-     * Whether the campaign took this session's directory away after
-     * {@link #open} made it -- a replay killed at its bound is withdrawn while
-     * its JVM still shuts down.  Nothing recreates it: a late table rewrite
-     * brought back a directory holding only expressions.json, and IMPORT
-     * refused hdfs-11741 v85 over it.
-     */
     private boolean withdrawn() {
         return !Files.isDirectory(layout.dir());
     }
 
-    /**
-     * A session that cannot write says so once and stops (silence
-     * would read as "the site did not run").
-     */
     private void fail(IOException unwritable) {
         failed = true;
         EngineConsole.println("Causynth could not write session rows to "
                 + layout.dir() + ": " + unwritable);
     }
 
-    /**
-     * Closes every open file of this session, for good: the run has ended
-     * ({@code JUnitMethodRunner#exit}), and a row a cluster thread files
-     * after its verdict is about no run (hdfs-17899-bug1 r1: attaches after
-     * the close, into a VM session opened anew, filed 55 BLOCKING refusals
-     * of handles the old session had made).
-     */
     public void close() {
         synchronized (LOCK) {
             closed = true;
-            // Each stream finished (its trailer), as engine work too.
             ConcolicVmBroker.asEngineWork(() -> {
                 for (BufferedWriter writer : writers.values()) {
                     try {
                         writer.flush();
                         writer.close();
                     } catch (IOException ignored) {
-                        // Rows are already flushed.
                     }
                 }
             });
@@ -327,14 +257,6 @@ public final class SessionPublisher {
         }
     }
 
-    /**
-     * Closes this session and moves its directory out of the corpus, to
-     * {@code <quarantine>/<sessionId>}, in one rename: a replay a refusal
-     * decided publishes no session ({@code FocusedReplay#refusedAt}), and
-     * it knows so before any stage can read one.
-     *
-     * @return {@code ""} once moved, else why it was not
-     */
     String withdrawTo(Path quarantine) {
         synchronized (LOCK) {
             close();

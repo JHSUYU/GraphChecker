@@ -14,11 +14,6 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * SYMBOL-SCOPE §2.2: where a door fault goes -- to the handler catching it
- * (a guard with no boolean arm), out of a method, through a rethrow, back
- * from a proxy call.
- */
 public class FaultPropagationTest {
     private static final String IOE = "java.io.IOException";
     private static final String SEND = "<f.Door: void send()>";
@@ -73,7 +68,6 @@ public class FaultPropagationTest {
         }
     }
 
-    /** An exception class built with a message. */
     private static String ioe(String name, String parent) {
         return "public class " + name + " extends " + parent
                 + " { public void <init>(java.lang.String) { } }";
@@ -95,12 +89,6 @@ public class FaultPropagationTest {
         return found.toString();
     }
 
-    /**
-     * {@code f.Door.send()} is woven with an IPC door fault; {@code
-     * f.Caller} calls it under an IOException handler ({@code call}), under
-     * a finally block ({@code relay}), through a proxied interface a handler
-     * serves ({@code use}).
-     */
     private static Scene scene() {
         String send = "virtualinvoke r1." + SEND + "();";
         JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,

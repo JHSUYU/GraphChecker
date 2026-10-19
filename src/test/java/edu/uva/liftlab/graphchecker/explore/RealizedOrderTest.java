@@ -13,12 +13,6 @@ import java.util.Map;
 import java.util.Set;
 import org.junit.Test;
 
-/**
- * The realized order a native reproduction holds (PIPELINE §10b): from
- * where a moved root's mint occurrence opened on, each WAKE of a context
- * running before it after the step just before it, when that step is
- * another context's first of its kind and site, both on the claim's cone.
- */
 public class RealizedOrderTest {
     private final List<ScheduleEvent> schedule = new ArrayList<ScheduleEvent>();
     private final Map<String, Long> marks = new HashMap<String, Long>();
@@ -34,7 +28,6 @@ public class RealizedOrderTest {
                 k, occurrence, endpoint));
     }
 
-    /** The edges with every context of the schedule on the cone. */
     private List<String> edges(String... mints) {
         Set<String> minted = new HashSet<String>();
         Set<String> onCone = new HashSet<String>();
@@ -61,12 +54,6 @@ public class RealizedOrderTest {
     }
     private static final String A = "n|Root:CLIENT/a#1";
 
-    /**
-     * Only on the claim's cone: the WAKE and the step each in the context
-     * of an occurrence on it, and the step in no turn-counted root but a
-     * mint's (solr-18413 Y8: an Overseer state-updater tick's queue write).
-     * A turn-counted WAKE side is held: its waits are what the order holds.
-     */
     @Test
     public void onlyTheConesContextsHoldAndATickStepOnlyAMints() {
         String task = "n|Root:OVERSEER_TASK#3";
@@ -74,8 +61,8 @@ public class RealizedOrderTest {
         String poll = "c|Root:CLIENT/poll#2";
         String tick = "n|Root:OVERSEER_STATE_UPDATE#15";
         String update = "c|Root:CLIENT/.update#4";
-        event(Kind.WAKE, task + "|run@0", "w0", 0, "task"); // running before
-        event(Kind.WAKE, waiter, "q0", 0, "wait");          // running before
+        event(Kind.WAKE, task + "|run@0", "w0", 0, "task");
+        event(Kind.WAKE, waiter, "q0", 0, "wait");
         event(Kind.WRITE, A, "mint", 0, "root");
         event(Kind.WAKE, task + "|run@0", "w1", 0, "task");
         event(Kind.RECV, poll, "p1", 0, "poll");
@@ -84,7 +71,7 @@ public class RealizedOrderTest {
         event(Kind.WAKE, task + "|run@0", "w3", 0, "task");
         event(Kind.RECV, update + "|f@0", "r1", 0, "update");
         event(Kind.WAKE, waiter, "q1", 0, "wait");
-        Object[][] rows = {   // minted, on the cone, the edges
+        Object[][] rows = {
             {set(A), set(A, task), list("mint<w1")},
             {set(A), set(A, task, poll), list("mint<w1", "p1<w2")},
             {set(A), set(A, task, tick), list("mint<w1")},

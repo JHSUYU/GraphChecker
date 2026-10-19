@@ -20,13 +20,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-/**
- * Where a local file fault could stand on what the root demand found
- * (SYMBOL-SCOPE §4.6), over the latent model ({@link
- * FaultPropagation#latent}): from a demanded site down the calls a fault
- * escapes, to the call of a demanded door's anchor it comes from, or to the
- * call into the system outside the scope that may hold one.
- */
 final class LatentFaults implements RootDemand.Faults {
     private final FaultPropagation model;
     private final Map<String, SiteControlDependence.MethodGuards> guards =
@@ -34,11 +27,6 @@ final class LatentFaults implements RootDemand.Faults {
     private final Map<String, BriefUnitGraph> graphs = new HashMap<>();
     private final Predicate<String> held;
 
-    /**
-     * @param systemClass whether a class is the system's own
-     * @param held        whether a region holds a method: a door's marker
-     *                    is read in the regions holding its demanded site
-     */
     LatentFaults(Predicate<String> systemClass, Predicate<String> held) {
         this.model = FaultPropagation.latent(systemClass);
         this.held = held;
@@ -64,7 +52,6 @@ final class LatentFaults implements RootDemand.Faults {
                                              Map<String, Integer> stores,
                                              Set<String> path) {
         Map<String, RootDemand.Candidate> found = new LinkedHashMap<>();
-        // A fault escaping before a demanded store skips it.
         for (Map.Entry<String, Integer> store : stores.entrySet()) {
             String method = SiteId.methodOf(store.getKey());
             Unit site = method.isEmpty() ? null : guards(method).unit(
@@ -77,8 +64,6 @@ final class LatentFaults implements RootDemand.Faults {
                 }
             }
         }
-        // A fault a handler catches decides the sites the handler's arm
-        // does; a site on the target's path only where it leads there.
         Map<String, Integer> decided = new LinkedHashMap<>(demanded);
         for (Map.Entry<String, Integer> store : stores.entrySet()) {
             decided.merge(store.getKey(), store.getValue(), Math::min);
@@ -118,12 +103,6 @@ final class LatentFaults implements RootDemand.Faults {
                 SiteControlDependence.originalIndex(body, call));
     }
 
-    /**
-     * From a raise of {@code method} down to where its fault comes from:
-     * the call where a door could stand, the call into the system outside
-     * the scope, and through each callee it escapes, one edge further each,
-     * the chain of methods walked kept as the door's {@code via}.
-     */
     private void descend(String method, FaultPropagation.Raise start,
                          int distance, String reach,
                          Map<String, RootDemand.Candidate> found) {
@@ -163,7 +142,6 @@ final class LatentFaults implements RootDemand.Faults {
         }
     }
 
-    /** The nearer of two findings of one call. */
     private static void keep(Map<String, RootDemand.Candidate> found,
                              RootDemand.Candidate candidate) {
         String key = (candidate.frontier ? "F|" : "D|") + candidate.siteId
@@ -174,8 +152,6 @@ final class LatentFaults implements RootDemand.Faults {
         }
     }
 
-    /** A door at {@code call} in the last method of {@code via}, read
-     *  where the first runs. */
     private RootDemand.Candidate candidate(List<String> via, Stmt call,
                                            int distance, String reach) {
         String method = via.get(via.size() - 1);
@@ -194,7 +170,6 @@ final class LatentFaults implements RootDemand.Faults {
                 SiteControlDependence.originalIndex(body, unit));
     }
 
-    /** Whether {@code site} runs after {@code from} on some normal path. */
     private boolean reaches(String method, Unit from, Unit site) {
         BriefUnitGraph cfg = graphs.computeIfAbsent(method,
                 key -> new BriefUnitGraph(CausynthStaticFacts.activeBody(

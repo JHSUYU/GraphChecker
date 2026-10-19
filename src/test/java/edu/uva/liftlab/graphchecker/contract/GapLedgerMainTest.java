@@ -22,30 +22,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/**
- * EMIT's gap ledger ({@link GapLedgerMain}): over a session's, a round's, a
- * worker's and the campaign's gap rows, the composer's refusals and gaps,
- * the static catalog's and the plan's, final/gaps.json is the document the
- * jq it replaced published, byte for byte (its text below is that jq's
- * output over this fixture, jq 1.6); EMIT's read of it keeps every BLOCKING
- * row and the DIAGNOSTIC rows EMIT selects, and names the ledger's digest.
- */
 public class GapLedgerMainTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    /** The main computes on its host's cores; the tests after it on one. */
     @After
     public void oneCore() {
         Parallel.width(1);
     }
 
-    /** The case's layout as EMIT reads it, under {@code root}. */
     static void fixture(Path root) throws IOException {
         Path iteration = root.resolve("iteration-0000");
-        // A replay session's rows: a string with every escape jq writes, a
-        // row repeated with another class (the first raised is kept), an
-        // undeclared hook, a bound in a subject, a row stating nothing.
         gzip(iteration.resolve("sessions/S1/gaps.jsonl.gz"),
                 "{\"schemaVersion\":1,\"sessionId\":\"S1\",\"kind\":\"UNSTATED_VALUE\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"reads.jsonl seq\\u003d5 field\\u003dobservedVersion\",\"detail\":\"tab\\there \\\"quoted\\\" back\\\\slash \\u00e9 \\u2713 \\ud83d\\ude00 del\\u007f bell\\u0007\",\"topologyEpoch\":\"iteration-0000\"}",
                 "{\"sessionId\":\"S1\",\"kind\":\"ADMISSION_GAP\",\"cls\":\"BLOCKING\",\"subject\":\"OCC.kept\",\"detail\":\"anchor never observed\"}",
@@ -55,23 +42,16 @@ public class GapLedgerMainTest {
                 "{\"sessionId\":\"S1\",\"kind\":\"HOOK_UNDECLARED\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"hook.b\",\"detail\":\"ran concrete\"}",
                 "{\"sessionId\":\"\",\"kind\":\"UNATTESTED_ARM\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"IXN.7 max-world-depth=0\",\"detail\":\"d\"}",
                 "{\"subject\":\"no kind\",\"cls\":\"DIAGNOSTIC\"}");
-        // A round's: a stated stage, a bound on a subject's first line, a
-        // row that states no class.
         gzip(iteration.resolve("obligations-0000/gaps.jsonl.gz"),
                 "{\"sessionId\":\"\",\"stage\":\"EXPLORE\",\"kind\":\"TASK_UNANSWERED\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"task.1 view-hold-max=3000\\nsecond line\",\"detail\":\"x\"}",
                 "{\"sessionId\":\"W1\",\"kind\":\"ADMISSION_GAP\",\"subject\":\"OCC.x\",\"detail\":\"no cls\"}");
-        // A worker's, read before the session's: its row naming the
-        // session's hook at REPLAY is the one kept, BLOCKING.
         gzip(iteration.resolve("obligations-0000/abc123/gaps.jsonl.gz"),
                 "{\"sessionId\":\"W1\",\"kind\":\"UNPRODUCIBLE_ANSWER\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"OBL.slow\",\"detail\":\"SOLVER_TIMEOUT\"}",
                 "{\"sessionId\":\"S1\",\"stage\":\"REPLAY\",\"kind\":\"HOOK_UNDECLARED\",\"cls\":\"BLOCKING\",\"subject\":\"hook.a\",\"detail\":\"ran concrete\"}");
-        // The campaign's own: IMPORT's gate states no stage, the others do.
         write(iteration.resolve("campaign_gaps.jsonl"),
                 "{\"schemaVersion\":1,\"sessionId\":\"seed-1\",\"kind\":\"UNSTATED_VALUE\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"s\",\"detail\":\"d\",\"topologyEpoch\":\"iteration-0000\"}",
                 "{\"sessionId\":\"\",\"stage\":\"EXPLORE\",\"kind\":\"ADMISSION_GAP\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"EXPLORATION_CUT\",\"detail\":\"owing work\"}",
                 "{\"sessionId\":\"\",\"stage\":\"COMPOSE\",\"kind\":\"OPEN_ARM_UNANSWERED\",\"cls\":\"BLOCKING\",\"subject\":\"arm\",\"detail\":\"no verdict\"}");
-        // The composer's refusals (BLOCKING by construction), a gap named by
-        // its reason, one stating an empty class, and a claim's gap.
         write(root.resolve("final/candidate_composition_manifest.json"),
                 "{\"finalStatus\":\"FINAL_READY\",\"finalStatusRefusals\":[{\"kind\":\"COMPOSE_HEAP_BOUND\",\"subject\":\"paths\",\"detail\":\"1 of 309\"},{\"subject\":\"nokind\"}],\"gaps\":[{\"reason\":\"LOOP_BOUND_OPEN\",\"subject\":\"loop.fixture\",\"detail\":\"invented\"},{\"kind\":\"X\",\"cls\":\"\",\"subject\":\"s\"}],\"claim\":{\"gaps\":[{\"kind\":\"CLAIM_GAP\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"c\",\"detail\":\"d\"}]}}");
         gzip(root.resolve("causynth/communication_gaps.jsonl.gz"),
@@ -133,8 +113,6 @@ public class GapLedgerMainTest {
                 "byCode"}) {
             assertEquals(same, whole.get(same), read.get(same));
         }
-        // The bounds on a subject's line, the undeclared hook: in jq's order,
-        // as the ledger has them.
         List<String> selected = new ArrayList<String>();
         for (JsonElement row : read.getAsJsonArray("telemetryGaps")) {
             selected.add(row.getAsJsonObject().get("subject").getAsString());

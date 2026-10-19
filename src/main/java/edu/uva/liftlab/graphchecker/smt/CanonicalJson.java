@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Deterministic JSON rendering used by immutable protocol identities. */
 public final class CanonicalJson {
     private CanonicalJson() {
     }

@@ -19,12 +19,6 @@ public class Z3Test {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    /**
-     * An unsat answer's core is known only where its own run said unsat: a
-     * core run that timed out or answered unknown names no core, which is
-     * not the empty one (an UNSAT that may rest on an excluded model would
-     * read as resting on none).  {what the core run does, known, core}.
-     */
     @Test
     public void aCoreIsKnownOnlyWhereItsRunSaidUnsat() throws IOException {
         Object[][] rows = {
@@ -55,14 +49,6 @@ public class Z3Test {
         }
     }
 
-    /**
-     * EVERY z3 STARTS UNDER ITS SLOT'S CAP: z3's own memory_max_size, the
-     * slot less what z3's accounting misses.  A lone ask's engines take half
-     * the room each, a caller of many asks at once a slot of the room shared
-     * that many ways, a path ask a slot of its own size, never past half the
-     * room nor below the least slot; a room that holds no run is refused.
-     * {room, how the solver is held (lone, shared:k, slotted:mb), the cap}.
-     */
     @Test
     public void aZ3StartsUnderItsSlotsCap() {
         Object[][] rows = {
@@ -96,12 +82,6 @@ public class Z3Test {
         }
     }
 
-    /**
-     * A z3 AT ITS CAP IS UNDECIDED BY NAME, as a timeout is: never a verdict,
-     * no error of the query (an error voids a composition's claim), its
-     * reason the cap it hit; the other engine's verdict still answers.
-     * {engine 2, engine 6, status}.
-     */
     @Test
     public void aZ3AtItsCapIsUndecidedByName() throws IOException {
         Path script = folder.newFile("z3-memout").toPath();
@@ -133,13 +113,6 @@ public class Z3Test {
         }
     }
 
-    /**
-     * TWO ENGINES THAT DECIDE ONE RUN DIFFERENTLY ARE AN ERROR, NEVER A
-     * VERDICT: engine 6 says unsat at once, engine 2 sat after 0.3 s; the
-     * verdict's run takes engine 6's unsat, its core's run, within the
-     * preferred engine's grace, has both.  The ask is undecided and the
-     * disagreement named among the solver's errors.
-     */
     @Test
     public void twoEnginesThatDifferAreAnErrorNeverAVerdict()
             throws IOException {

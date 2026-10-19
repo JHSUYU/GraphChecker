@@ -24,24 +24,6 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
-/**
- * The per-loop {@code K_L} (PIPELINE §2), declared (never measured: the
- * planner has no trip counts) in a JSONL file named by {@code
- * -D}{@value #SOURCE_PROPERTY} or {@code $}{@value #SOURCE_ENVIRONMENT}:
- *
- * <pre>
- * {"loopSiteId": "&lt;a.B: void poll()&gt;#u7", "loopBodyBound": 32,
- *  "reason": "measured 20-29 body executions in the recorded pass"}
- * </pre>
- *
- * <p>{@code loopSiteId} is one entry of {@link
- * LoopBoundPolicy#LOOP_CONTROL_SITE_IDS}.  A key is not a hint: an unknown
- * field, a duplicate site, a site of an analysed method no retained loop
- * claims ({@link #refuseUnclaimed(Set)}) and a value outside {@code 1..}{@link
- * LoopBoundPolicy#MAX_DECLARED_LOOP_BODY_ITERATIONS} are all refused, since a
- * stale unit index would otherwise silently inherit {@link
- * LoopBoundPolicy#declaredDefault()}.</p>
- */
 final class DeclaredLoopBodyBounds {
     static final String SOURCE_PROPERTY = "causynth.loop.bounds";
     static final String SOURCE_ENVIRONMENT = "CAUSYNTH_LOOP_BOUNDS";
@@ -49,7 +31,6 @@ final class DeclaredLoopBodyBounds {
     static final String BOUND_FIELD =
             LoopBoundPolicy.LOOP_BODY_BOUND;
     static final String REASON_FIELD = "reason";
-    /** The greppable key one declaration is named by in every refusal. */
     static final String KEY_PREFIX = BOUND_FIELD + ".";
     static final String FIELD_UNKNOWN = "BOUNDED_LOOP_BODY_BOUND_KEY_UNKNOWN";
 
@@ -64,7 +45,6 @@ final class DeclaredLoopBodyBounds {
         this.bySite = bySite;
     }
 
-    /** One declared loop, and where it was declared. */
     private static final class Declaration {
         private final String site;
         private final JsonElement value;
@@ -81,13 +61,11 @@ final class DeclaredLoopBodyBounds {
         }
     }
 
-    /** A campaign that declares no bound: every retained loop inherits. */
     private static DeclaredLoopBodyBounds none() {
         return new DeclaredLoopBodyBounds(
                 new TreeMap<String, Declaration>());
     }
 
-    /** The declarations this campaign's configuration names, if any. */
     static DeclaredLoopBodyBounds fromConfiguration() throws IOException {
         String configured = setting(SOURCE_PROPERTY, SOURCE_ENVIRONMENT);
         if (configured.isEmpty()) {
@@ -168,21 +146,11 @@ final class DeclaredLoopBodyBounds {
         return new Declaration(site.getAsString().trim(), bound, origin);
     }
 
-    /**
-     * {@code K_L} for the loop these control sites name, or {@code 0} when
-     * undeclared.  One loop has one prefix: members declaring different
-     * bounds, or one declaring while another inherits, are refused.
-     * @throws IllegalArgumentException naming {@link
-     *         LoopBoundPolicy#LOOP_BODY_BOUND_DISAGREES} or {@link
-     *         LoopBoundPolicy#DECLARED_BOUND_OUT_OF_RANGE}, in both cases
-     *         naming the configuration key that stated it
-     */
     int bound(Collection<String> loopControlSiteIds) {
         if (bySite.isEmpty() || loopControlSiteIds == null
                 || loopControlSiteIds.isEmpty()) {
             return 0;
         }
-        // Sorted: the verdict must not depend on guard walk order.
         Set<String> sites = new TreeSet<String>(loopControlSiteIds);
         Declaration declared = null;
         int bound = 0;
@@ -207,7 +175,6 @@ final class DeclaredLoopBodyBounds {
             return 0;
         }
         if (!undeclared.isEmpty()) {
-            // An undeclared member inherits: two prefixes in one nest.
             throw disagreement(sites, declared, bound, KEY_PREFIX + undeclared,
                     "absent, inheriting "
                             + LoopBoundPolicy.declaredDefault());
@@ -215,13 +182,6 @@ final class DeclaredLoopBodyBounds {
         return bound;
     }
 
-    /**
-     * Refuses every declaration of a loop in {@code analysed} that no retained
-     * loop claimed: a stale or misspelled key of a method the slice holds.  A
-     * declaration of a method the slice never reached is a system-wide row
-     * this campaign has no loop for (one experiment's declarations serve
-     * every check of it), and binds nothing here.
-     */
     void refuseUnclaimed(Set<String> analysed) {
         List<String> unclaimed = new ArrayList<String>();
         for (Declaration declaration : bySite.values()) {

@@ -38,69 +38,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-/**
- * The skeleton: one slot per (interaction, world), and what contradicts it.
- *
- * <p>A SLOT is (kind, producer, consumer) labelled with the opening session's
- * world ({@link ObligationFactory#worldDigest}). An unseen pairing OPENS one, a
- * repeat FILLS it, a consumer outside the closure is only recorded.</p>
- *
- * <p>A REPLACEMENT (PIPELINE §7.1) is a WIRE consumer paired with another
- * producer IN THE SAME WORLD: the schedule did not hold, BLOCKING. In another
- * world it is growth (a new slot). STATE pairings are never replacements.</p>
- *
- * <p>Only an ADMITTED replay states a topology ({@link
- * SessionReader#admitted}); others are reported DIAGNOSTIC.</p>
- *
- * <p>A slot stands on the session that opened it: one whose session left the
- * corpus holds nothing ({@link #standing}).  GROW withdraws the replay that
- * exposed a region and re-runs it under the grown plan, whose new occurrences
- * give the region's endpoints new ids; a withdrawn run's slots would pair its
- * consumers with producers no session of the corpus states, and the re-run
- * and every later session of its world would read as replacing them.</p>
- *
- * <p>THE TABLE ON DISK IS ITS ROUNDS' CHANGES: each round writes what it
- * changed, in order, as {@code obligations-NNNN/slots.jsonl.gz} beside its
- * other outputs -- a slot opened or replaced ({@code SLOT}, the row the slot
- * holds now) and a slot whose opening session left the corpus ({@code
- * SLOT_DROPPED}) -- and the table is those rounds folded in round order
- * ({@link #read}), after the table an iteration recorded before the rounds
- * wrote theirs ({@code slots.jsonl.gz} beside the sessions) when it has one.
- * Rewritten whole every round, the table was a quarter of a late round's
- * planner (hdfs-adhoc-07 EX1: 1.9 GB, read 38-51 s, written 194-208 s of
- * ~900).  A round's planner folds the rounds before its own, so a round
- * planned again (its planner ran out of heap) starts from the same table,
- * and a round directory that goes takes its changes with it.</p>
- *
- * <p>An occurrence a replay answered by its shape (IDENTITY §9) stands at
- * the planned address but ran under another chain of its shape, so its
- * consumers' producers are that chain's: its pairings open slots of their
- * own beside the planned occurrence's, replace none, and are no pairing a
- * later one replaces -- whichever session lands first, and however a slot
- * file orders them, since which slots are answered is read off their opening
- * sessions ({@link #standing}).  Only another answered pairing fills such a
- * slot: a session that ran the planned address itself and pairs its
- * consumer with that chain's producer replaces the planned pairing.</p>
- */
 public final class SlotTable {
-    /** gzip: SGF8-adhoc-05 round 4's changes, 6.6 GB as text, are 152 MB,
-     *  and every COMPOSE reads them all. */
     public static final String FILE = "slots.jsonl.gz";
-    /** A slot opened, or replaced by the row it holds now. */
     static final String OPENED = "SLOT";
-    /** A slot whose opening session left the corpus ({@link #standing}). */
     static final String DROPPED = "SLOT_DROPPED";
-    /** The rounds' directories, whose names carry their round. */
     private static final String ROUNDS = "obligations-";
 
-    /** One interaction the skeleton holds, in one world. */
     public static final class Slot {
         public final InteractionKind kind;
         public final Endpoint producer;
         public final Endpoint consumer;
         public final String openedBySession;
         public final int openedAtRound;
-        /** The world of the opening session; {@code ""} is the seed's. */
         public final String world;
 
         Slot(InteractionKind kind, Endpoint producer, Endpoint consumer,
@@ -122,7 +71,6 @@ public final class SlotTable {
         public final List<Slot> opened;
         public final int filled;
         public final int outside;
-        /** Whether some admitted session contradicted a slot of its world. */
         public final boolean replaced;
         public final List<GapRow> gaps;
 
@@ -136,26 +84,14 @@ public final class SlotTable {
         }
     }
 
-    /** (interaction, world) -> the slot. */
     private final Map<Key, Slot> byInteraction =
             new LinkedHashMap<Key, Slot>();
-    /** The keys of {@link #byInteraction} an answered occurrence opened. */
     private final Set<Key> answeredSlots = new HashSet<Key>();
-    /** WIRE consumer endpoint id | world -> the slot a later pairing of it
-     *  there replaces: never one an answered occurrence opened. */
     private final Map<String, Slot> slotOfConsumer =
             new HashMap<String, Slot>();
-    /** WIRE consumer endpoint id | world | session -> the slot an answered
-     *  occurrence of that session opened for it. */
     private final Map<String, Slot> ownChainOf = new HashMap<String, Slot>();
-    /** What this table changed since it was read or last written, in
-     *  order: the rows of the round that writes it ({@link #write}). */
     private final List<Change> changes = new ArrayList<Change>();
 
-    /** One row of {@link #changes}: a slot, and whether it opened or
-     *  dropped -- its JSON is made only as {@link #write} writes it (Z3D
-     *  snapshot-no-active round 2: 298,913 slots held as JSON were a
-     *  third of the planner's old generation). */
     private static final class Change {
         final Slot slot;
         final String kind;
@@ -170,30 +106,18 @@ public final class SlotTable {
     SlotTable() {
     }
 
-    /** The iteration's table: every round's changes folded, or an empty
-     *  table before its first round. */
     public static SlotTable read(Path iteration) throws IOException {
         return read(iteration, Integer.MAX_VALUE);
     }
 
-    /**
-     * The table the rounds before {@code round} left: the iteration's
-     * recorded table if it has one, then the changes of each round below
-     * {@code round}, in round order.
-     */
     public static SlotTable read(Path iteration, int round)
             throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
-        // The rounds' slots spell the same endpoints again and again: each
-        // held once ({@link RowPool}).
         RowPool pool = new RowPool();
-        // Indexed by standing(), which knows the sessions they stand on.
         for (Path file : files(iteration, round)) {
             if (!Files.isRegularFile(file)) continue;
             table.stated = true;
-            // Each line read into its slot and key on the core that parses
-            // it (RowCodec#readEach), folded in the file's order.
             RowCodec.readEach(file, pool, row -> new ChangeRead(
                     ExploreCodec.readSlot(row, pool),
                     JsonFields.optionalString(row, "kind")), change -> {
@@ -207,8 +131,6 @@ public final class SlotTable {
         return table;
     }
 
-    /** One row of a round's changes as {@link #read} folds it: the slot,
-     *  its key ({@link #key}) and whether it opened or dropped. */
     private static final class ChangeRead {
         final Slot slot;
         final Key key;
@@ -221,15 +143,10 @@ public final class SlotTable {
         }
     }
 
-    /** The files {@link #read(Path)} reads, there or not: what a
-     *  composition's inputs name of the table ({@code
-     *  compose.CompositionInputs}). */
     public static List<Path> files(Path iteration) throws IOException {
         return files(iteration, Integer.MAX_VALUE);
     }
 
-    /** The iteration's recorded table, then each round's changes below
-     *  {@code round} in round order; none without the iteration. */
     private static List<Path> files(Path iteration, int round)
             throws IOException {
         List<Path> files = new ArrayList<Path>();
@@ -255,7 +172,6 @@ public final class SlotTable {
         return stated;
     }
 
-    /** The consumer endpoints that have a WIRE slot in any world. */
     public Set<String> wireConsumers() {
         Set<String> consumers = new HashSet<String>();
         for (Slot slot : byInteraction.values()) {
@@ -266,8 +182,6 @@ public final class SlotTable {
         return consumers;
     }
 
-    /** Writes what this table changed as one round's rows into that
-     *  round's directory; the table holds no change after. */
     public void write(Path roundDir) throws IOException {
         RowCodec.writeAll(roundDir.resolve(FILE), changes,
                 change -> ExploreCodec.writeSlot(change.slot, change.kind));
@@ -278,8 +192,6 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
-    /** A slot's key in {@link #byInteraction}: its interaction and its
-     *  world. */
     private static Key key(Slot slot) {
         return key(slot.kind, slot.producer, slot.consumer, slot.world);
     }
@@ -289,12 +201,6 @@ public final class SlotTable {
         return new Key(kind, producer.id(), consumer.id(), world);
     }
 
-    /**
-     * ONE INTERACTION IN ONE WORLD, as its parts: its kind and its two
-     * endpoints' ids -- what its id digests ({@link Interaction#id}) --
-     * and the world's digest, never a key spelled of them (a late round's
-     * table held 1.5 M such strings, 160 MB, each digested again per ask).
-     */
     private static final class Key {
         private final InteractionKind kind;
         private final String producer;
@@ -326,17 +232,12 @@ public final class SlotTable {
         }
     }
 
-    /** Opens a slot, or replaces the one of its key: a change of the
-     *  round ({@link #write}).  {@code answered}: as {@link #index}. */
     private void open(Key key, Slot slot, boolean answered) {
         byInteraction.put(key, slot);
         changes.add(new Change(slot, OPENED));
         index(key, slot, answered);
     }
 
-    /** {@code answered}: the slot's consumer stands in an occurrence its
-     *  opening session answered by its question ({@link
-     *  SessionReader#answered}); {@code key}, the slot's ({@link #key}). */
     private void index(Key key, Slot slot, boolean answered) {
         if (answered) {
             answeredSlots.add(key);
@@ -352,14 +253,6 @@ public final class SlotTable {
         }
     }
 
-    /**
-     * Keeps the slots whose opening session is in {@code corpus}: a session
-     * that left it (a GROW swap) takes its slots with it, and the session
-     * standing in its place opens them again.  Each slot is indexed as its
-     * opening session answered its consumer's occurrence.
-     *
-     * @return each session's answered occurrences, by session id
-     */
     private Map<String, Set<String>> standing(Corpus corpus) {
         Map<String, Set<String>> answeredIn =
                 new HashMap<String, Set<String>>();
@@ -385,8 +278,6 @@ public final class SlotTable {
         return answeredIn;
     }
 
-    /** Takes every interaction the corpus states; only a consumer in {@code
-     *  closure} opens a slot. */
     public Reconciliation reconcile(Corpus corpus, Set<String> closure,
                                     int round) {
         Map<String, Set<String>> answeredIn = standing(corpus);
@@ -439,8 +330,6 @@ public final class SlotTable {
                     }
                     continue;
                 }
-                // PIPELINE §7.1: a read happening before the write it claims to
-                // observe contradicts the run's order.
                 if (contradictsOrder(read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE,
@@ -467,8 +356,6 @@ public final class SlotTable {
                 gaps);
     }
 
-    /** Reads one endpoint id cannot separate (same id, different versions of
-     *  one location); named once, no slot. */
     private static Set<String> indistinct(Corpus corpus,
                                           SessionReader session,
                                           List<GapRow> gaps) {
@@ -506,22 +393,11 @@ public final class SlotTable {
                 + SmtLowering.locationKey(read.location());
     }
 
-    /**
-     * Whether this run read before the write it claims to have observed.
-     * Both rows' positions are on the session's one order (CONTRACT-SPEC
-     * §2.2, {@link RowOrder}: the VM's event clock, then the engine's own
-     * rows of one seq in the order it stated them), whatever thread ran
-     * them; a row the clock did not number (seq 0) orders nothing.  Never
-     * the anchor chain: an occurrence goes on after the message it sent,
-     * and hdfs-11741 r3's balancer dispatcher read the delay its own move
-     * task had written a turn before (32 BLOCKING rows).
-     */
     private static boolean contradictsOrder(ReadRow read,
                                             WriteRow observed) {
         return RowOrder.before(read, observed);
     }
 
-    /** One session that pairs a slot's consumer with another producer. */
     public static final class Replacement {
         public final String sessionId;
         public final String consumerEndpointId;
@@ -554,8 +430,6 @@ public final class SlotTable {
         }
     }
 
-    /** Every same-world replacement the corpus states, by the same {@link
-     *  #replaced} rule. */
     public List<Replacement> replacements(Corpus corpus) {
         List<Replacement> found = new ArrayList<Replacement>();
         if (!stated) return found;
@@ -589,9 +463,6 @@ public final class SlotTable {
         return found;
     }
 
-    /** The slot this pairing, of an occurrence its session did not answer
-     *  by its question, contradicts: same-world WIRE consumer, other
-     *  producer, other session; {@code key}, the pairing's ({@link #key}). */
     private Slot replaced(Key key, InteractionKind kind, Endpoint producer,
                           Endpoint consumer, String sessionId, String world) {
         if (kind != InteractionKind.WIRE) return null;
@@ -603,8 +474,6 @@ public final class SlotTable {
         return held.openedBySession.equals(sessionId) ? null : held;
     }
 
-    /** Whether a slot holds this pairing: one an answered occurrence opened
-     *  holds an answered pairing only. */
     private boolean holds(Key key, boolean answered) {
         return byInteraction.containsKey(key)
                 && (answered || !answeredSlots.contains(key));
@@ -615,13 +484,6 @@ public final class SlotTable {
     static final String UNADMITTED =
             " (this replay was not admitted, so it states no topology)";
 
-    /**
-     * One pair against the skeleton: grow it, fill it, or contradict it.
-     * {@code answered}: the consumer stands in an occurrence its session
-     * answered by its question ({@link SessionReader#answered}), whose
-     * pairing is its own chain's: growth, never a replacement of the
-     * declared one's.
-     */
     private Outcome take(InteractionKind kind, Endpoint producer,
                          Endpoint consumer, String sessionId, String world,
                          boolean authority, boolean answered, int round,
@@ -671,23 +533,6 @@ public final class SlotTable {
         return Outcome.OPENED;
     }
 
-    /**
-     * A closure member that ran under a different causal context: an
-     * absence beside a presence at one code point, BLOCKING only in a world
-     * where the member ran (elsewhere a new occurrence).  Contexts compare
-     * by their shape ({@link Corpus#contextShape}, the rule {@link Branches}
-     * and IDENTITY §9 ask the question by): per anchor hop the RPC site and
-     * the sending node, then the root's role and api, without the per-site
-     * counts.  A session that ran the code point under a member's shape ran
-     * that member, whatever it counted -- a poll's k-th wake is another k in
-     * every run (solr-adhoc-05, -21: SolrZkClient#getData under
-     * Root:WAKE/ZkDistributedQueue.peekElements#k) -- and
-     * one that ran it under that shape and another too is growth.  A member
-     * the session ran under its own shape, at its region and index, on
-     * another node MOVED: the world placed the work there, and what runs at
-     * its code point is other work ({@link #movedTo}) -- named, DIAGNOSTIC,
-     * never a replacement.
-     */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
         Map<String, List<OccurrenceAddress>> byCodePoint =
@@ -700,14 +545,12 @@ public final class SlotTable {
         }
         Map<CausalContext, List<String>> shapes =
                 new HashMap<CausalContext, List<String>>();
-        // Member id -> the worlds a session ran it in, once per member.
         Map<String, Set<String>> running = new HashMap<String, Set<String>>();
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
             boolean authority = session.admitted();
             String world = ObligationFactory.worldDigest(
                     corpus.world(session.sessionId()));
-            // The member code points this session ran, and under what.
             Map<String, List<OccurrenceAddress>> ran =
                     new HashMap<String, List<OccurrenceAddress>>();
             for (ActivationRow activation : session.activations()) {
@@ -773,15 +616,6 @@ public final class SlotTable {
         return replaced;
     }
 
-    /**
-     * {member, where the session ran it}: a member of one code point the
-     * session ran at its region and index on another node, under a context
-     * of its shape that is no {@code Lost} one (which names no shape to
-     * compare) -- solr-bugs-snapshot-no-active Z2K: a setData fault made
-     * node1 the Overseer, and the client's update node1 had served ran on
-     * node0, beside node1's new autoscaling write at setData's code point;
-     * else null.
-     */
     private static OccurrenceAddress[] movedTo(Corpus corpus,
                                                List<OccurrenceAddress> members,
                                                SessionReader session,
@@ -805,9 +639,6 @@ public final class SlotTable {
         return null;
     }
 
-    /** Whether a session that ran these occurrences at one code point ran a
-     *  member there: one of a member's shape ({@link
-     *  ContextShape#sameQuestion}). */
     private static boolean ranMember(Corpus corpus,
                                      List<OccurrenceAddress> members,
                                      List<OccurrenceAddress> ran,
@@ -836,7 +667,6 @@ public final class SlotTable {
         return worlds;
     }
 
-    /** The same code point in the same control context. */
     private static String codePoint(OccurrenceAddress occurrence) {
         return occurrence.node().render() + "/" + occurrence.regionId() + "/"
                 + occurrence.index().hash();

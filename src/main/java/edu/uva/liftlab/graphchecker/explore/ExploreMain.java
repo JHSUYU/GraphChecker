@@ -52,75 +52,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * EXPLORE's planner: plan the closure, propose the flips still open, one
- * round at a time.
- *
- * <pre>
- *   --sessions &lt;dir&gt;           the corpus; its parent is the iteration
- *   --target-occurrence &lt;sel&gt;  the case's declared anchor (v1 selector),
- *                              the ONE root of the closure
- *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
- *                              (SYMBOL-SCOPE §3)
- *   --root-domains &lt;file&gt;      what the CASE says each root may be
- *   --system-doors &lt;file&gt;      the system's door catalog (doors.jsonl)
- *   --client-fault-transports &lt;t,...&gt;  the transports whose doors fail in
- *                              the workload client's root contexts
- *                              ({@link ClientFaults}); default: every door
- *   --system-view &lt;c,...&gt;      the system's view classes, whose guards are
- *                              no flip sites ({@code plan.SystemView})
- *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
- *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
- *   --max-world-depth
- *   one round, over every session the iteration holds:
- *   --round &lt;n&gt;                which round this is
- *   --results &lt;file&gt;           earlier rounds' ObligationResults; an
- *                              answered query is never proposed again
- *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
- *                              or running; none is proposed again
- *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl.gz,
- *                              gaps.jsonl.gz, graph.jsonl.gz, growth.jsonl,
- *                              slots.jsonl.gz, explore_manifest.json (the
- *                              large ones gzip, {@code ArtifactIO#GZIP})
- *   or every round of the exploration ({@link Service}):
- *   --serve &lt;dir&gt;             answer the rounds asked there, each
- *                              question naming its round, inFlight,
- *                              results (the answers then landed), corpus
- *                              (a file naming the sessions it reads, one
- *                              per line) and outputDir, until the process
- *                              is ended; a round whose sessions to read its
- *                              live set does not hold beside them is
- *                              answered out of heap, unread ({@link
- *                              HeapWatch#outgrown})
- * </pre>
- *
- * <p>A round rebuilds the frontier from every session, recorded verdict and
- * arm in flight, writes the unanswered flips, and states the round's wave
- * and the witnesses the corpus holds.  The campaign owns the loop, the
- * workers and every stop (PIPELINE §7.9); it never solves ({@link
- * ObligationSolverMain} does).  ONE planner serves an exploration's rounds:
- * what it read for one round it keeps for the next, so a round reads only
- * the sessions landed since -- the corpus's rows ({@link Corpus#read(Path,
- * Path, Corpus, Collection)}), the static map while its file reads the same,
- * the slot table it folded and changed ({@link SlotTable}) -- and builds
- * every index across sessions anew.  A served round reads the corpus and the
- * answers its question names, frozen by the campaign as the round starts,
- * so the campaign goes on landing, gating and attempting witnesses while it
- * plans (PIPELINE §7.9).  Each round's files are the ones a planner of its
- * own, reading the iteration then, writes (offline-ab.sh EXPLORE.serve).</p>
- */
 public final class ExploreMain {
-    /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
-    /** One round's tasks, gzip (SGF8-adhoc-05 round 5: 90 MB as text). */
     static final String TASKS_FILE = "tasks.jsonl.gz";
-    /** One round's gaps, gzip (SGF8-adhoc-05 round 5: 602 MB as text, read
-     *  again by EMIT and the bounds, run_engine.sh). */
     public static final String GAPS_FILE = "gaps.jsonl.gz";
-    /** Stated once the round has read its corpus: after it, a round reads
-     *  no session file (the corpus's rows and schedules are read whole by
-     *  {@link Corpus#read(Path, Path, Corpus, Collection)}), only the
-     *  workers' files and the iteration's. */
     static final String CORPUS_READ = "corpus_read";
 
     private final Path iteration;
@@ -130,33 +65,17 @@ public final class ExploreMain {
     private final String topologyEpoch;
     private final int maxTasks;
     private final ObligationFactory.Bounds bounds;
-    /** Where a fault door fails. */
     private final ClientFaults faults;
-    /** The system's view classes, whose guards are no flip sites. */
     private final SystemView view;
-    /** What the last round read, kept for the next. */
     private Corpus corpus;
     private StaticScopeMap scope;
-    /** The region plan PLAN froze in the iteration ({@code campaign_plan}):
-     *  its rows name the regions each one's occurrences folded. */
     static final String REGION_PLAN = "concolic_region_plan.jsonl";
     private String scopeDigest;
-    /** The slot table as the last round left it, and that round. */
     private SlotTable slots;
     private int slotsRound = -1;
-    /** The files a round writes beside its work ({@link #round}): its slot
-     *  changes and its graph. */
     private final List<Parallel.Beside> writing =
             new ArrayList<Parallel.Beside>();
 
-    /**
-     * One exploration's planner.
-     *
-     * @param declaredAnchor the case's v1 declaration,
-     *                       the closure's only root (PIPELINE §7.1); resolved
-     *                       against the seed each round, so nothing
-     *                       downstream sees a selector
-     */
     ExploreMain(Path iteration, String declaredAnchor, Path rootDomains,
                 Path scopeMap, String topologyEpoch, int maxTasks,
                 ObligationFactory.Bounds bounds, ClientFaults faults,
@@ -174,11 +93,8 @@ public final class ExploreMain {
 
     public static void main(String[] argv) throws Exception {
         HeapWatch.start();
-        // A planner is a head step, one JVM alone on its host (PIPELINE
-        // §7.9): it computes on every core (contract.Parallel).
         Parallel.width(Parallel.HOST_CORES);
         LongOptions options = LongOptions.parse(argv);
-        // The iteration is the parent of --sessions.
         Path sessions = options.path("sessions");
         if (sessions == null) {
             throw new IllegalArgumentException("Missing --sessions");
@@ -191,8 +107,6 @@ public final class ExploreMain {
                     + "pass --target-occurrence. A case declares ONE anchor "
                     + "(PIPELINE §7.1) and the closure is that anchor's");
         }
-        // Fail-closed: without the map the closure is the rows' alone, which
-        // can miss the writer region the failure depends on (PIPELINE §7.2).
         Path scopeMap = options.path("static-scope-map");
         if (scopeMap == null) {
             throw new IllegalArgumentException("the closure has no static "
@@ -224,9 +138,6 @@ public final class ExploreMain {
                         "inFlight");
                 List<String> named = corpus(Paths.get(
                         JsonFields.primitiveString(question, "corpus")));
-                // A round it cannot hold is not asked: it runs at the most
-                // heap a head JVM is given (run_engine.sh
-                // campaign_stream_plan), so none would hold it.
                 long[] live = HeapWatch.takePeakSwept();
                 long toRead = planner.toRead(named);
                 System.err.printf("round %d: the planner's live set %d MB at "
@@ -243,9 +154,6 @@ public final class ExploreMain {
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
                                 "results")), named, planned);
-                // Its live set at its highest this round, beside the round:
-                // what its host is charged for the next (run_engine.sh
-                // campaign_planner_need_mb).
                 ArtifactIO.replace(planned.resolve(LIVE_MB),
                         (HeapWatch.peakSwept() >> 20) + "\n");
             });
@@ -261,17 +169,8 @@ public final class ExploreMain {
                 options.path("results"), null, out)));
     }
 
-    /** The served planner's live set at its highest over a round, in MB,
-     *  in the round's directory ({@link HeapWatch#peakSwept}). */
     static final String LIVE_MB = "planner_live_mb";
 
-    /**
-     * The bytes of the session files a round over {@code named} reads, as
-     * they decode ({@link ArtifactIO#decodedSize}: the text the rows are
-     * held of, {@code HeapWatch#ROWS_PER_FILE_BYTE}): of the sessions it
-     * names that the corpus this planner kept does not hold ({@link
-     * Corpus#read(Path, Path, Corpus, Collection)} reads only those).
-     */
     long toRead(Collection<String> named) throws IOException {
         Set<String> held = new LinkedHashSet<String>();
         if (corpus != null) {
@@ -285,14 +184,12 @@ public final class ExploreMain {
             try (java.nio.file.DirectoryStream<Path> files = Files
                     .newDirectoryStream(SessionDir.of(iteration, sessionId)
                             .dir())) {
-                // Their text, what the rows hold of (ArtifactIO#decodedSize).
                 for (Path file : files) bytes += ArtifactIO.decodedSize(file);
             }
         }
         return bytes;
     }
 
-    /** The sessions a served round's question names, one per line. */
     private static List<String> corpus(Path file) throws IOException {
         List<String> named = new ArrayList<String>();
         for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
@@ -301,7 +198,6 @@ public final class ExploreMain {
         return named;
     }
 
-    /** One round by a planner of its own: {@link #round}. */
     public static JsonObject plan(Path iteration, String declaredAnchor,
                                   Path rootDomains, Path results,
                                   Path inFlight, Path scopeMap, Path out,
@@ -315,7 +211,6 @@ public final class ExploreMain {
                 .round(round, inFlight, results, null, out);
     }
 
-    /** {@code --client-fault-transports}: comma-separated names. */
     private static List<String> transports(String value) {
         List<String> names = new ArrayList<String>();
         for (String name : value.split(",")) {
@@ -324,18 +219,8 @@ public final class ExploreMain {
         return names;
     }
 
-    /**
-     * Plans one round into {@code out}, over the sessions {@code named}
-     * names -- null: every session the iteration holds -- and the answers
-     * {@code results} holds.
-     *
-     * @param inFlight the obligation rows queued or running, or null for
-     *                 none
-     */
     JsonObject round(int round, Path inFlight, Path results,
                      Collection<String> named, Path out) throws IOException {
-        // The round's gaps go to their file as they are said, on a thread
-        // of their own, which ends with the round whatever it came to.
         try (RoundGaps gaps = new RoundGaps(out.resolve(GAPS_FILE))) {
             return round(round, inFlight, results, named, out, gaps);
         }
@@ -344,22 +229,14 @@ public final class ExploreMain {
     private JsonObject round(int round, Path inFlight, Path results,
                              Collection<String> named, Path out,
                              RoundGaps gaps) throws IOException {
-        // A round that failed may have left its files being written: none
-        // is written over another's.
         for (Parallel.Beside file : writing) file.await();
         writing.clear();
         corpus = Corpus.read(iteration, rootDomains, corpus, named);
-        // Every session file this round reads is read: GROW may withdraw a
-        // session of its corpus now (run_engine.sh campaign_stream_swap_due).
         Files.createDirectories(out);
         Files.write(out.resolve(CORPUS_READ), new byte[0]);
-        // The map is read again only when its file changed.
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
-            // With what the plan PLAN froze for this iteration states: the
-            // store fetches on a target's data flow
-            // (ClosurePlanner#storeFetches).
             scope = StaticScopeMap.read(scopeMap).withPlan(
                     iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
@@ -397,11 +274,6 @@ public final class ExploreMain {
                     faults, view, gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
-                // A truncated closure misses arms, but whether that blocks a
-                // claim is the exploration's end's to say: none once an
-                // accepted witness ended it, else the closure it ended on
-                // (the manifest's `truncated`, PIPELINE §7.9).  This round's
-                // own is its record.
                 truncated += plan.truncated.size();
                 ceilingCut += plan.ceilingCut.size();
                 gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
@@ -437,27 +309,15 @@ public final class ExploreMain {
             }
         }
         Set<String> closure = closureOf(tasks);
-        // Reconcile the skeleton; a same-world replacement is BLOCKING but
-        // never empties the round (PIPELINE §7.1).  The table this planner
-        // left is the rounds' before this one only when it planned the one
-        // before; any other round folds them from their files.
         if (slots == null || slotsRound != round - 1) {
             slots = SlotTable.read(iteration, round);
         }
         slotsRound = -1;
-        // What the manifest states of the reconciliation is taken now, its
-        // gaps written: none is held to the round's end (SGF8-adhoc-05
-        // round 5: 53 K rows, 157 MB, held through the frontier).
         JsonObject skeleton = skeleton(slots, slots.reconcile(corpus, closure,
                 round), gaps);
-        // The round's change of the table is whole now, and its file is the
-        // round's largest (SGF8-adhoc-05 round 5: 2.8 GB, ~30 s of a 1 Gb/s
-        // link): written beside the rest of the round, which ends once it
-        // is.  The table is the next round's only if this one ends.
         SlotTable changed = slots;
         writing.add(Parallel.beside("slots", () -> changed.write(out)));
 
-        // The one ledger of owed arms (Frontier).
         Frontier frontier = new Frontier(corpus, tasks, flipSites);
         List<ObligationResult> answers = RowCodec.readAll(results,
                 RowCodec::readObligationResult);
@@ -474,7 +334,6 @@ public final class ExploreMain {
                 ObligationFactory.candidates(corpus, tasks, flipSites, bounds,
                         branches, frontier, offering, keys);
         gaps.addAll(offering);
-        // The forced replay of the anchor first (PIPELINE §7.10).
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
                 candidates);
@@ -482,16 +341,8 @@ public final class ExploreMain {
                 forced.candidates);
 
         Files.createDirectories(out);
-        // G_k and growth (PIPELINE §7.1); empty growth.jsonl +
-        // obligations.jsonl with nothing in flight is the driver's fixed
-        // point (§7.9).  The graph, 465 MB of 05 round 5's files, is
-        // written beside the rest of the round.
         WaveGraph graph = WaveGraph.of(corpus);
         writing.add(Parallel.beside("graph", () -> graph.write(out, round)));
-        // An address is grown once: a planned occurrence no replay ran again
-        // since depends on timing the replays do not reproduce (hdfs-17897
-        // v83: the NameNode converts a key command only on the heartbeat that
-        // carries one), and growing it again duplicates a plan row.
         Set<String> planned = plannedOccurrences(iteration);
         Set<OccurrenceAddress> unreproduced =
                 new LinkedHashSet<OccurrenceAddress>(grown.keySet());
@@ -507,9 +358,6 @@ public final class ExploreMain {
                             + "on timing the replays do not reproduce, and "
                             + "what it delivered stays in the wire arms"));
         }
-        // An invocation is grown once, up to the declared bound: its input
-        // already planned (an earlier generation's), or past the bound,
-        // named and counted (campaign_bounds).
         Map<UnplannedInput, String> inputs = ClosurePlanner.unplanned(corpus,
                 branches);
         Set<String> plannedInputs = plannedInputs(iteration);
@@ -530,17 +378,10 @@ public final class ExploreMain {
                                 + " inputs for: it stays concrete"));
             }
         }
-        // The store edges its replays ran past the plan's ZooKeeper chain.
         int exposed = WaveGraph.writeGrowth(corpus, grown, unpaused, inputs,
                 ZkEdges.of(corpus, chain), out);
-        // What only the seed replay ran waits for a focused replay to expose
-        // it -- unless this round is the fixpoint: then none ever will, and
-        // the closure is incomplete.
         boolean fixpoint = open.empty() && exposed == 0
                 && frontier.inFlightCount() == 0 && witnesses.isEmpty();
-        // A doors-only occurrence demanded as a value that no replay ran
-        // whole, and none GROW can re-run (the seed is not): at the fixed
-        // point no replay ever will.
         if (fixpoint) {
             for (OccurrenceAddress paused : runWhole) {
                 gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
@@ -565,10 +406,8 @@ public final class ExploreMain {
         }
         RowCodec.writeAll(out.resolve(TASKS_FILE), tasks,
                 ExploreCodec::writeTask);
-        // An empty file IS the frontier closing.
         RowCodec.writeAll(out.resolve("obligations.jsonl"), open.obligations,
                 ExploreCodec::writeObligation);
-        // A cycle past the naming budget keys its arms by reference: named.
         String namingCut = corpus.namingCut();
         if (namingCut != null) {
             gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
@@ -585,20 +424,15 @@ public final class ExploreMain {
         manifest.add("boundedFlips", boundedFlips(iteration,
                 frontier.boundedFlips()));
         manifest.add("force", forced.manifest);
-        // The files written beside the round, then its manifest, last: its
-        // time is the round's end (run_engine's campaign_last_round_millis).
         for (Parallel.Beside file : writing) file.join();
         writing.clear();
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
-        // A round planned again starts from the table the rounds before it
-        // left, folded from their files.
         slotsRound = round;
         return manifest;
     }
 
-    /** The declared anchor's task among a round's, or null. */
     private static Task anchorTask(List<Task> tasks,
                                    List<OccurrenceAddress> roots) {
         for (Task task : tasks) {
@@ -607,33 +441,10 @@ public final class ExploreMain {
         return null;
     }
 
-    /**
-     * The open decider arms the declared anchor's reached, admitted runs left
-     * phi without (TargetRow.OpenArm, causynth.BooleanReturns) and no run
-     * took, each with what its flip came to on the paths that left it: a
-     * path's flip TAKEN where a replay ran it ({@code ADMITTED}) or another
-     * recorded path took it -- phi states the arm there, and an arm one path
-     * took is not listed -- {@code UNSAT} where no world of the corpus takes
-     * it, {@code PENDING} while one is in flight or proposed (a flip asked
-     * again without a world its replay refuted among them), {@code
-     * UNANSWERED} where its flip came to anything else (a replay that never
-     * reached the decision and refuted nothing, NOT_ADMITTED), {@code
-     * NOT_ASKED} where no round cut it from that path, {@code NOT_FLIPPABLE}
-     * where no decision under it states a predicate.  The arm's state is the
-     * first of UNANSWERED, NOT_ASKED, PENDING, NOT_FLIPPABLE, UNSAT any of
-     * its paths is in.  Each world a replay of its flip refuted
-     * (WORLD_REFUTED, {@link Corpus#refutedWorlds}) is named on the row
-     * ({@code refutedWorlds}: its digest, obligation, session, the
-     * conditions that held, the workload's terminating exception and where
-     * it was thrown): an UNSAT rests on them.  EMIT names each arm
-     * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
-     * UNSAT one, and an UNANSWERED one leaves no verdict.
-     */
     static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
                               List<Task> tasks, Frontier frontier,
                               Frontier.Round open,
                               Map<String, List<ObligationResult>> answers) {
-        // Each proposed obligation by its id and by its flip.
         Set<String> proposed = new LinkedHashSet<String>();
         for (Obligation obligation : open.obligations) {
             proposed.add(obligation.obligationId());
@@ -720,7 +531,6 @@ public final class ExploreMain {
                 row.add("refutedWorlds", worlds);
                 row.add("unrunWorlds", ExploreCodec.list(new ArrayList<String>(
                         unrun.get(arm.getKey()))));
-                // The arm's query refused at the arm: named, never closed.
                 row.add("refused", ExploreCodec.list(new ArrayList<String>(
                         refusals.get(arm.getKey()))));
                 arms.add(row);
@@ -729,32 +539,8 @@ public final class ExploreMain {
         return arms;
     }
 
-    /** An open arm whose flip is asked no more past {@link
-     *  ObligationFactory#MAX_REFUTED_WORLDS} refuted worlds: the named
-     *  valve, result.json {@code bounded}. */
     static final String BOUNDED = "BOUNDED";
 
-    /**
-     * What one path's flip of its open arm came to ({@link #openArms}).  Its
-     * own FLIP -- task, path, decision, outcome, the key {@link
-     * Corpus#refutedWorlds} uses -- decides where it was asked: every answer
-     * that flip got, in wave order, whatever id each ran under, since the id
-     * moves as the corpus grows and one flip's answers land under several
-     * (hdfs-adhoc-39 WD2: the re-ask of a refuted flip came UNSAT under
-     * another id).  A path that never asked its own flip shares the answer
-     * of the arm its id names, as the id is meant to (Frontier: an arm is
-     * owed once per dependence, not per path), and so does one whose only
-     * answers refuted worlds (a refutation answers nothing of the arm; the
-     * shared id's UNSAT may settle it before its own re-ask: hdfs-adhoc-39
-     * OK1-0).  TAKEN where any answer admitted it or a recorded path took
-     * it; else what its last answer says.  The worlds its replays refuted
-     * are added to {@code
-     * refuted}, by digest; each replay that did not run its world ({@code
-     * ObligationResult#worldUnrefuted}: asked once more, {@link
-     * Frontier#consume}) to {@code unrun}, as obligation@session; each
-     * refusal at the arm ({@code ObligationResult#ARM_REFUSED}), its own
-     * flip's or its id's, to {@code refusals}: the arm stays open, by name.
-     */
     private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
@@ -803,8 +589,6 @@ public final class ExploreMain {
                         unrun.add(answer.obligationId() + "@"
                                 + answer.sessionId());
                     }
-                    // A refuted world answers nothing of the arm (Frontier
-                    // #consume): only its re-ask, or the shared id's, does.
                     if (answer.verdict() != Verdict.SAT_MODEL_READY
                             && answer.refutation() == null) {
                         last = answer.verdict();
@@ -826,24 +610,10 @@ public final class ExploreMain {
         return "NOT_ASKED";
     }
 
-    /**
-     * Every answer this iteration's obligation workers wrote, by the flip
-     * each asked ({@link ObligationFactory#flip}), in wave and name order:
-     * its question names the flip ({@code <flip>:<content>},
-     * {@link ObligationFactory#question}), else its ask's row does.  Read as
-     * the workers stand, while a GROW swap may set one's files to its
-     * re-run's (run_engine.sh campaign_stream_swap_worker): each file is
-     * renamed over whole, and a worker's flip is the same before and after,
-     * so the flip has the exposing replay's answer or the re-run's, as a
-     * round after the swap reads it.
-     */
     static Map<String, List<ObligationResult>> answersByFlip(Path iteration)
             throws IOException {
         Map<String, List<ObligationResult>> byFlip =
                 new LinkedHashMap<String, List<ObligationResult>>();
-        // Each worker's few small files read side by side: on NFS a read is
-        // its latency (SGF8-adhoc-05 round 5: 917 workers, 20-30 s one at
-        // a time).
         for (Answered worker : Parallel.map(ObligationDir.workerDirs(
                 iteration), Answered::new, Parallel.directoriesAtOnce())) {
             if (worker.flip.isEmpty()) continue;
@@ -854,8 +624,6 @@ public final class ExploreMain {
         return byFlip;
     }
 
-    /** One worker's answers and the flip it asked ({@link #answersByFlip}),
-     *  "" where it answered nothing. */
     private static final class Answered {
         final List<ObligationResult> results;
         final String flip;
@@ -868,15 +636,6 @@ public final class ExploreMain {
         }
     }
 
-    /**
-     * The flips held BOUNDED by {@code replay_timeout_s} ({@link
-     * Frontier#boundedFlips}), each by the arm its workers asked (task,
-     * path, site, ordinal, the outcome asked; {@code force} for the FORCE
-     * run, which asks none, {@link ForcedFlip#flip}) and the obligations whose
-     * replays were killed with what killed them: what run_engine's {@code
-     * campaign_bounds} names, the last round's being every one.  Read as the
-     * workers stand, as {@link #answersByFlip} is.
-     */
     static JsonArray boundedFlips(Path iteration, Set<String> flips)
             throws IOException {
         Map<String, JsonObject> rows = new LinkedHashMap<String, JsonObject>();
@@ -901,7 +660,6 @@ public final class ExploreMain {
                 row.addProperty("siteId", ask.siteId());
                 row.addProperty("ordinal", ask.ordinal());
                 row.addProperty("outcome", ask.flippedOutcome());
-                // The FORCE run, which flips nothing (ForcedFlip#flip).
                 if (ask.force()) row.addProperty("force", true);
                 row.add("killed", new JsonArray());
                 rows.put(flip, row);
@@ -920,8 +678,6 @@ public final class ExploreMain {
         return out;
     }
 
-    /** The flip one worker's obligation asked, or "" where it states
-     *  none. */
     private static String flipOf(Path worker) throws IOException {
         for (String file : new String[] {ObligationDir.QUESTION,
                 ObligationDir.QUESTION_ASKED}) {
@@ -941,7 +697,6 @@ public final class ExploreMain {
                 ask.siteId(), ask.ordinal(), ask.flippedOutcome());
     }
 
-    /** One refuted world as an open arm's row names it. */
     private static JsonObject refutedWorld(Corpus.Refuted world) {
         JsonObject row = new JsonObject();
         row.addProperty("world", world.digest);
@@ -954,16 +709,6 @@ public final class ExploreMain {
         return row;
     }
 
-    /**
-     * A CONCRETE ANCHOR (R1-ROOTS D0): every admitted path decided it on no
-     * symbol, so its decision is a constant of the formula (COMPOSE states
-     * its healthy arm as one) and its closure starts from what it read on its
-     * path guards' cone before it decided ({@link ClosurePlanner.Concrete}).
-     * Information, never a gap: what the decision rested on concretely --
-     * its paths, how many decided it on the way to the throw, the reads its
-     * closure demands and their locations, and how many earlier reads off
-     * the cone the root demand left out (root_demand.jsonl).
-     */
     private static JsonObject concreteRow(OccurrenceAddress anchor,
                                           ClosurePlanner.Concrete concrete) {
         Set<String> locations = new TreeSet<String>();
@@ -981,15 +726,6 @@ public final class ExploreMain {
         return row;
     }
 
-    /**
-     * THE WITNESSES: every admitted focused replay (in reading order) whose
-     * target row at a declared root observed the fatal.  The question is
-     * that one (r,c,i) occurrence, so what a run did after its fatal is not
-     * the bug's (owner 2026-09-28: hdfs-11741, hdfs-17899-bug2 kept
-     * exploring for waves after it).  The campaign tries to end at each one
-     * as it lands, by the same rule over the manifest's anchorOccurrences
-     * (PIPELINE §7.9); here they class the closure's gaps.
-     */
     private static List<String> witnesses(Corpus corpus,
                                           List<OccurrenceAddress> roots) {
         Set<String> witnessed = new LinkedHashSet<String>();
@@ -1005,17 +741,6 @@ public final class ExploreMain {
         return new ArrayList<String>(witnessed);
     }
 
-    /**
-     * THE WAVE this round plans, a generation of worlds: one past the
-     * deepest wave whose obligation published a session of this corpus, 0
-     * over the seed alone (a round's wave is its manifest's; one that states
-     * none planned from the seed).  It deepens only as sessions land, never
-     * with the rounds a streaming campaign plans between them, and
-     * {@code region_path_max_waves} bounds it (PIPELINE §7.9).  The workers
-     * are taken as the corpus's read found them ({@link Corpus#landedIn}):
-     * a GROW swap may rename a worker's answer to its re-run's, a session
-     * this round does not read, while the round plans.
-     */
     private static int wave(Corpus corpus) throws IOException {
         Map<Path, Integer> waves = new LinkedHashMap<Path, Integer>();
         int deepest = 0;
@@ -1036,10 +761,6 @@ public final class ExploreMain {
         return deepest;
     }
 
-    /** Planned tasks answered at more than ONE address across replays. The
-     *  ledger keys arms by address ({@link ClosurePlanner#taskId}), so a moving
-     *  address re-asks settled arms forever; the cause is upstream ({@code
-     *  runtime.Identity}). DIAGNOSTIC: exploration still proceeds. */
     private static List<GapRow> unstableAddresses(Corpus corpus) {
         Map<String, Map<String, String>> answeredBy =
                 new LinkedHashMap<String, Map<String, String>>();
@@ -1075,22 +796,11 @@ public final class ExploreMain {
         return unstable;
     }
 
-    /**
-     * Resolves the declared anchor via {@link SelectorResolution} (IDENTITY
-     * §9) and refuses the round, BLOCKING, when it does not resolve -- naming
-     * what the seed ran that region as, since the cause is usually a spelling
-     * mismatch. A full address resolves by parsing alone, so it is also checked
-     * against the seed's activations: no replay can focus an occurrence no run
-     * recorded (PIPELINE §7.1). The closure is the ANCHOR's only; plan rows
-     * are not roots.
-     */
     private static List<OccurrenceAddress> resolve(Corpus corpus,
                                                    String declaredAnchor,
                                                    List<GapRow> gaps) {
         String seed = corpus.seedSessionId();
         if (seed.isEmpty()) {
-            // Exactly one SEED-role session, no fallback: another would make
-            // the claim about the wrong execution.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     declaredAnchor,
                     "this corpus states no single seed session: "
@@ -1111,8 +821,6 @@ public final class ExploreMain {
         return roots;
     }
 
-    /** The declaration's occurrence, or null with the BLOCKING refusal named.
-     */
     private static OccurrenceAddress root(String declared, String seed,
                                           List<ActivationRow> activations,
                                           Set<String> ranInTheSeed,
@@ -1147,7 +855,6 @@ public final class ExploreMain {
         return match;
     }
 
-    /** What the seed session ran that region as, for a refusal to name. */
     private static String offered(String declared,
                                   List<ActivationRow> seed) {
         Selector selector;
@@ -1159,7 +866,6 @@ public final class ExploreMain {
         return ofRegion(selector.regionId(), seed);
     }
 
-    /** The contexts one region ran under in the seed, at most four. */
     private static String ofRegion(String regionId,
                                    List<ActivationRow> seed) {
         List<String> named = new ArrayList<String>();
@@ -1177,8 +883,6 @@ public final class ExploreMain {
                 : String.join(", ", named);
     }
 
-    /** The occurrence address of every task row the iteration's plan holds,
-     *  grown rows included. */
     private static Set<String> plannedOccurrences(Path iteration)
             throws IOException {
         Set<String> planned = new LinkedHashSet<String>();
@@ -1191,8 +895,6 @@ public final class ExploreMain {
         return planned;
     }
 
-    /** {@code <taskId> <symbol>} of every input the iteration's plan holds,
-     *  grown inputs included. */
     private static Set<String> plannedInputs(Path iteration)
             throws IOException {
         Set<String> planned = new LinkedHashSet<String>();
@@ -1215,10 +917,6 @@ public final class ExploreMain {
         return planned;
     }
 
-    /** The occurrences the current plan marks {@code mark} on their task
-     *  row: {@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}, run for their
-     *  doors alone (GROW drops it from one a value demand reaches), or
-     *  {@code #DOORS_ONLY_DECLARED}, so for good. */
     private static Set<String> doorsOnlyOccurrences(Path iteration,
                                                     String mark)
             throws IOException {
@@ -1233,7 +931,6 @@ public final class ExploreMain {
         return doorsOnly;
     }
 
-    /** Every occurrence this round's tasks hold: focused, and their factors. */
     private static Set<String> closureOf(List<Task> tasks) {
         Set<String> closure = new LinkedHashSet<String>();
         for (Task task : tasks) {
@@ -1263,8 +960,6 @@ public final class ExploreMain {
                                                concrete) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
-        // The same anchors as a target row spells its occurrence, so the
-        // campaign tells a landed session's witness by equality alone.
         JsonArray anchorOccurrences = new JsonArray();
         for (OccurrenceAddress root : roots) {
             anchors.add(root.render());
@@ -1275,12 +970,7 @@ public final class ExploreMain {
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("round", open.index);
         manifest.addProperty("wave", wave);
-        // The world depth its paths were cut by (ObligationFactory
-        // #candidates): a GROW re-run of a deeper world offers no round an
-        // obligation (run_engine.sh campaign_stream_grow_take).
         manifest.addProperty("maxWorldDepth", maxWorldDepth);
-        // FIXED_POINT: nothing proposed, exposed or in flight; AWAITING:
-        // nothing new while arms are still in flight.
         manifest.addProperty("state", !open.empty() || exposed > 0
                 ? "OBLIGATIONS_PROPOSED" : frontier.inFlightCount() > 0
                 ? "AWAITING" : "FIXED_POINT");
@@ -1289,9 +979,6 @@ public final class ExploreMain {
         manifest.addProperty("heldInFlight", open.heldInFlight);
         manifest.addProperty("branchesStopped", branches.stopped());
         manifest.addProperty("exposedRegions", exposed);
-        // Occurrences this round's closure did not plan: static candidates
-        // past --max-tasks, and of them those the rows connect past the
-        // closure ceiling (ClosurePlanner#CLOSURE_CEILING).
         manifest.addProperty("truncated", truncated);
         manifest.addProperty("ceilingCut", ceilingCut);
         manifest.add("skeleton", skeleton);
@@ -1307,8 +994,6 @@ public final class ExploreMain {
             row.addProperty("focused", task.focused().render());
             row.addProperty("factor", task.factor().size());
             row.addProperty("seedSessionId", task.seedSessionId());
-            // Why this occurrence is a task, so readers need not re-derive the
-            // closure.
             row.addProperty("why", why.get(task.taskId()));
             row.addProperty("proposed", proposedHere == null ? 0 : proposedHere);
             rows.add(row);
@@ -1335,9 +1020,6 @@ public final class ExploreMain {
         return manifest;
     }
 
-    /** A reconciliation's gaps, said, and what the manifest states of it:
-     *  the table's slots and what it opened, filled, left outside and
-     *  replaced. */
     private static JsonObject skeleton(SlotTable slots,
                                        SlotTable.Reconciliation reconciled,
                                        RoundGaps gaps) {
@@ -1351,7 +1033,6 @@ public final class ExploreMain {
         return row;
     }
 
-    /** The same gap said twice is one gap. */
     static List<GapRow> distinct(List<GapRow> gaps) {
         return new ArrayList<GapRow>(new LinkedHashSet<GapRow>(gaps));
     }

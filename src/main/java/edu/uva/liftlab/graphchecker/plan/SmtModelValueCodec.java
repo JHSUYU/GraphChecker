@@ -5,7 +5,6 @@ import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Lossless syntax handling for the scalar values returned by Z3. */
 public final class SmtModelValueCodec {
     private static final MathContext REAL_REPLAY_CONTEXT =
             MathContext.DECIMAL128;
@@ -13,7 +12,6 @@ public final class SmtModelValueCodec {
     private SmtModelValueCodec() {
     }
 
-    /** Converts an exact SMT Real model value to a Java decimal literal. */
     public static String realToJavaLiteral(String value) {
         String raw = value == null ? "" : value.trim();
         if ("NaN".equals(raw) || "Infinity".equals(raw)
@@ -28,7 +26,6 @@ public final class SmtModelValueCodec {
         return Double.toString(represented);
     }
 
-    /** Decodes SMT-LIB's doubled-quote escaping. */
     public static String decodeString(String value) {
         String raw = value == null ? "" : value;
         if (raw.length() >= 2 && raw.charAt(0) == '"'
@@ -82,7 +79,6 @@ public final class SmtModelValueCodec {
         return new ArrayList<>(items.subList(1, items.size()));
     }
 
-    /** Splits one SMT application; nested terms and "" strings stay intact. */
     static List<String> applicationItems(String expression) {
         if (expression == null || expression.length() < 2
                 || expression.charAt(0) != '('

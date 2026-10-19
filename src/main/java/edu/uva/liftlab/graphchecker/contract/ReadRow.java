@@ -7,13 +7,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 
-/**
- * CONTRACT-SPEC §2.2: one read, the consumer half of a STATE interaction.  An
- * unknown {@code observedVersion} is -1, never 0: a wrong join is a
- * fabricated causal edge.
- */
 public final class ReadRow extends Value {
-    /** The version of a read the run could not attribute. */
     public static final long UNKNOWN_VERSION = -1L;
 
     private final String sessionId;
@@ -53,7 +47,6 @@ public final class ReadRow extends Value {
                 javaType, concreteValue, UNKNOWN_VERSION);
     }
 
-    /** The same row, stating the mint's own version. */
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
@@ -62,8 +55,6 @@ public final class ReadRow extends Value {
                 javaType, concreteValue, mintVersion, false);
     }
 
-    /** The same row, stating whether a writer the log never named reached
-     *  its location. */
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
@@ -78,8 +69,6 @@ public final class ReadRow extends Value {
                 Fields.optional(concreteValue), mintVersion, unnamedWriter, 0);
     }
 
-    /** The same row at {@code tie} among the engine's rows of its seq
-     *  ({@link RowOrder}). */
     public ReadRow withTie(int tie) {
         if (tie == this.tie) return this;
         return new ReadRow(sessionId, seq, endpoint, location,
@@ -87,31 +76,14 @@ public final class ReadRow extends Value {
                 unnamedWriter, (int) Fields.nonNegative(tie, "tie"));
     }
 
-    /** Where among the engine's rows of its seq this row stands: 0 for a
-     *  VM row ({@link RowOrder}). */
     public int tie() {
         return tie;
     }
 
-    /**
-     * Whether a writer the VM's log never named reached this read's location
-     * when it read (the VM's {@code unnamedWriter}: an unhooked write, an
-     * uncaptured Unsafe write, an unmodeled container mutation).  The writers
-     * the log states are then not all the writers there were, so the read is
-     * paired with the one it observed and no other.  The version bound is not
-     * such a writer: every retained version is still a real, exact writer, so
-     * a hot field past it keeps its alternatives.
-     */
     public boolean unnamedWriter() {
         return unnamedWriter;
     }
 
-    /**
-     * A placeholder's own shadow-store version, else {@link #UNKNOWN_VERSION}.
-     * {@code observedVersion} joins to the last real write; this is the
-     * version a {@code ReadFromExpression} names, unique per mint (so it
-     * separates ports declared over one cell).
-     */
     public long mintVersion() {
         return mintVersion;
     }
@@ -132,37 +104,22 @@ public final class ReadRow extends Value {
         return location;
     }
 
-    /** The version observed, or {@link #UNKNOWN_VERSION}. */
     public long observedVersion() {
         return observedVersion;
     }
 
-    /** The symbol the read produced in the path condition. */
     public String symbol() {
         return symbol;
     }
 
-    /** The JVM descriptor {@code symbol} is declared with. */
     public String javaType() {
         return javaType;
     }
 
-    /** What the read returned, spelled as {@link #returned} says, or null. */
     public String concreteValue() {
         return concreteValue;
     }
 
-    /**
-     * What one read node states it returned, as {@link #concreteValue}
-     * spells it: a scalar constant's payload ({@code Y_I_2} is {@code 2}), a
-     * String as its JSON string literal -- quoted, so no content reads as a
-     * number or an identity -- Java null as {@code N}, and an object as the
-     * name of its identity ({@code M_L'<class>'_<rid>}), which a pin states
-     * the read equal to.  An exact read ({@code observedExact}) returned the
-     * word its version stored, so a version whose value is one of those
-     * leaves states it when the node does not (a reference cell's INITIAL
-     * null).  Null when neither states anything.
-     */
     public static String returned(JsonObject node) {
         JsonElement value = node == null ? null : node.get("concreteValue");
         if (value == null) value = exactlyObserved(node);
@@ -173,8 +130,6 @@ public final class ReadRow extends Value {
                     : null;
         }
         if (!value.isJsonObject()) return null;
-        // A String past the VM's bound states only its length: unstated,
-        // never a prefix to pin to.
         if (VmExpressionIr.TRUNCATED_VALUE_TYPE.equals(
                 VmExpressionIr.typeOf(value))) {
             return null;
@@ -186,8 +141,6 @@ public final class ReadRow extends Value {
                 : VmExpressionIr.constantPayload(constant.getAsString());
     }
 
-    /** The leaf an exact read's version holds: null, a constant, or a
-     *  named object; else null. */
     private static JsonElement exactlyObserved(JsonObject node) {
         JsonElement exact = node == null ? null : node.get("observedExact");
         JsonElement version = node == null ? null
@@ -210,7 +163,6 @@ public final class ReadRow extends Value {
                 ? JsonNull.INSTANCE : leaf;
     }
 
-    /** The content of a String {@link #returned} spelled, else null. */
     public static String stringContent(String spelled) {
         String text = spelled == null ? "" : spelled.trim();
         if (text.isEmpty() || text.charAt(0) != '"') return null;

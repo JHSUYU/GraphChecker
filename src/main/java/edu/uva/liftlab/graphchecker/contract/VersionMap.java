@@ -2,21 +2,12 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.function.Function;
 
-/**
- * VALUES BY A KEY AND A VERSION -- a location's write or read at one of its
- * versions -- held as the key's reference and the version's long, never as
- * a key spelled of both ({@code KIND/owner#slot#version}: a session's state
- * join held one such string per row, 986 MB of SGF8-adhoc-05 round 5's
- * planner): open addressing over three parallel arrays.  No entry is
- * removed, no key or value is null.  Built by one thread, then read by any.
- */
 public final class VersionMap<V> {
     private String[] keys = new String[8];
     private long[] versions = new long[8];
     private Object[] values = new Object[8];
     private int size;
 
-    /** The value held at {@code (key, version)}, or null. */
     @SuppressWarnings("unchecked")
     public V get(String key, long version) {
         if (key == null) return null;
@@ -30,13 +21,10 @@ public final class VersionMap<V> {
         }
     }
 
-    /** Holds {@code value} at {@code (key, version)}, over what was. */
     public void put(String key, long version, V value) {
         slot(key, version, value);
     }
 
-    /** The value held at {@code (key, version)}, made by {@code make} and
-     *  held where none was. */
     public V computeIfAbsent(String key, long version,
                              Function<String, V> make) {
         V held = get(key, version);
@@ -46,7 +34,6 @@ public final class VersionMap<V> {
         return made;
     }
 
-    /** Every value replaced by what {@code replace} makes of it. */
     @SuppressWarnings("unchecked")
     public void replaceAll(Function<V, V> replace) {
         for (int at = 0; at < keys.length; at++) {

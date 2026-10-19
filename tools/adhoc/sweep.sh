@@ -1,36 +1,10 @@
 #!/usr/bin/env bash
-# sweep.sh <snapshot> <round> <cases-file> [heads-per-host]
-#
-# Runs every case id of <cases-file> (a bug check is a named case whose tree
-# marks its target throw, experiments/lib/README.md) as one acceptance
-# campaign of the snapshot (tools/rounds/launch-run.sh): its head on one of
-# the lifts (LIFTS, tools/lib/gc-env.sh), at most <heads-per-host> heads on
-# each (default 1), its obligations on all of them
-# (CAUSYNTH_CAMPAIGN_WORKER_HOSTS), every lift's memory gated for both
-# through one ledger (fanout.sh, run_engine's host gate).  A head is admitted for the room it reserves on
-# its host (tools/lib/heads.sh case_head_reserve_mb: what its planner or
-# composer starts at; every other step it runs is charged where it is
-# placed).  The cases running at once share the lifts
-# (CAUSYNTH_STREAM_SHARED_POOL=true): each exploration keeps its share in
-# flight, the slots of its hosts at the replay charge it measured
-# (run_engine.sh campaign_pool_slots, campaign_replay_need_mb: on each lift,
-# as many replays as fit under the ledger's ceiling when each holds its
-# charge, at most its cores) over the explorations sharing them, read again
-# at every start (campaign_stream_has_slot), so ten cases take a tenth each
-# and one left alone takes them all.  A sweep keeps what a verdict needs (PRUNE=1; a
-# measurement sweep keeps every artifact with PRUNE=0) and
-# gives each case CASE_TIMEOUT_SECONDS (default 5400), on the concolic VM
-# image VM_IMAGE, which a sweep must name.  Case n of the file writes
-# $GC_OUT/accept-<round>-<n>; <round>-cases.tsv maps n to the case id.  A
-# sweep started again resumes: fanout.sh skips every case that returned.
 set -uo pipefail
 snapshot=$(cd "${1:?snapshot}" && pwd -P)
 round=${2:?round}
 cases_file=${3:?cases file}
 heads=${4:-1}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-# The host ledger's helpers (campaign_head_need_mb), as fanout.sh takes
-# them; with them, tools/lib/gc-env.sh.
 # shellcheck source=../../run_engine.sh
 source "${here}/../../run_engine.sh"
 set +e
@@ -41,9 +15,6 @@ vm=CAUSYNTH_CUSTOM_JDK_HOME=${VM_IMAGE:?sweep.sh: name the concolic VM image as 
 mkdir -p "${out}"
 
 mapfile -t cases < <(grep -v '^\s*\(#\|$\)' "${cases_file}")
-# A measurement sweep (CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED or IMPORT) reaches a
-# head on another host only on its job's command line: ssh carries no
-# environment (launch-round.sh does the same).
 stop_after=
 [[ -z "${CAUSYNTH_CAMPAIGN_STOP_AFTER+x}" ]] \
   || stop_after=" CAUSYNTH_CAMPAIGN_STOP_AFTER='${CAUSYNTH_CAMPAIGN_STOP_AFTER}'"

@@ -16,38 +16,16 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * THE HARD LANE'S INPUT: what a flip's first ask, undecided at its budget by
- * time or by z3's memory cap, leaves beside its query ({@code
- * obligation_query.smt2}), so that its ask at the full budget runs z3 alone,
- * in a JVM that reads no corpus ({@code ObligationSolverMain --decide}), and
- * answers as the corpus would: the question an answer settles, the gaps the
- * query's build stated, what an UNSAT says, the constants a model names, and
- * the query itself by its sha256 -- a record beside another query is refused
- * by name, with no z3 run.  A corpus-sized JVM per hard ask held one host each
- * for a 15-20 min corpus read before its z3 started (SGF7-adhoc-39: 21 GB of
- * sessions, 18-21 GB charged per ask, one per host).
- */
 final class HardAsk {
-    /** Its file, beside the query in the obligation's worker. */
     static final String FILE = "obligation_ask.json";
 
     final String obligationId;
-    /** The session a SOLVER_TIMEOUT or SOLVER_MEMOUT gap is filed under: the
-     *  path's. */
     final String gapSession;
-    /** The question an UNSAT settles ({@code ObligationFactory#question}). */
     final String question;
-    /** What an UNSAT answer says. */
     final String unsatDetail;
-    /** The gaps the query's build stated, before any answer's. */
     final List<GapRow> gaps;
-    /** The constants a sat answer's model names, in the query's order. */
     final List<String> modelSymbols;
-    /** sha256 of the query as published (body, check-sat, get-value). */
     final String querySha256;
-    /** The store z3's answer to that text is read from and kept in, its
-     *  iteration's ({@link Solved}); null: none. */
     final Path solved;
 
     HardAsk(String obligationId, String gapSession, String question,
@@ -84,15 +62,6 @@ final class HardAsk {
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
 
-    /**
-     * A sat answer of the hard lane: the model's values over the query of
-     * this sha256, and the budget and z3 room it was asked at.  The flip is
-     * finished by its host's solver ({@code ObligationFactory#solve} given
-     * it), which builds the query again: the same query takes the model, and
-     * asks whatever more it asks (the held re-ask) at this budget and room;
-     * another is refused by name, no replay and no re-ask (owner 2026-10-15:
-     * whatever spares a solve or a replay is kept).
-     */
     static final class Model {
         static final String FILE = "obligation_model.json";
 

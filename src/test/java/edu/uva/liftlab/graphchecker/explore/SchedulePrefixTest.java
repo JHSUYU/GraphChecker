@@ -18,11 +18,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * The schedule a focused replay is handed: the discovering session's order,
- * cut at the target -- the prefix before the cut, and the rest after it,
- * whose timeouts still hold.
- */
 public class SchedulePrefixTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -42,8 +37,6 @@ public class SchedulePrefixTest {
         rows.add(mark);
         rows.add(row(2, ScheduleEvent.Kind.RECV, "b", "OCC.focus"));
         rows.add(row(3, ScheduleEvent.Kind.WAKE, "tick.dn", ""));
-        // The source run was cut at its witness, and was one invocation of
-        // a parameterized test.
         rows.add(RowCodec.writeScheduleMark(ScheduleEvent.WITNESS, 4L));
         rows.add(0, RowCodec.writeScheduleInvocation("m[1](null)"));
         RowCodec.writeJsonl(session.schedule(), rows);
@@ -73,7 +66,6 @@ public class SchedulePrefixTest {
                 edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE,
                 SchedulePrefix.REST_FILE);
 
-        // A CONFIRM run holds no prefix: all of it is rest, WAKEs included.
         Path unheld = folder.newFolder("confirm").toPath();
         SchedulePrefix.write(iteration, "s1",
                 Collections.singletonList("OCC.focus"), false, unheld);

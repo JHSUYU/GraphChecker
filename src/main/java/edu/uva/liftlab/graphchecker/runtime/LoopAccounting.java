@@ -19,24 +19,10 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuratio
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
-/**
- * Loop bounds (PIPELINE §2): what a replay may run, and the terminal it
- * takes after.
- *
- * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge}:
- * {@code K_L} over the iterations that decided on a symbol, the resource
- * ceiling over all) and the resource ceiling of a fixed-count loop ({@link
- * #checkReplayBody}), both per loop per method activation, and
- * the enclosing call a LOOP_BODY_ROOT occurrence's k counts against
- * ({@link #enterLoopRoot}).  The policy lives in {@code plan/LoopBoundPolicy};
- * this class only accounts and cuts.  Woven hook names stay in
- * {@link ConcolicRegionRuntime} as delegates.</p>
- */
 final class LoopAccounting {
     private LoopAccounting() {
     }
 
-    /** Enclosing method calls that own LOOP_BODY_ROOT iteration frames. */
     private static final ThreadLocal<Deque<LoopRootInvocationContext>>
             LOOP_ROOT_INVOCATIONS =
             new ThreadLocal<Deque<LoopRootInvocationContext>>() {
@@ -46,8 +32,6 @@ final class LoopAccounting {
                 }
             };
 
-    /** Accounts for one attempted traversal of an instrumented backedge
-     *  ({@link LoopBackedgeBudget#traverse}). */
     static void checkBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
@@ -64,13 +48,11 @@ final class LoopAccounting {
                 "BOUND_HOOK_" + reason));
     }
 
-    /** Charges one loop body to the replay resource cap. */
     static void checkReplayBody(
             String loopId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
         String loop = nonNull(loopId);
-        // Instrumented under a different policy: loop ids untrusted.
         account(active, () -> loop.isEmpty() || !active.activation.loopBound
                 .acceptsInstrumentedBound(instrumentedMaxTraversals)
                 ? new ReplayLoopResourceCut(loop, 0, 0L,
@@ -80,12 +62,6 @@ final class LoopAccounting {
                         instrumentedMaxTraversals, 0L, "BODY_HOOK_" + reason));
     }
 
-    /**
-     * Both hooks' control flow: charge with the path condition paused, and
-     * end at the cut.  Fail-CLOSED: a charge or resume that throws is cut
-     * and named too ({@code failed}), or the bound silently stops being
-     * enforced.
-     */
     private static void account(ActiveRegion active, Supplier<Error> charge,
                                 Function<String, Error> failed) {
         ConcolicVmBroker api = engine();
@@ -106,7 +82,6 @@ final class LoopAccounting {
         endAtCut(active, cut);
     }
 
-    /** Resumes the paused path condition; true when the resume failed. */
     private static boolean resumeFailed(ConcolicVmBroker api,
                                         boolean paused) {
         if (!paused) return false;
@@ -118,11 +93,6 @@ final class LoopAccounting {
         }
     }
 
-    /**
-     * Both hooks' terminal: publishes the bounded prefix, states the cut and
-     * its reason as one {@code BOUND_INSUFFICIENT} gap row, and detaches.
-     * At most once per activation ({@code finish} is a compare-and-set).
-     */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
         active.cut = cut.getMessage();
@@ -132,39 +102,25 @@ final class LoopAccounting {
         ConcolicRegionRuntime.finish(active.token, "CUT", "", null);
     }
 
-    /**
-     * Opens the enclosing call that addresses LOOP_BODY_ROOT iterations.  It
-     * is counted once; body entries only consult it.
-     */
     static long enterLoopRoot(
             String loopRootHookGroup, String rootMethod,
             Object receiver, Object[] rootArguments) {
         ConcolicTaskPlan config = configuration();
         Deque<LoopRootInvocationContext> contexts =
                 LOOP_ROOT_INVOCATIONS.get();
-        // Minted before the plan is asked: it is what a loop task binds to.
         long token = ConcolicRegionRuntime.TOKEN_COUNTER.incrementAndGet();
-        // No index frame: only the campaign weaves this hook, so the
-        // recording never stands on it; the REGION hook pushes the frame.
         ConcolicTaskPlan.LoopRootAdmission admission =
                 config.addressLoopRootInvocation(loopRootHookGroup,
                         rootMethod, receiver, rootArguments, token);
-        // The planned occurrence it answered by shape takes the planned
-        // address here, once, where it opened (IDENTITY §9): its bodies'
-        // rows, endpoints and ordinals state it.
         if (admission.answered != null) {
             RowRuntime.answered(Identity.answer(admission.answered.address),
                     admission.answered.address);
         }
-        // Asked here, the only place this entry's marker is still innermost:
-        // an entry that opened no occurrence addresses no bodies
-        // (#bodiesAddressedHere).
         contexts.push(new LoopRootInvocationContext(token, loopRootHookGroup,
                 admission.admitted, Identity.openedNone()));
         return token;
     }
 
-    /** Closes one enclosing LOOP_BODY_ROOT method call. */
     static void exitLoopRoot(long token) {
         if (token == 0L) return;
         try {
@@ -175,14 +131,9 @@ final class LoopAccounting {
             contexts.pop();
             if (contexts.isEmpty()) LOOP_ROOT_INVOCATIONS.remove();
         } catch (Throwable ignored) {
-            // Bookkeeping must not alter a workload terminal.
         }
     }
 
-    /**
-     * The enclosing invocation on this thread that owns {@code task}, or
-     * null: the one it was admitted for, which its row names.
-     */
     static LoopRootInvocationContext enclosingLoopRoot(RuntimeTask task) {
         if (task == null || !task.loopBodyRoot) return null;
         for (LoopRootInvocationContext context
@@ -196,18 +147,6 @@ final class LoopAccounting {
         return null;
     }
 
-    /**
-     * Whether an enclosing invocation on this thread addresses the bodies of
-     * {@code groupKey} with an occurrence of its own.
-     *
-     * <p>Asked by {@code ConcolicRegionRuntime#enterRegionFrame} instead of
-     * the fold rule (IDENTITY §1) at a loop body.  The fold gates region
-     * ENTRIES; a body is an ITERATION of an entry that already ran, and the
-     * fold there would ask about whatever region
-     * folds innermost, refusing every body.  False when the loop root's own
-     * entry folded: its bodies would re-activate the occurrence it folded
-     * into.</p>
-     */
     static boolean bodiesAddressedHere(String groupKey) {
         for (LoopRootInvocationContext context : LOOP_ROOT_INVOCATIONS.get()) {
             if (context.groupKey.equals(nonNull(groupKey))) {
@@ -217,15 +156,10 @@ final class LoopAccounting {
         return false;
     }
 
-    /** One enclosing method invocation for bounded body activations. */
     static final class LoopRootInvocationContext {
-        /** This invocation's entry event: what a loop task is bound to. */
         final long token;
-        /** The loop root it opened ({@code ExecutionTask#loopRootHookGroup}). */
         final String groupKey;
-        /** The tasks this entry was offered to. */
         private final Set<String> offeredTaskIds;
-        /** Whether the region entry at this same Java entry folded. */
         private final boolean foldedEntry;
 
         private LoopRootInvocationContext(
@@ -239,12 +173,6 @@ final class LoopAccounting {
         }
     }
 
-    /**
-     * Per budget key (a loop in one method activation): the traversals of
-     * its backedge, those that closed an iteration deciding on a symbol, the
-     * activation's termed decisions at its last traversal, and a fixed-count
-     * loop's bodies.
-     */
     static final class LoopBackedgeBudget {
         private static final String SCOPE_SEPARATOR = "\u0000frame:";
         private final Map<String, Integer> traversals = new LinkedHashMap<>();
@@ -252,30 +180,6 @@ final class LoopAccounting {
         private final Map<String, Integer> termedAt = new LinkedHashMap<>();
         private final Map<String, Integer> bodies = new LinkedHashMap<>();
 
-        /**
-         * One traversal of {@code key}'s backedge (loop {@code loopId}, its
-         * {@code K_L} {@code bound}), which would enter the loop's next body;
-         * {@code termed} is how many decisions stating a term the activation
-         * has recorded so far.  The cut it takes, or null:
-         * <ul>
-         *   <li>{@code K_L} counts the iterations that recorded a decision
-         *   with a term since the key's last traversal (the first counts,
-         *   with nothing to compare it to): {@code K_L} bounds the flips a
-         *   loop offers, and an iteration that decided only on concrete
-         *   values offers none.  At {@code bound} of them it is cut
-         *   (attempt {@code K} would enter body {@code K+1});</li>
-         *   <li>in the armed activation of a FORCE run ({@code forced},
-         *   {@link ForcedArms#armedOn}) {@code K_L} does not apply: it bounds
-         *   the path space a loop offers to flips, and a forced run has one
-         *   path, the forced arms', which ends at its target (solr-adhoc-05
-         *   F2V4: FORCE_DIVERGED at K_L 8 in {@code
-         *   SolrCore.createInstances}'s symbolic loop);</li>
-         *   <li>every traversal is one more body of work, cut past the work
-         *   cap ({@link LoopBoundPolicy#workCap}, the rule a fixed-count
-         *   loop's bodies take too, {@link #body}): a loop that never
-         *   decides on a symbol still ends.</li>
-         * </ul>
-         */
         Error traverse(String loopId, String key, int termed, int bound,
                        boolean forced) {
             int attempted = traversals.merge(key, 1, Integer::sum);
@@ -291,9 +195,6 @@ final class LoopAccounting {
             return overWorkCap(loopId, attempted + 1L, bound);
         }
 
-        /** One body of fixed-count loop {@code loopId} (budget key {@code
-         *  key}, its {@code K_L} {@code bound}): the cut past its work cap,
-         *  or null. */
         ReplayLoopResourceCut body(String loopId, String key, int bound) {
             int entered = bodies.merge(key, 1,
                     (held, one) -> held == Integer.MAX_VALUE ? held
@@ -301,8 +202,6 @@ final class LoopAccounting {
             return overWorkCap(loopId, entered, bound);
         }
 
-        /** THE work cap's rule, for both kinds of loop: body {@code body}
-         *  runs only within {@link LoopBoundPolicy#workCap}. */
         private static ReplayLoopResourceCut overWorkCap(String loopId,
                                                          long body,
                                                          int bound) {
@@ -317,7 +216,6 @@ final class LoopAccounting {
 
     }
 
-    /** Control signal aborting a replay that spent its loop resource cap. */
     public static final class ReplayLoopResourceCut extends Error {
         private static final long serialVersionUID = 1L;
         static final String REASON = LoopBoundPolicy.WORK_CAP_REACHED;
@@ -330,7 +228,6 @@ final class LoopAccounting {
 
     }
 
-    /** Non-workload control signal used solely to abort a bounded path. */
     public static final class LoopBoundCut extends Error {
         private static final long serialVersionUID = 1L;
 

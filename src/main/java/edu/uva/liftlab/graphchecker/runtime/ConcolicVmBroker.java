@@ -11,26 +11,15 @@ import java.util.List;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
-/**
- * Reflective view of the concolic VM's static entry points, so this class
- * loads on a stock JDK.  A replay plan requires the whole surface
- * ({@link #requireCurrentCapabilities}) before its workload starts.
- */
 final class ConcolicVmBroker {
-    /** The statuses this side reads, mirrored from expressionBroker.hpp. */
     static final int OK = 0;
     static final int NO_ACTIVE_REGION = -1;
     static final int MISSING_METADATA = -2;
     static final int NOT_SYMBOLIC = -4;
     static final int UNSUPPORTED_TARGET = -12;
-    /** Bridge-local statuses, below every value the VM answers. */
     static final int INVOCATION_FAILED = -1001;
     static final int MALFORMED_RESULT = -1002;
 
-    /**
-     * The name expressionBroker.hpp gives one handoff status: a refusal row
-     * states which gap the VM named, never a bare number.
-     */
     static String statusName(long status) {
         switch (status == (int) status ? (int) status : 0) {
             case -1: return "HANDOFF_NO_ACTIVE_REGION";
@@ -50,7 +39,6 @@ final class ConcolicVmBroker {
     private static final Object LOCK = new Object();
     private static volatile ConcolicVmBroker engineApi;
 
-    /** The lazily loaded broker for this JVM. */
     static ConcolicVmBroker engine() {
         ConcolicVmBroker current = engineApi;
         if (current != null) {
@@ -93,13 +81,6 @@ final class ConcolicVmBroker {
     private Method exportLeaf;
     private Method mintLeaf;
 
-    /**
-     * How {@code exportLeaf}/{@code mintLeaf} address a leaf (VM.md §7):
-     * a field of the parent, an element of an array, an entry of a modeled
-     * map, a position of an ArrayList or ArrayDeque, or the leaf object
-     * itself.  The ordinal is the VM's {@code slotKind} (System.java,
-     * concolic/leafBroker.hpp).
-     */
     enum SlotKind { FIELD, ELEMENT, ENTRY, POSITION, VALUE }
 
     void requireCurrentCapabilities() {
@@ -121,14 +102,12 @@ final class ConcolicVmBroker {
         }
     }
 
-    /** Positive session id, or a negative VM status. */
     long openWorkloadSession() throws Exception {
         Object status = openWorkloadSession.invoke(null);
         return status instanceof Number
                 ? ((Number) status).longValue() : Long.MIN_VALUE;
     }
 
-    /** One JSON snapshot of the session, or {@code ""} when absent. */
     String workloadSessionStatus() {
         if (workloadSessionStatus == null) return "";
         try {
@@ -149,24 +128,18 @@ final class ConcolicVmBroker {
         }
     }
 
-    /** The VM's context id, or a negative status (non-number: MALFORMED). */
     long currentContextId() throws Exception {
         Object value = currentContextId.invoke(null);
         return value instanceof Number
                 ? ((Number) value).longValue() : MALFORMED_RESULT;
     }
 
-    /** The region-enter event id, or a negative status; see above. */
     long currentRegionEnterEventId() throws Exception {
         Object value = currentRegionEnterEventId.invoke(null);
         return value instanceof Number
                 ? ((Number) value).longValue() : MALFORMED_RESULT;
     }
 
-    /**
-     * The last event id of the VM's session: one monotone counter for
-     * versions, reads and region entries (aligns FrameJournal to the log).
-     */
     long currentEventId() throws Exception {
         Object value = currentEventId.invoke(null);
         return value instanceof Number
@@ -196,14 +169,6 @@ final class ConcolicVmBroker {
                 field.name(), javaTypeDescriptor(field.type()), prefix);
     }
 
-    /**
-     * Starts one tracked cell's version log at its current value, unless it
-     * already stands: an integral or wrapper's word, or a reference's
-     * identity (SYMBOL-SCOPE F2).  Its point: the VM versions only tracked
-     * locations, so without it a selected write site would publish nothing.
-     * A status the VM refuses with (a float or double field is
-     * {@code UNSUPPORTED_TARGET}) is thrown by name, for the caller's gap.
-     */
     void observeField(Object owner, String fieldSignature) throws Exception {
         DeclaredField field = FieldPathSpec.declaredField(
                 nonNull(fieldSignature));
@@ -222,14 +187,6 @@ final class ConcolicVmBroker {
         }
     }
 
-    /**
-     * Starts the version log of the state of the container {@code value} is
-     * or stands for (a view, an iterator, a wrapper), unless it stands;
-     * {@code afterMutation} on a thread outside every region, marks a
-     * standing log incomplete instead (VM.md §5.4).  Answers {@link #OK},
-     * {@link #NO_ACTIVE_REGION} or {@link #UNSUPPORTED_TARGET} (no container
-     * the VM models); any other status is thrown by name.
-     */
     long observeContainer(Object value, boolean afterMutation)
             throws Exception {
         Object status = observeContainer.invoke(null, value, afterMutation);
@@ -267,13 +224,6 @@ final class ConcolicVmBroker {
         resumePathCondition.invoke(null);
     }
 
-    /**
-     * The base pause a doors-only occurrence holds ({@code
-     * ConcolicRegionRuntime#holdBasePause}): a pause as {@link
-     * #pausePathCondition} is, but a frame the program pushes under it alone
-     * keeps its tracking in the VM, so a door decided in a callee records
-     * once {@link #resumeBase} lifts it there (VM.md §2).
-     */
     void pauseBase() throws Exception {
         pauseBase.invoke(null);
     }
@@ -282,18 +232,6 @@ final class ConcolicVmBroker {
         resumeBase.invoke(null);
     }
 
-    /**
-     * Pauses the VM's propagation on this thread for engine work the JDK runs
-     * on a program thread ({@link InheritedState}), touching no thread-local.
-     *
-     * Never loads the broker: before anything has asked for the VM no region
-     * has started on it, so no value is symbolic and there is nothing to
-     * pause.
-     *
-     * @return false before the broker is loaded or on a JVM without the
-     *         native (the recording's stock JDK), which propagates nothing;
-     *         true when {@link #resumeEngineWork} is owed
-     */
     static boolean pauseEngineWork() {
         ConcolicVmBroker loaded = engineApi;
         Method pause = loaded == null ? null : loaded.pausePathCondition;
@@ -302,19 +240,10 @@ final class ConcolicVmBroker {
         return true;
     }
 
-    /** Ends a {@link #pauseEngineWork} that returned true. */
     static void resumeEngineWork() {
         invokeNative(engineApi.resumePathCondition);
     }
 
-    /**
-     * Runs the engine's own output -- its session files, its console, its
-     * verdict file -- under the VM's pause: the engine's plumbing is never
-     * program state.  Unpaused on a region thread, a row naming a symbolic
-     * String stored symbolic bytes into its writer's reused encoder buffer,
-     * which the VM then tracked by value and versioned at every later write
-     * (solr-18413's seed under Z1, STATUS defect 38).
-     */
     static void asEngineWork(Runnable work) {
         boolean paused = pauseEngineWork();
         try {
@@ -337,11 +266,6 @@ final class ConcolicVmBroker {
         return String.valueOf(getBranchEvents.invoke(null));
     }
 
-    /**
-     * Forces the branch the next marker marks ({@code
-     * System.forceNextConcolicBranch}: jump, or fall through); zero, or a
-     * negative VM status.
-     */
     int forceNextBranch(boolean jump) throws Exception {
         Object status = forceNextBranch.invoke(null, jump);
         return status instanceof Number ? ((Number) status).intValue()
@@ -357,10 +281,6 @@ final class ConcolicVmBroker {
         }
     }
 
-    /**
-     * Exports one field and returns its handle, or {@link #MALFORMED_RESULT}
-     * for a non-number.  0 is the legal "no handle" of a NOT_SYMBOLIC leaf.
-     */
     long exportExpression(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long[] eventOut) throws Exception {
@@ -370,7 +290,6 @@ final class ConcolicVmBroker {
                 ? ((Number) handle).longValue() : MALFORMED_RESULT;
     }
 
-    /** Attaches one live handle; {@code eventOut} gets the endpoint id. */
     long attachExpression(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long handle, long[] eventOut)
@@ -387,52 +306,24 @@ final class ConcolicVmBroker {
         return String.valueOf(range.invoke(null, startIndex, endIndex));
     }
 
-    /**
-     * One page of the write log: every location a symbolic value reached,
-     * with versions and reads after {@code afterEventId} (an activation
-     * passes its entry event).  {@code maxBytes} bounds one answer
-     * ({@code complete: false} then says where to resume); 0 means no
-     * bound.  The session's pages are one channel: each table states only
-     * the definitions no earlier page stated, numbered in the channel
-     * (VM.md §8), so every page must be decoded, in that order: call it
-     * only under {@code SharedStateCapture#READ_OUT_ORDER}.  An image
-     * whose read-out restates every definition lacks this native, and a
-     * replay plan is refused on it by name ({@link
-     * #requireCurrentCapabilities}: {@code readOutTrackedLocations}).
-     */
     String readOutTrackedLocations(long afterEventId, int maxBytes)
             throws Exception {
         return requiredVmJson(readOutTrackedLocations.invoke(null,
                 afterEventId, maxBytes), "readOutTrackedLocations");
     }
 
-    /**
-     * Installs (replaces) the guarded-store table built by
-     * {@link GuardedStoreSites} and answers how many methods the VM kept.
-     */
     int installGuardedStoreSites(String table) throws Exception {
         Object kept = installGuardedStoreSites.invoke(null, table);
         return kept instanceof Number
                 ? ((Number) kept).intValue() : MALFORMED_RESULT;
     }
 
-    /**
-     * One leaf's expression for its writer, peeked (nothing is recorded):
-     * the slot's, else the leaf object's, else its typed constant.  One
-     * VM_LEAF_EXPORT document; a refusal is its named {@code status}.
-     */
     String exportLeaf(Object parent, SlotKind kind, Object slot)
             throws Exception {
         return requiredVmJson(exportLeaf.invoke(null, parent, kind.ordinal(),
                 slot), "exportLeaf");
     }
 
-    /**
-     * States one decoded leaf as {@code template} over fresh hole symbols
-     * (the grammar is System#mintLeaf's).  One VM_LEAF_MINT document; a
-     * refusal landing on the leaf object ({@code landsOn: OBJECT}) asks the
-     * caller to store a fresh equal object and mint again.
-     */
     String mintLeaf(Object parent, SlotKind kind, Object slot,
                     String template) throws Exception {
         return requiredVmJson(mintLeaf.invoke(null, parent, kind.ordinal(),

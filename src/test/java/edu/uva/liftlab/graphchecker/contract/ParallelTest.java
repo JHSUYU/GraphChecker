@@ -11,13 +11,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-/**
- * Independent items on every core, their results in the items' order: what
- * is made of them is what one thread made of them in turn, byte for byte
- * (the planner's keys and rows, PIPELINE §7.9).
- */
 public class ParallelTest {
-    /** As a planner's JVM computes, on more cores than one. */
     @Before
     public void manyCores() {
         Parallel.width(8);
@@ -28,8 +22,6 @@ public class ParallelTest {
         Parallel.width(1);
     }
 
-    /** Results in the items' order however long each took; the first
-     *  failure in the items' order is the one thrown. */
     @Test
     public void mapKeepsTheItemsOrder() throws IOException {
         List<Integer> items = new ArrayList<Integer>();

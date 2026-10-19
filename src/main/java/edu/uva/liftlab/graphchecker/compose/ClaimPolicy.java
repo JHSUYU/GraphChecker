@@ -29,53 +29,8 @@ import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
-/**
- * What a composed, solved query supports, and what it refuses to say.
- *
- * <p>There is no VALIDATE stage: the query and z3's verdicts ARE the
- * deliverable, so each claim kind states exactly what licenses it.</p>
- *
- * <ul>
- *   <li><b>MARKER_FLIPPED</b> -- a declared root moved inside its domain
- *       reaches the fatal arm, and ordinal 0 (the run as it happened) is
- *       unsat.</li>
- *   <li><b>CLOCK_SKEW</b> -- no declared root moved; pinning every clock
- *       cell to its recorded reading makes the query unsat.  The witness is
- *       asked with every clock running on wherever it can
- *       ({@link #leastClocks}), so {@link Claim#movedRoots}
- *       ({@link #movedRoots}) names only the jumps it needs.  A moved
- *       marker is asked first ({@link #mechanism}); where the clock pins
- *       refute the recorded valuation, a moved root must reach the fatal
- *       arm under those same pins.</li>
- *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- an explored session's fatal path
- *       is sat at the recorded roots through attested arms while the seed's
- *       own disjunct is not.</li>
- *   <li><b>FORMULA_SAT</b> -- a valuation satisfies the formula and none of
- *       the above names why: composer imprecision until CONFIRM says
- *       otherwise, confirmed like any claim ({@link #formulaSat}).</li>
- *   <li><b>NO_SUPPORTED_WITNESS</b> -- every valuation unsat, or an
- *       occurrence no session reached; an answer, not an exception.</li>
- * </ul>
- *
- * <p>The run as recorded is no counterfactual (owner 2026-10-04: a claim
- * moving no root is never a finding): a seed replay that observed the fatal
- * at the declared occurrence leaves no claim on the corpus, SEED_OBSERVED_FATAL
- * BLOCKING ({@link #unasked}), and a witness that is the run as recorded is
- * never FORMULA_SAT's while another moves something ({@link #asRecorded}).</p>
- *
- * <p>Two names ride on top: a formula sat as the run happened (recorded
- * roots, clocks and pairings) on a session that took the HEALTHY arm raises
- * FORMULA_SAT_AT_RECORDED_VALUATION, and enumeration continues past it; a
- * witness moving a root inside an UNATTESTED arm is not a mechanism, since
- * no producer path condition says the delivery survives the move.  Either
- * leaves a FORMULA_SAT for CONFIRM, never a gap that withholds a verdict.  A
- * witness moving configuration only is claimed after every other, clocks
- * and pairings included, and one moving a configuration whose plant leaves
- * reads of its key at the recording's value is not claimed, named.</p>
- */
 public final class ClaimPolicy {
 
-    /** One valuation, and what the solver answered about it. */
     public static final class Outcome {
         private final Composer.Valuation valuation;
         private final List<String> pinned;
@@ -93,19 +48,10 @@ public final class ClaimPolicy {
             this.arms = Collections.unmodifiableMap(arms);
         }
 
-        /**
-         * What this model was asked with held at the recording beside the
-         * valuation: unneeded clock cells ({@link #leastClocks}) and, where
-         * the recording decides the arm, every path's own pairing.
-         */
         public List<String> pinned() {
             return pinned;
         }
 
-        /**
-         * Arm selector -> the delivery this model rested on; only families
-         * the selected path opened have an entry (exactly-one per family).
-         */
         public Map<String, ComposedFamilies.ArmChoice> selectedArms() {
             return arms;
         }
@@ -118,12 +64,10 @@ public final class ClaimPolicy {
             return answer;
         }
 
-        /** The disjunct a sat model selected, or null. */
         public Composer.Disjunct selected() {
             return selected;
         }
 
-        /** Whether the model is sat and names the disjunct it selected. */
         boolean witness() {
             return answer.sat() && selected != null;
         }
@@ -136,7 +80,6 @@ public final class ClaimPolicy {
         }
     }
 
-    /** The claim, every answer it was read off, and the formula's own. */
     public static final class Decision {
         private final Claim claim;
         private final List<Outcome> outcomes;
@@ -160,11 +103,6 @@ public final class ClaimPolicy {
             return outcomes;
         }
 
-        /**
-         * z3's answer for the composed formula itself, every root free over
-         * its domain (the exported candidate.smt2), or null where a named
-         * claim's witness decided without it ({@link #closed}).
-         */
         public Z3.Answer formula() {
             return formula;
         }
@@ -173,35 +111,15 @@ public final class ClaimPolicy {
     private ClaimPolicy() {
     }
 
-    /** Solves every valuation of one composition and reads the claim off. */
     public static Decision decide(Composer.Composition composition,
                                   Z3 solver) {
         return decide(composition, solver, DECIDE_BUDGET_MS);
     }
 
-    /**
-     * How long one composition's claim may ask z3, in all: past it no
-     * question starts and every one running ends, each undecided -- named
-     * (a DIAGNOSTIC {@code decide budget} row), never a refutation, so no
-     * UNSAT stands on it.  The bound a decide that would not end in time
-     * rests on (SGF6-bugs-snapshot-no-active 0001: 141 paths, 128
-     * valuations, hours).
-     */
     static final long DECIDE_BUDGET_MS = 1_800_000L;
 
-    /**
-     * The self-check's part of the decide budget, one in this many: past it
-     * no path is self-checked and the one running ends, each undecided --
-     * left in the disjunction, never refuted on it -- and the cap is named
-     * (a DIAGNOSTIC {@code self-check cap} row), so the recorded valuation,
-     * whose answer decides the claim's polarity, and the other valuations
-     * are asked in the rest (SGF6-bugs-snapshot-no-active 0001: 141 paths,
-     * about 28 of them satisfiable after 20-90 s each, a self-check of 21
-     * of the 30 minutes).
-     */
     static final int SELF_CHECK_SHARE = 3;
 
-    /** {@link #decide} within {@code budgetMillis}. */
     static Decision decide(Composer.Composition composition, Z3 solver,
                            long budgetMillis) {
         Z3 bounded = solver.until(System.nanoTime()
@@ -223,10 +141,6 @@ public final class ClaimPolicy {
             decision = new Decision(claimWith(decision.claim(), gaps),
                     decision.outcomes(), decision.formula());
         }
-        // After every ask: a solver error is named, and the claim stands
-        // on the answers z3 gave (best effort); the paths whose own
-        // question it refused are left out of the next composition
-        // ({@link #REFUSED_PATH}, ComposeMain#run).
         List<String> errors = solver.errors();
         if (errors.isEmpty()) return decision;
         List<GapRow> gaps = new ArrayList<GapRow>(decision.claim().gaps());
@@ -241,12 +155,8 @@ public final class ClaimPolicy {
                 decision.outcomes(), decision.formula());
     }
 
-    /** How a path whose own question z3 answered with an error is named
-     *  ({@link #selfContradictory}): the subject's prefix, its path id
-     *  after it. */
     static final String REFUSED_PATH = "z3 refused path ";
 
-    /** The paths this claim names z3 refused ({@link #REFUSED_PATH}). */
     static Set<String> refusedPaths(Claim claim) {
         Set<String> paths = new LinkedHashSet<String>();
         for (GapRow gap : claim.gaps()) {
@@ -257,27 +167,6 @@ public final class ClaimPolicy {
         return paths;
     }
 
-    /**
-     * THE FORMULA DECIDES (owner 2026-10-04: "拼出.smt。结果肯定不是sat就是
-     * Unsat"): a named claim stands on its witness; otherwise the composed
-     * formula is asked whole, every root free over its domain -- the text
-     * COMPOSE exports as candidate.smt2 -- and its answer is the verdict.
-     * Unsat closes the claim negative, whatever the enumeration of single
-     * and pair moves reached (it only picks a witness's valuation);
-     * undecided within the budget is a defect (BLOCKING), never a
-     * refutation.  Sat is FORMULA_SAT: at the first enumerated witness a
-     * replay can plant, else at the formula's own model ({@link
-     * Composer.Composition#modelValuation}), which CONFIRM plants and judges
-     * like any other (over-approximate, confirm strictly); an enumerated
-     * witness that is the run as recorded is skipped ({@link #asRecorded}),
-     * and a corpus a BLOCKING gap already withholds a verdict from names no
-     * witness; the witness is refined as a named claim's is ({@link
-     * #leastClocks}, {@link #withMargin}).  A sat model that
-     * selects no disjunct is a defect, and so is a formula satisfiable only
-     * by moving a configuration whose plant leaves reads of its key at the
-     * recording's value ({@link #unplanted}): a world no replay can plant
-     * (UNPRODUCIBLE_ANSWER) until those reads are planted too.
-     */
     private static Decision closed(Composer.Composition composition,
                                    Disjunction asks, Decision decided) {
         Claim claim = decided.claim();
@@ -287,9 +176,6 @@ public final class ClaimPolicy {
         }
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
-        // An unsat may rest on a model the formula excludes, a refuted
-        // claim: the core names it (restsOnRefutations), so it is asked for
-        // whenever one is asserted.
         Outcome free = outcome(composition, asks,
                 composition.free(outcomes.size()),
                 Collections.<String>emptyList(),
@@ -311,8 +197,6 @@ public final class ClaimPolicy {
                             : reason)));
             return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
-        // A corpus a defect already withholds a verdict from names no
-        // witness: the formula's answer is stated, and nothing stands on it.
         if (claim.blocked()) {
             return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
@@ -355,8 +239,6 @@ public final class ClaimPolicy {
                             + "are planted"));
             return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
-        // Published as a named claim is: under every clock pin it can keep,
-        // each jump it still makes moved with room.
         Outcome refined = withMargin(composition, asks, leastClocks(
                 composition, asks, witness, composition.clockCells(), false,
                 gaps), gaps);
@@ -367,14 +249,6 @@ public final class ClaimPolicy {
                 gaps), outcomes, formula);
     }
 
-    /**
-     * Whether this witness is the run as recorded: the seed's own path, no
-     * root moved, no clock jumped ({@link #movedRoots}), no arm but its own
-     * run's pairings ({@code Composition#repaired}).  No counterfactual, so
-     * never FORMULA_SAT's witness while another moves something; the
-     * formula's own model may still be one, which CONFIRM refuses by name
-     * and the campaign then excludes ({@code compose.Refutations}).
-     */
     private static boolean asRecorded(Composer.Composition composition,
                                       Outcome outcome) {
         return outcome.selected().path().sessionId.equals(
@@ -384,8 +258,6 @@ public final class ClaimPolicy {
                 outcome.selectedArms().keySet()).isEmpty();
     }
 
-    /** Whether a replay can plant this witness's valuation; a root it
-     *  cannot is added to {@code unplantable}. */
     private static boolean plantable(Composer.Composition composition,
                                      Outcome outcome,
                                      Set<String> unplantable) {
@@ -395,20 +267,11 @@ public final class ClaimPolicy {
         return partial.isEmpty();
     }
 
-    /** The same claim with these gaps. */
     private static Claim claimWith(Claim claim, List<GapRow> gaps) {
         return Claim.of(claim.kind(), claim.valuationOrdinal(),
                 claim.movedRoots(), claim.polarityDecides(), gaps);
     }
 
-    /**
-     * The claim the solved valuations support: first every answer the claim
-     * is read off ({@link Reading}), then the claim, narrowest evidence
-     * first -- a moved root (1), no moved root but the clocks or a pairing
-     * (2), a moved configuration only, ranked after both, and another
-     * session's path that observed the fatal at the recorded roots (3) --
-     * else no supported witness.
-     */
     private static Decision read(Composer.Composition composition,
                                  Disjunction asks, long selfCheckCapMillis) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
@@ -423,14 +286,6 @@ public final class ClaimPolicy {
         return claimed != null ? claimed : reading.noWitness();
     }
 
-    /**
-     * The claim of a corpus no valuation is asked of, or null: none where no
-     * session reached the occurrence, and none where the seed replay
-     * observed the fatal at the declared occurrence -- the run as recorded
-     * is no counterfactual, so nothing composed over this corpus is a claim
-     * (the recording itself threw there, PLAN's TARGET_FATAL_IN_RECORDING,
-     * a declaration defect, or the replay diverged from it).
-     */
     private static Decision unasked(Composer.Composition composition,
                                     List<GapRow> gaps) {
         if (composition.disjuncts().isEmpty()) return none(gaps);
@@ -460,35 +315,18 @@ public final class ClaimPolicy {
                 new ArrayList<Outcome>());
     }
 
-    /**
-     * Every answer one composition's claim is read off, asked once in this
-     * order: each path alone with every root free (a self-contradictory
-     * path is refuted for every question after it), each valuation, then the
-     * run as it happened -- every clock pinned to its reading and every path
-     * to its own pairing ({@code Composition#recordedPairings}), which no
-     * valuation pins -- and, where that refutes a free witness, the clocks
-     * alone, which tells whether they decide it (CLOCK_SKEW).
-     */
     private static final class Reading {
         private final Composer.Composition composition;
         private final Disjunction asks;
         private final List<GapRow> gaps;
         private final List<Outcome> outcomes;
         private final List<String> cells;
-        /** Every clock at its reading and every path at its own pairing. */
         private final List<String> asHappened;
-        /** The free witness of the recorded valuation, asked as happened. */
         private final Outcome asRecorded;
-        /** The run as it happened refutes the recorded valuation's
-         *  witness: a moved root must reach the fatal arm held so. */
         private final boolean recordingDecides;
-        /** The clock pins alone refute it. */
         private final boolean clockDriven;
-        /** The recorded valuation's refutation names a valuation pin; else
-         *  the path refuted itself under every valuation. */
         private final boolean polarityDecides;
         private Outcome recorded;
-        /** Configuration roots a witness's plant cannot reach, named. */
         private final Set<String> partial = new LinkedHashSet<String>();
 
         Reading(Composer.Composition composition, Disjunction asks,
@@ -497,8 +335,6 @@ public final class ClaimPolicy {
             this.asks = asks;
             this.gaps = gaps;
             selfContradictory(composition, asks, gaps, selfCheckCapMillis);
-            // Asked PARALLEL_ASKS at a time: each whole ask's z3s in a
-            // slot of the composer's z3 room shared that many ways.
             Disjunction together = asks.asking(Math.min(PARALLEL_ASKS,
                     composition.valuations().size()));
             outcomes = new ArrayList<Outcome>(inParallel(
@@ -544,8 +380,6 @@ public final class ClaimPolicy {
                     && namesAValuation(recorded.answer().core());
         }
 
-        /** An undecided valuation is named: no witness there.  The verdict
-         *  is the formula's own answer ({@link #closed}). */
         private static void undecided(Outcome outcome, List<GapRow> gaps) {
             String reason = outcome.answer().reason();
             gaps.add(GapRow.of(Composer.COMPOSITION,
@@ -561,22 +395,6 @@ public final class ClaimPolicy {
                             ? "it stated no reason" : reason)));
         }
 
-        /**
-         * 1. A declared root moved inside its domain, of this pass's rank: a
-         * witness moving configuration only ranks after every other, the
-         * clocks and pairings of 2 included ({@code
-         * Composer#configurationOnly}).  Within a rank, a witness that is
-         * its selected session's own run ({@link #ownRun}) is claimed
-         * first, then the rest in the valuations' order: the order of the
-         * single moves says nothing of which one a run already reached
-         * (hdfs-adhoc-10 SL1: a fault ranked first in the root order was
-         * claimed through a writer arm re-paired from another session,
-         * which no run can realize, while the SYNC fault its own session
-         * had run waited thirteen valuations behind it).  Polarity (ordinal
-         * 0 unsat) is a CONDITION on the claim; when the recording decides
-         * the arm, a moved root must reach the fatal arm with clocks and
-         * pairings held as recorded, so neither is part of the witness.
-         */
         Decision movedRoot(boolean configuration) {
             Decision own = recordingDecides
                     ? movedAsHappened(configuration, true)
@@ -586,19 +404,11 @@ public final class ClaimPolicy {
                     : movedFree(configuration, false);
         }
 
-        /**
-         * Each valuation asked or refined for this rank once ({@link
-         * #movedRoot}'s two passes): its outcome, and the gaps doing so
-         * named, which join the claim's only once the pass that claims or
-         * reaches it keeps them.
-         */
         private final Map<Integer, Outcome> settled =
                 new LinkedHashMap<Integer, Outcome>();
         private final Map<Integer, List<GapRow>> settledGaps =
                 new LinkedHashMap<Integer, List<GapRow>>();
 
-        /** {@code found} asked as happened, or refined (leastClocks,
-         *  margins), once. */
         private Outcome settle(int index, Outcome found) {
             Outcome done = settled.get(index);
             if (done != null) return done;
@@ -613,12 +423,6 @@ public final class ClaimPolicy {
             return done;
         }
 
-        /**
-         * The witness of this rank to claim, or null: with {@code own}, the
-         * first that is its session's own run, judged aside -- nothing it
-         * names is kept unless it is claimed, so a corpus with no such
-         * witness is decided as without this pass -- else the first.
-         */
         private Decision movedAsHappened(boolean configuration,
                                          boolean own) {
             for (int index = 0; index < outcomes.size(); index++) {
@@ -643,10 +447,6 @@ public final class ClaimPolicy {
         }
 
         private Decision movedFree(boolean configuration, boolean own) {
-            // Unpublishable, so not refined: each clock pinned back is a
-            // round of path asks (hdfs-11741 L1: hours of leastClocks over a
-            // witness its polarity then refused).  Named once, by the pass
-            // in the valuations' order.
             if (own && !polarityDecides) return null;
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome found = outcomes.get(index);
@@ -659,8 +459,6 @@ public final class ClaimPolicy {
                             + found.valuation().moved().keySet());
                     return null;
                 }
-                // Published under every clock pin it can keep, and each
-                // clock it still moves moved with room.
                 Outcome outcome = settle(index, found);
                 List<GapRow> named = own ? new ArrayList<GapRow>(
                         settledGaps.get(index)) : gaps;
@@ -672,19 +470,12 @@ public final class ClaimPolicy {
                 outcomes.set(index, outcome);
                 if (!own && unattested(composition, outcome, gaps)) continue;
                 if (own) gaps.addAll(named);
-                // #mechanism answers MARKER_FLIPPED or a narrower replaced
-                // slot, never NO_SUPPORTED_WITNESS.
                 return claimed(mechanism(composition, asks, outcome,
                         clockDriven), outcome);
             }
             return null;
         }
 
-        /** A moved witness of this rank that may be its session's own run,
-         *  asked of nothing and naming nothing: {@link #movedWitness}'s
-         *  conditions without its gaps, and {@link #ownRun}'s that need no
-         *  model refined -- its own pairings, its moved roots run at their
-         *  values ({@code Composition#ranRoots}). */
         private boolean ownCandidate(Outcome outcome, boolean configuration) {
             return outcome.valuation().ordinal() != 0 && outcome.witness()
                     && ranked(composition, outcome, configuration)
@@ -695,15 +486,6 @@ public final class ClaimPolicy {
                     outcome.valuation().moved());
         }
 
-        /**
-         * Whether this witness is its selected session's own run: the
-         * selected path observed the fatal at the anchor, every arm the
-         * model takes on it is its own run's pairing ({@code
-         * Composition#repaired}), and that session ran the model's world --
-         * its moved roots, clocks and no planted pairing ({@code
-         * Composition#ranModel}, the test CONFIRM's realizedBy applies, so
-         * such a claim is confirmed by that very session).
-         */
         private boolean ownRun(Outcome outcome) {
             return ownPairings(outcome) && composition.ranModel(
                     outcome.selected(), movedRoots(composition, outcome));
@@ -715,18 +497,12 @@ public final class ClaimPolicy {
                     outcome.selectedArms().keySet()).isEmpty();
         }
 
-        /** A witness of a moved valuation of this rank a replay can plant. */
         private boolean movedWitness(Outcome outcome, boolean configuration) {
             return outcome.valuation().ordinal() != 0 && outcome.witness()
                     && ranked(composition, outcome, configuration)
                     && !unplanted(composition, outcome, partial, gaps);
         }
 
-        /**
-         * 2. No root moves, and the clocks are necessary -- with the same
-         * polarity condition, for the same reason -- or a pairing is: the
-         * claim, or null.
-         */
         Decision clockOrPairing() {
             for (Outcome outcome : outcomes) {
                 if (!outcome.witness()
@@ -740,9 +516,6 @@ public final class ClaimPolicy {
                         && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
                     continue;
                 }
-                // A clock or pairing the recording decides carries its own
-                // polarity (recordingDecides); recorded.answer().unsat()
-                // asks with them free and so could never publish CLOCK_SKEW.
                 if (!recordingDecides && !polarityDecides) {
                     undecidedPolarity(gaps, recorded, still.name());
                     return null;
@@ -754,21 +527,6 @@ public final class ClaimPolicy {
             return null;
         }
 
-        /**
-         * 3. The recorded valuation reaches the fatal arm on another
-         * session's path that OBSERVED it (the seed's own is no claim,
-         * {@link #unasked}), through attested arms, while the seed's own
-         * disjunct does not: the mechanism #mechanism's pin tests name; else,
-         * where a session's world planted a pairing its read took ({@code
-         * Composition#takenPairings}), STATE_PAIRING_FLIPPED -- the pairing
-         * is what the world moved, though no term of the path names the read
-         * (a node's view at a version lacking an alias decides nothing the
-         * VM states: Map#get of a key the older document never had) --, its
-         * witness that session's whole world ({@link #worldPairing}), the
-         * recorded valuation's path first, then every other path that
-         * observed the fatal and took a pairing; or null, named, where none
-         * fires.
-         */
         Decision observedElsewhere() {
             if (recorded == null || !recorded.witness()) return null;
             boolean attested = recorded.selected().fatalObserved()
@@ -808,8 +566,6 @@ public final class ClaimPolicy {
             return null;
         }
 
-        /** The paths that observed the fatal and whose session's world
-         *  planted a pairing its read took: the recorded valuation's first. */
         private List<Composer.Disjunct> worldPairings() {
             List<Composer.Disjunct> worlds =
                     new ArrayList<Composer.Disjunct>();
@@ -825,26 +581,9 @@ public final class ClaimPolicy {
             return worlds;
         }
 
-        /**
-         * The witness of the pairings {@code selected}'s session's world
-         * planted and its reads took: that session's whole world, as CONFIRM
-         * re-runs it -- its own run with every plant of its world ({@code
-         * Composition#worldRun}), its roots at the world's values ({@code
-         * #worldValuation}) and its clocks at the world's skews ({@code
-         * #worldClocks}), so the claim's movedRoots name every fault and
-         * clock the world planted and {@code Composition#repaired} the
-         * pairing.  Null where it does not stand, each named: nothing holds
-         * the path, a taken pairing's read is off the path's fatal cone
-         * ({@code Composition#onFatalPath}), the formula has no such model,
-         * or the session is not that world's run ({@code
-         * Composition#ranWorld}).
-         */
         private Outcome worldPairing(Composer.Disjunct selected) {
             String selector = selected.selector();
             List<String> held = composition.worldRun(selected);
-            // Nothing to hold where no family offers the path an arm: its
-            // own run is then the only one asked (solr-bugs-tra-start-
-            // overwrite Z2S: the paired view read stated by no family).
             if (held.isEmpty() && composition.offersArms(selector)) {
                 return unclaimed(selected, "nothing holds the path to its "
                         + "session's run while a family offers it arms: no "
@@ -898,8 +637,6 @@ public final class ClaimPolicy {
                         + "root, clock or pairing it did not realize, or "
                         + "minted a moved root elsewhere");
             }
-            // Which clause puts each pairing on the fatal path, in the
-            // claim, so a reading sees it.
             gaps.add(GapRow.of(selected.path().sessionId,
                     GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     selected.path().pathId, "world-pairing claim: each "
@@ -907,7 +644,6 @@ public final class ClaimPolicy {
             return witness;
         }
 
-        /** A world pairing that does not stand, named on its path. */
         private Outcome unclaimed(Composer.Disjunct selected, String why) {
             gaps.add(GapRow.of(selected.path().sessionId,
                     GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -916,7 +652,6 @@ public final class ClaimPolicy {
             return null;
         }
 
-        /** No claim stands: the recorded valuation's answer, read. */
         Decision noWitness() {
             return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
                     recorded == null ? 0 : recorded.valuation().ordinal(),
@@ -930,22 +665,12 @@ public final class ClaimPolicy {
         }
     }
 
-    /** Whether a moved-root witness is of this pass's rank: configuration
-     *  only, or anything else ({@code Composer#configurationOnly}). */
     private static boolean ranked(Composer.Composition composition,
                                   Outcome outcome, boolean configuration) {
         return composition.configurationOnly(
                 outcome.valuation().moved().keySet()) == configuration;
     }
 
-    /**
-     * Whether a witness moves a configuration root whose plant leaves other
-     * reads of its key at the recording's value (a second field caching
-     * it, a getter in another shape or outside the slice; {@code
-     * Composition#unplanted}): no configuration a cluster could hold, so no
-     * replay can confirm it as one.  Not claimed; named once per root,
-     * UNPRODUCIBLE_ANSWER DIAGNOSTIC.
-     */
     private static boolean unplanted(Composer.Composition composition,
                                      Outcome outcome, Set<String> named,
                                      List<GapRow> gaps) {
@@ -967,10 +692,8 @@ public final class ClaimPolicy {
         return !partial.isEmpty();
     }
 
-    /** The label every valuation pin carries ({@code Composer}'s spelling). */
     private static final String VALUATION_LABEL = "valuation__";
 
-    /** Whether one unsat core rests on a valuation pin at all. */
     private static boolean namesAValuation(List<String> core) {
         if (core == null) return false;
         for (String label : core) {
@@ -981,18 +704,8 @@ public final class ClaimPolicy {
         return false;
     }
 
-    /**
-     * How many valuations are asked at once (hdfs-17899-bug2: 128 valuations
-     * one at a time held COMPOSE for hours while the head's other cores sat
-     * idle): four whole asks, eight z3 processes, two per ask (one per
-     * arithmetic engine, {@code Z3#run}), each in a slot of an eighth of the
-     * composer's z3 room ({@code Disjunction#asking}); a valuation asked
-     * path by path asks its paths on the composition's pool ({@link
-     * Disjunction}).
-     */
     static final int PARALLEL_ASKS = 4;
 
-    /** Independent asks answered in parallel, read back in their order. */
     private static <T, R> List<R> inParallel(List<T> items,
                                              Function<T, R> ask) {
         List<R> answers = new ArrayList<R>();
@@ -1017,30 +730,12 @@ public final class ClaimPolicy {
         }
     }
 
-    /**
-     * Each path asked alone with every root free (selector forced, no
-     * valuation): one unsat there answers every root question the same way,
-     * and is refuted for each.  When every path is, the claim rests on those
-     * refutations, so each is asked once more without its fatal arm, what
-     * its own run satisfied.  Unsat there -- or refuted after observing the
-     * fatal arm -- is a contradiction the composition built
-     * (PATH_SELF_CONTRADICTORY: DIAGNOSTIC per path, BLOCKING for the
-     * composition).  Satisfied by every path, no root of the corpus turns
-     * any of them to the fatal arm: that is the claim's own answer, no gap
-     * (b20h BlockTokenSecretManager-511: the key read null-checked is pinned
-     * to the object the run read, its writers outside the window).  A claim
-     * whose polarity rests on a refuted path is refused separately
-     * ({@link #namesAValuation}).
-     */
     private static void selfContradictory(Composer.Composition composition,
                                           Disjunction asks,
                                           List<GapRow> gaps,
                                           long capMillis) {
         int undecided = 0;
         long started = System.nanoTime();
-        // A sanity check, not the witness search: its own short budget and
-        // its cap.  An undecided run leaves the path in the disjunction
-        // (safe direction).
         List<Z3.Answer> answers = asks.selfCheck(capMillis);
         for (int at = 0; at < answers.size(); at++) {
             Z3.Answer answer = answers.get(at);
@@ -1065,7 +760,6 @@ public final class ClaimPolicy {
                             + "its budget a path, and stay in the "
                             + "disjunction unexamined, never refuted on it"));
         } else if (undecided > 0) {
-            // A budget that drops a question says so: runs stay comparable.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     "self-check budget " + Disjunction.SELF_CHECK_BUDGET_MS
@@ -1077,21 +771,6 @@ public final class ClaimPolicy {
         }
     }
 
-    /**
-     * THE PATHS AN UNSAT RESTS ON, each checked against its own run: every
-     * path, with the formula unsat, is unsat with every root free, so each
-     * is asked once more with its fatal arm left out
-     * ({@code Disjunction#withoutFatalArms}), what its own run satisfied.
-     * One unsat there (or undecided within the budget), or one that
-     * observed the fatal arm, contradicts its run: DIAGNOSTIC per path, and
-     * BLOCKING for the composition, since an UNSAT resting on it is about
-     * the formula built and not about the recording.  A path refuted by its
-     * fatal arm alone is the claim's own answer, and so is one whose own
-     * self-check core names a refuted claim the formula asserts ({@link
-     * Disjunction#refutedBySelfCheck}): CONFIRM ran that model and
-     * disagreed, and the UNSAT names the refutation it rests on ({@code
-     * restsOnRefutations}).
-     */
     private static void contradictions(Composer.Composition composition,
                                        Disjunction asks,
                                        List<GapRow> gaps) {
@@ -1132,14 +811,6 @@ public final class ClaimPolicy {
                         + "the formula it built, not about the recording"));
     }
 
-    /**
-     * A mechanism the formula shows but the recording does not decide, raised
-     * as FORMULA_SAT_AT_RECORDED_VALUATION, not published: the run reached
-     * the fatal arm at the recorded valuation too, or its refutation names no
-     * valuation pin.  An UNDECIDED recorded valuation is named already
-     * ({@link Reading#undecided}) and is no such statement (hdfs-11741 L1: valuation 0
-     * "unknown" was published as satisfiable).
-     */
     private static void undecidedPolarity(List<GapRow> gaps,
                                           Outcome recorded, String shown) {
         if (recorded == null || !recorded.answer().decided()) return;
@@ -1161,22 +832,6 @@ public final class ClaimPolicy {
                         + ", so the recording does not decide the arm"));
     }
 
-    /**
-     * The mechanism this witness's own evidence names, narrowest first; no
-     * caller can make it name one the witness does not show.
-     *
-     * <ul>
-     *   <li>STATE_PAIRING_FLIPPED -- pinning the versions the path's reads
-     *       observed makes it unsat: a replaced state slot.</li>
-     *   <li>MESSAGE_PAIRING_FLIPPED -- the same for its attaches' arrivals:
-     *       a replaced wire slot (second: a witness needing both is about
-     *       the interleaving).</li>
-     *   <li>MARKER_FLIPPED -- the valuation moved a declared root.</li>
-     *   <li>CLOCK_SKEW -- nothing moved and the clocks are necessary
-     *       ({@code clockDriven}, asked once by {@link Reading}).</li>
-     *   <li>NO_SUPPORTED_WITNESS -- none of them; never a default.</li>
-     * </ul>
-     */
     private static ClaimKind mechanism(Composer.Composition composition,
                                        Disjunction asks, Outcome outcome,
                                        boolean clockDriven) {
@@ -1194,24 +849,10 @@ public final class ClaimPolicy {
         if (!outcome.valuation().moved().isEmpty()) {
             return ClaimKind.MARKER_FLIPPED;
         }
-        // Nothing moved: whether the clocks are necessary was asked by
-        // Reading.
         if (clockDriven) return ClaimKind.CLOCK_SKEW;
         return ClaimKind.NO_SUPPORTED_WITNESS;
     }
 
-    /**
-     * The roots this witness moved: the valuation's moved roots plus every
-     * clock cell where the model's clock jumped ({@link #jump}; no valuation
-     * pins a clock, so the model is the only statement of it), at the
-     * model's instant.  A cell that runs on from the cell before it is one
-     * {@link #leastClocks} pinned as unneeded.  A jump BACK is a jump too: a
-     * cell the witness needs short of where its clock ran on to (it must
-     * stay below a bound an earlier jump would carry it past) is one a
-     * replay has to plant, or it runs on ahead; it is named at its model
-     * instant, which can be its own reading (the clock set back to the
-     * host's).  NO_SUPPORTED_WITNESS claims carry an empty map instead.
-     */
     private static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
         Map<String, String> moved = new LinkedHashMap<String, String>();
@@ -1226,7 +867,6 @@ public final class ClaimPolicy {
         return moved;
     }
 
-    /** This valuation, this disjunct, and what the run actually paired. */
     private static boolean unsatWith(Disjunction asks, Outcome outcome,
                                      List<String> observed) {
         if (observed.isEmpty()) return false;
@@ -1238,8 +878,6 @@ public final class ClaimPolicy {
                 Collections.<String>emptyList(), false).unsat();
     }
 
-    /** Which arm of each family this model set the selector of, and which
-     *  state of each object a state arm delivers its queries saw. */
     private static Map<String, ComposedFamilies.ArmChoice> armsOf(
             Composer.Composition composition, Z3.Answer answer) {
         Map<String, ComposedFamilies.ArmChoice> taken =
@@ -1256,7 +894,6 @@ public final class ClaimPolicy {
         return taken;
     }
 
-    /** Which disjunct a sat model selected, or null when it named none. */
     private static Composer.Disjunct selectedOf(
             Composer.Composition composition, Z3.Answer answer) {
         if (!answer.sat()) return null;
@@ -1269,11 +906,6 @@ public final class ClaimPolicy {
         return null;
     }
 
-    /**
-     * Whether this witness moves a root inside an arm whose producer ran
-     * concretely (the recording says nothing of what it would deliver had
-     * the root moved); if so it is refused by name.
-     */
     private static boolean unattested(Composer.Composition composition,
                                       Outcome outcome, List<GapRow> gaps) {
         Set<String> refused = new LinkedHashSet<String>();
@@ -1296,13 +928,6 @@ public final class ClaimPolicy {
         return true;
     }
 
-    /**
-     * One valuation asked for every path selector, family arm selector,
-     * nested state selector, clock cell and held leaf (legalized: {@code
-     * Z3.modelQuery} appends names raw), so the claim can read path,
-     * delivery, the states a delivered object was queried at, clocks, and
-     * what each held leaf carried off the model.
-     */
     private static Outcome outcome(Composer.Composition composition,
                                    Disjunction asks,
                                    Composer.Valuation valuation,
@@ -1310,14 +935,6 @@ public final class ClaimPolicy {
         return outcome(composition, asks, valuation, pinned, wantCore, null);
     }
 
-    /**
-     * The same, asked of one path only where {@code path} names it: the
-     * refinement of a witness ({@link #leastClocks}, {@link #withMargin})
-     * keeps the witness's path, and another path's ask (one its own run
-     * refutes, asked free for its whole budget) waits for no answer it would
-     * give (hdfs-11741 L1: each pin of the clock-driven witness waited 30
-     * minutes on a path undecided free).
-     */
     private static Outcome outcome(Composer.Composition composition,
                                    Disjunction asks,
                                    Composer.Valuation valuation,
@@ -1327,7 +944,6 @@ public final class ClaimPolicy {
                 0L);
     }
 
-    /** The same within {@code budgetMillis} ({@code <= 0}: the solver's). */
     private static Outcome outcome(Composer.Composition composition,
                                    Disjunction asks,
                                    Composer.Valuation valuation,
@@ -1338,8 +954,6 @@ public final class ClaimPolicy {
                 budgetMillis);
     }
 
-    /** The same, asked of the path {@code selector} names (null: every
-     *  path). */
     private static Outcome outcomeOn(Composer.Composition composition,
                                      Disjunction asks,
                                      Composer.Valuation valuation,
@@ -1367,26 +981,8 @@ public final class ClaimPolicy {
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
 
-    /** How long one refinement of one witness may ask ({@link
-     *  #leastClocks}, {@link #withMargin}); past it the witness is published
-     *  as far as it got, named. */
     static final long REFINE_BUDGET_MS = 300000L;
 
-    /**
-     * The witness under every clock pin it can keep, each cell running on
-     * from the cell before it ({@link #runsOn}): a cell the witness's own
-     * model runs on already is pinned without an ask (the model is one
-     * under it).  Of its jumps, those outside its path's causal cone
-     * ({@code Composition#cone}, what acceptance reads: {@code cone.py}) are
-     * pinned first, in one ask, else one at a time in the recording's seq
-     * order; then those inside it, one at a time, so a jump lands as late as
-     * the witness allows.  All within {@link #REFINE_BUDGET_MS}: past it a
-     * jump inside the cone stands, a cause of the fatal by the formula,
-     * named DIAGNOSTIC (hdfs-11741 L1: 25 cells, each a round of path asks,
-     * ran past an hour).  {@code needed}:
-     * the recording already says the clocks are (clockDriven); otherwise a
-     * witness that needs no jump at all is asked for first.
-     */
     private static Outcome leastClocks(Composer.Composition composition,
                                        Disjunction asks, Outcome outcome,
                                        List<String> cells, boolean needed,
@@ -1450,8 +1046,6 @@ public final class ClaimPolicy {
         return witness;
     }
 
-    /** A refinement that ran out of {@link #REFINE_BUDGET_MS}: the witness
-     *  stands as far as it got, its untried cells named. */
     private static void refinementCut(List<GapRow> gaps, String step,
                                       List<String> untried) {
         gaps.add(GapRow.of(Composer.COMPOSITION, GapKind.SOLVER_TIMEOUT,
@@ -1461,26 +1055,6 @@ public final class ClaimPolicy {
                         + "which it publishes as they stand: " + untried));
     }
 
-    /**
-     * The witness with each clock jump it makes ({@link #jump}) made
-     * {@link ClockMargin#margin} (a minute in its ticks) further the same
-     * way, where the formula still reaches the fatal arm there.  The model is
-     * the cheapest world (a token's expiry passed by one millisecond), and
-     * the confirming replay reads every clock fresh, so an instant at the
-     * boundary falls back on the recorded arm: exploration's margin rule
-     * (adhoc token-expired.proxy missed by 70 ms).  The margin is on the
-     * JUMP, against the clock its cell runs on from ({@link
-     * Composer#clockStep} with an offset), never on the cell's instant: a
-     * later reading runs on from an earlier jump ({@link #runsOn}), so a
-     * minute added to the earlier instant moved the cell a later jump runs
-     * on from too, and used up that jump's own minute (PRE4-18406: delete()
-     * jumped in two occurrences, the second kept 1 ns of room over the
-     * reservation its clock ran on from, natively 0/10).  Every margin at
-     * once first; else each jump's in seq order, kept where the witness
-     * stays: a jump back that sits on its cell's floor has no room, and
-     * costs the other jumps none of theirs.  Within {@link
-     * #REFINE_BUDGET_MS}.
-     */
     private static Outcome withMargin(Composer.Composition composition,
                                       Disjunction asks, Outcome witness,
                                       List<GapRow> gaps) {
@@ -1528,17 +1102,6 @@ public final class ClaimPolicy {
         return roomy;
     }
 
-    /**
-     * These cells running on from the cell before each on its node's clock
-     * ({@link Composer.Composition#clockBefore}), as named pins: a cell keeps
-     * that cell's skew off its reading, and a cell with none before it its
-     * reading.  A clock that jumped at one cell runs on from there, as a
-     * replay runs it ({@code runtime.NodeClocks}, by the same seq order), so
-     * the cells after a jump are no more the witness's moves than the cells
-     * before it (SOLR-18406: delete()'s clock jumped past G's reservation,
-     * and the commit's next two readings were moved with it, the second one
-     * outside the witness path's cone).
-     */
     private static List<String> runsOn(Composer.Composition composition,
                                        List<String> cells) {
         List<String> pinned = new ArrayList<String>();
@@ -1551,11 +1114,6 @@ public final class ClaimPolicy {
         return pinned;
     }
 
-    /**
-     * How far a model's clock jumped at one cell: its skew off its reading
-     * less the skew of the cell before it on its node's clock, or null where
-     * the model or the recording states no instant for either.
-     */
     private static Long jump(Composer.Composition composition,
                              Map<String, String> model, String cell) {
         Long skew = skew(composition, model, cell);
@@ -1577,7 +1135,6 @@ public final class ClaimPolicy {
         }
     }
 
-    /** These cells at the instants the recording read, as named pins. */
     private static List<String> pins(Composer.Composition composition,
                                      List<String> cells) {
         List<String> pinned = new ArrayList<String>();
@@ -1590,7 +1147,6 @@ public final class ClaimPolicy {
         return pinned;
     }
 
-    /** Whether every family this disjunct reaches has an attested arm. */
     private static boolean attestedArms(Composer.Composition composition,
                                         Outcome outcome) {
         Map<String, Family> byInteraction =
@@ -1608,11 +1164,6 @@ public final class ClaimPolicy {
         return true;
     }
 
-    /**
-     * Whether every disjunct of the seed's session is unsat at the recorded
-     * roots; else the claim is about the recording, not a pairing.  No seed
-     * path: false.
-     */
     static boolean seedDisjunctUnsat(
             Composer.Composition composition, Disjunction asks) {
         String seed = composition.seedSessionId();

@@ -19,13 +19,6 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
-/**
- * WP4: a target is a class and a source line, resolved on class files javac
- * compiled from the fixture below -- a plain throw, two on one line with and
- * without the type, a lambda body, an anonymous class, a multi-line
- * {@code throw new}, a nested construction of the thrown type, a second
- * throw of one type (its ordinal), and lines that hold no throw.
- */
 public class ExceptionTargetLineResolverTest {
     private static final String[] FIXTURE = {
         "package fx;",
@@ -77,7 +70,6 @@ public class ExceptionTargetLineResolverTest {
             throws IOException {
         Path classes = compile();
         String ise = "java.lang.IllegalStateException";
-        // marker, stated type, class, then the identity or the refusal code.
         String[][] rows = {
             {"plain", "", "fx.Checks", "fx.Checks#plain(I)V#new:" + ise + "#0"},
             {"two", "", "fx.Checks", "TARGET_LINE_AMBIGUOUS"},

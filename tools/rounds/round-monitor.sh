@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# round-monitor.sh <glob-prefix>... -- one line per finished campaign (DONE ...) and per launcher line.
-#   tools/rounds/round-monitor.sh 'v20-*' | grep --line-buffered "DONE "
-# GC_OUT (tools/lib/gc-env.sh) holds accept-<round>-<case>/ per campaign.
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 shopt -s nullglob
@@ -23,7 +20,6 @@ while :; do
       fi
     done
   done
-  # launcher logs are written beside the outputs (see launch-round.sh)
   for pat in "$@"; do for f in ${out}/launch-$pat.log; do
     while IFS= read -r line; do
       k="L:$f:$line"; [[ -n "${seen[$k]:-}" ]] && continue; seen[$k]=1; echo "$line"

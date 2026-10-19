@@ -11,22 +11,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
     private static final Map<String, String> COMPLEMENTS = complements();
 
     private BranchPredicateAlgebra() {
     }
 
-    /** Capture view of a VM-owned predicate with null members removed.
-     *  Copy-on-write: untouched subtrees keep their identity (decoder anchors).
-     *  Each node once, children first, on a stack: the capture runs on the
-     *  workload's thread, whose stack a recursion along a deep predicate
-     *  would overflow.  {@code views} holds each node's view by identity,
-     *  kept by the caller across captures: a node never changes once
-     *  decoded, so its view is a function of it, and the predicates of one
-     *  store share their subtrees (a replay's branches walked them again
-     *  each, 17 s of 18413's seed). */
     static JsonElement canonicalView(JsonElement predicate,
                                      Map<JsonElement, JsonElement> views) {
         if (predicate == null) return JsonNull.INSTANCE;
@@ -60,7 +50,6 @@ public final class BranchPredicateAlgebra {
         return value != null && (value.isJsonArray() || value.isJsonObject());
     }
 
-    /** One array, each item's view already in {@code views}. */
     private static JsonElement view(JsonArray source,
                                     Map<JsonElement, JsonElement> views) {
         JsonArray copy = null;
@@ -79,8 +68,6 @@ public final class BranchPredicateAlgebra {
         return copy == null ? source : copy;
     }
 
-    /** One object without its null members, each member's view already in
-     *  {@code views}. */
     private static JsonElement view(JsonObject source,
                                     Map<JsonElement, JsonElement> views) {
         JsonObject copy = null;

@@ -121,22 +121,14 @@ JVM_CONFIG = (
     '<java.lang.Long: java.lang.Long getLong(java.lang.String)>',
     '<java.lang.Long: java.lang.Long getLong(java.lang.String,long)>',
     '<java.lang.Long: java.lang.Long getLong(java.lang.String,java.lang.Long)>')
-# A subclass a config getter is invoked through: matched as its catalog owner.
 CONFIG_ALIASES = {
     'org.apache.hadoop.hdfs.HdfsConfiguration': 'org.apache.hadoop.conf.Configuration',
     'org.apache.hadoop.mapred.JobConf': 'org.apache.hadoop.conf.Configuration'}
-# Edges that state WHICH object a value is read from, not the value: the
-# boundary walk does not follow them unless the receiver IS the value (a box,
-# a String, an enum: VALUE_LIKE).  A container's receiver is its contents, so
-# container_receiver is always followed.
 IDENTITY_EDGES = {'accessor_receiver', 'method_receiver', 'constructor_receiver',
                   'dispatch_receiver', 'dispatch_caller_receiver'}
 VALUE_LIKE = re.compile(r'^(?:java\.lang\.(?:Boolean|Byte|Character|Short|Integer|Long|Float'
                         r'|Double|Number|String|CharSequence|StringBuilder|StringBuffer|Enum)'
                         r'|java\.math\.Big(?:Integer|Decimal))$')
-# Edges from a call's operands into its result: a library return they carry is
-# no boundary (an accessor's field, a value-like call's arguments, a container's
-# receiver and key, a shared receiver's state).
 OPERAND_EDGES = {'accessor_field_return', 'local_def_use', 'container_receiver',
                  'container_argument', 'library_receiver'}
 ATOMIC = 'java.util.concurrent.atomic.'
@@ -287,11 +279,11 @@ def static_walk(edges_path, smap):
         if ATOMIC in (owner[:len(ATOMIC)], ftype[:len(ATOMIC)]) or cell in smap['reads']:
             return 'READ'
         if VALUE_LIKE.match(owner):
-            return None  # a box's or String's own state: its receiver carries it
+            return None
         writers = [(f, m) for f, kind, m, _ in into.get(cell, ()) if kind == 'field_write']
         if (all(m.endswith(' <clinit>()>') for _, m in writers)
                 if writers else ftype == owner):
-            return None  # a class constant: $assertionsDisabled, an enum constant
+            return None
         if writers and all(stores_config(f, m) for f, m in writers):
             return 'CONFIG_FIELD'
         if cell not in smap['written']:
@@ -311,7 +303,7 @@ def static_walk(edges_path, smap):
             if callee in markers:
                 return 'FAULT'
             if cell in into or callee in carried:
-                return None  # an expanded body, or the call's operand edges, carry it
+                return None
             owner = callee[1:callee.find(':')]
             if owner.startswith(ATOMIC):
                 return 'READ'
@@ -333,7 +325,7 @@ def static_walk(edges_path, smap):
     while queue:
         cell = queue.popleft()
         cls = classify(cell)
-        if cls:  # nearest first: the first cell of a class is its nearest
+        if cls:
             b = boundaries.setdefault(cls, {'count': 0, 'min': distance[cell], 'nearest': cell})
             b['count'] += 1
             continue
@@ -467,7 +459,7 @@ def root_categories(found):
         path = os.path.join(d, 'reads.jsonl.gz')
         if not os.path.exists(path):
             continue
-        for line in lines(path, 'rb'):  # only mint rows are parsed
+        for line in lines(path, 'rb'):
             if b'"mintVersion"' not in line:
                 continue
             symbol = json.loads(line).get('symbol', '')

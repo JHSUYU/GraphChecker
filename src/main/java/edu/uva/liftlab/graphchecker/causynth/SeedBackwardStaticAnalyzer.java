@@ -67,7 +67,6 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwn
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 
-/** Static backward data-flow analysis from one declared exception target. */
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
@@ -96,24 +95,15 @@ final class SeedBackwardStaticAnalyzer {
             Pattern.compile("-?\\d+");
     private static final Pattern FIELD_NAME_PATTERN = Pattern.compile(
             "<[^:]+:\\s+.+\\s+([^\\s>]+)>");
-    /** Collection views backed by their receiver: mutating one mutates both. */
     private static final Set<String> BACKED_MAP_VIEWS = names(
             "entrySet", "keySet", "values", "navigableKeySet",
             "descendingKeySet");
     private static final Set<String> BACKED_ITERATORS = names(
             "iterator", "listIterator", "descendingIterator");
-    /** Calls, by name, that write their receiver whatever its class: an
-     *  application container's as much as a JDK one's (whose contract,
-     *  JavaContainerTypes, names the rest). */
     private static final Set<String> CONTAINER_MUTATORS = names(
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
-    /** Library calls whose result may be an argument, by owner and name:
-     *  the checks that return what they checked, and the JDK and Guava
-     *  factories whose result is a view backed by their first argument
-     *  (and {@code Collections}' unmodifiable, synchronized and checked
-     *  views, {@link #aliasedOperands}). */
     private static final Map<String, List<Integer>> RETURNED_ARGUMENTS =
             returnedArguments(
                     "java.util.Objects.requireNonNull", "0",
@@ -134,10 +124,8 @@ final class SeedBackwardStaticAnalyzer {
                     "com.google.common.collect.Collections2.transform", "0",
                     "com.google.common.collect.Iterables.filter", "0",
                     "com.google.common.collect.Iterables.transform", "0");
-    /** A Guava multimap's views, which its own calls return backed by it. */
     private static final Set<String> MULTIMAP_VIEWS = names(
             "get", "asMap", "keySet", "keys", "values", "entries");
-    /** JDK value classes no call mutates ({@link #immutableValue}). */
     private static final Set<String> IMMUTABLE_VALUES = names(
             "java.lang.String", "java.lang.Boolean", "java.lang.Byte",
             "java.lang.Character", "java.lang.Short", "java.lang.Integer",
@@ -148,17 +136,13 @@ final class SeedBackwardStaticAnalyzer {
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
             "java.util.Queue", "java.util.Deque");
-    /** The one control-dependence row kind: branch operand -> guarded cell. */
     private static final String GUARD_KIND = "guard_dependency";
-    /** A {@code field_read} edge's mark: the read is on its method's own
-     *  receiver ({@link #processFieldReads}). */
     public static final String ON_RECEIVER = "onReceiver";
     private final CausynthTargetContext target;
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
     private final Map<String, SootMethod> allMethodsBySignature =
             new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
-    /** Post-dominance per method: the ONE control-dependence rule. */
     private final Map<String, SiteControlDependence.MethodGuards>
             guardsByMethod = new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
@@ -167,18 +151,12 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<Callsite>> methodCallersByCallee =
             new LinkedHashMap<>();
-    /** The abstract types outside the scope that an application class runs
-     *  a body of ({@link #buildGlobalStaticIndex}). */
     private final Set<String> dispatchOwners = new LinkedHashSet<>();
-    /** Every application call site of the explicit boolean fault hook. */
     private final Map<String, List<Integer>> explicitFaultUnitsByMethod =
             new LinkedHashMap<>();
-    /** Methods whose Jimple mentions one declared field. */
     private final Map<String, Set<String>> methodsReferencingField =
             new LinkedHashMap<>();
     private final Set<String> mutationIndexedFields = new LinkedHashSet<>();
-    /** Per method, the demanded field cells it stores or mutates: the
-     *  effects the calls into it decide ({@link #expandActivationGuards}). */
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
@@ -188,7 +166,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<EdgeIdentity, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> expandedDemands = new LinkedHashSet<>();
-    /** Which demanded formals only their method's return needs. */
     private final ReturnOnlyFormals returnOnly = new ReturnOnlyFormals(
             new ReturnOnlyFormals.Slice() {
                 @Override
@@ -208,12 +185,10 @@ final class SeedBackwardStaticAnalyzer {
                 }
             });
     private int discoveredExceptionSeedCount;
-    /** Structural accessor per call signature; a cached null is a negative. */
     private final Map<String, StructuralFieldAccessor>
             structuralFieldAccessors = new LinkedHashMap<>();
     private final Map<String, MethodSig> methodSignatureCache =
             new LinkedHashMap<>();
-    /** {@link #returnedOperands}, once asked per callee. */
     private final Map<String, Set<Integer>> returnedOperands =
             new LinkedHashMap<>();
     private final Set<String> invalidMethodSignatures =
@@ -232,7 +207,6 @@ final class SeedBackwardStaticAnalyzer {
             directlyMutatedContainerParametersCache = new LinkedHashMap<>();
     private final Map<String, Set<String>> hierarchyNamesCache =
             new LinkedHashMap<>();
-    /* Identity-keyed, but Linked*: nothing iterates in identity-hash order. */
     private final Map<Fact, List<String>> localValueUsesCache =
             new LinkedHashMap<>();
     private final Map<Fact, List<String>> nonInvokeUsesCache =
@@ -242,17 +216,11 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<Fact, List<String>> canonicalLocalUsesCache =
             new LinkedHashMap<>();
     private final WireFlowCatalog wireFlows;
-    /** The ports {@link #deriveWirePort} found, by message field. */
     private final Map<String, WireFlowCatalog.WireFlow> derivedPorts =
             new LinkedHashMap<>();
-    /** Which library calls are clocks ({@link #processLibraryReceiver}). */
     private final RootCatalog roots = new RootCatalog();
-    /** Which out-of-scope classes are the system's own, not a library
-     *  ({@link #processLibraryReceiver}); read at its first question. */
     private Predicate<String> systemClass;
-    /** {@link #rpcMessages}, computed at the first demanded getter. */
     private Set<String> rpcMessages;
-    /** The declared per-loop {@code K_L} (PIPELINE §2). */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
 
@@ -288,7 +256,6 @@ final class SeedBackwardStaticAnalyzer {
     private Set<String> hierarchyNames(SootClass root) {
         return memoized(hierarchyNamesCache, root.getName(), ignored -> {
             Set<String> names = new LinkedHashSet<>();
-            // A visitor that never answers visits the whole hierarchy.
             walkHierarchy(root, sootClass -> {
                 names.add(sootClass.getName());
                 return null;
@@ -315,8 +282,6 @@ final class SeedBackwardStaticAnalyzer {
                     "Could not load declared target method: "
                             + targetMethod);
         }
-        // Wire flows and fault hooks are seeds by declaration, even outside
-        // the exception's value slice.
         buildGlobalStaticIndex();
         initializeExceptionSeedAnchors();
         seedDeclaredWireFlows();
@@ -338,8 +303,6 @@ final class SeedBackwardStaticAnalyzer {
             result.fieldWriters.put(field.getKey(), sites);
         }
 
-        // Numbered in content order, not in the order the worklist found
-        // them: the ids and the rows' order are the slice's, not the run's.
         List<EdgeIdentity> found = new ArrayList<>(emittedEdgeRows.keySet());
         Collections.sort(found);
         for (EdgeIdentity key : found) {
@@ -355,12 +318,10 @@ final class SeedBackwardStaticAnalyzer {
                 result.executionContextAuthorities.put(method, authority);
             }
         }
-        // Checked over the final plan only.
         loopBodyBounds.refuseUnclaimed(selectedMethods);
         return result;
     }
 
-    /** The selected methods' port and loop catalog (SYMBOL-SCOPE §2.3). */
     private void planCommunicationCatalog(StaticProgram result) {
         List<String> selected = new ArrayList<>(selectedMethods);
         Collections.sort(selected);
@@ -370,7 +331,6 @@ final class SeedBackwardStaticAnalyzer {
         CommunicationCatalogPlanner.Result discovered =
                 CommunicationCatalogPlanner.plan(selected,
                         this::jimpleBody, ports, loopBodyBounds);
-        // A pure function of the selected set: replace, never append.
         result.communicationCallSites.clear();
         result.retainedLoops.clear();
         result.communicationGaps.clear();
@@ -387,13 +347,11 @@ final class SeedBackwardStaticAnalyzer {
         return method != null && method.isConcrete() ? method : null;
     }
 
-    /** One method's Jimple body, or null. */
     private Body jimpleBody(String signature) {
         SootMethod method = concreteMethod(signature);
         return method == null ? null : activeBody(method);
     }
 
-    /** Execution-context entry kind from Java concurrency contracts. */
     private String executionContextAuthority(String signature) {
         if (CausynthStaticFacts.constructor(signature)) {
             return "";
@@ -466,8 +424,6 @@ final class SeedBackwardStaticAnalyzer {
                 addEdge("exception_throw", thrown, exceptionNode,
                         method, throwFact);
             }
-            // Every branch on a path to the throw is in scope; which one
-            // decides it is the scope map's TARGET_SITE row.
             forEachGuardOperand(method, throwFact, false,
                     (guardFact, node) -> {
                 methodRelevant.add(node);
@@ -483,18 +439,12 @@ final class SeedBackwardStaticAnalyzer {
                 discoveredExceptionSeedCount == 0 ? 0 : 1);
     }
 
-    /** Seeds every capture of every declared wire port. */
     private void seedDeclaredWireFlows() {
         for (WireFlowCatalog.WireFlow flow : wireFlows.flows()) {
             seedPort(flow);
         }
     }
 
-    /**
-     * Demands every capture of one port and joins each producer to each
-     * consumer, so the slice continues on the sending side.  Idempotent: a
-     * port that gains captures is seeded again.
-     */
     private void seedPort(WireFlowCatalog.WireFlow flow) {
         List<String> producers = new ArrayList<>();
         List<Fact> producerFacts = new ArrayList<>();
@@ -527,21 +477,10 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** The field types a derived port carries: primitives and strings. */
     private static final Set<String> WIRE_LEAF_TYPES = names("boolean",
             "byte", "char", "short", "int", "long", "float", "double",
             "java.lang.String");
 
-    /**
-     * F3: a demanded {@code x = r.<M: T getF()>()} on a protobuf message M
-     * that an RPC carries ({@link #rpcMessages}) reads a value another
-     * process wrote through {@code M$Builder.setF(T)}.  The call is a
-     * consumer of port (M, F), every call of that setter in the analysed
-     * program is a producer, and each producer's argument is demanded in
-     * turn, so the slice continues on the sending side.  Only demanded
-     * getters derive, so the ports stay few; a capture a declared row holds
-     * is that row's.
-     */
     private void deriveWirePort(String method, Fact fact, MethodSig getter,
                                 List<String> defs, Set<String> relevant) {
         if (!getter.params.isEmpty() || !getter.name.startsWith("get")
@@ -564,13 +503,6 @@ final class SeedBackwardStaticAnalyzer {
         seedPort(port);
     }
 
-    /**
-     * Port (M, F), named {@code auto:<M's simple name>.<F>}, carried in the
-     * field of M the getter reads ({@link #messageField}), with its
-     * producers: every call of {@code M$Builder.setF(T)}, argument 0.  A
-     * getter whose body names no one field of its message derives a port
-     * with no producer, which derives nothing: no door could walk it.
-     */
     private WireFlowCatalog.WireFlow derivedPort(String identity,
                                                  MethodSig getter) {
         String message = getter.owner;
@@ -600,15 +532,6 @@ final class SeedBackwardStaticAnalyzer {
         return port;
     }
 
-    /**
-     * The field of its own message a generated getter returns: the one
-     * instance field of the getter's class its body reads off {@code this}
-     * -- {@code return this.keyId_} for a scalar, the {@code Object} that
-     * holds a String or its bytes for a string ({@code poolId_}, whose
-     * decoded String the getter caches back) -- or "".  Read off the body,
-     * never the spelling: the generated classes are library classes, whose
-     * bodies the scene resolves on demand.
-     */
     private static String messageField(MethodSig getter) {
         SootClass owner;
         try {
@@ -640,20 +563,6 @@ final class SeedBackwardStaticAnalyzer {
                 ? "" : read.getSignature();
     }
 
-    /**
-     * The protobuf messages that cross a process through a door: the
-     * request and response of every protobuf service method -- a method
-     * whose first parameter is the runtime's {@code RpcController}, the
-     * shape protoc emits for an {@code rpc}, which a system's RPC engine
-     * proxies on the client and dispatches on the server, so each call
-     * passes its transport's door -- and every message a field of one holds
-     * (an instance method's message return: a field getter, singular or
-     * repeated), which the RPC carries inside it.  A message no service
-     * reaches (an on-disk image section, an edit-log record, a streamed op)
-     * is written to a file or a socket with no door and is none.  The
-     * services are those of the loaded program: Soot resolves the analysis
-     * scope's references transitively.
-     */
     private Set<String> rpcMessages() {
         if (rpcMessages != null) return rpcMessages;
         List<String> pending = new ArrayList<>();
@@ -684,11 +593,6 @@ final class SeedBackwardStaticAnalyzer {
         return rpcMessages = found;
     }
 
-    /**
-     * A generated protobuf message: its hierarchy reaches the runtime's
-     * GeneratedMessage or GeneratedMessageV3 in whatever package a build
-     * relocates protobuf to (Hadoop's org.apache.hadoop.thirdparty.protobuf).
-     */
     private boolean protobufMessage(String className) {
         SootClass type = sceneClass(className);
         if (type == null) return false;
@@ -701,16 +605,12 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    /** A protobuf builder's field setter, {@code B B.setF(T)} of a nested
-     *  {@code $Builder}: its calls are a derived port's producers wherever
-     *  the message is ({@link #derivedPort}). */
     private static boolean builderSetter(MethodSig sig) {
         return sig.name.startsWith("set") && sig.params.size() == 1
                 && sig.owner.endsWith("$Builder")
                 && sig.owner.equals(sig.returnType);
     }
 
-    /** Loads one capture's method and demands its value there. */
     private String seedCapture(WireFlowCatalog.WireFlow flow,
                                WireFlowCatalog.CaptureSite site) {
         if (!ensureLoaded(concreteMethod(site.method))) {
@@ -729,10 +629,6 @@ final class SeedBackwardStaticAnalyzer {
         return node;
     }
 
-    /**
-     * Seeds every explicit fault marker's destination as a root, so its
-     * consumers and guards are kept by the ordinary control-dependence rule.
-     */
     private void seedExplicitFaultEntries() {
         List<String> methods = new ArrayList<>(
                 explicitFaultUnitsByMethod.keySet());
@@ -749,7 +645,6 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 List<String> destinations = new ArrayList<>(
                         canonicalDefs(method, fact));
-                // An ignored marker result stays a (branch-less) site.
                 if (destinations.isEmpty()) {
                     destinations.add(factNode(fact));
                 }
@@ -790,8 +685,6 @@ final class SeedBackwardStaticAnalyzer {
         if (allocation == null) {
             return null;
         }
-        // The ordinal is the class file's (ExceptionTargetLineResolver): a
-        // door's woven construction is not the program's.
         int ordinal = 0;
         for (Fact candidate : facts) {
             if (DoorWeave.isWoven(candidate.unit)
@@ -850,19 +743,11 @@ final class SeedBackwardStaticAnalyzer {
         return values;
     }
 
-    /** One method's CFG relation, built once. */
     private SiteControlDependence.MethodGuards cfgRelation(String method) {
         return memoized(guardsByMethod, method,
                 SiteControlDependence.MethodGuards::of);
     }
 
-    /**
-     * Adds the operands of every branch deciding whether {@code site} runs.
-     * The whole of control dependence in the slice, published as the one
-     * {@link #GUARD_KIND} row kind.
-     *
-     * @return whether any branch decides it
-     */
     private boolean demandControllingGuards(String method, Fact site,
                                             Set<String> relevant,
                                             Collection<String> guardedCells) {
@@ -912,7 +797,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void runWorklist() {
-        // Monotone fixed point over finite cells.
         while (!dirtyMethods.isEmpty()) {
             String method = dirtyMethods.iterator().next();
             dirtyMethods.remove(method);
@@ -966,7 +850,6 @@ final class SeedBackwardStaticAnalyzer {
             }
 
             if (defExactHit && !fact.isBranch) {
-                // A demanded definition demands the branches deciding it.
                 List<String> relevantDefs = new ArrayList<>();
                 for (String def : defs) {
                     if (relevant.contains(def) && !ignoreNode(def)) {
@@ -997,11 +880,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** A field read's edges; one on the method's own receiver ({@code this})
-     *  says so ({@value #ON_RECEIVER}): the receiver its call was recorded
-     *  with is the object it read the field on, whether or not the
-     *  recording wrote the read's row ({@code
-     *  runtime.RuntimeRegionPlanner#stampFieldOwners}). */
     private void processFieldReads(String method, List<Fact> facts,
                                    Fact fact, List<String> defs,
                                    Set<String> relevant) {
@@ -1053,13 +931,11 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         if (!affectedRelevantHeapCells.isEmpty()) {
-            // A heap write may have no relevant def local to hang guards on.
             demandControllingGuards(method, fact, relevant,
                     affectedRelevantHeapCells);
         }
     }
 
-    /** Keeps array contents in the slice; the index never turns symbolic. */
     private void processArrayAccesses(String method, Fact fact,
                                       List<String> defs,
                                       Set<String> relevant) {
@@ -1137,7 +1013,6 @@ final class SeedBackwardStaticAnalyzer {
                 raw.add(use);
             }
         }
-        // FieldRef rendering contains the receiver expression.
         raw.removeIf(this::isFieldAccessValue);
         raw.addAll(fact.fieldUses);
         return canonicalList(method, raw);
@@ -1147,22 +1022,6 @@ final class SeedBackwardStaticAnalyzer {
         return canonicalBase + "#array-element";
     }
 
-    /**
-     * One store or mutation of a demanded field: its value's edges, and its
-     * method's place among those whose calls the store runs only under
-     * ({@link #expandActivationGuards}).  A store into the object its
-     * constructor builds ({@code ownObject}, {@link #storesOwnObject}) says
-     * so on its edges: a call into a constructor decides whether that
-     * object exists, not what an existing object's field holds, and whether
-     * the new object reaches a reader goes through the location that hands
-     * it on, a store of its own; its scope-map row carries only the guards
-     * that choose which call builds it, both arms running one, and with it
-     * the arguments it stores ({@code StaticScopeMap#rows}).
-     * solr-bugs-reindex-cleanup SG1: {@code wrapWatcher}'s {@code instanceof
-     * ProcessWatchWithExecutor} guarded {@code new
-     * ProcessWatchWithExecutor(watcher)}, whose constructor stores {@code
-     * this.watcher}: 5,964 proposals, all refused.
-     */
     private void processFieldWrite(String method, Fact fact,
                                    Set<String> relevant, String field,
                                    List<String> sources, String kind,
@@ -1191,15 +1050,11 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** Whether {@code fact} stores into a field of the object its method,
-     *  a constructor, builds: its {@code this}. */
     private static boolean storesOwnObject(String method, List<Fact> facts,
                                            Fact fact) {
         return method.contains(" <init>(") && onReceiver(facts, fact);
     }
 
-    /** Whether the unit's instance field reference is on the method's own
-     *  receiver ({@link #onReceiver(String, String)}). */
     private static boolean onReceiver(List<Fact> facts, Fact fact) {
         if (facts == null) return false;
         for (Fact identity : facts) {
@@ -1212,9 +1067,6 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    /** Whether {@code unit}'s instance field reference ({@code b.<f>}, read
-     *  or written) is on {@code self}, the local a {@code := @this} identity
-     *  defines. */
     static boolean onReceiver(String self, String unit) {
         int field = unit.indexOf(".<");
         if (field <= 0) return false;
@@ -1271,7 +1123,6 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
         buildGlobalStaticIndex();
-        // Only this constructor's own call sites.
         if (thisRelevant || params.stream().anyMatch(
                 param -> method.equals(param.constructor))) {
             forEachCallsite(constructorCallersByCallee, method,
@@ -1342,30 +1193,8 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** How many calls up the guards of the calls into a method whose
-     *  activation the slice needs are sliced (SiteControlDependence's
-     *  CALL_DEPTH, the scope map's calls-into guards). */
     private static final int ACTIVATION_DEPTH = 3;
 
-    /**
-     * A branch that decides whether code carrying the slice's data runs is
-     * demanded like data, at the calls into it too (SYMBOL-SCOPE §2.2).  Two
-     * kinds of method need their activation: the declared target's, whose
-     * callers are its occurrence's way to the throw, and one holding a
-     * demanded store or container mutation, constant or
-     * not, which runs only where a call into it did (SOLR-18406: Lucene's
-     * CommitPoint.delete() sets {@code deleted = true}, and Solr's deletion
-     * policy calls it through IndexCommit.delete() only when the commit's
-     * reservation, a clock, has run out).  For each call into it, {@link
-     * #ACTIVATION_DEPTH} calls up, a virtual call included, never into an
-     * execution context's entry (its starter runs it: the slice crosses no
-     * thread start), the call's
-     * deciding operands -- its branches and door-fault branches -- are
-     * demanded in its method, guarding the method's {@code .activation} or
-     * the stored cells; a dispatched call links its caller to the method it
-     * runs.  A result the slice demands needs no rule of its own: its
-     * call's definition is demanded, and with it the call's guards.
-     */
     private void expandActivationGuards(String method) {
         Set<String> cells = new LinkedHashSet<>(
                 relevantFieldEffectsByMethod.getOrDefault(method,
@@ -1393,8 +1222,6 @@ final class SeedBackwardStaticAnalyzer {
                 for (String declaring : declared) {
                     forEachCallsite(methodCallersByCallee, declaring,
                             (callsite, callsiteFact) -> {
-                        // Once per callee and call, and again whenever the
-                        // guarded set has grown.
                         if (!expandOnce("ACTIVATION_GUARDS", method,
                                 cells.size(), callee, callsite.method,
                                 callsiteFact.unitIndex)) {
@@ -1436,10 +1263,6 @@ final class SeedBackwardStaticAnalyzer {
                 Collections.singletonList(activation));
     }
 
-    /**
-     * Emits a typed literal a caller passes for a relevant formal; answers
-     * whether it was one (its caller joins the slice).
-     */
     private boolean addTypedLiteralCallerArgument(
             String kind, MethodSig callee, int argumentIndex,
             String callerMethod, Fact fact) {
@@ -1512,7 +1335,6 @@ final class SeedBackwardStaticAnalyzer {
         return new ConstructorParam(constructor, index, formalParam(sig, index));
     }
 
-    /** Builds the reverse application index once, on first demand. */
     private void buildGlobalStaticIndex() {
         if (globalStaticIndexBuilt) {
             return;
@@ -1521,9 +1343,6 @@ final class SeedBackwardStaticAnalyzer {
         int indexedMethods = 0;
         int indexedFacts = 0;
         globalStaticIndexBuilt = true;
-        // A call through an abstract type an application class runs a body
-        // of is a call into the application, whatever scope the type is in:
-        // Solr's IndexCommit.delete() runs Lucene's CommitPoint.delete().
         for (SootClass sootClass : classesByName.values()) {
             for (String name : hierarchyNames(sootClass)) {
                 SootClass type = sceneClass(name);
@@ -1615,10 +1434,6 @@ final class SeedBackwardStaticAnalyzer {
                                 index, receiver, actuals);
                         addIndexedCallsite(methodCallersByCallee, sig.raw,
                                 callsite);
-                        // A call through a type that inherits the method
-                        // (Spi.m() of an interface Spi extends Base) is a
-                        // call of its declaration (Base.m()), the one a
-                        // dispatch source or a concrete callee names.
                         String declared = declaration(sig);
                         if (!declared.equals(sig.raw)) {
                             addIndexedCallsite(methodCallersByCallee,
@@ -1661,7 +1476,6 @@ final class SeedBackwardStaticAnalyzer {
         return facts;
     }
 
-    /** Materializes a full fact only after its reverse-index row is used. */
     private Fact indexedFact(String method, int unitIndex) {
         List<Fact> facts = factsByMethod.get(method);
         if (facts == null) {
@@ -1683,17 +1497,12 @@ final class SeedBackwardStaticAnalyzer {
                 ignored -> new ArrayList<>()).add(write);
     }
 
-    /** Indexes one recorded call site under its application callee. */
     private static void addIndexedCallsite(Map<String, List<Callsite>> index,
                                            String callee, Callsite callsite) {
         index.computeIfAbsent(callee, ignored -> new ArrayList<>())
                 .add(callsite);
     }
 
-    /**
-     * Resolves backed collection mutations lazily, per demanded field.  Exact:
-     * {@link #fieldsAliasedByLocal} only returns fields its method references.
-     */
     private void indexMutationsForField(String field) {
         if (!mutationIndexedFields.add(field)) {
             return;
@@ -1725,7 +1534,6 @@ final class SeedBackwardStaticAnalyzer {
         raw.addAll(localValueUses(fact));
         raw.addAll(actualInvokeArgs(fact.unitText));
         raw.addAll(fact.fieldUses);
-        // The base of an instance-field store is a use box, not a value.
         Set<String> destinationBases = new LinkedHashSet<>();
         for (InstanceFieldAccess access : fact.instanceFieldDefs) {
             if (field.equals(access.field)) {
@@ -1781,16 +1589,6 @@ final class SeedBackwardStaticAnalyzer {
         return mutatedFields;
     }
 
-    /**
-     * The fields {@code local} may be the state of before {@code
-     * beforeIndex}: those its definitions read or wrote, back through
-     * copies and casts, and through a call only to the operand its result
-     * may be ({@link #aliasedOperands}).  Never a call's other arguments:
-     * {@code toStringHelper(this).add("autoDeleteAgeMath",
-     * autoDeleteAgeMath)} made the next {@code add} a mutation of a String
-     * field (solr-adhoc-10 SG1: 518 deciders of TimeRoutedAlias's), and a
-     * copy constructor's argument is a copy.
-     */
     private Set<String> fieldsAliasedByLocal(List<Fact> facts, int beforeIndex,
                                              String local) {
         Set<String> fields = new LinkedHashSet<>();
@@ -1813,17 +1611,6 @@ final class SeedBackwardStaticAnalyzer {
         return fields;
     }
 
-    /**
-     * The operands a call's result may be: its receiver when the call may
-     * return it or a view backed by it -- a fluent call, whose declared
-     * return type is its own class or one above it (a builder returning
-     * {@code this}, {@code StringBuilder.append}, {@code List.subList}), a
-     * {@code java.util} view or iterator, a Guava multimap's view -- and
-     * an argument a library call returns ({@link #RETURNED_ARGUMENTS}:
-     * {@code Objects.requireNonNull}, {@code Maps.filterKeys}) or an
-     * application method's body does ({@link #returnedOperands}); none for
-     * any other call, whose result is none of its operands.
-     */
     private List<String> aliasedOperands(Fact fact) {
         MethodSig invoked = parseMethodSig(fact.invoke);
         if (invoked == null || fact.defs.isEmpty()) {
@@ -1858,7 +1645,6 @@ final class SeedBackwardStaticAnalyzer {
         return operands;
     }
 
-    /** Whether a call returns a view of the Guava multimap it is made on. */
     private boolean multimapView(MethodSig invoked) {
         if (!MULTIMAP_VIEWS.contains(invoked.name)
                 || !invoked.owner.startsWith("com.google.common.collect.")) {
@@ -1868,15 +1654,6 @@ final class SeedBackwardStaticAnalyzer {
                 invoked.owner).contains("com.google.common.collect.Multimap");
     }
 
-    /**
-     * Which operands a call into {@code signature} may return, by its body:
-     * -1 its receiver, k its k-th argument, through copies and casts
-     * (flow-insensitive, so what it may return); none for a body the scene
-     * lacks (an abstract or interface method: its overrides are not read).
-     * An application helper that returns what it was given ({@code
-     * checkArgument(x)}, a fluent setter declared to return {@code
-     * Object}) is its argument's alias.
-     */
     private Set<Integer> returnedOperands(String signature) {
         return returnedOperands.computeIfAbsent(signature, key -> {
             Body body = jimpleBody(key);
@@ -1927,8 +1704,6 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** Whether a call's declared result may be its receiver: its own class,
-     *  or one above it but {@code Object}. */
     private boolean fluent(MethodSig invoked) {
         if (invoked.returnType.equals(invoked.owner)) return true;
         if ("java.lang.Object".equals(invoked.returnType)) return false;
@@ -1937,7 +1712,6 @@ final class SeedBackwardStaticAnalyzer {
                 && hierarchyNames(owner).contains(invoked.returnType);
     }
 
-    /** Only java.util APIs specified to return a receiver-backed view. */
     private boolean returnsBackedCollectionView(Fact fact) {
         MethodSig invoked = parseMethodSig(fact.invoke);
         if (invoked == null || fact.defs.isEmpty()
@@ -1953,9 +1727,6 @@ final class SeedBackwardStaticAnalyzer {
                 : BACKED_ITERATORS.contains(invoked.name);
     }
 
-    /** Whether a call writes its receiver: a container mutation, by name
-     *  or by its JDK contract, or a write of a JDK atomic's value.  Never a
-     *  call on an immutable JDK value ({@link #immutableValue}). */
     private boolean isFieldMutator(Fact fact) {
         MethodSig sig = parseMethodSig(fact.invoke);
         return sig != null && !immutableValue(sig.owner)
@@ -1965,8 +1736,6 @@ final class SeedBackwardStaticAnalyzer {
                 || SharedFieldFlow.atomicWrite(sig.raw));
     }
 
-    /** Whether {@code className} is a JDK value no call mutates: a String,
-     *  a box, a big number, a UUID, a java.time value, an enum. */
     private boolean immutableValue(String className) {
         if (IMMUTABLE_VALUES.contains(className)
                 || className.startsWith("java.time.")) {
@@ -1977,12 +1746,6 @@ final class SeedBackwardStaticAnalyzer {
                 && hierarchyNames(type).contains("java.lang.Enum");
     }
 
-    /**
-     * A library class's supertypes, itself included: they decide which
-     * container contract a call on it states (JavaContainerTypes, by
-     * interface).  None for an application class, whose calls run the body
-     * the slice follows.
-     */
     private Collection<String> libraryHierarchy(String className) {
         SootClass type = isApplicationClassName(className) ? null
                 : sceneClass(className);
@@ -2043,9 +1806,6 @@ final class SeedBackwardStaticAnalyzer {
                 actuals, callerRelevant);
         processConstructorObjectInvoke(callerMethod, fact, callee,
                 actuals, callerRelevant);
-        // A dispatch target that is the callee itself (a concrete method an
-        // abstract class declares and a subclass inherits: BlockInfo
-        // .isComplete()) is the plain call; the others are dispatched.
         List<String> dispatchTargets = resolveDispatchTargets(callee);
         boolean plainCall = dispatchTargets.isEmpty()
                 || dispatchTargets.contains(callee.raw);
@@ -2110,11 +1870,6 @@ final class SeedBackwardStaticAnalyzer {
         return ((StringConstant) invoke.getArg(0)).value;
     }
 
-    /**
-     * One forward argument walk for an ordinary Java call: each actual whose
-     * formal is demanded, a formal only the callee's return needs only where
-     * the call's result is demanded here ({@link ReturnOnlyFormals}).
-     */
     private boolean propagateCallArguments(
             String kind, String callerMethod, Fact fact,
             MethodSig target, List<String> actuals,
@@ -2140,7 +1895,6 @@ final class SeedBackwardStaticAnalyzer {
         return relevantFlow;
     }
 
-    /** The same walk over a call's returned value. */
     private void propagateCallReturns(
             String kind, String callerMethod, Fact fact,
             String targetMethod, List<String> defs,
@@ -2159,15 +1913,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * A container query's result depends on its receiver and arguments
-     * (library receivers are otherwise excluded), by the contract of the
-     * receiver's interface (JavaContainerTypes), a stream pipeline's and a
-     * static {@code Collectors} call's included; a functional argument
-     * contributes its functional method's return ({@link
-     * #enterFunctionalArguments}).  Value semantics belong to the VM's
-     * {@code ContainerRelation}.
-     */
     private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
@@ -2184,13 +1929,10 @@ final class SeedBackwardStaticAnalyzer {
         }
         if (relevantDefs.isEmpty()) return;
 
-        // A static call (Collectors.toList()) reads its arguments alone.
         String receiver = invokeBaseLocal(fact.unitText);
         if (receiver != null) {
             String receiverNode = canonical(callerMethod, receiver);
             if (ignoreNode(receiverNode)) return;
-            // The result is demanded, so the receiver's state is a value
-            // input.
             for (String def : relevantDefs) {
                 Map<String, Object> edge = addEdge("container_receiver",
                         receiverNode, def, callerMethod, fact);
@@ -2214,26 +1956,11 @@ final class SeedBackwardStaticAnalyzer {
         enterFunctionalArguments(callerMethod, fact);
     }
 
-    /** A functional object's interfaces: java.util.function's, and a
-     *  Comparator. */
     private static boolean functionalInterface(String name) {
         return name.startsWith("java.util.function.")
                 || "java.util.Comparator".equals(name);
     }
 
-    /**
-     * Each functional argument of a container or stream call the slice
-     * demands contributes its functional method's return (SYMBOL-SCOPE
-     * §2.2): one {@code functional_return} edge from that method's return to
-     * the argument, and the slice enters the method -- each method of the
-     * object's class implementing an abstract method of a functional
-     * interface it implements.  The class is the one the argument is created
-     * from: a {@code new C}, or a static factory of a functional class (the
-     * {@code bootstrap$} of Soot's desugared lambda or method reference).
-     * The values it captured reach the factory's arguments at the creation
-     * site through the constructor-object edges.  An argument read from a
-     * field or a parameter states no class and is entered nowhere.
-     */
     private void enterFunctionalArguments(String callerMethod, Fact fact) {
         List<Value> arguments = ((Stmt) fact.unit).getInvokeExpr().getArgs();
         List<String> nodes = canonicalPositionList(callerMethod,
@@ -2260,8 +1987,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** The classes a local's definitions create its object of, that have a
-     *  functional method to enter ({@link CreatedFrom#classes}). */
     private Set<SootClass> creationClasses(String method, Local local) {
         List<Unit> units = new ArrayList<>();
         for (Fact fact : factsByMethod.get(method)) units.add(fact.unit);
@@ -2272,8 +1997,6 @@ final class SeedBackwardStaticAnalyzer {
         return classes;
     }
 
-    /** The methods a class (or a superclass) implements of the abstract
-     *  methods of the functional interfaces it implements. */
     private List<SootMethod> functionalMethods(SootClass type) {
         List<SootMethod> methods = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -2310,12 +2033,6 @@ final class SeedBackwardStaticAnalyzer {
         return methods;
     }
 
-    /**
-     * Mutation counterpart of {@link #processSemanticContainerOperation}: a
-     * relevant container receiver demands its mutators' arguments, and the
-     * fields it is later published into name the mutation a write of theirs
-     * ({@link #publishMutation}).
-     */
     private void processSemanticContainerMutation(
             String callerMethod, Fact fact, MethodSig callee,
             Set<String> callerRelevant) {
@@ -2337,26 +2054,12 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(argument);
         }
-        // Whether the mutation ran is part of the container's state.
         demandControllingGuards(callerMethod, fact, callerRelevant,
                 Collections.singletonList(receiverNode));
         enterFunctionalArguments(callerMethod, fact);
         publishMutation(callerMethod, fact, receiver);
     }
 
-    /**
-     * P2(b) (R3-REFCONT): a mutation of the container a local holds shapes
-     * the referent every later store of that local -- or of a copy of it,
-     * before it is redefined -- publishes into a field, and, one call up,
-     * the referent the method returns into each field its callers store
-     * the result into.  One {@code container_publication} edge per field,
-     * from the local ({@code publishedFrom}) to the field at the mutation:
-     * the scope map's write site of that field with the mutation's guards.
-     * solr-18406: {@code updateKnownCommitPoints} puts each commit whose
-     * {@code !wrapper.isDeleted()} holds into a fresh map, then stores the
-     * map into {@code knownCommits}.  A mutation of a field's container
-     * through an alias is {@link #fieldsAliasedByLocal}'s.
-     */
     private void publishMutation(String method, Fact mutation, String local) {
         if (!expandOnce("PUBLICATION", method, mutation.unitIndex)) return;
         Set<String> fields = new LinkedHashSet<>();
@@ -2387,12 +2090,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * Adds to {@code fields} each field a fact after {@code index} stores
-     * {@code local}, or a copy of it, into, up to its redefinition.
-     *
-     * @return whether the method returns it
-     */
     private static boolean storedFrom(List<Fact> facts, int index,
                                       String local, Set<String> fields) {
         Set<String> aliases = new LinkedHashSet<>();
@@ -2424,7 +2121,6 @@ final class SeedBackwardStaticAnalyzer {
         return returned;
     }
 
-    /** Whether {@code value}, through a cast, is one of the locals. */
     private static boolean alias(Value value, Set<String> locals) {
         Value operand = value instanceof CastExpr
                 ? ((CastExpr) value).getOp() : value;
@@ -2432,8 +2128,6 @@ final class SeedBackwardStaticAnalyzer {
                 && locals.contains(((Local) operand).getName());
     }
 
-    /** Bridges an application helper that mutates a container argument or
-     *  its receiver. */
     private void processContainerCallMutationEffects(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> actuals, Set<String> callerRelevant) {
@@ -2457,12 +2151,8 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** The key {@link #directlyMutatedContainerParameters} gives {@code
-     *  this}. */
     private static final int RECEIVER = -1;
 
-    /** The parameters, by index, and {@code this} ({@link #RECEIVER}) whose
-     *  container the method mutates, each with its local. */
     private Map<Integer, String> directlyMutatedContainerParameters(
             MethodSig callee) {
         return memoized(directlyMutatedContainerParametersCache,
@@ -2510,8 +2200,6 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** A collection's {@code toArray}: an array of its elements, so it
-     *  depends on the collection's state as a query's result does. */
     private static boolean containerArray(MethodSig method) {
         return COLLECTION_CONTRACT_OWNERS.contains(method.owner)
                 && "toArray".equals(method.name)
@@ -2521,7 +2209,6 @@ final class SeedBackwardStaticAnalyzer {
                 && method.params.get(0).endsWith("[]")));
     }
 
-    /** A demanded new object depends on its constructor arguments. */
     private void processConstructorObjectInvoke(String callerMethod, Fact fact,
                                                 MethodSig callee,
                                                 List<String> actuals,
@@ -2587,15 +2274,6 @@ final class SeedBackwardStaticAnalyzer {
         callerRelevant.add(declaredFieldNode);
     }
 
-    /**
-     * A demanded result of any other library call depends on its receiver's
-     * state when the receiver is shared ({@link LibraryReceivers}): one
-     * {@code library_receiver} row from the receiver to each demanded def.
-     * Application calls, container contracts, value types, accessors and
-     * dispatched calls state their dependence themselves, a clock's value is
-     * a root whatever its receiver holds, and a call into the system's own
-     * code outside the scope is the scope frontier's.
-     */
     private Predicate<String> systemClass() {
         if (systemClass == null) {
             systemClass = LibraryReceivers.systemClasses(
@@ -2658,7 +2336,6 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("accessorImplementationMethod", accessor);
     }
 
-    /** Attaches the resolved declaration to one direct field read. */
     private void annotateDirectDeclaredFieldEdge(Map<String, Object> edge,
                                                  String fieldSignature) {
         String owner = fieldOwner(fieldSignature);
@@ -2673,9 +2350,6 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("declaredFieldSignature", field.getSignature());
     }
 
-    /** The signature of the analysed method a call's owner declares or
-     *  inherits ({@link #resolveDeclaredMethod}), else the call's own: a
-     *  library's declaration is no callee the slice expands. */
     private String declaration(MethodSig call) {
         return memoized(declarationCache, call.raw, ignored -> {
             SootMethod declared = resolveDeclaredMethod(call);
@@ -2685,7 +2359,6 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** Resolves one method declaration inherited by the invocation owner. */
     private SootMethod resolveDeclaredMethod(MethodSig methodSignature) {
         if (methodSignature == null || methodSignature.owner.isEmpty()) {
             return null;
@@ -2701,7 +2374,6 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** The unique analyzable closed-world receiver of this call, or null. */
     private SootMethod uniqueAnalyzableImplementation(MethodSig callee) {
         if (callee == null || callee.owner.isEmpty()) {
             return null;
@@ -2726,7 +2398,6 @@ final class SeedBackwardStaticAnalyzer {
                 && !method.isNative() && activeBody(method) != null;
     }
 
-    /** A field accessor, recognized from its body, never its spelling. */
     private StructuralFieldAccessor structuralFieldAccessor(
             MethodSig callee) {
         if (callee == null) {
@@ -2827,15 +2498,6 @@ final class SeedBackwardStaticAnalyzer {
                 + String.join(",", sig.params) + ")";
     }
 
-    /**
-     * The concrete methods of the analysis scope a call on {@code
-     * sig.owner} may run that {@code accept}s (CHA): for each concrete
-     * subtype of the owner, the method its lookup finds, declared there or
-     * inherited.  {@code
-     * Replica.getGenerationStamp()} runs {@code Block}'s through {@code
-     * ReplicaInfo extends Block implements Replica}, though {@code Block}
-     * itself implements no {@code Replica}.
-     */
     private List<SootMethod> concreteImplementations(
             MethodSig sig, Predicate<SootMethod> accept) {
         SootClass owner = sceneClass(sig.owner);
@@ -2846,8 +2508,6 @@ final class SeedBackwardStaticAnalyzer {
         if (declared == null) return Collections.emptyList();
         List<SootMethod> matches = new ArrayList<>();
         for (SootMethod target : abstractDispatch(owner, declared)) {
-            // The analysis scope's bodies only: a library body the Scene can
-            // load is still outside what the slice follows.
             if (target.getDeclaringClass().isApplicationClass()
                     && accept.test(target)) {
                 matches.add(target);
@@ -2856,9 +2516,6 @@ final class SeedBackwardStaticAnalyzer {
         return matches;
     }
 
-    /** The concrete targets of {@code declared} below {@code owner}, by
-     *  signature (the hierarchy answers a hash set of methods, in identity
-     *  order); none when it cannot resolve them (a phantom supertype). */
     private static List<SootMethod> abstractDispatch(SootClass owner,
                                                      SootMethod declared) {
         List<SootMethod> targets;
@@ -2872,7 +2529,6 @@ final class SeedBackwardStaticAnalyzer {
         return targets;
     }
 
-    /** A loaded, non-phantom class by name, application or library. */
     private static SootClass sceneClass(String name) {
         SootClass found = Scene.v().getSootClassUnsafe(name, false);
         return found == null || found.isPhantom() ? null : found;
@@ -2967,10 +2623,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * The one call-site walk every caller expander takes, in index order;
-     * expanders differ only in what they demand at a site.
-     */
     private void forEachCallsite(
             Map<String, List<Callsite>> index, String callee,
             BiConsumer<Callsite, Fact> visit) {
@@ -2987,14 +2639,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * At one call site, demands each actual whose formal is relevant -- a
-     * formal only the callee's return needs only where the call's result is
-     * demanded ({@link ReturnOnlyFormals#demanded}).  A literal actual is a
-     * typed-literal row of {@code literalKind}, or nothing when that is null.
-     *
-     * @return whether an actual was demanded
-     */
     private boolean expandCallerArguments(
             String demandKind, String edgeKind, String literalKind,
             String targetMethod, String demandScope, MethodSig target,
@@ -3031,8 +2675,6 @@ final class SeedBackwardStaticAnalyzer {
         return expanded;
     }
 
-    /** At one call site, demands the receiver of a relevant {@code this},
-     *  as {@link #expandCallerArguments} an actual. */
     private boolean expandCallerReceiver(
             String demandKind, String edgeKind, String targetMethod,
             String targetThis, Callsite callsite, Fact callsiteFact) {
@@ -3054,7 +2696,6 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    /** Whether the call's result is demanded in its method. */
     private boolean resultDemanded(Callsite callsite, Fact callsiteFact) {
         return exactIntersects(relevant(callsite.method),
                 canonicalDefs(callsite.method, callsiteFact));
@@ -3072,12 +2713,6 @@ final class SeedBackwardStaticAnalyzer {
             }
             Set<String> sources = new LinkedHashSet<>();
             String subSignature = methodSubSignature(targetSig);
-            // The supertypes of every class that runs this body: its own
-            // and those of each subtype inheriting it.  A call names the
-            // type it is made through, which may inherit the method rather
-            // than declare it (Spi.m() of an interface Spi extends a
-            // library's Probe declaring m), so such a type is a source too;
-            // not for Object's methods, which every type has.
             for (SootClass runner : inheritingSubtypes(targetClass,
                     subSignature)) {
                 for (String candidateName : hierarchyNames(runner)) {
@@ -3103,9 +2738,6 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    /** {@code declaring} and each of its subclasses that inherits its
-     *  {@code subSignature} (declares none of its own), breadth first, each
-     *  level's subclasses by name (the hierarchy answers a hash set). */
     private static List<SootClass> inheritingSubtypes(SootClass declaring,
                                                       String subSignature) {
         List<SootClass> runners = new ArrayList<>();
@@ -3126,9 +2758,6 @@ final class SeedBackwardStaticAnalyzer {
         return runners;
     }
 
-    /** A body the slice follows: a concrete method of an application
-     *  class, an abstract class's or an interface's default one included,
-     *  that is no structural field accessor. */
     private boolean isExpandableMethod(String signature) {
         SootMethod method = concreteMethod(signature);
         MethodSig sig = parseMethodSig(signature);
@@ -3141,7 +2770,6 @@ final class SeedBackwardStaticAnalyzer {
         return relevantByMethod.computeIfAbsent(method, DirtyMarkingSet::new);
     }
 
-    /** One computation per key, taken on first demand and kept. */
     private static <K, V> V memoized(Map<K, V> cache, K key,
                                      Function<K, V> compute) {
         V cached = cache.get(key);
@@ -3153,12 +2781,6 @@ final class SeedBackwardStaticAnalyzer {
         return computed;
     }
 
-    /**
-     * Visits each canonical operand of each branch {@code site} depends on.
-     * A call a door fault leaves for a handler is such a branch, and its
-     * operand is where the fault comes from: the {@code .throws} cell of each
-     * callee it escapes ({@link FaultPropagation}), demanded there.
-     */
     private void forEachGuardOperand(
             String method, Fact site, boolean controllingOnly,
             BiConsumer<Fact, String> visit) {
@@ -3186,7 +2808,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** Demands a method's {@code .throws} cell in that method. */
     private void demandThrows(String cell) {
         String method = cell.substring(0,
                 cell.length() - FaultPropagation.THROWS.length());
@@ -3195,12 +2816,6 @@ final class SeedBackwardStaticAnalyzer {
         selectedMethods.add(method);
     }
 
-    /**
-     * A demanded {@code <m>.throws}: each raise a door fault escapes {@code
-     * m} from ({@link FaultPropagation}) flows into it ({@code
-     * exception_flow}) from its origins -- a woven throw's marker local, a
-     * callee's {@code .throws} -- under the raise's own guards.
-     */
     private void expandThrows(String method) {
         String cell = FaultPropagation.throwsCell(method);
         List<Fact> facts = factsByMethod.get(method);
@@ -3241,15 +2856,6 @@ final class SeedBackwardStaticAnalyzer {
         return expandedDemands.add(key.toString());
     }
 
-    /**
-     * Processes a selected method again.  Any demand that grows is followed
-     * by this for every method whose pass reads it: a caller when a callee's
-     * demand reaches its actual (its own pass emits the call's {@code
-     * call_argument} and dispatch rows from the callee's demand, even when
-     * the actual was already relevant), a method whose field effects or
-     * constant stores grew.  Otherwise the rows would depend on the order
-     * the worklist met the methods.
-     */
     private void markDirty(String method) {
         if (method != null && selectedMethods.contains(method)) {
             dirtyMethods.add(method);
@@ -3257,7 +2863,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private final class DirtyMarkingSet extends LinkedHashSet<String> {
-        /** The method to mark, or null to mark the added value itself. */
         private final String method;
 
         private DirtyMarkingSet(String method) {
@@ -3296,8 +2901,6 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> applicationInvokeArgs = new LinkedHashSet<>();
             MethodSig invoked = parseMethodSig(fact.invoke);
             boolean valueLikeLibraryInvoke = isValueLikeLibraryInvoke(invoked);
-            // An application call's actuals reach its body's formals; a
-            // value-like one (an enum's identity) has no body to reach.
             boolean applicationInvoke = invoked != null
                     && isApplicationClassName(invoked.owner)
                     && !valueLikeLibraryInvoke;
@@ -3315,7 +2918,6 @@ final class SeedBackwardStaticAnalyzer {
             }
             Set<String> uses = new LinkedHashSet<>();
             for (String use : nonInvokeUses(fact)) {
-                // Use boxes hold a composite expression and its leaves.
                 if (!atomicDataflowUse(use)
                         || (!valueLikeLibraryInvoke && use.equals(invokeBase))
                         || applicationInvokeArgs.contains(use)
@@ -3351,8 +2953,6 @@ final class SeedBackwardStaticAnalyzer {
         if (invoked == null) {
             return false;
         }
-        // A wrapper's own unboxing accessor, Boolean's included: solr-18413's
-        // DocCollection.isReadOnly() unboxes its Boolean readOnly.
         if (JavaPrimitiveBoxing.unboxing(invoked.raw)) {
             return true;
         }
@@ -3366,9 +2966,6 @@ final class SeedBackwardStaticAnalyzer {
                 || enumIdentity(invoked);
     }
 
-    /** The final methods every enum inherits from java.lang.Enum, read off
-     *  the constant's identity: an application enum's call of one runs no
-     *  body of its own (HDFS's {@code getBlockUCState().equals(COMPLETE)}). */
     private static final Set<String> ENUM_IDENTITY = names(
             "boolean equals(java.lang.Object)", "int hashCode()",
             "int ordinal()", "java.lang.String name()");
@@ -3478,7 +3075,6 @@ final class SeedBackwardStaticAnalyzer {
         return SiteId.of(fact.method, fact.unitIndex);
     }
 
-    /** Returns the canonical local bound to {@code @this}. */
     private String methodThisNode(String method) {
         String cached = methodThisNodeCache.get(method);
         if (cached != null) {
@@ -3528,7 +3124,6 @@ final class SeedBackwardStaticAnalyzer {
         return walkHierarchy(root, resolver);
     }
 
-    /** The one hierarchy walk: first non-null answer, or null. */
     private static <T> T walkHierarchy(SootClass root,
                                        Function<SootClass, T> resolver) {
         if (root == null) {
@@ -3547,7 +3142,6 @@ final class SeedBackwardStaticAnalyzer {
                 if (resolved != null) {
                     return resolved;
                 }
-                // Superclass before interfaces, as Java lookup does.
                 if (sootClass.hasSuperclass()) {
                     work.addFirst(sootClass.getSuperclass());
                 }
@@ -3580,7 +3174,6 @@ final class SeedBackwardStaticAnalyzer {
         }
         String fromText = String.valueOf(from);
         String toText = String.valueOf(to);
-        // Only a guard may name one cell at both ends (x = f(x) if x...).
         boolean sameCellGuard = GUARD_KIND.equals(kind) && fact != null;
         if (ignoreNode(fromText) || ignoreNode(toText)
                 || fromText.equals(toText) && !sameCellGuard) {
@@ -3599,7 +3192,6 @@ final class SeedBackwardStaticAnalyzer {
                     method, fact, edgeTransferKind);
             edge = object(
                     "schemaVersion", StaticDataflowEdgeSchema.VERSION,
-                    // Numbered by analyze() once the slice is complete.
                     "id", "",
                     "kind", kind,
                     "transferKind", edgeTransferKind,
@@ -3629,7 +3221,6 @@ final class SeedBackwardStaticAnalyzer {
         return edge;
     }
 
-    /** Whether a {@code local_def_use} row is an exact JVM value copy. */
     private boolean exactLocalDirectCopy(String kind, String fromText,
                                          String toText, String method,
                                          Fact fact,
@@ -3716,8 +3307,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** A call that is one read of one field: the method that answers it
-     *  (its body's proof, or a JDK atomic's table entry), and the field. */
     private static final class StructuralFieldAccessor {
         private final String implementation;
         private final SootField field;
@@ -3729,8 +3318,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** One emitted edge's identity: kind, ends, method and unit; ordered by
-     *  method, unit, kind and ends. */
     private static final class EdgeIdentity
             implements Comparable<EdgeIdentity> {
         private final String kind;
@@ -3826,7 +3413,6 @@ final class SeedBackwardStaticAnalyzer {
                 : method + "#synthetic:" + firstNonBlank(kind, "edge");
     }
 
-    /** {@link #RETURNED_ARGUMENTS} from (owner.name, "k k ...") pairs. */
     private static Map<String, List<Integer>> returnedArguments(
             String... pairs) {
         Map<String, List<Integer>> map = new LinkedHashMap<>();

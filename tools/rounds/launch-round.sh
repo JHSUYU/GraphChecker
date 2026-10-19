@@ -1,55 +1,15 @@
 #!/usr/bin/env bash
-# launch-round.sh <snapshot> <round>
-#
-# Starts the acceptance campaigns of one round from one snapshot worktree --
-# the ten named HDFS cases, or the cases CASES names (any case id a case
-# directory declares) -- each detached on its
-# head host, every one with its obligations spread over every host in LIFTS:
-#
-#   CAUSYNTH_CUSTOM_JDK_HOME=<image> tools/rounds/launch-round.sh ~/gc-run/<snapshot> v22
-#   CASES="hdfs-17960 hdfs-11741" CAUSYNTH_CUSTOM_JDK_HOME=<image> \
-#     tools/rounds/launch-round.sh ~/gc-run/<snapshot> v22b
-#
-# A campaign's HEAD is the shell that drives it.  Every heavy step it takes
-# -- an engine JVM of any stage, the seed and CONFIRM replays, REPRODUCE's
-# native runs -- goes wherever the host ledger has room, its own host first
-# (run_engine.sh campaign_head_charged), and its host keeps room for its
-# next planner or composer (campaign_head_reserve).  Its OBLIGATIONS run on
-# every host in LIFTS, as many on a host as its memory admits, up to its
-# cores (campaign_stream_admit_host).  So the head hosts are chosen here, at
-# launch, from the hosts' room now -- the ledger's reading every start takes
-# (campaign_host_room) -- the heaviest case first (its engine heap,
-# tools/lib/heads.sh case_engine_heap_mb), each to the host with the most
-# room among those that head the fewest cases: no host heads two before
-# every host heads one.
-# lift11 -- the owner's interactive machine -- heads nothing but is a
-# worker, and a host whose memory cannot be read heads nothing either.
-#
-# CAUSYNTH_CUSTOM_JDK_HOME is the VM image every campaign runs; a launch
-# must name it.  CASE_TIMEOUT_SECONDS, PRUNE and CAUSYNTH_CAMPAIGN_STOP_AFTER,
-# when set, reach every head.  LIFTS (tools/lib/gc-env.sh) is the pool: while
-# the sessions that drive the work run on lift11, leave it out
-# (docs/handover/PARALLEL.md §2).  DRY=1 prints the heads chosen and launches
-# nothing.
-# Outputs: $GC_OUT/accept-<round>-<case without hdfs->/, launcher logs
-# $GC_OUT/launch-<round>-<case without hdfs->.log.  One campaign is stopped
-# with tools/rounds/stop-run.sh <round>-<case without hdfs->: a campaign is
-# many process groups on every lift, so no one group id stops it.  A round's
-# directories are written once: a name already used is refused.
 set -euo pipefail
 
 snapshot=${1:?usage: launch-round.sh <snapshot> <round>}
 round=${2:?usage: launch-round.sh <snapshot> <round>}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-# The host ledger's helpers (campaign_host_room, campaign_host_is_local), as
-# tools/adhoc/fanout.sh takes them; with them, tools/lib/gc-env.sh.
 # shellcheck source=../../run_engine.sh
 source "${here}/../../run_engine.sh"
 # shellcheck source=../lib/heads.sh
 source "${here}/../lib/heads.sh"
 out=${GC_OUT}
 vm=${CAUSYNTH_CUSTOM_JDK_HOME:?launch-round.sh: name the concolic VM image as CAUSYNTH_CUSTOM_JDK_HOME}
-# The owner's interactive machine: a worker, never a head.
 owner_host=lift11
 round_cases=(hdfs-11741 hdfs-17960 hdfs-17967-pathA hdfs-17967-pathB
   hdfs-17967-pathC hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3
@@ -83,10 +43,6 @@ mapfile -t launches < <(for case_id in "${cases[@]}"; do
   done | heads_choose "${heads[@]}")
 
 mkdir -p "${out}"
-# What a run's caller sets reaches a head on another host only on the
-# command line (ssh carries no environment): a measurement run's stop stage
-# (CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT), the case budget
-# (CASE_TIMEOUT_SECONDS, which a deep closure needs raised) and the pruning.
 passed=
 for name in CAUSYNTH_CAMPAIGN_STOP_AFTER CASE_TIMEOUT_SECONDS PRUNE; do
   [[ -z "${!name+x}" ]] || passed+="${name}=$(printf '%q' "${!name}") "

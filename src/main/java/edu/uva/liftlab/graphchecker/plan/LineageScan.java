@@ -16,25 +16,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * The lineage scope: every application class that hands work to another thread,
- * runs it, waits/signals, draws or hands a Random to a JDK method ({@link
- * WorkStartSites#draws}: the weave keys each draw by its site, so a replay
- * draws what its recording drew wherever the class sits; HDFS's
- * NetworkTopology, which places a pipeline's DataNodes by ThreadLocalRandom,
- * neither hands off work nor is analysed), or lists a directory ({@link
- * WorkStartSites#lists}: the weave sorts the listing, so every run walks a
- * directory in one order whatever file system it runs on).
- * A lineage hole puts everything after it under
- * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
- * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
- * Bytecode only, no hierarchy: wide {@link WorkStartSites} predicates; classes
- * already analysed are skipped.
- *
- * <p>Usage: {@code LineageScan <out-dir> <analysed-dirs> <class-root>...},
- * {@code <analysed-dirs>} path-separated: the case's scope and what SEED grew
- * it by ({@link ScopeGrowth}).</p>
- */
 public final class LineageScan {
     private LineageScan() {
     }

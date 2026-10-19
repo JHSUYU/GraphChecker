@@ -189,15 +189,8 @@ def main():
     selector = path.get('selector', '')
     out['selector'] = selector
     out['selectedPathId'] = chosen.get('selectedPathId', '')
-    # A SAT stands on its witness's path; an UNSAT on every path.
     sat = result.get('claim') == 'SAT_CANDIDATE' and bool(selector)
     out['unboundOffWitness'] = []
-    # A store content leaf a producer no session attests at its port
-    # settles (compose.Composer#refusedByRule, SmtLowering#settled): concrete[] kind
-    # CONSTANT (its export a constant), EXPORTED (bound by its export) or
-    # BOUNDED (held past the daemon tick bound): named, and no open link; so
-    # is a leaf of a version of its view the read is not paired to (UNPAIRED,
-    # Composer (6b): its case is dead, the path holding its choice false).
     path_of = {p.get('selector', ''): p.get('pathId', '')
                for p in manifest.get('paths') or []}
     named = {'CONSTANT': 'constantByRefusedProducer',
@@ -223,10 +216,6 @@ def main():
             out['unboundOffWitness'] += open_links
         else:
             out['unbound'] += open_links
-    # A handoff an arm the witness chose holds FREE or HELD (concrete[], its
-    # "arm") is no family's binding either: the family states it, but as a
-    # value no producer made, so the chain breaks there as it does at a
-    # fatal condition's unbound v_H.
     arms = {arm.get('selector') for arm in chosen.get('selectedArms') or []}
     out['unbound'] += sorted(
         row.get('subject', '') for row in result.get('concrete') or []

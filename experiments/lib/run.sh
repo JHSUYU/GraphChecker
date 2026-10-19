@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# run.sh <case-dir> <case-id> build|config|validate|campaign|reproduce [args...]
-#
-# The one launcher: the case's declarations become the campaign's
-# environment, and run_engine.sh runs the case's workflow.properties.
 set -euo pipefail
 lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${lib}/case-env.sh" "${1:?usage: run.sh <case-dir> <case-id> <command>}" "${2-}"
@@ -17,22 +13,13 @@ export CAUSYNTH_REPO=${repo}
 export CAUSYNTH_MODULE_DIR=${module}
 export CAUSYNTH_CLASSES_DIR=${analysis}
 export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
-# A system's own doors (experiments/<system>/doors.jsonl), which replace the
-# engine catalog's of their transport and direction (SYMBOL-SCOPE §4.2).
 export CAUSYNTH_SYSTEM_DOORS=
 [[ ! -f "${system_dir}/doors.jsonl" ]] \
   || CAUSYNTH_SYSTEM_DOORS=${system_dir}/doors.jsonl
-# The transports whose doors fail in the workload client's own root contexts
-# (system.sh client_fault_transports; explore.ClientFaults): empty, every door.
 CAUSYNTH_CLIENT_FAULT_TRANSPORTS=$(IFS=,; echo "${client_fault_transports[*]-}")
 export CAUSYNTH_CLIENT_FAULT_TRANSPORTS
-# The region roots whose occurrences always run for their doors alone
-# (system.sh doors_only_roots; plan.DoorsOnlyRoots): empty, none.
 CAUSYNTH_DOORS_ONLY_ROOTS=$(IFS='|'; echo "${doors_only_roots[*]-}")
 export CAUSYNTH_DOORS_ONLY_ROOTS
-# The system's view classes (system.sh system_scope), as class names: woven in
-# every case for the store's decodes, they add no tracked cell (SEED,
-# causynth.RootDemand).
 CAUSYNTH_SYSTEM_VIEW=
 for entry in "${system_scope[@]}"; do
   view=${entry#*:}
@@ -41,15 +28,9 @@ done
 export CAUSYNTH_SYSTEM_VIEW
 export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
-# A reader of a recorded run (tools/regress/offline-ab.sh `config`) states the
-# classpath that run froze: the tree's surefire report may be gone since.
-# A campaign never sets it -- execute.sh reads the report either way.
 CAUSYNTH_CLASSPATH=${CAUSYNTH_CLASSPATH_OVERRIDE:-$(bash "${lib}/classpath.sh" \
   "${case_dir}" "${case_id}")}
 export CAUSYNTH_OUTPUT_DIR=${output_dir}
-# A case directory without a target.yaml runs on the throw its tree marks with
-# the case's id (tools/lib/annotated.py): the spec is derived from the tree,
-# never kept by hand, and stays with the run's output.
 if [[ ! -f ${target_spec} ]]; then
   mkdir -p "${CAUSYNTH_OUTPUT_DIR}"
   target_spec=${CAUSYNTH_OUTPUT_DIR}/declared-target.yaml

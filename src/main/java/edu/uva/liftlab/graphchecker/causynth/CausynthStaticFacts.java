@@ -38,7 +38,6 @@ import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Immutable records and Soot decoding of the static backward analysis. */
 public final class CausynthStaticFacts {
     private static final Pattern FIELD_OWNER = Pattern.compile("<([^:]+):");
     static final Pattern METHOD_SIGNATURE = Pattern.compile(
@@ -47,7 +46,6 @@ public final class CausynthStaticFacts {
     private CausynthStaticFacts() {
     }
 
-    /** The declaring field, not the constant-pool owner it was named via. */
     static SootField declaredField(SootFieldRef reference) {
         if (reference == null) return null;
         try {
@@ -112,7 +110,6 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** One exact, index-stable observation of a Soot unit. */
     static final class Fact {
         final Unit unit;
         final String method;
@@ -155,15 +152,6 @@ public final class CausynthStaticFacts {
                     || lower.startsWith("lookupswitch");
         }
 
-        /**
-         * The unit's own text.  Soot prints a branch with the statement it
-         * jumps to ({@code if $r38 != null goto $r39 = virtualinvoke
-         * $r38.<..getRouter()>()}), and every text reader here -- the invoke
-         * base, the actual arguments -- read that statement's call as the
-         * branch's: the guard's operand was the "receiver" and was dropped,
-         * so solr-18413's deciding guard {@code targetColl == null} named no
-         * operand and no failure target.
-         */
         static String ownText(Unit unit) {
             if (unit instanceof IfStmt) {
                 return "if " + ((IfStmt) unit).getCondition();
@@ -249,7 +237,6 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** One top-level Jimple array load or store operand. */
     static final class ArrayAccess {
         final String base;
         final String index;
@@ -260,7 +247,6 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** The scene's method for a signature, or null. */
     static SootMethod method(String signature) {
         try {
             return Scene.v().getMethod(signature);
@@ -269,53 +255,24 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** Whether a method is the woven program's: its class is an application
-     *  class. */
     static boolean applicationMethod(String signature) {
         SootMethod method = method(signature);
         return method != null
                 && method.getDeclaringClass().isApplicationClass();
     }
 
-    /** Whether a method's body is the analysed program's: a concrete method
-     *  of an application class. */
     static boolean analysedMethod(String signature) {
         SootMethod method = method(signature);
         return method != null && method.isConcrete()
                 && method.getDeclaringClass().isApplicationClass();
     }
 
-    /** Whether a field is a constant: static and final. */
     static boolean constantField(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
         return field != null && field.isStatic() && field.isFinal();
     }
 
-    /**
-     * How the replay versions a field from any store into it (SYMBOL-SCOPE
-     * F2):
-     * <ul>
-     *   <li>{@code VALUE}: an instance field holding an integral value --
-     *       boolean, byte, char, short, int or long, or its wrapper, whose
-     *       value (or null) is all a reader observes: a box is immutable and
-     *       a store puts a new one (solr-18413's {@code
-     *       RoutingRule.expireAt} is a {@code Long}).  Float and double stay
-     *       out, boxed or not.</li>
-     *   <li>{@code REFERENCE}: a field a store re-points holding an
-     *       object, an array included, other than a String or a wrapper: a
-     *       reader queries or projects the referent the field held when it
-     *       read (solr-18406's {@code knownCommits}, a map each commit
-     *       replaces).  A static field too: its location is its class's.</li>
-     *   <li>{@code CONTAINER}: a field only its construction stores ({@link
-     *       #constructionOnly}) holding a map, set, list, queue or deque
-     *       ({@code JavaContainerTypes#shape}; an array is none): its
-     *       reference never changes, and the container's contents, mutated
-     *       in place, are what a reader queries
-     *       ({@code BlockTokenSecretManager.allKeys}).  Any other field only
-     *       its construction stores is none: there is nothing to re-pair.</li>
-     * </ul>
-     */
     static SharedFieldFlow.TrackedKind trackedKind(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
@@ -339,18 +296,6 @@ public final class CausynthStaticFacts {
                 : SharedFieldFlow.TrackedKind.NONE;
     }
 
-    /**
-     * Whether only its own class's construction stores a field: final, or
-     * final in effect ({@link #storedOnlyAtConstruction}).  Its one writer
-     * is its constructor, so the field itself has nothing to re-pair
-     * (SYMBOL-SCOPE §5.1): a read of it is no {@code REFERENCE} read (of a
-     * container, a {@code CONTAINER} read of its contents), and a store into it
-     * is no guarded store (§5.3) -- a concrete store there starts no log,
-     * so the field names no owner its readers would project through
-     * (hdfs-adhoc-03: {@code FSOutputSummer.sum}, a final DataChecksum
-     * stored under a symbolic guard of {@code newStreamForCreate}, made
-     * every chunk's CRC symbolic).
-     */
     static boolean constructionOnly(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
@@ -361,15 +306,6 @@ public final class CausynthStaticFacts {
         return field.isFinal() || storedOnlyAtConstruction(field);
     }
 
-    /**
-     * Whether a private field is stored only by its own class's
-     * constructors -- its initializer included -- so final in effect:
-     * Lucene's {@code IndexFileDeleter.refCounts}, a lambda's captured
-     * value.  A private field's every store is in its own class (a nested
-     * class stores it through that class's accessor), so reading its
-     * class's bodies proves it; a class whose bodies are not loaded proves
-     * nothing.
-     */
     private static boolean storedOnlyAtConstruction(SootField field) {
         if (!field.isPrivate()) return false;
         String constructor = field.isStatic() ? "<clinit>" : "<init>";
@@ -391,21 +327,17 @@ public final class CausynthStaticFacts {
         return true;
     }
 
-    /** A String or a wrapper is a value, never a referent a reader
-     *  queries; float and double are no tracked value. */
     private static final Set<String> UNVERSIONED_REFERENCES =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java.lang.String", "java.lang.Float",
                     "java.lang.Double")));
 
-    /** Whether a field is static: its location is its class's. */
     static boolean staticField(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
         return field != null && field.isStatic();
     }
 
-    /** A retrievable active body, or null: an unloadable body is not a fact. */
     static Body activeBody(SootMethod method) {
         if (method == null || !method.isConcrete()) return null;
         try {
@@ -415,13 +347,11 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** The deterministic name UUID artifacts identify a row by. */
     static String nameId(String prefix, String identity) {
         return prefix + UUID.nameUUIDFromBytes(
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The first field {@code owner} itself declares that {@code accepts}. */
     static SootField field(SootClass owner, Predicate<SootField> accepts) {
         if (owner == null) return null;
         for (SootField candidate : owner.getFields()) {
@@ -430,7 +360,6 @@ public final class CausynthStaticFacts {
         return null;
     }
 
-    /** Declaring type of a field signature, or {@code ""}. */
     public static String fieldOwner(String fieldSignature) {
         if (fieldSignature == null) {
             return "";

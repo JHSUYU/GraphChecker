@@ -10,7 +10,6 @@ import java.util.List;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** One typed value capture at one side of a message boundary. */
 public final class CommunicationHandoffSpec {
     public static final String FIELD = "communicationHandoffs";
     public static final String SIDE = "side";
@@ -99,9 +98,6 @@ public final class CommunicationHandoffSpec {
     public String captureKind() { return captureKind; }
     public String method() { return method; }
 
-    /** The message field the port is carried in ({@code <M: T f>}), or ""
-     *  for a declared row: such an attach takes its element from the
-     *  getter's receiver, the message it was decoded into. */
     public String codecField() { return codecField; }
     public String declaredCallee() { return declaredCallee; }
     public int unitIndex() { return unitIndex; }

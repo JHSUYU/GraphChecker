@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# build.sh <zookeeper checkout> <module> <test class> <test method> -- builds
-# the workload's module and what it needs with the current GraphChecker jar,
-# and runs the workload once natively, as an automatic cluster.  Its surefire
-# report states the classpath every workload JVM runs on.
-#
-# MAVEN_REPO_LOCAL is the tree's own Maven repository (system.sh
-# zk_maven_repo): the tree's SNAPSHOT artifacts and the GraphChecker jar its
-# modules depend on (provided) are installed there, never into ~/.m2.
 set -euo pipefail
 
 repo=${1:?missing ZooKeeper checkout}
@@ -23,15 +15,12 @@ jar=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 [[ "${SKIP_GRAPHCHECKER_INSTALL:-0}" == 1 ]] \
   || (cd "${graphchecker}" && mvn -q -o -DskipTests package)
 common=(-q -B "-Dmaven.repo.local=${m2}")
-# The whole jar: the tree's tests run natively with the engine's runtime on
-# their classpath, last (the dependency is the last of each module).
 mvn "${common[@]}" install:install-file "-Dfile=${jar}" \
   -DgroupId=org.example -DartifactId=GraphChecker -Dversion=1.0-SNAPSHOT \
   -Dpackaging=jar
 cd "${repo}"
 common+=(-Dcheckstyle.skip -Dspotbugs.skip -Dmaven.javadoc.skip=true)
 mvn "${common[@]}" -DskipTests install -pl "${module}" -am
-# Surefire takes the method: a parameterized one (m[k]) runs every invocation.
 mvn "${common[@]}" test -pl "${module}" \
   -Dtest="${test_class##*.}#${test_method%%\[*}" -Dcausynth.cluster.automatic=true
 

@@ -23,12 +23,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * What makes a read symbolic: its category, as the static scope map states it
- * ({@link StaticScopeMap#clocks}, {@link StaticScopeMap#readSites}), a
- * fault marker in the program's text, a field a hook owns, or a wire cut
- * port.  Every other proposed read is concrete.
- */
 public class SymbolicRootPolicyTest {
 
     private static final String NN = "REGION.nn";
@@ -50,12 +44,6 @@ public class SymbolicRootPolicyTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
-    /**
-     * A clock's read carries the mint marker and the clock flag, both off the
-     * scope map; a read no category names is concrete by name; the fault
-     * marker in the program's text is a root; and a declared wire-flow cut
-     * port hands over a producer expression: tracked, and no root.
-     */
     @Test
     public void onlyARootMakesAReadSymbolic() throws Exception {
         StaticScopeMap map = map(Arrays.asList(clockRead(EXPIRE)),
@@ -93,9 +81,6 @@ public class SymbolicRootPolicyTest {
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
         assertFalse("a cut port is not a root", cut.has(ROOT));
 
-        // A name is a VALUE, and the graph names one value once per local it
-        // is copied into; Soot proves which edges are exact copies, so
-        // following only those renames it onto the port.
         JsonObject port = action("EXTERNAL_CALL_RETURN", GET_NUM + "#u2",
                 GET_NUM_LOCAL);
         ConcolicScheduler.SymbolicInputSelection renamed = clockOf(GET_NUM);
@@ -119,8 +104,6 @@ public class SymbolicRootPolicyTest {
                 + "\"}");
     }
 
-    /** The published scope map of these edges, through the artifact the way
-     *  SEED publishes it and PLAN reads it. */
     private StaticScopeMap map(List<Map<String, Object>> edges,
                                Map<String, List<String>> regionMethods,
                                Map<String, Clock> clocks,
@@ -159,7 +142,6 @@ public class SymbolicRootPolicyTest {
         return StaticScopeMap.read(file);
     }
 
-    /** A selection whose one clock is {@code callee}. */
     private ConcolicScheduler.SymbolicInputSelection clockOf(String callee)
             throws IOException {
         return ConcolicScheduler.SymbolicInputSelection.read(map(
@@ -191,7 +173,6 @@ public class SymbolicRootPolicyTest {
         return edge;
     }
 
-    /** One candidate-graph row as the static stage holds it. */
     private static Map<String, Object> edge(String row) {
         Map<String, Object> edge = new LinkedHashMap<>();
         for (Map.Entry<String, com.google.gson.JsonElement> member
@@ -208,7 +189,6 @@ public class SymbolicRootPolicyTest {
                 json("{\"regionId\":\"" + DN + "\"}"));
     }
 
-    /** One clock return, one accessor field, one fault marker. */
     private static JsonArray proposals() {
         JsonArray actions = new JsonArray();
         JsonObject clock = action("EXTERNAL_CALL_RETURN", EXPIRE + "#u2",

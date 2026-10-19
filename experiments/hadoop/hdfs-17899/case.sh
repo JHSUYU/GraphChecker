@@ -1,4 +1,3 @@
-# HDFS-17899: three paths to a stale block key.  Declarations only.
 case "${1:?usage: case.sh bug1|bug2|bug3}" in
   bug1)
     repo=${GC_TREES}/hadoop-hdfs-study-r7

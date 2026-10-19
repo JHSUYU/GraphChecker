@@ -15,10 +15,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Execution goals for one causal-skeleton region occurrence. */
 public final class RegionInstancePlan extends PlanRow {
-    /** Occurrence members the runtime stamped, copied to the task; absent when
-     *  unevidenced. */
     private static final String[] OCCURRENCE_FIELDS = {
             "activationId",
             ConfiguredSourcePhaseContract.PLAN_FIELD,
@@ -48,7 +45,6 @@ public final class RegionInstancePlan extends PlanRow {
             }
             decoded.add(each);
         }
-        // One occurrence = one task = one guarded summary.
         if (decoded.size() != 1) {
             throw new IllegalArgumentException(
                     "region occurrence requires exactly one closure goal, "
@@ -65,7 +61,6 @@ public final class RegionInstancePlan extends PlanRow {
         return new RegionInstancePlan(encoded.deepCopy());
     }
 
-    /** The occurrence's one closure goal. */
     public Goal goal() { return goal; }
 
     void writeTaskIdentityTo(JsonObject target) {
@@ -78,8 +73,6 @@ public final class RegionInstancePlan extends PlanRow {
         }
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
-        // The task row, not the region plan, is what instrumentation and
-        // runtime read.
         copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_AUTHORITY);
         copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_LOOP);
     }

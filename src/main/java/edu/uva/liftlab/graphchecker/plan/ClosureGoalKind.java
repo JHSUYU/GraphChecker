@@ -4,11 +4,8 @@ import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** What one replay explores for a selected region occurrence. */
 public enum ClosureGoalKind {
-    /** Explore the complete region-local path condition. */
     REGION_PATH_CLOSURE,
-    /** Explore the region-local path ending at the selected failure. */
     TARGET_REACH_CLOSURE;
 
     public static final String TASK_FIELD = "goalKind";

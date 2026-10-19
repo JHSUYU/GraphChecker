@@ -34,15 +34,11 @@ import subprocess
 import sys
 
 MARKER_NAME = "CausynthExceptionTarget"
-# A string literal, and a constant made of literals joined by `+`.
 _LITERAL = r'"(?:[^"\\]|\\.)*"'
 _CONSTANT = r'%s(?:\s*\+\s*%s)*' % (_LITERAL, _LITERAL)
-# `throw new [@Marker("...")] Type(`: the marker and the type may continue on
-# the lines after the one the throw starts on.
 THROW = re.compile(r'throw\s+new\s+(?:@[\w.$]+\s*(?:\(\s*%s\s*\))?\s*)?'
                    r'([\w.$]+)\s*[(<]' % _CONSTANT)
 MARKER = re.compile(r'@(?:[\w$]+\.)*%s\s*\(\s*(%s)\s*\)' % (MARKER_NAME, _CONSTANT))
-# How many lines after its first a throw's marker and type may take.
 CONTINUATION = 3
 
 
@@ -104,7 +100,6 @@ def sites(system_dir, tree):
                 if not cases:
                     raise SystemExit("%s: @%s names no case"
                                      % (where, MARKER_NAME))
-                # The `new`'s line, the one javac numbers the throw by.
                 line = text.count("\n", 0, throw.start(1))
                 for case in cases:
                     rows.append({"case": case, "cls": cls, "line": line + 1,

@@ -11,35 +11,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-/**
- * THE MARGIN a DEMANDED flip over a clock is strengthened by.
- *
- * <p>The solver returns the cheapest world (hdfs-11741: {@code expiryDate <
- * now} by one millisecond), but a clock is replayed as a SKEW ({@code
- * ObligationFactory#solve}) over an instant that drifts between runs, so a thin
- * margin falls back on the recorded arm (NOT_ADMITTED).</p>
- *
- * <p>So each comparison atom naming a CLOCK cell is demanded with room: {@code
- * a >= b} true becomes {@code a >= b + eps}; demanded FALSE applies the same
- * rule to the asserted negation. {@code eps} = one minute
- * ({@link #MARGIN_NANOS}), in the ticks of the clock the atom names; an
- * atom naming clocks of two ticks is left alone.</p>
- *
- * <p>Trap: a JVM {@code lcmp} lowers to {@link
- * JavaPrimitiveSmtSemantics#integralCompareResult} under {@code (>= ... 0)}; it
- * is read back as {@code A >= B} (verified by rebuilding the text), since
- * adding eps to the three-valued compare code makes the query UNSAT.</p>
- *
- * <p>Nothing else is touched: atoms with no clock, unresolved polarity (under
- * {@code ite}, {@code =}, {@code distinct}, {@code xor}) or non-arithmetic
- * operands are returned for one DIAGNOSTIC row each. Polarity passes only
- * through {@code not}, {@code and}, {@code or}.</p>
- */
 public final class ClockMargin {
     public static final long MARGIN_NANOS = TimeUnit.MINUTES.toNanos(1);
 
-    /** The margin in the ticks of a clock whose tick is {@code clockNanos}
-     *  nanoseconds ({@code RootMintRow#clockNanos}). */
     public static long margin(long clockNanos) {
         return JavaPrimitiveSmtSemantics.clockTicks(MARGIN_NANOS, clockNanos);
     }
@@ -48,8 +22,6 @@ public final class ClockMargin {
             new LinkedHashSet<String>(java.util.Arrays.asList(
                     "<", "<=", ">", ">="));
 
-    /** Heads that make an operand non-arithmetic (a margin needs a quantity).
-     */
     private static final Set<String> NOT_ARITHMETIC =
             new LinkedHashSet<String>(java.util.Arrays.asList(
                     "ite", "=", "distinct", "xor", "not", "and", "or", "=>",
@@ -58,10 +30,8 @@ public final class ClockMargin {
     private ClockMargin() {
     }
 
-    /** One demanded term, strengthened, and the atoms it could not reach. */
     static final class Strengthened {
         final String text;
-        /** Atoms left as they were, one DIAGNOSTIC each. */
         final List<String> unstrengthened;
 
         private Strengthened(String text, List<String> unstrengthened) {
@@ -71,14 +41,6 @@ public final class ClockMargin {
         }
     }
 
-    /**
-     * One demanded assertion with every clock comparison given its clock's
-     * margin of room.
-     *
-     * @param asserted the lowered, renamed text the query asserts
-     * @param margins  the query's CLOCK cell variables, each with its
-     *                 margin in its own ticks ({@link #margin})
-     */
     static Strengthened strengthen(String asserted,
                                    Map<String, Long> margins) {
         List<String> unreached = new ArrayList<String>();
@@ -126,8 +88,6 @@ public final class ClockMargin {
             this.margins = margins;
         }
 
-        /** One subterm at the demanded polarity: TRUE (holds if it does), FALSE
-         *  (holds if it does not), null (unknown). */
         private void visit(SExpression node, Boolean polarity) {
             if (node.atom()) return;
             String head = node.head();
@@ -138,8 +98,6 @@ public final class ClockMargin {
             }
             if (("and".equals(head) || "or".equals(head))
                     && node.children().size() > 1) {
-                // Monotone connectives: a stronger conjunct strengthens the
-                // whole.
                 for (int index = 1; index < node.children().size(); index++) {
                     visit(node.children().get(index), polarity);
                 }
@@ -150,13 +108,11 @@ public final class ClockMargin {
                         polarity);
                 return;
             }
-            // Anything else decides no polarity below it.
             for (int index = 1; index < node.children().size(); index++) {
                 visit(node.children().get(index), null);
             }
         }
 
-        /** One comparison atom, read back through the JVM's compare. */
         private void atom(SExpression node, String head, SExpression left,
                           SExpression right, Boolean polarity) {
             String operator = head;
@@ -167,7 +123,6 @@ public final class ClockMargin {
             if (compared == null) {
                 compared = integralCompare(right, left);
                 if (compared != null) {
-                    // (op 0 CMP) is the mirrored comparison of A and B.
                     operator = mirrored(head);
                     whole = true;
                 }
@@ -191,9 +146,6 @@ public final class ClockMargin {
                 unstrengthened.add(node.text());
                 return;
             }
-            // The margin goes on the side that makes the DEMANDED proposition
-            // harder; for a demanded false it moves to the other side of the
-            // negated atom.
             boolean upper = ">".equals(operator) || ">=".equals(operator);
             boolean left0 = upper != polarity.booleanValue();
             String padded = "(+ " + (left0 ? a.text() : b.text()) + " "
@@ -229,8 +181,6 @@ public final class ClockMargin {
         return ">=";
     }
 
-    /** The two longs an {@code lcmp} term beside {@code 0} compares, or null;
-     *  recognized only if rebuilding it yields the same text. */
     private static SExpression[] integralCompare(SExpression compare,
                                                  SExpression zero) {
         if (compare.atom() || compare.children().size() != 4
@@ -248,7 +198,6 @@ public final class ClockMargin {
         return new SExpression[]{a, b};
     }
 
-    /** Into {@code into}, the margin of every clock cell this term names. */
     private static void marginsNamed(SExpression node,
                                      Map<String, Long> margins,
                                      Set<Long> into) {
@@ -262,7 +211,6 @@ public final class ClockMargin {
         }
     }
 
-    /** Whether a margin can be added to this term (it must be arithmetic). */
     private static boolean arithmetic(SExpression node) {
         if (node.atom()) return true;
         String head = node.head();

@@ -18,25 +18,13 @@ import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/** Builds candidate region skeletons around execution-context entries. */
 final class SymbolicRegionPlanner {
-    /** A demanded shared-state writer no enclosing task region can own. */
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
-    /**
-     * An explicit fault call is itself a replayable request boundary, where
-     * no execution context already roots its method.
-     */
     static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
-    /** The declared target's own method, when no entry encloses it. */
     static final String FAILURE_TARGET_ENTRY = "FAILURE_TARGET_ENTRY";
     private SymbolicRegionPlanner() {
     }
 
-    /**
-     * @param doors the demanded doors the pass wove ({@link DemandedDoors}):
-     *              each roots nothing; the methods of its chain join the
-     *              regions holding the chain's first method
-     */
     static void planSelectedSkeleton(
             StaticProgram program, Collection<String> selectedMethods,
             List<DemandedDoors.Site> doors) {
@@ -54,15 +42,6 @@ final class SymbolicRegionPlanner {
         declareRetainedLoops(program);
     }
 
-    /**
-     * A demanded door's marker is read in the occurrence that runs the
-     * demanded site it was chosen for (SYMBOL-SCOPE §4.6): the methods of
-     * its chain, from the site's method down to the door's caller, join
-     * every region holding the site's method.  No root is added, so no
-     * address moves (a utility method rooted as a fault entry opened
-     * occurrences wherever it ran, and the test thread's DataNode starts
-     * lost their hop: hdfs-adhoc-26, DECLARED_TARGET_BEFORE_WINDOW).
-     */
     private static void fold(StaticProgram program,
                              List<DemandedDoors.Site> doors) {
         for (DemandedDoors.Site door : doors) {
@@ -77,16 +56,13 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** The slice's call graph and the anchor kinds a skeleton is kept for. */
     private static final class Anchors {
         private final Set<String> selected = new LinkedHashSet<>();
         private final Map<String, Set<String>> outgoing =
                 new LinkedHashMap<>();
         private final Map<String, String> authorities;
         private final Set<String> failure = new LinkedHashSet<>();
-        /** Methods that read an explicit fault marker (a woven door). */
         private final Set<String> faults = new LinkedHashSet<>();
-        /** Any capture of a wire value may own an occurrence. */
         private final Set<String> communication;
         private final Set<String> state = new LinkedHashSet<>();
 
@@ -124,18 +100,12 @@ final class SymbolicRegionPlanner {
                 }
                 outgoing.get(method).add(callee);
             }
-            // A door woven into a method that is already an execution
-            // context or the target's own method (a door at calls:
-            // PacketResponder#run parses its pipeline's ack) leaves it that
-            // region: its address and its selection stay what they were
-            // without the door.
             authorities = new LinkedHashMap<>(
                     program.executionContextAuthorities);
             String target = text(program.targetResolved.get("method"));
             if (!target.isEmpty()) {
                 authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
             }
-            // A demanded or a data-flow door's marker roots nothing (fold).
             for (Map<String, Object> edge : program.edges) {
                 String method = text(edge.get("method"));
                 if (selected.contains(method) && Boolean.TRUE.equals(
@@ -148,13 +118,6 @@ final class SymbolicRegionPlanner {
             }
         }
 
-        /**
-         * Roots a skeleton at each entry, in signature order, unless it is
-         * unselected, already a root, {@code skipped}, or a constructor: no
-         * execution context, but the target's own method is its region when
-         * nothing encloses it (the weave enters it once {@code this} is
-         * initialized).
-         */
         private void root(StaticProgram program, Collection<String> entries,
                           Function<String, String> authority,
                           Predicate<String> skipped) {
@@ -175,7 +138,6 @@ final class SymbolicRegionPlanner {
             }
         }
 
-        /** One skeleton over the root's closure, if it holds an anchor. */
         private void addSkeleton(StaticProgram program, String root,
                                  String authority) {
             List<String> methods = forwardClosure(root, outgoing,
@@ -197,8 +159,6 @@ final class SymbolicRegionPlanner {
             row.put("anchorMethod", anchors.get(0));
             row.put("anchorMethods", anchors);
             row.put("methods", methods);
-            // A region holding the failure is its exception context, a door
-            // in it or not: the failure closure starts from those alone.
             row.put("selection", !failed.isEmpty()
                     ? "EXCEPTION_CONTEXT"
                     : explicitFault
@@ -209,7 +169,6 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** Whether some skeleton is already rooted at {@code method}. */
     private static boolean hasSkeletonRoot(StaticProgram program,
                                            String method) {
         for (Map<String, Object> region : program.regions) {
@@ -220,7 +179,6 @@ final class SymbolicRegionPlanner {
         return false;
     }
 
-    /** Declares on each region the retained loops of the methods it holds. */
     private static void declareRetainedLoops(StaticProgram program) {
         if (program.regions.isEmpty() || program.retainedLoops.isEmpty()) {
             return;
@@ -245,14 +203,6 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /**
-     * SYMBOL-SCOPE §6: declares every capture of every port on the regions
-     * holding it -- a producer's region gets an OUT, a consumer's an IN.
-     * Composition binds the consumer's v_H to the producer's expression
-     * through a message family (PIPELINE §8); both ends are declared so an
-     * absent or ambiguous handoff fails closed.  A value
-     * held across a synchronous call stays in one region and has no port.
-     */
     private static void declareCommunicationPorts(StaticProgram program) {
         if (program.regions.isEmpty()) {
             return;
@@ -276,7 +226,6 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** Declares every producer and consumer of one wire port. */
     private static void declareWirePort(
             StaticProgram program, Map<String, Object> site,
             Map<String, Map<String, Map<String, Object>>> byRegion) {
@@ -336,7 +285,6 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** The identity and root fields every skeleton row opens with. */
     private static Map<String, Object> skeletonRow(String root,
                                                    String authority) {
         Map<String, Object> row = new LinkedHashMap<>();
@@ -361,7 +309,6 @@ final class SymbolicRegionPlanner {
         return result;
     }
 
-    /** Every capture method of every wire port. */
     private static Set<String> communicationEndpoints(
             StaticProgram program) {
         Set<String> entries = new LinkedHashSet<>();
@@ -390,7 +337,6 @@ final class SymbolicRegionPlanner {
         return result;
     }
 
-    /** One FIFO call-graph closure, ordered by signature, never by map. */
     private static Set<String> callClosure(
             Collection<String> seeds, Map<String, Set<String>> outgoing,
             Predicate<String> excluded) {
@@ -412,7 +358,6 @@ final class SymbolicRegionPlanner {
         return new ArrayList<>(unique);
     }
 
-    /** The declared fields the failure slice reads (HEAP_READ sources). */
     private static Set<String> failureRelevantState(
             Collection<Map<String, Object>> edges) {
         Map<String, List<Map<String, Object>>> incoming =
@@ -436,8 +381,6 @@ final class SymbolicRegionPlanner {
                     Collections.<Map<String, Object>>emptyList())) {
                 String transfer = text(edge.get("transferKind"));
                 String source = text(edge.get("fromCell"));
-                // A static final field -- a constant, an enum switch map --
-                // is no state an occurrence shares.
                 if ("HEAP_READ".equals(transfer)
                         && StaticProgram.declaredField(source)
                         && !CausynthStaticFacts.constantField(source)) {

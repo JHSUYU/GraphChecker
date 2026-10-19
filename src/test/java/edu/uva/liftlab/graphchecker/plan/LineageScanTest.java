@@ -13,11 +13,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** The lineage scope keeps every class that starts, hands off or runs work,
- *  waits, draws unseeded, or lists a directory. */
 public class LineageScanTest {
 
-    /** The DataNode actor's shape: a command put at the head of a deque. */
     static final class HeadOfDeque {
         void enqueueFirst(LinkedBlockingDeque<Runnable> queue, Runnable work)
                 throws InterruptedException {
@@ -25,7 +22,6 @@ public class LineageScanTest {
         }
     }
 
-    /** The command processor's: the work taken off a queue. */
     static final class Taker {
         Object next(BlockingQueue<Object> queue) throws InterruptedException {
             return queue.take();
@@ -44,28 +40,24 @@ public class LineageScanTest {
         }
     }
 
-    /** A work entry is kept even when nothing in it hands anything off. */
     static final class Work implements Runnable {
         @Override
         public void run() {
         }
     }
 
-    /** The DataNode actor's pacing: a timed wait on its own monitor. */
     static final class Waiter {
         synchronized void pace(long millis) throws InterruptedException {
             wait(millis);
         }
     }
 
-    /** A list's add is a write, not a handoff. */
     static final class ListWriter {
         void write(List<Object> list, Object value) {
             list.add(value);
         }
     }
 
-    /** DFSNetworkTopology's shape: a pick from one shared static Random. */
     static final class Drawer {
         private static final java.util.Random RANDOM = new java.util.Random();
 
@@ -74,14 +66,12 @@ public class LineageScanTest {
         }
     }
 
-    /** NetworkTopology's: a Random handed to the JDK's shuffle. */
     static final class Shuffler {
         void order(List<Object> nodes, java.util.Random random) {
             java.util.Collections.shuffle(nodes, random);
         }
     }
 
-    /** RawLocalFileSystem's and FileUtil's shape: a directory listed. */
     static final class Lister {
         String[] names(java.io.File directory) {
             return directory.list();

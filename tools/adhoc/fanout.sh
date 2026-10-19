@@ -1,33 +1,9 @@
 #!/usr/bin/env bash
-# fanout.sh <jobs-file> <log-dir> [slots-per-host]
-#
-# Runs every line of <jobs-file> -- one shell command, run from the
-# GraphChecker checkout -- on the lifts (LIFTS, tools/lib/gc-env.sh), at most
-# <slots-per-host> at a time on each (default 8).  A line may start with
-# "NEED_MB=<n> ", the memory the job needs (default JOB_MEMORY_MB, 4000).  A
-# job starts on a host only when the host ledger every campaign charges
-# (run_engine.sh campaign_host_try_start, CAUSYNTH_HOST_LEDGER) has room for
-# its need, and it is charged there until it returns (a fanout ended before
-# leaves its charges to lapse with their lease), so no lift is ever run out
-# of memory by the jobs and the campaigns together.  A line may instead
-# start with "ADMIT_MB=<n> ": the job starts only where the ledger has room
-# for n, and holds no charge once it is launched -- a campaign head, whose
-# run_engine.sh reserves its own room (campaign_head_reserve) and charges
-# each step where it places it; a lifelong charge as well counted the same
-# room twice and starved the head's own steps (round HG2: two 8 GB head
-# charges per lift left 5.7 GB for 6-11 GB seed replays).
-# A job on this machine runs here, with no ssh.
-#
-# Job n writes <log-dir>/<n>.log and, once it returned, <log-dir>/<n>.exit
-# (its status); a line "<n> <host> exit=<status> <seconds>s" per finished job
-# goes to stdout.  A fanout started again over the same <log-dir> skips every
-# job with an .exit: it resumes.
 set -uo pipefail
 jobs_file=${1:?jobs file}
 log_dir=${2:?log dir}
 slots=${3:-8}
 checkout=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# The ledger's helpers, as the shell test takes them.
 # shellcheck source=../../run_engine.sh
 source "${checkout}/run_engine.sh"
 set +e
@@ -51,13 +27,6 @@ reap() {
     fi
   done
 }
-# A job no host has room for holds its need on the host with the most room,
-# as a waiting head step does (run_engine.sh campaign_head_hold_room): every
-# other start there counts the hold (campaign_host_head_room), so that host
-# drains as its starts return instead of a running campaign's pool taking each
-# freed slot first (round HI3, 2026-10-06: two of twenty queued campaigns
-# started in 25 minutes while two deep explorations kept ~600 obligations
-# queued).  The hold is the job's until a job starts, renewed while it waits.
 hold_job=""
 release_hold() {
   [[ -z "${campaign_head_hold}" ]] || rm -f -- "${campaign_head_hold}"
@@ -73,8 +42,6 @@ hold_room() {
   release_hold
   for host in "${hosts[@]}"; do
     (( running[$host] < slots )) || continue
-    # Another sweep's job holds this host: two holds on one host each count
-    # the other's, and neither job could ever start there.
     dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")/heads"
     ! compgen -G "${dir}/fanout.*.hold" >/dev/null || continue
     room=$(campaign_host_room "${host}") || continue
@@ -87,8 +54,6 @@ hold_room() {
   campaign_head_hold="${dir}/fanout.$(hostname -s).$$.$(date +%s).hold"
   printf '%s\n' "${need}" >"${campaign_head_hold}"
   hold_job=${next}
-  # Two sweeps that chose at once: the later name gives its hold up and
-  # chooses again at its next poll.
   local first
   first=$(compgen -G "${dir}/fanout.*.hold" | LC_ALL=C sort | head -n 1)
   [[ "${first}" == "${campaign_head_hold}" ]] || release_hold
@@ -99,7 +64,6 @@ job_need() {
     || need=${BASH_REMATCH[2]}
   printf '%s\n' "${need}"
 }
-# The job after the last one launched that has not returned yet.
 skip_returned() {
   while (( next < ${#commands[@]} )) && [[ -e "${log_dir}/${next}.exit" ]]; do
     next=$(( next + 1 ))
@@ -110,8 +74,6 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
   reap
   launched=0
   for host in "${hosts[@]}"; do
-    # The ledger charges a start at once, so a host takes jobs until its
-    # slots or its room run out.
     while (( next < ${#commands[@]} && running[$host] < slots )); do
       command=${commands[$next]}
       need=${JOB_MEMORY_MB:-4000}

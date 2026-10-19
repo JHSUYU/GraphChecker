@@ -8,23 +8,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * SYMBOL-SCOPE §4.2: a store read's door (a {@code DATA_FLOW} door) is asked
- * only where its fetch lies on the data flow.  The recording states each
- * decode with the occurrence that fetched it ({@link RecordedStore}); PLAN
- * takes the fetch's door to be the data-flow door call that occurrence made
- * last before the decode and after its store event before it, every marker
- * of that one call ({@code RuntimeSelectedRegionFinalizer#fetchDoor}), and
- * states the rest as woven but never asked.  A decode of a version its own
- * occurrence wrote fetched nothing.
- */
 public class StoreFetchDoorsTest {
-    /** A planned occurrence whose final basis is a door's -- a control
-     *  producer's or a store fetch's -- is doors-only; one a value rule
-     *  moved (a store item's sender, a wire's producer), or a target, is
-     *  not -- unless its region root is one the system declares heavy
-     *  (plan.DoorsOnlyRoots), a target's aside: then it is doors-only and
-     *  declared so. */
     @Test
     public void aDoorOccurrenceIsPlannedDoorsOnly() {
         Map<String, Map<String, Object>> instances = new LinkedHashMap<>();

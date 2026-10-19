@@ -2,14 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.Set;
 
-/**
- * CONTRACT-SPEC §4: one producer path's arm of a family,
- * {@code pi_q and guard_q and v_H(I) = e_q}.  {@code guardRoots} is the
- * roots the delivery holds under ({@code smt.Arms}): those {@code e_q}
- * names, every varied root, every root its replay ran concretely.
- * {@code attested} (IDENTITY §4): only a run with a recorded path
- * condition may carry a root move.
- */
 public final class Arm extends Value {
     private final String producerPathId;
     private final String piRef;
@@ -35,12 +27,10 @@ public final class Arm extends Value {
                 Fields.copy(guardRoots), attested);
     }
 
-    /** The roots the delivery holds under. */
     public Set<String> guardRoots() {
         return guardRoots;
     }
 
-    /** Whether the producer run recorded a path condition. */
     public boolean attested() {
         return attested;
     }

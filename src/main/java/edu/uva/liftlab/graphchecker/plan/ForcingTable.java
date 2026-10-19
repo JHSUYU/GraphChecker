@@ -13,50 +13,14 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * THE FORCING TABLE of the declared throw (PIPELINE §2, §5): for each branch
- * between the target region's entry and the throw, the arm that leads to the
- * throw, keyed by the branch site id the woven decision marker and every
- * DecisionRow name.  SEED states it on the TARGET_SITE row ({@code force}),
- * PLAN copies it onto the declared task's {@code targetBranch.force}, and a
- * forced replay ({@code runtime.ForcedArms}) forces those arms at the
- * declared occurrence.
- *
- * <p>The arms: each of the throw's guards at its fatal arm, each guard of
- * the {@code chain} at its arm toward the guard it controls, and the helper
- * branch arms that decide a guard on a helper's constant return
- * ({@code guardDeciders}): the arm whose verdict is the guard's wanted
- * arm, else the OPEN arm (it runs on to a value no constant states, where
- * the fatal may lie), nested deciders alike, each with its {@code via} as
- * SEED states it ({@link StaticScopeMap.Guard#via}: the method its helper
- * is called from, past synthetic hops; a decider is forced only in a call
- * from there).  A switch guard is not forced (the VM forces an if's arm only),
- * nor a fault call, which no branch decides: a forced world they take
- * elsewhere closes before its target, FORCE_DIVERGED.  A guard each of whose
- * arms reaches the throw within one iteration ({@code
- * StaticScopeMap.Guards#passable}: an {@code assert}'s {@code
- * $assertionsDisabled} test, the first test of {@code if (a || b) throw}),
- * and a decider neither of whose arms leaves the way, are stated {@code
- * passable} and never forced: forcing one against its concrete arm would put
- * {@code false} in the forced condition (that world cannot take it), while
- * either arm leads on to the branches that are forced.  The table is also the one
- * statement of the arm toward the throw COMPOSE asks whether a path left
- * the way at ({@code compose.RestsOn#wayGuard}).  Each TARGET_SITE row has
- * its own table, and a task carries its own target's.</p>
- */
 public final class ForcingTable {
     private ForcingTable() {
     }
 
-    /** One if to force, as the VM is asked it
-     *  ({@code System.forceNextConcolicBranch(jump)}). */
     public static final class Arm {
         public final String siteId;
-        /** Whether it jumps (true) or falls through. */
         public final boolean arm;
-        /** The method a decider's helper must be called from, or "". */
         public final String via;
-        /** Whether its other arm reaches the throw too: never forced. */
         public final boolean passable;
 
         Arm(String siteId, boolean arm, String via, boolean passable) {
@@ -84,9 +48,6 @@ public final class ForcingTable {
 
     private static final String PASSABLE = "passable";
 
-    /** SEED: the table of one TARGET_SITE, from its guards, chain and
-     *  deciders, the {@code passable} branches among them marked; a site
-     *  named twice keeps its first arm. */
     public static JsonArray of(StaticScopeMap.Site target,
                                Set<String> passable) {
         Map<String, Arm> table = new LinkedHashMap<String, Arm>();
@@ -112,7 +73,6 @@ public final class ForcingTable {
         return json;
     }
 
-    /** One guard, an if at its arm (a switch states none: not forced). */
     private static void branch(Map<String, Arm> table, String site,
                                Boolean arm, Set<String> passable) {
         if (arm != null && !table.containsKey(site)) {
@@ -120,18 +80,6 @@ public final class ForcingTable {
         }
     }
 
-    /**
-     * The decider arms of one guard that make it take {@code wanted}: per
-     * decider site the arm whose verdict is {@code wanted}, else its open
-     * arm; the deciders of the arm chosen, in turn, at that arm.  A decider
-     * neither of whose arms leaves the way -- each runs to a return whose
-     * verdict is {@code wanted}, or on to a value no constant states (an
-     * open arm) -- is {@code passable}, as a guard each of whose arms
-     * reaches the throw is: forcing it against its concrete arm would put
-     * {@code false} in the forced condition for an arm that leads on too.
-     * Each is forced in a call of its helper from its own {@code via}
-     * ({@link StaticScopeMap.Guard#via}, which SEED states).
-     */
     private static void deciders(Map<String, Arm> table,
                                  List<StaticScopeMap.Guard> deciders,
                                  boolean wanted) {
@@ -172,8 +120,6 @@ public final class ForcingTable {
         }
     }
 
-    /** A table as {@link #of} wrote it, by site, its passable rows
-     *  included; a row it cannot read is none. */
     public static Map<String, Arm> read(JsonElement json) {
         Map<String, Arm> table = new LinkedHashMap<String, Arm>();
         if (json == null || !json.isJsonArray()) return table;
@@ -192,17 +138,6 @@ public final class ForcingTable {
         return Collections.unmodifiableMap(table);
     }
 
-    /**
-     * PLAN: the table one declared occurrence is forced by.  Where the
-     * recording's occurrence entered the throw's method (it decided a branch
-     * there, {@code observed}), a caller's chain guard is left out: the run
-     * reaches the method by some call, and forcing the guard of another call
-     * into it would only divert it (solr-18413 FA1: two callers' guards,
-     * concrete, forced off the way the recording took into the method, and
-     * the forced condition was {@code false}).  The throw's method's own
-     * branches and the deciders (forced only in a call from their {@code
-     * via}) stay.
-     */
     public static JsonArray forOccurrence(JsonArray table, Set<String> throwMethods,
                                           Set<String> observed) {
         boolean entered = false;

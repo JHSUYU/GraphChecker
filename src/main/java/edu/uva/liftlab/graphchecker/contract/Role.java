@@ -2,20 +2,10 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.Locale;
 
-/**
- * CONTRACT-SPEC §1: the scope kind a lineage hop ran under, as the workload
- * declares it (no deployment vocabulary in engine code).  Only the engine's
- * own kinds are constants.  Never a thread id or name: those are timing
- * facts (IDENTITY §1).
- */
 public final class Role extends Value {
-    /** A hop this run could not attribute; the address says so. */
     public static final Role UNKNOWN = new Role("UNKNOWN");
-    /** The workload's own action: the root a request descends from. */
     public static final Role CLIENT = new Role("CLIENT");
-    /** Work a JDK executor ran, as the submission's own hop. */
     public static final Role EXECUTOR_TASK = new Role("EXECUTOR_TASK");
-    /** A turn of a timed-wait loop: its k counts the loop's wakes. */
     public static final Role WAKE = new Role("WAKE");
 
     private final String name;
@@ -24,10 +14,6 @@ public final class Role extends Value {
         this.name = name;
     }
 
-    /**
-     * The role one declared name spells, upper-cased over {@code [A-Z0-9_]}.
-     * Total, since it runs inside instrumentation; empty is {@link #UNKNOWN}.
-     */
     public static Role of(String declared) {
         String name = normalized(declared);
         if (name.isEmpty() || name.equals(UNKNOWN.name)) return UNKNOWN;
@@ -37,7 +23,6 @@ public final class Role extends Value {
         return new Role(name);
     }
 
-    /** The canonical spelling: part of every rendered causal context. */
     public String name() {
         return name;
     }

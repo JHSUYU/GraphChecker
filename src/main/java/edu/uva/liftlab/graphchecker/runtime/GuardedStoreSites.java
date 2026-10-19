@@ -20,35 +20,12 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * SEED's control-dependence answer ({@code static_scope_map.jsonl},
- * SYMBOL-SCOPE §3) installed as the VM's session table: a concrete store
- * starts a location's log only at a store site named here, once one of that
- * site's guard branches decided symbolically (VM §5.3); a store into an
- * already-tracked location is versioned anywhere.  Decides nothing itself.
- *
- * <p>A store site is what the VM can tell apart at the store: its method,
- * with the owner's dots made slashes, and what it stores -- {@code FIELD
- * a/b/C.f} for a field store, {@code CALL put} for a container mutation's
- * call.  Guard site ids ({@link edu.uva.liftlab.graphchecker.plan.SiteId#of})
- * go verbatim, and contain commas, hence tab-separated fields.</p>
- *
- * <p>Required: a missing table would silently mean no guarded concrete
- * mutation ever starts a log, so it is refused by name.</p>
- */
 final class GuardedStoreSites {
-    /** Names this epoch's scope map, read once for this table, for
-     *  {@link ClockLoops}, for the READ_SITE methods
-     *  ({@code RowPublication#installReadSites}) and for the message fields
-     *  a door walks ({@link MessageCodec#install}). */
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
-    /** SYMBOL-SCOPE §5.3:
-     *  {@code line ::= methodKey '\t' store ( '\t' guardSite )+}. */
     private static final char LINE = '\n';
     private static final char FIELD = '\t';
 
-    /** Store method, then its store site, then the site's guards. */
     private final Map<String, Map<String, Set<String>>> guardsBySite;
 
     private GuardedStoreSites(
@@ -56,11 +33,6 @@ final class GuardedStoreSites {
         this.guardsBySite = guardsBySite;
     }
 
-    /**
-     * Installs the epoch's table.
-     *
-     * @return "" once installed, else the diagnostic the session fails with
-     */
     static String install(ConcolicVmBroker api) {
         String declared = trimmed(System.getenv(PATH_ENVIRONMENT));
         if (declared.isEmpty()) {
@@ -90,7 +62,6 @@ final class GuardedStoreSites {
                     + failure.getClass().getName() + ": "
                     + failure.getMessage();
         }
-        // Every site here has a guard, so the VM must keep them all.
         if (installed != table.sites()) {
             return "GUARDED_STORE_SITES_INSTALL_REFUSED: the VM kept "
                     + installed + " of the " + table.sites()
@@ -105,8 +76,6 @@ final class GuardedStoreSites {
         Map<String, Map<String, Set<String>>> guardsBySite =
                 new LinkedHashMap<String, Map<String, Set<String>>>();
         for (JsonObject row : rows) {
-            // A field only its construction stores has nothing to re-pair:
-            // a concrete store into it starts no log (SYMBOL-SCOPE §5.1).
             if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
                     || !StaticScopeMap.WRITE_SITE.equals(
                             member(row, "role"))
@@ -125,7 +94,6 @@ final class GuardedStoreSites {
                             key -> new LinkedHashSet<String>());
             for (String guard : guards) {
                 if (guard.indexOf(LINE) >= 0 || guard.indexOf(FIELD) >= 0) {
-                    // Would make the VM read another string as a method.
                     throw new IllegalStateException("guard site id contains "
                             + "the table's field framing: " + guard);
                 }
@@ -168,12 +136,6 @@ final class GuardedStoreSites {
         return guards.size();
     }
 
-    /**
-     * What one store site stores, as the VM names it at the store: the call
-     * a container mutation makes ({@code CALL put}), else the field a
-     * putfield/putstatic writes ({@code FIELD a/b/C.f}, its declaring class
-     * internal).
-     */
     private static String store(JsonObject row, String siteId) {
         String callee = member(row, "declaredCallee");
         if (!callee.isEmpty()) {
@@ -196,7 +158,6 @@ final class GuardedStoreSites {
                 + field.name();
     }
 
-    /** One store method as the VM asks for it: owner in internal form. */
     private static String internalMethod(String vmSite, String siteId) {
         String stated = trimmed(vmSite);
         int owner = stated.indexOf('#');

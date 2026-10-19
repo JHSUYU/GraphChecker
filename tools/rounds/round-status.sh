@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# round-status.sh <round>: per started case, its age, current stage and seed-replay give-ups (or its verdict when done).
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 out=${GC_OUT}; round=$1; now=$(date +%s)

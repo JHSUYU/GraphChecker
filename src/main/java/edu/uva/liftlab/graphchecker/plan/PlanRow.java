@@ -6,21 +6,15 @@ import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** The one plan row shape; {@link RegionInstancePlan} and {@link ExecutionTask}
- *  are views of it. {@link #json()} is the live object: read-only once decoded.
- */
 public abstract class PlanRow {
     final JsonObject encoded;
     private final String label;
     private final List<ConfiguredSourcePhaseContract.Occurrence> phases;
 
-    /** {@code source} is owned outright; a decoder copies before calling. */
     PlanRow(JsonObject source, String label) {
         this(source, label, null);
     }
 
-    /** {@code decoded}: phases the caller already holds (one decode per row).
-     */
     PlanRow(JsonObject source, String label,
             List<ConfiguredSourcePhaseContract.Occurrence> decoded) {
         this.encoded = source;

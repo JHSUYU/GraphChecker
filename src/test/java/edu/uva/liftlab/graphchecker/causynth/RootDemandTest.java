@@ -17,10 +17,6 @@ import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * SYMBOL-SCOPE §4.6: where the target's path guards' values enter, nearest
- * boundary first, and which boundaries are chosen.
- */
 public class RootDemandTest {
     private static final String T = "t.T";
     private static final String CHECK = "<t.T: void check()>";
@@ -131,8 +127,6 @@ public class RootDemandTest {
         return region;
     }
 
-    /** A stub of the Soot side: a failing result at each File call, the
-     *  latent faults it is given, the woven door at HANDLE#u7. */
     private static final class Faults implements RootDemand.Faults {
         final List<RootDemand.Candidate> latent = new ArrayList<>();
         Map<String, Integer> stores;
@@ -166,14 +160,6 @@ public class RootDemandTest {
         return "<" + T + ": " + declared + ">";
     }
 
-    /**
-     * {@code check}'s guard at u9 reads a clock, the fields {@code count}
-     * (stored by {@code run}, under {@code flag}, and only where a call
-     * decided on {@code limit} 14 copies away let it), {@code name} ({@code
-     * run}), {@code old} (stored outside every region), an atomic, a
-     * stream, a map, another class of the system and {@code handle}'s
-     * formal; and, 17 copies away, another clock.
-     */
     private static List<Map<String, Object>> edges() {
         String z0 = CHECK + "::$z0";
         List<Map<String, Object>> edges = new ArrayList<>(Arrays.asList(
@@ -238,8 +224,6 @@ public class RootDemandTest {
         return edges;
     }
 
-    /** {@code t.T}'s constructor stores {@code flag} and {@code limit}
-     *  from a Configuration. */
     private static void scene(Map<String, List<String>> writers) {
         String conf = "org.apache.hadoop.conf.Configuration";
         JimpleScene.load(JimpleScene.OBJECT,

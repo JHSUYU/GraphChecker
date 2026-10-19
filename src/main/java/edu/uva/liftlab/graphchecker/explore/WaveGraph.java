@@ -25,14 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** G_k and its growth (PIPELINE §7.1, §7.8). {@code graph.jsonl.gz}: NODE
- *  per activated occurrence, EDGE per WIRE pairing or STATE join, with worlds
- *  ({@link ObligationFactory#worldDigest}), plus a FRONTIER diff; no THREAD
- *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: the
- *  occurrences the closure demands and no session captured ({@link
- *  ClosurePlanner.Plan#exposed}). */
 final class WaveGraph {
-    /** gzip: SGF8-adhoc-05 round 4's, 368 MB as text, is 10 MB. */
     static final String GRAPH = "graph.jsonl.gz";
     static final String GROWTH = "growth.jsonl";
 
@@ -48,9 +41,6 @@ final class WaveGraph {
     private WaveGraph() {
     }
 
-    /** Every admitted session's nodes and edges, each session's found and
-     *  its edges' ids digested on a core of its own ({@link Parallel#map}),
-     *  taken in the sessions' order. */
     static WaveGraph of(Corpus corpus) throws IOException {
         WaveGraph graph = new WaveGraph();
         List<SessionReader> admitted = new ArrayList<SessionReader>();
@@ -70,8 +60,6 @@ final class WaveGraph {
         return graph;
     }
 
-    /** What one admitted session states of the graph: its world, and its
-     *  WIRE pairings, then its STATE joins, in its rows' order. */
     private static final class Ran {
         final SessionReader session;
         final String world;
@@ -96,7 +84,6 @@ final class WaveGraph {
         }
     }
 
-    /** One pairing or join, with its interaction's id. */
     private static final class Edge {
         final InteractionKind kind;
         final Endpoint producer;
@@ -148,15 +135,12 @@ final class WaveGraph {
         edgeWorlds.get(edge.id).add(world);
     }
 
-    /** Writes {@code graph.jsonl.gz} with its FRONTIER against the previous
-     *  round's. */
     void write(Path roundDir, int round) throws IOException {
         Set<String> before = new LinkedHashSet<String>();
         if (round > 0) {
             Path previous = roundDir.resolveSibling(
                     String.format("obligations-%04d", round - 1))
                     .resolve(GRAPH);
-            // Its ids alone, each line parsed on a core (RowCodec#readEach).
             RowCodec.readEach(previous, row -> {
                 List<String> ids = new ArrayList<String>(1);
                 if (row.has("occurrenceId")) {
@@ -194,15 +178,6 @@ final class WaveGraph {
         RowCodec.writeJsonl(roundDir.resolve(GRAPH), rows);
     }
 
-    /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
-     *  closure grows ({@link ClosurePlanner.Plan#exposed}), one
-     *  DOORS_ONLY_UNPAUSED row per doors-only occurrence a value demand
-     *  reached ({@link ClosurePlanner.Plan#unpaused}: GROW drops its mark),
-     *  one UNPLANNED_INPUT row per marker invocation a flipped world added
-     *  ({@link ClosurePlanner#unplanned}), each naming the session whose
-     *  replay is re-run, if any, and its obligation, and the ZK_EDGE rows of
-     *  the store edges its replays ran past the ZooKeeper chain ({@link
-     *  ZkEdges}); returns the row count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
                            Map<OccurrenceAddress, String> unpaused,
@@ -232,12 +207,8 @@ final class WaveGraph {
         return rows.size();
     }
 
-    /** A growth row's kind for a doors-only occurrence a value demand
-     *  reached. */
     static final String DOORS_ONLY_UNPAUSED = "DOORS_ONLY_UNPAUSED";
 
-    /** One growth row of an occurrence; a session "" names no replay to
-     *  re-run. */
     private static JsonObject growthRow(String kind, Corpus corpus,
                                         OccurrenceAddress occurrence,
                                         String sessionId) {
@@ -253,7 +224,6 @@ final class WaveGraph {
         return row;
     }
 
-    /** A growth row's exposing session and its obligation. */
     private static JsonObject exposing(Corpus corpus, String sessionId) {
         SessionReader session = corpus.session(sessionId);
         JsonObject row = new JsonObject();

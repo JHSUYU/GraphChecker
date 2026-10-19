@@ -5,13 +5,10 @@ import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
-/** A Soot method signature, {@code <owner: ret name(p1,p2)>}, as the JVM
- *  spells it: the owner's internal name, the name, the descriptor. */
 final class JvmSignature {
     private JvmSignature() {
     }
 
-    /** {@code [owner, name, descriptor]}, or null for no method signature. */
     static String[] parse(String signature) {
         String text = signature == null ? "" : signature.trim();
         int colon = text.indexOf(": ");

@@ -1,18 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §2.2: a value a consumer endpoint took off the wire.
- * {@code symbol} is the handoff control {@code v_H}, minted at every declared
- * port; {@code arrival} is what arrived; {@code producer} is null only when
- * unpaired (IDENTITY §4).  {@code javaType} must equal every arm's
- * {@code e_q} descriptor in the family.  {@code pairedBy} names which key
- * paired it (not equal evidence, IDENTITY §4); null means unstated,
- * not unpaired.
- */
 public final class AttachRow extends Value {
-    /** Paired by the VM handle the export staged. */
     public static final String HANDLE = "HANDLE";
-    /** Paired by the message's correlation id and the port. */
     public static final String CORRELATION_PORT = "CORRELATION_PORT";
 
     private final String sessionId;
@@ -72,48 +61,38 @@ public final class AttachRow extends Value {
         return endpoint;
     }
 
-    /** The handoff control {@code v_H} minted at this attach. */
     public String symbol() {
         return symbol;
     }
 
-    /** The JVM descriptor {@code v_H} is declared with. */
     public String javaType() {
         return javaType;
     }
 
-    /** What arrived in this session. */
     public String arrival() {
         return arrival;
     }
 
-    /** Whether an obligation answered this attach instead of the arrival. */
     public boolean answered() {
         return answered;
     }
 
-    /** The answered value, or {@code null}. */
     public String answeredValue() {
         return answeredValue;
     }
 
-    /** The paired producer endpoint, or {@code null} when unpaired. */
     public Endpoint producer() {
         return producer;
     }
 
-    /** The exchange correlation id: the within-run pairing evidence. */
     public String correlationId() {
         return correlationId;
     }
 
-    /** {@link #HANDLE}, {@link #CORRELATION_PORT}, or {@code null}
-     *  (unstated). */
     public String pairedBy() {
         return pairedBy;
     }
 
-    /** The WIRE interaction this attach is the consumer half of, or null. */
     public Interaction interaction() {
         return producer == null ? null
                 : Interaction.of(InteractionKind.WIRE, producer, endpoint);

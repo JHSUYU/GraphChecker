@@ -23,40 +23,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-/**
- * The guard set of a site: the branches it is control-dependent on.  The one
- * guard computation in the engine.
- *
- * <p>SYMBOL-SCOPE §3: site {@code t} is control-dependent on branch {@code b}
- * when some successor of {@code b} is post-dominated by {@code t} and {@code
- * b} is not.  Unlike a may-reach rule, this keeps a branch both of whose arms
- * can reach the site but only one makes it unavoidable -- and so NAMES that
- * arm ({@link StaticScopeMap.Guard#outcome()}).</p>
- *
- * <p>The CFG is {@link BriefUnitGraph}: an exception edge would leave almost
- * nothing post-dominated.  The one exception it adds is a door fault a
- * handler catches ({@link FaultPropagation}): a call that can leave one to a
- * handler is a fault branch over the CFG with that edge, deciding the sites
- * only one of its exits reaches, with no boolean arm (its guard's outcome is
- * null) and no decision ever recorded at it -- a fault is flipped at its
- * marker ({@link MethodGuards}).  A door woven into the method itself (a
- * door at calls) throws to the handler from its marker branch, which is a
- * fault branch too, on its arm: otherwise the handler, now reached from
- * every exit of the calls before it, would be decided by nothing.</p>
- *
- * <p>Every index is the ORIGINAL one ({@link
- * CausynthPipeline#originalUnitIndex}), the numbering of every published site
- * id.  Trap: a woven body's POSITION is shifted by the inserted hooks; a woven
- * unit has no original index and is never a guard.</p>
- */
 public final class SiteControlDependence {
     private SiteControlDependence() {
     }
 
-    /**
-     * The guard sets of the given sites, from the live Scene.  A site with no
-     * body or unit answers empty, read as "no branch stated", not "unguarded".
-     */
     public static StaticScopeMap.Guards over(Collection<String> siteIds) {
         Map<String, MethodGuards> byMethod =
                 new LinkedHashMap<String, MethodGuards>();
@@ -99,12 +69,6 @@ public final class SiteControlDependence {
                 return found;
             }
 
-            /** The site's own and chain guards, and those of the calls
-             *  that run its method (the walk {@code targetChain} takes),
-             *  each of whose arms reaches the site -- or, in a caller, one
-             *  of its calls into the chain -- within one iteration
-             *  ({@link MethodGuards#passable}): a guard choosing WHICH call
-             *  runs the method ({@link #choosingCallsInto}) among them. */
             @Override
             public Set<String> passable(String siteId,
                                         Predicate<String> entry) {
@@ -157,9 +121,6 @@ public final class SiteControlDependence {
                 return found;
             }
 
-            /** A call's guards and theirs: in `if (a || b) return;
-             *  call();` the call is control-dependent on b alone, and b on
-             *  a. */
             private List<StaticScopeMap.Guard> deciding(String call) {
                 MethodGuards guards = guardsOf(SiteId.methodOf(call));
                 int unit = SiteId.unitIndexOf(call);
@@ -169,7 +130,6 @@ public final class SiteControlDependence {
                 return deciding;
             }
 
-            /** A caller's relation, built once. */
             private MethodGuards guardsOf(String caller) {
                 MethodGuards guards = callers.get(caller);
                 if (guards == null) {
@@ -188,8 +148,6 @@ public final class SiteControlDependence {
                 return new ArrayList<String>(found);
             }
 
-            /** The call sites that run {@code method}, {@link #CALL_DEPTH}
-             *  calls up, but none into a method {@code walked} refuses. */
             private List<String> callSitesInto(String method,
                                                Predicate<String> walked) {
                 if (calls == null) calls = CallSites.ofApplication();
@@ -223,15 +181,8 @@ public final class SiteControlDependence {
         };
     }
 
-    /** How many calls up the calls-into guards reach (the slice's
-     *  SeedBackwardStaticAnalyzer#ACTIVATION_DEPTH). */
     private static final int CALL_DEPTH = 3;
 
-    /**
-     * Where each method of the analysed program is called from: the call
-     * site ids, by callee, a virtual call counting for every override the
-     * hierarchy dispatches it to.
-     */
     private static final class CallSites {
         private final Map<String, List<String>> byCallee;
 
@@ -271,8 +222,6 @@ public final class SiteControlDependence {
             return new CallSites(byCallee);
         }
 
-        /** The methods one call may run; none when the hierarchy cannot
-         *  resolve it (a phantom supertype). */
         private static Collection<soot.SootMethod> targets(
                 soot.jimple.InvokeExpr call,
                 Map<soot.SootMethod, Collection<soot.SootMethod>> dispatched) {
@@ -303,17 +252,12 @@ public final class SiteControlDependence {
         }
     }
 
-    /** One unit's original index in its body ({@link
-     *  CausynthPipeline#originalUnitIndex}), or its position in a body never
-     *  woven. */
     static int originalIndex(Body body, Unit unit) {
         List<Unit> units = new ArrayList<Unit>(body.getUnits());
         return tagged(units) ? CausynthPipeline.originalUnitIndex(unit)
                 : units.indexOf(unit);
     }
 
-    /** Whether a weave tagged these units; an untagged body was never woven,
-     *  so its positions are the original indices. */
     private static boolean tagged(List<Unit> units) {
         for (Unit unit : units) {
             if (CausynthPipeline.originalUnitIndex(unit) >= 0) return true;
@@ -321,7 +265,6 @@ public final class SiteControlDependence {
         return false;
     }
 
-    /** {@link BriefUnitGraph}'s edges and the door faults' handler edges. */
     private static final class FaultGraph extends UnitGraph {
         FaultGraph(Body body, String method, FaultPropagation faults) {
             super(body);
@@ -337,7 +280,6 @@ public final class SiteControlDependence {
         }
     }
 
-    /** One CFG's post-dominance over some of its branches. */
     private static final class Relation {
         final UnitGraph cfg;
         final MHGPostDominatorsFinder<Unit> post;
@@ -349,8 +291,6 @@ public final class SiteControlDependence {
             this.branches = branches;
         }
 
-        /** The branches one of whose arms makes {@code site} run and which
-         *  {@code site} does not post-dominate. */
         List<Unit> deciding(Unit site) {
             List<Unit> found = new ArrayList<Unit>();
             for (Unit branch : branches) {
@@ -365,8 +305,6 @@ public final class SiteControlDependence {
             return found;
         }
 
-        /** The branches {@code site} is reachable from, by a proper subset
-         *  of their successors when {@code controllingOnly}. */
         List<Unit> reaching(Unit site, boolean controllingOnly) {
             List<Unit> found = new ArrayList<Unit>();
             for (Unit branch : branches) {
@@ -386,16 +324,6 @@ public final class SiteControlDependence {
             return found;
         }
 
-        /**
-         * Whether each arm of {@code branch} reaches one of {@code sites}
-         * within one iteration: the branch itself and every backedge -- an
-         * edge back into the loop's header ({@link #backedge}) -- are
-         * barriers.  An arm that comes back to the way only in the next
-         * iteration of an enclosing loop leaves it in this one ({@code
-         * if (first && !isActive) continue; if (!isLeader) continue; throw}:
-         * isActive's continue arm reaches the throw only through the
-         * header, in a turn where {@code first} is false).
-         */
         boolean passable(Unit branch, Collection<Unit> sites) {
             List<Unit> successors = cfg.getSuccsOf(branch);
             if (successors.size() < 2) return false;
@@ -424,24 +352,12 @@ public final class SiteControlDependence {
             return false;
         }
 
-        /**
-         * Whether {@code from -> to} closes a loop: a retreating edge of a
-         * depth-first walk from the method's entry -- over the CFG and from
-         * each unit to the handlers of its traps -- into a unit still on the
-         * walk's stack, the loop's header.  From the entry alone: a
-         * handler's first unit is a head of this CFG too (it has no
-         * exception edges), and dominance over every head would let a
-         * loop's latch, reached from a catch block as well, close no loop
-         * (solr-adhoc-07: ZkController$1.command's loop over descriptors,
-         * whose catch falls through to its {@code hasNext}).
-         */
         private boolean backedge(Unit from, Unit to) {
             if (backedges == null) backedges = retreating();
             Set<Unit> into = backedges.get(from);
             return into != null && into.contains(to);
         }
 
-        /** {@link #backedge}'s edges, by source, built at its first ask. */
         private Map<Unit, Set<Unit>> backedges;
 
         private Map<Unit, Set<Unit>> retreating() {
@@ -480,10 +396,6 @@ public final class SiteControlDependence {
             return found;
         }
 
-        /** A unit's successors on {@link #retreating}'s walk: its CFG's,
-         *  and the handlers of the traps it lies in, so a catch block is
-         *  walked inside the loop it catches for (a {@code continue} from
-         *  it back to the header closes the loop). */
         private List<Unit> walked(Unit unit, Map<Unit, List<Unit>> handlers) {
             List<Unit> handling = handlers.get(unit);
             if (handling == null) return cfg.getSuccsOf(unit);
@@ -492,7 +404,6 @@ public final class SiteControlDependence {
             return successors;
         }
 
-        /** Per unit, the handlers of the traps whose range holds it. */
         private static Map<Unit, List<Unit>> handlers(Body body) {
             Map<Unit, List<Unit>> found = new LinkedHashMap<Unit, List<Unit>>();
             for (soot.Trap trap : body.getTraps()) {
@@ -508,7 +419,6 @@ public final class SiteControlDependence {
             return found;
         }
 
-        /** Reachability within one occurrence: the branch is a barrier. */
         private boolean reachesWithoutRevisiting(Unit start, Unit site,
                                                  Unit branch) {
             Set<Unit> seen = new LinkedHashSet<Unit>();
@@ -524,21 +434,11 @@ public final class SiteControlDependence {
         }
     }
 
-    /**
-     * One method's control dependence, built once; callers keep it.  Two
-     * relations: the branches' over {@link BriefUnitGraph}, and, when a call
-     * of the method can leave a door fault to a handler, the fault branches'
-     * over the {@link FaultGraph}.  A fault branch adds to a site's guards,
-     * never takes a branch's place: the branches deciding the call decide
-     * the site through it, so a recorded branch is never hidden behind a
-     * call no decision is recorded at.
-     */
     public static final class MethodGuards {
         private final String method;
         private final Map<Unit, Integer> original;
         private final Map<Integer, Unit> byIndex;
         private final Relation plain;
-        /** Null when no call of the method leaves a fault to a handler. */
         private final Relation faults;
         private final Map<Integer, List<StaticScopeMap.Guard>> cache =
                 new LinkedHashMap<Integer, List<StaticScopeMap.Guard>>();
@@ -555,13 +455,10 @@ public final class SiteControlDependence {
             this.byIndex = byIndex;
         }
 
-        /** The relation of one method, or an empty one with no body. */
         public static MethodGuards of(String method) {
             return of(method, FaultPropagation.current());
         }
 
-        /** The relation of one method over a fault model: the slice's, or
-         *  the root demand's latent one. */
         static MethodGuards of(String method, FaultPropagation raised) {
             Body body = CausynthStaticFacts.activeBody(
                     CausynthStaticFacts.method(method));
@@ -585,10 +482,6 @@ public final class SiteControlDependence {
             }
             UnitGraph cfg = new BriefUnitGraph(body);
             List<Unit> branches = new ArrayList<Unit>();
-            // A call that can leave a door fault to a handler of the method,
-            // and the branch an in-method throw one catches stands on (a
-            // woven throw's marker, a failing result's test): its arm
-            // reaches the handler only over the fault graph.
             List<Unit> faultBranches = new ArrayList<Unit>();
             for (Unit unit : units) {
                 if (original.get(unit).intValue() < 0) continue;
@@ -608,13 +501,10 @@ public final class SiteControlDependence {
                     original, byIndex);
         }
 
-        /** The unit at an ORIGINAL index, or null. */
         Unit unit(int unitIndex) {
             return byIndex.get(Integer.valueOf(unitIndex));
         }
 
-        /** Whether a fault caught by one of {@code handlers} makes the unit
-         *  at {@code unitIndex} unavoidable, over the fault graph. */
         boolean caughtLeadsTo(Collection<Unit> handlers, int unitIndex) {
             Unit site = unit(unitIndex);
             if (faults == null || site == null) return false;
@@ -624,7 +514,6 @@ public final class SiteControlDependence {
             return false;
         }
 
-        /** The branches the unit at this ORIGINAL index depends on. */
         public List<StaticScopeMap.Guard> at(int unitIndex) {
             List<StaticScopeMap.Guard> cached = cache.get(
                     Integer.valueOf(unitIndex));
@@ -634,12 +523,6 @@ public final class SiteControlDependence {
             return computed;
         }
 
-        /**
-         * The guards of the unit's guards, and theirs, each on its arm toward
-         * the guard it controls: every decision an occurrence takes on its way
-         * to the unit, outermost last, the unit's own guards excluded.  A
-         * guard met twice (a loop's) is named once.
-         */
         public List<StaticScopeMap.Guard> chain(int unitIndex) {
             List<StaticScopeMap.Guard> direct = at(unitIndex);
             Set<String> named = new LinkedHashSet<String>();
@@ -661,18 +544,6 @@ public final class SiteControlDependence {
             return Collections.unmodifiableList(chain);
         }
 
-        /**
-         * Of the guards and chain of the units at these ORIGINAL indices,
-         * those each of whose arms reaches one of the units within one
-         * iteration ({@link Relation#passable}), so neither arm leaves the
-         * way to them: an {@code assert}'s {@code $assertionsDisabled} test,
-         * a chain guard on its skip arm while its other arm reaches the unit
-         * through the assert's own test; the first test of a throw's {@code
-         * if (a || b)}, whose healthy arm reaches it through {@code b} (a
-         * FORCE run leaves it to its operands, {@code
-         * runtime.ForcedArms#reachedTarget}); in a caller, a guard choosing
-         * which of its calls into the throw's method runs.
-         */
         public Set<String> passable(Collection<Integer> unitIndices) {
             Set<String> found = new LinkedHashSet<String>();
             if (plain == null) return found;
@@ -698,15 +569,6 @@ public final class SiteControlDependence {
             return found;
         }
 
-        /**
-         * Every branch from which the unit at this ORIGINAL index is
-         * reachable, and every fault branch with the branches it is
-         * reachable from.  SCOPE for widening the slice, not a guard set: it
-         * names no arm and decides nothing.
-         *
-         * @param controllingOnly keep a branch only when a proper subset of
-         *                        its successors reaches the site
-         */
         public List<Integer> reaching(int unitIndex,
                                       boolean controllingOnly) {
             String key = unitIndex + (controllingOnly ? "|c" : "|r");
@@ -742,8 +604,6 @@ public final class SiteControlDependence {
                     new ArrayList<StaticScopeMap.Guard>();
             addGuards(site, named, found);
             for (Unit branch : faultClosure(site, null)) {
-                // A call has no arm; a marker branch its arm toward the
-                // handler, over the fault graph.
                 if (named.add(siteOf(branch))) {
                     found.add(new StaticScopeMap.Guard(siteOf(branch),
                             reachingArm(faults, branch, site)));
@@ -753,7 +613,6 @@ public final class SiteControlDependence {
             return Collections.unmodifiableList(found);
         }
 
-        /** The plain relation's guards of {@code site}, each on its arm. */
         private void addGuards(Unit site, Set<String> named,
                                List<StaticScopeMap.Guard> found) {
             for (Unit branch : plain.deciding(site)) {
@@ -768,10 +627,6 @@ public final class SiteControlDependence {
             }
         }
 
-        /**
-         * The fault branches {@code site} depends on, and theirs: deciding
-         * it (post-dominance, {@code controllingOnly} null) or reaching it.
-         */
         private List<Unit> faultClosure(Unit site, Boolean controllingOnly) {
             List<Unit> closure = new ArrayList<Unit>();
             if (faults == null) return closure;
@@ -796,8 +651,6 @@ public final class SiteControlDependence {
             return SiteId.of(method, original.get(unit).intValue());
         }
 
-        /** The arm of an if that makes {@code site} unavoidable over the
-         *  relation's graph, or null. */
         private static Boolean reachingArm(Relation relation, Unit branch,
                                            Unit site) {
             if (!(branch instanceof IfStmt)) return null;

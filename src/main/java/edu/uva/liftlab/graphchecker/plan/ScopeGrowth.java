@@ -33,63 +33,10 @@ import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-/**
- * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2.4),
- * over the classes of the lineage roots:
- * <ul>
- *   <li>a {@link ScopeFrontier#CALLEE} of a type of the roots (the platform's
- *       types are the VM's to model): the class whose body it runs -- for an
- *       abstract one, the class each implementation inherits it from, unless
- *       that body only returns constants;</li>
- *   <li>a {@link ScopeFrontier#FIELD}: its owner and, unless the field is
- *       private or final, every class storing it; a static final field is a
- *       constant, no state;</li>
- *   <li>a {@link ScopeFrontier#FORMAL}: every class calling the method.</li>
- * </ul>
- * A row the root demand found where a local file fault could stand ({@code
- * demand} IO: a call into the system that escapes before a demanded store,
- * or that a handler deciding a demanded site catches) takes the class whose
- * body runs the called method only when that body itself calls a demanded
- * door's anchor ({@link LibraryCatalog#demandedDoor}), listed as {@value
- * #IO} in the manifest; any other is skipped, named in the summary.
- * A codec's class is the wire, never scope ({@link #codec}: the library
- * catalog's {@code CODEC} rows, protobuf's runtimes and the messages
- * generated on them, SolrJ's JavaBin): a value crosses a serialization
- * through its doors' staged exports, never the codec's internals, and a
- * codec grown into scope makes every encode and decode in the cluster a
- * writer region (solr-bugs-reindex-cleanup SB2: JavaBinCodec, grown as the
- * body of ZkNodeProps#load's JavaBin branch, 68 % of a 6.5 GB recording).
- * Rows are taken
- * in the frontier's order -- the root demand's first, then nearest first
- * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
- * each class taken
- * is copied into the grown directory and listed in its {@value #MANIFEST}
- * with the row that took it.
- *
- * <p>Before the first pass and after every growth, outside the budget,
- * {@value #DOORS} takes the class family (the class and its nested classes)
- * of every library catalog door ({@link LibraryCatalog}) the analysis scope
- * calls: a class of the scope or of what it grew, outside the family,
- * invokes a method of it.  A class of the roots the scope never reached
- * (hadoop-common's ZooKeeper elector in every HDFS case) brings no door.  The
- * family is copied from the first of the roots and the classpath holding it
- * -- a library jar (ZooKeeper) as well as the system's own classes -- unless
- * the scope holds it.  A door at every call of its anchor has no family: the
- * scope's own callers hold it.</p>
- *
- * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
- * <scope-dir> <class-root>...}, or {@code ScopeGrowth --doors <grown-dir>
- * <scope-dir> <classpath> <class-root>...}.  Prints the number of classes it
- * added, then what it did.</p>
- */
 public final class ScopeGrowth {
-    /** The grown classes and why, one {@code class<TAB>kind<TAB>signature
-     *  <TAB>distance} line each, in the order they were taken. */
     public static final String MANIFEST = "GROWN";
-    /** The door step's flag, and the kind of its manifest lines. */
     static final String DOORS = "--doors";
     private static final String DOOR = "DOOR";
-    /** The root demand's class of a row where a file fault could stand. */
     private static final String IO = "IO";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
@@ -166,9 +113,6 @@ public final class ScopeGrowth {
                 + "file operation of their own: " + noFileOperation));
     }
 
-    /** Whether the body {@code name} has for the method {@code signature}
-     *  names calls a demanded door's anchor itself: a local file operation
-     *  a door could stand at once it is analysed. */
     boolean callsFileOperation(String name, String signature) {
         ClassFacts facts = classes.get(name);
         Matcher member = METHOD.matcher(signature);
@@ -189,15 +133,12 @@ public final class ScopeGrowth {
         return false;
     }
 
-    /** The door step ({@value #DOORS}): one decision per family, in catalog
-     *  order. */
     private static void doors(String[] args) throws IOException {
         if (args.length < 5) {
             throw new IllegalArgumentException("usage: ScopeGrowth " + DOORS
                     + " <grown-dir> <scope-dir> <classpath> <class-root>...");
         }
         Path grown = Paths.get(args[1]);
-        // The callers asked about are the analysis scope's classes.
         ScopeGrowth index = new ScopeGrowth();
         index.scan(Paths.get(args[2]));
         index.scan(grown);
@@ -209,12 +150,6 @@ public final class ScopeGrowth {
         Set<String> present = new LinkedHashSet<>(
                 classNames(Paths.get(args[2])));
         present.addAll(classNames(grown));
-        // A family the system placed a door in after its own hook is its
-        // transport, whatever the scope calls: the request a command in scope
-        // sends through layers out of it (Solr's RESTORECORE, through the
-        // shard handler) is that family's (SYMBOL-SCOPE §4.2), its other
-        // doors with it.  A library's family joins where a class of the scope
-        // calls into it.
         Set<String> placed = new LinkedHashSet<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
             if (!door.atCalls() && door.relocated != null) {
@@ -224,7 +159,6 @@ public final class ScopeGrowth {
         Set<String> decided = new LinkedHashSet<>();
         List<String> taken = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
-            // A door at calls is woven in the scope's own callers.
             if (door.atCalls()) continue;
             String family = door.family();
             if (!decided.add(family) || present.contains(family)
@@ -242,7 +176,6 @@ public final class ScopeGrowth {
                 + (taken.size() == 1 ? "y" : "ies") + " added: " + taken);
     }
 
-    /** Whether a class scanned outside {@code family} calls into it. */
     boolean called(String family) {
         String nested = family + "$";
         for (ClassFacts caller : classes.values()) {
@@ -260,8 +193,6 @@ public final class ScopeGrowth {
         return false;
     }
 
-    /** Copies a class and its nested classes from the first entry holding
-     *  it into {@code grown}; their names, none when no entry holds it. */
     static List<String> copyFamily(String family, List<Path> search,
                                    Path grown) throws IOException {
         String outer = family.replace('.', '/') + ".class";
@@ -316,7 +247,6 @@ public final class ScopeGrowth {
         return names;
     }
 
-    /** A classpath's entries, a {@code dir/*} as its jars in name order. */
     private static List<Path> classpath(String classpath) throws IOException {
         List<Path> entries = new ArrayList<>();
         for (String entry : classpath.split(Pattern.quote(
@@ -352,7 +282,6 @@ public final class ScopeGrowth {
                 StandardOpenOption.APPEND);
     }
 
-    /** The classes of the roots one frontier row reaches, in name order. */
     Set<String> resolve(String kind, String signature) {
         Set<String> found = new TreeSet<>();
         Matcher member = (ScopeFrontier.FIELD.equals(kind) ? FIELD : METHOD)
@@ -400,7 +329,6 @@ public final class ScopeGrowth {
         }
         for (ClassFacts candidate : classes.values()) {
             if (!subtype(candidate.name, owner)) continue;
-            // The body it runs is the nearest superclass declaring it.
             for (ClassFacts at = candidate; at != null;
                  at = classes.get(at.superclass)) {
                 if (!at.bodies.containsKey(key)) continue;
@@ -416,8 +344,6 @@ public final class ScopeGrowth {
         return (access & flags) == flags;
     }
 
-    /** Whether a body touches nothing but the constants it loads (null: it
-     *  touches state or calls). */
     private boolean constantBody(Set<String> statics) {
         if (statics == null) return false;
         for (String field : statics) {
@@ -429,7 +355,6 @@ public final class ScopeGrowth {
         return true;
     }
 
-    /** Whether {@code name} is {@code ancestor} or below it in the roots. */
     private boolean subtype(String name, String ancestor) {
         Set<String> seen = new LinkedHashSet<>();
         List<String> pending = new ArrayList<>(Collections.singleton(name));
@@ -443,8 +368,6 @@ public final class ScopeGrowth {
         return false;
     }
 
-    /** A codec's class: it or a supertype is one a catalog CODEC row names
-     *  ({@link LibraryCatalog#codecClasses}). */
     boolean codec(String name) {
         Set<String> seen = new LinkedHashSet<>();
         List<String> pending = new ArrayList<>(Collections.singleton(name));
@@ -487,24 +410,16 @@ public final class ScopeGrowth {
         return names;
     }
 
-    /** What one class file states: its supertypes, the methods it has a
-     *  body for, its fields, and the fields it stores and methods it calls. */
     private static final class ClassFacts extends ClassVisitor {
         final Path file;
         final Path relative;
         String name = "";
         String superclass = "";
         final List<String> supertypes = new ArrayList<>();
-        /** {@code name(paramType,...)} of every concrete method, to the
-         *  static fields it loads -- null once it touches anything else. */
         final Map<String, Set<String>> bodies = new LinkedHashMap<>();
-        /** Every field it declares, with its access flags. */
         final Map<String, Integer> fields = new LinkedHashMap<>();
-        /** {@code owner|field} of every field it stores. */
         final Set<String> stores = new LinkedHashSet<>();
-        /** {@code owner|name(paramType,...)} of every method it calls. */
         final Set<String> calls = new LinkedHashSet<>();
-        /** The same, by the calling method's {@code name(paramType,...)}. */
         final Map<String, Set<String>> callsBy = new LinkedHashMap<>();
 
         ClassFacts(Path file, Path relative) {

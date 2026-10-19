@@ -39,47 +39,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * An obligation's question: build its query, solve it, say what the replay
- * must apply.  Every obligation one host's workers ask within an
- * exploration, over the corpus as it read it ({@link Service}); or one
- * flip's hard-lane ask, over its first ask's query alone ({@link #decide}).
- *
- * <pre>
- *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
- *   --z3-room-mb &lt;n&gt;         what the JVM's charge holds for its z3
- *                             processes, a question's two engines half
- *                             each ({@code smt.Z3}); required
- *   a host's share of the questions:
- *   --sessions &lt;dir&gt;          the corpus the exploration has landed so far
- *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
- *                             declaration the round was planned under
- *   --serve &lt;dir&gt;             answer the questions put there, each into its
- *                             own output directory (obligation_result.jsonl,
- *                             obligation.jsonl, obligation_query.smt2,
- *                             gaps.jsonl, focused_task.jsonl, the schedule
- *                             cut, the pairings' expected_edges.jsonl,
- *                             question.txt or question.asked, and a first
- *                             ask undecided at its budget its {@link
- *                             HardAsk}), until none has come for
- *   --idle-seconds &lt;n&gt;
- *   --retire-past-mb &lt;n&gt;     or until a question needs a corpus of more
- *                             than n MB of session files, which the heap it
- *                             was started at does not hold (0: never)
- *   --seats &lt;n&gt;              the questions it answers at once (1); their
- *                             z3s share the JVM's room, --z3-room-mb, each
- *                             question's runs as in a room of its own of
- *   --question-room-mb &lt;n&gt;   (--z3-room-mb when not given)
- *   or one flip's hard-lane ask, no corpus read ({@link #decide}):
- *   --decide &lt;worker&gt; --obligations &lt;file&gt; --obligation-id &lt;id&gt;
- * </pre>
- *
- * <p>Queries are independent: a question's files are the same whichever
- * questions the JVM answered before it or answers beside it, the ones a JVM
- * of its own reading that corpus writes ({@link Corpus#asking}).  The verdict
- * is always written: UNSAT and NOT_ADMITTED are terminal outcomes the next
- * round reads, never a run failure.</p>
- */
 public final class ObligationSolverMain {
     private ObligationSolverMain() {
     }
@@ -123,48 +82,6 @@ public final class ObligationSolverMain {
         throw new IllegalArgumentException("--serve or --decide is required");
     }
 
-    /**
-     * A host's answers for one exploration.  The corpus is read when the
-     * first question is taken, and read again only when a question's round
-     * was planned over a session the read did not hold (its {@link
-     * #ROUND_CORPUS}, the sessions that still stand of it), or a session the
-     * read held has left the corpus: a round's question needs no session
-     * that landed after the round was planned, and sessions land every few
-     * seconds while a re-read costs 10-16 s (solr-adhoc-39 PV7, 208
-     * sessions; read again after every landing, a host's solver re-read
-     * before nearly every question).  A read takes every session that
-     * stands then, those the read before held from it, unread ({@link
-     * Corpus#read(Path, Path, Corpus, java.util.Collection)}); otherwise the
-     * question starts from the corpus as read.  Either way it is asked in a
-     * state of its own over the corpus ({@link Corpus#asking}), and its
-     * files are the ones a JVM of its own, reading that corpus, would
-     * write.  A read past {@code
-     * retirePastBytes} of session files (0: none) is not made: the question
-     * is given back ({@link Service.Outgrown}) for a solver sized anew.
-     *
-     * <p>SEVERAL AT ONCE ({@code --seats}, {@link Service#serve}): the
-     * corpus is read, and read again, by one question at a time, under the
-     * answerer's lock, and each question solves over the corpus it read or
-     * found read, beside the others -- a read builds a new corpus from the
-     * one before and changes nothing of it ({@link Corpus#read(Path, Path,
-     * Corpus, java.util.Collection)}), so a question still solving over the
-     * one before is undisturbed -- in a state of its own over it, what a JVM
-     * of its own would start the question with ({@link Corpus#asking}); its
-     * z3s take their turns in the JVM's room ({@link Z3.Rooms}), each run in
-     * slots of half a question's room, as alone.</p>
-     *
-     * <p>THE CORPUS STANDS WITHOUT WHAT GROW WITHDREW ({@link #standing}),
-     * and a read is of whole sessions: GROW's swaps withdraw sessions while
-     * solvers serve ({@code run_engine.sh campaign_stream_swap}), each named
-     * in {@link SessionDir#WITHDRAWN} before its directory leaves.  A session the
-     * journal names once the read is done -- or one gone under it, failing
-     * the read -- may have been read in part (a file missing reads as no
-     * rows), and the corpus is read again without it; a session leaves once
-     * and never returns, so one still unnamed after the read stood whole
-     * while it was read.  The journal, not the listing, says what left: a
-     * peer's listing of the directory may be its NFS client's, up to a
-     * minute old, while a file's open reads it as the head closed it.</p>
-     */
     private static Service.Answerer answerer(Path sessions,
                                              Path rootDomains, Path z3,
                                              long timeoutMillis,
@@ -173,10 +90,7 @@ public final class ObligationSolverMain {
                                              long retirePastBytes) {
         Path iteration = sessions.getParent();
         return new Service.Answerer() {
-            /** The corpus as last read; guarded by this answerer. */
             private Corpus corpus;
-            /** Each session the corpus was read from -> its files' bytes;
-             *  guarded by this answerer. */
             private final Map<String, Long> read =
                     new HashMap<String, Long>();
 
@@ -186,7 +100,6 @@ public final class ObligationSolverMain {
                 Path obligations = Paths.get(JsonFields.primitiveString(
                         question, "obligations"));
                 Corpus asked = current(question, obligations);
-                // A flip the hard lane found sat, finished with its model.
                 String decided = JsonFields.optionalString(question,
                         "decided");
                 HardAsk.Model model = decided.isEmpty() ? null
@@ -197,8 +110,6 @@ public final class ObligationSolverMain {
                         model));
             }
 
-            /** The corpus this question solves over: as read, or read
-             *  again first (one reader at a time). */
             private synchronized Corpus current(JsonObject question,
                                                 Path obligations)
                     throws Exception {
@@ -223,8 +134,6 @@ public final class ObligationSolverMain {
                                     + "the " + (retirePastBytes >> 20)
                                     + " MB its heap was started for");
                         }
-                        // A read GROW withdrew a session under keeps the
-                        // others, whole, for the next.
                         corpus = Corpus.read(iteration, rootDomains, corpus,
                                 standing);
                         return reading;
@@ -265,13 +174,10 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** One read of the corpus: the sessions {@code standing} in it. */
     interface Reading<T> {
         T read(List<String> standing) throws Exception;
     }
 
-    /** What {@link #readWhole} read, the sessions withdrawn under its reads
-     *  and how many times it read again. */
     static final class Whole<T> {
         final T read;
         final Set<String> left;
@@ -284,14 +190,6 @@ public final class ObligationSolverMain {
         }
     }
 
-    /**
-     * A read of the sessions standing, {@code now} first, whole: read again,
-     * of what stands then, while {@link SessionDir#WITHDRAWN} names a session of the
-     * read once it is done, or one it read when it failed (a session gone
-     * under it; a failure no withdrawal explains is thrown).  A session
-     * leaves once, named first, and never returns, so a read none of whose
-     * sessions the journal names after it read each one whole.
-     */
     static <T> Whole<T> readWhole(Path sessions, List<String> now,
                                   Reading<T> reading) throws Exception {
         Path iteration = sessions.getParent();
@@ -318,22 +216,13 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** Whether a corpus read from the sessions {@code read} lacks one the
-     *  {@code round} needs, or holds one that is no longer standing {@code
-     *  now}. */
     static boolean stale(Set<String> read, List<String> now,
                          List<String> round) {
         return !read.containsAll(round) || !now.containsAll(read);
     }
 
-    /**
-     * The sessions a round was planned over, beside its obligations
-     * ({@code run_engine.sh campaign_stream_round_start}).
-     */
     static final String ROUND_CORPUS = "corpus.txt";
 
-    /** Of the sessions standing {@code now}, those the round of {@code
-     *  obligations} was planned over; all of them where it names none. */
     static List<String> round(Path obligations, List<String> now)
             throws IOException {
         Path named = obligations.resolveSibling(ROUND_CORPUS);
@@ -350,9 +239,6 @@ public final class ObligationSolverMain {
         return standing;
     }
 
-    /** The bytes of one session's files as read: its rows' decoded text
-     *  ({@link ArtifactIO#decodedSize}), what a heap holds of them, as the
-     *  shell sizes a solver ({@code run_engine.sh campaign_rows_bytes}). */
     private static long bytes(Path session) throws IOException {
         long bytes = 0L;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(session)) {
@@ -365,8 +251,6 @@ public final class ObligationSolverMain {
         return bytes;
     }
 
-    /** The session directory names of a corpus, sorted, but those GROW
-     *  withdrew ({@link SessionDir#WITHDRAWN}). */
     static List<String> standing(Path sessions) throws IOException {
         List<String> names = new ArrayList<String>();
         try (DirectoryStream<Path> entries =
@@ -382,7 +266,6 @@ public final class ObligationSolverMain {
         return names;
     }
 
-    /** The round's row of one obligation. */
     private static Obligation proposal(Path obligations, String obligationId)
             throws IOException {
         Obligation proposal = null;
@@ -397,26 +280,11 @@ public final class ObligationSolverMain {
         return proposal;
     }
 
-    /**
-     * THE HARD LANE: one flip's ask at the full budget, z3 alone, over the
-     * query its first ask published and the record beside it ({@link
-     * HardAsk}), in a JVM that reads no corpus -- or no z3 at all where the
-     * record's store holds an answer to the text, and a decided one is kept
-     * there ({@link Solved}).  Its answer is mapped as the
-     * corpus's ask maps one ({@code ObligationFactory#settled}) and published
-     * into the worker as that ask publishes it: UNSAT settling its question,
-     * or no verdict by name.  A sat answer leaves its model ({@link
-     * HardAsk.Model}) and no answer: its host's solver finishes the flip.  A
-     * record of another obligation or another query is refused by name
-     * ({@link #HARD_ASK_MISMATCH}), with no z3 run.
-     */
     static void decide(Path obligations, String obligationId, Path worker,
                        Path z3, long timeoutMillis, int z3RoomMb)
             throws IOException {
         Obligation proposal = proposal(obligations, obligationId);
         HardAsk ask = HardAsk.read(worker.resolve(HardAsk.FILE));
-        // The query is streamed to z3, never held: a query past tens of MB
-        // held twice over (its text and its body) outgrew the JVM's heap.
         Path query = worker.resolve(QUERY);
         byte[] suffix = Z3.modelQuery("", ask.modelSymbols)
                 .getBytes(StandardCharsets.UTF_8);
@@ -441,12 +309,10 @@ public final class ObligationSolverMain {
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
         Z3 solver = new Z3(z3, budget, z3RoomMb);
-        // Kept by its text, its answer is the store's (Solved): no z3 run.
         Z3.Answer answer = Solved.at(ask.solved).answer(ask.querySha256,
                 ask.modelSymbols, () -> solver.ask(
                         output -> body(query, body, output),
                         ask.modelSymbols, false));
-        // The query stays as its first ask published it.
         ObligationFactory.Outcome settled = ObligationFactory.settled(ask,
                 answer, budget, solver, null);
         if (settled == null) {
@@ -460,7 +326,6 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** The first {@code body} bytes of the query file, written out. */
     private static void body(Path query, long body, java.io.Writer output)
             throws IOException {
         try (java.io.Reader in = new java.io.InputStreamReader(
@@ -518,7 +383,6 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** The first {@code limit} bytes of a stream. */
     private static final class LimitedInput extends java.io.FilterInputStream {
         private long left;
 
@@ -544,20 +408,12 @@ public final class ObligationSolverMain {
         }
     }
 
-    /** A hard-lane record that does not belong to its worker's query. */
     static final String HARD_ASK_MISMATCH = "HARD_ASK_MISMATCH";
 
-    /** The query a worker's ask published. */
     static final String QUERY = "obligation_query.smt2.gz";
 
-    /** A flip's focus row: the session its path ran in, by which a replay
-     *  owed on a path whose session GROW withdrew is dropped ({@code
-     *  run_engine.sh campaign_stream_replay_drop}). */
     static final String PATH_SESSION = "pathSessionId";
 
-    /** Solves one published obligation over the corpus of {@code
-     *  iteration} and writes every artifact of it; {@code decided}, the
-     *  hard lane's model of its flip, finishes it without z3's verdict. */
     public static JsonObject solve(Corpus corpus, Path iteration,
                                    Path obligations, String obligationId,
                                    Path out, Path z3, long timeoutMillis,
@@ -568,9 +424,6 @@ public final class ObligationSolverMain {
                 decided));
     }
 
-    /** {@link #solve(Corpus, Path, Path, String, Path, Path, long, int,
-     *  HardAsk.Model)} with the question's solver, inside its question
-     *  ({@link Corpus#asking}). */
     static JsonObject solve(Corpus corpus, Path iteration, Path obligations,
                             String obligationId, Path out, Z3 solver,
                             HardAsk.Model decided) throws IOException {
@@ -582,8 +435,6 @@ public final class ObligationSolverMain {
         ObligationFactory.Candidate candidate =
                 ObligationFactory.locate(corpus, proposal);
         if (candidate == null) {
-            // The path is gone from the corpus: this obligation's own admission
-            // gap.
             return publish(out, proposal,
                     ObligationResult.of(obligationId,
                             Verdict.NOT_ADMITTED, "",
@@ -597,9 +448,6 @@ public final class ObligationSolverMain {
                                     + "not hold")), null);
         }
         OccurrenceAddress declared = declaredTarget(obligations);
-        // What the replay is given besides the corpus, as the question
-        // keys it: the declared occurrence, and the plan generation its
-        // class tree is woven from (GROW appends to the plan and re-weaves).
         Path plan = iteration.resolve(PLAN);
         String given = "declared " + (declared == null ? ""
                 : declared.render()) + "\nplan " + (Files.isRegularFile(plan)
@@ -610,28 +458,19 @@ public final class ObligationSolverMain {
         if (!outcome.issued()) {
             JsonObject published = publish(out, proposal, outcome.result,
                     outcome.smt2, outcome.gaps, null);
-            // Undecided at its budget: what its hard-lane ask reads.
             if (outcome.owed != null) {
                 outcome.owed.write(out.resolve(HardAsk.FILE));
             }
-            // Last: a verdict that settles its question says so only once
-            // it is written.
             if (outcome.settles) {
                 ask(out.resolve(ObligationDir.QUESTION), outcome.question);
             }
             return published;
         }
-        // The schedule half of the world (SchedulePrefix), followed only up
-        // to the first occurrence the world's pairings reorder. Mints are
-        // listed, not derived: one whole-workload run can focus several
-        // occurrences so each root is planted where it is minted.
         List<String> cutAt = targetOccurrences(candidate);
         cutAt.addAll(outcome.holding.reordered);
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
                 candidate.path.sessionId, cutAt, outcome.holding.cutBefore,
                 true, out);
-        // The pairings, held and compared as CONFIRM's edges are
-        // (runtime.Confirmation).
         if (!outcome.holding.edges.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(Confirmation.FILE),
                     outcome.holding.edges);
@@ -642,24 +481,14 @@ public final class ObligationSolverMain {
                 outcome.obligation, outcome.inheritedFlips,
                 outcome.clockDeltas, outcome.rootMints, outcome.pairings,
                 cut);
-        // An open decider arm's flip: its replay may refute its world
-        // (FocusedReplay#refuted).
         if (outcome.openArm) focus.addProperty(FocusedReplay.OPEN_ARM, true);
         focus.addProperty(PATH_SESSION, candidate.path.sessionId);
         JsonObject published = publish(out, outcome.obligation,
                 outcome.result, outcome.smt2, outcome.gaps, focus);
-        // Asked, and settled only by what its replay decides: its worker
-        // makes it the settled question then (run_engine.sh
-        // campaign_obligation_replay).
         ask(out.resolve(ObligationDir.QUESTION_ASKED), outcome.question);
         return published;
     }
 
-    /**
-     * A FORCE run's worker (PIPELINE §7.10): no query; the replay is the
-     * seed's world held to the seed's schedule up to the declared
-     * occurrence, whose branches the focus row's {@code force} has forced.
-     */
     private static JsonObject force(Corpus corpus, Path iteration,
                                     Path obligations, Obligation proposal,
                                     Path out) throws IOException {
@@ -686,13 +515,11 @@ public final class ObligationSolverMain {
                 ForcedFlip.FORCE + ": the recording's world, the declared "
                         + "occurrence's branches forced to the throw"), "",
                 Collections.<GapRow>emptyList(), focus);
-        // Named by its flip, as a flip's question is (ForcedFlip#flip).
         ask(out.resolve(ObligationDir.QUESTION_ASKED), ForcedFlip.flip(proposal)
                 + ":" + ForcedFlip.FORCE + " " + proposal.obligationId());
         return published;
     }
 
-    /** The iteration's task plan, which GROW appends to. */
     private static final String PLAN = "execution_task_plan.jsonl";
 
     private static void ask(Path file, String question) throws IOException {
@@ -700,11 +527,6 @@ public final class ObligationSolverMain {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The case's declared occurrence, as the wave planned it: the one anchor
-     * {@code explore_manifest.json} resolved beside the wave's obligations
-     * (a selector or {@code first} already resolved), or null.
-     */
     private static OccurrenceAddress declaredTarget(Path obligations)
             throws IOException {
         Path manifest = obligations.resolveSibling(
@@ -716,10 +538,6 @@ public final class ObligationSolverMain {
                 ? OccurrenceAddress.parse(anchors.get(0).getAsString()) : null;
     }
 
-    /** Where the prefix is cut: the TARGET (flip occurrence, focus, factor),
-     *  not where a value is planted. Trap: cutting at an early mint lets
-     *  daemons run free and the target occurrence may never run (hdfs-17967
-     *  path B). */
     private static List<String> targetOccurrences(
             ObligationFactory.Candidate candidate) {
         List<String> ids = new ArrayList<String>();
@@ -728,7 +546,6 @@ public final class ObligationSolverMain {
         return ids;
     }
 
-    /** A task's: its focus and factor. */
     private static List<String> targetOccurrences(Task task) {
         List<String> ids = new ArrayList<String>();
         ids.add(task.focused().id());
@@ -736,10 +553,6 @@ public final class ObligationSolverMain {
         return ids;
     }
 
-    /** Writes the verdict row, the obligation, the query (always) and the
-     *  focus row ({@code focus} null: an empty file). The focus row is {@code
-     *  focused_task.jsonl}, never {@code execution_task_plan.jsonl}: that name
-     *  is decoded as a PLAN {@code ExecutionTask} by the session opener. */
     private static JsonObject publish(Path out, Obligation obligation,
                                       ObligationResult result, String smt2,
                                       List<GapRow> gaps, JsonObject focus)
@@ -755,8 +568,6 @@ public final class ObligationSolverMain {
         RowCodec.writeAll(out.resolve(ObligationDir.GAPS),
                 ExploreMain.distinct(new ArrayList<GapRow>(gaps)),
                 RowCodec::writeGap);
-        // Always written -- but by a hard-lane ask (null), which keeps its
-        // first ask's: an UNSAT query is the one a reader most needs.
         if (smt2 != null) {
             Files.write(out.resolve(QUERY), ArtifactIO.gzip((smt2.isEmpty()
                     ? "; no query was encoded: " + result.verdict() + " "

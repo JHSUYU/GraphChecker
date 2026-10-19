@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-# build.sh <tree> [<test class>#<test method>...] -- an HDFS tree built for
-# GraphChecker, then the named workloads run once natively: a case's
-# classpath is read off its workload's surefire report (system.sh
-# system_classpath), so every case a tree serves needs its test run there
-# once after a build.
-#
-# GraphChecker's plain jar, from this checkout's target/ (run `mvn package`
-# first), is installed into the tree's own Maven repository: the tree's
-# hadoop-common, hadoop-hdfs-client and hadoop-hdfs compile against it
-# (provided).  The launcher puts the run's frozen jar ahead of the tree's
-# classpath, so the installed one only has to compile the tree.  Then
-# hadoop-hdfs and every module it needs are built (-am), Java 8, by the
-# tree's own Maven repository: no tree installs into ~/.m2, where it would
-# change the jars every other tree resolves.
-#
-#   MAVEN_REPO_LOCAL  the tree's Maven repository
-#                     (default $GC_M2/<tree's directory name>)
-#   SKIP_TREE_BUILD=1 only run the workloads (the tree is built)
 set -euo pipefail
 
 tree=$(cd "${1:?usage: build.sh <tree> [<class>#<method>...]}" && pwd -P)
@@ -45,10 +27,6 @@ if [[ "${SKIP_TREE_BUILD:-0}" != 1 ]]; then
 fi
 (($# > 0)) || exit 0
 
-# One surefire run for every workload, grouped by class: -Dtest=A#m1*+m2*,B#m3*
-# (a parameterized method m[k] runs as m*, every invocation; surefire takes
-# the simple class name).  A test that fails natively still writes its
-# report; whether each one passed is printed below.
 declare -A methods=() seen=()
 for spec in "$@"; do
   class=${spec%%#*}

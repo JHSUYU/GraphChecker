@@ -7,16 +7,10 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * The question {@code (r,c)} at any index: a context's shape over the
- * senders of its anchors, and when two occurrences are the same question.
- */
 public class ContextShapeTest {
     private static final Map<String, ContextShape.Stance> SENDERS =
             new HashMap<String, ContextShape.Stance>();
     static {
-        // dn0 served balancer's request e1, which the balancer sent under
-        // its balance-block request
         SENDERS.put("e1", ContextShape.Stance.ofSend(
                 "c/balancer#epoch0|Root:CLIENT/balance-block#3"));
         SENDERS.put("e2", ContextShape.Stance.ofSend(

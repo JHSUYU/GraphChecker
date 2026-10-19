@@ -30,27 +30,12 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-/**
- * The end of a run: its settle gives up only on a grace in which nothing
- * moved, and an activation stranded there is settled in one step, its own
- * terminal still finding it; and the end halts its JVM once it has written
- * what it owes, whatever the workload's teardown would still do.
- */
 public class EndOfRunTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
-    /** How long a workload JVM may take to end: its start and its end,
-     *  never a teardown that does not return. */
     private static final long END_SECONDS = 60L;
 
-    /**
-     * A decided focused replay ends at once and is collected with its
-     * verdict, though its cluster would never let its JVM go (a shutdown
-     * hook that never returns, PV7-adhoc-38's Jetty, and a non-daemon
-     * thread): the run's end closes the session -- its verdict rows in it
-     * -- then states the verdict to its worker, whole, and halts.
-     */
     @Test
     public void aDecidedReplayEndsAtOnceWithItsVerdictBehindItsClosedSession()
             throws Exception {
@@ -74,8 +59,6 @@ public class EndOfRunTest {
         List<JsonObject> rows = RowCodec.readJsonl(statement);
         assertEquals(1, rows.size());
         assertEquals("OB", rows.get(0).get("obligationId").getAsString());
-        // The session it names was closed with its verdict rows before the
-        // statement; one naming none was withdrawn under the worker first.
         String session = rows.get(0).get("sessionId").getAsString();
         Path closed = session.isEmpty()
                 ? only(worker.resolve("refused-sessions"))
@@ -108,10 +91,6 @@ public class EndOfRunTest {
                         ObligationDir.REPLAY_VERDICT)));
     }
 
-    /**
-     * The recording and a native reproduction end the same way: the trace
-     * is flushed and closed, its manifest CLOSED, before the halt.
-     */
     @Test
     public void aRecordingEndsAtOnceWithItsTraceClosed() throws Exception {
         Path trace = folder.newFolder("trace").toPath();
@@ -129,12 +108,6 @@ public class EndOfRunTest {
                 trace.resolve("window_ms")));
     }
 
-    /**
-     * A native reproduction its bound kills, never reaching its run's end,
-     * keeps every plant row it stated: answer.json is read off them
-     * ({@code run_engine.sh campaign_reproduce_run}), and no hook of the
-     * engine's flushes its trace any more.
-     */
     @Test
     public void aKilledNativeRunKeepsItsPlantRows() throws Exception {
         Path trace = folder.newFolder("native").toPath();
@@ -148,7 +121,6 @@ public class EndOfRunTest {
             }
             Thread.sleep(50L);
         }
-        // The bound's TERM, then its KILL: its teardown holds it meanwhile.
         jvm.destroy();
         if (!jvm.waitFor(2L, TimeUnit.SECONDS)) jvm.destroyForcibly();
         jvm.waitFor(END_SECONDS, TimeUnit.SECONDS);
@@ -157,12 +129,6 @@ public class EndOfRunTest {
                 StandardCharsets.UTF_8).contains(RecordingPlant.FATAL));
     }
 
-    /**
-     * A JVM told to end before its run did (the worker's bound, the
-     * workload's own System.exit) states nothing: what its shutdown left is
-     * no run that ended by itself, and a statement the worker finds is a
-     * decided end's.
-     */
     @Test
     public void aJvmToldToEndBeforeItsRunStatesNothing() throws Exception {
         Path worker = folder.newFolder("told").toPath();
@@ -182,17 +148,6 @@ public class EndOfRunTest {
         assertTrue(log(worker).contains("was told to end"));
     }
 
-    /**
-     * One workload JVM's end, as {@link #workload} starts it: whose
-     * cluster never lets go -- a shutdown hook that never returns and a
-     * non-daemon thread -- so only a halt ends it.  {@code replay}: a
-     * focused replay's session, then the run's end; {@code recording}: one
-     * trace row, then the end; {@code window}: a replay's window opened and
-     * closed, then a teardown that never ends; {@code told}: the JVM's
-     * shutdown begun (a
-     * System.exit) before the run's end; {@code native}: one plant row,
-     * then never an end.
-     */
     public static final class Workload {
         public static void main(String[] args) throws Exception {
             CountDownLatch shuttingDown = new CountDownLatch(1);
@@ -233,13 +188,11 @@ public class EndOfRunTest {
                 try {
                     Thread.sleep(Long.MAX_VALUE);
                 } catch (InterruptedException ignored) {
-                    // A cluster that never lets go.
                 }
             }
         }
     }
 
-    /** {@link Workload} in a JVM of its own, its files in {@code dir}. */
     private static Process workload(String kind, Path dir,
                                     String... properties) throws Exception {
         List<String> command = new ArrayList<>(Arrays.asList(
@@ -264,7 +217,6 @@ public class EndOfRunTest {
         return builder.start();
     }
 
-    /** The exit status of a workload JVM that ended in time. */
     private static int ended(Process jvm, Path dir) throws Exception {
         if (!jvm.waitFor(END_SECONDS, TimeUnit.SECONDS)) {
             jvm.destroyForcibly();
@@ -280,7 +232,6 @@ public class EndOfRunTest {
                 StandardCharsets.UTF_8) : "(no log)";
     }
 
-    /** The one entry of {@code dir}. */
     private static Path only(Path dir) throws Exception {
         File[] entries = dir.toFile().listFiles();
         assertTrue("one entry in " + dir, entries != null
@@ -288,7 +239,6 @@ public class EndOfRunTest {
         return entries[0].toPath();
     }
 
-    /** A focus row: flip one decision of an occurrence of TASK.1. */
     private static String focusRow() {
         String focus = "hdfs/dn0#epoch0/region/REGION.1/ctx:Root:TICK#1/idx:"
                 + "<a.B: void run()>@0";
@@ -302,7 +252,6 @@ public class EndOfRunTest {
                 + "\"rootMints\":{}}";
     }
 
-    /** TASK.1, one planned occurrence of REGION.1. */
     private static JsonObject taskRow() {
         JsonObject encoded = new JsonObject();
         encoded.addProperty("taskId", "TASK.1");

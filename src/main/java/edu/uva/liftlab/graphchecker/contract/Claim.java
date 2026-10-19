@@ -3,12 +3,6 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.List;
 import java.util.Map;
 
-/**
- * CONTRACT-SPEC §4: the conclusion, with what it took and what it stepped
- * over.  {@code polarityDecides} separates an explanation from a formula
- * that was always satisfiable.  Gaps travel with the claim so no report
- * states it without them.
- */
 public final class Claim extends Value {
     private final ClaimKind kind;
     private final int valuationOrdinal;
@@ -38,17 +32,14 @@ public final class Claim extends Value {
         return kind;
     }
 
-    /** Which enumerated valuation carried the claim; 0 is the recorded one. */
     public int valuationOrdinal() {
         return valuationOrdinal;
     }
 
-    /** Root symbol to the value the witness moved it to. */
     public Map<String, String> movedRoots() {
         return movedRoots;
     }
 
-    /** Whether the seed disjunct is unsat at the recorded valuation. */
     public boolean polarityDecides() {
         return polarityDecides;
     }

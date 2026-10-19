@@ -1,19 +1,5 @@
-# system.sh -- the Hadoop system: HDFS MiniDFSCluster trees, built by
-# Maven, their workload classpath read off the surefire report.  Sourced by
-# lib/case-env.sh before a case's case.sh.
-#
-# A Hadoop case.sh may also set
-#   cluster_automatic   true for a cluster test of the tree as it is written:
-#                       every MiniDFSCluster it builds is made reproducible,
-#                       registered whole and opens the window by itself
-#                       (CausynthCluster#AUTOMATIC)
 
 cluster_automatic=
-# THE block-key family's shared scope: the SASL data-transfer handshake and
-# the block-token key managers every case of the family turns on, and the IPC
-# client whose propagation calls the causal context travels on.  A case adds
-# only what is its own.  The Hadoop shim is not here: it is GraphChecker's
-# jar, not a class of the tree.
 blockkey_scope=(
   common:org/apache/hadoop/ipc/Client
   common:org/apache/hadoop/security/token/delegation/DelegationKey
@@ -28,11 +14,7 @@ blockkey_scope=(
   hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
   hdfs:org/apache/hadoop/hdfs/security/token/block/ExportedBlockKeys
 )
-# The launcher supplies the frozen GraphChecker jar ahead of the tree's
-# classpath, whose shim entry it replaces.
 system_jar_first=true
-# The tree's own sources, as "<root>:<tree-relative source dir>": where
-# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
   hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
@@ -42,9 +24,6 @@ system_paths() {
   module=${repo}/hadoop-hdfs-project/hadoop-hdfs
   report=${module}/target/surefire-reports/TEST-${test_class}.xml
   test_classes=${module}/target/test-classes
-  # The lineage scope is the whole tree's, whatever the case analyses
-  # (plan.LineageScan): a thread start or queue handoff in a class outside
-  # the analysis scope is still where a thread's cause comes from.
   lineage_roots="${repo}/hadoop-common-project/hadoop-common/target/classes:${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes:${module}/target/classes"
 }
 
@@ -69,10 +48,6 @@ system_build() {
   bash "${system_dir}/build.sh" "${repo}" "${test_class}#${test_method}"
 }
 
-# MiniDFSCluster puts its name directories, edit logs and block data under
-# test.build.data; a test unpacks its stored images and storage directories
-# from test.cache.data, which Hadoop's surefire sets to the module's test
-# classes (TestDatanodeLayoutUpgrade's hadoop-24-datanode-dir.tgz).
 system_jvm_properties() {
   jvm_properties=("-Dtest.build.data=$2" "-Dtest.cache.data=${test_classes}")
   [[ "${cluster_automatic}" != true ]] \

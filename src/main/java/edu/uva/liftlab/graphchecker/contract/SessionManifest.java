@@ -13,31 +13,10 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-/**
- * CONTRACT-SPEC §2.1: the role one session states it ran as ({@code
- * manifest.json}, written when the session opens) -- the only answer to
- * "which session is the recording".  Never inferred from activations: a
- * FOCUSED replay that activated nothing is still FOCUSED.  At the run's end
- * it also counts the region entries unnamed work made, by {@code
- * <node>/region/<regionId>}: each opened no occurrence (IDENTITY §1), so no
- * row of the session states what ran there; and it states what a declared
- * root was read at where the replay minted none ({@link #concreteReadings})
- * and which declared roots held a value computed from others where it read
- * them ({@link #derivedRoots}), the names its nodes had only in this
- * run ({@link #runSpellings}), the occurrences it ran for their doors
- * alone ({@link #doorsOnly}), and the hand-off tasks that served a queue
- * ({@link #servingTasks}).  Schema 2; a manifest of another schema is
- * refused.
- */
 public final class SessionManifest {
-    /** What a session ran as: the recording, one counterfactual of it, or
-     *  the recording's world with the declared occurrence's branches
-     *  forced to the throw (PIPELINE §7.10), whose rows are read only as
-     *  its forced path. */
     public enum Role { SEED, FOCUSED, FORCED }
 
     public static final String KIND = "SESSION_MANIFEST";
-    /** The schema this contract reads and writes. */
     public static final int SCHEMA = 2;
 
     private final String sessionId;
@@ -78,7 +57,6 @@ public final class SessionManifest {
                 new TreeSet<String>(serving));
     }
 
-    /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
     public static SessionManifest of(String sessionId, Role role,
                                      List<String> obligationIds) {
         List<String> ids = new ArrayList<String>();
@@ -98,7 +76,6 @@ public final class SessionManifest {
                 Collections.<String>emptySet());
     }
 
-    /** This manifest, with what only the run's end can state. */
     public SessionManifest atClose(Map<String, Integer> entries,
                                    Map<String, Map<String, String>> readings,
                                    Set<String> derived,
@@ -119,70 +96,34 @@ public final class SessionManifest {
                 serving == null ? Collections.<String>emptySet() : serving);
     }
 
-    /**
-     * The rendered occurrences this replay ran for their doors alone (a
-     * control producer's or a store fetch's task, {@code
-     * RuntimeSelectedRegionFinalizer#DOORS_ONLY}): their guards and roots ran
-     * paused, so this session captured no value of them ({@code
-     * explore.ClosurePlanner#plan}).
-     */
     public Set<String> doorsOnly() {
         return doorsOnly;
     }
 
-    /**
-     * The hand-off tasks of this run that served a queue: the {@code
-     * ActivationRow#threadKey} of each task an executor handed to a worker
-     * of its own whose thread took work another thread started while it ran
-     * -- an update queue's item, polled by a ConcurrentUpdate client's
-     * Runner.  Held where it runs, such a task holds what is queued behind
-     * it, so its activations are held at the send that started them ({@code
-     * ActivationRow#heldWhereItRuns}).  Stated at the close: a task's rows
-     * are written at its activations' entries, before the loop's takes.
-     * None in a manifest from before this field, or of a run that did not
-     * close.
-     */
     public Set<String> servingTasks() {
         return servingTasks;
     }
 
-    /**
-     * Root id -> rendered occurrence -> the value a declared source held
-     * when this replay first read it there, at an occurrence it ran
-     * concretely and so minted no root for (CONTRACT-SPEC §2.1): what that
-     * occurrence's rows were computed from, though no symbol stands for it.
-     */
     public Map<String, Map<String, String>> concreteReadings() {
         return concreteReadings;
     }
 
-    /**
-     * The declared roots whose source already carried an expression where
-     * this replay read it (a field computed from a clock's reading, say): a
-     * value moved by other inputs, so no reading of it, anywhere, is the
-     * root's own.
-     */
     public Set<String> derivedRoots() {
         return derivedRoots;
     }
 
-    /** The names this run's nodes had only in it, each standing for its
-     *  node ({@link RunSpellings}); none where the run did not close. */
     public RunSpellings runSpellings() {
         return runSpellings;
     }
 
-    /** Whether this session states it is the recording. */
     public boolean seed() {
         return role == Role.SEED;
     }
 
-    /** Whether this session states it ran forced (PIPELINE §7.10). */
     public boolean forced() {
         return role == Role.FORCED;
     }
 
-    /** The obligations this replay was handed, in the focus row's order. */
     public List<String> obligationIds() {
         return obligationIds;
     }
@@ -238,8 +179,6 @@ public final class SessionManifest {
         return json;
     }
 
-    /** Reads one manifest; another schema, or an absent or unknown role, is
-     *  refused, never SEED. */
     public static SessionManifest fromJson(JsonObject json) {
         int schema = JsonFields.optionalInteger(json, "schemaVersion", -1);
         if (schema != SCHEMA) {

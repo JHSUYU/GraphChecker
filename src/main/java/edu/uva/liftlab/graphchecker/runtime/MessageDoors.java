@@ -26,79 +26,26 @@ import java.util.function.Supplier;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * THE message doors a system's transports call, whatever the system: a
- * request or a response leaves (outbound) carrying the sender's GraphChecker
- * context and the symbolic values it exports, and arrives (inbound) where the
- * receiver installs them for as long as it serves that message.  Its values
- * are the ports the thread staged: a declared row's, and the message fields
- * of the protobuf message the door is handed, which the door walks
- * ({@link MessageCodec}); a message parsed inside the exchange is walked
- * again ({@link #parsed}), binding each element to it.  Plus the workload's
- * side of attribution: nodes and their aliases, request scopes, the
- * recorded window, daemon ticks and scopes carried across a queue.
- *
- * <p>A transport keeps only what is its own: where its header travels (a
- * Hadoop RPC header field, an HTTP header), how it names an exchange (its
- * correlation id) and which half a message is.  The Hadoop shim ({@code
- * org.apache.hadoop.ipc.CausynthMessagePropagation}: IPC, the SASL exchange
- * and the DataTransfer ops) and the Solr trees (HTTP) call this class.</p>
- *
- * <p>One inbound exchange per thread: installing the next one ends the one
- * before it, and so does an outbound message, whose sender is no longer
- * serving what it received.</p>
- */
 public final class MessageDoors {
     public static final String REQUEST = "REQUEST";
     public static final String RESPONSE = "RESPONSE";
 
     private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
 
-    /**
-     * What each version of a shared store carried when it was written
-     * ({@link #stored}), by transport and key.  The store is the nodes' own
-     * (ZooKeeper, in a cluster that runs in one JVM): the table is its
-     * metadata, not a channel of the engine's.
-     */
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
-    /** Each node's view and version a decode re-pointed it to, once,
-     *  inside the window or before it ({@link #decode}). */
     private static final Set<String> REPOINTED =
             ConcurrentHashMap.newKeySet();
-    /**
-     * The writes to a shared store in flight ({@link #storing}), by
-     * transport and token.  Guarded by itself; every {@link #storeEnded}
-     * notifies the reads waiting on it ({@link #filed}).
-     */
     private static final Map<String, Map<Long, Write>> STORING =
             new HashMap<String, Map<Long, Write>>();
     private static final AtomicLong STORES = new AtomicLong();
-    /**
-     * How long a read waits for the writes in flight to file its version,
-     * in ms, while none of them is filing: a write before its store's call
-     * may be one the schedule holds behind the reader, which would
-     * otherwise wait for the watchdog.
-     */
     static final long FILED_WAIT_MS = 2000L;
 
-    /**
-     * How long a read waits, in ms, while a write in flight is filing
-     * ({@link #stored} began: past its store's call, it takes no turn before
-     * it files).  Filing exports the document's leaves under the VM, which
-     * takes seconds (solr-18413 Z2V: the Overseer queue item MigrateCmd
-     * wrote, read 2 s into its filing, paired with no write, and the chain
-     * from the clock to the fatal broke there).
-     */
     static final long FILING_WAIT_MS = 60000L;
 
-    /** One write in flight: the thread making it and the location it
-     *  writes. */
     private static final class Write {
         private final Thread thread;
         private final String location;
-        /** Whether {@link #stored} registered it: past its store's call,
-         *  filing ({@link #FILING_WAIT_MS}). */
         private final boolean filing;
 
         private Write(Thread thread, String location, boolean filing) {
@@ -107,52 +54,21 @@ public final class MessageDoors {
             this.filing = filing;
         }
 
-        /**
-         * Whether a version read at {@code path} may be this write's: the
-         * location itself, or a child named by its prefix -- a sequential
-         * create's, whose name the store completes -- never a deeper one.
-         */
         private boolean makes(String path) {
             return path.equals(location) || path.startsWith(location)
                     && path.indexOf('/', location.length()) < 0;
         }
     }
 
-    /**
-     * While the thread runs a store's notification ({@link #notified}): its
-     * kind until a read names its cause, {@code null} after (and outside).
-     */
     private static final ThreadLocal<String> NOTIFIED = new ThreadLocal<>();
-    /**
-     * How many store notifications this thread is delivering ({@link
-     * #notified}), for the whole callback: a publication on it is a
-     * notification's, which a pairing's hold may defer ({@link
-     * #publishing}).  Unlike {@link #NOTIFIED}, which the callback's first
-     * read of its cause clears, it stands until the callback returns.
-     */
     private static final ThreadLocal<Integer> DELIVERING =
             ThreadLocal.withInitial(() -> 0);
-    /**
-     * How many notifications of one kind on one node have read each version
-     * ({@link #fetched}).  Two watchers of one kind on one node both parse a
-     * version (Solr registers a StateWatcher per refresh): the second parse
-     * was the first's address, so the plan kept one, and SOLR-18413's leader
-     * read the objects of the parse no replay recorded.
-     */
     private static final Map<String, Integer> DELIVERIES =
             new ConcurrentHashMap<String, Integer>();
 
     private MessageDoors() {
     }
 
-    /**
-     * One message leaves: its trace context and the symbolic values the
-     * sender exported (the ports a {@code WIRE_FLOW} row declares), to
-     * travel with it.
-     *
-     * @param scope the scope the work carries ({@link #captureScope}), or
-     *              {@code null} for the calling thread's own
-     */
     public static Outbound outbound(String transport, String correlationId,
                                     String attemptId, String half,
                                     Object localOwner, Object scope) {
@@ -160,11 +76,6 @@ public final class MessageDoors {
                 scope, "", null);
     }
 
-    /**
-     * The same, the message leaving with the protobuf {@code message} it
-     * carries: the door walks it, every message field's value carried
-     * ({@link MessageCodec#send}).
-     */
     public static Outbound outbound(String transport, String correlationId,
                                     String attemptId, String half,
                                     Object localOwner, Object scope,
@@ -173,14 +84,6 @@ public final class MessageDoors {
                 scope, "", message);
     }
 
-    /**
-     * One request leaves naming the operation it asks for ({@code verb}, a
-     * constant its door reads off the request: a Hadoop RPC's protocol and
-     * method), so its producer endpoint and its SEND are that operation's
-     * (IDENTITY §4): a DataNode turn that sends a heartbeat before a block
-     * report, where the recorded turn sent the report alone, no longer gives
-     * the heartbeat the report's identity (hdfs-adhoc-15).
-     */
     public static Outbound outboundRequest(String transport,
                                            String correlationId,
                                            String attemptId,
@@ -195,7 +98,6 @@ public final class MessageDoors {
                                  Object localOwner, Object scope,
                                  String verb, Object message) {
         try {
-            // Staged before the door files what the message carries.
             MessageCodec.send(message);
             String trace = CausynthTraceRecorder.outboundExchange(transport,
                     correlationId, attemptId, half, localOwner, scope,
@@ -210,21 +112,6 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * A request of {@code transport} starts on this thread, at its client's
-     * invoke point, before the client's call.  A RESPONSE the thread
-     * received is over: the request is the thread's own work, not that
-     * response's (round SL1-3, hdfs-adhoc-52: every request the test made
-     * stood on the previous response's anchor, chaining each NameNode
-     * context onto every earlier exchange), as a node startup or a daemon's
-     * turn ends what it served ({@link #beginTick}).  A REQUEST the thread
-     * serves stands: a handler's nested call is its call's.  The request is
-     * in hand, named by {@code verb}, attempt {@code attempt} of it (a retry
-     * of one call), in a level of its own counted per verb ({@code
-     * Identity#requestStarting}).
-     *
-     * @return what {@link #requestEnded} takes, in a finally
-     */
     public static long requestStarting(String transport, String verb,
                                        int attempt) {
         try {
@@ -238,34 +125,15 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * A client's call starts on this thread whose requests start below it
-     * ({@link #requestStarting}): a cloud client's attempt at one call,
-     * which it routes over its nodes' clients and may hand to its pool.  A
-     * RESPONSE the thread received is over, as at a request's start, so
-     * neither the routing nor the work it hands off stands on the last
-     * response the thread read (round SG1, solr-adhoc-13: a cloud client's
-     * parallel updates stood on the response to its previous attempt, and
-     * the replay's timing had another response read last).
-     */
     public static void callStarting() {
         Inbound served = CURRENT.get();
         if (served != null && RESPONSE.equals(served.half)) endInbound();
     }
 
-    /** The request {@link #requestStarting} began is over, answered or
-     *  failed ({@code Identity#requestEnded}). */
     public static void requestEnded(long request) {
         guarded("requestEnded", null, () -> Identity.requestEnded(request));
     }
 
-    /**
-     * One message arrives: ends the exchange the thread was serving and
-     * installs this one.
-     *
-     * @param keepSymbolic keep the values earlier messages of the same
-     *                     multi-message exchange carried (a SASL handshake)
-     */
     public static Inbound inbound(String trace, String symbolic,
                                   String transport, String correlationId,
                                   String attemptId, String half,
@@ -283,8 +151,6 @@ public final class MessageDoors {
                                    String transport, String correlationId,
                                    String attemptId, String half,
                                    Object localOwner, boolean keepSymbolic) {
-        // Every receipt ends the request this thread had in hand, whether or
-        // not it carries a context (Identity#requestInHand).
         Identity.requestInHand("");
         endInbound(!keepSymbolic);
         if (!keepSymbolic) {
@@ -307,16 +173,13 @@ public final class MessageDoors {
         return scope;
     }
 
-    /** Ends {@code scope} if the thread still serves it. */
     public static void endInbound(Inbound scope) {
         if (scope == null || scope == Inbound.EMPTY || CURRENT.get() != scope) {
-            // Already ended by the next message's install: not an error.
             return;
         }
         endInbound();
     }
 
-    /** Ends whatever exchange the thread serves. */
     public static void endInbound() {
         endInbound(true);
     }
@@ -335,33 +198,6 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * A write to a store the nodes share is about to be made at {@code
-     * location}: a create of that path, or a write of its data.  It takes
-     * its turn first ({@link ScheduleEvent.Kind#WRITE}, keyed by the location
-     * as every run spells it, {@link RunNames}): writes to one location run
-     * in the recorded order while the prefix holds them, and the store
-     * decides each race they run -- whether a create finds its node made --
-     * as the recording's did (SB19, solr-bugs-reindex-cleanup: a node
-     * created the collection's terms node the recording had another replica
-     * create, and the shard's leader election went the other way).  Past the
-     * cut no slot holds, and writes at one location are ordered only behind
-     * the prefix's ({@code ScheduleLog#conflictLocked}).  A location that
-     * still spells a name only this run has, which no adapter stated
-     * ({@link #spelledAs}), keys alike in no two runs: that write takes no
-     * turn, and says so once per name.
-     *
-     * <p>The store applies a write, and notifies the version's watchers,
-     * before the write's call returns, so another thread can read the
-     * version before {@link #stored} files it (SOLR-18413 F2: node1's state
-     * watchers read the routing rule's version before the Overseer's turn
-     * filed it, and their work opened no occurrence).  Until {@link
-     * #storeEnded}, a read of a version this write may have made that finds
-     * it unfiled waits for it, at most {@link #FILED_WAIT_MS}, or {@link
-     * #FILING_WAIT_MS} once it is filing ({@link #filed}).</p>
-     *
-     * @return the write's token, for {@link #storeEnded}
-     */
     public static long storing(String transport, String location) {
         return guarded("storing", location, -1L, () -> {
             boolean paused = pause();
@@ -374,19 +210,6 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * A write that takes or frees a number of its location's parent: a
-     * sequential create ({@code location}: the prefix the store completes)
-     * or a delete ({@code location}: the path deleted), each moving the
-     * parent's child counter, which numbers the next sequential create
-     * there.  Its turn is keyed by the parent, so every participant of one
-     * leader election, or every writer of one queue, takes its number in
-     * the recorded order, and no run-only name of the creating node (its
-     * store session, spelled in an election's prefix) is part of the key.
-     * In flight, as {@link #storing}, at {@code location}.
-     *
-     * @return the write's token, for {@link #storeEnded}
-     */
     public static long storingChild(String transport, String location) {
         return guarded("storingChild", location, -1L, () -> {
             boolean paused = pause();
@@ -402,15 +225,6 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * A read of {@code location} takes its turn before the store's call
-     * ({@link ScheduleEvent.Kind#READ}), keyed as the write turn is ({@link
-     * RunNames#key}): the read sees the version the recording's read saw --
-     * an exists() check before a create, a compare-and-set's version, a
-     * client's alias or cluster state (solr-adhoc-39, round MB23s: a cloud
-     * client read the alias the Overseer had not yet written, and its updates
-     * went to another node).
-     */
     public static void reading(String transport, String location) {
         guarded("reading", location, () -> {
             boolean paused = pause();
@@ -422,51 +236,24 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * Engine work a system's code called runs with the VM's propagation
-     * paused, as every hook the weave emits does: the engine's plumbing is
-     * never program state (solr-bugs-snapshot-no-active Z2G: a store
-     * write's door, keying a path spelled from a request's values, stated
-     * 1,441 versions of the JDK's UTF-8 encoder arrays as the
-     * CREATESNAPSHOT task's writes).  Only in a replay: elsewhere no VM
-     * propagates.  Pair with {@link #resume} in a finally.
-     */
     private static boolean pause() {
         if (!RowRuntime.open()) return false;
         ConcolicRegionRuntime.pauseObservation();
         return true;
     }
 
-    /** Ends what {@link #pause} began. */
     private static void resume(boolean paused) {
         if (paused) ConcolicRegionRuntime.resumeObservation();
     }
 
-    /**
-     * A system's JSON codec serializes a document into bytes: the VM
-     * propagates nothing until {@link #serialized}.  A store's content
-     * crosses leaf by leaf, from the document the codec was handed ({@link
-     * #jsonWritten}), never through its bytes, which are concrete; so is
-     * any other use of the codec's output.  Unpaused, every character of a
-     * symbolic leaf written into the codec's buffers was a version
-     * (solr-bugs-snapshot-no-active Z2G: 2,100 array writes of noggit's
-     * CharArr and ByteUtils.UTF16toUTF8 in the CREATESNAPSHOT task, whose
-     * publication held every region close behind it).
-     *
-     * @return whether it paused, for {@link #serialized}
-     */
     public static boolean serializing() {
         return pause();
     }
 
-    /** The codec's serialization {@link #serializing} paused has ended. */
     public static void serialized(boolean paused) {
         resume(paused);
     }
 
-    /** A write's or a read's turn at {@code location}, keyed as every run
-     *  spells it: one key for both, and for the STORE location a version is
-     *  filed under. */
     private static void turn(ScheduleEvent.Kind kind, String transport,
                              String location) {
         RunNames.Keyed keyed = RunNames.key(trimmed(location));
@@ -486,7 +273,6 @@ public final class MessageDoors {
         }
     }
 
-    /** A write in flight at {@code location} until {@link #storeEnded}. */
     private static long inFlight(String transport, String location,
                                  boolean filing) {
         long store = STORES.incrementAndGet();
@@ -499,10 +285,6 @@ public final class MessageDoors {
         return store;
     }
 
-    /**
-     * The write {@link #storing} began has filed its version
-     * ({@link #stored}), or failed: called in a {@code finally}.
-     */
     public static void storeEnded(String transport, long store) {
         synchronized (STORING) {
             Map<Long, Write> writes = STORING.get(transport);
@@ -514,19 +296,6 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * What the write of a stored version carried, once filed: at once if it
-     * is, else once a write another thread had in flight at the version's
-     * location when this one read files it -- the store applied that write
-     * before the read saw its version, and its writer files the version
-     * before its bracket ends.  {@code null} when none of those writes filed
-     * it: the version was made outside the window or carried nothing, and
-     * the read waits for nothing begun after it read; or the writes did not
-     * file it within {@link #FILED_WAIT_MS} -- a writer the schedule holds
-     * behind this reader, say -- or, while one of them is filing, within
-     * {@link #FILING_WAIT_MS}, and a DIAGNOSTIC row names the version and
-     * the writes still in flight.
-     */
     static Outbound filed(String transport, String key) {
         String filed = transport + "\n" + key;
         Outbound message = STORED.get(filed);
@@ -571,21 +340,10 @@ public final class MessageDoors {
         return message;
     }
 
-    /**
-     * This thread's write at {@code location} is filing ({@link #stored}):
-     * past its store's call, it takes no turn and waits on nothing a reader
-     * holds before it files -- a reader waiting for it ({@link #filed})
-     * holds only {@link #STORING}, which its wait releases -- so a reader
-     * may wait for it {@link #FILING_WAIT_MS}.  The token, for {@link
-     * #storeEnded}.
-     */
     static long filingBegins(String transport, String location) {
         return inFlight(transport, location, true);
     }
 
-    /** Whether a thread making one of the {@code pending} writes is filing
-     *  a write in flight {@code now} ({@link Write#filing}): one begun
-     *  before its store's call goes on into {@link #stored}. */
     private static boolean filing(Map<Long, Write> pending,
                                   Map<Long, Write> now) {
         for (Write write : now.values()) {
@@ -597,15 +355,11 @@ public final class MessageDoors {
         return false;
     }
 
-    /** A stored version's location: its key without the version. */
     static String location(String key) {
         int at = key.lastIndexOf('@');
         return at < 0 ? key : key.substring(0, at);
     }
 
-    /** The writes of {@code transport} in flight at {@code path} on other
-     *  threads than {@code reader}: a thread's own write in flight is
-     *  behind its read. */
     private static Map<Long, Write> inFlight(String transport, String path,
                                              Thread reader) {
         Map<Long, Write> writes = new HashMap<Long, Write>();
@@ -620,36 +374,14 @@ public final class MessageDoors {
         return writes;
     }
 
-    /**
-     * A write to a store the nodes share: a message sent where it is written
-     * (a schedule SEND) and received wherever a node later reads that
-     * version, any number of times.  The write is in flight until its
-     * version is filed ({@link #storing}), from wherever its adapter opened
-     * the bracket: before the store's call, or here.
-     *
-     * <p>{@code data} is what the write wrote: when a system's codec
-     * serialized it ({@link #jsonWritten}), each leaf of that document is
-     * exported on this version ({@link StoreContent}).</p>
-     *
-     * @param key the location and the version this write made
-     */
     public static void stored(String transport, String key, Object owner,
                               byte[] data) {
         boolean paused = false;
         long store = -1L;
         try {
             paused = pause();
-            // In flight until filed, whatever bracket the adapter opened:
-            // the SEND and the producer it mints take the concolic VM
-            // milliseconds.
             store = filingBegins(transport, location(key));
-            // Its place on the session's order before anything files it: a
-            // reader released by the filing (#filed) stands after the write
-            // (review re-check M8: positioned after the filing, a decode of
-            // the version stood before its write, TOPOLOGY_DIVERGENCE).
             RowOrder.Position position = Identity.enginePosition();
-            // The content first: a reader that finds the version filed
-            // finds its leaves exported ({@link #filed}).
             Object document = StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
@@ -663,12 +395,6 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * The version a write made is a version of its store location
-     * (LocationKind.STORE): a write row at the writer's occurrence in a
-     * replay, a STORE_WRITE trace row in the recording, which PLAN crosses
-     * from a demanded read of it ({@code RecordedStore}).
-     */
     private static void written(String transport, String key, Object owner,
                                 RowOrder.Position position,
                                 Object document) {
@@ -676,8 +402,6 @@ public final class MessageDoors {
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
         String node = RuntimeTraceContext.ownedSource(owner).key();
-        // The recording's rows only where it writes them: no replay names an
-        // occurrence or walks a document for a row it never writes.
         if (CausynthTraceRecorder.tracing()) {
             OccurrenceAddress writer = Identity.currentOccurrence(node);
             CausynthTraceRecorder.storeWritten(trimmed(transport), path,
@@ -691,25 +415,12 @@ public final class MessageDoors {
         if (!RowRuntime.open()) return;
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         LocationId location = storeLocation(transport, path);
-        // After every VM event so far, as a concrete target stands: a closure
-        // cuts a writer strictly before its write's seq, and the writer's
-        // own last event (its door's fault marker) is before the write.
         RowRuntime.storeWrite(at, position,
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
     }
 
-    /**
-     * The objects a fetch of {@code key} was parsed into, the adapter's
-     * product of the decode (Solr's {@code ClusterState.load}, {@code
-     * Aliases.fromJSON}): each application object of it is registered as
-     * holding that version ({@link Provenance}), so a guard that reads one
-     * of its fields reads the version (a STORE read row at the guard, {@code
-     * ConcolicRegionRuntime#observeProvenance}).  The recording states the
-     * objects by identity (a STORE_DECODED trace row), which PLAN joins with
-     * the objects each occurrence read a field on.
-     */
     public static void decoded(String transport, String key, Object product) {
         boolean paused = false;
         try {
@@ -722,17 +433,6 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * An engine fault in a door the system's code calls -- one that
-     * observes it (decodes, views, refreshes, stores, content) or brackets
-     * its messages and requests: named, never thrown into the system's
-     * code, which such a door leaves as it found it (a NullPointerException
-     * of #decode killed every seed replay whose test builds its cluster in
-     * @Before, solr-sg3 SP2-10).  The rows the door would have stated are
-     * missing: ENGINE_FAULT, BLOCKING.  A fault door's planted fault is the
-     * system's world, not an engine fault: it is thrown, never here; nor
-     * is an Error (a replay's cut, LoopAccounting).
-     */
     static void doorFault(String door, RuntimeException fault) {
         StackTraceElement[] frames = fault.getStackTrace();
         RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING, door,
@@ -742,12 +442,6 @@ public final class MessageDoors {
                         + " missing");
     }
 
-    /**
-     * {@code call}, its engine fault named ({@link #doorFault}) and
-     * {@code fallback} returned in place of a throw into the system: a
-     * token no end door matches.  The door is named {@code at} what (null:
-     * nothing) only when it faults, so a store door spells nothing per call.
-     */
     private static <T> T guarded(String door, String at, T fallback,
                                  Supplier<T> call) {
         try {
@@ -758,8 +452,6 @@ public final class MessageDoors {
         }
     }
 
-    /** {@code call}, its engine fault named ({@link #doorFault}) as
-     *  {@link #guarded(String, String, Object, Supplier)} names it. */
     private static void guarded(String door, String at, Runnable call) {
         try {
             call.run();
@@ -771,31 +463,16 @@ public final class MessageDoors {
     private static void decode(String transport, String key, Object product) {
         long version = version(key);
         if (version < 0L || product == null) return;
-        // A write in flight at the path may have made this version, its
-        // hook not yet run (a create's version 0 opening a new life): the
-        // decode waits for it to file, bounded and named (#filed), so it
-        // names the life the version was made in.
         filed(trimmed(transport), trimmed(key));
         String path = life(transport, location(key), version, false);
         LocationId store = storeLocation(transport, path);
-        // The decode re-points its node's view (LocationKind.VIEW): the
-        // view's write is stated here, a pairing's hold deferring only the
-        // system's publication of it (#publishing).  A version its node
-        // decoded before -- a watcher's and a fetch's parse of one version,
-        // or one decoded before the window opened -- re-points nothing: one
-        // write of a view per version, the first.
         String node = nodeHere();
         OccurrenceAddress here = Identity.currentOccurrence(node);
         String decoder = decoderNode(here, node);
         LocationId view = viewOf(store, decoder);
-        // A thread no registered node owns (a test building its cluster in
-        // @Before) has no view to re-point: its parse is no node's decision.
         boolean repoints = view != null && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
                         + version);
-        // A refresh's decode is what its reader reads at once where no
-        // publication follows it (a lazy collection's live fetch): past a
-        // pairing's hold of the view, it overrides it, named.
         if (view != null && REFRESHING.get() > 0) {
             Confirmation.overridden(view, version, here, "a decode inside"
                     + " a refresh the system asked for, what its reader"
@@ -803,51 +480,20 @@ public final class MessageDoors {
         }
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
-        // The decode runs on the fetching thread right after the read: the
-        // occurrence running it is the fetch's.
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered, here);
         if (!repoints) return;
         if (!RowRuntime.open()) {
-            // Before the window: what the node holds when it opens, the
-            // view's INITIAL at its first row (RowRuntime#viewInitial).
             RowRuntime.viewBeforeWindow(view, version);
             return;
         }
-        // The running occurrence, else the node's role occurrence: never
-        // none on a registered node's thread.
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
-        // After every VM event so far, as a store's write stands.
         RowRuntime.viewWrite(at, Identity.enginePosition(),
                 Endpoint.messageSite(trimmed(transport), "VIEW",
                         view.slot().replace('/', '.').replace('@', '.')),
                 viewOf(store, at), version);
     }
 
-    /**
-     * A node is about to PUBLISH version {@code version} of its view of
-     * {@code path} -- make the decode the readers on the node see (Solr's
-     * {@code ZkStateReader#updateWatchedCollection}, {@code
-     * ZkStateReader.StateWatcher#refreshAndWatchChildren}, {@code
-     * AliasesManager#setIfNewer}); -1 for a removal, -2 for an update of
-     * the same version (per-replica states) -- and {@code
-     * apply} publishes it, under the locks the system's own publication
-     * takes.  On a thread delivering a store's notification ({@link
-     * #notified}, the whole callback), outside a refresh the system asked
-     * for ({@link #refreshStarting}), a pairing's hold of the view may defer
-     * it, and a deferred one holds every later one of the view behind it
-     * ({@code Confirmation#publishing}): the thread goes on, the node's
-     * readers keep the version they had, and the publications apply later
-     * in the order they came.  A notification's publication that nothing
-     * defers is published by the caller, its PUBLISH turn settled when the
-     * callback ends, after the caller's constructState ({@link #notified},
-     * {@code Confirmation#notificationEnded}).  A synchronous publication --
-     * a forced refresh, a fetch on the reader's own thread, the node's own
-     * write -- is never deferred, and supersedes the deferred removals and
-     * what came before them ({@code Confirmation#published}).
-     *
-     * @return whether it was deferred: the caller then publishes nothing
-     */
     public static boolean publishing(String transport, String path,
                                      long version, Runnable apply) {
         boolean delivering = DELIVERING.get() > 0 && REFRESHING.get() == 0;
@@ -855,10 +501,6 @@ public final class MessageDoors {
                 ? "inside a refresh the system asked for"
                 : "on a thread delivering no store notification";
         return guarded("publishing", path, Boolean.FALSE, () -> {
-            // A notification's publication takes a PUBLISH turn, recorded
-            // and held whether or not a pairing holds the view; one at once
-            // settles what a hold deferred, and the node's older turns of
-            // the view where an order holds them (Confirmation#published).
             if (!delivering && !Confirmation.holdsViews()
                     && !ScheduleLog.enforcing()) {
                 return false;
@@ -887,26 +529,15 @@ public final class MessageDoors {
         });
     }
 
-    /** A view's PUBLISH site at {@code version}: the store location of
-     *  {@code path} in its store life, as every run spells it ({@link
-     *  #storeLocation}). */
     private static String publishedSite(String transport, String path,
                                         long version) {
         return ScheduleEvent.published(trimmed(transport),
                 storeLocation(transport, path).slot(), version);
     }
 
-    /** The (node, path, version) publications that took their turn. */
     private static final Set<String> PUBLISH_TURNS =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    /**
-     * The PUBLISH turn of a notification's publication of {@code version}
-     * of {@code path} on {@code node}: its site, the first per version --
-     * a second callback's publication of a version re-points nothing, as a
-     * second decode of it ({@link #decode}) --, or null (another's, a
-     * removal or a same-version update, or a node no registered work owns).
-     */
     private static String publishTurn(String transport, String path,
                                       long version, String node) {
         if (version < 0L || node == null || node.isEmpty()) return null;
@@ -914,36 +545,16 @@ public final class MessageDoors {
         return PUBLISH_TURNS.add(node + "\n" + site) ? site : null;
     }
 
-    /**
-     * The node whose view a decode or a refresh on this thread re-points:
-     * the running occurrence's, else the thread's scope's (a decode before
-     * the window, or on a thread no occurrence runs on).
-     */
     private static String decoderNode(OccurrenceAddress here, String node) {
         return here != null ? here.node().render() : node;
     }
 
-    /**
-     * The system's own refresh of a view begins (Solr's {@code
-     * ZkStateReader#forceUpdateCollection}, {@code
-     * #forciblyRefreshAllClusterStateSlow}, a lazy collection's {@code
-     * LazyCollectionRef#get}): it reads the store as it stands, as its
-     * caller asked, so no pairing's hold defers what it publishes ({@link
-     * #publishing}), even on a notification's thread -- a refresh on the
-     * program's way (the Overseer applying a RefreshCollectionMessage, a
-     * leader's prep-recovery) is no slow event thread; one that publishes a
-     * version past the paired one leaves the pairing untaken.  Ends at
-     * {@link #refreshEnded}.
-     *
-     * @return the token {@link #refreshEnded} takes
-     */
     public static long refreshStarting() {
         int depth = REFRESHING.get();
         REFRESHING.set(depth + 1);
         return depth;
     }
 
-    /** Ends the refresh {@link #refreshStarting} began. */
     public static void refreshEnded(long token) {
         if (token <= 0L) {
             REFRESHING.remove();
@@ -952,28 +563,14 @@ public final class MessageDoors {
         }
     }
 
-    /** How many system refreshes run on this thread ({@link
-     *  #refreshStarting}). */
     private static final ThreadLocal<Integer> REFRESHING =
             ThreadLocal.withInitial(() -> 0);
 
-    /** The node the running thread's work is attributed to, or "". */
     private static String nodeHere() {
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
         return view.source == null ? "" : view.source.key();
     }
 
-    /**
-     * The adapter's accessor of one node's view of {@code path} handed out
-     * {@code product}, the object its decodes re-point (Solr's {@code
-     * AliasesManager#getAliases}): a read of the version a decode made it
-     * from ({@link Provenance}), stated as a STORE read and a VIEW read of
-     * the running occurrence -- the admitted activation's, else the
-     * thread's role occurrence -- at the accessor's site ({@link
-     * ContentPort#viewed}), as a PROVENANCE site states one (SYMBOL-SCOPE
-     * §6.4).
-     * An object no decode made states nothing.
-     */
     public static void viewed(String transport, String path, Object product) {
         if (product == null || !RowRuntime.open()) return;
         boolean paused = false;
@@ -994,9 +591,6 @@ public final class MessageDoors {
         String node = nodeHere();
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
-        // On the scale the engine's writes of a store and a view stand on,
-        // after every VM event so far and every engine row stated before it
-        // (contract.RowOrder): never ordered before the write it saw.
         String site = ContentPort.viewed(trimmed(transport), path);
         RowRuntime.storeRead(at, Identity.enginePosition(), site,
                 version.location, version.version);
@@ -1007,23 +601,10 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * Whether a system's JSON codec hands this thread's documents over
-     * ({@link #jsonWritten}, {@link #jsonRead}): in a replay, and in the
-     * recording's window, which states their leaves.  The codec builds the
-     * writer's document only then.
-     */
     public static boolean capturingContent() {
         return StoreContent.capturing() || CausynthTraceRecorder.tracing();
     }
 
-    /**
-     * A system's JSON codec serialized {@code document} -- a tree of maps,
-     * lists and leaves as its serializer walked the object it was handed,
-     * each leaf the object the writer holds -- into {@code bytes}: a store
-     * write of these bytes ({@link #stored}) exports its leaves.  Kept
-     * weakly by the array, so bytes no store takes drop it.
-     */
     public static void jsonWritten(byte[] bytes, Object document) {
         try {
             StoreContent.written(bytes, document);
@@ -1032,19 +613,10 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * A system's JSON codec parsed {@code bytes} into {@code tree}: when a
-     * store fetch returned these bytes ({@link #fetched}), each leaf of the
-     * tree is minted on its entry, paired with that version's export of it
-     * ({@link StoreContent}).
-     */
     public static void jsonRead(byte[] bytes, Object tree) {
         try {
             String version = StoreContent.parsed(bytes, tree);
             if (version == null || !CausynthTraceRecorder.tracing()) return;
-            // What the recording states the reader parsed, leaf by leaf, in
-            // the occurrence parsing it: the version's life, as its decode
-            // names it (#decode).
             int cut = version.indexOf('\n');
             String transport = version.substring(0, cut);
             String key = version.substring(cut + 1);
@@ -1057,16 +629,10 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * One node's view of a store location (LocationKind.VIEW): the
-     * transport at the node of {@code at}, the location as every run spells
-     * it; null for no registered node, whose view is no node's.
-     */
     static LocationId viewOf(LocationId store, OccurrenceAddress at) {
         return viewOf(store, at == null ? "" : at.node().render());
     }
 
-    /** The same, of the node {@code node} names. */
     private static LocationId viewOf(LocationId store, String node) {
         if (store == null || node.isEmpty() || node.startsWith(
                 OccurrenceBinding.UNREGISTERED_SOURCE_KEY)) {
@@ -1076,8 +642,6 @@ public final class MessageDoors {
                 store.slot());
     }
 
-    /** A store location as every run spells it: the path as {@link
-     *  RunNames} keys it, then its life ({@link #life}) past the first. */
     static LocationId storeLocation(String transport, String path) {
         String named = trimmed(path);
         int life = named.lastIndexOf(LIFE);
@@ -1087,15 +651,6 @@ public final class MessageDoors {
                 RunNames.key(bare).location + suffix);
     }
 
-    /**
-     * {@code path} named with its life in this run (design Z §1): {@code
-     * <path>#<n>} from its second life on.  A store restarts a path's
-     * versions at 0 when the path is created again after its delete, so a
-     * version 0 written once the path stood at a version is a new life --
-     * without it, writeOf(location, v) could pick the other life's v.  A
-     * decode names the life it read and starts none: it first waits for a
-     * write in flight at the path to file ({@link #decoded}).
-     */
     private static String life(String transport, String path,
                                long version, boolean write) {
         String key = trimmed(transport) + "\n" + trimmed(path);
@@ -1112,13 +667,10 @@ public final class MessageDoors {
         }
     }
 
-    /** transport + path -> {its life, whether it stood at a version}. */
     private static final Map<String, int[]> LIVES = new HashMap<>();
 
-    /** What separates a path from its life in a store location's name. */
     private static final String LIFE = "#";
 
-    /** A stored version's version: its key after the last {@code @}, or -1. */
     private static long version(String key) {
         String held = trimmed(key);
         int at = held.lastIndexOf('@');
@@ -1130,28 +682,10 @@ public final class MessageDoors {
         }
     }
 
-    /**
-     * A store's notification (a ZooKeeper watch event) run by its callback:
-     * the first version the callback reads that a write of the window
-     * stored ({@link #fetched}) is the message that caused it, and the
-     * callback's end ends it.  Whatever lineage the callback's pooled thread
-     * inherited is the pool's, not the notification's cause.  The
-     * recording states the notification (WATCH_FIRED) in the occurrence the
-     * callback opens first ({@link #regionOpened}), else in the one it ran
-     * in.
-     *
-     * @param kind what is notified (the watcher's class): one change the
-     *             store reports to two watchers is read by two callbacks,
-     *             each an occurrence of its own
-     * @param path the location notified, null for none (a session event)
-     * @param type the event's type
-     */
     public static void notified(String kind, String transport, String path,
                                 String type, Runnable callback) {
         NOTIFIED.set(trimmed(kind));
         DELIVERING.set(DELIVERING.get() + 1);
-        // The notification, stated in the occurrence its callback opens
-        // (#regionOpened), else where it ran (below).
         FIRED.set(path == null || !CausynthTraceRecorder.tracing() ? null
                 : new String[] {trimmed(transport), trimmed(path),
                         trimmed(type)});
@@ -1160,15 +694,10 @@ public final class MessageDoors {
             callback.run();
         } finally {
             DELIVERING.set(DELIVERING.get() - 1);
-            // The callback's own exception is the system's and goes on; an
-            // engine fault here would replace it, so it is named instead.
             try {
                 if (FIRED.get() != null) {
                     fired(Identity.currentOccurrence(nodeHere()));
                 }
-                // What it published at once is in force now -- Solr's watch
-                // callbacks end right after their constructState -- so its
-                // PUBLISH turns are settled here (#publishing).
                 Confirmation.notificationEnded(owed);
                 NOTIFIED.remove();
                 endInbound();
@@ -1178,22 +707,12 @@ public final class MessageDoors {
         }
     }
 
-    /** A notification this thread delivers, not yet stated ({@link
-     *  #notified}): transport, path and type. */
     private static final ThreadLocal<String[]> FIRED = new ThreadLocal<>();
 
-    /**
-     * An occurrence opened on this thread ({@code Identity#occurrence}):
-     * the first a notification's callback opens is the callback's, where
-     * the notification is stated.
-     */
     static void regionOpened(OccurrenceAddress occurrence) {
         if (FIRED.get() != null) fired(occurrence);
     }
 
-    /** States the notification this thread delivers, once, at
-     *  {@code occurrence}: its zxid none, which ZooKeeper's notifications
-     *  carry no client of. */
     private static void fired(OccurrenceAddress occurrence) {
         String[] fired = FIRED.get();
         if (fired == null) return;
@@ -1202,20 +721,6 @@ public final class MessageDoors {
                 -1L, false), fired[2], -1L, occurrence);
     }
 
-    /**
-     * A read of {@code key} -- the location and the version it returned,
-     * -1 for no node -- at the store's call ({@code op}: a ZooKeeper
-     * getData, exists or getChildren, whose version is the node's children
-     * version): stated in the recording; in a replay, a read row of the
-     * version under the store's own site ({@code <transport>#READ:<location>})
-     * only where the composition reads it: in a planned occurrence that runs
-     * tracked (not doors-only), of a path on the ZooKeeper chain, or by an
-     * occurrence on it (a path off the chain it reads is the chain's growth,
-     * {@code explore.ZkEdges}).  Anywhere else -- a role's poll of a leader
-     * node, a doors-only occurrence -- nothing: no row, no activation (owner
-     * 2026-10-15: what is off the chain costs nothing).  A getChildren's
-     * version is no data version a write made: never a row.
-     */
     public static void storeRead(String transport, String key, String op,
                                  Object owner) {
         boolean paused = false;
@@ -1232,10 +737,6 @@ public final class MessageDoors {
     private static void read(String transport, String key, String op,
                              Object owner) {
         long version = version(key);
-        // The path's life as it stands, in both passes alike (a version
-        // read starts the next create's new life): a read waits for no
-        // write in flight (a decode does, #decode), so its timing is the
-        // store's alone.
         String path = life(transport, location(key), version, false);
         if (CausynthTraceRecorder.tracing()) {
             CausynthTraceRecorder.storeRead(trimmed(transport), path, version,
@@ -1262,11 +763,6 @@ public final class MessageDoors {
                 location, version);
     }
 
-    /**
-     * The ZooKeeper chain this replay states its store reads by ({@link
-     * #read}): the iteration's, which its campaign names ({@value
-     * ZkChain#ENVIRONMENT}), read once; none named, the empty chain.
-     */
     private static volatile ZkChain chain;
 
     static ZkChain chain() {
@@ -1293,26 +789,10 @@ public final class MessageDoors {
         }
     }
 
-    /** A fetch's version key with its life ({@link #life}), as a decode of
-     *  it names it. */
     static String livePath(String transport, String key) {
         return life(transport, location(key), version(key), false);
     }
 
-    /**
-     * A read of a version a {@link #stored} write made.  The first such read
-     * of a notification installs the writer's context, on the reading node:
-     * each version read is an occurrence of its own, named by the write.
-     * The schedule never waits for it: ZooKeeper folds the changes that
-     * arrive before a watch is set again into one event, so how many
-     * notifications a run takes is the store's timing.  Any other read is
-     * data, not a cause: a loop that polls the store reads as often as its
-     * timing lets it.  A read that takes what its write carried -- the
-     * writer's context in a notification -- first waits for the version to
-     * be filed, if a write in flight may file it ({@link #filed}).
-     * {@code data} is what the fetch returned: a parse of it by a system's
-     * codec ({@link #jsonRead}) takes in this version's content.
-     */
     public static void fetched(String transport, String key, Object owner,
                                byte[] data) {
         boolean paused = false;
@@ -1337,11 +817,6 @@ public final class MessageDoors {
         NOTIFIED.remove();
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
-        // The notified kind is part of the context the callback's work is
-        // addressed by, never of the pairing with the write; so is which of
-        // the node's deliveries of this version it is, from the second on --
-        // the store's timing, which CONFIRM compares through
-        // (CausalContext.Anchor#anyDelivery).
         int delivery = DELIVERIES.merge(RuntimeTraceContext.ownedSource(owner)
                 .key() + "\n" + transport + "\n" + key + "\n" + kind, 1,
                 Integer::sum);
@@ -1355,22 +830,6 @@ public final class MessageDoors {
         CURRENT.set(new Inbound(token, key, "1", REQUEST));
     }
 
-    /**
-     * An item of a store's queue (ZooKeeper's sequential nodes: the Solr
-     * Overseer's state-update queue) taken by the one consumer that
-     * processes it, as {@link #received} takes a request: it ends what the
-     * thread served, and is the message the thread serves until the next
-     * one -- named by its key, as its write sent it ({@link #stored}), so an
-     * attach of an element it carried pairs with that write's export by the
-     * item and its port ({@code Interactions#pairing}, CORRELATION_PORT) --
-     * with the values its writer staged on it.  The consumer's context stays
-     * its own: which turn takes an item is the queue's batching, and each
-     * turn is ordered as a tick of its own, and a consumer takes an item
-     * inside its turn ({@link #beginTick}), which ended whatever the thread
-     * served before: what an item ends is the item before it.  An item its
-     * writer has not yet filed is waited for ({@link #filed}); one no write
-     * of the window filed names nothing.
-     */
     public static void consumed(String transport, String key) {
         boolean paused = false;
         try {
@@ -1388,9 +847,6 @@ public final class MessageDoors {
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);
         if (message == null) return;
-        // Its RECV names the item the turn took in, as a received request's
-        // does: the doors of the message that started the consumer
-        // (Corpus#startedBy, RecordedMessages#doorsOf).
         CausynthTraceRecorder.receivedExchange(transport, key, "1", REQUEST,
                 null);
         if (!message.symbolic.isEmpty()) {
@@ -1399,37 +855,21 @@ public final class MessageDoors {
         CURRENT.set(new Inbound(0L, key, "1", REQUEST));
     }
 
-    /** The exchange the thread serves, or {@code null}. */
     public static Inbound current() {
         return CURRENT.get();
     }
 
-    /**
-     * Enters the scope a queued unit of work carried from where it was made:
-     * the dequeue half of a queue handoff.
-     */
     public static long enterCarriedScope(Object scope, String role,
                                          String api) {
         return guarded("enterCarriedScope", role, 0L, () ->
                 CausynthTraceRecorder.enterCarriedScope(scope, role, api));
     }
 
-    /** Leaves the scope {@link #enterCarriedScope} entered. */
     public static void exitCarriedScope(long token) {
         guarded("exitCarriedScope", null, () ->
                 CausynthTraceRecorder.exitCarriedScope(token));
     }
 
-    /**
-     * Opens one daemon tick as a root of its own: a service-loop turn.  The
-     * exchange the thread served ends first, as for a node startup: the turn
-     * serves no message it did not take in itself.  Left standing below the
-     * turn, the next message's end of it closed the turn as well (a
-     * DataNode actor built inside the window stands in its registration's
-     * response when its first turn begins; the IPC client ends that exchange
-     * before its heartbeat, so the heartbeat went out in the test's request
-     * and the turn stated no END: hdfs-adhoc-21/22/23/25, round HG5A).
-     */
     public static long beginTick(Object owner, String role) {
         return guarded("beginTick", role, 0L, () -> {
             endInbound();
@@ -1437,22 +877,10 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * Whether the turn {@link #beginTick} opened is vacant: one the recording
-     * never made, which a replay held and let go only because the run could
-     * go no further (a pool's shutdown awaiting the timer task it runs in).
-     * A tick site whose turn may be skipped -- a poll, not a queue's consumer
-     * -- skips it; the recording, which holds nothing, has no vacant turn.
-     */
     public static boolean vacant(long tick) {
         return CausynthTraceRecorder.vacantDaemonTick(tick);
     }
 
-    /**
-     * Closes the tick {@link #beginTick} opened, and the exchange its thread
-     * served in it: the turn serves nothing past its end (the Solr
-     * Overseer's batch write after its last item's turn served that item).
-     */
     public static void endTick(long token) {
         guarded("endTick", null, () -> {
             endInbound();
@@ -1460,31 +888,10 @@ public final class MessageDoors {
         });
     }
 
-    /** Opens the recorded window: the workload's recording boundary. */
     public static void startRecording() {
         CausynthTraceRecorder.startRecording();
     }
 
-    /**
-     * Opens the construction of one node, under the name the system's
-     * adapter registers it by once it is built ({@link #registerNode}, the
-     * same kind, role and id): what it starts or creates until {@link
-     * #endNodeStartup} belongs to that node, though the test's request
-     * stands where it runs (IDENTITY.md §5), the calling thread's own work
-     * inside it included.  Attribution only: no event, no lineage hop.  A
-     * system's cluster adapter brackets each node it constructs this way,
-     * and a registered node's start, a restart's included, by {@link
-     * #beginNodeStartup(Object)}.
-     *
-     * <p>A construction is the test's own work, not the serving of the last
-     * message its thread received: the exchange the thread served ends
-     * first, so the node and the threads it starts stand in the test's
-     * request, not under that message's anchor (round HG4, hdfs-adhoc-22: one
-     * response that differed after a divergence re-anchored every later
-     * cluster's build, and 10560 slots were given up at once).</p>
-     *
-     * @return the token {@link #endNodeStartup} takes
-     */
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
         return guarded("beginNodeStartup", role, 0L, () -> {
@@ -1494,11 +901,6 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * Opens one startup of a node already registered -- its threads' start
-     * -- or of none when it is not: what it starts belongs to the node.  The
-     * exchange the thread served ends first, as for a construction.
-     */
     public static long beginNodeStartup(Object node) {
         return guarded("beginNodeStartup", null, 0L, () -> {
             endInbound();
@@ -1506,13 +908,11 @@ public final class MessageDoors {
         });
     }
 
-    /** Ends the startup {@code token} opened. */
     public static void endNodeStartup(long token) {
         guarded("endNodeStartup", null, () ->
                 CausynthTraceRecorder.endNodeStartup(token));
     }
 
-    /** Closes it: the workload's test is over, its teardown unrecorded. */
     public static void stopRecording() {
         CausynthTraceRecorder.stopRecording();
     }
@@ -1523,13 +923,6 @@ public final class MessageDoors {
                 epoch);
     }
 
-    /**
-     * The names node {@code sourceId} has only in this run -- the id of its
-     * store session, its host and port -- each stated so: a store location
-     * that spells one keys its write by the node's name instead ({@link
-     * #storing}), alike in the recording and every replay (a ZooKeeper
-     * leader election's {@code <session>-<core>-n_} prefix).
-     */
     public static void spelledAs(String sourceId, String... spellings) {
         if (spellings == null) return;
         for (String spelling : spellings) {
@@ -1541,11 +934,6 @@ public final class MessageDoors {
         CausynthTraceRecorder.registerSourceAlias(alias, anchor);
     }
 
-    /**
-     * Registers one node: its anchor as the source, and every object the node
-     * runs its work through as the same node -- what the attribution rule
-     * finds on a thread's frames.  A null or repeated alias is skipped.
-     */
     public static void registerNode(Object anchor, String kind, String role,
                                     String sourceId, Object... aliases) {
         registerSource(anchor, kind, role, sourceId, 0L);
@@ -1580,11 +968,6 @@ public final class MessageDoors {
         });
     }
 
-    /**
-     * One client operation the workload itself makes, a request root of its
-     * own ({@link CausynthTraceRecorder#beginWorkloadCall}); 0, and nothing
-     * begun, on a node's own thread.
-     */
     public static long beginWorkloadCall(String api) {
         return CausynthTraceRecorder.beginWorkloadCall(api);
     }
@@ -1593,7 +976,6 @@ public final class MessageDoors {
         if (call != 0L) endRequest(call, api);
     }
 
-    /** What one outbound message carries. */
     public static final class Outbound {
         static final Outbound EMPTY = new Outbound("", "", "", "");
         public final String correlationId;
@@ -1614,7 +996,6 @@ public final class MessageDoors {
         }
     }
 
-    /** One installed inbound exchange. */
     public static final class Inbound {
         static final Inbound EMPTY = new Inbound(0L, "", "", "");
         private final long token;

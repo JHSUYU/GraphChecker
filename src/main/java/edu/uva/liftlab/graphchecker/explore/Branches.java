@@ -15,23 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * WHICH SESSIONS MAY PARENT AN OBLIGATION (PIPELINE §7.4).
- *
- * <p>The question is one declared occurrence {@code (r,c,i)}.  A focused
- * replay whose run holds no activation of the declared region {@code r}
- * under the declared context {@code c} -- at any invocation index {@code i},
- * since a flip may shift it (a fault's retry, a loop that runs once more) --
- * ran the question's occurrence under another chain or not at all
- * ({@code TASK_UNANSWERED}, {@code OCCURRENCE_ANCHOR_UNMATCHED}), so it can
- * answer nothing about it: its BRANCH STOPS.  Its world is never inherited,
- * its paths are never flipped and nothing it exposes is grown; it stays in
- * the corpus as the evidence it is (its rows still attest arms), and each
- * stop is a DIAGNOSTIC gap of the round that applied it.  Contexts compare by
- * {@link ContextShape} ({@link Corpus#contextShape}), the rule PLAN picks its
- * walk origins by.  COMPOSE and the claim stay on the exact declared
- * address.</p>
- */
 public final class Branches {
     private final Corpus corpus;
     private final Set<String> stopped;
@@ -41,8 +24,6 @@ public final class Branches {
         this.stopped = stopped;
     }
 
-    /** Applies the rule to every admitted focused session of the corpus,
-     *  naming each stop in {@code gaps}.  No resolved root stops none. */
     public static Branches of(Corpus corpus, List<OccurrenceAddress> roots,
                        List<GapRow> gaps) {
         Map<CausalContext, List<String>> shapes =
@@ -69,15 +50,12 @@ public final class Branches {
         return new Branches(corpus, stopped);
     }
 
-    /** Whether a session may parent obligations: the seed, or an admitted
-     *  focused session whose branch did not stop. */
     public boolean parents(String sessionId) {
         SessionReader session = corpus.session(sessionId);
         return session != null && session.admitted()
                 && !stopped.contains(sessionId);
     }
 
-    /** How many admitted focused sessions this round stopped. */
     public int stopped() {
         return stopped.size();
     }

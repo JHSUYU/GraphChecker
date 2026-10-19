@@ -19,15 +19,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * One service of an exploration: the questions put in its directory are
- * answered oldest first, up to its seats at once, each into its own output
- * directory and marked answered last; one whose asker is gone is dropped; a failure is that
- * question's answer, its deepest throwable, never the service's end; a
- * service given an idle time ends once idle with none waiting, naming no
- * service any more, and one given none goes on serving; one that outgrew its
- * corpus gives its question back and ends.
- */
 public class ServiceTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
@@ -37,8 +28,6 @@ public class ServiceTest {
             throws Exception {
         Path dir = folder.newFolder("solver").toPath();
         Files.createDirectories(dir.resolve(Service.REQUESTS));
-        // Taken by a service that died mid-answer (its run stopped): never
-        // this one's to wait for, so it still ends idle.
         Files.write(dir.resolve(Service.REQUESTS)
                 .resolve("0.dead" + Service.TAKEN),
                 "{}".getBytes(StandardCharsets.UTF_8));
@@ -46,7 +35,6 @@ public class ServiceTest {
                 "4242\n".getBytes(StandardCharsets.UTF_8));
         String live = ManagementFactory.getRuntimeMXBean().getName()
                 .split("@")[0];
-        // name, waiter, what the answerer does
         String[][] questions = {
                 {"3.b", live, "ok"},
                 {"1.a", live, "fail"},
@@ -107,13 +95,6 @@ public class ServiceTest {
         assertFalse(Files.exists(dir.resolve(Service.LOCK)));
     }
 
-    /**
-     * A service whose answerer cannot hold a question's corpus ({@code
-     * Service.Outgrown}) gives that question back untaken and ends at once,
-     * whatever else waits, naming itself retired so its askers start one
-     * sized anew (solr-adhoc-39 PV7: solvers that ran out of heap lost every
-     * question they held).
-     */
     @Test
     public void aServiceThatOutgrewItsCorpusGivesTheQuestionBackAndEnds()
             throws Exception {
@@ -152,12 +133,6 @@ public class ServiceTest {
         assertFalse(Files.exists(dir.resolve(Service.LOCK)));
     }
 
-    /**
-     * A solver's corpus stands without what GROW's swaps withdrew: the
-     * journal beside the corpus names each before its directory leaves, so a
-     * listing that still shows one (a peer's NFS client's, up to a minute
-     * old) is read without it.
-     */
     @Test
     public void aSolversCorpusStandsWithoutWhatGrowWithdrew()
             throws Exception {
@@ -173,17 +148,9 @@ public class ServiceTest {
                 ObligationSolverMain.standing(sessions));
     }
 
-    /**
-     * A solver's read is of whole sessions while GROW swaps: a session the
-     * journal names once the read is done, or one gone under a read that
-     * failed, is read again without it, and the solver says so; a failure
-     * no withdrawal explains is thrown, and a journal naming only sessions
-     * the read did not hold asks nothing again.
-     */
     @Test
     public void aSolversReadUnderAWithdrawalIsReadAgainWithoutIt()
             throws Exception {
-        // case | what the first read does | what was read last | again
         String[][] rows = {
                 {"named-after", "withdraw b", "a c", "1"},
                 {"gone-under", "withdraw c, fail", "a b", "1"},

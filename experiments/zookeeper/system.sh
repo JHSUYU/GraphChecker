@@ -1,28 +1,7 @@
-# system.sh -- the ZooKeeper system: branch-3.9 trees (the newest line on
-# Java 8), built by Maven into a Maven repository of their own, their
-# workload classpath read off the surefire report.  Sourced by
-# lib/case-env.sh before a case's case.sh.
-#
-# Every workload is a ClientBase test as it is written: the tree's test code
-# registers its server and its clients and opens the window itself
-# (org.apache.zookeeper.test.CausynthZkCluster) when causynth.cluster.automatic
-# is set, and a client's requests reach the server's pipeline as messages
-# (org.apache.zookeeper.CausynthZk).
-#
-# A ZooKeeper case.sh also sets
-#   zk_module   the tree-relative Maven module of the workload's test class
-#               (default zookeeper-server; the recipes' tests are in
-#               zookeeper-recipes/zookeeper-recipes-<name>)
 
 zk_module=zookeeper-server
-# The Maven repository every ZooKeeper tree builds with: its SNAPSHOT
-# artifacts are the tree's own, never the shared ~/.m2's.
 zk_maven_repo=${GC_M2}/zookeeper
-# GraphChecker's jar follows the tree's classpath: the tree's own libraries
-# (slf4j and its binding, Netty) are not the engine's versions.
 system_jar_first=false
-# The tree's own sources, as "<root>:<tree-relative source dir>": where
-# tools/lib/annotated.py finds the throws a known bug's case is marked at.
 system_sources=(
   server:zookeeper-server/src/main/java
   election:zookeeper-recipes/zookeeper-recipes-election/src/main/java
@@ -34,14 +13,6 @@ system_paths() {
   module=${repo}/${zk_module}
   report=${module}/target/surefire-reports/TEST-${test_class}.xml
   test_classes=${module}/target/test-classes
-  # The lineage scope (plan.LineageScan): the tree's class roots the
-  # workload's classpath holds -- its module's, the server's and jute's, the
-  # ones classpath.py puts first and the build makes (-am).  A recipe another
-  # module holds is no class the workload can load: woven, it does not verify
-  # against the workload's classpath (ZK5: the lock recipe's ProtocolSupport).
-  # And the workload's own test classes: a ZooKeeper workload's clients are
-  # threads its test starts (an election's contenders), which stand on their
-  # creator's frames and share one address unless the start is a start site.
   local each
   lineage_roots=
   for each in "${zk_module}" zookeeper-server zookeeper-jute; do
@@ -75,12 +46,6 @@ system_build() {
     "${test_method}"
 }
 
-# What surefire hands every test JVM of the tree, for a workload JVM the
-# engine starts: the directory ClientBase makes its servers' data in (a
-# relative default would write into the tree), the super user digest some
-# tests authenticate with, a logging configuration that logs warnings only
-# (the tree's logs every request at INFO with its caller's line, which a
-# replay on the interpreter pays for), and the automatic cluster.
 system_jvm_properties() {
   jvm_properties=(
     "-Dbuild.test.dir=$2"

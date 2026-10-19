@@ -1,11 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * CONTRACT-SPEC §2.2: a value a producer endpoint put on the wire, {@code e_p}
- * in the {@link ExpressionTable}.  {@code seq} is where the producer's path
- * condition is cut; the sort comes from {@code javaType}, never from the
- * recorded characters.
- */
 public final class ExportRow extends Value {
     private final String sessionId;
     private final long seq;
@@ -50,17 +44,14 @@ public final class ExportRow extends Value {
         return endpoint;
     }
 
-    /** The reference to {@code e_p} in this session's expression table. */
     public String expressionRef() {
         return expressionRef;
     }
 
-    /** The JVM descriptor of the exported value. */
     public String javaType() {
         return javaType;
     }
 
-    /** The VM handle of the exported value: half of the wire pairing. */
     public long handle() {
         return handle;
     }

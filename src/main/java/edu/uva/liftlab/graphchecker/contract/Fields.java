@@ -8,16 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Field checks and defensive copies for the contract's immutable values;
- * construction fails closed, naming the field.
- */
 final class Fields {
     private Fields() {
     }
 
-    /** {@code value}, or a refusal naming {@code field}; an empty string is
-     *  a statement. */
     static <T> T required(T value, String field) {
         if (value == null) {
             throw new IllegalArgumentException(field + " is required");
@@ -25,7 +19,6 @@ final class Fields {
         return value;
     }
 
-    /** {@code value} trimmed, refusing null and blank, naming {@code field}. */
     static String text(String value, String field) {
         String stated = value == null ? "" : value.trim();
         if (stated.isEmpty()) {
@@ -34,13 +27,11 @@ final class Fields {
         return stated;
     }
 
-    /** {@code value} or null; a blank optional is no statement at all. */
     static String optional(String value) {
         if (value == null) return null;
         return value.trim().isEmpty() ? null : value;
     }
 
-    /** {@code value}, refusing anything below 1, naming {@code field}. */
     static int ordinal(int value, String field) {
         if (value < 1) {
             throw new IllegalArgumentException(
@@ -49,11 +40,6 @@ final class Fields {
         return value;
     }
 
-    /**
-     * The number spelled after the marker at {@code marker} (of
-     * {@code markerLength} chars) to the end of {@code value}; -1 unless the
-     * marker is past index 0 and followed by digits only.
-     */
     static int trailingNumber(String value, int marker, int markerLength) {
         int start = marker + markerLength;
         if (marker <= 0 || start >= value.length()) return -1;
@@ -63,7 +49,6 @@ final class Fields {
         return Integer.parseInt(value.substring(start));
     }
 
-    /** {@code value}, refusing anything below 0, naming {@code field}. */
     static long nonNegative(long value, String field) {
         if (value < 0) {
             throw new IllegalArgumentException(
@@ -72,13 +57,11 @@ final class Fields {
         return value;
     }
 
-    /** The same check, for an int. */
     static int nonNegative(int value, String field) {
         nonNegative((long) value, field);
         return value;
     }
 
-    /** An unmodifiable copy; a null list is the empty one. */
     static <T> List<T> copy(List<T> values) {
         if (values == null || values.isEmpty()) {
             return Collections.emptyList();
@@ -90,7 +73,6 @@ final class Fields {
         return Collections.unmodifiableList(copied);
     }
 
-    /** An unmodifiable copy in iteration order; a null map is the empty one. */
     static <K, V> Map<K, V> copy(Map<K, V> values) {
         if (values == null || values.isEmpty()) {
             return Collections.emptyMap();
@@ -103,7 +85,6 @@ final class Fields {
         return Collections.unmodifiableMap(copied);
     }
 
-    /** An unmodifiable copy in iteration order; a null set is the empty one. */
     static <T> Set<T> copy(Set<T> values) {
         if (values == null || values.isEmpty()) {
             return Collections.emptySet();

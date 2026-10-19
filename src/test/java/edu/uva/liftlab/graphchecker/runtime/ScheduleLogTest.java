@@ -33,22 +33,12 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * The schedule: what the recorder writes, and how the turnstile holds a
- * replay to a prefix -- order, timeout, release, and an interrupt that is the
- * workload's and not a divergence.
- */
 @RunWith(FreshStatics.class)
 public class ScheduleLogTest {
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
     private final ScheduleLog.Sink writer = written::add;
 
-    /**
-     * The node every test's threads run for.  An event with no identity
-     * holds no place in the order, so the test thread opens one request and
-     * every thread a test starts inherits it: they all state one context.
-     */
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
     private static final String VIEW_NODE = "auto0/node0#epoch0";
@@ -68,14 +58,12 @@ public class ScheduleLogTest {
         ScheduleLog.install(writer);
     }
 
-    /** The test's one request, on a freshly reset runtime. */
     private void openRequest() {
         node = new Object();
         RuntimeTraceContext.registerSource(node, NODE);
         request = RuntimeTraceContext.beginRequest(node, "schedule-test");
     }
 
-    /** A fresh schedule, written into {@link #written} again. */
     private void restart() {
         written.clear();
         ScheduleLog.install(writer);
@@ -97,12 +85,10 @@ public class ScheduleLogTest {
                 String.valueOf(millis));
     }
 
-    /** Milliseconds since {@code nanos}. */
     private static long since(long nanos) {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - nanos);
     }
 
-    /** The order's account states {@code fragment}. */
     private static void progress(String fragment) {
         progress("", fragment);
     }
@@ -118,7 +104,6 @@ public class ScheduleLogTest {
         return thread;
     }
 
-    /** Each thread joined and gone. */
     private static void joined(Thread... threads) throws InterruptedException {
         for (Thread thread : threads) {
             thread.join(10000L);
@@ -130,13 +115,6 @@ public class ScheduleLogTest {
         return Collections.synchronizedList(new ArrayList<String>());
     }
 
-    /**
-     * A NATIVE REPRODUCTION HOLDS THE CONFIRMED WORLD'S ORDER at admission
-     * (explore.RealizedOrder): an event waits until the event its row orders
-     * before it was made in another context; one whose before-event does not
-     * come within the order's timeout goes on, and every hold of the run
-     * gives way after it.
-     */
     @Test
     @FreshStatics.Rows(2)
     public void aPlantedRunHoldsTheRealizedOrder() throws Exception {
@@ -156,7 +134,6 @@ public class ScheduleLogTest {
         System.clearProperty(contexts);
         String ours = free[0];
         String theirs = free[1];
-        // Ours waits for theirs; a second of ours for an event never made.
         Path plant = Files.createTempFile("plant", ".jsonl");
         Files.write(plant, Arrays.asList(
                 order(0, theirs, "WRITE", "ZK:/a", ours, "SEND", "x"),
@@ -180,8 +157,6 @@ public class ScheduleLogTest {
         }
     }
 
-    /** Ours SENDs x while another context WRITEs ZK:/a {@code late} ms
-     *  after both started. */
     private static void runBoth(Object other, long late) throws Exception {
         CountDownLatch go = new CountDownLatch(1);
         Thread theirs = started(() -> {
@@ -200,7 +175,6 @@ public class ScheduleLogTest {
         theirs.join();
     }
 
-    /** One realized ORDER row of the plant. */
     private static String order(int row, String beforeContext,
                                 String beforeKind, String beforeSite,
                                 String afterContext, String afterKind,
@@ -218,11 +192,6 @@ public class ScheduleLogTest {
         return order.toString();
     }
 
-    /**
-     * An event survives its row, and a torn last row ends the read; the
-     * recorder counts k per key, drains what came before it was installed,
-     * and nothing is recorded before the window opens.
-     */
     @Test
     public void theRecorderCountsKPerKeyAndDrainsWhatCameFirst()
             throws Exception {
@@ -258,11 +227,6 @@ public class ScheduleLogTest {
         assertEquals(4, sites().size());
     }
 
-    /**
-     * Threads started inside one scope count their events apart: the start
-     * frame is part of an event's context (IDENTITY §8); a thread no woven
-     * start handed work keeps the scope's context.
-     */
     @Test
     public void threadsStartedInOneScopeCountTheirOwnEvents() throws Exception {
         written.clear();
@@ -276,7 +240,6 @@ public class ScheduleLogTest {
             Identity.startWork(site, thread, null);
             spawned.add(thread);
         }
-        // The second thread runs first: its sends are still its own 0 and 1.
         for (int index = spawned.size() - 1; index >= 0; index--) {
             spawned.get(index).start();
             spawned.get(index).join();
@@ -289,7 +252,6 @@ public class ScheduleLogTest {
                 scope + " k=0"), sends());
     }
 
-    /** The SENDs written, each by its context and k. */
     private List<String> sends() {
         List<String> sends = new ArrayList<String>();
         for (ScheduleEvent event : events()) {
@@ -300,16 +262,6 @@ public class ScheduleLogTest {
         return sends;
     }
 
-    /**
-     * A NODE'S VIEW PUBLICATION IS AN EVENT OF ITS OWN (PUBLISH; SGF2
-     * snapshot-no-active: the seed published v8 after the CREATESNAPSHOT
-     * read the recording ran after it): it stands at the node's |VIEW
-     * stance, whatever callback made it, and holds its place.  A
-     * notification's publication whose turn is not due is handed to the
-     * node's publisher; the callback goes on at once (it holds its
-     * collection's refresh lock).  Where no order holds it is published at
-     * once, its event written when the callback ends.
-     */
     @Test
     public void aViewsPublicationIsHeldAtItsPlaceByTheNodesPublisher()
             throws Exception {
@@ -353,13 +305,6 @@ public class ScheduleLogTest {
         assertEquals(VIEW_NODE + "|VIEW", events().get(1).context());
     }
 
-    /**
-     * A NEWER VERSION'S DOOR NEVER GIVES UP AN OLDER ONE IN FLIGHT (review
-     * SA): v8's callback has begun its turn and is still publishing when
-     * v9's reaches its door.  v8's slot is on its way, so v9's turn is not
-     * due: v9 goes to the publisher, the order stays v8 then v9, and what v8
-     * holds back sees v8.  Given up at v9's door, v8's slot let it read v7.
-     */
     @Test(timeout = 30000L)
     public void aNewerVersionsDoorKeepsAnOlderOneInFlight() throws Exception {
         enforce(Arrays.asList(publish(VIEW_NODE, V8), publish(VIEW_NODE, V9),
@@ -397,8 +342,6 @@ public class ScheduleLogTest {
         progress(" 0 given up");
     }
 
-    /** Spins {@code millis}, asking the order between spins where
-     *  {@code asking} (review R2b: blocked on the watchdog, no cycle). */
     private static void held(long millis, boolean asking) {
         long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
         while (System.nanoTime() < until) {
@@ -406,13 +349,6 @@ public class ScheduleLogTest {
         }
     }
 
-    /**
-     * A notification's publication at its node's door, as a store
-     * notification's callback makes it: deferred to the node's publisher,
-     * or published by the caller, its turn settled when the callback ends.
-     *
-     * @return whether it was deferred to the node's publisher
-     */
     private static boolean door(LocationId view, long version, Runnable apply,
                                 String turn) {
         int callback = Confirmation.notificationBegins();
@@ -452,12 +388,6 @@ public class ScheduleLogTest {
         }
     }
 
-    /**
-     * A thread whose event is not next waits for its turn; an interrupt
-     * while it waits is the workload's to see, and the order stands; a
-     * stalled slot is given up and z takes it, an event the order lacks runs
-     * free, and so does everything once the prefix is used up.
-     */
     @Test
     public void aThreadWhoseEventIsNotNextWaitsForItsTurn() throws Exception {
         enforce(prefix("x", "y"));
@@ -508,7 +438,6 @@ public class ScheduleLogTest {
         assertTrue("a free run admits at once", since(before) < 200L);
     }
 
-    /** {@code first}, then {@code rest}. */
     private static List<ScheduleEvent> order(ScheduleEvent first,
                                              List<ScheduleEvent> rest) {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
@@ -517,19 +446,6 @@ public class ScheduleLogTest {
         return order;
     }
 
-    /**
-     * PROGRESS IS WHAT IS NEW ({@link ScheduleLog#newKeys}, as the replay's
-     * watch counts it, {@link ConcolicResultPublisher#watched}): the turns
-     * of a poll loop, each its own root occurrence, doing again what the
-     * first did -- its wake, its send, its write to the queue's next
-     * sequential znode, a site spelled by a fresh port, session id or
-     * object, a view published again at its next version (SGF7-adhoc-09: a
-     * leader election failing once a minute) -- make nothing new; other
-     * code, another location or another
-     * node does, and so does the window's close.  Counted as steps, every
-     * turn moved (PV7-38: PULL replicas polling a leader left down kept
-     * replays alive until replay_timeout_s).
-     */
     @Test
     public void aLoopDoingAgainWhatItDidMakesNothingNew() {
         noRequest();
@@ -580,7 +496,6 @@ public class ScheduleLogTest {
         progress((made + 3) + " distinct event(s), at most ");
     }
 
-    /** The workload closes its window: what the order still holds goes. */
     @Test(timeout = 20000L)
     public void closingTheWindowLetsTheOrderGo() throws Exception {
         timeout(30000L);
@@ -594,8 +509,6 @@ public class ScheduleLogTest {
         progress("2 open at the window's close");
     }
 
-    /** A notification on a thread of its own reading {@code key}: whether a
-     *  write named its work goes to {@code named}. */
     private static Thread reading(Object owner, String key,
                                   List<Boolean> named) {
         return started(() -> MessageDoors.notified("Watcher", "STORE", null,
@@ -605,7 +518,6 @@ public class ScheduleLogTest {
         }));
     }
 
-    /** A write ("W") or a read ("R") of /p at its turn. */
     private static void turn(String kind) {
         if (kind.equals("W")) {
             written("/p");
@@ -614,10 +526,6 @@ public class ScheduleLogTest {
         }
     }
 
-    /**
-     * A write whose slot is past the cut holds nothing of its own, but waits
-     * behind the prefix's write to its location until it is made.
-     */
     @Test(timeout = 30000L)
     public void aWritePastTheCutWaitsBehindThePrefixsWriteThere()
             throws Exception {
@@ -639,12 +547,6 @@ public class ScheduleLogTest {
         progress(" 0 given up");
     }
 
-    /**
-     * A WRITE WAITING ONLY BEHIND READ SLOTS stands a grace, not the
-     * ceiling, while the reader's thread computes elsewhere: solr-adhoc-31's
-     * test client polled past its recorded read, and the write behind it
-     * waited CEILING graces (16 s) at each such read.
-     */
     @Test(timeout = 60000L)
     public void aWriteWaitingOnlyBehindReadsStandsNoCeiling()
             throws Exception {
@@ -669,8 +571,6 @@ public class ScheduleLogTest {
                 took < 3 * 300L);
     }
 
-    /** A fresh run on this thread, its schedule empty, with no request
-     *  standing, so the next one roots its lineage. */
     private void noRequest() {
         written.clear();
         reset();
@@ -678,8 +578,6 @@ public class ScheduleLogTest {
         request = 0L;
     }
 
-    /** One workload request {@code api}, rooting its lineage, running
-     *  {@code inside}. */
     private void request(String api, Runnable inside) {
         long token = RuntimeTraceContext.beginRequest(node, api);
         try {
@@ -689,18 +587,11 @@ public class ScheduleLogTest {
         }
     }
 
-    /** One write to the shared store at {@code location}: its bracket. */
     private static void written(String location) {
         MessageDoors.storeEnded("STORE", MessageDoors.storing("STORE",
                 location));
     }
 
-    /**
-     * A signal sent while a held wait stands outside the wait set is state
-     * the wait reads: after its quantum ran out under the notifier's
-     * monitor, after the window's opening took it out, and while a held
-     * await reacquires its lock.
-     */
     @Test
     public void aNotifySentWhileAHeldWaitIsOutOfTheWaitSetIsNotLost()
             throws Exception {
@@ -708,20 +599,15 @@ public class ScheduleLogTest {
         Object monitor = new Object();
         for (boolean opening : new boolean[] {false, true}) {
             restart();
-            // Opening: the wait starts free, on the wall clock, in the set.
             if (opening) RecordingWindow.reset();
             enforce(prefix("x"));
             Thread idle = waits(monitor, WORK, 1, true).get(0);
             if (opening) Thread.sleep(100L);
             synchronized (monitor) {
                 if (opening) {
-                    // The opening takes the wait out of the wait set; the
-                    // notify that follows reaches only its mark.
                     RecordingWindow.open();
                     TimedWaits.windowOpened();
                 } else {
-                    // Held past a quantum: the wait stands outside the wait
-                    // set, blocked on this monitor, when the notify is sent.
                     Thread.sleep(200L);
                 }
                 TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
@@ -764,11 +650,6 @@ public class ScheduleLogTest {
         assertTrue(written.isEmpty());
     }
 
-    /**
-     * A notify ends one wait and a notifyAll every one, held or free.  An
-     * untimed wait the notifyAll carrying another's notify woke goes back
-     * to waiting: it ends by its own notify only.
-     */
     @Test
     public void aNotifyEndsOneWaitAndANotifyAllEndsEvery() throws Exception {
         timeout(30000L);
@@ -800,10 +681,6 @@ public class ScheduleLogTest {
         }
     }
 
-    /**
-     * {@code count} woven waits at {@code site} on {@code monitor}, each
-     * standing in it: a minute long when {@code timed}, else untimed.
-     */
     private static List<Thread> waits(Object monitor, String site, int count,
                                       boolean timed)
             throws InterruptedException {
@@ -827,7 +704,6 @@ public class ScheduleLogTest {
         }
         waiting.await();
         synchronized (monitor) {
-            // Every wait has entered it.
         }
         return threads;
     }
@@ -840,7 +716,6 @@ public class ScheduleLogTest {
         return alive;
     }
 
-    /** One event of this thread's context inside a recorded occurrence. */
     private static ScheduleEvent inOccurrence(Kind kind, String site,
                                               String occurrence) {
         return ScheduleEvent.of(0L, kind,
@@ -848,31 +723,25 @@ public class ScheduleLogTest {
                 occurrence, "");
     }
 
-    /** A thread that makes one event, blocking for its turn; started. */
     private static Thread observer(Kind kind, String site) {
         return started(() -> ScheduleLog.observe(kind, site));
     }
 
-    /** Holds this run to {@code prefix}, with no rest after it. */
     private static void enforce(List<ScheduleEvent> prefix) {
         enforce(prefix, Collections.<ScheduleEvent>emptyList());
     }
 
-    /** Holds this run to {@code prefix}, then {@code rest}. */
     private static void enforce(List<ScheduleEvent> prefix,
                                 List<ScheduleEvent> rest) {
         ScheduleLog.enforceForTests(prefix, rest, false);
     }
 
-    /** A prefix of SEND events at these sites, on this thread's context. */
     private static List<ScheduleEvent> prefix(String... sites) {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
         for (String site : sites) events.add(event(SEND, site));
         return events;
     }
 
-    /** One event as this JVM's threads compute it: every one of them runs
-     *  in the test's one request, so every one states the same context. */
     private static ScheduleEvent event(Kind kind, String site) {
         return inOccurrence(kind, site, "");
     }
@@ -899,8 +768,6 @@ public class ScheduleLogTest {
         return sites;
     }
 
-    /** A fresh run held to the recording of {@code turns} (request:at),
-     *  each made by {@code make}. */
     private void enforceRecorded(String turns, long timeout,
                                  java.util.function.Consumer<String> make) {
         noRequest();

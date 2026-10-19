@@ -15,25 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Which decisions EXPLORE may flip, as far as the iteration's ZooKeeper
- * chain goes ({@code zk_chain.jsonl}, {@link ZkChain}; its keys read off
- * the seed's composition, {@code compose.ZkKeysMain}).  The causal chain
- * alone decides which store values a flip may move (owner 2026-10-15:
- * weaving the classes that hold a node's view adds no flip): a decision is
- * one only where its term names a root, a message's field, a heap read, or
- * a chain read -- a leaf the chain's keys cover, a read of a chain path's
- * store or view.  Store values off the chain (leaves no key covers, reads
- * of a path or a view the chain does not hold), the containers a decode
- * builds, and nothing it classifies decide no flip: no value the question
- * rests on, and from the next replay on such a leaf crosses as a constant.
- * A leaf of a chain path no keys row names is the whole document's ({@link
- * ZkChain#grown}).  No chain: every decision as before.
- */
 final class ZkKeys {
-    /** The chain's keyed paths' pointers, by slot; null: no chain. */
     private final Map<String, Set<String>> pointers;
-    /** The slots of the chain's paths. */
     private final Set<String> paths = new HashSet<String>();
 
     private ZkKeys(ZkChain chain) {
@@ -47,10 +30,6 @@ final class ZkKeys {
         return new ZkKeys(chain);
     }
 
-    /**
-     * Whether a decision may be flipped as far as the chain goes: its term
-     * names a root, a message's field, a heap read or a chain read.
-     */
     boolean flippable(Corpus corpus, String sessionId, DecisionRow decision) {
         if (pointers == null) return true;
         String term = FlipQuery.statedTerm(corpus, sessionId,
@@ -86,8 +65,6 @@ final class ZkKeys {
         return false;
     }
 
-    /** Whether the chain holds a leaf: its path's keys cover its pointer,
-     *  or its path is the chain's with no keys (the whole document). */
     private boolean onChain(ContentPort.Parsed leaf) {
         Set<String> keys = pointers.get(leaf.location);
         if (keys == null) return paths.contains(leaf.location);

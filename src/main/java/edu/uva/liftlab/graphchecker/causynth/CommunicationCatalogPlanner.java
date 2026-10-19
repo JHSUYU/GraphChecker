@@ -22,7 +22,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
 
-/** The static communication and loop catalog of one target-selected slice. */
 final class CommunicationCatalogPlanner {
     private CommunicationCatalogPlanner() {
     }
@@ -31,15 +30,9 @@ final class CommunicationCatalogPlanner {
         final List<Map<String, Object>> callSites = new ArrayList<>();
         final List<Map<String, Object>> loops = new ArrayList<>();
         final List<Map<String, Object>> gaps = new ArrayList<>();
-        /** Communication-boundary callees: where a demand walk stops. */
         final Set<String> callSiteCallees = new LinkedHashSet<>();
     }
 
-    /**
-     * Publishes the wire ports and the loops of the selected slice; seeding a
-     * port's captures selected their methods.  A port with no capture on one
-     * side carries nothing.
-     */
     static Result plan(Collection<String> selectedMethods,
                        Function<String, Body> bodies,
                        List<WireFlowCatalog.WireFlow> flows,
@@ -60,7 +53,6 @@ final class CommunicationCatalogPlanner {
             }
         }
 
-        // Loops of every selected method, communicating or not.
         for (String method : ordered) {
             Body body = body(bodies, method);
             if (body == null) continue;
@@ -69,7 +61,6 @@ final class CommunicationCatalogPlanner {
         return result;
     }
 
-    /** Publishes one row per retained loop of {@code method}. */
     private static void catalogLoops(String method, Body body,
                                      DeclaredLoopBodyBounds bounds,
                                      Result result) {
@@ -106,7 +97,6 @@ final class CommunicationCatalogPlanner {
             }
             int declaredBound = bounds.bound(controlSites);
             if (!fixedCount && declaredBound == 0) {
-                // Runs under the inherited K_L: a prefix nobody stated.
                 result.gaps.add(gap(
                         GapKind.BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
                         GapClass.DIAGNOSTIC,
@@ -114,8 +104,6 @@ final class CommunicationCatalogPlanner {
                                 + LoopBoundPolicy.declaredDefault(),
                         method, loopSiteId, controlSites.toString()));
             } else if (fixedCount && declaredBound == 0) {
-                // Named, not demanded: the trip count is the array length,
-                // observed exactly, so a declared K_L would only weaken it.
                 result.gaps.add(gap(
                         GapKind.BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED,
                         GapClass.DIAGNOSTIC,
@@ -147,7 +135,6 @@ final class CommunicationCatalogPlanner {
                 if (position == null || shape == null) continue;
                 String site = SiteId.of(method,
                         position.intValue());
-                // One row per exiting guard.
                 if (loop.members.containsAll(shape.successors)) continue;
                 Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
                 exit.put("siteId", site);
@@ -184,7 +171,6 @@ final class CommunicationCatalogPlanner {
         }
     }
 
-    /** Exact, unambiguous innermost natural-loop owner of every branch. */
     private static Map<Unit, CfgLoopControl.RetainedLoop>
             innermostLoopsByBranch(
             Body body, List<CfgLoopControl.RetainedLoop> loops) {
@@ -217,7 +203,6 @@ final class CommunicationCatalogPlanner {
                     selected = candidate;
                 }
             }
-            // Equal or overlapping bodies: no unique innermost owner.
             if (selected != null) result.put(unit, selected);
         }
         return result;
@@ -226,7 +211,6 @@ final class CommunicationCatalogPlanner {
     static final String LOOP_ROW_KIND = "RETAINED_LOOP";
 
 
-    /** One schema-stamped catalog row of {@code kind}. */
     static Map<String, Object> newRow(String kind) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put(CommunicationCatalogContract.SCHEMA_VERSION_FIELD,
@@ -235,10 +219,6 @@ final class CommunicationCatalogPlanner {
         return row;
     }
 
-    /**
-     * One catalog gap stating its own kind and class, like a {@link
-     * edu.uva.liftlab.graphchecker.contract.GapRow}; no later stage overrules.
-     */
     static Map<String, Object> gap(GapKind kind, GapClass cls, String reason,
                                    String method, String siteId,
                                    String detail) {

@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# pick-lift.sh [min-free-gb]: prints the host of LIFTS (tools/lib/gc-env.sh)
-# with the most free memory per unit of load among those where taking
-# min-free-gb (default 6) still leaves the host at most
-# CAUSYNTH_HOST_MAX_USED_PCT percent full.  Prints nothing when none
-# qualifies.  With LIFTS unset it never picks the control host, lift11,
-# where the sessions run (PARALLEL §1): gc-env.sh's default keeps lift11 as
-# a campaign's worker, never as onlift's choice; a LIFTS the caller sets is
-# taken as it is.
 lifts_given=${LIFTS+set}
 # shellcheck source=lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/gc-env.sh"

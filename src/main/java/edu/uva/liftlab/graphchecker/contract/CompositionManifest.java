@@ -2,13 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 
-/**
- * CONTRACT-SPEC §4: everything one anchor's composition stands on; with the
- * {@code .smt2} beside it and z3's verdict, the deliverable, and without
- * them the claim cannot be re-checked.  Written by Gson (ComposeMain), field
- * by field: the fields are the manifest's shape.  It names no location, so
- * a composition copied elsewhere is the same bytes.
- */
 public final class CompositionManifest {
     private final OccurrenceAddress anchor;
     private final List<PathEntry> paths;

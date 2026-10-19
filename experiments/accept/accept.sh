@@ -1,55 +1,4 @@
 #!/usr/bin/env bash
-# accept.sh -- the acceptance run: one case at a time, each campaign followed by
-# the plain z3 probe and a readable report.
-#
-#   DRY=1 bash accept.sh        validate everything, run nothing
-#   bash accept.sh              run it (re-execs itself under setsid)
-#
-# Nothing here decides what a case proved.  The campaign publishes
-# schedule/final/result.json, report.py reads the claim out of it and compares
-# the mechanism against this case's expected one; cone.py checks in the
-# published formula that the witness's moved roots are causes of its fatal;
-# probe.sh asks z3 about the published formula and is reported beside the
-# verdict, never gating it.
-#
-# Environment (every path is an argument or an env var; none is baked in)
-#   CAUSYNTH_CUSTOM_JDK_HOME  REQUIRED -- the concolic VM image.  Unset, this
-#              script refuses by name rather than guessing an image: every
-#              case's execute.sh reads exactly this variable.
-#   JAR        the jar under test.  Default: <repo>/target/GraphChecker-1.0-
-#              SNAPSHOT-jar-with-dependencies.jar, where <repo> is the
-#              GraphChecker tree THIS script is committed in.  Setting JAR
-#              moves the whole run to that jar's own repo (the jar's
-#              grandparent): run_engine.sh resolves graphchecker_jar relative
-#              to the tree it lives in, so the jar and the tree cannot be
-#              chosen separately without the harness lying about what ran.
-#   OUT        output root.  Default: <repo>/target/accept (target/ is
-#              .gitignore'd, so a run leaves the work tree clean).
-#   CASES      space-separated case ids.  Default: all nine.
-#   CASE_TIMEOUT_SECONDS  per-case wall budget, default 21600 (6 h).  A
-#              runaway guard, not a schedule: hdfs-17899-bug1 takes ~1.8 h.
-#   SKIP_BUILD=1          use the jar already in <repo>/target, run no mvn
-#   Z3_BIN / Z3_TIMEOUT_SECONDS   default tools/lib/gc-env.sh's and 600
-#   MIN_FREE_GB / DISK_WAIT_SECONDS   default 6 G and 1800 s, free on the
-#              filesystem OUT is written to (acc_free_gb)
-#   PRUNE=1 / CASE_CAP_MB DELETES every file of a finished case that is not
-#              named in ACCEPT_KEEP_GLOBS below.  Off by default: what a case
-#              publishes moves with the pipeline, and a keep list that has
-#              fallen behind deletes the evidence of exactly the stage under
-#              test.  Turn it on for a long campaign on a small disk, after
-#              reading that list against the run you are pruning.
-#
-# Cases run one at a time.  A campaign already runs as many obligations as
-# its hosts' memory admits, and the standing ruling is at most two campaign
-# lanes on this host; a second lane is a second invocation of this script,
-# not a knob.
-#
-# Process discipline: the run re-execs under setsid, so no signal meant for
-# another run reaches this one; its group id is written to $OUT/pgid.  It is
-# not the whole run -- a case runs under `timeout`, which takes a group of its
-# own, and the engine gives each replay and remote worker one too -- so a run
-# is stopped by its output directory (tools/rounds/stop-run.sh).  Nothing is
-# ever killed by this script.
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -67,7 +16,6 @@ ACCEPT_DISK_WAIT_S=${DISK_WAIT_SECONDS:-1800}
 ACCEPT_CASE_CAP_MB=${CASE_CAP_MB:-300}
 ACCEPT_PRUNE=${PRUNE:-0}
 
-# This file lives at <repo>/experiments/accept/accept.sh.
 SELF_REPO=$(cd "$here/../.." && pwd -P)
 DRY=${DRY:-0}
 if [[ -n "${JAR:-}" ]]; then
@@ -77,7 +25,6 @@ else
   JAR=$REPO/target/$ACCEPT_JAR_NAME
 fi
 IMG=${CAUSYNTH_CUSTOM_JDK_HOME:-}
-# Every case runs through the one launcher; a case directory is declarations.
 ACCEPT_LIB="$REPO/experiments/lib"
 OUT=${OUT:-$SELF_REPO/target/accept}
 read -r -a CASE_LIST <<<"${CASES-${ACCEPT_ALL_CASES[*]}}"
@@ -85,11 +32,6 @@ CASE_TIMEOUT=${CASE_TIMEOUT_SECONDS:-21600}
 SKIP_BUILD=${SKIP_BUILD:-0}
 
 acc_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
-# The G free where the run writes: OUT's filesystem, or before the run makes
-# OUT its nearest existing parent's (h4 wrote to a home `df /` never saw).  A
-# 1 MB write there must succeed first, and a refused one is 0 G: a per-user
-# quota on an NFS export is not in df's numbers (h4 lost three cases to
-# "Disk quota exceeded" with the pool 32 T free).
 acc_free_gb() {
   local at=$OUT probe=""
   until [[ -d "$at" ]]; do at=$(dirname "$at"); done
@@ -104,9 +46,6 @@ acc_free_gb() {
 }
 acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
-# The case directory a case id names and its run.sh argument, "<dir> <arg>"
-# ("-" for none: lib/case-id.sh); a directory that holds no case for an id no
-# experiment names, which the preflight refuses.
 # shellcheck source=../lib/case-id.sh
 source "$here/../lib/case-id.sh"
 acc_case() {
@@ -120,7 +59,6 @@ acc_case_dir() {
   echo "$root/out/$c"
 }
 
-# Wait for headroom rather than racing another lane for it.
 acc_await_disk() {
   local need=$1 waited=0 free
   while :; do
@@ -132,9 +70,6 @@ acc_await_disk() {
   done
 }
 
-# ---------------------------------------------------------------------------
-# One case, out of the experiment's own machinery
-# ---------------------------------------------------------------------------
 acc_build_jar() {
   [[ "$SKIP_BUILD" == 1 ]] && { acc_log "SKIP_BUILD=1: using $JAR"; return 0; }
   acc_log "building $ACCEPT_JAR_NAME in $REPO"
@@ -145,11 +80,6 @@ acc_build_jar() {
   return $rc
 }
 
-# The case directory holds declarations; experiments/lib/run.sh turns
-# them into the campaign's environment and runs run_engine.sh with the case's
-# workflow.properties.  This function starts that and states the two things a
-# harness run must not inherit -- a fresh output directory and the VM image --
-# and nothing else.
 acc_run_case() {  # acc_run_case <case-id>
   local case_id=$1 dir="" arg=""
   read -r dir arg < <(acc_case "$case_id")
@@ -177,10 +107,6 @@ acc_run_case() {  # acc_run_case <case-id>
     echo "### ---- campaign ----" >>"$log"
     (
       cd "$dir" || exit 97
-      # The campaign's budget is what is left of the case's (SECONDS: this
-      # --run-case process, which `timeout` started), so it publishes a
-      # claim before the case timeout kills it (run_engine.sh
-      # campaign_budget_s).
       export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CUSTOM_JDK_HOME="$IMG" \
         CAUSYNTH_CAMPAIGN_BUDGET_S=$(( CASE_TIMEOUT - SECONDS ))
       bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" campaign
@@ -192,13 +118,6 @@ acc_run_case() {  # acc_run_case <case-id>
   return $rc
 }
 
-# ---------------------------------------------------------------------------
-# Optional pruning
-# ---------------------------------------------------------------------------
-# Everything a later reading of a finished case needs, as globs relative to
-# the case directory.  A name here is one the pipeline writes: read the list
-# against the run you are pruning before you set PRUNE=1, because a name the
-# pipeline has moved on from is the evidence this harness exists to read.
 ACCEPT_KEEP_GLOBS=(
   'schedule/final/result.json'
   'schedule/final/candidate.smt2'
@@ -251,8 +170,6 @@ acc_prune_case() {
   fi
   before=$(acc_dir_mb "$dir")
   keep=$(mktemp) || return 0
-  # A pattern that matches nothing stays literal and the -f test rejects it,
-  # so no shell option is touched on the caller's behalf.
   for rel in "${ACCEPT_KEEP_GLOBS[@]}"; do
     for f in "$dir"/$rel; do
       [[ -f "$f" ]] && printf '%s\n' "$f" >>"$keep"
@@ -272,23 +189,12 @@ acc_prune_case() {
   return 0
 }
 
-# ---------------------------------------------------------------------------
-# Internal entry point
-# ---------------------------------------------------------------------------
-# `accept.sh --run-case <case-id>` runs exactly one case's validate+campaign
-# and exits with its code.  The main loop below calls it this way because
-# `timeout` needs a process of its own, and because a case must not be able to
-# take the harness's own shell down with it.  The loop passes the resolved
-# JAR, OUT and VM image in the environment, so the child derives the same
-# repo, output root and image as its parent and guesses nothing.
 if [[ "${1:-}" == "--run-case" ]]; then
   [[ -n "$IMG" ]] || { echo "CAUSYNTH_CUSTOM_JDK_HOME is unset" >&2; exit 2; }
   acc_run_case "${2:?usage: accept.sh --run-case <case-id>}"
   exit $?
 fi
 
-# One session of our own, so every child is in one group we may signal and no
-# other lane's campaign ever is.
 if [[ "$DRY" != 1 && "${ACCEPT_SESSION:-0}" != 1 ]]; then
   export ACCEPT_SESSION=1
   exec setsid bash "$0" "$@"
@@ -302,7 +208,6 @@ acc_log "  out   $OUT"
 acc_log "  cases ${CASE_LIST[*]:-(none)}"
 acc_log "  per-case budget ${CASE_TIMEOUT}s, prune=$ACCEPT_PRUNE"
 
-# ---- preflight ------------------------------------------------------------
 fail=0
 check() { # check <label> <ok|no> <detail>
   if [[ "$2" == ok ]]; then printf '  OK    %-26s %s\n' "$1" "$3"
@@ -371,16 +276,12 @@ if [[ "$DRY" == 1 ]]; then
 fi
 (( fail > 0 )) && { acc_log "ABORT: $fail preflight failure(s)"; exit 2; }
 
-# ---- run ------------------------------------------------------------------
 mkdir -p "$OUT"/logs "$OUT"/out "$OUT"/report
 echo $$ >"$OUT/pgid"
 acc_log "process group $$ (stop the run by its OUT: tools/rounds/stop-run.sh)"
 acc_build_jar || { acc_log "ABORT: build failed"; exit 2; }
 
 TSV="$OUT/summary.tsv"
-# Header once, rows appended: cases are run one at a time into the same OUT, so
-# rewriting the header on every invocation would drop every row an earlier
-# invocation wrote.
 [[ -s "$TSV" ]] || printf 'case\texit\telapsed\tclaim\tfinalStatus\tblockers\tgaps\tplain\tbuggy\tother\tverdict\treason\tfinding\n' >"$TSV"
 
 for c in "${CASE_LIST[@]}"; do

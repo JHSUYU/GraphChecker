@@ -1,5 +1,3 @@
-# HDFS-17897: the client's cached data-encryption key is rejected by the
-# striped block-group checksum leader.  Declarations only.
 repo=${GC_TREES}/hadoop-hdfs-study-r7
 test_class=org.apache.hadoop.hdfs.TestCausynthStripedChecksum
 test_method=testStaleEncryptionKeyFailsStripedChecksum

@@ -18,13 +18,7 @@ import java.util.List;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPOutputStream;
 
-/**
- * Writes the discovery artifact set of one static analysis run.  Target,
- * call-site and loop rows are not published on their own: they travel in the
- * scope map and {@code region_skeletons}.
- */
 final class CausynthArtifactWriter {
-    /** The candidate dataflow graph's file in the campaign's output. */
     static final String CANDIDATE_GRAPH = "candidate_dataflow_edges.jsonl.gz";
 
     private CausynthArtifactWriter() {
@@ -42,9 +36,6 @@ final class CausynthArtifactWriter {
                 program.regions);
         writeGzipJsonl(outputDir.resolve("communication_gaps.jsonl.gz"),
                 program.communicationGaps);
-        // SYMBOL-SCOPE §2.3: plain JSONL for EXPLORE.  Built over the
-        // door-woven bodies before any hook is woven, so guard ids share the
-        // woven branch sites' numbering.
         ArtifactIO.replaceJsonl(outputDir.resolve(StaticScopeMap.FILE),
                 staticScopeMap);
         ArtifactIO.replaceJsonl(outputDir.resolve(ScopeFrontier.FILE),
@@ -61,13 +52,11 @@ final class CausynthArtifactWriter {
                         StandardCharsets.UTF_8))) {
             for (Object value : values) {
                 writer.write(JsonFields.WRITER.toJson(value));
-                // Not the platform newline: stable hashes.
                 writer.write('\n');
             }
         }
     }
 
-    /** Discovery artifacts favor iteration speed over maximum compression. */
     private static final class FastGzipOutputStream
             extends GZIPOutputStream {
         private FastGzipOutputStream(OutputStream output)

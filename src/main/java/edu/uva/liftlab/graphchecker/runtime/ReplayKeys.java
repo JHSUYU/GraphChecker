@@ -30,33 +30,10 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * The RSA key pairs of a concolic replay, from a pool instead of a prime
- * search.
- *
- * <p>The concolic VM interprets {@code java.math.BigInteger} with none of
- * HotSpot's intrinsics: one 2048-bit RSA key pair takes it 40-70 s, the stock
- * JDK 0.1-0.3 s.  A Solr node draws one as it starts ({@code CoreContainer}'s
- * {@code PublicKeyHandler}, {@code CryptoKeys.RSAKeyPair}): four nodes spent
- * 220 s of a 470 s seed replay in the search (solr-adhoc
- * OverseerCollectionMessageHandler-679, a jstack every 3 s), and every
- * obligation's replay of that workload spent it again.  A key pair is a draw
- * of {@code SecureRandom} bits no stage reads -- no root, row or symbol is
- * made of it -- so a replay JVM draws its RSA key pairs from a fixed pool,
- * pairs of public exponent 65537 generated once on the stock JDK ({@link
- * #POOL}: four per size of 1024, 2048, 3072 and 4096 bits), one after another
- * per size and the first again after the last: two pairs drawn in a row
- * differ, as two searches' would, and every replay draws the same ones.  A
- * size or exponent the pool has no pair of is the JDK's own search; either
- * way the replay log names it once per size.  The recording, on the stock
- * JDK, searches as it always does.</p>
- */
 public final class ReplayKeys extends Provider {
     private static final long serialVersionUID = 1L;
     private static final String NAME = "CausynthReplayKeys";
-    /** "{@code <bits> <base64 PKCS#8 RSA private CRT key>}" per line. */
     private static final String POOL = "replay-rsa-keys.txt";
-    /** The sizes the replay log has named. */
     private static final Set<Integer> NAMED =
             ConcurrentHashMap.<Integer>newKeySet();
 
@@ -65,16 +42,13 @@ public final class ReplayKeys extends Provider {
         put("KeyPairGenerator.RSA", Rsa.class.getName());
     }
 
-    /** Puts this provider first, once per replay JVM, before the workload. */
     static void install() {
         if (Security.getProvider(NAME) == null) {
             Security.insertProviderAt(new ReplayKeys(), 1);
         }
     }
 
-    /** The RSA generator: the JDK's, with its pair drawn from the pool. */
     public static final class Rsa extends KeyPairGeneratorSpi {
-        /** The JDK's own: it checks every parameter as it always does. */
         private final KeyPairGenerator jdk;
         private int bits = 2048;
         private BigInteger exponent = RSAKeyGenParameterSpec.F4;
@@ -117,8 +91,6 @@ public final class ReplayKeys extends Provider {
         }
     }
 
-    /** The pool, read on the first draw, with this layer's observation
-     *  paused: no workload path holds its decoding. */
     private static final class Pool {
         static final Map<Integer, List<KeyPair>> PAIRS = read();
         static final Map<Integer, AtomicInteger> DRAWN =

@@ -15,31 +15,16 @@ import edu.uva.liftlab.graphchecker.compose.ContainerSmtCodec.Host;
 import edu.uva.liftlab.graphchecker.compose.ContainerSmtCodec.Sort;
 import edu.uva.liftlab.graphchecker.compose.ContainerSmtCodec.Term;
 
-/**
- * THE CONTAINER STATE MODEL: the {@code Value}, {@code IndexedState} and
- * {@code AssocState} datatypes and functions, and the one boxing between a
- * Java cell and a {@code Value}.  It reads no recorded expression; lowering
- * container operations is {@link ContainerSmtCodec}'s.
- */
 public final class ContainerStateModel {
     private ContainerStateModel() {
     }
 
-    /**
-     * Both operations denote the exact empty container.  They state different
-     * provenance, which the caller keeps; the lowering is the same.
-     */
     static boolean emptiesState(String operation) {
         return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
     }
 
-    /**
-     * The cell that holds Java null: an absent element, a refused read's
-     * residue, and a {@code null} leaf compared against cells.
-     */
     public static final String NULL_CELL = "(VRef nullRef)";
 
-    /** One tagged transport value shared by path solving and composition. */
     public static String valueDatatypeDeclaration() {
         return "(declare-datatypes () ((Value"
                 + " (VByte (valueByte Int))"
@@ -54,21 +39,10 @@ public final class ContainerStateModel {
                 + " (VString (valueString String)))))";
     }
 
-    /**
-     * The reference a String has where a reference is asked of it
-     * ({@link #unboxValue}, a String compared with a reference): {@code
-     * (string_ref s)}, whose facts ({@link #stringRefFacts}) make it never
-     * null and one per String.
-     */
     public static String stringRef(String string) {
         return "(string_ref " + string + ")";
     }
 
-    /**
-     * What a String's reference is, stated for the String the query names
-     * (quantifier-free): its inverse gives the String back, so two different
-     * Strings are two references, and it is not null.
-     */
     public static String stringRefFacts(String string) {
         String ref = stringRef(string);
         return "(and (= (ref_string " + ref + ") " + string + ") (not (= "
@@ -87,17 +61,11 @@ public final class ContainerStateModel {
                 + value + ")";
     }
 
-    /**
-     * The tag a boxed cell of {@code javaType} may be unboxed by, or
-     * {@code ""} to stay boxed: unknown types and reference cells, since
-     * {@code (VRef nullRef)} is also a refused read's residue.
-     */
     public static String unboxableCellKind(String javaType) {
         String kind = valueKind(javaType);
         return "VRef".equals(kind) ? "" : kind;
     }
 
-    /** The {@code Value} constructor a cell of this Java type is boxed by. */
     private static String valueKind(String javaType) {
         String integral = integralValuePart(javaType, true);
         if (!integral.isEmpty()) return integral;
@@ -113,7 +81,6 @@ public final class ContainerStateModel {
         return "";
     }
 
-    /** A wrapper as the primitive it boxes, anything else as itself. */
     private static String cellDescriptor(String javaType) {
         String descriptor = JavaPrimitiveBoxing
                 .primitiveDescriptor(javaType);
@@ -138,27 +105,10 @@ public final class ContainerStateModel {
         return ORDERED;
     }
 
-    /**
-     * What reads a map's iteration order.  A query that reaches none of
-     * these never asks it, and no operation of its maps keeps the order
-     * ({@link #unordered}).  A view in no order ({@code assoc_view_key},
-     * {@code assoc_view_position}) reads none: it is keyed by its state's
-     * term and size, not by the state.
-     */
     public static final Set<String> ORDER_READERS =
             Collections.unmodifiableSet(new LinkedHashSet<String>(
                     Arrays.asList("assoc_key_at", "assoc_position_of")));
 
-    /**
-     * One preamble line as a query that reads no map's order
-     * ({@link #ORDER_READERS}) needs it: a put or a removal leaves the order
-     * and the positions as they were.  Nothing reads them and no state is
-     * compared or chosen whole ({@code ContainerSmtCodec#term}), so the
-     * query is the same question; but a removal's renumbering is a lambda
-     * over arrays, and z3 answers a query holding one "incomplete (theory
-     * array)" or not at all (hdfs-11741 L1: valuation 0 undecided on two
-     * fatal-observing paths, sat in seconds without it).
-     */
     public static String unordered(String line) {
         String kept = UNORDERED.get(line);
         return kept == null ? line : kept;
@@ -182,8 +132,6 @@ public final class ContainerStateModel {
                         + " (assoc_position (Array Value Int))))))",
                 "(declare-fun indexed_state_of (Ref) IndexedState)",
                 "(declare-fun assoc_state_of (Ref) AssocState)",
-                // A String cell's reference and its inverse
-                // (#stringRef).
                 "(declare-fun string_ref (String) Ref)",
                 "(declare-fun ref_string (Ref) String)",
                 "(define-fun indexed_read ((s IndexedState) (i Int)) Value"
@@ -197,9 +145,6 @@ public final class ContainerStateModel {
                         + " (+ (indexed_size s) 1)"
                         + " (store (indexed_elements s)"
                         + " (indexed_size s) v)))",
-                // An append under a guard (a stream's filtered member), the
-                // guard inside the store as assoc_put_if's: with g false
-                // the state is s's.
                 "(define-fun indexed_append_if ((s IndexedState) (v Value)"
                         + " (g Bool)) IndexedState"
                         + " (let ((n (indexed_size s)))"
@@ -214,18 +159,8 @@ public final class ContainerStateModel {
                         + " (select (assoc_order s) i))",
                 "(define-fun assoc_position_of ((s AssocState) (k Value))"
                         + " Int (select (assoc_position s) k))",
-                // A view's positions where the chain's order is not the
-                // one the map's class iterates in: whatever bijection with
-                // its keys the view facts state, and no order
-                // (ContainerSmtCodec.ViewOrder.FREE), over the state's
-                // term as an Int (ContainerSmtCodec#tag) and its size: an
-                // uninterpreted function of a state a removal built holds a
-                // lambda, and z3 answers that "incomplete (theory array)".
                 "(declare-fun assoc_view_key (Int Int Int) Value)",
                 "(declare-fun assoc_view_position (Int Int Value) Int)",
-                // Every array-valued choice is pushed inside a store: an
-                // array-valued ite with a symbolic condition and a lambda
-                // branch is outside what z3 decides (hdfs-11741 v79).
                 "(define-fun assoc_put ((s AssocState) (k Value)"
                         + " (v Value)) AssocState"
                         + " (let ((h (not (assoc_has s k)))"
@@ -240,9 +175,6 @@ public final class ContainerStateModel {
                         + " (ite h n (select (assoc_position s) k)))"
                         : " " + KEPT_ORDER + " " + KEPT_POSITION)
                         + ")))",
-                // A removal under a guard: the guard is pushed INSIDE the
-                // renumbering lambdas, and with h false every component is
-                // s's own.
                 "(define-fun assoc_remove_if ((s AssocState) (k Value)"
                         + " (g Bool)) AssocState"
                         + " (let ((h (and g (assoc_has s k)))"
@@ -267,8 +199,6 @@ public final class ContainerStateModel {
                         + ")))",
                 "(define-fun assoc_remove ((s AssocState) (k Value))"
                         + " AssocState (assoc_remove_if s k true))",
-                // A put under a guard, the guard inside each component as
-                // assoc_remove_if's: with g false every component is s's.
                 "(define-fun assoc_put_if ((s AssocState) (k Value)"
                         + " (v Value) (g Bool)) AssocState"
                         + " (let ((h (and g (not (assoc_has s k))))"
@@ -287,8 +217,6 @@ public final class ContainerStateModel {
 
     private static final List<String> ORDERED = preamble(true);
 
-    /** Each line of {@link #ORDERED} that keeps the order, as it is kept
-     *  by a query reading none. */
     private static final Map<String, String> UNORDERED = unorderedLines();
 
     private static Map<String, String> unorderedLines() {
@@ -307,13 +235,6 @@ public final class ContainerStateModel {
         if (value == null || value.sort != Sort.VALUE) return value;
         String kind = valueKind(javaType);
         if (cellSort == Sort.REF) {
-            // A reference cell holds an object's reference, the null cell,
-            // or a String: a String stored in an Object-valued container, and
-            // an enum constant, which the VM states by its name (a
-            // ConStringSymbolExp of type String: CollectionAction's actions
-            // map, solr-bugs-reindex-cleanup SGF, whose every path read a
-            // VString cell as a VRef and contradicted itself).  A String's
-            // reference is its string_ref: never null, one per String.
             String string = "(valueString " + value.text + ")";
             host.require("(or ((_ is VRef) " + value.text + ") ((_ is VString) "
                     + value.text + "))");
@@ -323,8 +244,6 @@ public final class ContainerStateModel {
                     + value.text + ") " + stringRef(string) + ")", Sort.REF);
         }
         if (cellSort == Sort.STRING) {
-            // A String a container answers may be null (a value stored
-            // null): the cell is a String or the null cell, and says which.
             String isNull = "(= " + value.text + " " + NULL_CELL + ")";
             host.require("(or ((_ is VString) " + value.text + ") " + isNull
                     + ")");

@@ -15,71 +15,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * The one ledger of owed arms; a round is what is still owed.
- *
- * <p><b>An arm is a fact about a PLANNED OCCURRENCE under what its guard
- * depends on, never about a session.</b> Its key is {@link
- * ObligationFactory#obligationId}: task ({@link ClosurePlanner#taskId}), site,
- * ordinal, flipped outcome and {@link ObligationFactory#dependence} (the path
- * condition and the world the guard rests on). It is owed once across the
- * corpus and settled when either:</p>
- *
- * <ul>
- *   <li><b>some session recorded it</b> under the same dependence ({@link
- *       Corpus#pathsOf} spans sessions). Trap: keying by the path condition
- *       alone lets a recording over other inputs settle an arm that is still
- *       needed (hdfs-11741: the same expiry compare over a map of four keys
- *       instead of five).</li>
- *   <li><b>a round answered it</b>: ADMITTED, UNSAT, or a NOT_ADMITTED
- *       whose replay ran its world as asked ({@link
- *       ObligationResult#settlesArm}).  {@link Verdict#SAT_MODEL_READY} is
- *       NOT an answer (replay not run).  Any other NOT_ADMITTED -- its replay
- *       did not run its world, or its query was refused -- is a fact about
- *       that world only: it settles its own flip, once a second such answer
- *       of it lands (asked once more), and the arm stays owed in every other
- *       world (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's
- *       world never minted its inherited root, and its NOT_ADMITTED closed
- *       the arm for every world).  An ADMITTED replay also settles its flip ({@link
- *       ObligationFactory#flip}: task, path, site, ordinal, outcome) whatever
- *       id the arm has since: a replay of that flip of that path already took
- *       the arm in the path's world, and only the sessions landed after it
- *       moved the dependence (solr-adhoc-07 IB1: 59 answered flips re-keyed,
- *       25 of them already ADMITTED).</li>
- * </ul>
- *
- * <p>A replay killed past its bound ({@link ObligationResult#replayBounded})
- * answered nothing, of the arm or of its world: it settles nothing and counts
- * toward no world-only answer.  Its flip is asked once more; a flip whose
- * replays were killed {@link #MAX_BOUNDED_REPLAYS} times and that nothing
- * else answered -- a FORCE run's too, by its flip ({@link ForcedFlip#flip})
- * -- is held unproposed, BOUNDED by {@code replay_timeout_s} and
- * named ({@link #boundedFlips}, the round manifest's {@code boundedFlips},
- * run_engine's {@code campaign_bounds}), so an UNSAT over it publishes as
- * bounded, never as a clean close (solr-adhoc-38 EXZ1: 24 flips killed
- * twice at 2400 s, the expected witness among them, settled as world-only
- * answers, and the run ended UNSAT_CLOSED at FIXED_POINT).</p>
- *
- * <p>An arm queued or running ({@link #inFlight}) is not settled and not
- * proposed again: by its id, and by the flip its row asks ({@link
- * ObligationFactory#flip}), since its id may move while it is in flight:
- * sessions landing since its round grow the dependence.</p>
- *
- * <p>Trap: keying by session ({@code pathId}) re-proposes every answered arm
- * from every replay it produced. New obligations arise only from new planned
- * occurrences or guards no session has taken both ways.</p>
- *
- * <p><b>Admission is per task:</b> NOT_ADMITTED closes the focused arm only; a
- * diverging producer is its own task's business. Results are keyed by
- * obligation, never by replay. The ledger is rebuilt each round, so nested
- * guard chains deepen without re-asking settled arms.</p>
- */
 public final class Frontier {
-    /** One round: the flips the runtime is asked to solve and replay. */
     public static final class Round {
         public final int index;
         public final List<Obligation> obligations;
-        /** Candidates not proposed because they are in flight. */
         public final int heldInFlight;
 
         private Round(int index, List<Obligation> obligations,
@@ -95,43 +34,22 @@ public final class Frontier {
     }
 
     private final List<Task> tasks;
-    /** arm key -> the reason it is settled, as a gap row prints it. */
     private final Map<String, String> settled =
             new LinkedHashMap<String, String>();
-    /** Arms a round answered, for the manifest histogram. */
     private final Map<String, Verdict> answered =
             new LinkedHashMap<String, Verdict>();
-    /** arm key -> the refusal that settled it at the arm ({@code
-     *  ObligationResult#ARM_REFUSED}): an open arm names it. */
     private final Map<String, String> armRefusals =
             new LinkedHashMap<String, String>();
-    /** Arms a recorded path already took. */
     private final Set<String> recorded = new LinkedHashSet<String>();
-    /** arm key -> proposing task, this round. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
-    /** The flips a round's replay ADMITTED, whatever id their arm has. */
     private final Set<String> admittedFlips = new LinkedHashSet<String>();
-    /** The flips answered twice by a NOT_ADMITTED about their own world
-     *  only ({@link #consume}). */
     private final Set<String> worldOnlyFlips = new LinkedHashSet<String>();
-    /** How many killed replays leave a flip nothing else answered BOUNDED. */
     static final int MAX_BOUNDED_REPLAYS = 2;
-    /** The flips whose replays were killed past their bound {@link
-     *  #MAX_BOUNDED_REPLAYS} times and that nothing else answered. */
     private final Set<String> boundedFlips = new LinkedHashSet<String>();
-    /** The ids, and the flips, of the arms queued or running. */
     private final Set<String> inFlightIds = new LinkedHashSet<String>();
     private final Set<String> inFlightFlips = new LinkedHashSet<String>();
 
-    /** Indexes every arm the corpus recorded for these tasks, over all paths:
-     *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
-     *  attests. Only at the task's flip sites ({@link
-     *  ObligationFactory#candidates}): no candidate is keyed anywhere else.
-     *  The keys on every core ({@link ObligationFactory#dependences}),
-     *  settled in the order of the tasks, their paths and decisions.
-     *
-     *  @param flipSites task id -> the site ids its demand names */
     public Frontier(Corpus corpus, List<Task> tasks,
                     Map<String, Set<String>> flipSites) {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
@@ -172,14 +90,6 @@ public final class Frontier {
         }
     }
 
-    /** Takes earlier rounds' verdicts, and each answer by the flip it asked
-     *  ({@code ExploreMain#answersByFlip}); a recording, if any, stays the
-     *  stated reason.  An answer settles its arm only where it is a fact
-     *  about the arm ({@code ObligationResult#settlesArm}); a replay that
-     *  refuted its world answers nothing of it (asked again without that
-     *  world); a replay killed past its bound answers nothing (a flip killed
-     *  {@link #MAX_BOUNDED_REPLAYS} times is held BOUNDED); any other
-     *  NOT_ADMITTED settles its own flip once a second one of it lands. */
     public void consume(Collection<ObligationResult> results,
                         Map<String, List<ObligationResult>> byFlip) {
         for (Map.Entry<String, List<ObligationResult>> flip
@@ -224,8 +134,6 @@ public final class Frontier {
         }
     }
 
-    /** Takes the arms a campaign has queued or started and not yet
-     *  answered: none is proposed again while it is. */
     public void inFlight(Collection<Obligation> flying) {
         for (Obligation obligation : flying) {
             inFlightIds.add(obligation.obligationId());
@@ -235,51 +143,39 @@ public final class Frontier {
         }
     }
 
-    /** Whether this candidate's arm is queued or running: by its id, or
-     *  by its flip, since its id may move while it flies. */
     public boolean flying(ObligationFactory.Candidate candidate) {
         return inFlightIds.contains(candidate.obligationId)
                 || inFlightFlips.contains(ObligationFactory.flip(candidate));
     }
 
-    /** Whether a flip ({@link ObligationFactory#flip}) is queued or
-     *  running, whatever id its obligation has. */
     public boolean flying(String flip) {
         return inFlightFlips.contains(flip);
     }
 
-    /** How many arms are queued or running. */
     public int inFlightCount() {
         return inFlightIds.size();
     }
 
-    /** What a round answered for this arm, by its id, or null. */
     public Verdict verdict(String obligationId) {
         return answered.get(obligationId);
     }
 
-    /** The refusal that settled this arm at the arm, or null. */
     public String armRefusal(String obligationId) {
         return armRefusals.get(obligationId);
     }
 
-    /** Whether this arm, by its id, is queued or running. */
     public boolean inFlight(String obligationId) {
         return inFlightIds.contains(obligationId);
     }
 
-    /** Whether a recorded path already took this arm. */
     public boolean recorded(String obligationId) {
         return recorded.contains(obligationId);
     }
 
-    /** The first reason this arm is settled, or {@code ""} while it is owed. */
     public String settled(String obligationId) {
         return settled.getOrDefault(obligationId, "");
     }
 
-    /** {@link #settled(String)} of a candidate's arm, or its flip already
-     *  ADMITTED under another id; {@code ""} while it is owed. */
     public String settled(ObligationFactory.Candidate candidate) {
         String reason = settled(candidate.obligationId);
         if (!reason.isEmpty()) return reason;
@@ -301,9 +197,6 @@ public final class Frontier {
                 + "is held unproposed, open, never settled" : "";
     }
 
-    /** The flips held BOUNDED: replays killed past their bound {@link
-     *  #MAX_BOUNDED_REPLAYS} times, nothing else answering them
-     *  ({@link #consume}). */
     public Set<String> boundedFlips() {
         return Collections.unmodifiableSet(boundedFlips);
     }
@@ -312,9 +205,6 @@ public final class Frontier {
         settled.putIfAbsent(obligationId, reason);
     }
 
-    /** Opens one round over the arms the tasks still owe and nobody is
-     *  asking yet; {@code first}, a FORCE run ({@link ForcedFlip}), goes
-     *  ahead of them while it is owed (null: none). */
     public Round open(int index, Obligation first,
                       List<ObligationFactory.Candidate> candidates) {
         List<Obligation> obligations = new ArrayList<Obligation>();
@@ -343,7 +233,6 @@ public final class Frontier {
         return new Round(index, obligations, held);
     }
 
-    /** Per task: how many obligations this round proposes. */
     public Map<String, Integer> proposedPerTask() {
         Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
         for (Task task : tasks) counts.put(task.taskId(), 0);
@@ -353,7 +242,6 @@ public final class Frontier {
         return counts;
     }
 
-    /** How many queries ended in each verdict, over every round so far. */
     public Map<String, Integer> verdictHistogram() {
         Map<String, Integer> histogram = new LinkedHashMap<String, Integer>();
         for (Verdict verdict : answered.values()) {

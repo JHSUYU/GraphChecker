@@ -14,14 +14,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/**
- * The classes a weave run holds for their lineage alone ({@code
- * plan.LineageScan}), from the dirs {@value #PROPERTY} names.  They get only
- * work-start, work-claim, queue-claim and timed-wait hooks (no context level,
- * so analysis-scope indices are unchanged); static analysis never sees them.
- */
 public final class LineageScope {
-    /** Set by run_engine.sh on the two weave runs. */
     public static final String PROPERTY = "causynth.lineage.dirs";
 
     private static Set<String> classes;
@@ -33,10 +26,6 @@ public final class LineageScope {
         return dirs(PROPERTY, "lineage class directory");
     }
 
-    /**
-     * The absolute directories a path-separated system property names; one
-     * that is not a directory is refused as {@code what} not found.
-     */
     public static List<String> dirs(String property, String what) {
         String configured = System.getProperty(property);
         List<String> dirs = new ArrayList<>();
@@ -52,7 +41,6 @@ public final class LineageScope {
         return dirs;
     }
 
-    /** Whether this class is in the run for its lineage alone. */
     public static synchronized boolean lineageOnly(String className) {
         if (classes == null) classes = read();
         return classes.contains(className);

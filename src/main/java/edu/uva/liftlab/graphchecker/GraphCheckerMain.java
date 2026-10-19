@@ -45,7 +45,6 @@ public class GraphCheckerMain {
         phase.setDefaultOptions("enabled:false");
         PackManager.v().getPack(GraphCheckerTransformer.PHASE_PACK).add(phase);
         configureSoot();
-        // One whole-program phase, no call graph: the pipeline builds its own.
         PhaseOptions.v().setPhaseOption(
                 GraphCheckerTransformer.PHASE_NAME, "enabled:true");
         PhaseOptions.v().setPhaseOption("cg", "off");
@@ -91,15 +90,6 @@ public class GraphCheckerMain {
                 prependClasspathEntries(processDirs, options.getClassPath())));
         Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
-        // Identity must not depend on the host or the run.  Soot runs on one
-        // thread, over the classes by name (orderClassesByName); each lambda
-        // class is named by what it is (LambdaClassNames, installed once the
-        // classes are loaded); jb.sils, which handed a split local's uses to
-        // its copies in identity-hash order, takes them in body order
-        // (SharedInitializationSplitter); and a body's locals are numbered
-        // by type and first definition, not in the order the phases left
-        // them (Balancer.runOneIteration's z6..z8 and
-        // FileChecksumHelper.checksumBlock's z1, z2 swapped between runs).
         Options.v().set_num_threads(1);
         SharedInitializationSplitter.install();
         PhaseOptions.v().setPhaseOption("jb.lns", "sort-locals:true");
@@ -113,9 +103,6 @@ public class GraphCheckerMain {
                     configuredTestDirs.size(),
                     productionProcessDirs.size());
         }
-        // ONE application scope for every pass: PackManager writes only
-        // application classes, so a narrower scope drops woven bodies and
-        // shifts every index below them (IDENTITY §10).
         Options.v().set_process_dir(productionProcessDirs);
         LOG.info("Soot application scope is the case's {} production "
                         + "root(s){}", productionProcessDirs.size(),
@@ -127,12 +114,6 @@ public class GraphCheckerMain {
         Options.v().set_output_format(Options.output_format_class);
     }
 
-    /**
-     * Soot lists the classes it loaded in the order the process dirs'
-     * listings returned them, which is the filesystem's; every pass after
-     * this one (the bodies Soot builds first, lambda classes included, and
-     * each walk of ours over the Scene) meets them by name instead.
-     */
     private static void orderClassesByName() {
         Scene scene = Scene.v();
         for (Chain<SootClass> chain : Arrays.asList(scene.getClasses(),
@@ -199,7 +180,6 @@ public class GraphCheckerMain {
         return String.join(File.pathSeparator, expanded);
     }
 
-    /** Input dirs plus {@code causynth.process.dirs} and the lineage dirs. */
     private List<String> expandProcessDirs(List<String> inputDirs) {
         LinkedHashSet<String> dirs = new LinkedHashSet<>();
         for (String inputDir : inputDirs) {
@@ -214,7 +194,6 @@ public class GraphCheckerMain {
         return new ArrayList<>(dirs);
     }
 
-    /** Put the authoritative project outputs ahead of dependency jars. */
     private static String prependClasspathEntries(
             List<String> entries, String classPath) {
         StringBuilder builder = new StringBuilder();

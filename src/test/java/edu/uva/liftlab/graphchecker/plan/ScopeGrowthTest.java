@@ -12,12 +12,6 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * SYMBOL-SCOPE §2.4: the scope grows where the slice stops at it --
- * toward a callee's body, a field's owner and writers, a writer's callers,
- * nearest the throw first -- and never toward the target's own callers or a
- * clock.
- */
 public class ScopeGrowthTest {
     private static final String T = ScopeGrowthTest.class.getName();
     private static final String GET = "<" + T + "$Store: long get()>";
@@ -46,8 +40,6 @@ public class ScopeGrowthTest {
                         "<A: long own()>"),
                 edge("field_write", "w::$l0", "<W: long far>", ""));
         List<String> found = new ArrayList<>();
-        // The root demand's boundaries come first, each nearest first; an
-        // IO frontier callee is a row though no return of it is demanded.
         String save = "<" + T + "$Saver: void save(java.io.File)>";
         Map<String, StaticScopeMap.Demanded> demanded = new LinkedHashMap<>();
         demanded.put(set, new StaticScopeMap.Demanded("SCOPE", 3, true));

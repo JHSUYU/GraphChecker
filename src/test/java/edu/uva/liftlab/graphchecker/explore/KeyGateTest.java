@@ -10,13 +10,6 @@ import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * The key gate's one judgement ({@link KeyGate#nestedOnly}): a key holding a
- * satisfiable ask beside an UNSAT one is sound only where every UNSAT ask's
- * world strictly extends a satisfiable one's (the inherited flips' prefixes
- * the key does not name add conjuncts); any other such key folds two
- * questions.
- */
 public class KeyGateTest {
     @Test
     public void anUnsatAskIsExplainedOnlyByAWorldItExtends() {
@@ -24,7 +17,6 @@ public class KeyGateTest {
         Set<String> f = world("F");
         Set<String> g = world("G");
         Set<String> fg = world("F", "G");
-        // satisfiable worlds | UNSAT worlds | nested only | why
         Object[][] rows = {
             {Arrays.asList(seed), Arrays.asList(f), true,
                     "the seed's arm SAT, a one-flip world's UNSAT: its"

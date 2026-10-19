@@ -19,61 +19,15 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/**
- * Which of the recording's call, argument and exit rows SEED's aggregation
- * reads (PIPELINE §2): the recording weave traces a row only where one of
- * these says so, and still calls every hook, so the event numbering is the
- * same.  The readers, and what each takes:
- *
- * <ul>
- * <li>a declared site's captures ({@code RuntimeRegionPlanner
- *     #declaredSiteCaptures}): the call rows at the site and callee of a
- *     {@code DECLARED_SITE};</li>
- * <li>a field's owners ({@code RuntimeRegionPlanner#stampFieldOwners}): the
- *     call rows at a call that accesses a field of its receiver ({@link
- *     RuntimeSelectedRegionFinalizer#fieldAccessingCalls});</li>
- * <li>the recorded heap ({@link RecordedHeap}): the call rows and every
- *     argument row at a store site that mutates through a call ({@link
- *     RuntimeSelectedRegionFinalizer#storingCalls}): the container holds what
- *     it was handed (a nested NamedList, a list's element);</li>
- * <li>a configured source's phases ({@code
- *     RuntimeRegionPlanner#configuredSourcePhases}): the call rows at a
- *     declared configured-source site;</li>
- * <li>a port's captures ({@code RuntimeRegionPlanner
- *     #communicationCaptureEvent}): the call rows at a call-return or
- *     call-argument port's site, the argument row of a call-argument port,
- *     the method-argument row of a parameter port, the exit row of a
- *     method-return port.</li>
- * </ul>
- *
- * Every other call row, argument row and normal-exit row is read by no
- * stage (hdfs-adhoc-49, TestSnapshot: 65 % of the trace's bytes).
- */
 public final class TracedRows {
-    /**
-     * What the recording weave leaves beside the classes it wove: the
-     * digest of the static artifacts it decided its rows on and of the
-     * rule it traced by ({@link #inputsDigest}).  The recorder states it in
-     * the trace's manifest, and the aggregation refuses a trace whose digest
-     * is not its own ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a
-     * declared site or port they add would find no rows and say nothing,
-     * and a recording traced by an older rule lacks rows a reader reads.
-     */
     public static final String DIGEST_RESOURCE = "causynth-traced-rows.digest";
 
-    /** {@code <siteId>\n<declaredCallee>}: every call row there. */
     private final Set<String> callSites = new HashSet<>();
-    /** Sites whose every call is traced, whatever its callee. */
     private final Set<String> anyCallee = new HashSet<>();
-    /** {@code <siteId>\n<declaredCallee>\n<index>}. */
     private final Set<String> callArguments = new HashSet<>();
-    /** Sites whose every call's every argument is traced. */
     private final Set<String> anyArgument = new HashSet<>();
-    /** {@code <method>\n<index>}. */
     private final Set<String> methodArguments = new HashSet<>();
     private final Set<String> methodExits = new HashSet<>();
-    /** {@link #inputsDigest} of the artifacts these rows were read off, or
-     *  "" for rows built from no files. */
     final String digest;
 
     private TracedRows(Collection<StaticProgram.RegionRow> skeletons,
@@ -103,8 +57,6 @@ public final class TracedRows {
         }
     }
 
-    /** The recording weave's: the campaign's static artifacts beside the
-     *  candidate skeletons it weaves from ({@code causynth.output.dir}). */
     static TracedRows of(Collection<StaticProgram.RegionRow> skeletons,
                          File skeletonFile) throws IOException {
         String declared = System.getProperty("causynth.output.dir", "");
@@ -122,25 +74,9 @@ public final class TracedRows {
                 inputsDigest(scopeMap, graph, skeletonFile));
     }
 
-    /**
-     * Which rows this class traces and what the aggregation reads in them,
-     * by name: a recording made under another rule over the same artifacts
-     * lacks what the aggregation reads (one before the storing calls'
-     * argument rows has no holder edge into a container's elements, and the
-     * recorded heap would call them held by nothing; one before the method
-     * entries' window names every window's request #1 one causal context),
-     * so the rule is part of {@link #inputsDigest}.  Renamed with every such
-     * change.
-     */
     static final String RULE = "storing calls' receivers and arguments;"
             + " method entries' windows";
 
-    /**
-     * The digest of the rows' rule ({@link #RULE}) and the three static
-     * artifacts the rows are decided on: the scope map, the candidate graph
-     * and the candidate skeletons, by their bytes.  The weave and the
-     * aggregation compute it alike.
-     */
     public static String inputsDigest(File scopeMap, File graph,
                                       File skeletons) throws IOException {
         return ArtifactIO.sha256(RULE + "\n"
@@ -175,7 +111,6 @@ public final class TracedRows {
         }
     }
 
-    /** The enter, return and unwinding rows of the calls at one site. */
     public boolean callSite(String siteId, String declaredCallee) {
         return anyCallee.contains(siteId)
                 || callSites.contains(siteId + "\n" + declaredCallee);
@@ -192,7 +127,6 @@ public final class TracedRows {
         return methodArguments.contains(method + "\n" + index);
     }
 
-    /** A normal exit's row (an exceptional one is always traced). */
     public boolean methodExit(String method) {
         return methodExits.contains(method);
     }

@@ -1,20 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * One invocation of a planned fault marker that its occurrence's task plans
- * no input for (PIPELINE §7.8, GROW): the plan's {@code taskId}, the planned
- * input's {@code symbol} and the invocation {@code k} of the marker's call in
- * that occurrence.  A replay states it as the subject of an {@link
- * GapKind#UNPLANNED_INPUT} row, {@code <taskId> <symbol>#<k>}; GROW plans it
- * as the input {@link #grown()} of the same task, so the k-th call is a root
- * of its own.  Neither a task id nor an input symbol holds a space or a
- * {@code #}.
- */
 public final class UnplannedInput extends Value {
-    /** The most invocations of one planned marker in one occurrence GROW
-     *  plans inputs for: a declared bound, counted in the case's {@code
-     *  bounded} ({@code unplanned-input-max}); a replay names one more at
-     *  most, so the bound is seen. */
     public static final int MAX = 4;
 
     private final String taskId;
@@ -27,8 +13,6 @@ public final class UnplannedInput extends Value {
         this.k = k;
     }
 
-    /** The {@code k}-th invocation of the input {@code symbol} plans (its
-     *  own symbol, or the one a grown symbol was grown from). */
     public static UnplannedInput of(String taskId, String symbol, int k) {
         String base = Fields.text(symbol, "symbol");
         int grown = base.indexOf('#');
@@ -37,7 +21,6 @@ public final class UnplannedInput extends Value {
         return new UnplannedInput(Fields.text(taskId, "taskId"), base, k);
     }
 
-    /** Reads a row's subject ({@link #subject()}). */
     public static UnplannedInput parse(String subject) {
         String value = subject == null ? "" : subject.trim();
         int space = value.indexOf(' ');
@@ -60,7 +43,6 @@ public final class UnplannedInput extends Value {
         return taskId;
     }
 
-    /** The planned input it is an invocation of. */
     public String symbol() {
         return symbol;
     }
@@ -69,12 +51,10 @@ public final class UnplannedInput extends Value {
         return k;
     }
 
-    /** The symbol (and port id) of its grown input: {@code <symbol>#<k>}. */
     public String grown() {
         return symbol + "#" + k;
     }
 
-    /** {@code <taskId> <symbol>#<k>}. */
     public String subject() {
         return taskId + " " + grown();
     }

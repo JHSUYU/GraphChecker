@@ -31,60 +31,29 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/**
- * The one catalog the static analysis and its runtime finalization are both
- * indexed by: region rows, activations, edges, ports and loop sites.
- *
- * <p>Every per-key index is a method here, built once.  A row list is only
- * appended to or filtered, so its size plus the identity of its last row is
- * an exact staleness stamp for the indexes derived from it.</p>
- */
 public final class StaticProgram {
-    /** How a retained-loop identity spells its header unit. */
     private static final String LOOP_HEADER_MARKER = "#loop:u";
 
     final List<Map<String, Object>> edges = new ArrayList<>();
     final List<String> traceMethods = new ArrayList<>();
-    /** Methods that are allowed to own a REGION activation. */
     final Map<String, String> executionContextAuthorities =
             new LinkedHashMap<>();
     final List<Map<String, Object>> regions = new ArrayList<>();
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
-    /** One {@code COMMUNICATION_CALL_SITE} row per selected call site. */
     final List<Map<String, Object>> communicationCallSites =
             new ArrayList<>();
-    /** One row per retained loop of a selected method. */
     final List<Map<String, Object>> retainedLoops = new ArrayList<>();
     final List<Map<String, Object>> communicationGaps = new ArrayList<>();
-    /**
-     * Gaps the finalizer raised building ports (truncated activation-local
-     * accesses, an accessor stream at snapshot capacity).  They reach the
-     * runtime plan on {@code Result.gaps}: a port built from a truncated
-     * history is a chain element no later stage sees whole.
-     */
     final List<Map<String, Object>> planGaps = new ArrayList<>();
-    /** The ZooKeeper causal chain the plan was cut to ({@link
-     *  ZkCausalGraph.Chain#rows}, its keys rows): {@code zk_chain.jsonl}. */
     final List<JsonObject> zkChain = new ArrayList<>();
-    /** Callees that are communication boundaries in the selected slice. */
     final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
-    /** Each application field's store sites ({@code <method>#u<unit>}) over
-     *  the whole analysed scope, not only the slice: the analyzer's writer
-     *  index, read by {@link ConfigRoots}. */
     final Map<String, List<String>> fieldWriters = new LinkedHashMap<>();
-    // Frozen runtime inputs of one finalization
 
-    /** The runtime-refined dataflow rows this finalization reads. */
     List<Map<String, Object>> graph = Collections.emptyList();
-    /** The selected region skeletons, decoded once, by region id. */
     final Map<String, RegionRow> skeletons = new LinkedHashMap<>();
-    /** Minted region activations, by occurrence id. */
     final Map<String, Map<String, Object>> activations =
             new LinkedHashMap<>();
 
-    /** The activations by stance ({@code ContextShape.Stance}), built once
-     *  the activations are read: a door rule asks it per served occurrence
-     *  (RuntimeSelectedRegionFinalizer#doorsOf). */
     private Map<String, List<String>> byStance;
 
     Map<String, List<String>> activationsByStance() {
@@ -100,7 +69,6 @@ public final class StaticProgram {
         return byStance;
     }
 
-    // Indexes, each built once
 
     private Map<String, List<Map<String, Object>>> graphEdgesByRegion;
     private Map<String, List<String>> skeletonRegionIdsByMethod;
@@ -109,11 +77,6 @@ public final class StaticProgram {
     private Object regionStamp;
     private int regionCount = -1;
 
-    /**
-     * Graph rows indexed by every region that claims them.  Scoping is static:
-     * read off the skeletons' {@code methods} sets by {@link
-     * #skeletonRegionsHolding}, never off a recorded {@code regionIds}.
-     */
     Map<String, List<Map<String, Object>>> edgesByRegion() {
         if (graphEdgesByRegion == null) {
             graphEdgesByRegion = new LinkedHashMap<>();
@@ -128,11 +91,6 @@ public final class StaticProgram {
         return graphEdgesByRegion;
     }
 
-    /**
-     * The selected skeletons whose method set holds {@code method}.  Not
-     * {@link #regionsHolding}: {@link #regions} is still being built (empty)
-     * when the graph is first indexed; the skeletons are already complete.
-     */
     List<String> skeletonRegionsHolding(String method) {
         if (skeletonRegionIdsByMethod == null) {
             skeletonRegionIdsByMethod = new LinkedHashMap<>();
@@ -151,7 +109,6 @@ public final class StaticProgram {
                 Collections.<String>emptyList());
     }
 
-    /** The minted activations of one region, in minting order. */
     List<Map<String, Object>> regionActivations(String regionId) {
         if (activationsByRegion == null) {
             activationsByRegion = new LinkedHashMap<>();
@@ -170,7 +127,6 @@ public final class StaticProgram {
                 Collections.<Map<String, Object>>emptyList());
     }
 
-    /** The callee one dataflow edge names, dynamic dispatch included. */
     static String invocationTarget(Map<String, Object> edge) {
         if ("DYNAMIC_DISPATCH".equals(text(edge.get("transferKind")))
                 && "dispatch_activation".equals(text(edge.get("kind")))) {
@@ -183,7 +139,6 @@ public final class StaticProgram {
         return text(edge.get("invoke"));
     }
 
-    /** The regions whose method set holds {@code method}. */
     List<String> regionsHolding(String method) {
         if (method.isEmpty()) {
             return Collections.emptyList();
@@ -211,17 +166,11 @@ public final class StaticProgram {
         regionStamp = last;
     }
 
-    /** Whether one cell names a declared field rather than a local. */
     static boolean declaredField(String cell) {
         return cell.startsWith("<") && cell.endsWith(">")
                 && cell.contains(":") && !cell.contains("(");
     }
 
-    /**
-     * The one breadth-first closure driver: FIFO from the seeds, each node
-     * visited once, so result order is first-discovery order.  An adjacency
-     * answering {@code null} ends the whole walk (early stop on a witness).
-     */
     static <T> Set<T> closure(Collection<? extends T> seeds,
                               Function<T, Collection<T>> adjacency) {
         Set<T> visited = new LinkedHashSet<>();
@@ -236,21 +185,7 @@ public final class StaticProgram {
         return visited;
     }
 
-    // Root selection: the once-only-root rule
 
-    /**
-     * The loop body one region must be rooted at instead of its skeleton
-     * root, or {@code null} when the root stands.
-     *
-     * <p>A once-entered root cannot admit an alias published later (VM frame
-     * tracking is push-time), so for a service loop the iteration, not the
-     * entry, is the activation (IDENTITY §1).  Fires only when a caller of the
-     * anchor issues the demanded call inside one of its retained loops
-     * ({@link #serviceLoopCandidate}), the trace saw that loop decide its
-     * continuation more than once in one activation, and an iteration frame
-     * can open at that call ({@link #placeable}).  The innermost such loop
-     * wins; with none the root stands, a whole-method activation.</p>
-     */
     Map<String, Object> loopBodyRoot(
             RegionRow skeleton,
             Collection<Map<String, Object>> regionActivations,
@@ -286,22 +221,12 @@ public final class StaticProgram {
                             && !orphansAFold(caller, regionActivations)) {
                         return rootLoop(loop, caller, unitIndex);
                     }
-                    // The walk stops at the root.
                     if (!caller.equals(root)) next.add(caller);
                 }
             }
             next.removeAll(visited);
             frontier = new ArrayList<>(next);
         }
-        // The root method itself may hold the service loop: the one its
-        // first call into the region is in.  A method that does region work
-        // before its loop (addKeys runs removeExpiredKeys, then copies keys)
-        // is one unit of work; set-up outside the region (a thread's setName)
-        // is not work.  The demanded unit is the first call in the loop's
-        // BODY: a call before the loop's control sites feeds its condition
-        // (a synthetic accessor of the outer class's running flag), which no
-        // body edge dominates.  A loop with no call after its control sites
-        // (do-while) keeps that first call.
         List<Integer> units = new ArrayList<>();
         int work = Integer.MAX_VALUE;
         for (Map.Entry<String, List<String>> callee : callSites.entrySet()) {
@@ -329,12 +254,6 @@ public final class StaticProgram {
         return null;
     }
 
-    /**
-     * States, once, that the recording iterated a loop holding a region's
-     * demanded call where no iteration frame can open ({@link #placeable}):
-     * the region's root stands, a whole-method activation, and the rows
-     * say why rather than nothing.
-     */
     private void unplaceable(Map<String, Object> loop, int unitIndex,
                              String regionId) {
         RuntimeSelectedRegionFinalizer.planGap(planGaps,
@@ -349,14 +268,6 @@ public final class StaticProgram {
                         + "): the region's root is the activation");
     }
 
-    /**
-     * Whether an iteration frame of {@code loop} can open at the call at
-     * {@code unitIndex}: the static pass stated it ({@link
-     * LoopBoundPolicy#BODY_ENTRY_CALL_UNITS}), from the same placement the
-     * weave frames the loop by, so SEED never names a loop body INSTRUMENT
-     * cannot open.  A row stating none (a static pass before the member)
-     * places none.
-     */
     private static boolean placeable(Map<String, Object> loop,
                                      int unitIndex) {
         Object entries = loop.get(LoopBoundPolicy.BODY_ENTRY_CALL_UNITS);
@@ -367,15 +278,6 @@ public final class StaticProgram {
         return false;
     }
 
-    /**
-     * Whether rooting at a loop of {@code loopMethod} would leave a region
-     * entry folded into these activations in no occurrence: one the root
-     * called, but not under the loop's method.  Folds are taken while the
-     * whole root is open; rooted at the loop, the root's other work is
-     * nobody's.  SOLR-18406: IndexFileDeleter.checkpoint calls the deletion
-     * policy's onCommit -- the reservation's clock -- beside decRef's loop
-     * over files, which rooted the region and dropped the clock.
-     */
     private static boolean orphansAFold(
             String loopMethod,
             Collection<Map<String, Object>> regionActivations) {
@@ -393,7 +295,6 @@ public final class StaticProgram {
         return false;
     }
 
-    /** The last unit of the loop's control sites, or -1. */
     private static int lastControlUnit(Map<String, Object> loop) {
         int last = -1;
         for (String site : strings(loop.get(
@@ -403,9 +304,6 @@ public final class StaticProgram {
         return last;
     }
 
-    /** The first iterated loop of {@code method} holding the unit where an
-     *  iteration frame can open, or null; one holding it where none can is
-     *  stated ({@link #unplaceable}). */
     private Map<String, Object> placeableLoopAt(
             Map<String, List<Map<String, Object>>> loopsByMethod,
             Set<String> iterated, String method, int unitIndex,
@@ -423,7 +321,6 @@ public final class StaticProgram {
         return null;
     }
 
-    /** The first iterated loop of {@code method} holding the unit, or null. */
     private static Map<String, Object> iteratedLoopAt(
             Map<String, List<Map<String, Object>>> loopsByMethod,
             Set<String> iterated, String method, int unitIndex) {
@@ -438,7 +335,6 @@ public final class StaticProgram {
         return null;
     }
 
-    /** The region's retained loops that could be a service loop, by owner. */
     private Map<String, List<Map<String, Object>>> serviceLoops(
             RegionRow skeleton) {
         Map<String, List<Map<String, Object>>> byMethod =
@@ -455,20 +351,6 @@ public final class StaticProgram {
         return byMethod;
     }
 
-    /**
-     * Whether one retained loop may be the region's service loop.
-     *
-     * <p>{@code CONDITION_BOUNDED}: always.  {@code FIXED_COUNT_INDEXED}: only
-     * when one iteration is one unit of demanded work -- the body (or a callee)
-     * captures a wire port's value, or the body writes a declared field.</p>
-     *
-     * <p>Trap: a message field's producer capture (a builder's setter call)
-     * is no unit of work, since the door carries the message whole
-     * (SYMBOL-SCOPE §6.3): a loop building the repeated field of ONE message
-     * never qualifies.  Rooted there, the message's other leaves -- hdfs-11741's
-     * {@code currentKey}, converted before the {@code allKeys} loop -- would be
-     * built with no activation, so their values carry no expression.</p>
-     */
     private boolean serviceLoopCandidate(RegionRow skeleton,
                                          Map<String, Object> loop,
                                          String owner) {
@@ -514,7 +396,6 @@ public final class StaticProgram {
         return false;
     }
 
-    /** The published loop body a re-rooted region names. */
     private static Map<String, Object> rootLoop(Map<String, Object> loop,
                                                 String caller,
                                                 int unitIndex) {
@@ -534,7 +415,6 @@ public final class StaticProgram {
         return row;
     }
 
-    /** Every call this region's rows name, as {@code callee -> [method#uN]}. */
     private Map<String, List<String>> callSitesByCallee(String regionId) {
         Map<String, Set<String>> sites = new LinkedHashMap<>();
         for (Map<String, Object> edge : regionGraph(regionId)) {
@@ -555,7 +435,6 @@ public final class StaticProgram {
         return result;
     }
 
-    /** Loops seen deciding continuation twice in one call of an activation. */
     private static Set<String> loopsIteratedWithinActivation(
             Map<String, List<Map<String, Object>>> loopsByMethod,
             Collection<Map<String, Object>> regionActivations,
@@ -598,7 +477,6 @@ public final class StaticProgram {
         return iterated;
     }
 
-    /** The index after the loop-header marker in a loop identity, or -1. */
     private static int loopHeaderUnitIndex(String site) {
         int at = site.lastIndexOf(LOOP_HEADER_MARKER);
         if (at < 0) return -1;
@@ -610,13 +488,11 @@ public final class StaticProgram {
         }
     }
 
-    /** Whether {@code unitIndex} lies between the loop's header and its end. */
     static boolean loopContains(Map<String, Object> loop,
                                 int unitIndex) {
         int header = loopHeaderUnitIndex(text(loop.get(
                 LoopBoundPolicy.RUNTIME_LOOP_ID)));
         if (header < 0 || unitIndex < header) return false;
-        // End at the latch too: a while(true) loop's only guard is the header.
         int last = number(loop.get(LoopBoundPolicy.LOOP_LATCH_UNIT_INDEX),
                 header);
         for (String site : strings(loop.get(
@@ -626,21 +502,14 @@ public final class StaticProgram {
         return unitIndex <= last;
     }
 
-    /**
-     * One {@code REGION_SKELETON} or {@code SYMBOLIC_REGION} row, decoded once
-     * into typed final members; decode refuses any other shape.
-     */
     public static final class RegionRow {
-        /** The undecoded row, for the writers that republish it verbatim. */
         public final Map<String, Object> json;
         public final String regionId;
         public final String rootMethod;
         public final String rootAuthority;
-        /** The loop body this region is re-rooted at, or {@code null}. */
         public final Map<String, Object> rootLoop;
         public final String anchorMethod;
         public final String selection;
-        /** The admission anchors, the single {@code anchorMethod} included. */
         public final List<String> anchorMethods;
         public final List<String> methods;
         public final List<String> runtimeOccurrenceIds;
@@ -663,7 +532,6 @@ public final class StaticProgram {
                         + " row in " + source);
             }
             json = row;
-            // JSON null reads as absent.
             regionId = stringValue(row.get("regionId"));
             rootMethod = stringValue(row.get("rootMethod"));
             rootAuthority = stringValue(row.get(
@@ -698,10 +566,6 @@ public final class StaticProgram {
                     ConfiguredSourcePhaseContract.DECLARATION_FIELD);
         }
 
-        /**
-         * Declared configured-source hook sites by {@code siteId}, decoded
-         * lazily so an unread malformed catalog never refuses a run.
-         */
         public Map<String, ConfiguredSourcePhaseContract.Declaration>
                 sourcePhasesBySite() {
             if (sourcePhasesBySite != null) return sourcePhasesBySite;
@@ -729,7 +593,6 @@ public final class StaticProgram {
         }
     }
 
-    /** Decodes region rows of one kind, refusing a duplicated identity. */
     public static List<RegionRow> regionRows(
             Collection<Map<String, Object>> rows, String kind,
             Object source) {

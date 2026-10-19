@@ -13,13 +13,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * CONTRACT-SPEC §4: how far a root may move, as absolute bounds.  A root with
- * neither bound is pinned, in the composer and the flip solver alike.
- * {@link #declared(Path)} is the one reader of {@code root-domains.jsonl} and
- * {@link #resolved} the one join with a mint, so the two consumers cannot
- * disagree.  A refused bound is {@code null}, never {@code ""}.
- */
 public final class RootDomain extends Value {
     private final String rootId;
     private final RootKind kind;
@@ -44,12 +37,6 @@ public final class RootDomain extends Value {
                 Fields.optional(min), Fields.optional(max));
     }
 
-    /**
-     * The case's declared domains by root id: {@code sourceId},
-     * {@code declaredDomainMin/Max} (absolute or {@code +k}/{@code -k}).
-     * Kind and recorded value come from the mint in {@link #resolved}, so a
-     * declaration carries INTEGRAL and no value.  No file declares nothing.
-     */
     public static Map<String, RootDomain> declared(Path file)
             throws IOException {
         Map<String, RootDomain> domains =
@@ -68,19 +55,6 @@ public final class RootDomain extends Value {
                 JsonFields.text(row, "declaredDomainMax"));
     }
 
-    /**
-     * One minted root's absolute domain: the case's declaration if any, its
-     * {@code +k}/{@code -k} read off the reading, else the mint's bounds,
-     * which are absolute ({@code -2} is minus two), never both.  Kind and
-     * recorded value are the mint's.  An integral configuration is widened
-     * by {@code compared}: each literal a recorded decision compared the
-     * root with, its {@code c - 1, c, c + 1} joining the mint's hull and its
-     * reading (a comparison with a value the slice does not state, a live
-     * replica count, is one with the literal the run had: SYMBOL-SCOPE
-     * §4.3), the whole within what the configuration's own validation admits
-     * ({@link RootMintRow#valid}) when the reading lies within it.  The
-     * case's declaration still wins.
-     */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared,
                                       Collection<BigInteger> compared) {
@@ -101,8 +75,6 @@ public final class RootDomain extends Value {
             }
         }
         if (low == null || high == null) return mint;
-        // A validation the recorded reading itself fails is no validation
-        // of this value (the mint drops it, named): nothing is clipped.
         Validity valid = row.valid();
         if (!integral(row.recordedValue()) || valid.admits(
                 new BigInteger(row.recordedValue().trim()))) {
@@ -113,19 +85,11 @@ public final class RootDomain extends Value {
                 low.toString(), high.toString());
     }
 
-    /** Whether {@code compared} widens one root's domain ({@link
-     *  #resolved}): an integral configuration the case declares nothing
-     *  for; any other root's is its mint's, whatever was compared. */
     public static boolean widened(RootMintRow row, boolean declared) {
         return !declared && row.kind() == RootKind.INTEGRAL
                 && row.category() == RootCategory.CONFIG;
     }
 
-    /**
-     * The same, about a reading other than the mint's own: a clock cell the
-     * composition anchors on the recording's timeline
-     * ({@code Composer#clocks}).
-     */
     public static RootDomain resolved(RootMintRow row, String reading,
                                       Map<String, RootDomain> declared) {
         RootDomain stated = declared == null ? null
@@ -139,11 +103,6 @@ public final class RootDomain extends Value {
                 declaredBound(stated.max(), reading));
     }
 
-    /**
-     * One declared bound as an absolute value: itself, or {@code +k}/{@code
-     * -k} from the recorded reading -- the case file's syntax, read only
-     * here.  {@code null} when either is not integral.
-     */
     private static String declaredBound(String bound, String recorded) {
         String stated = bound == null ? "" : bound.trim();
         if (!stated.startsWith("+") && !stated.startsWith("-")) {
@@ -156,13 +115,11 @@ public final class RootDomain extends Value {
                 .add(new BigInteger(offset.trim())).toString();
     }
 
-    /** One absolute bound, or {@code null} when absent or not integral. */
     private static String absolute(String bound) {
         String stated = bound == null ? "" : bound.trim();
         return integral(stated) ? stated : null;
     }
 
-    /** Whether one text is an integral literal: the one such test. */
     private static boolean integral(String value) {
         return !JavaPrimitiveSmtSemantics.integralLiteral(value).isEmpty();
     }
@@ -179,17 +136,14 @@ public final class RootDomain extends Value {
         return recordedValue;
     }
 
-    /** The absolute lower bound, or {@code null}. */
     public String min() {
         return min;
     }
 
-    /** The absolute upper bound, or {@code null}. */
     public String max() {
         return max;
     }
 
-    /** A root with no declared domain does not move. */
     public boolean pinned() {
         return min == null && max == null;
     }

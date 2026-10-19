@@ -13,37 +13,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * THE OPEN LINKS of a claimed path's causal chain, read off the composed
- * formula exactly as {@code experiments/accept/cone.py} reads them, so
- * COMPOSE and the checker name one set (PIPELINE §8): a boundary constant --
- * a handoff's {@code v_H}, {@code _field_HOFF.} -- the path's fatal condition
- * names (through define-funs; let-bound and quantified names, and a
- * define-fun's parameters, are no constants) that no message family
- * asserted under the path's selector names and no producer refused by rule
- * settles on the path ({@code concrete[]}: CONSTANT, EXPORTED, BOUNDED,
- * {@link SmtLowering#settled}), and a boundary value an arm the
- * witness chose holds FREE or HELD ({@code concrete[]}, its arm).  Each is a
- * value the witness rests on that no producer the corpus attests made.
- *
- * <p>Read iteratively: a composed formula nests thousands deep.  Read once
- * per formula, its assertions indexed by the selector they are stated under:
- * every path of a body asks it (hdfs-11741 HL1: 66 paths over a 45 MB body,
- * each read whole again, and each assertion of another selector searched to
- * the end of the text for this one's -- 44 minutes of a witness attempt).</p>
- */
 final class Cone {
 
-    /** What makes a constant a handoff's value ({@code HandoffMint}). */
     static final String BOUNDARY = "_field_HOFF.";
 
     private final String text;
     private final Set<String> consts = new HashSet<String>();
-    /** Each define-fun's form, parsed when first named. */
     private final Map<String, int[]> defs = new HashMap<String, int[]>();
     private final Map<String, Set<String>> defined =
             new HashMap<String, Set<String>>();
-    /** selector -> the forms of the assertions stated under it, in order. */
     private final Map<String, List<int[]>> asserted =
             new HashMap<String, List<int[]>>();
 
@@ -52,11 +30,6 @@ final class Cone {
         for (int[] form : topLevel(text)) read(form);
     }
 
-    /**
-     * The open links of the path {@code selector} selects ({@code pathId}),
-     * whose witness chose {@code arms}: cone.py's {@code unbound} for that
-     * path, sorted.
-     */
     synchronized Set<String> unbound(String selector, String pathId,
                                      Collection<String> arms,
                                      Collection<Composer.Concrete> concrete) {
@@ -71,16 +44,12 @@ final class Cone {
         for (Node family : families) {
             bound.addAll(names(family, Collections.<String>emptySet()));
         }
-        // A store content leaf its producer, refused by rule, settles
-        // (SmtLowering#settled: a constant, its export, a named bound): no
-        // open link.
         for (Composer.Concrete row : concrete) {
             if (SmtLowering.settled(row.kind) && pathId.equals(row.pathId)) {
                 bound.add(row.subject);
                 bound.add(SmtNames.legalSymbols(row.subject));
             }
         }
-        // The last fatal assertion of the selector, as cone.py's dict keeps.
         if (!fatal.isEmpty()) {
             for (String name : names(fatal.get(fatal.size() - 1),
                     Collections.<String>emptySet())) {
@@ -100,9 +69,6 @@ final class Cone {
         return open;
     }
 
-    /** One top-level command: the declarations, definitions and each
-     *  assertion stated under a selector -- {@code (assert (=> s ...))} or
-     *  {@code (assert (! (=> s ...) ...))} -- are kept. */
     private void read(int[] form) {
         List<String> head = atoms(form[0] + 1, form[1], 3);
         if (head.isEmpty()) return;
@@ -135,8 +101,6 @@ final class Cone {
         }
     }
 
-    /** {@code (assert (! (=> selector body) :named name))}: a fatal or a
-     *  family of this selector keeps its body. */
     private static void assertion(Node node, String selector,
                                   List<Node> fatal, List<Node> families) {
         if (node.kids.size() < 2) return;
@@ -163,8 +127,6 @@ final class Cone {
         }
     }
 
-    /** The declared constants {@code root} depends on, {@code bound} names
-     *  aside (cone.py's {@code Formula.names}). */
     private Set<String> names(Node root, Set<String> bound) {
         Set<String> found = new LinkedHashSet<String>();
         Deque<Object[]> pending = new ArrayDeque<Object[]>();
@@ -210,8 +172,6 @@ final class Cone {
         return found;
     }
 
-    /** A define-fun's constants, its parameters aside; memoized, a cycle
-     *  reading as nothing. */
     private Set<String> defined(String name) {
         Set<String> done = defined.get(name);
         if (done != null) return done;
@@ -233,11 +193,7 @@ final class Cone {
         return found;
     }
 
-    // ------------------------------------------------------------------
-    // Reading SMT-LIB text (cone.py's forms()).
-    // ------------------------------------------------------------------
 
-    /** One term: an atom, or a list ({@code kids}). */
     private static final class Node {
         final String atom;
         final List<Node> kids;
@@ -252,7 +208,6 @@ final class Cone {
         }
     }
 
-    /** Each top-level form's [start, end) in {@code text}. */
     static List<int[]> topLevel(String text) {
         List<int[]> forms = new ArrayList<int[]>();
         int depth = 0;
@@ -275,8 +230,6 @@ final class Cone {
         return forms;
     }
 
-    /** The first {@code limit} tokens of [from, to): each parenthesis one,
-     *  each atom one. */
     private List<String> leading(int from, int to, int limit) {
         List<String> tokens = new ArrayList<String>();
         int at = from;
@@ -296,8 +249,6 @@ final class Cone {
         return tokens;
     }
 
-    /** The first {@code limit} atoms of the list body [from, to), nested
-     *  lists skipped. */
     private List<String> atoms(int from, int to, int limit) {
         List<String> found = new ArrayList<String>();
         int at = from;
@@ -316,7 +267,6 @@ final class Cone {
         return found;
     }
 
-    /** The term [from, to), parsed with an explicit stack. */
     private Node parse(int from, int to) {
         Deque<List<Node>> open = new ArrayDeque<List<Node>>();
         List<Node> top = new ArrayList<Node>();
@@ -363,8 +313,6 @@ final class Cone {
         return end == at ? at + 1 : end;
     }
 
-    /** The index of the {@code |} or {@code "} closing the one at
-     *  {@code at} (a string's {@code ""} is an escaped quote). */
     private static int closing(String text, int at) {
         char quote = text.charAt(at);
         int index = at + 1;

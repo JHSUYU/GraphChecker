@@ -39,10 +39,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * The region graph joins on an address.  It only scopes: it never decides
- * what matters, picks an arm, or names a writer.
- */
 public class RegionGraphOccurrenceKeyTest {
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -52,22 +48,6 @@ public class RegionGraphOccurrenceKeyTest {
         G.reset();
     }
 
-    /**
-     * What the slice PUBLISHES about the cells it names (SYMBOL-SCOPE §3):
-     * every write site of such a cell, under the innermost region that would
-     * run it, with the guard set post-dominance gives that site -- and the
-     * guard set is where a may-reach guard and a control-dependence guard
-     * differ, which is the difference between finding 17960's marker flip and
-     * not finding it.
-     *
-     * <p>That is the whole of what the static side contributes to the demand
-     * walk.  {@code writerRegionsByCell} is the join the region finalizer
-     * crosses on: one location, the REGIONS whose text stores into it, under
-     * both names a read can reach it by -- the leaf the VM versions and the
-     * declared field that owns it.  It names no activation and no writer: a
-     * region the recording never entered contributes no occurrence, and WHICH
-     * of the entered ones wrote the value the VM's own expression decides.</p>
-     */
     @Test
     public void theMapScopesTheDemandWalkAndNamesNoWriter()
             throws IOException {
@@ -75,10 +55,6 @@ public class RegionGraphOccurrenceKeyTest {
         theGuardSetIsPostDominanceAndNotMayReach();
     }
 
-    /**
-     * 17960's shape: one counter, two writers, and the writer the seed never
-     * ran is in the map exactly like the one it did.
-     */
     private void theSliceNamesEveryWriteSiteOfACellItNames()
             throws IOException {
         String leaf = "<java.util.concurrent.atomic.AtomicInteger: int value>";
@@ -100,8 +76,6 @@ public class RegionGraphOccurrenceKeyTest {
                 row("kind", "exception_throw", "method", saver,
                         "unitIndex", 64, "toCell", saver
                                 + "#u64#exception:java.lang.IllegalState"),
-                // A local-held container mutation names no shared location,
-                // so it is no candidate writer of one.
                 row("kind", "container_mutation_argument", "method", decrement,
                         "unitIndex", 12, "toCell", decrement + "::$r5"));
         Map<String, Object> port = row(
@@ -109,7 +83,6 @@ public class RegionGraphOccurrenceKeyTest {
                 RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "OUT",
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD, saver,
                 CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 9);
-        // The same port's attach defines nothing: no export site.
         Map<String, Object> attach = row(
                 CommunicationCatalogContract.PORT_ID, "XCH.a.resp.count",
                 RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "IN",
@@ -117,7 +90,6 @@ public class RegionGraphOccurrenceKeyTest {
                 decrement,
                 CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 3);
         List<Map<String, Object>> regions = Arrays.asList(
-                // The enclosing request region holds every method below it.
                 row("regionId", "REGION.request", "methods", Arrays.asList(
                         "<example.Rpc: void handle()>", increment, decrement)),
                 row("regionId", "REGION.delete", "methods",
@@ -150,13 +122,10 @@ public class RegionGraphOccurrenceKeyTest {
         Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
         StaticScopeMap map = StaticScopeMap.read(file);
 
-        // The counter's carrier is found from the site the recording DID
-        // write at, spelled the way the VM spells an endpoint site.
         Set<String> carriers = map.carriersAt(
                 "example.Manager#create()Ljava/lang/String;#621:WRITE", "I",
                 LocationKind.INSTANCE);
         assertEquals(Collections.singleton(carrier), carriers);
-        // A write row of another type at that method is not that cell.
         assertTrue(map.carriersAt(
                 "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z",
                 LocationKind.INSTANCE)
@@ -183,7 +152,6 @@ public class RegionGraphOccurrenceKeyTest {
                 Arrays.asList(decrement + "#u7", decrement + "#u15"), guards);
         assertEquals("and the arm of each guard that reaches it",
                 Arrays.asList(Boolean.TRUE, Boolean.FALSE), arms);
-        // The port's producer side only, and the declared target.
         assertEquals("the attach in REGION.delete is no export", 1,
                 map.exportsOf("XCH.a.resp.count").size());
         assertEquals("REGION.save",
@@ -193,9 +161,6 @@ public class RegionGraphOccurrenceKeyTest {
         assertEquals("example.Saver#save(Ljava/io/OutputStream;)V",
                 map.targetSites().get(0).vmSite);
 
-        // The join the demand walk crosses on: both names of the location
-        // answer with the same two sites, each naming the region AND the
-        // method an activation has to have entered to have written there.
         Map<String, List<StaticScopeMap.Site>> writeSites =
                 map.writeSitesByCell();
         assertEquals("the leaf the VM keeps versions of",
@@ -216,12 +181,6 @@ public class RegionGraphOccurrenceKeyTest {
                         + "#u64#exception:java.lang.IllegalState"));
     }
 
-    /**
-     * The guard set of a write is post-dominance, not may-reach: the branch
-     * BOTH of whose arms can reach the write still decides it, because on one
-     * arm the write is unavoidable and on the other it is not.  That branch is
-     * 17960's ordered-deletion marker.
-     */
     private void theGuardSetIsPostDominanceAndNotMayReach() {
         G.reset();
         SootClass owner = new SootClass("example.Guarded");
@@ -258,23 +217,12 @@ public class RegionGraphOccurrenceKeyTest {
                 SiteId.of(method.getSignature(), 4));
         assertEquals(expected, guardSites(SiteControlDependence.over(
                 Collections.singletonList(decrement)).of(decrement)));
-        // Each kept branch also NAMES the arm that makes the write
-        // unavoidable: that is the site's fatal polarity, and it is stated
-        // once, here, instead of derived by a second rule downstream.
         assertEquals(Arrays.asList(Boolean.TRUE, Boolean.TRUE),
                 guardArms(SiteControlDependence.over(
                         Collections.singletonList(decrement)).of(decrement)));
-        // Both arms of the marker branch CAN reach the write, which is why
-        // the graph's may-reach guard rule drops it.
         assertEquals(2, new soot.toolkits.graph.BriefUnitGraph(body)
                 .getSuccsOf(ordered).size());
 
-        // And after INSTRUMENT has woven a hook into the same body, the guard
-        // ids are STILL the ids the branches were planned and woven under: a
-        // published site id is in the ORIGINAL numbering, and reading the
-        // guards off positions in a woven body shifted every one of them past
-        // the first hook ("0 of the 27 installed guard ids is decided
-        // anywhere in the session").
         CausynthPipeline.tagOriginalUnits(new ArrayList<Unit>(
                 body.getUnits()));
         Unit hook = Jimple.v().newAssignStmt(count, IntConstant.v(7));

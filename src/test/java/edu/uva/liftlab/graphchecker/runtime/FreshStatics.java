@@ -22,23 +22,16 @@ import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Runs each test of a class -- each row of a {@link Rows} test -- in a class
- * loader of its own for the engine's classes, so every static starts as it
- * does in the one JVM a replay is.
- */
 public final class FreshStatics extends Runner implements Filterable {
     private static final String ENGINE = "edu.uva.liftlab.graphchecker.";
     private static final String ROW = "graphchecker.test.row";
 
-    /** A test run once per row, each in a fresh loader ({@link #row}). */
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.METHOD)
     public @interface Rows {
         int value();
     }
 
-    /** The row of a {@link Rows} test this run is. */
     public static int row() {
         return Integer.parseInt(System.getProperty(ROW, "0"));
     }
@@ -75,7 +68,6 @@ public final class FreshStatics extends Runner implements Filterable {
         }
     }
 
-    /** One row in a fresh loader; false once it failed. */
     private boolean runRow(String method, int row, Description test,
                            RunNotifier outer) {
         List<Failure> failures = new ArrayList<>();

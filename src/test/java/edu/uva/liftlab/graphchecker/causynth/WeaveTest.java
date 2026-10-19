@@ -22,8 +22,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/** What INSTRUMENT weaves around a call: a work start, a logging call's
- *  pause, a loop body's frame. */
 public class WeaveTest {
     private static final String PAUSE = "pauseConcolicPathCondition";
     private static final String RESUME = "resumeConcolicPathCondition";
@@ -35,18 +33,12 @@ public class WeaveTest {
         G.reset();
     }
 
-    /**
-     * A work start passes what the work was submitted to ({@code
-     * Identity#handsOff} reads an executor's queue from it): the submission's
-     * receiver, and null for a static call that starts work.
-     */
     @Test
     public void aStartPassesTheReceiverItWasSubmittedTo() {
         String executor = "java.util.concurrent.Executor";
         JimpleScene.load("public interface java.lang.Runnable { }",
                 "public interface " + executor + " { }",
                 "public class a.Pools { }",
-                // pool.execute(task); a.Pools.execute(task);
                 "application public class a.Submitter { public static void"
                         + " submit(" + executor + ", java.lang.Runnable) { "
                         + executor + " r0; java.lang.Runnable r1;"
@@ -67,7 +59,6 @@ public class WeaveTest {
         CausynthPipeline.HookCatalog refs =
                 CausynthPipeline.HookCatalog.concolic();
         Object[][] table = {
-                // the start, its site, what it passes as submitted to
                 {submitted, "<a.Submitter: void submit()>#u2", pool},
                 {helper, "<a.Submitter: void submit()>#u3", NullConstant.v()},
         };
@@ -81,12 +72,6 @@ public class WeaveTest {
         }
     }
 
-    /**
-     * A logging call runs under the VM's pause (RULES: IO only on the traced
-     * flow): the calls whose callee a logging API names are paused, nothing
-     * else; the pause is taken before the call and released after it, on a
-     * throw too, before the rethrow.
-     */
     @Test
     public void aLoggingApisCallIsPausedAndReleasedOnEveryExit() {
         Object[][] rows = {
@@ -99,7 +84,6 @@ public class WeaveTest {
                 {"org.slf4j.LoggerFactory", false},
                 {"org.apache.solr.common.cloud.SolrZkClient", false},
         };
-        // The catch-all the release on a throw is woven under.
         JimpleScene.add("public class java.lang.Throwable { }");
         CausynthPipeline.HookCatalog refs =
                 CausynthPipeline.HookCatalog.concolic();
@@ -126,7 +110,6 @@ public class WeaveTest {
         }
     }
 
-    /** {@code static void log(<api> logger) { logger.info("x"); return; }} */
     private static Body callerOf(String api) {
         String owner = "a.Caller" + Math.abs(api.hashCode());
         if (!Scene.v().containsClass(api)) {
@@ -140,45 +123,27 @@ public class WeaveTest {
                 .getActiveBody();
     }
 
-    /**
-     * Where one iteration of a loop can open its frame for a demanded call
-     * (IDENTITY §1, LOOP_BODY_ROOT): SEED states it and INSTRUMENT asks the
-     * same function, so a loop body SEED names is one the weave can open.
-     */
     @Test
     public void anIterationOpensWhereItHoldsTheCallOrNowhere() {
         JimpleScene.load("public class a.Loops { public static void work() { }"
-                // hdfs-adhoc-41, INodesInPath.getExistingINodes: the loop
-                // returns a call from inside it.  The call is on the exit
-                // path: no member.
                 + loop("exitPath", "label1: if i0 <= 0 goto label3;"
                         + " if i1 != 0 goto label2; i0 = i0 - 1; goto label1;"
                         + " label2:" + WORK + " label3:")
-                // The call in the body, after both controls: the outermost
-                // control edge whose target holds it, the second control's
-                // entry.
                 + loop("inBody", "label1: if i0 <= 0 goto label2;"
                         + " if i1 != 0 goto label2;" + WORK + " i0 = i0 - 1;"
                         + " goto label1; label2:")
-                // A while (true) whose work comes before its only control:
-                // each turn is the header's.
                 + loop("beforeControls", "label1:" + WORK
                         + " if i0 > 0 goto label2; i0 = i0 + 1; goto label1;"
                         + " label2:")
-                // Two controls enter the call alike: no one entry is proved.
                 + loop("alike", "label1: if i0 > 0 goto label2;"
                         + " if i1 <= 0 goto label3; goto label4;"
                         + " label2: if i0 <= 9 goto label3; goto label4;"
                         + " label3:" + WORK + " i0 = i0 - 1; goto label1;"
                         + " label4:") + " }");
         Object[][] rows = {
-            // name, method, the demanded call's unit, the entry target's
-            // (-1: none), the control edges the frame opens on
             {"a call on the loop's exit path", "exitPath", 6, -1, 0},
             {"a call in the body after the controls", "inBody", 4, 3, 1},
             {"work before every control", "beforeControls", 2, 2, 1},
-            // if (a || b) work(): two control edges into one block are one
-            // entry, opened on both.
             {"a call two controls enter alike", "alike", 7, 7, 2},
         };
         for (Object[] row : rows) {
@@ -203,7 +168,6 @@ public class WeaveTest {
         }
     }
 
-    /** The startWork call woven before {@code start}: the last before it. */
     private static InvokeExpr startWorkBefore(Body body, Stmt start) {
         List<Unit> units = new ArrayList<>(body.getUnits());
         for (int at = units.indexOf(start) - 1; at >= 0; at--) {
@@ -227,8 +191,6 @@ public class WeaveTest {
         return invoke.getMethodRef().getName();
     }
 
-    /** {@code static void name(int i0, int i1)}: its identities, the
-     *  {@code loop}, a return. */
     private static String loop(String name, String loop) {
         return " public static void " + name + "(int, int) { int i0, i1;"
                 + " i0 := @parameter0: int; i1 := @parameter1: int; " + loop

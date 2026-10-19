@@ -30,12 +30,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** The JSON of the exploration contract: tasks, obligations, results. Addresses
- *  use {@link RowCodec}'s occurrence form so tasks and rows join on the
- *  rendered address; field accessors are {@code smt.JsonFields}'. */
 public final class ExploreCodec {
-    /** Session id of a gap this stage raises ({@code GapRow.sessionId} must be
-     *  non-empty). */
     public static final String EXPLORATION = "exploration";
 
     private ExploreCodec() {
@@ -69,8 +64,6 @@ public final class ExploreCodec {
         return json;
     }
 
-    /** A FORCE obligation's mark (Obligation#forcing), on its row and on
-     *  its focus row. */
     static final String FORCE = "force";
 
     public static Obligation readObligation(JsonObject json) {
@@ -91,17 +84,6 @@ public final class ExploreCodec {
     }
 
 
-    /**
-     * THE FOCUS ROW ({@code focused_task.jsonl}) a replay runs: focus, factor,
-     * the flip ({@code null} when {@code obligation} flips nothing), inherited
-     * flips, mint values (a clock as a skew), answers, pairings (the replay
-     * is held to them by its {@code expected_edges.jsonl}), each root's mint
-     * occurrence, unproducible handoffs and the schedule cut ({@code cut}
-     * null: none). Read back by {@link #readWorld}.  {@code declaredTarget}, the
-     * case's one occurrence (null: none resolved), is where the replay stops
-     * once it observes the fatal ({@code runtime.FocusedReplay}).
-     */
-    /** One JSON object file, as a wave's artifacts are written. */
     static JsonObject readObject(Path file) throws IOException {
         return JsonParser.parseString(new String(Files.readAllBytes(file),
                 StandardCharsets.UTF_8)).getAsJsonObject();
@@ -121,7 +103,6 @@ public final class ExploreCodec {
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "FOCUSED_TASK");
         row.addProperty("taskId", obligation.taskId());
-        // Render for OccurrenceAddress.parse, id for grep.
         row.addProperty("focused", focused.render());
         row.addProperty("focusedOccurrenceId", focused.id());
         if (declaredTarget != null) {
@@ -141,28 +122,21 @@ public final class ExploreCodec {
             flip.addProperty("outcome", obligation.flippedOutcome());
         }
         row.add("flip", flip);
-        // Held like the flip (a wrong arm un-admits); still ONE verdict row.
         JsonArray inherited = new JsonArray();
         for (Corpus.Flip carried : inheritedFlips) {
             inherited.add(writeFlip(carried));
         }
         row.add("inheritedFlips", inherited);
         row.add("rootAssignments", strings(obligation.rootAssignments()));
-        // A clock's counterfactual is a SKEW off the replay's own reading.
         row.add("clockDeltas", strings(clockDeltas));
         row.add("answers", strings(obligation.answers()));
         row.add("pairings", strings(pairings));
-        // Each root's mint occurrence is focused, or it reads the recording.
         row.add("rootMints", strings(rootMints));
         row.add("unproducible", list(obligation.unproducible()));
         if (cut != null) row.add("schedulePrefix", cut.toJson());
         return row;
     }
 
-    /** Writes one focus row ({@code focused_task.jsonl}; none: an empty
-     *  file), nulls stated: a CONFIRM's or a FORCE run's {@code flip: null}
-     *  is the statement ({@code runtime.FocusedReplay} reads no row without
-     *  it). */
     static void writeFocusFile(Path file, JsonObject focus)
             throws IOException {
         Files.write(file, (focus == null ? "" : new GsonBuilder()
@@ -170,10 +144,6 @@ public final class ExploreCodec {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The world one focus row states; mirrored by {@code
-     *  runtime.FocusedReplay}. Flips: the row's own (at {@code
-     *  focusedOccurrenceId}) first, then inherited ones in row order -- the
-     *  order a child session inherits them in. */
     public static Corpus.World readWorld(JsonObject json) {
         List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
         JsonObject own = object(json, "flip");
@@ -189,8 +159,6 @@ public final class ExploreCodec {
                 map(object(json, "pairings")), flips);
     }
 
-    /** One flip's decision; {@code owner} states whose and which obligation
-     *  (the row itself for its own flip). */
     private static Corpus.Flip readFlip(JsonObject flip, JsonObject owner) {
         return new Corpus.Flip(optionalString(owner, "focusedOccurrenceId"),
                 optionalString(flip, "siteId"),
@@ -199,7 +167,6 @@ public final class ExploreCodec {
                 optionalString(owner, "obligationId"));
     }
 
-    /** One inherited flip, as the focus row states it. */
     public static JsonObject writeFlip(Corpus.Flip flip) {
         JsonObject json = new JsonObject();
         json.addProperty("focusedOccurrenceId", flip.focusedOccurrenceId);
@@ -210,8 +177,6 @@ public final class ExploreCodec {
         return json;
     }
 
-    /** One change of the epoch's skeleton: a slot opened, or dropped
-     *  ({@code kind}, {@link SlotTable}). */
     public static JsonObject writeSlot(SlotTable.Slot slot, String kind) {
         JsonObject json = new JsonObject();
         json.addProperty("schemaVersion", 1);
@@ -226,7 +191,6 @@ public final class ExploreCodec {
         return json;
     }
 
-    /** One slot, its endpoints' parts from {@code pool}. */
     public static SlotTable.Slot readSlot(JsonObject json, RowPool pool) {
         return new SlotTable.Slot(
                 InteractionKind.valueOf(
@@ -252,7 +216,6 @@ public final class ExploreCodec {
         return json;
     }
 
-    /** A string-valued object as a map. */
     static Map<String, String> map(JsonObject json) {
         Map<String, String> values = new LinkedHashMap<String, String>();
         for (Map.Entry<String, JsonElement> entry : json.entrySet()) {

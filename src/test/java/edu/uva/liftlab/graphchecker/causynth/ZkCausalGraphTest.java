@@ -12,16 +12,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * THE ZOOKEEPER CAUSAL CHAIN: backward from a target over the recording's
- * store rows, the writers of a chain location's versions up to the one read
- * (never a later one), the queue item it applied and that item's writer,
- * and the decodes on the target's node of the view it read at or below the
- * version read -- no other location, no later decode, no decode on another
- * node; and the chain's FIELDS, by leaf identity: the pointer the target's
- * leaf was parsed at, the writer's leaf there, the item leaf it serialized
- * from, nothing else of either document.
- */
 public class ZkCausalGraphTest {
     private static String at(String node, int k) {
         return "auto0/" + node + "#epoch0/region/REGION.w/ctx:Root:CLIENT/"
@@ -102,7 +92,6 @@ public class ZkCausalGraphTest {
                 Collections.singleton("|state"), keys.get(writer1).get(ITEM));
         assertEquals(Collections.singleton("|state"),
                 keys.get(sender).get(ITEM));
-        // A location a target read decoded objects of is carried whole.
         assertEquals(Collections.singleton(ZkCausalGraph.WHOLE),
                 graph.keys(chain, Collections.singletonList(101),
                         Collections.singletonList(STATE))

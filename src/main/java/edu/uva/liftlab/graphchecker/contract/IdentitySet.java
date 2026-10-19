@@ -4,20 +4,10 @@ import java.util.AbstractSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
-/**
- * A SET OF INSTANCES, each held as one reference in one array (open
- * addressing by identity), where a set over an {@code IdentityHashMap}
- * holds two references a slot at a third of its slots free (a closure
- * walk's expanded reads: 29.7 M of them in SGF8-adhoc-05 round 5's
- * planner, 476 MB).  Its order is its table's: only where no order is
- * read.  No element is removed, none is null.  One thread changes it; it is
- * read while no thread does.
- */
 public final class IdentitySet<E> extends AbstractSet<E> {
     private Object[] slots;
     private int size;
 
-    /** One sized for {@code expected} elements. */
     public IdentitySet(int expected) {
         int capacity = 2;
         while (capacity < 2 * expected) capacity <<= 1;

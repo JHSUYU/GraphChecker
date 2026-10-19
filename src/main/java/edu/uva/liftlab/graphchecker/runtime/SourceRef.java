@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import java.util.Objects;
 
-/** Stable logical source identity for one node/application lifecycle. */
 public final class SourceRef {
     private final String kind;
     private final String role;

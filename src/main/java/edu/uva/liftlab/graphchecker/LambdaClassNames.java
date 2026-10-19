@@ -22,42 +22,16 @@ import java.util.Map;
 import java.util.UUID;
 import soot.util.MultiMap;
 
-/**
- * Names the class Soot desugars a lambda into by what the class is, not by
- * when it was made.
- *
- * <p>Soot names that class {@code <Outer>$<impl>__<n>} ({@code <impl>} the
- * implementation method, {@code $} as {@code _}), with {@code n} from one
- * counter over the whole run, in the order bodies happen to be built.  Bodies
- * built on several threads, a process dir listed in another order, or another
- * scope (a weave adds the lineage classes) give the same lambda another name,
- * and with it another region id, other site ids and other Jimple, in the
- * static artifacts and the woven classes alike.  Installed as Soot's
- * {@code LambdaMetaFactory}, this one sets {@code n} to a hash of everything
- * the class is made from (the enclosing class, the bootstrap arguments, the
- * interface method and the captured types), so a lambda has one name in every
- * run.  Two call sites that would make the same class share it.</p>
- *
- * <p>Two different classes whose names still collide (one implementation
- * method, two contents, one 31-bit hash) stop the run: Soot refuses the
- * second as a duplicate class.</p>
- */
 final class LambdaClassNames extends LambdaMetaFactory {
-    /** Soot's counter: the next class is numbered {@code ++uniq}. */
     private static final Field COUNTER = field(LambdaMetaFactory.class,
             "uniq");
 
-    /** The bootstrap method of the class made for each content. */
     private final Map<String, SootMethodRef> made = new HashMap<>();
 
     private LambdaClassNames(Singletons.Global global) {
         super(global);
     }
 
-    /**
-     * Makes this Soot's lambda factory: after the classes are loaded (the
-     * factory resolves the boxing methods), before any body is built.
-     */
     static void install() {
         Field factory = field(Singletons.class,
                 "instance_soot_LambdaMetaFactory");
@@ -95,7 +69,6 @@ final class LambdaClassNames extends LambdaMetaFactory {
         }
         bootstrap = super.makeLambdaHelper(bootstrapArgs, tag, name, types,
                 enclosingClass);
-        // Null: Soot declined the call site, and made no class.
         if (bootstrap == null) return null;
         String className = bootstrap.getDeclaringClass().getName();
         if (!className.endsWith("__" + number)) {

@@ -20,8 +20,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Runtime-planning JSONL: row 1 is the region catalog plus gaps, then one
- *  self-contained row per occurrence plan. */
 public final class RuntimePlanArtifact {
     private static final int SCHEMA_VERSION = 2;
     private static final String CATALOG_KIND =
@@ -37,18 +35,10 @@ public final class RuntimePlanArtifact {
         this.regions = regions;
     }
 
-    /** Decoded once here, never re-parsed. */
     public List<RegionInstancePlan> regionPlans() { return plans; }
 
     public List<JsonObject> regions() { return copies(regions); }
 
-    /**
-     * Writes the catalog row (regions + gaps), then the plan rows as {@code
-     * encodedPlans} yields them, each rendered and written before the next
-     * is built: a plan of 2000 occurrences is 130 MB of text, which built
-     * whole (rows, then one string of them, then its bytes) took a 2 GB
-     * aggregation out of its heap (hdfs-adhoc-43).
-     */
     public static void write(Writer output,
                              Collection<JsonObject> encodedRegions,
                              Collection<JsonObject> encodedGaps,
@@ -77,7 +67,6 @@ public final class RuntimePlanArtifact {
         return CanonicalJson.render(catalog) + "\n";
     }
 
-    /** Reads one bundle and restores the canonical in-memory binding view. */
     public static RuntimePlanArtifact read(Path path) throws IOException {
         List<JsonObject> rows = readRows(path);
         JsonObject catalog = catalog(rows, path);
@@ -102,7 +91,6 @@ public final class RuntimePlanArtifact {
             throw new IOException("invalid runtime plan row: " + path,
                     malformed);
         }
-        // One coarse occurrence is one row (IDENTITY §5).
         Set<String> occurrences = new LinkedHashSet<>();
         for (RegionInstancePlan plan : decoded) {
             if (!occurrences.add(plan.occurrenceId())) {
@@ -110,7 +98,6 @@ public final class RuntimePlanArtifact {
                         + plan.occurrenceId());
             }
         }
-        // Gaps are the catalog's to state, not this reader's to keep.
         objects(array(catalog, "gaps"), "runtime plan gaps", path);
         return new RuntimePlanArtifact(decoded, regions);
     }

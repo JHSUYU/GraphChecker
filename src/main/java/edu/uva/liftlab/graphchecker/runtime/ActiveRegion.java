@@ -34,40 +34,23 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** One live activation of a declared region, and what it records. */
 final class ActiveRegion {
     final long token;
-    /** The one task whose region-local path this activation records. */
     final RuntimeTask activation;
-    /** The address every row of this activation is keyed by, or null. */
     OccurrenceAddress d3Address;
-    /** Whether this activation counts against its address's set. */
     private boolean activationClaimed;
-    /** Exact event-ledger entry of this native region frame. */
     long vmRegionEnterEventId;
     final Object receiver;
     final Thread thread;
     final AtomicBoolean finished = new AtomicBoolean();
-    /** The declared target branch event this occurrence decided, or null. */
     JsonObject targetReach;
-    /** Terminal outcome, frozen when the occurrence stops running. */
     boolean abandoned;
-    /** A selected non-loop occurrence ended in a durable named gap. */
     boolean terminalGap;
     private boolean closed;
-    /** Loop bodies this activation has charged. */
     volatile long chargedLoopBodies;
-    /** Decisions this activation recorded with a term, on its thread
-     *  ({@code BranchObservation}): what a loop iteration's {@code K_L}
-     *  count asks ({@link #traverseBackedge}). */
     int termedDecisions;
-    /** Why a loop bound cut this activation's local path, or null
-     *  ({@code LoopAccounting#endAtCut}). */
     volatile String cut;
-    /** Logical sources and request scopes observed while this ran. */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
-    /** Every source the observed context or the receiver's registration
-     *  attributes this to. */
     Set<String> attributedSourceKeys() {
         Set<String> keys = new LinkedHashSet<>(observedSourceKeys);
         SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
@@ -81,23 +64,14 @@ final class ActiveRegion {
         return true;
     }
 
-    /** Exact configured-source and planned-action observations. */
     final List<JsonObject> symbolizedRows = new ArrayList<>();
     final List<JsonObject> branchMappings = new ArrayList<>();
-    /** The write log this activation read out, and its gaps: each
-     *  location's record, shared with every activation whose read-out
-     *  stated it alike. */
     final Map<String, SharedStateCapture.Filed> sharedStateRecords =
             new LinkedHashMap<>();
-    /** The locations its read-out refused, with why. */
     final Map<String, String> sharedStateRefusals = new LinkedHashMap<>();
-    /** Symbols this activation already minted at a one-shot hook. */
     final Set<String> materialized = new LinkedHashSet<>();
-    /** The box each configuration key's first getter read here minted. */
     private final Map<String, Object> configurationReads =
             new LinkedHashMap<>();
-    /** The declared inputs that took such a box: symbolic, and stated by
-     *  the first read's row. */
     private final Set<String> configurationReuses = new LinkedHashSet<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
@@ -107,22 +81,10 @@ final class ActiveRegion {
     private final LoopBackedgeBudget loopBackedges;
     private final Map<Long, PreparedBranch> preparedBranches =
             new LinkedHashMap<>();
-    /** One shared expression DAG for all read-outs in this VM session. */
     final VmExpressionTable.Store expressionStore;
     private long preparedBranchSequence;
     int lastPathConditionSize;
-    /**
-     * The Java-side branch-observation gate, opened once the first selected
-     * input is symbolic (or inherited from a symbolic caller).
-     */
     boolean pathRecordingStarted;
-    /**
-     * A doors-only occurrence's base pause of the path condition stands
-     * ({@code RuntimeTask#doorsOnly}): taken at the end of its entry hook,
-     * and of every hook after a door decision ({@code ConcolicRegionRuntime
-     * #holdBasePause}, {@code #closeDoorWindow}), lifted while a door
-     * decision runs ({@code #openDoorWindow}), released at its close.
-     */
     boolean basePaused;
 
     ActiveRegion(long token, RuntimeTask activation,
@@ -135,28 +97,22 @@ final class ActiveRegion {
         this.loopBackedges = new LoopBackedgeBudget();
     }
 
-    /** Counts this activation against its address's set (bounds loop-body
-     *  occurrences). */
     void claimActivation() {
         if (activationClaimed) return;
         activationClaimed = true;
         activation.claimActivation();
     }
 
-    /** Gives the slot back; this activation published nothing. */
     void releaseActivation() {
         if (!activationClaimed) return;
         activationClaimed = false;
         activation.releaseActivation();
     }
 
-    /** This activation's address as a row names it, or "" when unnamed. */
     String address() {
         return d3Address == null ? "" : d3Address.render();
     }
 
-    /** Whether this occurrence is on the ZooKeeper chain ({@code
-     *  ZkChain#holds}), asked of its address once; null until asked. */
     private Boolean onZkChain;
 
     boolean onZkChain() {
@@ -167,71 +123,42 @@ final class ActiveRegion {
         return onZkChain;
     }
 
-    /**
-     * Charges one body of this fixed-count loop, {@code bound} its {@code
-     * K_L}, to the work cap, returning the cut that ends the activation once
-     * the cap is spent ({@link LoopBackedgeBudget#body}).
-     */
     synchronized ReplayLoopResourceCut chargeLoopBody(String loopId,
                                                       int bound) {
         chargedLoopBodies++;
         return loopBackedges.body(loopId, inThisCall(loopId), bound);
     }
 
-    /** Counts one traversal of this loop's backedge, {@code bound} its
-     *  {@code K_L}; returns the cut it takes, or null
-     *  ({@link LoopBackedgeBudget#traverse}: the armed FORCE activation's
-     *  loops take the work cap alone). */
     synchronized Error traverseBackedge(String loopId, int bound) {
         chargedLoopBodies++;
         return loopBackedges.traverse(loopId, inThisCall(loopId),
                 termedDecisions, bound, ForcedArms.armedOn(this));
     }
 
-    /**
-     * A loop's budget key: the loop in the method activation running it.
-     * Keyed by the loop alone, every call of a helper in one long activation
-     * shared one budget (WritableUtils.readVLong, cut at its 9th body across
-     * the token fields a DataXceiver reads: a9b token-expired.mirror).
-     */
     private static String inThisCall(String loopId) {
         return LoopBackedgeBudget.scoped(loopId, Identity.frameToken());
     }
 
-    /**
-     * Records a decision while the symbolic gate is closed, and answers
-     * with the occurrence of the site it charged, or {@code 0} where
-     * nothing was recorded.
-     */
     int recordConcreteDecision(
             String method, int unitIndex, BranchDecision decision) {
         try {
-            // The only caller has filtered out undeclared sites.
             String site = SiteId.render(method, unitIndex);
             int occurrence = Identity.nextBranchOrdinal(site);
-            // No path condition was added: the row owns an empty range.
             JsonObject row = BranchObservation.decisionRow(method,
                     unitIndex, occurrence, 0L, decision.outcome(), 0, 0);
             ForcedArms.statesCaller(this, row);
             branchMappings.add(row);
             if (activation.targetTest(site)
                     && activation.targetBranchOccurrence == occurrence) {
-                // Concrete: it stands after every event so far, so the path
-                // condition before it is every decision the VM recorded.
                 recordTargetReach(site, occurrence, decision.outcome(),
                         Identity.afterLastEvent());
             }
             return occurrence;
         } catch (Throwable ignored) {
-            // Observation must never alter the workload's own outcome.
             return 0;
         }
     }
 
-    /**
-     * States one decision to {@code FocusedReplay}, the only account of
-     * whether a replay follows its obligation; keep no second account here.
-     */
     void observeReplayDecision(
             String siteId, int occurrence, BranchDecision decision) {
         if (d3Address == null) return;
@@ -241,7 +168,6 @@ final class ActiveRegion {
         }
     }
 
-    /** Whether this activation has walked a branch its obligation forbids. */
     boolean replayPrefixContradicted() {
         return d3Address != null && FocusedReplay.contradicted(d3Address);
     }
@@ -267,9 +193,6 @@ final class ActiveRegion {
         return handle <= 0L ? null : preparedBranches.remove(handle);
     }
 
-    /**
-     * Records the declared target branch event this occurrence decided.
-     */
     void recordTargetReach(String siteId, int occurrence,
                                    boolean outcome, long vmEventId) {
         if (targetReach != null) return;
@@ -278,22 +201,10 @@ final class ActiveRegion {
         reach.addProperty("siteId", nonNull(siteId));
         reach.addProperty("occurrence", occurrence);
         reach.addProperty("outcome", outcome);
-        // Same clock as the decisions, so they can be ordered against it.
         if (vmEventId > 0L) reach.addProperty("vmEventId", vmEventId);
         targetReach = reach;
     }
 
-    /**
-     * Whether a configured-source hook may mint where it just fired.
-     *
-     * <p>A concretely run region contributes literals, never freedom:
-     * minting under a concrete occurrence adds a free root that
-     * is decoupled from what computed the value (e.g. an expiry from its
-     * clock).  The owning occurrence is the thread's active one (occurrences
-     * do not nest), and the question is {@code FocusedReplay}'s: does it run
-     * symbolic here?  Otherwise nothing is minted and a DIAGNOSTIC gap says
-     * why; an unaddressed activation is never focused.</p>
-     */
     static boolean mintsUnderSymbolicOccurrence(
             ActiveRegion active, String sourceId, String fieldSignature) {
         if (active != null && active.symbolicallyActive()) return true;
@@ -309,31 +220,16 @@ final class ActiveRegion {
         return false;
     }
 
-    /**
-     * Whether this occurrence runs symbolic, per {@code FocusedReplay}; with
-     * no focus row (the recording) every planned occurrence does.
-     */
     boolean symbolicallyActive() {
         if (!FocusedReplay.focusedSession()) return true;
         return FocusedReplay.focused(activation.taskId, d3Address);
     }
 
-    /** This activation, as a row about its mint names it. */
     private String mintAddress() {
         return firstNonBlank(address(), Long.toString(token))
                 + " of region " + nonNull(activation.regionId);
     }
 
-    /**
-     * The declared mint site one hook execution stands at, or null.  The
-     * catalog lists SITES, not a budget: any read at a known site binds to
-     * its symbol.  A configuration read at a site this occurrence's catalog
-     * lacks (its recording never read the key there; a flipped path reaches
-     * new reads) holds the world's value, which {@code RootMint#configuration}
-     * wrote before the mint, and mints nothing: named, and stated as a
-     * concrete reading by the caller.  A tree hook's plant is per site, so
-     * its unnamed site is a plan/instrumentation disagreement, BLOCKING.
-     */
     synchronized RootMint.SourceSiteEntry observeConfiguredSourceEntry(
             String sourceId, String runtimeFieldSignature) {
         CausynthTraceRecorder.ActiveCallSiteContext context =
@@ -353,11 +249,6 @@ final class ActiveRegion {
                 declaration.isEmpty() ? ConcolicTaskPlan.configuration()
                         .declaredPhase(nonNull(sourceId)) : null;
         if (declaration.isEmpty() && planned == null) {
-            // A tree hook every NameNode runs (a block key's serial, a
-            // configuration a scaffold hooks) in a case whose plan declares
-            // its source nowhere: no root of this case, so nothing to mint
-            // and nothing a verdict waits for -- named, not blocking, and
-            // counted by a closed negative.
             RowRuntime.gap(GapKind.HOOK_UNDECLARED, GapClass.DIAGNOSTIC,
                     mintAddress(), "the hook for " + nonNull(sourceId)
                             + " ran, but no task of this case's plan"
@@ -392,8 +283,6 @@ final class ActiveRegion {
                             + " catalog, so nothing declares this mint");
             return null;
         }
-        // All rows are executions of one site and agree on phase id,
-        // field and callee, so the first stands for them.
         ConfiguredSourcePhaseContract.Occurrence matched =
                 declaration.get(0);
         if (!matched.fieldSignature().equals(
@@ -408,17 +297,12 @@ final class ActiveRegion {
         return new RootMint.SourceSiteEntry(matched, site);
     }
 
-    /** The box a getter read of this configuration minted here, or null
-     *  ({@code RootMint#materializePrimitiveValue}); a non-null answer is
-     *  the box the asking input {@code symbol} takes. */
     synchronized Object configurationRead(String sourceId, String symbol) {
         Object box = configurationReads.get(sourceId);
         if (box != null) configurationReuses.add(symbol);
         return box;
     }
 
-    /** Whether this declared input took the box of its key's first read
-     *  here: no input left unsymbolized. */
     synchronized boolean configurationReused(String symbol) {
         return configurationReuses.contains(symbol);
     }
@@ -427,18 +311,12 @@ final class ActiveRegion {
         configurationReads.putIfAbsent(sourceId, box);
     }
 
-    /** Publishes one mint row for one entry of a declared site. */
     synchronized void recordConfiguredSourceMint(
             RootMint.SourceSiteEntry entry, String sourceId,
             String fieldSignature, String symbol,
             JsonElement expression, boolean reused,
             String recordedValue) {
         JsonObject row = new JsonObject();
-        // The live read, taken before any focused plant
-        // (RootMint#configuredSource); a configuration's world plant comes
-        // first (RootMint#configuration), so it states the world it read.
-        // Without it a relative domain has no centre;
-        // RowPlaceholderMint#roots names that case.
         if (recordedValue != null && !recordedValue.isEmpty()) {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
@@ -459,17 +337,6 @@ final class ActiveRegion {
         symbolizedRows.add(row);
     }
 
-    /**
-     * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
-     * static anchors ({@code causynth.ConfigRoots}) and the value this mint
-     * read, clipped to what its own validation admits ({@link Validity}),
-     * which the mint row names -- unless the value read lies outside it,
-     * when the validation is no validation of this value: dropped, named,
-     * nothing clipped.  None
-     * stated: a boolean, or no anchor, and the root is pinned.  A
-     * declaration stating half a domain, or a bound that is no integer,
-     * states none either, named.
-     */
     static void configDomain(JsonObject row, String staticMin,
                              String staticMax, Validity valid,
                              String recordedValue) {
@@ -504,8 +371,6 @@ final class ActiveRegion {
                             + " and is pinned");
             return;
         }
-        // The static hull and the reading, within the validation the
-        // reading passed (a value it rejects is no cluster's).
         BigInteger read = new BigInteger(value);
         row.addProperty("domainMin",
                 kept.clip(read.min(new BigInteger(min))).toString());
@@ -516,39 +381,16 @@ final class ActiveRegion {
     private static final java.util.regex.Pattern INTEGER =
             java.util.regex.Pattern.compile("-?[0-9]+");
 
-    /**
-     * The occurrence a mint of this root is addressed at: the region whose
-     * plan owns it ({@code declaringRegion}, runtime counterpart of
-     * {@code StaticScopeMap.holders}), not the innermost one, so seed and
-     * replay agree.  Captured now, while the region stack is live.
-     */
     private String mintOccurrence(String rootId) {
         return rootOwner(rootId).address();
     }
 
-    /**
-     * The live activation whose plan owns root {@code rootId}, else this
-     * one: every mint asks it ({@code RootMint#mintOwner},
-     * {@code RootMint#focusedRootValue}).
-     */
     ActiveRegion rootOwner(String rootId) {
         ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
                 new ConcolicRegionRuntime.Declares.Root(nonNull(rootId)));
         return owner == null ? this : owner;
     }
 
-    /**
-     * Records what one frozen {@code SYMBOLIC} action observed after its hook
-     * minted or retained a value, with the concrete value the mint read (""
-     * when none) -- the same shape as a configured-source mint.  The VM
-     * label is descriptive only; authority comes from the exact expression.
-     *
-     * <p>Stated even when the replay planted here.  Trap: suppressing it
-     * leaves the moved root with no {@code recordedValue}, which IMPORT
-     * refuses (invariant 8).  A declared clock also states {@code
-     * clockSkew}, how far its node's clock ran off the host's reading there
-     * ({@code NodeClocks}; 0 is not written).</p>
-     */
     synchronized void recordManualSymbolization(
             SymbolizeAction action, String requestedSymbol,
             List<String> fieldPath, String fieldSignature,
@@ -566,8 +408,6 @@ final class ActiveRegion {
         row.addProperty("actionDigest", action.actionDigest);
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
-        // Captured now: frames are gone at publish.  One row per mint
-        // (RowPlaceholderMint), so the frames alone place it.
         row.addProperty("siteIndex", Identity.siteIndex().render());
         row.addProperty("symbol", nonNull(requestedSymbol));
         JsonArray encodedPath = new JsonArray();
@@ -587,21 +427,16 @@ final class ActiveRegion {
         row.addProperty("minted", minted);
         row.addProperty("reused", reused);
         if (recordedValue != null && !recordedValue.isEmpty()) {
-            // What THIS execution ran the root at, clocks included (the
-            // seed replay's readings are the composer's timeline).
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
         row.addProperty("category", action.category().name());
         if (!action.configSource.isEmpty()) {
-            // A configuration getter's return is the root of its key.
             row.addProperty("sourceId", action.configSource);
             configDomain(row, action.configDomainMin,
                     action.configDomainMax, action.configValid,
                     recordedValue);
         }
-        // A declared wall-clock read says so, so no reader guesses a clock
-        // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {
             row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK,
                     action.clock.nanos());
@@ -617,10 +452,6 @@ final class ActiveRegion {
         row.addProperty("mintOccurrence",
                 mintOccurrence(nonNull(action.symbol)));
         symbolizedRows.add(row);
-        // I4: file the clock cell at mint time, keyed by the installed VM
-        // symbol: nested activations publish their decisions before this
-        // row exists.  Only a fresh mint of a declared clock; the port id
-        // is a manual mint's root id.
         if (minted && action.declaresWallClockRead()) {
             String installed = optionalString(row, "rawSymbol");
             RowRuntime.clockCell(installed.isEmpty()
@@ -630,28 +461,17 @@ final class ActiveRegion {
         }
     }
 
-    /**
-     * Names one refusal at a configured source's mint as a BLOCKING gap: the
-     * wave's value was not written at the mint the obligation is about.
-     */
     private void refuseMint(
             GapKind kind,
             ConfiguredSourcePhaseContract.Occurrence phase,
             String detail) {
         RowRuntime.gap(kind, GapClass.BLOCKING,
-                // Never blank: a blank subject throws inside Fields.text,
-                // out of the mint hook into the workload.
                 firstNonBlank(
                         phase == null ? "" : phase.phaseId(),
                         address(), Long.toString(token)),
                 nonNull(detail));
     }
 
-    /**
-     * Whether this run can place this mint at the node and epoch the plan
-     * addresses, filing the gap that says why not.  The site is reached once
-     * per node lifecycle, so the epoch tells two mints of one site apart.
-     */
     synchronized boolean mintIsPlaceable(Object mintOwner) {
         String unattributed = mintIsNotThePlannedNode(mintOwner);
         if (unattributed.isEmpty()) return true;
@@ -661,10 +481,6 @@ final class ActiveRegion {
         return false;
     }
 
-    /**
-     * Every node this mint is attributed to: the minted object's owner, this
-     * occurrence's sources, and the thread's current source.
-     */
     private Set<String> mintAttribution(Object mintOwner) {
         Set<String> attributed = new LinkedHashSet<>(
                 attributedSourceKeys());
@@ -677,15 +493,6 @@ final class ActiveRegion {
         return attributed;
     }
 
-    /**
-     * Why this mint cannot be shown to be the planned node and epoch, or
-     * {@code ""}.
-     *
-     * <p>Deliberately stricter than root admission: admission tolerates an
-     * unattributed activation, but a model rewrites the recorded execution,
-     * so a mint must be attributed positively or the recorded value
-     * stands.</p>
-     */
     private String mintIsNotThePlannedNode(Object mintOwner) {
         String planned = nonNull(activation.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
@@ -696,8 +503,6 @@ final class ActiveRegion {
                     + "cannot be shown to be " + planned + "; the "
                     + "recorded value stands";
         }
-        // Another epoch of the planned node is named as such: the source
-        // identity strips #epoch<n>, so it reads as the planned node.
         for (String observed : attributed) {
             if (!observed.equals(planned)
                     && RuntimeTraceContext.sameSourceIdentity(planned,

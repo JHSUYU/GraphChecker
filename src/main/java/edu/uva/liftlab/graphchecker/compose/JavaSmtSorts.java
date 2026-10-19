@@ -5,15 +5,10 @@ import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 
 
-/**
- * Which {@link VmTermLowering.Sort} a recorded Java type denotes; every
- * caller reads it here.
- */
 public final class JavaSmtSorts {
     private JavaSmtSorts() {
     }
 
-    /** The sort a recorded Java type or descriptor denotes. */
     public static Sort sortOfJava(String type) {
         if (type == null) return Sort.VALUE;
         String normalized = type.replace('.', '/');
@@ -46,13 +41,6 @@ public final class JavaSmtSorts {
         return Sort.REF;
     }
 
-    /**
-     * The sort a VM minted symbol's name states, or null for any other name:
-     * {@code M_<type>_...}, the type a descriptor letter ({@code M_Z_},
-     * {@code M_I_}) or a quoted class ({@code M_L'String'_}).  A handoff
-     * leaf's name says the sort its reader parsed, which a writer of the
-     * same leaf in another run may have sent otherwise.
-     */
     public static Sort sortOfSymbol(String name) {
         if (name == null || !name.startsWith("M_") || name.length() < 4) {
             return null;
@@ -69,8 +57,6 @@ public final class JavaSmtSorts {
         return sortOfJava(rest.substring(0, 1));
     }
 
-    /** Whether a Java type or a VM symbol's name ({@code M_C_...}) is a
-     *  char, which renders as itself and not as its code. */
     public static boolean isChar(String typeOrSymbol) {
         if (typeOrSymbol == null) return false;
         String type = typeOrSymbol.replace('.', '/');
@@ -80,7 +66,6 @@ public final class JavaSmtSorts {
                 || type.startsWith("M_L'Character'_");
     }
 
-    /** The sort one JVM cast descriptor denotes. */
     public static Sort castSort(String descriptor) {
         if (descriptor == null) return Sort.VALUE;
         if ("Z".equals(descriptor) || "B".equals(descriptor)

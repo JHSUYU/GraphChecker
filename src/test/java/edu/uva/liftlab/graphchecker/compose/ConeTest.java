@@ -10,12 +10,6 @@ import java.util.TreeSet;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * The open links of a claimed path's chain are cone.py's: what its fatal
- * condition names and no family of its selector binds, and what an arm the
- * witness chose holds -- never a value on the path the fatal does not rest
- * on.
- */
 public class ConeTest {
 
     private static final String FORMULA = String.join("\n",
@@ -39,7 +33,6 @@ public class ConeTest {
             "(assert (! (=> path_selector__0__a (and message_arm__0__x"
                     + " (=> message_arm__0__x (= M_I_field_HOFF.bound 7))))"
                     + " :named message_family__0__f))",
-            // A hold on the path the fatal condition does not rest on.
             "(assert (=> path_selector__0__a (= M_I_field_HOFF.off 6)))",
             "(assert (! (=> path_selector__1__b (> M_I_field_HOFF.other 0))"
                     + " :named path_fatal__1))",
@@ -48,15 +41,11 @@ public class ConeTest {
     @Test
     public void theOpenLinksAreWhatTheFatalRestsOnUnbound() {
         List<Composer.Concrete> concrete = Arrays.asList(
-                // HELD in an arm the witness chose: open.
                 row("HELD", "M_I_field_HOFF.armHeld").on("P0")
                         .in("message_arm__0__x"),
-                // HELD on the path, outside the cone: closed.
                 row("HELD", "M_I_field_HOFF.off").on("P0"),
-                // FREE in an arm the witness did not choose: closed.
                 row("FREE", "M_I_field_HOFF.other").on("P0")
                         .in("message_arm__0__y"),
-                // An arm of another path: closed.
                 row("HELD", "M_I_field_HOFF.armHeld").on("P1")
                         .in("message_arm__0__x"));
         Cone cone = new Cone(FORMULA);

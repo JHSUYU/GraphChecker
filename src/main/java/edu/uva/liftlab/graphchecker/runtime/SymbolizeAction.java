@@ -44,8 +44,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 final class SymbolizeAction {
     final String symbol;
-    /** Canonical identity of the exact frozen task action row, as PLAN
-     *  states it ({@code InputActionCatalog#DIGEST}). */
     final String actionDigest;
     final String cell;
     final String location;
@@ -63,28 +61,16 @@ final class SymbolizeAction {
     final int accessorCallUnitIndex;
     final String accessorDeclaredCallee;
     final String accessorImplementationMethod;
-    /** How the finalizer classified the port that minted this action. */
     final String sourceKind;
-    /** A clock input's clock (the plan's: the JVM clock it wraps, its
-     *  tick), null for any other input. */
     final Clock clock;
-    /** A configuration getter's return: the root it is ({@code
-     *  CONFIG:<key>}) and its static domain; "" for any other input. */
     final String configSource;
     final String configDomainMin;
     final String configDomainMax;
-    /** What the configuration's own validation admits. */
     final Validity configValid;
-    /** A fault marker's name ({@code FAULT:<TRANSPORT>:..}); "" for any
-     *  other input. */
     final String marker;
-    /** The static site the plan observed this read at, or "". */
     final String siteId;
-    /** The recorded event this read was observed at, or -1. */
     final long eventSeq;
-    /** What this read returned in the recording, or "" when unobserved. */
     final String recordedPrimitiveValue;
-    /** The selection file named this input by hand: mint, do not reuse. */
     final boolean declaredSymbolicRoot;
     final List<String> fieldPath;
     final String javaType;
@@ -164,7 +150,6 @@ final class SymbolizeAction {
         if (this.fieldPaths.isEmpty() && !this.fieldPath.isEmpty()) {
             this.fieldPaths.add(new ArrayList<>(this.fieldPath));
         }
-        // One declared field per hop of a multi-hop port.
         List<String> pathDeclarations = FieldPathSpec.stringArray(json,
                 "fieldPathDeclarations");
         if (pathDeclarations.size() == this.fieldPath.size()) {
@@ -211,7 +196,6 @@ final class SymbolizeAction {
         return javaTypeDescriptor(javaType).startsWith("[");
     }
 
-    /** A root-argument action, whole or by field path, at this index. */
     boolean atArgument(int argumentIndex) {
         return index == argumentIndex && ("ARGUMENT".equals(location)
                 || "ARGUMENT_FIELD_PATH".equals(location));
@@ -243,7 +227,6 @@ final class SymbolizeAction {
         return accessorConstrained() || acceptsOccurrence(actualOccurrence);
     }
 
-    /** The action names an accessor call: its reads are that call's. */
     private boolean accessorConstrained() {
         return !accessorCallerMethod.isEmpty()
                 || accessorCallUnitIndex >= 0
@@ -257,13 +240,10 @@ final class SymbolizeAction {
                 && JavaPrimitiveBoxing.unboxReturn(cell);
     }
 
-    /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
         return clock != null && !recordedPrimitiveValue.isEmpty();
     }
 
-    /** Where this input's value enters the world, as its mint states it:
-     *  a clock's reading, a configuration, a fault marker, else a read. */
     RootCategory category() {
         if (declaresWallClockRead()) return RootCategory.CLOCK;
         if (!configSource.isEmpty()) return RootCategory.CONFIG;
@@ -304,7 +284,6 @@ final class SymbolizeAction {
                 || accessFieldSignature.equals(exactSignature));
     }
 
-    /** The logical path for an exact getstatic materialization. */
     List<String> exactStaticFieldPath(
             String signature, String actualField) {
         String exactSignature = nonNull(signature);
@@ -340,7 +319,6 @@ final class SymbolizeAction {
                 : SiteId.render(accessorCallerMethod,
                         accessorCallUnitIndex);
         boolean accessSiteConstrained = !accessSites.isEmpty();
-        // Accessor actions name the caller's invoke site, not this read.
         if (accessSiteConstrained) {
             String constrainedSite = accessorConstrained
                     ? accessorSiteId
@@ -385,7 +363,6 @@ final class SymbolizeAction {
                 || !accessFieldSignature.equals(nonNull(signature)))) {
             return false;
         }
-        // A path rooted at a return/local may have no static owner.
         return !accessOwnerClass.isEmpty()
                 || !nonNull(signature).isEmpty()
                 && cell.contains(nonNull(signature));
@@ -395,7 +372,6 @@ final class SymbolizeAction {
         return resolveFieldPathLeafOwner(accessOwner, fieldPath);
     }
 
-    /** The exact declaration of the leaf that will be symbolized. */
     String exactLeafFieldSignature() {
         return exactLeafFieldSignature(fieldPath);
     }

@@ -9,16 +9,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Resolves the workflow properties and the target spec into a context. */
 final class CausynthTargetResolver {
     private CausynthTargetResolver() {
     }
 
-    /**
-     * The output dir and the spec's one exception target, found in the
-     * analysis inputs, as the system properties {@code run_engine.sh} always
-     * sets; an unset one is refused by name.
-     */
     static CausynthTargetContext resolve(List<String> inputs)
             throws IOException {
         Path spec = declaredPath("causynth.target.spec");
@@ -42,10 +36,6 @@ final class CausynthTargetResolver {
         return Paths.get(declared.trim()).toAbsolutePath().normalize();
     }
 
-    /**
-     * The spec's {@code exception_target:} lines, in order.  Blank lines and
-     * {@code #} comments are skipped; any other entry is refused.
-     */
     static List<ExceptionTargetLineResolver.TargetLine> targetLines(Path spec)
             throws IOException {
         if (!Files.isRegularFile(spec)) {

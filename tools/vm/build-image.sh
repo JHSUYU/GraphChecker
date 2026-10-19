@@ -1,20 +1,4 @@
 #!/usr/bin/env bash
-# build-image.sh <dir> -- the concolic VM image, built from this checkout's
-# third_party/OpenJDK-Concolic-Execution-Engine: a full JDK (make hotspot jdk
-# images; Zero, release, -DENABLE_CONCOLIC) on local disk, then the causynth
-# smoke suite on it.  Writes <dir>/j2sdk-image (what CAUSYNTH_CUSTOM_JDK_HOME
-# names), <dir>/SOURCE.txt and <dir>/smoke.log.  ~1 h at JOBS=40.
-#
-# Needs gcc-6/g++-6 on PATH (built with a newer GCC the VM crashes in
-# System.symbolize; causynth_build_openjdk.sh refuses one), JDK 8 at
-# /usr/lib/jvm/java-8-openjdk-amd64 as the boot JDK, and the JDK's native
-# build dependencies: libffi-dev libfreetype6-dev libcups2-dev libasound2-dev
-# libx11-dev libxext-dev libxt-dev libxrender-dev libxtst-dev zip unzip.
-# A host without gcc-6: scripts/causynth_build_in_docker.sh (Ubuntu 18.04).
-#
-#   VM_BUILD_ROOT  the local build directory (default /localtmp/$USER/vm-build;
-#                  kept, so a rerun after a source change is incremental)
-#   JOBS           make jobs (default 40)
 set -euo pipefail
 dest=${1:?usage: build-image.sh <dir>}
 checkout=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)

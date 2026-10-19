@@ -68,9 +68,6 @@ def alive(dirs):
             [what for word, what in rows if word == "silent"])
 
 
-# What a log states about why a run ended, most specific first: the trace
-# aggregation (SEED's silent stop), a stage's Java main, the engine's die(),
-# a full disk or quota (the write that failed names it).
 STATED = [r"Failed to aggregate Causynth runtime trace: (.*)",
           r'Exception in thread "main" (.*)',
           r"^Error: (.*)",
@@ -114,8 +111,6 @@ def classify(row, result_path, lines, root, text):
                             if result.get("configurationOnly") is True
                             else "CONFIRMED")
         elif claim == "SAT_UNCONFIRMED":
-            # Refuted, or decided by no replay: a false positive either way
-            # (owner 2026-10-08, no refused split).
             row["class"] = "REFUTED"
             row["reason"] = confirmation.get("reason", "")[:200]
         elif claim == "UNSAT_CLOSED":
@@ -143,7 +138,6 @@ def classify(row, result_path, lines, root, text):
         row["finding"] = (result.get("findingKind", "") + " "
                           + ",".join(r if isinstance(r, str) else r.get("rootId", "")
                                      for r in result.get("movedRoots", []) or []))[:160]
-        # What refused the witness, occurrence addresses elided.
         blockers = result.get("blockers") or []
         if blockers and not row["reason"]:
             row["reason"] = re.sub(r"\S*/region/\S*", "<occ>", blockers[0]["kind"]
@@ -153,7 +147,6 @@ def classify(row, result_path, lines, root, text):
         row["stage"], row["reason"] = stated(root, text)
         row["reason"] = row["reason"][:200]
     elif row["class"] == "RUNNING":
-        # Resolved below, against every lift at once.
         row["stage"], row["reason"] = stated(root, text)
 
 

@@ -26,58 +26,31 @@ import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * The row contract, checked at IMPORT as a gate over one epoch's sessions.
- * Each rule is one row of CONTRACT-SPEC §2.6, cited in
- * its gap; BLOCKING gaps fail the stage closed.  Pure functions over rows: a
- * rule the rows cannot decide reports a DIAGNOSTIC rather than guess.
- */
 public final class RowInvariants {
-    /** {@code EXPR.} plus sixteen hex digits, and nothing else. */
     private static final Pattern REFERENCE =
             Pattern.compile("EXPR\\.[0-9a-fA-F]{16}");
-    /** Any token that starts like a reference, well spelled or not. */
     private static final Pattern REFERENCE_LIKE =
             Pattern.compile("EXPR\\.[0-9a-zA-Z_.\\-]*");
-    /** A minted symbol: {@code M_<sort>_<name>}, sort {@code L'..'} or one. */
     private static final Pattern MINTED =
             Pattern.compile("^M_(L'[^']*'|[A-Z])_(.*)$");
-    /** A VM literal: {@code Y_<sort>_<value>}. */
     private static final Pattern LITERAL =
             Pattern.compile("^Y_([A-Z])_(-?[0-9]+)$");
-    /** A plain decimal, as an INTEGRAL or CLOCK reading is spelled. */
     private static final Pattern DECIMAL = Pattern.compile("^-?[0-9]+$");
-    /** The site spelling a placeholder read carries. */
     public static final String PLACEHOLDER = "#PLACEHOLDER#";
 
     private RowInvariants() {
     }
 
-    /**
-     * What one session left the gate for the sessions gated after it: whether
-     * it states SEED (invariant 1), the roots it mints -- each id with the
-     * first symbol its rows mint it under, in row order -- and every symbol
-     * it names with one citation (invariant 11, {@link #named}).  A landed
-     * session never changes, so these are what the gate would read of it
-     * again; the gate keeps them, one per session, beside the epoch
-     * ({@code ImportGateMain}), and an epoch's gate reads them, never the
-     * sessions it gated before (SGF8-adhoc-07: a gate of one session read
-     * every admitted session's manifest and roots, 8-10 s, and all 300 of
-     * them whole when it brought a root, 332 s).
-     */
     public interface Gated {
         String sessionId();
 
         boolean seed();
 
-        /** Root id to the first symbol the session mints it under. */
         Map<String, String> roots();
 
-        /** Every symbol the session names, with one citation. */
         Map<String, String> named() throws IOException;
     }
 
-    /** A session the gate judged now: what it leaves for those after it. */
     public static final class Judged implements Gated {
         private final String sessionId;
         private final boolean seed;
@@ -115,7 +88,6 @@ public final class RowInvariants {
         }
     }
 
-    /** One gate's violations, and what each session it judged leaves. */
     public static final class Checked {
         public final List<GapRow> gaps;
         public final List<Judged> judged;
@@ -126,14 +98,11 @@ public final class RowInvariants {
         }
     }
 
-    /** One member of the epoch: a session judged now, or one before. */
     private static final class Member {
         final String sessionId;
         final boolean seed;
         final Map<String, String> roots;
-        /** Judged now: its header; else null. */
         final SessionReader header;
-        /** Judged before: what it left; else null. */
         final Gated before;
 
         private Member(String sessionId, boolean seed,
@@ -157,29 +126,6 @@ public final class RowInvariants {
         }
     }
 
-    /**
-     * The violations of the sessions {@code gated}, each judged once, as
-     * members of one epoch with the sessions {@code admitted} (gated before,
-     * still in the epoch, never judged again: what each left the gate,
-     * {@link Gated}).  Every rule but two is one session's; the two over the
-     * SET are judged over both: exactly one SEED (1), and the epoch's roots
-     * (11) -- a gated session against every root of the epoch, and an
-     * admitted one against each root (id, symbol) the gated sessions bring
-     * that the admitted ones did not mint, by what it named and stated.  So
-     * gating an epoch a few sessions at a time files exactly the violations
-     * one gate over all of it would, each once, and a gate's cost is its own
-     * sessions' (and a small record of each one before).
-     *
-     * <p>One session held at a time: an iteration no longer fits one heap
-     * (hdfs-11741 v74: 240 sessions with 3 MB expression tables ran the gate
-     * out of 8 GB).  Who states SEED and which roots the epoch has come from
-     * every gated session's manifest and root rows first.  The epoch is in
-     * session id order whichever sessions it was gated in, so the first
-     * session to mint a root names its symbol.  {@code focus} maps a gated
-     * session's id to the focus rows its replay ran: the first is the ask
-     * ({@code rootAssignments}, {@code clockDeltas}), each one a flip it
-     * owes.</p>
-     */
     public static Checked check(List<? extends Gated> admitted,
                                 List<SessionDir> gated,
                                 Map<String, List<JsonObject>> focus)
@@ -227,8 +173,6 @@ public final class RowInvariants {
         return new Checked(gaps, judged);
     }
 
-    /** One session's roots: each id with the first symbol its rows mint it
-     *  under, in row order. */
     private static Map<String, String> firstRoots(SessionReader session) {
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
@@ -244,7 +188,6 @@ public final class RowInvariants {
         references(session, gaps);
         onePerEvent(session, gaps);
         sorts(session, gaps);
-        // One valuation, read once, for every rule that judges a term.
         Map<String, String> executed = executed(session, ask, gaps);
         decisions(session, executed, gaps);
         versions(session, gaps);
@@ -253,15 +196,7 @@ public final class RowInvariants {
         targets(session, executed, gaps);
     }
 
-    // ---- 1. the session set -------------------------------------------
 
-    /**
-     * Exactly one session states it is the seed, and the seed names no
-     * obligation.  Read off {@code manifest.json}, never inferred from
-     * activations: a focused replay that never activated looks like a seed.
-     * The count is the epoch's; what a session's own manifest states is
-     * judged of the sessions being gated only.
-     */
     private static void sessionSet(Collection<Member> epoch,
                                    List<GapRow> gaps) {
         List<String> stated = new ArrayList<String>();
@@ -291,10 +226,6 @@ public final class RowInvariants {
                         + stated + "; exactly one must"));
     }
 
-    /**
-     * Every session was read whole (CONTRACT-SPEC §2.6).  BLOCKING: an
-     * unparseable kind reads back as no rows, which later stages take as fact.
-     */
     private static void complete(SessionReader session, List<GapRow> gaps) {
         if (session.incomplete().isEmpty()) return;
         gaps.add(GapRow.of(session.sessionId(), GapKind.SESSION_INCOMPLETE,
@@ -303,7 +234,6 @@ public final class RowInvariants {
                         + session.incomplete()));
     }
 
-    /** Every row's occurrence ran in its session (CONTRACT-SPEC §2.6). */
     private static void activated(SessionReader session, List<GapRow> gaps) {
         Set<String> ran = new LinkedHashSet<String>();
         for (ActivationRow row : session.activations()) {
@@ -341,13 +271,7 @@ public final class RowInvariants {
                         + "for the occurrence this row is about"));
     }
 
-    // ---- 2. never-neither ---------------------------------------------
 
-    /**
-     * CONTRACT-SPEC §2.6: every ReadRow must have an observedVersion or
-     * a plain decimal concreteValue, never neither.  An attach is paired by
-     * HANDLE or CORRELATION_PORT and nothing else.
-     */
     private static void neverNeither(SessionReader session,
                                      List<GapRow> gaps) {
         for (ReadRow row : session.reads()) {
@@ -377,13 +301,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 3. expression references -------------------------------------
 
-    /**
-     * Every {@code EXPR.<16hex>} a row cites exists in that session's
-     * expression table, and no other reference spelling appears (CONTRACT-SPEC
-     * §2.6).  A reference the session does not hold is unlowerable.
-     */
     private static void references(SessionReader session, List<GapRow> gaps) {
         ExpressionTable table = session.expressions();
         Set<String> said = new LinkedHashSet<String>();
@@ -437,21 +355,10 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 4. one row per event -----------------------------------------
 
-    /**
-     * One row per event (CONTRACT-SPEC §2.6): two rows of one kind at one seq
-     * and subject are one event stated twice (BLOCKING).  Two events under
-     * one endpoint id merge in the skeleton, which keys slots by endpoint;
-     * that is an identity defect (IDENTITY §4), so only a DIAGNOSTIC.
-     */
     private static void onePerEvent(SessionReader session,
                                     List<GapRow> gaps) {
         Set<String> seen = new LinkedHashSet<String>();
-        // A store read is its reader's read of one version (IDENTITY §7.2),
-        // and so is a read of a node's view (SYMBOL-SCOPE §6.4): its seq is
-        // the JVM's last event, which another reader of another version
-        // shares.
         for (ReadRow row : session.reads()) {
             boolean store = row.location().kind() == LocationKind.STORE
                     || row.location().kind() == LocationKind.VIEW;
@@ -462,10 +369,6 @@ public final class RowInvariants {
                             + (store ? "|" + row.observedVersion() : ""),
                     row.location() + "");
         }
-        // A store's write is its version (IDENTITY §7.2), and so is a node's
-        // view of it (SYMBOL-SCOPE §6.4): two versions of one path, or two
-        // decodes of one path on one node, with no VM event between them,
-        // or with no VM clock at all (seq 0), are two events.
         for (WriteRow row : session.writes()) {
             boolean store = row.location().kind() == LocationKind.STORE
                     || row.location().kind() == LocationKind.VIEW;
@@ -480,9 +383,6 @@ public final class RowInvariants {
                             + "|" + row.ordinal(),
                     row.siteId() + "#" + row.ordinal());
         }
-        // One per occurrence and event: an unreached target has seq 0 (no
-        // VM clock), and a concrete decision stands after the last VM event,
-        // which two occurrences can share (adhoc recv-offset.mirror).
         for (TargetRow row : session.targets()) {
             twice(session, gaps, seen, "targets", row.seq(),
                     "occurrence/seq/anchorSiteId", row.occurrence().id()
@@ -510,7 +410,6 @@ public final class RowInvariants {
                         + "second row of this kind states the same event"));
     }
 
-    /** Events of one row kind that share one endpoint id (DIAGNOSTIC). */
     private static <T> void endpoints(SessionReader session,
                                       List<GapRow> gaps, String kind,
                                       List<T> rows,
@@ -528,8 +427,6 @@ public final class RowInvariants {
             Endpoint endpoint = endpoints.get(entry.getKey());
             Set<Long> seqs = entry.getValue();
             if (seqs.size() < 2) continue;
-            // Absent index or equal frames: the identity's defect to fix
-            // (IDENTITY §4), never cured here by an ordinal or counter.
             int frames = endpoint.siteIndex().frames().size();
             gaps.add(violation(session, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, kind, seqs.iterator().next(),
@@ -545,11 +442,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 5. symbol sorts ----------------------------------------------
 
-    /**
-     * One name, one spelled sort, = a read's javaType (CONTRACT-SPEC §2.6).
-     */
     private static void sorts(SessionReader session, List<GapRow> gaps) {
         Map<String, String[]> sortOfName = new LinkedHashMap<String, String[]>();
         for (RootMintRow row : session.roots()) {
@@ -566,7 +459,6 @@ public final class RowInvariants {
         }
     }
 
-    /** A minted symbol's spelled sort is its row's javaType's. */
     private static void spelledAsDeclared(SessionReader session,
                                           List<GapRow> gaps, String kind,
                                           long seq, String symbol,
@@ -602,16 +494,7 @@ public final class RowInvariants {
                         + held[0] + " at " + held[1]));
     }
 
-    // ---- 6. decisions: the recorded arm is the recorded arm ------------
 
-    /**
-     * CONTRACT-SPEC §2.6: {@code outcome} says whether the published term
-     * HELD; the runtime never pre-applies the polarity.  A term resting only
-     * on declared roots and literals must agree with its row, judged at the
-     * valuation the session RAN under ({@link #executed}), not at
-     * {@code recordedValue}; a FORCED decision with the arm its operands
-     * decided ({@code concreteOutcome}), not the one it was forced to.
-     */
     private static void decisions(SessionReader session,
                                   Map<String, String> executed,
                                   List<GapRow> gaps) {
@@ -635,13 +518,6 @@ public final class RowInvariants {
         }
     }
 
-    /**
-     * What this session RAN each declared root at, by symbol, or null when
-     * unstated.  A FOCUSED replay's mints record the recording's value
-     * (RootMint#focusedRootValue), so its valuation is the ask: assignments
-     * are absolute, a CLOCK and any unassigned root its {@code
-     * recordedValue}.  A FOCUSED session with no ask is BLOCKING.
-     */
     private static Map<String, String> executed(SessionReader session,
                                                 JsonObject ask,
                                                 List<GapRow> gaps) {
@@ -669,12 +545,6 @@ public final class RowInvariants {
         return bySymbol;
     }
 
-    /**
-     * One mint's executed value.  A CLOCK's row states the instant its
-     * node's clock ran it at, planted or run on ({@code
-     * RootMintRow#clockSkew}); any other root ran at the ask's assignment
-     * where the ask planted it, else at its {@code recordedValue}.
-     */
     private static String ran(RootMintRow row, Map<String, String> assigned) {
         String recorded = row.recordedValue().trim();
         if (assigned == null || row.kind() == RootKind.CLOCK) {
@@ -685,8 +555,6 @@ public final class RowInvariants {
         return planted.trim();
     }
 
-    /** Truth of a term at the valuation -- a reference, possibly negated,
-     *  or a constant; null at an unevaluable leaf. */
     private static Boolean truth(SessionReader session, String term,
                                  Map<String, String> declared) {
         String text = term.trim();
@@ -703,7 +571,6 @@ public final class RowInvariants {
         return Boolean.valueOf(negated != held);
     }
 
-    /** Whether a published term is {@code (not <operand>)}. */
     private static boolean negation(String text) {
         return text.startsWith("(not ") && text.endsWith(")");
     }
@@ -712,12 +579,6 @@ public final class RowInvariants {
         return negation.substring(5, negation.length() - 1).trim();
     }
 
-    /**
-     * One VM expression at the recorded valuation: Boolean, Long or null.
-     * Each node once, operands first, on a stack: operands are shared nodes
-     * (as a tree, a chain naming the node below twice is 2^depth paths),
-     * and a cap at depth 64 left a deeper term unjudged.
-     */
     private static Object value(JsonObject root,
                                 Map<String, String> declared) {
         if (root == null) return null;
@@ -742,14 +603,12 @@ public final class RowInvariants {
         return values.get(root);
     }
 
-    /** The nodes one node's value is computed from; null where absent. */
     private static JsonObject[] operands(JsonObject node) {
         String type = primitiveString(node, "_type");
         if ("ConsumerBoundaryExpression".equals(type)) {
             return new JsonObject[]{member(node, "expression")};
         }
         if ("ReadFromExpression".equals(type)) {
-            // What the read returned is what the write it observed stated.
             return new JsonObject[]{member(member(node, "observedVersion"),
                     "expression")};
         }
@@ -766,7 +625,6 @@ public final class RowInvariants {
                 ? value.getAsJsonObject() : null;
     }
 
-    /** One node's value, its operands' already in {@code values}. */
     private static Object value(JsonObject node, JsonObject[] operands,
                                 Map<JsonObject, Object> values,
                                 Map<String, String> declared) {
@@ -821,7 +679,6 @@ public final class RowInvariants {
         return a == b;
     }
 
-    /** A recorded reading, as the row spells one. */
     private static Object literal(String recorded) {
         String value = recorded.trim();
         if ("true".equals(value)) return Boolean.TRUE;
@@ -834,22 +691,12 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 7. versions ---------------------------------------------------
 
-    /**
-     * An observed version is stated by a WriteRow or a read's
-     * {@code mintVersion} (CONTRACT-SPEC §2.6); missing is a DIAGNOSTIC.  A
-     * WriteRow at a placeholder's minted version is BLOCKING (nobody wrote
-     * it); keyed by {@code location@mintVersion}, never by symbol, since
-     * {@code x.f = <mint symbol>} is a real write.
-     */
     private static void versions(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
         for (WriteRow row : session.writes()) {
             stated.add(row.location() + "@" + row.version());
         }
-        // A placeholder's mintVersion differs from its observedVersion;
-        // never key the mint by the observed one.
         Set<String> minted = new LinkedHashSet<String>();
         for (ReadRow row : session.reads()) {
             if (row.mintVersion() >= 0) {
@@ -874,7 +721,6 @@ public final class RowInvariants {
                             + "states it): no WriteRow of this session states "
                             + "this version and no placeholder read mints it");
         }
-        // Every placeholder row states the version it mints.
         for (ReadRow row : session.reads()) {
             if (!row.endpoint().site().contains(PLACEHOLDER)) continue;
             if (row.mintVersion() >= 0) continue;
@@ -897,13 +743,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 8. roots ------------------------------------------------------
 
-    /**
-     * CONTRACT-SPEC §2.6: a RootMintRow is published only for a DECLARED root,
-     * MARKER spelled boolean, INTEGRAL/CLOCK plain decimal, one row per
-     * (occurrence, rootId).
-     */
     private static void roots(SessionReader session, List<GapRow> gaps) {
         Set<String> minted = new LinkedHashSet<String>();
         for (RootMintRow row : session.roots()) {
@@ -940,18 +780,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 9. targets ----------------------------------------------------
 
-    /**
-     * CONTRACT-SPEC §2.6: {@code phiTerm} is in the FATAL polarity, and a
-     * reached anchor states it: a decision's term, or for a concrete fatal
-     * condition the constant of the arm it took ({@code true} on the fatal
-     * arm, {@code false} on the healthy one).  None stated is BLOCKING where
-     * the run observed the fatal (the witness would rest on a predicate no
-     * row states), else DIAGNOSTIC (a path with no phi is no disjunct).  A
-     * stated phi holds exactly on the fatal arm: where the session's
-     * valuation decides it, it agrees with {@code observedFatal}.
-     */
     private static void targets(SessionReader session,
                                 Map<String, String> executed,
                                 List<GapRow> gaps) {
@@ -993,13 +822,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 10. a focused session ran the flip it was given ---------------
 
-    /**
-     * A focused replay's session states the arm its focus row {@code flip}
-     * asked for (CONTRACT-SPEC §2.6).  DIAGNOSTIC: the result row carries the
-     * verdict.
-     */
     public static List<GapRow> flipped(JsonObject flip,
                                        SessionReader session) {
         List<GapRow> gaps = new ArrayList<GapRow>();
@@ -1025,15 +848,7 @@ public final class RowInvariants {
         return gaps;
     }
 
-    // ---- 11. a root symbol without its RootMintRow ---------------------
 
-    /**
-     * CONTRACT-SPEC §2.6: every root symbol a session names has a
-     * RootMintRow in that session.  The root set is epoch-wide; BLOCKING,
-     * since an unrowed symbol is a root free at every valuation.  "Names"
-     * uses the same walk as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
-     * {@code RootMint#mintUnattributed}.
-     */
     private static void attributed(String sessionId, Set<String> stated,
                                    Map<String, String> named,
                                    Map<String, String> roots,
@@ -1056,8 +871,6 @@ public final class RowInvariants {
         }
     }
 
-    /** The epoch's roots, id to the symbol it was first minted under: of
-     *  every member, or of those {@code before} this gate alone. */
     private static Map<String, String> epochRoots(Collection<Member> epoch,
                                                   boolean before) {
         Map<String, String> roots = new LinkedHashMap<String, String>();
@@ -1070,7 +883,6 @@ public final class RowInvariants {
         return roots;
     }
 
-    /** Every symbol one session names, with one citation (rows first). */
     private static Map<String, String> named(SessionReader session) {
         Map<String, String> where = new LinkedHashMap<String, String>();
         for (DecisionRow row : session.decisions()) {
@@ -1081,7 +893,6 @@ public final class RowInvariants {
             cite(session, row.phiTerm(), where, "targets.jsonl seq="
                     + row.seq() + " field=phiTerm " + row.anchorSiteId());
         }
-        // One walk over the table: its expressions share subtrees.
         Set<JsonElement> walked = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
         for (Map.Entry<String, JsonObject> entry
@@ -1098,7 +909,6 @@ public final class RowInvariants {
         return where;
     }
 
-    /** The symbols one published term names, cited at the row that holds it. */
     private static void cite(SessionReader session, String term,
                              Map<String, String> where, String place) {
         String text = term.trim();
@@ -1117,16 +927,7 @@ public final class RowInvariants {
         }
     }
 
-    // ---- 12. referent states --------------------------------------------
 
-    /**
-     * CONTRACT-SPEC §2.6: a write's {@code referentState} names a version of
-     * its container's {@code MAP} location below the write's own, BLOCKING
-     * otherwise: the state the store saw was published before it.  A
-     * version no write row of the session states (the runtime states a
-     * refusal wherever its read-out shows one) is DIAGNOSTIC, as a read of
-     * one is: COMPOSE composes no reader through that store.
-     */
     private static void referents(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
         for (WriteRow row : session.writes()) {
@@ -1144,9 +945,6 @@ public final class RowInvariants {
                                 + " §2.6): the state is not older than the "
                                 + "store"));
             } else if (!stated.contains(state)) {
-                // As a read of a version no row states: evidence the run
-                // lost (a withheld activation's rows), which COMPOSE
-                // refuses the store on by name.
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, "writes", row.seq(),
                         "referentState", row.location() + "@" + row.version()
@@ -1157,7 +955,6 @@ public final class RowInvariants {
         }
     }
 
-    // ---- shared -------------------------------------------------------
 
     private static void say(SessionReader session, List<GapRow> gaps,
                             Set<String> said, GapKind kind, GapClass cls,
@@ -1168,7 +965,6 @@ public final class RowInvariants {
                 detail));
     }
 
-    /** Every violation names session, row kind, seq and field. */
     private static GapRow violation(SessionReader session, GapKind kind,
                                     GapClass cls, String rowKind, long seq,
                                     String field, String subject,
@@ -1178,7 +974,6 @@ public final class RowInvariants {
                         + subject, detail);
     }
 
-    /** One string-to-string member of a row, or an empty map. */
     private static Map<String, String> strings(JsonObject node,
                                                String member) {
         Map<String, String> read = new LinkedHashMap<String, String>();

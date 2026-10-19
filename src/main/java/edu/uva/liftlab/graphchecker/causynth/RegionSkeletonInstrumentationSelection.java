@@ -10,19 +10,10 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
-/**
- * The candidate region skeletons every weave opens its regions from: a static
- * fact, since the recording is woven before it runs and the replay must stand
- * on the same frames.
- */
 final class RegionSkeletonInstrumentationSelection {
     private RegionSkeletonInstrumentationSelection() {
     }
 
-    /**
-     * The region each ROOT method opens: the recording pushes an index frame
-     * where the replay does (IDENTITY §10), from the same file.
-     */
     static Map<String, String> regionRootsFromEnvironment() {
         Map<String, String> roots = new LinkedHashMap<>();
         for (StaticProgram.RegionRow region : skeletonsFromEnvironment()) {
@@ -46,12 +37,10 @@ final class RegionSkeletonInstrumentationSelection {
         return methods;
     }
 
-    /** The candidate skeletons' file every weave opens its regions from. */
     static File skeletonFile() {
         return new File(configuredFile());
     }
 
-    /** The candidate skeletons every weave opens its regions from. */
     static List<StaticProgram.RegionRow> skeletonsFromEnvironment() {
         File file = skeletonFile();
         try {

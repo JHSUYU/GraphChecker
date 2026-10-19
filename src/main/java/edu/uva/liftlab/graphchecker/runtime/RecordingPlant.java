@@ -24,123 +24,20 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * A native reproduction's plant (PIPELINE §10b): the world a confirmed
- * witness ran in, planted in the recording weave on a stock JDK, so a
- * finding is run again without the concolic VM ({@code run_engine.sh}
- * REPRODUCE), and the one question such a run answers: does the planted
- * world take the throw's fatal arm at the claim's anchor.
- *
- * <p>{@code -Dcausynth.plant=<file>} names the plant, JSONL written by
- * CONFIRM's own code ({@code explore.ConfirmMain --plant}), each row
- * numbered ({@value #ROW}); a row the run applied is an {@link #APPLIED}
- * trace row naming its number.  A row plants inside the recording window
- * only, under an occurrence named by its id ({@link OccurrenceAddress#id}),
- * as a focused replay matches its occurrences; the occurrences enclosing a
- * call are the recording weave's region entries on its thread
- * ({@code CausynthTraceRecorder#enclosingOccurrences}).</p>
- * <ul>
- *   <li>{@code ROOT FAULT {rootId, occurrence, siteId, invocation, value}}: a
- *   marker call ({@code Debug.makeSymbolicBoolean}) answers the value at
- *   that call site under the occurrence, at its {@code invocation}-th call
- *   there (1 when unstated: a grown root is one invocation of its own,
- *   PIPELINE §7.8); otherwise, and always without a plant, its recorded
- *   polarity {@code false}.  A timed wait's planted timeout the program
- *   could not have reached (its latch already open, ...) is refused there,
- *   {@link #UNWRITTEN} ({@link #plantRefused}); so is a planted session expiry
- *   no expirer can make real ({@code Sessions#expires}).  A {@code true} answer is a door fault
- *   for the thread's identity as in a replay ({@link Identity#doorFaulted}).</li>
- *   <li>{@code ROOT HOOK {rootId, occurrence, value}}: a tree's symbolize
- *   hook of that root writes the value into the field it names
- *   ({@link RootMint#writeModeledField}) under an occurrence the
- *   confirmation focuses -- the anchor, or the mint occurrence of any root
- *   of the plant ({@link Plant#focused}) -- as a replay's mint plants it.</li>
- *   <li>Values at a call's return, which {@link PlantAgent} hands here
- *   ({@link #returned(long)} and its overloads) after every call of a
- *   callee the plant names in a class it names; the call is the one the
- *   recording weave's own call-site context states, by {@code siteId} and
- *   callee ({@code CausynthTraceRecorder#currentCallSiteContext}):
- *   <ul>
- *     <li>{@code ROOT CONFIG {rootId, occurrence, sites: [{siteId, callee}],
- *     javaType, value}}: every return of those getter calls is the value --
- *     a configuration is the world's, whatever occurrence reads it, as in a
- *     replay;</li>
- *     <li>{@code ROOT READ {rootId, occurrence, siteId, callee, javaType,
- *     value}}: the accessor call's return under the occurrence;</li>
- *     <li>{@code ROOT CLOCK {rootId, occurrence, siteId, callee, clock:
- *     {nanos, source}, skew}}: the first return of the clock call under the
- *     occurrence is the host's reading plus the skew, and a jump of that
- *     occurrence's node's clock ({@link NodeClocks}): every later declared
- *     reading of that clock on that node runs on from it;</li>
- *     <li>{@code CLOCK_SITE {siteId, callee, clock, regions}}: a declared
- *     clock reading, which reads the host's clock plus the skew of the
- *     jump before it on its node's clock, its node the one of its innermost
- *     enclosing occurrence of a region in {@code regions}.  "Before" is
- *     this run's real order ({@link #PLACES}): a native run has no recorded
- *     place.  A context row, applied by nobody;</li>
- *     <li>{@code ANSWER {endpoint, port, siteId, callee, regions, value}}:
- *     the value a port's call-return capture returns, carried and named as
- *     a replay's attach names it inside its innermost enclosing occurrence
- *     of a region in {@code regions} ({@link HandoffMint#answerNatively}),
- *     the answer written at the endpoint's leaf.</li>
- *   </ul></li>
- *   <li>{@code ORDER {before, after}}: CONFIRM's own row of what the model
- *   chose or the world's pairings -- not one only a read's own join needs,
- *   the confirmed session's history, which a native run makes on its own
- *   timing ({@code explore.ConfirmMain#writePlant}) -- held as a CONFIRM run
- *   holds it ({@link Confirmation}, which reads this file in a planted run);
- *   and {@code ORDER {scope: EVENT, before, after}}, an edge of the
- *   order the session CONFIRM saw ran in from the moved roots on, two schedule
- *   events by kind, context, site and k, held at the event's admission
- *   ({@code ScheduleLog#holdRealizedLocked}).  Held, the row is applied; one
- *   that waits is a {@link #HOLDING} row, and one whose wait times out an
- *   {@link #UNHELD} row, after which every hold gives way ({@link #gaveWay})
- *   and the run reproduces nothing; what it waited for, coming later, is a
- *   {@link #LATE} row.</li>
- *   <li>{@code TARGET {occurrence: <the anchor's id>, siteId: <a TARGET_SITE
- *   guard>, value: <its fatal arm>}} per guard of the target.  A decision
- *   there that takes the fatal arm inside the window is a {@link #FATAL}
- *   trace row, saying whether an enclosing occurrence is the anchor; at the
- *   anchor the run ends ({@link JUnitMethodRunner#exit}), its question
- *   answered, as a focused replay ends at its witness.</li>
- * </ul>
- * A value that cannot be read as what the call returns is an
- * {@link #UNWRITTEN} row, as a HOOK's write that fails.
- */
 public final class RecordingPlant {
     static final String PROPERTY = "causynth.plant";
-    /** The trace event of one plant row applied: a root planted, an order
-     *  held, an answer written. */
     static final String APPLIED = "PLANT_APPLIED";
-    /** An ORDER's activation waits for what the model orders before it. */
     static final String HOLDING = "PLANT_HOLDING";
-    /** An ORDER the run did not hold within the order's timeout: what it
-     *  waited for had not come.  The first gives every hold of the run way
-     *  ({@link #gaveWay}): the run no longer runs the confirmed world. */
     static final String UNHELD = "PLANT_UNHELD";
-    /** What an {@link #UNHELD} ORDER waited for came after all, past the
-     *  timeout; an UNHELD row with none never came in this run. */
     static final String LATE = "PLANT_LATE";
-    /** A row reached whose value could not be planted. */
     static final String UNWRITTEN = "PLANT_UNWRITTEN";
-    /** The trace event of one decision of the planted world's fatal arm. */
     static final String FATAL = "PLANT_FATAL";
-    /** A root the world assigns, planted where it is minted. */
     public static final String ROOT = "ROOT";
-    /** An ORDER row: CONFIRM's ({@link Confirmation}), or, of scope
-     *  {@code EVENT}, the confirmed session's realized order
-     *  ({@code ScheduleLog#holdRealizedLocked}). */
     public static final String ORDER = "ORDER";
-    /** A pairing's hold of a node's decodes of a view (Confirmation). */
     public static final String VIEW_HOLD = "VIEW_HOLD";
-    /** An ORDER row's scope: none for CONFIRM's activations, {@code EVENT}
-     *  for schedule events. */
     public static final String SCOPE = "scope";
-    /** A guard of the target and its fatal arm. */
     public static final String TARGET = "TARGET";
-    /** A declared clock reading: runs on its node's clock. */
     public static final String CLOCK_SITE = "CLOCK_SITE";
-    /** An attach the world answers. */
     public static final String ANSWER = "ANSWER";
     public static final String KIND = "kind";
     public static final String ROW = "row";
@@ -148,7 +45,6 @@ public final class RecordingPlant {
     public static final String ROOT_ID = "rootId";
     public static final String OCCURRENCE = "occurrence";
     public static final String SITE = "siteId";
-    /** A FAULT row's invocation of its marker call in its occurrence. */
     public static final String INVOCATION = "invocation";
     public static final String SITES = "sites";
     public static final String CALLEE = "callee";
@@ -162,64 +58,37 @@ public final class RecordingPlant {
     public static final String ENDPOINT = "endpoint";
     public static final String PORT = "port";
 
-    /** Read once: the JVM's own property. */
     private static final boolean PLANTING = !file().isEmpty();
     private static volatile Plant plant;
     private static final AtomicBoolean ENDED = new AtomicBoolean();
-    /** The run's own order of declared clock readings: a reading's place
-     *  on its node's clock ({@link NodeClocks}). */
     private static final AtomicLong PLACES = new AtomicLong();
-    /** "occurrence id|root id" of every clock root planted: an
-     *  occurrence's root is its first reading of the call. */
     private static final Set<String> CLOCKED = ConcurrentHashMap.newKeySet();
-    /** The rows stated applied or unwritten: each once. */
     private static final Set<Integer> STATED = ConcurrentHashMap.newKeySet();
-    /** Whether an ORDER of either scope was not held in time: from then
-     *  on no hold of the run holds ({@link #gaveWay}). */
     private static volatile boolean gaveWay;
-    /** Each marker call site's calls so far per occurrence id: the
-     *  invocation a FAULT row answers. */
     private static final Map<String, Integer> INVOCATIONS =
             new ConcurrentHashMap<String, Integer>();
-    /** The FAULT row the thread's last marker call answered true, with its
-     *  name and occurrence ({@link #plantRefused}). */
     private static final ThreadLocal<Object[]> ANSWERED =
             new ThreadLocal<Object[]>();
 
     private RecordingPlant() {
     }
 
-    /**
-     * An ORDER was not held in time ({@link #UNHELD}): the run no longer runs
-     * the world CONFIRM saw, so it reproduces nothing, and every hold of
-     * either scope gives way at once -- a run held on to an order it already
-     * broke only waits out its bound.  It goes on, so each row whose wait
-     * gave way states whether what it waited for came later ({@link #LATE})
-     * or never: a k-indexed event this run never reaches is an identity
-     * that drifted natively, not a slow one.
-     */
     static void gaveWay() {
         gaveWay = true;
     }
 
-    /** Whether an ORDER gave way in this run ({@link #gaveWay}). */
     static boolean orderGaveWay() {
         return gaveWay;
     }
 
-    /** Whether this run plants a world: a native reproduction, where the
-     *  workload's checks of the recording's world do not hold
-     *  ({@link CausynthTraceRecorder#replaying}). */
     static boolean planting() {
         return PLANTING;
     }
 
-    /** The plant file this run was handed, or "". */
     static String file() {
         return System.getProperty(PROPERTY, "").trim();
     }
 
-    /** One root or answer of the plant: its row and the value planted. */
     static final class Root {
         final int row;
         final String value;
@@ -246,7 +115,6 @@ public final class RecordingPlant {
         }
     }
 
-    /** A root whose value a call returns: CONFIG and READ. */
     static final class Valued {
         final Root root;
         final String rootId;
@@ -259,7 +127,6 @@ public final class RecordingPlant {
         }
     }
 
-    /** A clock root: the jump its mint makes. */
     static final class Jump {
         final int row;
         final String rootId;
@@ -274,26 +141,18 @@ public final class RecordingPlant {
         }
     }
 
-    /** One port's answers at a call: the regions declaring the capture IN,
-     *  each answered endpoint. */
     static final class Answering {
         final Set<String> regions = new LinkedHashSet<String>();
         final Map<String, Root> endpoints = new LinkedHashMap<String, Root>();
     }
 
-    /** One call whose return the plant reads ({@link PlantAgent}). */
     static final class Call {
         final String callee;
-        /** A declared clock reading's clock, or null. */
         Clock clock;
-        /** The regions declaring the clock reading. */
         final Set<String> regions = new LinkedHashSet<String>();
-        /** Clock roots, by mint occurrence id. */
         final Map<String, Jump> jumps = new LinkedHashMap<String, Jump>();
         final List<Valued> configs = new ArrayList<Valued>();
-        /** READ roots, by mint occurrence id. */
         final Map<String, Valued> reads = new LinkedHashMap<String, Valued>();
-        /** Answers, by port. */
         final Map<String, Answering> answers =
                 new LinkedHashMap<String, Answering>();
 
@@ -302,21 +161,12 @@ public final class RecordingPlant {
         }
     }
 
-    /** One plant file. */
     static final class Plant {
-        /** FAULT markers: call site, then occurrence id, then the root by
-         *  the invocation it answers. */
         final Map<String, Map<String, Map<Integer, Root>>> markers;
-        /** HOOK roots, by root id. */
         final Map<String, Root> hooks;
-        /** The calls whose returns it reads, by site id. */
         final Map<String, Call> calls;
-        /** The occurrences the confirmation focuses, by id: the anchor and
-         *  every root's mint occurrence ({@code FocusedReplay#focused}). */
         final Set<String> focused;
-        /** Guard site -> its fatal arm. */
         final Map<String, Boolean> fatalArms;
-        /** The claim's anchor, by occurrence id. */
         final String anchor;
 
         Plant(Map<String, Map<String, Map<Integer, Root>>> markers,
@@ -332,7 +182,6 @@ public final class RecordingPlant {
         }
     }
 
-    /** The marker {@code name}'s answer at the call running now. */
     static boolean marker(String name) {
         if (!PLANTING || !RecordingWindow.opened()) return false;
         CausynthTraceRecorder.ActiveCallSiteContext site =
@@ -358,14 +207,6 @@ public final class RecordingPlant {
         return value;
     }
 
-    /**
-     * A planted fault the program could not have reached at the call it was
-     * planted for -- a timed wait's timeout ({@code TimedWaits#timesOut}), a
-     * session expiry no expirer made real ({@code Sessions#expires}) --
-     * ({@code why}): the FAULT row the thread's marker call just answered is
-     * stated {@link #UNWRITTEN}, so the run plants no model -- the world is
-     * impossible.  False outside a plant, where a replay names it instead.
-     */
     static boolean plantRefused(String name, String why) {
         if (!PLANTING) return false;
         Object[] answered = ANSWERED.get();
@@ -376,8 +217,6 @@ public final class RecordingPlant {
         return true;
     }
 
-    /** A tree's symbolize hook of {@code rootId} on {@code owner}'s field:
-     *  the planted value written there under a focused occurrence. */
     static void hook(String rootId, Object owner, String fieldSignature) {
         if (!PLANTING || !RecordingWindow.opened()) return;
         Plant rows = plant();
@@ -391,8 +230,6 @@ public final class RecordingPlant {
                 root.row, rootId, occurrence, root.value);
     }
 
-    /** What a plant-named call returned, as the planted world has it
-     *  ({@link PlantAgent} calls it after every such call). */
     public static long returned(long value) {
         if (!PLANTING) return value;
         Object planted = intercept(value);
@@ -400,7 +237,6 @@ public final class RecordingPlant {
                 : value;
     }
 
-    /** {@link #returned(long)} for an int, short, byte or char return. */
     public static int returned(int value) {
         if (!PLANTING) return value;
         Object planted = intercept(value);
@@ -428,14 +264,10 @@ public final class RecordingPlant {
                 : value;
     }
 
-    /** {@link #returned(long)} for a reference return; the agent casts it
-     *  back to the call's type. */
     public static Object returned(Object value) {
         return PLANTING ? intercept(value) : value;
     }
 
-    /** The call running now, as the recording weave states it, inside the
-     *  window. */
     private static Object intercept(Object host) {
         if (!RecordingWindow.opened()) return host;
         CausynthTraceRecorder.ActiveCallSiteContext site =
@@ -445,9 +277,6 @@ public final class RecordingPlant {
                 CausynthTraceRecorder.enclosingOccurrences(), host);
     }
 
-    /** What call {@code siteId} of {@code callee} returns under {@code
-     *  enclosing} (innermost first), if the plant reads it, applied in
-     *  order: a configuration, an accessor's read, a clock, answers. */
     static Object returnedAt(Plant plant, String siteId, String callee,
                              List<String> enclosing, Object host) {
         Call call = plant.calls.get(siteId);
@@ -472,7 +301,6 @@ public final class RecordingPlant {
         return value;
     }
 
-    /** A CONFIG or READ root's value, read as what the call returns. */
     private static Object valued(Valued valued, Object host,
                                  String occurrence) {
         Object planted = ModelValues.coerce("", valued.root.value,
@@ -489,12 +317,6 @@ public final class RecordingPlant {
         return planted;
     }
 
-    /**
-     * A clock call's return on its node's clock: the first under a clock
-     * root's mint occurrence plants the root (the host's reading plus its
-     * skew) and jumps the node's clock; every other declared reading reads
-     * the host plus the skew of the latest jump at or before it.
-     */
     private static Object clocked(Call call, Object host,
                                   List<String> enclosing) {
         if (!(host instanceof Long || host instanceof Integer)) return host;
@@ -505,8 +327,6 @@ public final class RecordingPlant {
             OccurrenceAddress mint = OccurrenceAddress.parse(minted);
             Jump jump = call.jumps.get(mint.id());
             if (CLOCKED.add(mint.id() + "|" + jump.rootId)) {
-                // A clock stating no source is on no node's order: the
-                // plant moves this reading alone.
                 NodeClocks.jump(mint.node().render(), jump.clock, place,
                         jump.skew);
                 long instant = reading + jump.skew;
@@ -522,7 +342,6 @@ public final class RecordingPlant {
         return skew == 0L ? host : box(host, reading + skew);
     }
 
-    /** The answers one port's capture takes at the call running now. */
     private static Object answered(String port, final Answering answering,
                                    Object host, List<String> enclosing) {
         final String at = declaringOccurrence(answering.regions, enclosing);
@@ -544,8 +363,6 @@ public final class RecordingPlant {
                 });
     }
 
-    /** What a call of {@code host}'s runtime type returns: its box's
-     *  primitive, else the stated type, else its own class. */
     static Class<?> returnedType(Object host, String javaType) {
         if (host instanceof Long) return long.class;
         if (host instanceof Integer) return int.class;
@@ -575,17 +392,11 @@ public final class RecordingPlant {
         }
     }
 
-    /** What one ORDER row of the plant came to ({@link Confirmation},
-     *  {@code ScheduleLog#holdRealizedLocked}): {@code event} one of {@link
-     *  #APPLIED}, {@link #HOLDING}, {@link #UNHELD}, {@link #LATE}. */
     static void ordered(String event, int row, String after,
                         String waitingFor) {
         CausynthTraceRecorder.plantOrdered(event, row, after, waitingFor);
     }
 
-    /** A decision the recording observed ({@code outcome} null when it took
-     *  no arm a guard names): at a target guard's fatal arm, stated, and at
-     *  the anchor the run's end. */
     static void decided(String siteId, Boolean outcome) {
         if (!PLANTING || outcome == null) return;
         Plant rows = plant();
@@ -602,7 +413,6 @@ public final class RecordingPlant {
         }
     }
 
-    /** Of the occurrences enclosing a decision, the anchor's, or null. */
     static String anchorOf(List<String> enclosing, String anchor) {
         for (String occurrence : enclosing) {
             if (OccurrenceAddress.parse(occurrence).id().equals(anchor)) {
@@ -612,8 +422,6 @@ public final class RecordingPlant {
         return null;
     }
 
-    /** Of the occurrences enclosing a call, innermost first, the first
-     *  the confirmation focuses (by id), or null. */
     static String focusedOccurrence(Set<String> focused,
                                     List<String> enclosing) {
         for (String occurrence : enclosing) {
@@ -624,8 +432,6 @@ public final class RecordingPlant {
         return null;
     }
 
-    /** Of the occurrences enclosing a call, innermost first, the first
-     *  {@code byOccurrence} plants at (by id), or null. */
     static String plantedOccurrence(Map<String, ?> byOccurrence,
                                     List<String> enclosing) {
         if (byOccurrence == null || byOccurrence.isEmpty()) return null;
@@ -638,8 +444,6 @@ public final class RecordingPlant {
         return null;
     }
 
-    /** Of the occurrences enclosing a call, innermost first, the first of
-     *  a region in {@code regions}, or null. */
     static String declaringOccurrence(Set<String> regions,
                                       List<String> enclosing) {
         for (String occurrence : enclosing) {
@@ -651,8 +455,6 @@ public final class RecordingPlant {
         return null;
     }
 
-    /** The run's one end, on a thread of its own: the decision's thread is
-     *  the workload's, and the end waits for what is live to settle. */
     private static void end(final String siteId, final String anchor) {
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
@@ -676,7 +478,6 @@ public final class RecordingPlant {
                 try {
                     plant = read(Paths.get(file()));
                 } catch (IOException | RuntimeException unreadable) {
-                    // A run told to plant that cannot is no reproduction.
                     throw new IllegalStateException("the plant -D" + PROPERTY
                             + "=" + file() + " is unreadable: "
                             + unreadable.getMessage(), unreadable);
@@ -686,8 +487,6 @@ public final class RecordingPlant {
         }
     }
 
-    /** Whether an ORDER row names its two ends: activations, or, of scope
-     *  EVENT, two events. */
     private static boolean ordered(JsonObject row) {
         if (optionalString(row, SCOPE).isEmpty()) {
             return row.has("before") && row.get("before").isJsonPrimitive()
@@ -708,18 +507,6 @@ public final class RecordingPlant {
         return true;
     }
 
-    /**
-     * A plant file's rows.  A row of another kind, without its number, a
-     * ROOT of no plantable category or missing what its category needs (a
-     * FAULT its call site and a boolean, a CONFIG its getter calls, a READ
-     * or CLOCK its call, a CLOCK its clock and an integral skew), a call
-     * site named with two callees, a TARGET naming no guard or a boolean
-     * arm, and an ORDER naming no activation, or of scope EVENT no event
-     * (kind, context, site and k), are refused; so is a plant whose target
-     * rows name no anchor or two, since the run would answer nothing.  ORDER
-     * rows are {@link Confirmation}'s, and those of scope EVENT {@code
-     * ScheduleLog}'s.
-     */
     static Plant read(Path file) throws IOException {
         Map<String, Map<String, Map<Integer, Root>>> markers =
                 new LinkedHashMap<String, Map<String, Map<Integer, Root>>>();
@@ -785,8 +572,6 @@ public final class RecordingPlant {
                 Collections.unmodifiableMap(fatalArms), anchor);
     }
 
-    /** One ROOT row into what plants it; returns the occurrence it is
-     *  minted at.  A root stated twice is refused. */
     private static String root(JsonObject row, int number,
                                Map<String, Map<String, Map<Integer, Root>>>
                                        markers,
@@ -861,7 +646,6 @@ public final class RecordingPlant {
         return occurrence;
     }
 
-    /** The call a row names by site and callee; one site, one callee. */
     private static Call call(Map<String, Call> calls, JsonObject row)
             throws IOException {
         String site = optionalString(row, SITE);
@@ -900,12 +684,6 @@ public final class RecordingPlant {
         return texts;
     }
 
-    /**
-     * The calls a plant has a run intercept ({@link PlantAgent}): each
-     * caller class (internal name) to the callees it calls whose returns the
-     * plant reads, as {@code owner.name descriptor}.  A site or callee no
-     * JVM signature parses from is refused.
-     */
     static Map<String, Set<String>> interceptions(Plant plant)
             throws IOException {
         Map<String, Set<String>> intercepted =

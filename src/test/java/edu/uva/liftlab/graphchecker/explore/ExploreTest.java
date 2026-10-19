@@ -77,44 +77,26 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Exploration, checked on the five things a corpus can say to it.
- *
- * <p>Each case is a synthetic corpus in the contract's own file layout, driven
- * exactly as the campaign drives the stage: one planner invocation per wave
- * ({@link ExploreMain}), one solver per obligation
- * ({@link ObligationSolverMain}), verdicts appended to the results file the
- * next wave reads.  The queries are solved by the same z3 the campaign uses,
- * so an assertion about SAT or UNSAT is an assertion about the query.</p>
- */
 public class ExploreTest {
-    /** The bounds a round runs with when the case states none. */
     private static final ObligationFactory.Bounds DEFAULT_BOUNDS =
             new ObligationFactory.Bounds(
                     ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
                     ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
                     ObligationFactory.DEFAULT_MAX_WORLD_DEPTH);
 
-    /** What a case declares: a v1 selector, resolved against the seed. */
     private static final String TARGET_SELECTOR =
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
-    /** The NameNode's key rotation: a daemon tick, nobody's request. */
     private static final OccurrenceAddress PRODUCER = occurrence("hdfs-case/nn0",
             "REGION.rotate", CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 1),
             "o.a.h.h.s.b.BlockManager#run#8");
-    /** The data node's fatal read: its own DataXceiver op. */
     private static final OccurrenceAddress TARGET = occurrence("hdfs-case/dn0",
             "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
             "o.a.h.h.s.d.DataXceiver#run#12");
-    /** addKeys on the same node: started by the rotation's own delivery. */
     private static final OccurrenceAddress WRITER = occurrence("hdfs-case/dn0",
             "REGION.addkeys", CausalContext.of(exportedId(),
                     "DatanodeProtocol#registerDatanode"),
             "o.a.h.h.s.d.BPServiceActor#offerService#41");
-    /** The map addKeys writes and the target reads: one location, one node. */
-    /** No roots, no clock deltas. */
     private static final Map<String, String> NONE = Collections.emptyMap();
-    /** {@code Corpus#inputShape} of a guard stating no handoff. */
     private static final List<String> NONE_STATED =
             Collections.<String>emptyList();
     private static final LocationId ALL_KEYS =
@@ -130,24 +112,10 @@ public class ExploreTest {
             Endpoint.stateSite("BlockTokenSecretManager",
                     "retrieveDataEncryptionKey", 8, false),
             "BlockTokenSecretManager#retrieveDataEncryptionKey#8");
-    /**
-     * A second reader of that map on the target's node, started by a
-     * message of its own.
-     *
-     * <p>It is a member of the target's factor -- it touches the location
-     * the target reads -- and it is NOT upstream of the target: it reads
-     * what the target reads and writes nothing for it.  So what reaches
-     * IT reaches the task only through the factor, which is what a
-     * reaching set seeded from the focused occurrence alone would lose.
-     * dn1's SASL handler is this occurrence on hdfs-11741: it sits beside
-     * {@code addKeys} on the map, and the Balancer's token arrives at
-     * it.</p>
-     */
     private static final OccurrenceAddress READER =
             occurrence("hdfs-case/dn0", "REGION.reader",
                     CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                     "o.a.h.h.s.d.DataXceiver#run#44");
-    /** The node whose message that second reader is started by. */
     private static final OccurrenceAddress SIDECAR =
             occurrence("hdfs-case/sidecar", "REGION.sidecar",
                     CausalContext.of(Role.of("SIDECAR"), "", 1),
@@ -161,8 +129,6 @@ public class ExploreTest {
                     "checkAccess", 4, false),
             "BlockTokenSecretManager#checkAccess#4");
 
-    /** A system declaring Solr's published views (PUBLISHED_VIEW): a
-     *  pairing flip of a view no hook publishes is never asked. */
     @Before
     public void publishedViews() {
         System.setProperty(
@@ -180,25 +146,12 @@ public class ExploreTest {
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
 
-    /**
-     * A FORCE RUN KILLED PAST ITS BOUND ANSWERED NOTHING (PIPELINE §7.10,
-     * §7.6), as a flip's killed replay does ({@link Frontier#consume}, by
-     * the flip its row states, {@link ForcedFlip#flip}): it is asked again;
-     * killed twice with no forced session landed it is held unasked, its
-     * state BOUNDED and named in the round's {@code boundedFlips}
-     * (campaign_bounds' {@code replay_timeout_s}), so no UNSAT rests on a
-     * forced replay that ran nothing.  A replay that decided it (here
-     * FORCE_DIVERGED) answers it, under the same flip.
-     */
     @Test
     public void aKilledForceRunIsAskedAgainThenHeldBounded() throws Exception {
         String killed = ObligationResult.REPLAY_BOUNDED + ": replay exceeded"
                 + " replay_timeout_s=2400";
         String diverged = "FORCE_DIVERGED: the occurrence closed first";
         Object[][] rows = {
-            // its replays' details, in the order they landed; whether the
-            // next round asks it again; its state there; the round's
-            // boundedFlips
             {new String[] {killed}, true, "PROPOSED", "[]"},
             {new String[] {killed, killed}, false, "BOUNDED", "[FORCE x2]"},
             {new String[] {killed, diverged}, false, "NOT_ADMITTED", "[]"},
@@ -234,8 +187,6 @@ public class ExploreTest {
                     break;
                 }
                 assertNotNull(name + ": asked in round " + k, force);
-                // Its worker, in the iteration as the pool places it: the
-                // solver's question, then what its replay came to.
                 Path worker = iteration.resolve(wave)
                         .resolve(force.obligationId());
                 solve(iteration, out.resolve(wave), force,
@@ -262,17 +213,6 @@ public class ExploreTest {
         }
     }
 
-    /**
-     * ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1): what it read for a round
-     * it keeps for the next -- the sessions' rows, the static map, the slot
-     * table it changed -- and each round's files are the ones a planner of
-     * its own writes over the iteration as it stood, while sessions land
-     * and one leaves (a GROW swap).  The slot table on disk is the rounds'
-     * changes: a slot a world opened, then dropped once its session left.
-     * A served round reads the corpus its question names (PIPELINE §7.9):
-     * a session that lands once the round's corpus is frozen is no session
-     * of that round.
-     */
     @Test
     public void aServedRoundIsAFreshPlannersRound() throws Exception {
         Path iteration = tree.newFolder("served").toPath();
@@ -291,9 +231,6 @@ public class ExploreTest {
                 iteration.resolve(StaticScopeMap.FILE), "epoch0",
                 ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS,
                 ClientFaults.NONE, SystemView.of(""));
-        // round -> what lands before it: a world's session, its leaving,
-        // another world's; and one that lands after the round's corpus was
-        // frozen, while it plans.
         String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
                 {"land", "s-b"}, {"unlisted", "s-c"}};
         Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
@@ -321,8 +258,6 @@ public class ExploreTest {
                 landed(iteration, landing[1]);
             }
             Path mine = iteration.resolve(name);
-            // What the round reads, by which its room is judged: the files
-            // of the sessions the planner does not hold yet, as they decode.
             long reads = 0L;
             for (String sessionId : corpus) {
                 if (held.contains(sessionId)) continue;
@@ -361,12 +296,6 @@ public class ExploreTest {
                         && kinds.containsKey(SlotTable.DROPPED));
     }
 
-    /**
-     * A ROUND ON ONE CORE IS A ROUND ON MANY ({@code contract.Parallel}):
-     * the frontier's keys and the candidates, one session's in order to a
-     * thread, the sessions side by side, and every file read and written by
-     * blocks -- byte for byte the files one thread writes.
-     */
     @Test
     public void aRoundOnOneCoreIsARoundOnMany() throws Exception {
         Path iteration = tree.newFolder("cores").toPath();
@@ -411,8 +340,6 @@ public class ExploreTest {
         }
     }
 
-    /** A world's admitted session of the served planner's iteration: the
-     *  target's guard flipped by the marker, the rotated key delivered. */
     private static Session landed(Path iteration, String id)
             throws IOException {
         Session world = new Session(iteration, id);
@@ -426,8 +353,6 @@ public class ExploreTest {
         return world;
     }
 
-    /** A directory and everything under it, gone (a session GROW moved
-     *  aside). */
     private static void deleteTree(Path dir) throws IOException {
         List<Path> all = new ArrayList<Path>();
         try (java.util.stream.Stream<Path> walked = Files.walk(dir)) {
@@ -437,14 +362,6 @@ public class ExploreTest {
         for (Path path : all) Files.delete(path);
     }
 
-    /**
-     * One obligation worker of the iteration: the FOCUS ROW its replay was
-     * driven by, and the result row that names the session it published.
-     *
-     * <p>The world a session ran in is read off this row and nowhere else
-     * ({@link Corpus#world}), so a fixture that wants a session to have one
-     * writes the row the campaign writes.</p>
-     */
     private static void worker(Path iteration, String wave, String dir,
                                String obligationId, String sessionId,
                                OccurrenceAddress focused, String siteId,
@@ -455,7 +372,6 @@ public class ExploreTest {
                 roots, clockDeltas, Collections.<Corpus.Flip>emptyList());
     }
 
-    /** The same, for a replay that INHERITED a world as well as its own. */
     private static void worker(Path iteration, String wave, String dir,
                                String obligationId, String sessionId,
                                OccurrenceAddress focused, String siteId,
@@ -506,15 +422,6 @@ public class ExploreTest {
                                 "the focused prefix reproduced"))));
     }
 
-    /**
-     * THE ROUND STATES, THE CAMPAIGN STOPS (PIPELINE §7.9).  A round names
-     * every admitted replay that observed the fatal at the declared
-     * occurrence and keeps proposing -- whether the exploration ends there
-     * is the campaign's, once COMPOSE has judged the corpus.  It never
-     * proposes an obligation the campaign has in flight, under its id or
-     * under the question its row asks (an id moves as sessions land), and
-     * its wave is one past the deepest wave a landed session came from.
-     */
     @Test
     public void aRoundNamesItsWitnessesAndHoldsWhatIsInFlight()
             throws Exception {
@@ -553,8 +460,6 @@ public class ExploreTest {
         List<Obligation> proposed = obligations(asked);
         assertFalse(proposed.isEmpty());
 
-        // In flight under its own id, and under another id for the same
-        // question: neither is proposed again, and the round says so.
         Obligation first = proposed.get(0);
         Path flying = out.resolve("in_flight.jsonl");
         RowCodec.writeAll(flying, Arrays.asList(Obligation.of("OBL.moved",
@@ -577,14 +482,6 @@ public class ExploreTest {
         }
     }
 
-    /**
-     * A BRANCH WITHOUT THE DECLARED REGION UNDER ITS CONTEXT STOPS
-     * (PIPELINE §7.4).  An admitted replay that ran the declared region
-     * under the declared context at another index -- a window index a retry
-     * moved -- parents obligations; one that ran it only under another
-     * context does not, and is named; a refused replay parents nothing
-     * either way.  A sender no row names is unknown, never a difference.
-     */
     @Test
     public void aBranchWithoutTheDeclaredRegionUnderItsContextStops()
             throws Exception {
@@ -623,15 +520,6 @@ public class ExploreTest {
         assertEquals(GapClass.DIAGNOSTIC, gaps.get(0).cls());
     }
 
-    /**
-     * WHAT A GUARD DEPENDS ON is its arm's key ({@link
-     * ObligationFactory#dependence}): a prefix decision sharing no variable
-     * with the guard, and a factor member's writes to state the guard does
-     * not read, never split one question in two; a prefix decision over the
-     * guard's own root, and another value written where it reads, do.
-     * (hdfs-11741 v79: 4984 candidates, 2422 keys by the whole prefix and
-     * every write of the factor, 499 by what the guard depends on.)
-     */
     @Test
     public void anArmIsKeyedByWhatItsGuardDependsOn() throws Exception {
         Path iteration = tree.newFolder("depends").toPath();
@@ -642,9 +530,6 @@ public class ExploreTest {
         OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
                 "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
                         3), "o.a.h.h.s.d.DataXceiver#run#57");
-        // session, Near#u2, Far#u4, writes of the map, writes of the qop,
-        // handoffs to a co-reader of the map; s-idle also runs the late
-        // feeder, which delivers it nothing
         String[][] sessions = {
             {"s-seed", "true", "true", "1", "1", "0"},
             {"s-idle", "true", "true", "1", "1", "0"},
@@ -682,9 +567,6 @@ public class ExploreTest {
             if ("s-idle".equals(row[0])) session.activation(lateWriter, false);
             session.flush();
         }
-        // A world whose flip stands later in the task's own occurrence (a
-        // fault after the guard: solr-adhoc-07's makePath): its prefix is
-        // asserted, never keyed.
         Session afterGuard = new Session(iteration, "s-later");
         afterGuard.activation(TARGET, true);
         afterGuard.activation(WRITER, false);
@@ -702,9 +584,6 @@ public class ExploreTest {
                 "(> (+ M_A M_READ_KEY) 3)");
         afterGuard.decision(TARGET, "Later#u20", 1, true, "(> M_A 5)");
         afterGuard.flush();
-        // Feeders that wrote other terms where the guard reads (a member
-        // flip writing M_A-1 where the seed wrote M_A+10; requests writing
-        // 5 or 7; a term reading a location another writer wrote).
         LocationId inner = LocationId.of(LocationKind.INSTANCE, "40", "7");
         OccurrenceAddress innerA = occurrence("hdfs-case/dn0",
                 "REGION.innerA", CausalContext.of(Role.of("INNER_A"), "", 1),
@@ -717,7 +596,6 @@ public class ExploreTest {
                 "o.a.h.h.s.d.InnerB#run#1");
         JsonObject symbolA = leaf("M_A", "I");
         JsonObject innerRead = leaf("M_INNER", "I");
-        // session, written term, the inner location's writer (or none)
         Object[][] writtenRows = {
             {"s-plus", binary("+", symbolA, literal(10)), null},
             {"s-minus", binary("-", symbolA, literal(1)), null},
@@ -835,7 +713,6 @@ public class ExploreTest {
                         NONE_STATED),
                 corpus.inputShape("s-more", TARGET, reversed, qopKey,
                         NONE_STATED));
-        // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
             Session session = new Session(raced, order);
@@ -859,8 +736,6 @@ public class ExploreTest {
                 racedCorpus.inputShape("s-ba", TARGET,
                         Collections.singletonList(WRITER), qopKey,
                         NONE_STATED));
-        // A session that runs a feeder no earlier session ran: the seed never
-        // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
         late.activation(lateWriter, false);
         late.symbolic("e.late", "M_A");
@@ -878,8 +753,6 @@ public class ExploreTest {
                         + " (solr-bugs-reindex-cleanup SG1: 87 % of its"
                         + " re-keyed ids)", seed,
                 dependence(grown, later, "s-idle", "Guard#u8"));
-        // The wave names an obligation once: a solver reading the corpus
-        // mid-wave (a larger factor, another dependence) keeps that id.
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,
                 Obligation.of("OBL.as-the-wave-named-it", task.taskId(),
                         Corpus.pathId("s-seed", TARGET), "Guard#u8", 1, true,
@@ -889,30 +762,15 @@ public class ExploreTest {
         assertEquals("OBL.as-the-wave-named-it", located.obligationId);
     }
 
-    /**
-     * GROWTH IS THE CLOSURE'S (PIPELINE §7.2, §7.8). A
-     * demanded occurrence no session CAPTURED -- the hooks ran it and its
-     * runtime identity is in a session's rows, but no planned task admitted
-     * it -- is grown from the admitted focused session that names it; named
-     * by the seed replay alone it waits for one (DIAGNOSTIC); a lost role is
-     * no region, so nothing grows it; a captured one is a task.  hdfs-17899:
-     * a DataNode's periodic heartbeat sends through the woven IPC door under
-     * no task, and the closure demands that sender.
-     */
     @Test
     public void theClosureGrowsWhatItDemandsAndNoSessionCaptured()
             throws Exception {
         OccurrenceAddress lost = occurrence("hdfs-case/nn0",
                 "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
-        // Started by nn0's KEY_MANAGER_TICK #3 through a message its tick
-        // root sent in no region (the heartbeats of hdfs-11741).
         OccurrenceAddress anchored = occurrence("hdfs-case/nn0",
                 "REGION.rotate", CausalContext.of("e-tick", "HADOOP_IPC"),
                 "o.a.h.h.s.b.BlockManager#run#8");
-        // producer, whether the seed captures it, whether a focused replay
-        // names it, the last tick of its role the recording ran (-1: no
-        // recorded schedule), whether it began past that tick
         Object[][] cases = {
             {PRODUCER, true, false, -1, false},
             {PRODUCER, false, true, -1, false},
@@ -930,10 +788,7 @@ public class ExploreTest {
             boolean past = (Boolean) row[4];
             Path iteration = tree.newFolder().toPath();
             if (recorded >= 0) {
-                // PRODUCER is nn0's KEY_MANAGER_TICK #1.
                 List<JsonObject> ticks = new ArrayList<JsonObject>();
-                // A view's publication stands at its node's |VIEW stance,
-                // which no tick reading parses (ScheduleEvent.Kind#PUBLISH).
                 ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                         ScheduleEvent.Kind.PUBLISH, producer.node().render()
                                 + "|VIEW", ScheduleEvent.published("SOLR_ZK",
@@ -1006,8 +861,6 @@ public class ExploreTest {
                 }
             }
             if (past) {
-                // A tick the recording never ran: only a slower replay ran
-                // it (hdfs-11741 v86, heartbeats #44-#100 against #5).
                 assertFalse(label, task);
                 assertTrue("a tick past the recording is not grown: " + label,
                         plan.exposed.isEmpty() && plan.waiting.isEmpty());
@@ -1026,8 +879,6 @@ public class ExploreTest {
                 assertEquals("grown from the focused replay naming it: "
                                 + label, "s-flip",
                         plan.exposed.get(producer));
-                // Once planned, an address is not grown again: whether it
-                // runs is the replays' timing (hdfs-17897 v83).
                 JsonObject plannedRow = new JsonObject();
                 plannedRow.addProperty("occurrenceId", producer.render());
                 RowCodec.writeJsonl(iteration.resolve(
@@ -1046,8 +897,6 @@ public class ExploreTest {
                         plan.exposed.isEmpty());
                 assertTrue("it waits for a focused replay: " + label,
                         plan.waiting.contains(producer));
-                // This corpus flips nothing, so its first wave is the
-                // fixpoint: no focused replay will ever run it.
                 Path wave = iteration.resolve("obligations-0000");
                 Path results = iteration.resolve("results.jsonl");
                 Files.write(results, new byte[0]);
@@ -1075,14 +924,6 @@ public class ExploreTest {
         throw new AssertionError(sessionId + " took no " + siteId);
     }
 
-    /**
-     * WORLD_REFUTED: a replay of an open arm's flip that refuted its world
-     * answers nothing of the arm.  The arm is asked again with exactly that
-     * world excluded, the round names the refuted world on the arm's row
-     * (digest, conditions, the workload's exception), and the arm closes
-     * UNSAT once no other world of the corpus takes it -- an UNSAT that says
-     * it rests on the refuted world.
-     */
     @Test
     public void aRefutedWorldIsExcludedAndTheArmAskedAgain() throws Exception {
         Assume.assumeTrue(z3Available());
@@ -1115,8 +956,6 @@ public class ExploreTest {
         assertEquals(Verdict.SAT_MODEL_READY, first.verdict);
         assertEquals("the one world that takes it",
                 "11", first.obligation.rootAssignments().get("CASE.SERIAL"));
-        // Its replay refuted that world: the worker's answer, as the head
-        // lands it in the iteration.
         ObligationResult refuted = ObligationResult.of(asked.obligationId(),
                 Verdict.NOT_ADMITTED, "s-flip", "WORLD_REFUTED: never entered",
                 edu.uva.liftlab.graphchecker.contract.WorldRefutation.of(
@@ -1172,7 +1011,6 @@ public class ExploreTest {
         assertEquals(1, named.getAsJsonArray("refutedWorlds").size());
     }
 
-    /** One symbolic leaf, as the VM serializes it ({@code "N"} is null). */
     private static JsonObject leaf(String symbol, String javaType) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "SymbolExpression");
@@ -1181,7 +1019,6 @@ public class ExploreTest {
         return node;
     }
 
-    /** One int literal, as the VM serializes it. */
     private static JsonObject literal(long value) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "ConstExpr");
@@ -1200,27 +1037,12 @@ public class ExploreTest {
         return node;
     }
 
-    /**
-     * One guarded read: the location, the version it observed, and the
-     * PROJECTION the execution performed on that version.
-     *
-     * <p>The shape 11741's anchor guard has -- the map state the write log
-     * covers, and the one entry this read took out of it.</p>
-     */
     private static JsonObject guardedRead(LocationId location, long version,
                                           String javaType,
                                           JsonObject projection) {
         return guardedRead(location, version, javaType, projection, -1L);
     }
 
-    /**
-     * The same, stating the EVENT the read happened at.
-     *
-     * <p>Which is what makes the node a statement about shared state a
-     * closure can follow (E2): the location says WHICH cell and the event
-     * id says AS OF WHEN, so the version the producer had in hand is the
-     * latest write of that location at or before it.</p>
-     */
     private static JsonObject guardedRead(LocationId location, long version,
                                           String javaType,
                                           JsonObject projection,
@@ -1250,14 +1072,6 @@ public class ExploreTest {
         return node;
     }
 
-    /**
-     * A KEPT ANSWER IS ALL ITS TEXT SAYS ({@link Solved#whole}): unsat, or
-     * sat with a value of every symbol the text asks the model of -- a sat
-     * whose model's run was cut short is answered, never kept, so the next
-     * ask of the text runs z3 again; and a store that cannot be written
-     * leaves the answer answered.  Per row: the verdict, the symbols its
-     * model valued, whether the next ask is answered as kept.
-     */
     @Test
     public void onlyAWholeAnswerIsKept() throws Exception {
         List<String> asks = Arrays.asList("x", "y");
@@ -1287,15 +1101,6 @@ public class ExploreTest {
         assertSame(unsat, unwritable.answer("q", asks, () -> unsat));
     }
 
-    /**
-     * THE SOLVER KEY ({@link Solved}): z3's decided answer is a fact of its
-     * query's text alone, kept by it, and an ask of the same text under
-     * another question -- another plan generation, world, task -- runs no
-     * z3 and comes to the outcome a z3 run deciding the same comes to; the
-     * question stays its own (SOLR-18413 b05: 312 of 519 solver-decided asks
-     * asked a text asked before).  An undecided answer is kept nowhere.  Per
-     * row: the flipped term, its verdict.
-     */
     @Test
     public void aQueryTextIsAnsweredOnceWhateverAsksIt() throws Exception {
         Assume.assumeTrue(z3Available());
@@ -1337,7 +1142,6 @@ public class ExploreTest {
             assertEquals(name, asked.obligation, again.obligation);
             assertEquals(name, asked.smt2, again.smt2);
             assertEquals(name, asked.settles, again.settles);
-            // Undecided at its budget: no answer of the text, none kept.
             Files.delete(kept);
             ObligationFactory.Outcome timedOut = corpus.asking(() ->
                     ObligationFactory.solve(corpus, candidate, new Z3(
@@ -1349,22 +1153,6 @@ public class ExploreTest {
         }
     }
 
-    /**
-     * ONLY A FAITHFUL VERDICT SETTLES AN ARM ({@link Frontier#consume},
-     * {@code ObligationResult#settlesArm}): a NOT_ADMITTED whose replay ran
-     * its world as asked and never reached the decision ({@code WORLD_RAN})
-     * settles the arm for every world, as today; one whose replay did not
-     * run its world (an inherited root not minted, a refusal, a stall) is a
-     * fact about that world only -- the arm stays owed for any other world,
-     * the flip itself asked once more and settled by a second such answer
-     * (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's world never
-     * minted its inherited root, and its NOT_ADMITTED closed the arm).  A
-     * replay killed past its bound ({@code REPLAY_BOUNDED}) answered
-     * nothing: it is no world-only answer, the flip is asked once more, and
-     * killed twice it is held BOUNDED and named, never settled
-     * (solr-adhoc-38 EXZ1: 24 flips killed twice read as world-only
-     * answers, and the run closed UNSAT).
-     */
     @Test
     public void onlyAFaithfulNotAdmittedSettlesTheArm() throws Exception {
         String ran = ObligationResult.WORLD_RAN + ": occurrence o never"
@@ -1373,23 +1161,13 @@ public class ExploreTest {
         String unrun = "occurrence o never reached Lookup#u8#1 in this"
                 + " replay; its world did not run: the inherited root R was"
                 + " never minted";
-        // A refusal whose cause is in what the key names (the flipped
-        // predicate, the versions it read that no row wrote) is the arm's;
-        // one resting on the world (an inherited flip) is its own flip's.
         String atArm = ObligationResult.ARM_REFUSED + ": the query was"
                 + " refused: ADMISSION_GAP:Lookup#u8#1";
         String inWorld = "the query was refused: ADMISSION_GAP:Rotate#u5#1";
         String killed = ObligationResult.REPLAY_BOUNDED + ": replay exceeded"
                 + " replay_timeout_s=2400";
-        // At its z3s' cap: undecided by name, as a timeout is -- no fact
-        // about the arm.
         String memout = "SOLVER_MEMOUT at 1984 MB";
         Object[][] rows = {
-            // its answers' details (the k-th landing takes the k-th, the
-            // last repeating), how many of them landed on its flip,
-            // whether the arm is settled for every world, whether the next
-            // round asks the flip again from the same path, whether the flip
-            // is held BOUNDED
             {ran, 1, true, false, false},
             {unrun, 1, false, true, false},
             {unrun, 2, false, false, false},
@@ -1423,7 +1201,6 @@ public class ExploreTest {
                 answer(iteration, "OB." + k, ObligationDir.QUESTION,
                         flip + ":content", Verdict.NOT_ADMITTED, "",
                         details[Math.min(k, details.length - 1)]);
-                // What it asked, which a bounded flip is named by.
                 RowCodec.writeAll(iteration.resolve("obligations-0000")
                                 .resolve("OB." + k)
                                 .resolve(ObligationDir.OBLIGATION),
@@ -1451,8 +1228,6 @@ public class ExploreTest {
         }
     }
 
-    /** Each bounded flip row's site (FORCE for the FORCE run) and how many
-     *  killed replays it names. */
     private static String names(JsonArray bounded) {
         List<String> names = new ArrayList<String>();
         for (JsonElement element : bounded) {
@@ -1464,8 +1239,6 @@ public class ExploreTest {
         return names.toString();
     }
 
-    /** One earlier worker of this iteration: its question file and the
-     *  answer it wrote. */
     private static void answer(Path iteration, String obligationId,
                                String questionFile, String question,
                                Verdict verdict, String sessionId,
@@ -1481,13 +1254,7 @@ public class ExploreTest {
                         .getBytes(StandardCharsets.UTF_8));
     }
 
-    /** A target read of a map two concurrent addKeys wrote, recorded taking
-     *  the first write, and {@code Lookup#u8} deciding {@code term} over it
-     *  (and over root {@code CASE.LIMIT}, recorded {@code limit}, when one
-     *  is given). */
-    /** {@link #twoWriters}' lookup over the read node the VM writes. */
     private static final String VM_LOOKUP = "EXPR.0000000000000002";
-    /** The key id both of {@link #twoWriters}' writers store: a field. */
     private static final LocationId KEY_ID =
             LocationId.of(LocationKind.INSTANCE, "21", "40");
 
@@ -1496,20 +1263,15 @@ public class ExploreTest {
         return twoWriters(name, term, limit, "I");
     }
 
-    /** {@link #twoWriters}, the second writer storing an int, or with
-     *  {@code "Z"} a comparison's boolean. */
     private Path twoWriters(String name, String term, String limit,
                             String secondType) throws IOException {
         return twoWriters(name, term, limit, secondType, 6L);
     }
 
-    /** {@link #twoWriters}, the lookup again seeing version {@code seen}:
-     *  the second writer's 6, or one no row wrote. */
     private Path twoWriters(String name, String term, String limit,
                             String secondType, long seen)
             throws IOException {
         Path iteration = tree.newFolder(name).toPath();
-        // A second addKeys, started by a request of its own.
         OccurrenceAddress again = occurrence("hdfs-case/dn0",
                 "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"), "",
                         2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
@@ -1527,14 +1289,10 @@ public class ExploreTest {
                 "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
                 KEY_ID, 6L, "e.2");
         seed.read(LOOKED_UP, KEY_ID, 5L, "M_READ_KEY", "1");
-        // The lookup again, after the second write: the same occurrence's
-        // read of the same field.
         seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
                 "retrieveDataEncryptionKey", 9, false),
                 "BlockTokenSecretManager#retrieveDataEncryptionKey#9"),
                 KEY_ID, seen, "M_READ_AGAIN", "2");
-        // The lookup as the VM states it: the guarded read, joined to the
-        // write it observed, compared.
         seed.expression(VM_LOOKUP, binary("==", readNode(KEY_ID, 5L, "I",
                 literal(1)), literal(2)));
         if (limit != null) {
@@ -1552,7 +1310,6 @@ public class ExploreTest {
         return iteration;
     }
 
-    /** Why a worker said what it said, for a failure message. */
     private static String detail(Worker worker) throws IOException {
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.directory.resolve("obligation_result.jsonl"),
@@ -1576,13 +1333,7 @@ public class ExploreTest {
         return new String(text.toByteArray(), StandardCharsets.UTF_8);
     }
 
-    // ---- driving the stage the way the campaign drives it -------------
 
-    /**
-     * One round, planned from the case's own selector as the stage does,
-     * over the static map the epoch published beside its sessions, with
-     * nothing in flight.
-     */
     private JsonObject plan(Path iteration, String selector, Path domains,
                             Path results, Path roundDir, int round)
             throws IOException {
@@ -1592,8 +1343,6 @@ public class ExploreTest {
                 DEFAULT_BOUNDS);
     }
 
-    /** The same, of the case's target, with {@code inFlight} held and
-     *  {@code bounds} its round's. */
     private static JsonObject plan(Path iteration, Path results,
             Path inFlight, Path roundDir, int round,
             ObligationFactory.Bounds bounds) throws IOException {
@@ -1602,25 +1351,12 @@ public class ExploreTest {
                 round, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS, bounds);
     }
 
-    /** A round's bounds: {@code maxPaths} per task, {@code maxDepth} deep. */
     private static ObligationFactory.Bounds bounds(int maxPaths,
                                                    int maxDepth) {
         return new ObligationFactory.Bounds(maxPaths,
                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, maxDepth);
     }
 
-    /**
-     * The walk's steps run ahead on the planner's cores ({@code
-     * ClosurePlanner#CORES}), and its plan is the one-at-a-time walk's: each
-     * step computed ahead is the walk of its demand's state, and is taken in
-     * queue order only while it still is; what only that order gives -- the
-     * leaves of the anchor's two reads at one seq, held once, the first
-     * asked ({@code Corpus#readLeaves}) -- is computed in it.  Here a
-     * producer whose every delivery a session attached, and a writer each
-     * session's anchor read, over seventy sessions: planned on one core --
-     * the walk one step at a time -- on four and on the host's, the three
-     * plans are one.
-     */
     @Test
     public void theWalkAheadPlansWhatItPlansAlone() throws Exception {
         Path iteration = tree.newFolder("asked-ahead").toPath();
@@ -1640,7 +1376,6 @@ public class ExploreTest {
             session.write(STORED, ALL_KEYS, 5L, "e.stored");
             session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY" + at,
                     "11999" + at);
-            // The next read at the same seq (a store read and its view's).
             session.seq--;
             session.read(side, LocationId.of(LocationKind.MAP, "" + (40 + at),
                     "-3"), 0L, "M_SIDE" + at, "0");
@@ -1662,18 +1397,6 @@ public class ExploreTest {
                 plans.get(0), plans.get(2));
     }
 
-    /**
-     * A step computed ahead whose demand an earlier step grew, or whose
-     * walk claimed the leaves of a seq another row asked first in the
-     * order, is not the walk of its demand there ({@code
-     * ClosurePlanner.Walk#take}): W1's delivery is W4's
-     * handoff, so W1's step grows W4, which then reads e, W5's; W1 and W2
-     * read a and b at one seq ({@code Corpus#readLeaves}: the first row
-     * asked holds it), a holding W8's handoff through W7's write, so in
-     * the order W2's delivery rests on a's leaves -- which name f, W6's --
-     * not on b's; over seventy sessions.  On one core -- the walk one step
-     * at a time -- on four and on the host's, one plan.
-     */
     @Test
     public void aStepWhoseDemandChangedIsWalkedAgain() throws Exception {
         Path iteration = tree.newFolder("walked-again").toPath();
@@ -1737,8 +1460,6 @@ public class ExploreTest {
             session.export(x4b, "e.h4b", 30L + at, "5" + at);
             session.export(x4, "e.h4", 40L + at, "4" + at);
             session.attach(r4b, "M_C" + at, "5" + at, x4b);
-            // a's version 1 is W8's handoff, which moves: a and b's seq
-            // holds a's leaves where W1 asked it first.
             session.export(x8, "e.w8", 50L + at, "8" + at);
             session.attach(r8, "M_P" + at, "8" + at, x8);
             session.write(wroteA, a, 1L, "e.a");
@@ -1770,15 +1491,6 @@ public class ExploreTest {
                 plans.get(0), plans.get(2));
     }
 
-    /**
-     * A step reads its group's index; it never builds one: groups are
-     * indexed on the planner's thread as the steps that walk them start
-     * ({@code ClosurePlanner.Walk#reads}).  Here the anchor's step demands
-     * twelve producers, so the steps started next index the thirteenth
-     * group -- the insert after which a JDK 8 HashMap resizes at its next
-     * computeIfAbsent, whatever its key -- and the walk, planned two hundred
-     * times on the host's cores, is the one-core walk each time.
-     */
     @Test
     public void aStepNeverIndexesAGroup() throws Exception {
         Path iteration = tree.newFolder("indexed-ahead").toPath();
@@ -1823,9 +1535,6 @@ public class ExploreTest {
         }
     }
 
-    /** The plans of {@code iteration}'s corpus, each read anew, on one
-     *  core -- the walk one step at a time -- on four, and on the host's
-     *  ({@code ClosurePlanner#CORES}). */
     private static List<String> onEachPool(Path iteration,
                                            StaticScopeMap map)
             throws IOException {
@@ -1847,8 +1556,6 @@ public class ExploreTest {
         }
     }
 
-    /** {@link #closure} of {@link #TARGET}, its steps on {@code
-     *  cores}. */
     private static ClosurePlanner.Plan plannedOn(Corpus corpus,
             StaticScopeMap map, java.util.concurrent.ForkJoinPool cores) {
         Set<GapRow> said = new LinkedHashSet<GapRow>();
@@ -1862,7 +1569,6 @@ public class ExploreTest {
                 SystemView.of(""), cores, said::add), said);
     }
 
-    /** Everything a plan states, as text. */
     private static String rendered(ClosurePlanner.Plan plan) {
         return plan.tasks + "\n" + plan.why + "\n" + plan.flipSites + "\n"
                 + gapsOf(plan) + "\n" + plan.exposed + "\n" + plan.waiting
@@ -1870,8 +1576,6 @@ public class ExploreTest {
                 + plan.runWhole + "\n" + plan.ceilingCut;
     }
 
-    /** One write of a store version at an occurrence, and one leaf of the
-     *  document it exported. */
     private static void written(Session session, OccurrenceAddress at,
                                 LocationId store, long version, String leaf) {
         session.write(at(at, "SOLR_ZK#WRITE:" + store.slot(),
@@ -1880,8 +1584,6 @@ public class ExploreTest {
                 "Utils#toJSON#7"), "", 0L, "0");
     }
 
-    /** One anchor's closure, every admitted session a parent of growth but
-     *  those whose branch stopped ({@link Branches}). */
     private static ClosurePlanner.Plan closure(Corpus corpus,
                                                OccurrenceAddress anchor,
                                                StaticScopeMap map) {
@@ -1895,32 +1597,20 @@ public class ExploreTest {
                 SystemView.of(""), said::add), said);
     }
 
-    /** The gaps each plan's walk said, each once, as a round writes them
-     *  ({@code RoundGaps}). */
     private static final Map<ClosurePlanner.Plan, List<GapRow>> SAID =
             Collections.synchronizedMap(new java.util.IdentityHashMap<
                     ClosurePlanner.Plan, List<GapRow>>());
 
-    /** {@code plan}, whose walk said {@code said}. */
     private static ClosurePlanner.Plan saying(ClosurePlanner.Plan plan,
                                               Set<GapRow> said) {
         SAID.put(plan, new ArrayList<GapRow>(said));
         return plan;
     }
 
-    /** The gaps {@code plan}'s walk said ({@link #saying}). */
     private static List<GapRow> gapsOf(ClosurePlanner.Plan plan) {
         return SAID.get(plan);
     }
 
-    /**
-     * The task bound counts static candidates only ({@code
-     * ClosurePlanner.Candidates}): a candidate the rows later connect -- here
-     * the producer of what the anchor's writer attached, found first as a
-     * static writer of the map -- is planned whatever the bound, and the
-     * candidates left take turns by class, so a bound of two plans one of
-     * each class before a second of either.
-     */
     @Test
     public void aConnectedCandidateIsPlannedAndCandidatesTakeTurnsByClass()
             throws Exception {
@@ -1970,7 +1660,6 @@ public class ExploreTest {
                         "<example.Keys: int value>",
                         "<example.Manager: example.Keys allKeys>", ""))));
         Corpus corpus = Corpus.read(iteration, null);
-        // Per bound: the static candidates planned, and those cut.
         Object[][] rows = {
             {0, Collections.<OccurrenceAddress>emptyList(),
                     Arrays.asList(sibling, siblingC, refresher)},
@@ -2001,9 +1690,6 @@ public class ExploreTest {
             assertEquals("bound " + row[0], cut, plan.truncated);
             assertTrue(plan.ceilingCut.isEmpty());
         }
-        // Past a ceiling of two occurrences the rows connect, the producer
-        // the writer's attach names is cut and named, and no static
-        // candidate stays planned whatever the bound.
         ClosurePlanner.Plan capped = ClosurePlanner.plan(corpus, TARGET, 2, 2,
                 map, Branches.of(corpus, Collections.singletonList(TARGET),
                         new ArrayList<GapRow>()),
@@ -2022,14 +1708,12 @@ public class ExploreTest {
                 capped.truncated));
     }
 
-    /** The occurrences one plan's tasks focus, in its order. */
     private static List<String> focused(ClosurePlanner.Plan plan) {
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
         return focused;
     }
 
-    /** Which rule proposed each task of one plan, by focused occurrence. */
     private static Map<String, String> why(ClosurePlanner.Plan plan) {
         Map<String, String> reasons = new LinkedHashMap<String, String>();
         for (Task task : plan.tasks) {
@@ -2048,7 +1732,6 @@ public class ExploreTest {
         return file;
     }
 
-    /** One site row of that map, in the artifact's one shape. */
     private static String scopeSite(String role, String regionId,
                                     String siteId, String vmSite,
                                     String cell, String carrier,
@@ -2069,9 +1752,6 @@ public class ExploreTest {
         return row.toString();
     }
 
-    /** The same WRITE_SITE row, stated as a mutator call on the container
-     *  its carrier holds: a store of that container's state, the MAP
-     *  location the fixture's key map is ({@code StaticScopeMap#stores}). */
     private static String put(String row) {
         JsonObject site = com.google.gson.JsonParser.parseString(row)
                 .getAsJsonObject();
@@ -2080,14 +1760,12 @@ public class ExploreTest {
         return site.toString();
     }
 
-    /** The declared target and the branches it is control-dependent on. */
     private static String targetSite(String regionId, String siteId,
                                      String... guards) {
         return scopeSite(StaticScopeMap.TARGET_SITE, regionId, siteId, "",
                 "", "", "", guards);
     }
 
-    /** One obligation worker: the verdict row and the completed obligation. */
     private static final class Worker {
         private final Verdict verdict;
         private final Obligation obligation;
@@ -2101,17 +1779,6 @@ public class ExploreTest {
         }
     }
 
-    /**
-     * THE HARD LANE READS NO CORPUS ({@code ObligationSolverMain#decide}): z3
-     * alone over the query a first ask published and its record ({@code
-     * HardAsk}), answered as the corpus's ask maps an answer ({@code
-     * ObligationFactory#settled}): UNSAT with the record's detail, gaps and
-     * question, settling it; the budget spent a named SOLVER_TIMEOUT, never
-     * UNSAT; a model left for the host's solver to finish, no answer
-     * (SGF7-adhoc-39: each hard ask was a corpus JVM of 18-21 GB, one per
-     * host).  Per row: the body, the budget, and the verdict and detail
-     * published (MODEL: a model, no answer).
-     */
     @Test
     public void theHardLaneAnswersOverItsFirstAsksQueryAlone()
             throws Exception {
@@ -2152,8 +1819,6 @@ public class ExploreTest {
             ObligationSolverMain.decide(obligations, "OB.1", worker,
                     Paths.get("z3"), (Long) row[1], 1152);
             String says = Arrays.toString(row);
-            // Its decided answer is kept by its text, an undecided one
-            // nowhere; asked again, a kept one is the answer, no z3 run.
             Path kept = solved.resolve(sha + ".json");
             assertEquals(says, !"NOT_ADMITTED".equals(row[2]),
                     Files.exists(kept));
@@ -2190,7 +1855,6 @@ public class ExploreTest {
         return solve(iteration, null, waveDir, proposal, out, name);
     }
 
-    /** One worker, given the same case declaration the wave was planned under. */
     private Worker solve(Path iteration, Path domains, Path waveDir,
                          Obligation proposal, Path out, String name)
             throws IOException {
@@ -2212,8 +1876,6 @@ public class ExploreTest {
         return new Worker(rows.get(0).verdict(), solved.get(0), worker);
     }
 
-    /** Whether a directory's gap rows hold one {@code named} matches: a
-     *  round's ({@link ExploreMain#GAPS_FILE}) or a worker's. */
     private static boolean anyGap(Path dir,
             java.util.function.Predicate<GapRow> named) throws IOException {
         return RowCodec.readAll(dir.resolve(ExploreMain.GAPS_FILE),
@@ -2221,7 +1883,6 @@ public class ExploreTest {
                 .stream().anyMatch(named);
     }
 
-    /** The results file of a case's rounds, empty. */
     private static Path results(Path out) throws IOException {
         Path results = out.resolve("obligation_results.jsonl");
         Files.write(results, new byte[0]);
@@ -2250,7 +1911,6 @@ public class ExploreTest {
         return null;
     }
 
-    /** One occurrence: a component, a region, why it ran, and where. */
     private static OccurrenceAddress occurrence(String node, String region,
                                                 CausalContext context,
                                                 String callSite) {
@@ -2259,20 +1919,12 @@ public class ExploreTest {
                         Frame.of(callSite, 0))));
     }
 
-    /** One endpoint of an occurrence, at the first execution of its site. */
     private static Endpoint at(OccurrenceAddress occurrence, String site,
                                String callSite) {
         return Endpoint.of(occurrence, site, ExecutionIndex.of(
                 Collections.singletonList(Frame.of(callSite, 0))), 0);
     }
 
-    /**
-     * The rotation's export endpoint, which the writer's causal anchor names.
-     *
-     * <p>Built the long way because it is a static initialiser that the
-     * writer's own address depends on: the anchor IS the producer's endpoint
-     * id, so the consumer's identity contains the producer's.</p>
-     */
     private static String exportedId() {
         return at(occurrence("hdfs-case/nn0", "REGION.rotate",
                         CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 1),
@@ -2289,18 +1941,6 @@ public class ExploreTest {
         }
     }
 
-    /**
-     * IDENTITY §7.2: a store version the concrete anchor read through a
-     * decoded object -- a STORE read at its PROVENANCE_SITE, before it
-     * decided -- rests on the write that made it and on every earlier
-     * version of its location, whatever node wrote them, and each writer on
-     * the queue item it took in: the item's sender decided a fault, so it is
-     * a control producer and its door is asked
-     * (solr-bugs-restore-construction: the client's view of state.json,
-     * the Overseer's state writes, the item RestoreCmd offered).  Rows:
-     * whether the read is on the anchor's provenance site, whether the
-     * earlier writer took in the item, and what is then planned.
-     */
     @Test
     public void aStoreVersionRestsOnEveryWriteOfItsLocationAndTheirItems()
             throws Exception {
@@ -2320,9 +1960,6 @@ public class ExploreTest {
         OccurrenceAddress restore = occurrence("solr-case/node0",
                 "REGION.restore", CausalContext.of(Role.of("OVERSEER_TASK"),
                         "", 1), "Restore#run#1");
-        // Per row: the read on the anchor's provenance site, the earlier
-        // writer took the item in, the anchor's phi (a symbolic one demands
-        // the store version too: its content is no value a term names).
         Object[][] cases = {
             {true, true, Arrays.asList(true, true, true), "false"},
             {true, false, Arrays.asList(true, true, false), "false"},
@@ -2355,9 +1992,6 @@ public class ExploreTest {
                     ScheduleEvent.Kind.SEND, ContextShape.Stance.of(restore)
                             .render(), "SOLR_ZK#REQUEST", 0, restore.id(),
                     "e-item")));
-            // A node's view publication: its stance is no causal context,
-            // and the corpus reads past it (review B1: every schedule
-            // holding one crashed the planner).
             schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                     ScheduleEvent.Kind.PUBLISH, restore.node().render()
                             + "|" + ContextShape.Stance.VIEW_STANCE,
@@ -2410,19 +2044,13 @@ public class ExploreTest {
         private final List<RootMintRow> roots = new ArrayList<>();
         private final List<TargetRow> targets = new ArrayList<>();
         private final List<GapRow> gaps = new ArrayList<>();
-        /** What this replay SETTLED, as its own obligations.jsonl states. */
         private final List<ObligationResult> answered = new ArrayList<>();
-        /** A FORCE run's session ({@code SessionManifest.Role#FORCED}). */
         private boolean forced;
-        /** The names its nodes had only in this run, spelling -> node
-         *  ({@code SessionManifest#runSpellings}). */
         private final Map<String, String> spelled =
                 new LinkedHashMap<String, String>();
-        /** The occurrences it ran for their doors alone. */
         private final Set<String> doorsOnly = new TreeSet<String>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
-        /** The session's own event order: every row takes the next one. */
         private long seq;
 
         private Session(Path iteration, String sessionId) {
@@ -2441,7 +2069,6 @@ public class ExploreTest {
                     "fixture#" + occurrence.node().node());
         }
 
-        /** The same, on a thread of its own. */
         private void activation(OccurrenceAddress occurrence, boolean focused,
                                 boolean instrumented, String thread) {
             activations.add(ActivationRow.of(sessionId, occurrence,
@@ -2449,7 +2076,6 @@ public class ExploreTest {
                     thread, ActivationRow.ClaimKind.NONE, null));
         }
 
-        /** Several occurrences, each its own activation. */
         private void activations(boolean focused,
                                  OccurrenceAddress... occurrences) {
             for (OccurrenceAddress occurrence : occurrences) {
@@ -2457,7 +2083,6 @@ public class ExploreTest {
             }
         }
 
-        /** {@code spelling} is node {@code node}'s in this run. */
         private void spelled(String node, String spelling) {
             spelled.put(spelling, node);
         }
@@ -2469,25 +2094,17 @@ public class ExploreTest {
                     Collections.<String, Long>emptyMap()));
         }
 
-        /**
-         * One root minted, at the point of the session where it is minted:
-         * before every decision that can mention it, because a value is read
-         * before it is branched on.
-         */
-        /** The anchor's own predicate, in the fatal polarity. */
         private void target(OccurrenceAddress occurrence, String site,
                             String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
                     false, true, null));
         }
 
-        /** The key lookup's anchor: fatal where the key read was 0. */
         private void anchored(OccurrenceAddress occurrence) {
             target(occurrence, "BlockTokenSecretManager"
                     + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
         }
 
-        /** The anchor, where this replay observed the fatal. */
         private void fatal(OccurrenceAddress occurrence, String site,
                            String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
@@ -2505,14 +2122,12 @@ public class ExploreTest {
                 ? Clock.of(1_000_000L, Clock.WALL) : null, 0L));
         }
 
-        /** A declared fault marker the recording minted as {@code recorded}. */
         private void marker(OccurrenceAddress at, String rootId,
                             String symbol, String recorded) {
             root(at, rootId, symbol, RootKind.MARKER, recorded, null, null,
                     true);
         }
 
-        /** A declared integral root, its recorded value and its domain. */
         private void integral(OccurrenceAddress at, String rootId,
                               String symbol, String recorded, String min,
                               String max) {
@@ -2539,7 +2154,6 @@ public class ExploreTest {
             write(endpoint, location, version, ref, "I");
         }
 
-        /** The same, at the Java type the runtime states for the value. */
         private void write(Endpoint endpoint, LocationId location,
                            long version, String ref, String javaType) {
             writes.add(WriteRow.of(sessionId, ++seq, endpoint, location,
@@ -2552,11 +2166,6 @@ public class ExploreTest {
                     symbol, "I", concrete));
         }
 
-        /**
-         * The key chain as every session of the target's factor records it:
-         * the rotation exports a key, addKeys receives it as M_HOFF_KEY and
-         * stores it in the map, the target reads it back.
-         */
         private void keyChain() {
             activation(WRITER, false);
             activation(PRODUCER, false);
@@ -2568,7 +2177,6 @@ public class ExploreTest {
             read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         }
 
-        /** The value a handoff minted, as the VM propagated it. */
         private void symbolic(String ref, String symbol) {
             symbolic(ref, symbol, "I");
         }
@@ -2581,12 +2189,10 @@ public class ExploreTest {
             expressions.put(ref, expression);
         }
 
-        /** One expression of the session's table, as the VM built it. */
         private void expression(String ref, JsonObject node) {
             expressions.put(ref, node);
         }
 
-        /** One literal the VM recorded as a delivered constant. */
         private void constant(String ref, String value) {
             JsonObject expression = new JsonObject();
             expression.addProperty("_type", "ConstExpr");
@@ -2595,14 +2201,6 @@ public class ExploreTest {
             expressions.put(ref, expression);
         }
 
-        /**
-         * One verdict this replay published for itself.
-         *
-         * <p>The replay owns whether its obligation was admitted, and a
-         * wave cuts a new flip only from a session that says ADMITTED of
-         * every one of them -- so the fixture states it where the runtime
-         * does, in the session's own file.</p>
-         */
         private void answered(ObligationResult result) {
             answered.add(result);
         }
@@ -2627,8 +2225,6 @@ public class ExploreTest {
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             ExpressionLogs.write(dir.expressions(), expressions);
-            // The fixture STATES the role, as a campaign's own session
-            // manifest does.
             boolean focused = false;
             for (ActivationRow activation : activations) {
                 if (activation.focused()) focused = true;

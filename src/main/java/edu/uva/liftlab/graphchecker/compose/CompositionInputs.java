@@ -19,38 +19,16 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 
-/**
- * EVERYTHING ONE COMPOSITION READS, as one SHA-256 ({@link #FILE}, beside
- * its manifest): what ComposeMain was asked (the anchor, the root domains,
- * the static scope map, the valuation bound, the solver budget, z3), the
- * JVM's {@code causynth.*} properties (and the file one names), each
- * session (its id, its files' names and sizes -- a published session is
- * only ever appended to -- and its manifest), the iteration's recorded
- * schedule, refuted claims, uncaptured sessions ({@link
- * SessionDir#UNCAPTURED}) and slot tables ({@link SlotTable#files}), and
- * the result and focus rows of each obligation worker whose session is one
- * of them: the worker data a corpus reads of a session ({@code
- * Corpus#world}, {@code #waveVerdict}).  Not the z3 room: a resource, not
- * an input.  Two compositions over one digest differ in z3's free choices
- * alone, so the final COMPOSE takes the exploration's accepted witness
- * attempt over the same digest instead of composing it again ({@code
- * ComposeMain --reuse}).
- */
 final class CompositionInputs {
-    /** The digest of a composition's inputs, beside its manifest: written
-     *  only when no input changed while it read them. */
     static final String FILE = "compose_inputs.sha256";
 
     private CompositionInputs() {
     }
 
-    /** The digest of what a composition with these arguments reads now. */
     static String of(ComposeMain.Arguments arguments) throws IOException {
         return ArtifactIO.sha256(String.join("\n", lines(arguments)));
     }
 
-    /** The digest a composition in {@code dir} read, or "" where it states
-     *  none. */
     static String of(Path dir) throws IOException {
         Path file = dir.resolve(FILE);
         if (!Files.isRegularFile(file)) return "";
@@ -58,9 +36,6 @@ final class CompositionInputs {
                 .trim();
     }
 
-    /** What the digest is of, one input a line: its name, a tab, and its
-     *  sha256 (a size for a session's file); what tells two corpora
-     *  apart. */
     static List<String> lines(ComposeMain.Arguments arguments)
             throws IOException {
         List<String> lines = new ArrayList<String>();
@@ -101,7 +76,6 @@ final class CompositionInputs {
             try (Stream<Path> listed = Files.list(session.dir())) {
                 listed.sorted().forEach(files::add);
             } catch (NoSuchFileException gone) {
-                // Moved aside since it was listed: no session of the read.
                 lines.add("session-gone " + id);
                 continue;
             }
@@ -130,7 +104,6 @@ final class CompositionInputs {
         lines.add(name + "\t" + ArtifactIO.sha256(value));
     }
 
-    /** One file's bytes; "absent" where it is not there. */
     private static void file(List<String> lines, String name, Path file)
             throws IOException {
         String digest = "absent";
@@ -138,13 +111,11 @@ final class CompositionInputs {
             try {
                 digest = ArtifactIO.sha256(file);
             } catch (NoSuchFileException gone) {
-                // Gone since it was looked at: absent, as it is now.
             }
         }
         lines.add(name + "\t" + digest);
     }
 
-    /** The path a property's value spells, or null where it spells none. */
     private static Path path(String value) {
         try {
             return value == null || value.isEmpty() ? null : Paths.get(value);

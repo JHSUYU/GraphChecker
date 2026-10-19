@@ -4,13 +4,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
 
-/**
- * One model literal read back as the Java value a mint can write; the SMT
- * grammar is {@code plan/SmtModelValueCodec}'s.
- *
- * <p>{@link UnsupportedReplayValue} is not {@code null}: a model "null" may
- * be written, an unreadable literal may not.</p>
- */
 final class ModelValues {
     private ModelValues() {
     }
@@ -22,7 +15,6 @@ final class ModelValues {
         String type = nonNull(valueType).toUpperCase();
         String raw = nonNull(value).trim();
         try {
-            // Reference null is decided before String decoding.
             if ((requestedType == null || !requestedType.isPrimitive())
                     && ("NULL".equals(type)
                     || "null".equalsIgnoreCase(raw))) {

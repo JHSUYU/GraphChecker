@@ -25,13 +25,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.ToIntFunction;
 
-/** The one loop CFG of a method and the branches that continue its loops. */
 final class CfgLoopControl {
-    /** One dominance proof per body, shared. */
     private static final Map<Body, LoopCfg> BY_BODY =
             Collections.synchronizedMap(new IdentityHashMap<Body, LoopCfg>());
 
-    /** Rejects no unit: only instrumentation names loops by unit index. */
     private static final ToIntFunction<Unit> ANY_UNIT = unit -> 0;
 
     private CfgLoopControl() {
@@ -52,7 +49,6 @@ final class CfgLoopControl {
             this.unitChainState = body.getUnits().getModificationCount();
         }
 
-        /** False once the unit chain was modified since the proof. */
         private boolean describes(Body candidate) {
             return unitChainState
                     == candidate.getUnits().getModificationCount();
@@ -66,7 +62,6 @@ final class CfgLoopControl {
             return transfers;
         }
 
-        /** Normal transfers: the only edges a backedge or bound can be. */
         List<Unit> succsOf(Unit unit) {
             return transfers.getSuccsOf(unit);
         }
@@ -75,7 +70,6 @@ final class CfgLoopControl {
             return dominators.isDominatedBy(unit, dominator);
         }
 
-        /** Everything reaching a latch without passing the header. */
         Set<Unit> naturalLoop(Unit header, Collection<Unit> latches) {
             Set<Unit> loop = StaticProgram.closure(latches,
                     unit -> unit == header
@@ -97,7 +91,6 @@ final class CfgLoopControl {
         }
     }
 
-    /** A dominance-proved backedge, named by original unit index. */
     static final class Backedge {
         final Unit source;
         final int sourceIndex;
@@ -118,7 +111,6 @@ final class CfgLoopControl {
         }
     }
 
-    /** One natural loop: its proved header and closing backedges. */
     static final class NaturalLoop {
         private final LoopCfg cfg;
         final Unit header;
@@ -157,7 +149,6 @@ final class CfgLoopControl {
             return cfg.succsOf(unit);
         }
 
-        /** Normal transfers ending one dynamic invocation of this loop. */
         List<Edge> exitEdges() {
             Set<Unit> members = members();
             List<Edge> exits = new ArrayList<Edge>();
@@ -173,10 +164,6 @@ final class CfgLoopControl {
 
     }
 
-    /**
-     * Where one iteration's frame opens: a body unit and the control edges
-     * into it the frame opens on; at the header, every edge into it.
-     */
     static final class BodyEntry {
         final Unit target;
         final List<Edge> edges;
@@ -187,24 +174,6 @@ final class CfgLoopControl {
         }
     }
 
-    /**
-     * Where one iteration's frame opens so that it holds the work at {@code
-     * demanded} (IDENTITY §1, {@code LOOP_BODY_ROOT}), or {@code null} where
-     * none can: the unit must be a member of the loop the header dominates;
-     * the frame opens at the one outermost body unit a control edge enters
-     * and that dominates it -- on every control edge into that unit, so
-     * {@code if (a || b) handle();}, two controls entering one block, is one
-     * entry -- or, when no control edge does (the work comes before every
-     * control: a {@code while (true)} left by a return or a throw,
-     * FsDatasetImpl.initReplicaRecovery's retry loop), at the header.  A
-     * unit on a path that leaves the loop is no member: a call after the
-     * loop's exit decision runs once per call of the method, however often
-     * the loop turned (hdfs-adhoc-41: INodesInPath.getExistingINodes returns
-     * getAncestorINodesInPath from inside its loop).  SEED states the call
-     * units this places (the retained-loop row's {@code
-     * bodyEntryCallUnits}), and the weave asks it again of the loop it
-     * frames.
-     */
     static BodyEntry bodyEntry(NaturalLoop loop, Collection<Unit> controls,
                                Unit demanded) {
         Set<Unit> members = loop.members();
@@ -212,8 +181,6 @@ final class CfgLoopControl {
                 || !loop.isDominatedBy(demanded, loop.header)) {
             return null;
         }
-        // An if's one in-loop successor, a switch's every case that stays;
-        // edges into one unit are one entry.
         List<Unit> targets = new ArrayList<Unit>();
         Map<Unit, List<Edge>> into = new IdentityHashMap<Unit, List<Edge>>();
         for (Unit control : controls) {
@@ -262,7 +229,6 @@ final class CfgLoopControl {
         return false;
     }
 
-    /** Natural loops in first-backedge order; units with no index skipped. */
     static List<NaturalLoop> naturalLoops(LoopCfg cfg,
                                           ToIntFunction<Unit> unitIndex) {
         List<NaturalLoop> loops = new ArrayList<NaturalLoop>();
@@ -289,16 +255,10 @@ final class CfgLoopControl {
         return loops;
     }
 
-    /** Releases every held loop CFG at the end of one analysis run. */
     static void forget() {
         BY_BODY.clear();
     }
 
-    /**
-     * The body's loop CFG, rebuilt once its unit chain changed.  Transfers
-     * are the unexceptional {@link BriefUnitGraph}; dominance is proved over
-     * the trap graph when the body has traps.
-     */
     static LoopCfg loopCfg(Body body) {
         LoopCfg held = BY_BODY.get(body);
         if (held != null && held.describes(body)) {
@@ -312,21 +272,14 @@ final class CfgLoopControl {
         return built;
     }
 
-    /** One retained loop: its iteration guards and classification. */
     static final class RetainedLoop {
         final Unit header;
-        /** Exiting branches, in CFG order. */
         final List<Unit> guards;
-        /** {@code FIXED_COUNT_INDEXED} or {@code CONDITION_BOUNDED}. */
         final String classification;
-        /** The nest's guards do not all classify the same way. */
         final boolean guardsClassifyDifferently;
         final List<Unit> latches;
-        /** Exact members: assign a branch to its innermost loop. */
         final Set<Unit> members;
 
-        /** The proved loop itself: where an iteration frame can open
-         *  ({@link #bodyEntry}). */
         final NaturalLoop natural;
 
         private RetainedLoop(NaturalLoop natural, List<Unit> guards,
@@ -344,7 +297,6 @@ final class CfgLoopControl {
         }
     }
 
-    /** Every retained loop of {@code cfg}, one per proved header. */
     static List<RetainedLoop> retainedLoops(LoopCfg cfg) {
         List<RetainedLoop> result = new ArrayList<RetainedLoop>();
         Map<Unit, String> kinds = classify(cfg);
@@ -391,16 +343,10 @@ final class CfgLoopControl {
                 : LoopBoundPolicy.LOOP_CONDITION_BOUNDED;
     }
 
-    /**
-     * Every iteration guard with its loop's classification: an array-length
-     * test is {@code FIXED_COUNT_INDEXED} (slots = array cardinality); anything
-     * else is {@code CONDITION_BOUNDED} under a declared {@code K_L}.
-     */
     private static Map<Unit, String> classify(LoopCfg cfg) {
         Map<Unit, String> result = new IdentityHashMap<Unit, String>();
         Set<String> lengthLocals = arrayLengthLocals(cfg.body());
         for (NaturalLoop natural : naturalLoops(cfg, ANY_UNIT)) {
-            // Classified per latch.
             for (Backedge backedge : natural.backedges) {
                 Set<Unit> loop = natural.members(backedge);
                 List<Unit> exits = new ArrayList<Unit>();
@@ -444,7 +390,6 @@ final class CfgLoopControl {
         return continues && exits;
     }
 
-    /** Locals this body only ever assigns {@code lengthof} to. */
     private static Set<String> arrayLengthLocals(Body body) {
         Set<String> lengths = new LinkedHashSet<String>();
         Set<String> other = new LinkedHashSet<String>();

@@ -4,18 +4,8 @@ import java.util.AbstractSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
-/**
- * A HASH SET AS ONE ARRAY of its elements (open addressing, linear
- * probing): a reference a slot at most half full, where a {@code HashSet}
- * holds a 32-byte node and a table slot per element (a closure walk's named
- * symbols, 17 M of them in SGF8-adhoc-05 round 5's planner, 640 MB).  Its
- * order is its table's (null, where held, first), as a {@code HashSet}'s is
- * its own: only where no order is read.  No element is removed.  One thread
- * changes it; it is read while no thread does.
- */
 public final class OpenSet<E> extends AbstractSet<E> {
     private Object[] slots;
-    /** The non-null elements. */
     private int size;
     private boolean holdsNull;
 
@@ -105,8 +95,6 @@ public final class OpenSet<E> extends AbstractSet<E> {
         slots = larger;
     }
 
-    /** murmur3's 32-bit finalizer: a String's hash is weak in its low bits
-     *  for keys that differ at their end. */
     static int spread(int h) {
         h ^= h >>> 16;
         h *= 0x85ebca6b;

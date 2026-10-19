@@ -14,27 +14,6 @@ import java.security.ProtectionDomain;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * The plant-run agent (PIPELINE §10b): loaded only by a native
- * reproduction's JVM ({@code -javaagent}, {@code execute.sh} with {@code
- * CAUSYNTH_PLANT}), it hands {@link RecordingPlant} the value every call the
- * plant reads returns -- a clock's reading, a configuration getter's or an
- * accessor's value, a port's call-return capture -- so the planted world's
- * value takes its place.
- *
- * <p>In each caller class the plant names, as it loads, every invoke of a
- * callee the plant names there is followed by one call, {@code
- * RecordingPlant.returned(T)T} for the call's JVM return type T (a reference
- * through {@code Object} and back by a cast).  Which call it is the
- * recording weave's own call-site context states at run time, by site and
- * callee, so no unit index is mapped to a bytecode offset; an invoke the weave
- * wraps in no context matches no row.  Nothing else changes: the woven classes
- * on disk, SEED's artifacts and the recording are the same, and a JVM without
- * a plant loads no agent.  The rewrite keeps the operand stack's types (one
- * value in, the same type out), so no frame is recomputed and no class is
- * loaded to do it; it speaks the oldest ASM API that reads Java 8 classes, as
- * a tree may put an older ASM ahead of the engine's on the class path.</p>
- */
 public final class PlantAgent {
     private static final String PLANT =
             "edu/uva/liftlab/graphchecker/runtime/RecordingPlant";
@@ -52,7 +31,6 @@ public final class PlantAgent {
         instrumentation.addTransformer(new Rewriter(intercepted));
     }
 
-    /** Rewrites the caller classes the plant names as they load. */
     static final class Rewriter implements ClassFileTransformer {
         private final Map<String, Set<String>> intercepted;
 
@@ -70,8 +48,6 @@ public final class PlantAgent {
             try {
                 return rewrite(bytes, callees);
             } catch (RuntimeException unwritable) {
-                // The class loads as woven: its calls answer the host, and
-                // every row it would have planted says it was not reached.
                 EngineConsole.println("Causynth plant agent: " + className
                         + " was not rewritten: " + unwritable);
                 return null;
@@ -79,7 +55,6 @@ public final class PlantAgent {
         }
     }
 
-    /** One class with every invoke of {@code callees} handed to the plant. */
     static byte[] rewrite(byte[] bytes, final Set<String> callees) {
         ClassReader reader = new ClassReader(bytes);
         ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_MAXS);
@@ -109,7 +84,6 @@ public final class PlantAgent {
         return writer.toByteArray();
     }
 
-    /** The plant's call after one invoke returning {@code type}. */
     static void handOff(MethodVisitor method, Type type) {
         switch (type.getSort()) {
             case Type.VOID:

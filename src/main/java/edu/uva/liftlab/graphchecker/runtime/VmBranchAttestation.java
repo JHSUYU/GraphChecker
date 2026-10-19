@@ -21,30 +21,15 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
 
-/**
- * Whether the VM's branch event is the decision the workload just took --
- * the gate, the only thing that lets a decision row carry a term.
- *
- * <p>Two checks: the event's exact ownership (thread context, region, task,
- * site, occurrence, outcome, one record, a condition index in the new
- * suffix), and that the VM relation IS the Jimple predicate.  The one
- * tolerance is {@link #observedOperatorImpliesBranch}.  A refusal is
- * published as an {@code UNATTESTED_ARM} gap by {@link #noteRefused}.</p>
- */
 final class VmBranchAttestation {
     private VmBranchAttestation() {
     }
 
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
-    /** The VM's spelling of an int constant, {@code Y_I_<value>}. */
     private static final Pattern INT_CONSTANT =
             Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$");
 
-    /**
-     * Names one VM branch event this replay could not attest: its decision
-     * row carries no site predicate, so its arm has no term.
-     */
     static void noteRefused(String siteId, int occurrence,
                             Attestation attestation, String windowOutcome) {
         RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
@@ -53,10 +38,6 @@ final class VmBranchAttestation {
                         + nonNull(windowOutcome) + "): " + attestation.error);
     }
 
-    /**
-     * @param parsed the caller's read of the event stream: both answers come
-     *               from one (costly) observation.
-     */
     static Attestation attest(
             ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
@@ -180,7 +161,6 @@ final class VmBranchAttestation {
 
         int completeSymbolicCount = expected.caseArm()
                 ? 1 : expected.caseKeys.size();
-        // The VM still emits an exact event when the selector is concrete.
         if (rawIndices.size() == 0) {
             return Attestation.valid(
                     Collections.<Integer>emptyList());
@@ -251,8 +231,6 @@ final class VmBranchAttestation {
         return Attestation.valid(indices);
     }
 
-    /** The selector of {@code selector <op> key}, or null when the
-     *  condition is not that comparison. */
     private static JsonObject switchSelectorIfMatches(
             JsonElement condition, String expectedOperator, int expectedKey) {
         if (condition == null || !condition.isJsonObject()) return null;
@@ -285,14 +263,6 @@ final class VmBranchAttestation {
         return key == expectedKey ? left.getAsJsonObject() : null;
     }
 
-    /**
-     * Whether two VM expressions are one: the same node, or equal refs
-     * ({@link RowRuntime#refOf}, each node hashed once).  Never their
-     * renderings: the decoder shares nodes and a FieldAccessExpression
-     * names its owner twice, so a rendering doubles per level -- SOLR-18413's
-     * verifyProp selector was 1,060 nodes and 7.4e10 as a tree, and one
-     * toString ran over 70 s on the workload's thread.
-     */
     static boolean sameExpression(JsonObject left, JsonObject right) {
         return left == right
                 || RowRuntime.refOf(left).equals(RowRuntime.refOf(right));
@@ -322,10 +292,6 @@ final class VmBranchAttestation {
                 || symbolicNull(object.get("_right"));
     }
 
-    /**
-     * The operator the taken arm asserts: the Jimple one, complemented on
-     * the fall-through; null when the expression states none.
-     */
     private static String armOperator(String expression, boolean outcome) {
         Matcher matcher = BRANCH_OPERATOR.matcher(nonNull(expression));
         if (!matcher.find()) return null;
@@ -337,7 +303,6 @@ final class VmBranchAttestation {
         return nonNull(expression).matches(".*\\bnull\\b.*");
     }
 
-    /** Resolves the Java boolean value selected by a Jimple zero test. */
     private static Boolean booleanValueRequiredByZeroBranch(
             String expression, boolean outcome) {
         String rendered = nonNull(expression).trim();
@@ -357,11 +322,6 @@ final class VmBranchAttestation {
         return "!=".equals(effective);
     }
 
-    /**
-     * Returns the underlying Java boolean represented by an asserted engine
-     * condition, or {@code null} when the IR node is value-producing or its
-     * semantics are not part of the exact codec.
-     */
     private static Boolean representedBooleanValue(JsonObject condition) {
         if (!"OpStrExpression".equals(optionalString(condition, "_type"))) {
             return null;
@@ -384,12 +344,6 @@ final class VmBranchAttestation {
         return !optionalBool(condition, "_is_not", false);
     }
 
-    /**
-     * The one tolerance: Soot may spell an edge {@code >=}/{@code <=} where
-     * the VM asserts the stronger {@code >}, {@code <} or {@code ==}.  Only
-     * that forward implication is admitted; {@link #semanticCondition} then
-     * restores the Jimple operator.
-     */
     private static boolean observedOperatorImpliesBranch(
             String expected, String observed, boolean nullComparison) {
         if (expected.equals(observed)) {
@@ -404,7 +358,6 @@ final class VmBranchAttestation {
                 && ("<".equals(observed) || "==".equals(observed));
     }
 
-    /** Returns the branch-level predicate while retaining the VM operands. */
     static JsonElement semanticCondition(
             String expression, boolean outcome, JsonElement condition) {
         if (condition == null || !condition.isJsonObject()) {
@@ -426,10 +379,6 @@ final class VmBranchAttestation {
         return normalized;
     }
 
-    /**
-     * One constraint negated by complementing its operator over the VM's own
-     * operands, or null when it has no relational operator.
-     */
     static JsonElement negated(JsonElement condition) {
         if (condition == null || !condition.isJsonObject()) return null;
         JsonObject original = condition.getAsJsonObject();
@@ -464,7 +413,6 @@ final class VmBranchAttestation {
     static final class Attestation {
         final List<Integer> conditionIndices;
         final boolean valid;
-        /** Read by {@link VmBranchAttestation#noteRefused} and nothing else. */
         final String error;
 
         private Attestation(List<Integer> conditionIndices,

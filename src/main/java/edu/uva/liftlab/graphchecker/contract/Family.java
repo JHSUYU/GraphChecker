@@ -2,11 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 
-/**
- * CONTRACT-SPEC §4: every arm one interaction's control could have carried,
- * keyed by interaction id (CONTRACT-SPEC §5).  An armless family is
- * reported, never filled with an invented disjunct.
- */
 public final class Family extends Value {
     private final String interactionId;
     private final List<Arm> arms;

@@ -25,7 +25,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/** IDENTITY §9: a case declaration is resolved against the seed session. */
 public class PlanTest {
     private static final String REGION = "REGION.53092d3e";
     private static final NodeId DN0 = NodeId.parse("hdfs-17897/dn0#epoch0");
@@ -39,18 +38,13 @@ public class PlanTest {
             + "\"observed\":true,\"primitiveValue\":\"false\","
             + "\"eventSeq\":7,\"callId\":3}";
 
-    /**
-     * The k-th match in SEED order, on the declared component, under the
-     * declared api -- and a declaration this recording cannot satisfy is a
-     * refusal that says what the seed did hold.
-     */
     @Test
     public void aDeclarationNamesTheKthMatchInSeedOrder() {
         List<ActivationRow> seed = new ArrayList<ActivationRow>();
         OccurrenceAddress first = anchored(DN0, 1);
         OccurrenceAddress second = anchored(DN0, 2);
-        seed.add(activation(anchored(DN1, 1)));     // another component
-        seed.add(activation(tick(DN0)));            // no message started it
+        seed.add(activation(anchored(DN1, 1)));
+        seed.add(activation(tick(DN0)));
         seed.add(activation(first));
         seed.add(activation(second));
 
@@ -58,22 +52,14 @@ public class PlanTest {
                 + "@hdfs-17897/client#epoch0/striped-file-checksum#2";
         assertEquals(second, SelectorResolution.resolve(declared, seed));
 
-        // The daemon tick and the other component are not candidates: one was
-        // started by no message, the other ran somewhere else.  So the FIRST
-        // match under that api is the one on dn0, not the one on dn1.
         assertEquals(first, SelectorResolution.resolve(
                 DN0.render() + "/region/" + REGION
                         + "@hdfs-17897/client#epoch0/striped-file-checksum#1",
                 seed));
 
-        // A declaration with no api takes every occurrence of the region on
-        // that component, tick included, still in seed order.
         assertEquals(tick(DN0), SelectorResolution.resolve(
                 DN0.render() + "/region/" + REGION + "#1", seed));
 
-        // An address that is already resolved passes through untouched, which
-        // is what a re-run hands back out of a previous manifest; declared,
-        // it names that occurrence and no other.
         assertEquals(second,
                 SelectorResolution.resolve(second.render(), seed));
         assertTrue(RuntimeWorkflowDiscovery.declares(second.render(),
@@ -81,10 +67,6 @@ public class PlanTest {
         assertFalse(RuntimeWorkflowDiscovery.declares(second.render(),
                 first.render()));
 
-        // k beyond what the seed holds, or a node the seed never ran the
-        // region on, is a case pointed at an execution this recording does
-        // not contain.  It degrades rather than throwing, so DECIDE reports
-        // DECLARATION_MISSING out of the artifact.
         for (String missing : new String[] {DN0.render() + "/region/"
                 + REGION + "#9", DN9.render() + "/region/" + REGION + "#1"}) {
             OccurrenceAddress absent = SelectorResolution.resolve(missing,
@@ -94,12 +76,6 @@ public class PlanTest {
         }
     }
 
-    /**
-     * The declared occurrence is one the window holds back to its root: a
-     * target on a message sent before the window (round HG2's hdfs-adhoc-19,
-     * a block report answered inside the recording's window and before the
-     * replay's) is never the question, and none other is a named refusal.
-     */
     @Test
     public void aDeclarationResolvesAmongTargetsTheWindowHoldsToTheirRoot()
             throws Exception {
@@ -151,12 +127,6 @@ public class PlanTest {
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of(CHECKSUM, 0))));
     }
-    /**
-     * GROW's planner (PIPELINE §7.8): an UNPLANNED_INPUT row's invocation is
-     * planned in its own task's row -- the input it names, again, as a root
-     * of its own -- never as a second row of the occurrence, once, and a row
-     * naming no planned input is refused.
-     */
     @Test
     public void anUnplannedInvocationIsAnInputOfItsTask() throws Exception {
         List<JsonObject> plan = Arrays.asList(task("TASK.t", MARKER),

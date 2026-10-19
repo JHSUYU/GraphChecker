@@ -10,8 +10,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/** Soot field declaration and field-path parser; a value parser, not an
- *  admission layer. */
 public final class FieldPathSpec {
     private static final Pattern DECLARED_FIELD = Pattern.compile(
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
@@ -27,9 +25,6 @@ public final class FieldPathSpec {
                 : null;
     }
 
-    /** Dotted label of a field path; "" when empty or any segment is blank. A
-     *  blank segment names no field ({@code a..b} would match no written
-     *  symbol); Runtime and Solver share this so their labels cannot drift. */
     public static String join(List<String> path) {
         if (path == null || path.isEmpty()) return "";
         StringBuilder result = new StringBuilder();
@@ -47,7 +42,6 @@ public final class FieldPathSpec {
         return strings(object == null ? null : object.get(member));
     }
 
-    /** Non-blank trimmed strings of an array; empty when any entry is not. */
     private static List<String> strings(JsonElement value) {
         if (value == null || !value.isJsonArray()) {
             return Collections.emptyList();

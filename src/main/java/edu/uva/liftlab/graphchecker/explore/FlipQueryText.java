@@ -13,28 +13,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** One flip query as text: {@link FlipQuery} decides what it says; this only
- *  lays it out (header comments, reached preamble, own variables, definitions,
- *  assertions), asking the builder's {@link Scope} about renaming. */
 final class FlipQueryText {
 
-    /** What the query knows about a recorded name; the builder answers. */
     interface Scope {
-        /** This session's recorded symbol -> the query's own variable. */
         Map<String, String> renamesOf(String sessionId);
 
-        /** Whether this query states that recorded name of that session. */
         boolean stated(String name, String sessionId);
     }
 
     private FlipQueryText() {
     }
 
-    /** Exactly the declarations these texts reach, in this query's
-     *  variables, by the name each declares. A cached lowering holds many
-     *  more; stating them would blur what the query rests on. One per name:
-     *  equal minted names mean equal closed terms.
-     */
     static Map<String, String> statedDeclarations(Corpus corpus,
                                                   Set<String> lowered,
                                                   Scope scope,
@@ -47,8 +36,6 @@ final class FlipQueryText {
             Map<String, String> rename = scope.renamesOf(sessionId);
             for (SmtLowering.Declaration declaration
                     : lowering.reachedBy(named)) {
-                // A recorded symbol the query bound is declared once, by the
-                // query.
                 if (rename.containsKey(declaration.name)
                         || stated.containsKey(declaration.name)) {
                     continue;
@@ -86,8 +73,6 @@ final class FlipQueryText {
             text.append("; ").append(entry.getKey()).append(" = ")
                     .append(entry.getValue()).append('\n');
         }
-        // Preamble: exactly what assertions, declarations and variable sorts
-        // reach (SmtNames#reachedPreamble, same rule as the composed query).
         Collection<String> declarations = statedDeclarations(corpus, lowered,
                 scope, assertions).values();
         List<String> reaching = new ArrayList<String>(assertions);
@@ -95,7 +80,6 @@ final class FlipQueryText {
         reaching.addAll(sorts.values());
         Set<String> opening = new LinkedHashSet<String>();
         SmtNames.Named named = SmtNames.named(reaching);
-        // Each lowering offers the same preamble: reached once per distinct one.
         Set<List<String>> offered = new LinkedHashSet<List<String>>();
         for (String sessionId : lowered) {
             SmtLowering lowering = corpus.lowering(sessionId);
@@ -107,8 +91,6 @@ final class FlipQueryText {
         }
         if (opening.isEmpty()) opening.add("(set-logic ALL)");
         for (String line : opening) text.append(line).append('\n');
-        // Own variables before definitions: a define-fun over an undeclared
-        // constant errors and cascades.
         for (Map.Entry<String, String> entry : sorts.entrySet()) {
             text.append("(declare-fun ").append(entry.getKey())
                     .append(" () ").append(entry.getValue()).append(")\n");
@@ -119,8 +101,6 @@ final class FlipQueryText {
         for (String assertion : assertions) {
             text.append("(assert ").append(assertion).append(")\n");
         }
-        // The nearest world (FlipQuery.Builder#nearest): least movement of
-        // roots and clocks.
         if (!nearest.isEmpty()) {
             StringBuilder distance = new StringBuilder();
             for (Map.Entry<String, String> entry : nearest.entrySet()) {
@@ -131,9 +111,6 @@ final class FlipQueryText {
                     ? distance.substring(1) : "(+" + distance + ")")
                     .append(")\n");
         }
-        // No check-sat: the ask is Z3#modelQuery's, so the published query is
-        // the one solved. Illegal bare names are quoted once, as in the
-        // composed query.
         return SmtNames.legalSymbols(text.toString());
     }
 }

@@ -61,7 +61,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
-import annotated  # noqa: E402
+import annotated
 
 KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5}
 BUCKETS = ((1e9, "<=1s"), (60e9, "<=1min"), (3600e9, "<=1h"))

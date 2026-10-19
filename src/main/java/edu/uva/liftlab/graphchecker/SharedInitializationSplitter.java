@@ -30,24 +30,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Soot's {@code jb.sils} ({@code SharedInitializationLocalSplitter}), with
- * its choices taken in body order.
- *
- * <p>The phase gives each use of a local that only constants define its own
- * copy of the local, assigned right after each of those constants, so the
- * typing can give the uses different types.  Soot keeps a local's uses in a
- * hash set of objects it has just made, so which copy a use got, and in
- * which order the copies' assignments followed the constant, followed
- * identity hashes: two runs of one jar named {@code
- * Dispatcher.shouldIgnore}'s locals otherwise.  This one runs the same passes
- * before the split and makes the same units, the locals taken in the order
- * of their first use and each local's uses in body order.</p>
- */
 final class SharedInitializationSplitter extends BodyTransformer {
     private static final String PHASE = "jb.sils";
 
-    /** Stands in for Soot's phase; before any body is built. */
     static void install() {
         Pack jb = PackManager.v().getPack("jb");
         if (!jb.remove(PHASE)) {
@@ -60,7 +45,6 @@ final class SharedInitializationSplitter extends BodyTransformer {
     @Override
     protected void internalTransform(Body body, String phase,
                                      Map<String, String> options) {
-        // Soot's passes before the split, as its phase runs them.
         CopyPropagator.v().transform(body);
         ConstantPropagatorAndFolder.v().transform(body);
         DexNullThrowTransformer.v().transform(body);
@@ -77,8 +61,6 @@ final class SharedInitializationSplitter extends BodyTransformer {
                                 Scene.v().getDefaultThrowAnalysis(),
                                 Options.v().omit_excepting_unit_edges()),
                         true);
-        // Per local, in order of its first use: each use that only
-        // constants reach, with them.
         Map<Local, List<Map.Entry<Unit, List<Unit>>>> clusters =
                 new LinkedHashMap<>();
         for (Unit unit : body.getUnits()) {

@@ -10,31 +10,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
-/**
- * The JDK container contracts, by interface (R3-REFCONT SS2.1): what a call
- * on a container does is its interface's -- a query reads the container's
- * state, a mutation changes it -- whatever class answers it.  Which
- * interfaces a class honors is the Soot hierarchy's answer where the caller
- * has one, else the fixed list of JDK classes below.  Whether the VM models
- * the class (its capability, and an application subclass is refused) is
- * decided at run time, never here: the static side classifies by interface
- * only.  A call is named by its name and parameters, never its return type,
- * which an implementation narrows ({@code ConcurrentHashMap.keySet()} returns
- * a {@code KeySetView}).
- *
- * <p>A stream is a query over its source: every call of a {@code
- * java.util.stream} pipeline ({@code BaseStream} and its subtypes) and of
- * {@code Collectors} reads its receiver and its arguments, and a collection
- * hands its state to one by {@code stream()} or {@code parallelStream()}.
- * A functional argument of any of these calls (a filter's predicate, a
- * {@code computeIfAbsent}'s function) is the analyzer's to enter.</p>
- */
 public final class JavaContainerTypes {
     public enum Shape {
         NONE, INDEXED, ASSOCIATIVE
     }
 
-    /** One interface's contract: its shape and the calls it states. */
     private enum Contract {
         MAP(Shape.ASSOCIATIVE), SET(Shape.ASSOCIATIVE), LIST(Shape.INDEXED),
         QUEUE(Shape.INDEXED), DEQUE(Shape.INDEXED), ITERATOR(Shape.NONE),
@@ -42,7 +22,6 @@ public final class JavaContainerTypes {
         STREAM(Shape.NONE, true);
 
         private final Shape shape;
-        /** Every call is a query: a stream pipeline's. */
         private final boolean everyCallQueries;
         private final Set<String> queries = new LinkedHashSet<>();
         private final Set<String> mutations = new LinkedHashSet<>();
@@ -150,11 +129,8 @@ public final class JavaContainerTypes {
                 Collections.<String>emptySet());
     }
 
-    /** The interfaces, each with its contract. */
     private static final Map<String, Contract> INTERFACES =
             new LinkedHashMap<>();
-    /** The JDK classes, each with the contracts it honors: the answer when
-     *  no hierarchy is at hand (COMPOSE reads recorded types). */
     private static final Map<String, Set<Contract>> CLASSES =
             new LinkedHashMap<>();
 
@@ -216,18 +192,10 @@ public final class JavaContainerTypes {
     private JavaContainerTypes() {
     }
 
-    /** The shape of a type by the fixed list alone. */
     public static Shape shape(String type) {
         return shape(type, null);
     }
 
-    /**
-     * The shape of a type: an array is indexed; a map or a set is
-     * associative; a list, queue or deque is indexed.
-     *
-     * @param hierarchy a class's supertypes, itself included, or empty
-     *                  when it is not loaded; null: the fixed list alone
-     */
     public static Shape shape(String type,
                               Function<String, ? extends Collection<String>>
                                       hierarchy) {
@@ -243,8 +211,6 @@ public final class JavaContainerTypes {
         return found;
     }
 
-    /** Whether a call's result is read off its receiver container's state:
-     *  its value depends on the receiver as much as on its arguments. */
     public static boolean query(String signature,
                                 Function<String, ? extends Collection<String>>
                                         hierarchy) {
@@ -259,8 +225,6 @@ public final class JavaContainerTypes {
         return false;
     }
 
-    /** Whether a call changes its receiver container's state, with its
-     *  arguments. */
     public static boolean mutation(String signature,
                                    Function<String, ? extends
                                            Collection<String>> hierarchy) {
@@ -272,7 +236,6 @@ public final class JavaContainerTypes {
         return false;
     }
 
-    /** The contracts a class honors: its own and its supertypes'. */
     private static Set<Contract> contracts(
             String owner,
             Function<String, ? extends Collection<String>> hierarchy) {
@@ -300,7 +263,6 @@ public final class JavaContainerTypes {
         for (String name : names) CLASSES.put(name, contracts);
     }
 
-    /** Calls spelled with {@code K} for {@code java.lang.Object}. */
     private static Set<String> calls(String... calls) {
         Set<String> spelled = new LinkedHashSet<>();
         for (String call : Arrays.asList(calls)) {
@@ -309,7 +271,6 @@ public final class JavaContainerTypes {
         return spelled;
     }
 
-    /** One call: its owner, and its name with its parameter types. */
     private static final class Call {
         private final String owner;
         private final String name;
@@ -319,8 +280,6 @@ public final class JavaContainerTypes {
             this.name = name;
         }
 
-        /** A Soot method signature {@code <owner: ret name(params)>}, or
-         *  null. */
         private static Call parse(String signature) {
             String value = signature == null ? "" : signature.trim();
             int ownerEnd = value.indexOf(':');

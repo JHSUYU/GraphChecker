@@ -20,19 +20,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-/**
- * A ROUND'S GAPS AS THE ROUND SAYS THEM ({@link ExploreMain#round}): each
- * distinct row once, in the order it was first said, rendered and deflated
- * on a thread of their own as the round goes on, never held as rows --
- * SGF8-adhoc-05 round 5 said 345 K gaps, 1 GB of text its planner held to
- * the round's end -- and written whole at its end ({@link #write}), byte for
- * byte the file {@link RowCodec#writeAll} writes of their distinct list,
- * counted by kind for the round's manifest ({@link #byKind}).  A row is its
- * line ({@link RowCodec#writeGap} renders every part), and distinct by its
- * line's 128-bit digest.  One thread says them.
- */
 final class RoundGaps implements Consumer<GapRow>, AutoCloseable {
-    /** How many rows are handed to the writer at once. */
     private static final int BATCH = 1024;
     private static final HashFunction DIGEST = Hashing.murmur3_128();
 
@@ -44,34 +32,27 @@ final class RoundGaps implements Consumer<GapRow>, AutoCloseable {
             });
     private final Path file;
     private final RowCodec.Runs runs;
-    /** The digests of the rows written. */
     private final Digests seen = new Digests();
-    /** kind -> its distinct rows, in the order each kind was first said. */
     private final Map<String, Integer> byKind =
             new LinkedHashMap<String, Integer>();
     private List<GapRow> batch = new ArrayList<GapRow>(BATCH);
-    /** What the writer failed on, thrown at {@link #write}. */
     private volatile Throwable failed;
 
-    /** The gaps of the file {@code file} names (gzip by its name). */
     RoundGaps(Path file) {
         this.file = file;
         this.runs = new RowCodec.Runs(file);
     }
 
-    /** One gap said. */
     @Override
     public void accept(GapRow gap) {
         batch.add(gap);
         if (batch.size() == BATCH) hand();
     }
 
-    /** Gaps said in their order. */
     void addAll(Collection<GapRow> gaps) {
         for (GapRow gap : gaps) accept(gap);
     }
 
-    /** The batch said so far, to the writer. */
     private void hand() {
         if (batch.isEmpty()) return;
         List<GapRow> rows = batch;
@@ -79,7 +60,6 @@ final class RoundGaps implements Consumer<GapRow>, AutoCloseable {
         writer.execute(() -> take(rows));
     }
 
-    /** On the writer: each new row's line into the file's runs. */
     private void take(List<GapRow> rows) {
         if (failed != null) return;
         try {
@@ -97,7 +77,6 @@ final class RoundGaps implements Consumer<GapRow>, AutoCloseable {
         }
     }
 
-    /** Writes the file, once every gap said is in it. */
     void write() throws IOException {
         hand();
         writer.shutdown();
@@ -119,25 +98,20 @@ final class RoundGaps implements Consumer<GapRow>, AutoCloseable {
         runs.write(file);
     }
 
-    /** kind -> how many distinct rows of it the file holds, each kind in
-     *  the order it was first said; whole once {@link #write} returned. */
     Map<String, Integer> byKind() {
         return Collections.unmodifiableMap(byKind);
     }
 
-    /** Ends the writer, whatever the round came to. */
     @Override
     public void close() {
         writer.shutdownNow();
     }
 
-    /** 128-bit digests, two longs each, open addressing. */
     private static final class Digests {
         private long[] slots = new long[2 * 1024];
         private int size;
         private boolean zero;
 
-        /** Whether {@code (high, low)} was not held, holding it. */
         boolean add(long high, long low) {
             if (high == 0 && low == 0) {
                 boolean added = !zero;

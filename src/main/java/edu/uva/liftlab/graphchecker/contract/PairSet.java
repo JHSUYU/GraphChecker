@@ -1,19 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-/**
- * A SET OF PAIRS, each held as its two references -- never as a key spelled
- * of both (a closure walk's paired handoffs, {@code session|symbol}, were
- * 5.8 M strings and 1.7 GB of SGF8-adhoc-05 round 5's planner): open
- * addressing over one array, two slots a pair, a pair equal to another
- * where both its parts are ({@link Object#equals}).  No pair is removed.
- * One thread changes it; it is read while no thread does.
- */
 public final class PairSet {
-    /** first, second, first, second, ...; a free pair's first is null. */
     private Object[] slots = new Object[2 * 8];
     private int size;
 
-    /** Whether it holds {@code (first, second)}. */
     public boolean contains(Object first, Object second) {
         int mask = slots.length / 2 - 1;
         for (int at = hash(first, second) & mask; ; at = (at + 1) & mask) {
@@ -25,8 +15,6 @@ public final class PairSet {
         }
     }
 
-    /** Holds {@code (first, second)}; whether it was not held.  Neither
-     *  part is null. */
     public boolean add(Object first, Object second) {
         if (first == null || second == null) {
             throw new NullPointerException("a pair of " + first + " and "
@@ -38,7 +26,6 @@ public final class PairSet {
         return true;
     }
 
-    /** Holds every pair {@code other} holds. */
     public void addAll(PairSet other) {
         for (int at = 0; at < other.slots.length; at += 2) {
             if (other.slots[at] != null) {
@@ -70,7 +57,6 @@ public final class PairSet {
         slots = larger;
     }
 
-    /** Both parts' hashes, spread ({@link OpenSet#spread}). */
     private static int hash(Object first, Object second) {
         return OpenSet.spread(31 * first.hashCode() + second.hashCode());
     }

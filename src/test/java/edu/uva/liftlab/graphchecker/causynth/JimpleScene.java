@@ -15,14 +15,7 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * A Soot scene stated in Jimple, one class per text, as Soot prints a class:
- * every class a library class unless its text starts {@code application},
- * every method stating a body ({@code { }} for an empty one) given it as
- * its active body.
- */
 public final class JimpleScene {
-    /** The root class, and the declared throws' exception. */
     public static final String OBJECT = "public class java.lang.Object { }";
 
     private static final Pattern NAME = Pattern.compile(
@@ -31,14 +24,12 @@ public final class JimpleScene {
     private JimpleScene() {
     }
 
-    /** Soot reset, phantom references allowed, the classes loaded. */
     public static void load(String... classes) {
         G.reset();
         Options.v().set_allow_phantom_refs(true);
         add(classes);
     }
 
-    /** The classes added to the scene as it stands. */
     public static void add(String... classes) {
         List<SootClass> types = new ArrayList<>();
         List<JimpleAST> parsed = new ArrayList<>();
@@ -72,7 +63,6 @@ public final class JimpleScene {
         }
     }
 
-    /** The method of that signature. */
     public static SootMethod method(String signature) {
         return Scene.v().getMethod(signature);
     }

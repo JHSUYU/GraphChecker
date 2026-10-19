@@ -29,32 +29,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * The wire's far half (SYMBOL-SCOPE §6.3): v_H, the consumer's boundary
- * variable, minted on the value that arrived.
- *
- * <p>After {@link WireExport} attaches the producer's e_p, the element's
- * shadow becomes a FRESH variable, so the two sides are explored
- * independently and joined offline at H; e_p travels on the row, never as a
- * substitution.  Entries: {@link #mintDelivered} (element carried),
- * {@link #mintArrived} (none carried) and
- * {@link #mintAmbient} (outside every selected occurrence -- selection
- * decides whose paths are explored, never whether a value crossed).</p>
- *
- * <p>Identity is {@code (port, consumer occurrence, k-th attach, element
- * path)} only, so the same attach in two replays mints the same variable.
- * For a {@code WIRE_FLOW} port the consumer occurrence is the one the PLAN
- * declares the IN site on, not the live one, and the attached leaf is a
- * field of the carrier ({@link ConcolicRegionRuntime#CARRIER_CLASS}).</p>
- */
 final class HandoffMint {
     private HandoffMint() {
     }
 
-    /**
-     * Mints v_H for a delivery whose message carried an element, attached at
-     * VM event {@code attachEventId}.  Runs with observation paused.
-     */
     static void mintDelivered(CommunicationHandoffSpec site,
                               long attachEventId, Object carrier,
                               String field, String descriptor) {
@@ -63,7 +41,6 @@ final class HandoffMint {
             mintAmbient(site, carrier, field, descriptor);
             return;
         }
-        // Only an element the VM states an expression for is minted on.
         String unstated;
         try {
             Field storage = declaredInstanceField(carrier, CARRIER_CLASS,
@@ -85,10 +62,6 @@ final class HandoffMint {
         mintHandoffVariable(active, site, carrier, field, descriptor);
     }
 
-    /**
-     * Mints v_H at a declared capture whose message carried no element; an
-     * answer is written on the carrier leaf as usual.
-     */
     static void mintArrived(
             CommunicationHandoffSpec site, Object carrier, String field,
             String descriptor) {
@@ -105,14 +78,6 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * The activation this attach belongs to: the innermost live region whose
-     * plan declares this port IN (stable across replays).  Trap: the
-     * innermost live region may not own the site, and filing there reports
-     * one attach twice.  When none declares it the innermost live one
-     * carries the row, reported unplanned (UNPLANNED_HANDOFF); null
-     * only when no region is live.
-     */
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
         return ConcolicRegionRuntime.declaringRegion(
@@ -120,11 +85,6 @@ final class HandoffMint {
                         nonNull(site.portId())));
     }
 
-    /**
-     * Mints v_H on each primitive leaf this attach landed on: one variable per
-     * handoff occurrence (k is part of H), by the configured-source mint
-     * mechanism under a handoff label.
-     */
     private static void mintHandoffVariable(
             ActiveRegion active, CommunicationHandoffSpec site,
             Object carrier, String field, String descriptor) {
@@ -135,16 +95,8 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * Mints v_H at one primitive leaf of one attach.  A reference or array
-     * port is one attach and several variables (e.g. {@code [i].keyId}), each
-     * its own handoff occurrence.
-     */
     private static void mintHandoffLeaf(ActiveRegion active, String portId,
                                         HandoffLeaf leaf) {
-        // H belongs to the declared IN occurrence (#attachConsumerRegion),
-        // not the live one: a CALL_RETURN attach runs in the caller's frame.
-        // k is the OCCURRENCE's count (I3), not the activation's.
         String consumerOccurrenceId = active.activation.occurrenceId;
         String phaseId = handoffMintKey(portId, consumerOccurrenceId,
                 nextAttach(consumerOccurrenceId, portId, leaf.path),
@@ -159,19 +111,13 @@ final class HandoffMint {
         try {
             String recordedValue = ConcolicRegionRuntime.recordedScalar(
                     leaf.field.get(leaf.owner));
-            // Name the endpoint first: an obligation answers an attach by
-            // its endpoint id (CONTRACT-SPEC §3).
             Endpoint consumer = RowRuntime.nextEndpoint(active.d3Address,
                     portId, WireExport.attemptOf(
                             RuntimeTraceContext.current()));
             String answer = consumer == null ? ""
                     : FocusedReplay.answer(consumer.id());
-            // Identity is the indexed path; the VM resolves the bare
-            // field signature.
             if (!answer.isEmpty() && !RootMint.writeModeledField(leaf.owner,
                     leaf.signature(), descriptor, answer)) {
-                // The answer was not written: the same named refusal a
-                // root mint states (#applyFocusedRootAssignment).
                 RowRuntime.gap(GapKind.ASSIGNMENT_UNPLANTED,
                         GapClass.BLOCKING, portId,
                         "the wave's answer for this handoff could not be"
@@ -179,7 +125,6 @@ final class HandoffMint {
                 return;
             }
             if (!answer.isEmpty()) {
-                // The world acts where the answer moves what arrived.
                 FocusedReplay.answered(!recordedValue.equals(ConcolicRegionRuntime
                         .recordedScalar(leaf.field.get(leaf.owner))));
             }
@@ -199,28 +144,12 @@ final class HandoffMint {
         }
     }
 
-    /** What a native reproduction answers at its attaches
-     *  ({@link RecordingPlant}). */
     interface NativeAnswers {
-        /** The answer of the attach {@code endpointId} names, or null. */
         String answer(String endpointId);
 
-        /** One answer written into its leaf, or not. */
         void planted(String endpointId, boolean written);
     }
 
-    /**
-     * A native reproduction's attach: {@code value}, what a call returned at
-     * a port's call-return capture inside {@code consumer} (the occurrence
-     * of a region declaring it IN), carried as the replay's weave carries it
-     * ({@code CausynthPipeline#addCommunicationHandoff}), each primitive leaf
-     * named by the endpoint a replay's attach names it by
-     * ({@link #mintHandoffLeaf}: one per leaf, in the same order, so the
-     * k-th attach of a run is the replay's k-th); a leaf {@code answers}
-     * answers is written as the replay writes it.  Returns the value read
-     * back off the carrier: the answer, or the object its leaves were
-     * written into.
-     */
     static Object answerNatively(String portId, Object value,
                                  OccurrenceAddress consumer,
                                  NativeAnswers answers) {
@@ -242,7 +171,6 @@ final class HandoffMint {
         return readBack(carrier, field);
     }
 
-    /** The carrier a value of its runtime type crosses on. */
     private static ConcolicRegionRuntime.HandoffLeafCarrier carrierOf(
             Object value) {
         if (value instanceof Long) {
@@ -268,7 +196,6 @@ final class HandoffMint {
         return ConcolicRegionRuntime.HandoffLeafCarrier.of(value);
     }
 
-    /** The carrier field a value of its runtime type is the leaf of. */
     private static String leafField(Object value) {
         return value instanceof Long ? "j" : value instanceof Integer ? "i"
                 : value instanceof Boolean ? "z" : value instanceof Float
@@ -287,10 +214,6 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * Names one attach inside {@code active} that minted no v_H: the value
-     * crossed, but no row keys an arm by it.
-     */
     private static void unminted(ActiveRegion active, String portId,
                                  String why) {
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -300,11 +223,6 @@ final class HandoffMint {
                         + " two replays could be joined at: " + why);
     }
 
-    /**
-     * Symbolizes one leaf under {@code label} and reads back its exact VM
-     * root, or null.  {@code active} opens path recording; an ambient mint
-     * (null) records no path.
-     */
     private static JsonObject mintLeaf(ActiveRegion active, HandoffLeaf leaf,
                                        String label) throws Exception {
         ConcolicVmBroker api = engine();
@@ -320,11 +238,6 @@ final class HandoffMint {
 
     private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
 
-    /**
-     * The identity v_H is minted under and its answer looked up by:
-     * {@code (port, consumer occurrence, k, element path)}; empty when any
-     * part is missing.
-     */
     static String handoffMintKey(String portId,
                                          String consumerAddress,
                                          int attachOrdinal,
@@ -339,22 +252,11 @@ final class HandoffMint {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The label the VM mints v_H under.  Never {@code SRC.}: the importer
-     * tells a configured-source root by its {@code _field_SRC.<label>_}
-     * marker.
-     */
     static String mintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + nonNull(portId));
     }
 
-    /**
-     * States one delivered v_H as the consumer endpoint of an interaction,
-     * paired to its producer by the staged VM handle, else by the message it
-     * arrived in, never by a guess.  {@code answer} is the wave's value
-     * written into it, or "".
-     */
     private static void publishAttachRow(Endpoint consumer, String portId,
                                          String symbol, String javaType,
                                          String arrival, String answer) {
@@ -373,11 +275,6 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * Mints v_H at a declared port that arrived outside every selected
-     * occurrence (the entry rule).  Path recording is
-     * deliberately NOT started: an unselected activation records no path.
-     */
     private static void mintAmbient(
             CommunicationHandoffSpec site, Object carrier, String field,
             String descriptor) {
@@ -416,15 +313,9 @@ final class HandoffMint {
         }
     }
 
-    /** k per {@code (occurrence, port, element path)}.  Guarded by itself. */
     private static final Map<String, Integer> ATTACHES =
             new HashMap<String, Integer>();
 
-    /**
-     * k for the next attach of one element at one consumer occurrence.
-     * Counted per OCCURRENCE (I3): a per-activation count restarts in each
-     * activation folding into it, merging distinct elements into one symbol.
-     */
     static int nextAttach(String consumer, String portId,
                           String elementPath) {
         String element = nonNull(consumer) + "\n" + nonNull(portId) + "\n"
@@ -437,22 +328,15 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * The identity an ambient attach mints v_H under: the same key a selected
-     * attach uses, k from {@link #nextAttach}.  Trap: a constant k makes every
-     * element on one port one variable.
-     */
     static String ambientMintKey(String portId, String consumer,
                                  String elementPath) {
         return handoffMintKey(portId, consumer,
                 nextAttach(consumer, portId, elementPath), elementPath);
     }
 
-    /** One primitive leaf of one attach, and how the row names it. */
     private static final class HandoffLeaf {
         private final Object owner;
         private final Field field;
-        /** How the row names this leaf: indexed, so two elements differ. */
         private final String path;
 
         private HandoffLeaf(Object owner, Field field, String path) {
@@ -461,29 +345,19 @@ final class HandoffMint {
             this.path = path;
         }
 
-        /** What the VM resolves on the owner: the bare field signature. */
         private String signature() {
             return exactFieldSignature(field);
         }
     }
 
-    /** How many leaves of one attach are minted before the rest is named. */
     private static final int HANDOFF_LEAF_LIMIT = 64;
 
-    /**
-     * The primitive leaves one attach delivered: the field itself if
-     * primitive, else each element's declared primitive instance fields,
-     * index-qualified.  An array of primitives yields none.  Hitting the cap
-     * is named as a gap, since an unminted leaf is otherwise indistinguishable
-     * from nothing delivered.
-     */
     private static List<HandoffLeaf> handoffLeaves(
             String portId, Object carrier, String field, String descriptor) {
         List<HandoffLeaf> leaves = primitiveLeaves(portId, carrier,
                 declaredInstanceField(carrier, CARRIER_CLASS, field,
                         descriptor));
         if (leaves.isEmpty()) {
-            // No leaf, no v_H: the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     portId,
                     "the delivered element exposes no primitive leaf to mint"
@@ -529,7 +403,6 @@ final class HandoffMint {
         return leaves;
     }
 
-    /** Names one delivery whose boundary variables did not fit the cap. */
     private static void noteTruncatedHandoff(String portId, int minted,
                                              int droppedElements,
                                              int droppedFields) {
@@ -544,11 +417,8 @@ final class HandoffMint {
                         + " later stage can join a handoff at them");
     }
 
-    /** @return how many qualifying leaves the cap left out */
     private static int addPrimitiveLeaves(Object owner, String prefix,
                                           List<HandoffLeaf> leaves) {
-        // Only application objects: a boxed primitive's "value" is a field
-        // no decode reads.
         if (owner.getClass().getName().startsWith("java.")) return 0;
         int dropped = 0;
         for (Field field : owner.getClass().getDeclaredFields()) {
@@ -571,7 +441,6 @@ final class HandoffMint {
         return dropped;
     }
 
-    /** The one exact VM root of a read-back, or null when it is not one. */
     private static JsonObject exactSymbolOf(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject root = expression.getAsJsonObject();

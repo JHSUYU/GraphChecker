@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# prepare-analysis.sh <case-dir> <case-id> -- copies the case's analysis
-# scope, as its case.sh declares it, and its system's (system_scope) into the
-# classes directory the weave reads.  One copy of the helpers for every case.
 set -euo pipefail
 lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
 mkdir -p "${analysis}"
 find "${analysis}" -type f -delete
 
-# copy <root> <path> <exact>: a PREFIX family ("DataNode" is DataNode* in its
-# package), or with exact=true one class and its nested classes only --
-# "DataXceiver" must not pull in DataXceiverServer.
 copy() {
   local root=$1 path=$2 exact=$3 file found=false base
   [[ -d "${root}" ]] || {

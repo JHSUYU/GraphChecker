@@ -18,22 +18,11 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * The declared throw's forcing table (PIPELINE §2): each guard at its fatal
- * arm, each chain guard at its arm toward the guard it controls, a helper's
- * deciding arm whose verdict the guard wants (else its open arm, nested
- * deciders alike, each with the method that calls its helper); a switch
- * guard and a fault call (no arm) are not forced.  SEED writes it on the
- * TARGET_SITE row, the map reads each row's back, and a task takes its own
- * target's.
- */
 public class ForcingTableTest {
     private static final String M = "<a.T: void check(int)>";
     private static final String H = "<a.T: boolean expired()>";
     private static final String N = "<a.T: int age()>";
     private static final String CALLER = "<a.T: void run(int)>";
-    /** A branchless helper between {@link #H}'s test and {@link #N}: N's
-     *  deciders are called from it, not from H. */
     private static final String X = "<a.T: boolean aged()>";
 
     @Rule
@@ -42,9 +31,6 @@ public class ForcingTableTest {
     @Test
     public void theTableNamesTheArmOfEveryBranchOnTheWayToTheThrow()
             throws IOException {
-        // check: u3 a switch, u5 a fault call,
-        // u8 `if (!expired())` deciding the throw at u9; expired(): u1 tests
-        // age(), whose u2 decides; run: u4 calls check.
         String row = "{\"schemaVersion\":1,\"kind\":\"STATIC_SCOPE_SITE\","
                 + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
                 + "\"siteId\":\"" + M + "#u9\",\"vmSite\":\"\","
@@ -87,7 +73,6 @@ public class ForcingTableTest {
         }
         assertEquals("one arm per site", 4, table.size());
 
-        // Stated on the row, read back by the map whole, under its site.
         JsonArray force = ForcingTable.of(target,
                 Collections.<String>emptySet());
         assertEquals(force, read(row.substring(0, row.length() - 1)
@@ -105,21 +90,6 @@ public class ForcingTableTest {
                 + "\"force\":" + force + "}";
     }
 
-    /**
-     * An {@code assert} before the throw: its {@code $assertionsDisabled}
-     * test (u2) is a chain guard on its skip arm, yet its other arm reaches
-     * the throw too, through the assert's own test (u3): it is passable,
-     * never forced, so a forced world with assertions on states no {@code
-     * false} for it (solr-adhoc-07 F2P2: ZkController.register's two
-     * asserts).  The assert's test is forced at its arm.  Of the throw's own
-     * guards, {@code if (x > 5 || x < -5)}, u5's healthy arm reaches the
-     * throw through u6: passable too, left to its operands, and a FORCE run
-     * goes on to u6 when it takes that arm (runtime.ForcedArms#reachedTarget;
-     * solr-18406 F2V3: getAndSaveCommitPoint's u11); u6, at its fatal arm,
-     * is forced.  check(int x): u1 z0 = $assertionsDisabled; u2 if z0 goto
-     * u5; u3 if x != 0 goto u5; u4 return; u5 if x > 5 goto u7; u6 if x >= -5
-     * goto u9; u7 r1 = new X (the throw); u8 throw r1; u9 return.
-     */
     @Test
     public void aBranchBothOfWhoseArmsReachTheThrowIsNeverForced()
             throws IOException {
@@ -167,7 +137,6 @@ public class ForcingTableTest {
         }
     }
 
-    /** {@link #aBranchBothOfWhoseArmsReachTheThrowIsNeverForced}'s body. */
     private static void assertBody() {
         JimpleScene.load("application public class a.A { static final"
                 + " boolean $assertionsDisabled; public void check(int) {"

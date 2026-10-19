@@ -25,16 +25,6 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
-/**
- * The values messages carry, one port per value: a port is one carried value
- * with every capture that writes it and every capture that reads it.  A
- * declared row states one of each; direction and transport are no part of
- * it, since the recording binds each capture to the exchange it ran in and
- * replay keys everything on the port id.  A port derived from a protobuf
- * message names the message field it is carried in ({@link
- * WireFlow#codecField}): the IPC door walks the message for it
- * (SYMBOL-SCOPE §6.3).
- */
 public final class WireFlowCatalog {
     static final String PROPERTY = "causynth.communication.mappings";
     static final String KIND = "WIRE_FLOW";
@@ -67,14 +57,6 @@ public final class WireFlowCatalog {
         return new WireFlowCatalog(flows);
     }
 
-    /**
-     * Whether a declared flow is this program's: a system's mapping file
-     * declares its protocol's flows once for every case, and a flow joins a
-     * producer and a consumer, so a program that does not hold both methods
-     * a row names (concrete) carries none of its values end to end.  Such a
-     * row is skipped by name in the static pass's log; a row the program
-     * holds whole is parsed, and refused by name if it is malformed.
-     */
     static boolean applies(JsonObject row, Map<String, SootMethod> methods) {
         for (String side : new String[] {"producer", "consumer"}) {
             JsonElement capture = row.get(side);
@@ -97,7 +79,6 @@ public final class WireFlowCatalog {
         }
     }
 
-    /** The mapping file's rows, read once; none when the case maps nothing. */
     private static volatile List<Row> rows;
 
     private static List<Row> rows() throws IOException {
@@ -143,8 +124,6 @@ public final class WireFlowCatalog {
         return flows;
     }
 
-    /** Whether a declared port holds a capture at {@code site}: it is that
-     *  port's, and no rule derives another there. */
     boolean captures(CaptureSite site) {
         for (WireFlow flow : flows) {
             if (flow.captures(site)) return true;
@@ -156,7 +135,6 @@ public final class WireFlowCatalog {
                                   Map<String, SootMethod> methods) {
         if (integer(row, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(row, "kind"))) {
-            // Refused, never skipped: a skipped flow reads as "never sent".
             throw new IllegalArgumentException(
                     "communication mapping " + string(row, "id")
                             + " states schemaVersion "
@@ -207,27 +185,15 @@ public final class WireFlowCatalog {
                 ? fallback : value.getAsInt();
     }
 
-    /**
-     * One port: every producer exports into {@link #portId} and every
-     * consumer attaches from it, so a capture site belongs to one port.
-     */
     static final class WireFlow {
         final String id;
         final String javaType;
         final String exchangeSiteKey;
         final String portId;
-        /**
-         * The protobuf message field the value is carried in ({@code <M: T
-         * f>}), or "" for a declared row: a door walks the message for it,
-         * exporting from the field and binding the decoded element to the
-         * message, and its producer captures (the builder's setter calls)
-         * are the slice's and the regions', never woven.
-         */
         final String codecField;
         final List<CaptureSite> producers = new ArrayList<>();
         final List<CaptureSite> consumers = new ArrayList<>();
 
-        /** A port named {@code id}, keyed by {@code identity}. */
         WireFlow(String id, String identity, String javaType,
                  String codecField) {
             this.id = id;
@@ -267,7 +233,6 @@ public final class WireFlowCatalog {
             return row;
         }
 
-        /** In site order: a derived port gains consumers in worklist order. */
         private static List<Map<String, Object>> rows(
                 List<CaptureSite> captures) {
             List<CaptureSite> ordered = new ArrayList<>(captures);
@@ -301,7 +266,6 @@ public final class WireFlowCatalog {
             this.javaType = javaType;
         }
 
-        /** A call capture a rule found. */
         static CaptureSite call(String method, String kind, int index,
                                 String callee, int unitIndex,
                                 String javaType) {
@@ -389,7 +353,6 @@ public final class WireFlowCatalog {
                     : SiteId.of(method, unitIndex);
         }
 
-        /** Where the capture is: its site, kind and argument. */
         String site() {
             return kind + "@" + siteId() + "#" + index;
         }

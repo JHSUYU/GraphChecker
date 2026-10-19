@@ -9,39 +9,12 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
-/**
- * Whether a waiting thread's loop reads a CLOCK root: the scope map
- * ({@code static_scope_map.jsonl}) declares a CLOCK root -- a {@code
- * DECLARED_SITE} of {@code inputKind} CLOCK -- in a method on the thread's
- * stack at the wait.  Such a loop waits for time only the clock brings (a
- * rule's expiry), so {@code ScheduleLog} never holds it for the order to
- * move.
- *
- * <p>The methods are installed when the workload session opens, from the
- * rows {@link GuardedStoreSites#install} reads, before the workload runs.
- * Read at the first wait instead, the 3 MB map of an HDFS ad-hoc check held
- * a BPServiceActor's first tick 2-3 s on the concolic VM mid-run, and every
- * other thread's first wait behind it (hdfs ad-hoc FileChecksumHelper-496),
- * long enough for an IPC caller's one-second hand-off to its sender thread
- * to time out and the replay to leave the recorded order.</p>
- *
- * <p>PRECISION.  By method, along the stack.  A frame whose method reads a
- * clock root anywhere counts, inside the loop or not: the wait then runs as
- * it did before any poll was held, so this errs toward the old behavior.  A
- * loop that reads the root in a callee returned before the wait ({@code
- * while (!rule.isExpired()) sleep(..)}) is not seen, and polls once per move
- * of the order or per let-go.  Only the fatal slice's clocks are roots: a
- * loop over another clock (a {@code TimeOut} the workload bounds) is a poll
- * like any other.</p>
- */
 final class ClockLoops {
-    /** {@code class#method} of every method declaring a CLOCK root. */
     private static volatile Set<String> methods = Collections.emptySet();
 
     private ClockLoops() {
     }
 
-    /** Whether a frame of {@code stack} is a method declaring a CLOCK root. */
     static boolean reads(StackTraceElement[] stack) {
         Set<String> declared = methods;
         if (declared.isEmpty()) return false;
@@ -54,7 +27,6 @@ final class ClockLoops {
         return false;
     }
 
-    /** Installs the CLOCK methods of the session's scope map rows. */
     static void install(List<JsonObject> rows) {
         Set<String> found = new HashSet<String>();
         for (JsonObject row : rows) {
@@ -64,7 +36,6 @@ final class ClockLoops {
         methods = found;
     }
 
-    /** {@code class#method} of a CLOCK root row's {@code vmSite}, or "". */
     static String clockMethod(JsonObject row) {
         if (!StaticScopeMap.SITE_KIND.equals(primitiveString(row, "kind"))
                 || !StaticScopeMap.DECLARED_SITE.equals(

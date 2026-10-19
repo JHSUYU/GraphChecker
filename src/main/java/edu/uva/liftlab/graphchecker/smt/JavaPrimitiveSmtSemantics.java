@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
-/** Shared SMT semantics for Java's integral computational types. */
 public final class JavaPrimitiveSmtSemantics {
     public static final String INT_WRAP_DEFINITION =
             "(define-fun java_int_wrap ((i Int)) Int"
@@ -24,7 +23,6 @@ public final class JavaPrimitiveSmtSemantics {
         JAVA_LONG
     }
 
-    /** Java's two binary IEEE-754 computational formats. */
     public enum FloatingKind {
         NONE,
         JAVA_FLOAT,
@@ -47,31 +45,16 @@ public final class JavaPrimitiveSmtSemantics {
     private JavaPrimitiveSmtSemantics() {
     }
 
-    /** {@code Long.MAX_VALUE}, as an SMT-LIB numeral. */
     private static final String JAVA_LONG_MAX = "9223372036854775807";
 
-    /**
-     * A CLOCK cell's domain {@code [floor, ceiling]} in its ticks, the one spelling
-     * for {@code explore.FlipQuery} and {@code compose.Composer}.  The floor
-     * is the cell's own reading (a clock never turns back); the ceiling is
-     * {@link #clockSkewCeiling}.  Both bounds are needed: no ceiling lets z3
-     * pass {@code 2^63}, a floor of 0 lets it park models near 1970.
-     */
     public static String clockDomain(String variable, String floor,
                                      String ceiling) {
         return "(and (>= " + variable + " " + floor + ") (<= " + variable
                 + " " + ceiling + "))";
     }
 
-    /** Default forward clock window, 30 days; override in root-domains.jsonl. */
     public static final long CLOCK_SKEW_WINDOW_NANOS = TimeUnit.DAYS.toNanos(30);
 
-    /**
-     * One span of time in the ticks of a clock whose tick is {@code
-     * clockNanos} nanoseconds ({@code RootMintRow#clockNanos}).  In
-     * milliseconds for every clock, a {@code nanoTime} reading could move
-     * 2.6 seconds, never the hour of SOLR-18406's commit reservation.
-     */
     public static long clockTicks(long nanos, long clockNanos) {
         if (clockNanos <= 0L) {
             throw new IllegalArgumentException("a clock's tick is a positive"
@@ -80,12 +63,6 @@ public final class JavaPrimitiveSmtSemantics {
         return nanos / clockNanos;
     }
 
-    /**
-     * {@code reading + } {@link #CLOCK_SKEW_WINDOW_NANOS} in the clock's
-     * ticks.  Trap: never {@code Long.MAX_VALUE} when a reading exists --
-     * the SMT sum cannot wrap but the JVM's does, so a flip would be
-     * admitted by overflow.
-     */
     public static String clockSkewCeiling(String reading, long clockNanos) {
         if (reading == null || reading.trim().isEmpty()) {
             return JAVA_LONG_MAX;
@@ -104,13 +81,11 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
-    /** Whether this decimal is a value a Java {@code long} can hold. */
     public static boolean fitsJavaLong(BigInteger value) {
         return value != null
                 && value.bitLength() < Long.SIZE;
     }
 
-    /** Normalizes a source type or VM name to one JVM descriptor. */
     public static String javaTypeDescriptor(String javaType) {
         String value = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
@@ -143,10 +118,6 @@ public final class JavaPrimitiveSmtSemantics {
         return result.append(descriptor).toString();
     }
 
-    /**
-     * THE type-name normalisation (shell removed, dotted), shared by
-     * {@link JavaPrimitiveBoxing} and {@link JavaContainerTypes}.
-     */
     public static String typeName(String javaType) {
         String value = javaType == null ? "" : javaType.trim();
         if (value.startsWith("L") && value.endsWith(";")) {
@@ -155,7 +126,6 @@ public final class JavaPrimitiveSmtSemantics {
         return value.replace('/', '.');
     }
 
-    /** Whether one Java type name IS a primitive (not a wrapper). */
     public static boolean primitive(String javaType) {
         String descriptor = javaTypeDescriptor(javaType);
         return descriptor.length() == 1 && "ZBCSIJFD".contains(descriptor);
@@ -177,13 +147,8 @@ public final class JavaPrimitiveSmtSemantics {
         return FloatingKind.NONE;
     }
 
-    /**
-     * One recorded decimal integer as SMT-LIB spells it ({@code (- N)} when
-     * negative), or "" when the text is not one.
-     */
     public static String integralLiteral(String value) {
         String text = value == null ? "" : value.trim();
-        // An absurdly long run is no value any execution produced.
         if (text.isEmpty() || text.length() > 1024) return "";
         try {
             BigInteger number = new BigInteger(text);
@@ -194,7 +159,6 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
-    /** The VM's F/D literal as raw IEEE bits, parsed exactly as replay does. */
     public static String floatingLiteral(String value, FloatingKind kind) {
         if (kind == null || kind == FloatingKind.NONE || value == null) {
             return null;
@@ -245,13 +209,11 @@ public final class JavaPrimitiveSmtSemantics {
         else if ("@".equals(operator) || "/".equals(operator)) {
             operation = "fp.div";
         } else {
-            // SMT fp.rem is IEEE remainder, not Java's truncating %.
             return null;
         }
         return "(" + operation + " RNE " + left + " " + right + ")";
     }
 
-    /** Exact JVM {@code fcmp*}/{@code dcmp*} result. */
     public static String floatingCompareResult(String left, String right,
                                         boolean nanIsGreater) {
         String nanResult = nanIsGreater ? "1" : "(- 1)";
@@ -261,7 +223,6 @@ public final class JavaPrimitiveSmtSemantics {
                 + ") 1 0)))";
     }
 
-    /** Exact JVM {@code lcmp} result in the shared mathematical-Int model. */
     public static String integralCompareResult(String left, String right) {
         return "(ite (< " + left + " " + right + ") (- 1)"
                 + " (ite (> " + left + " " + right + ") 1 0))";
@@ -291,7 +252,6 @@ public final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
-    /** One Java primitive conversion, with no fresh SMT value. */
     public static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
         String source = javaTypeDescriptor(sourceJavaType);
@@ -345,7 +305,6 @@ public final class JavaPrimitiveSmtSemantics {
                     : value;
         }
         if ("J".equals(target)) {
-            // Every B/C/S/I value is exactly representable as a Java long.
             return value;
         }
         return null;
@@ -407,7 +366,6 @@ public final class JavaPrimitiveSmtSemantics {
         return value;
     }
 
-    /** Returns the runtime value domain of an explicitly typed Java leaf. */
     public static IntegralDomain domainOfJavaType(String javaType) {
         String type = normalize(javaType);
         if ("Z".equals(type) || "java.lang.Boolean".equals(type)) {
@@ -436,7 +394,6 @@ public final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
-    /** Java binary numeric promotion, but only when both widths are known. */
     public static IntegralWidth promote(IntegralWidth left, IntegralWidth right) {
         if (left == null || right == null
                 || left == IntegralWidth.NONE
@@ -461,7 +418,6 @@ public final class JavaPrimitiveSmtSemantics {
                 "cannot wrap an ambiguous integral expression");
     }
 
-    /** Exact Java two's-complement lowering for integral bitwise operators. */
     public static String bitwise(String operator, String left, String right,
                           IntegralWidth width) {
         BigInteger constant = integerLiteral(right);
@@ -485,7 +441,6 @@ public final class JavaPrimitiveSmtSemantics {
                 + right + ")))", width);
     }
 
-    /** Exact Java shift lowering, including the JVM shift-distance mask. */
     public static String shift(String operator, String left, String right,
                         IntegralWidth width) {
         BigInteger constant = integerLiteral(right);
@@ -517,7 +472,6 @@ public final class JavaPrimitiveSmtSemantics {
                 + right + " " + bits + "))))", width);
     }
 
-    /** Java {@code /} (JLS 15.17.2): truncates toward zero, unlike SMT div. */
     public static String integralDivision(String left, String right,
                                    IntegralWidth width) {
         return wrap("(let ((java_idiv_a " + left + ")"
@@ -526,7 +480,6 @@ public final class JavaPrimitiveSmtSemantics {
                 + " (- (div (- java_idiv_a) java_idiv_b))))", width);
     }
 
-    /** Java {@code %} (JLS 15.17.3): the dividend's sign, unlike SMT mod. */
     public static String integralRemainder(String left, String right,
                                     IntegralWidth width) {
         return wrap("(let ((java_irem_a " + left + ")"
@@ -535,10 +488,6 @@ public final class JavaPrimitiveSmtSemantics {
                 + " (- (mod (- java_irem_a) java_irem_b))))", width);
     }
 
-    /**
-     * Definedness of Java {@code /} or {@code %}: the divisor is non-zero
-     * (SMT-LIB leaves division by zero uninterpreted; Java throws).
-     */
     public static String integralDivisorDefined(String right) {
         BigInteger literal = integerLiteral(right);
         if (literal != null) {
@@ -547,7 +496,6 @@ public final class JavaPrimitiveSmtSemantics {
         return "(not (= " + right + " 0))";
     }
 
-    /** Exact Java integral complement. */
     public static String complement(String operand, IntegralWidth width) {
         int bits = bits(width);
         return wrap("(bv2int (bvnot ((_ int2bv " + bits + ") "
@@ -561,21 +509,10 @@ public final class JavaPrimitiveSmtSemantics {
                 "cannot lower an ambiguous integral bit operation");
     }
 
-    /** The VM spells {@code iushr}/{@code lushr} as {@code >>u}; Java as {@code >>>}. */
     public static String canonicalVmOperator(String operator) {
         return ">>u".equals(operator) ? ">>>" : operator;
     }
 
-    /**
-     * A bitwise operator against a constant mask, in integer arithmetic: the
-     * operand's unsigned value bound ONCE by a {@code let}, each bit the mask
-     * selects read off it.  Spelled out per bit, the operand's text was
-     * copied once per bit, and an operand that is itself such a term grew
-     * by that factor at every level: hdfs-17960 e2's flip queries were one
-     * 75 MB {@code define-fun} (a snapshot id packed by shifts and masks,
-     * one variable spelled 377,858 times) that took 60-77 s to lower and 6
-     * GB of heap before z3 parsed it.  z3 shares the bound term either way.
-     */
     private static String constantBitwise(String operator, String variable,
                                           BigInteger rawMask,
                                           IntegralWidth width) {
@@ -628,7 +565,6 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
-    /** The descriptor, with its shell removed. */
     private static String normalize(String javaType) {
         return typeName(javaTypeDescriptor(javaType));
     }

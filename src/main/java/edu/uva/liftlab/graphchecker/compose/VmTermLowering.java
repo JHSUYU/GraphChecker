@@ -19,21 +19,10 @@ import java.util.List;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * The SMT lowering vocabulary ({@link Sort}, {@link Term}, {@link Reason},
- * the preamble) and the static helpers {@link SmtLowering} lowers with.
- */
 public final class VmTermLowering {
     private VmTermLowering() {
     }
 
-    /**
-     * One recorded value as an SMT literal of this sort, or "" when it is
-     * none: a Bool {@code true}/{@code false} (the VM's {@code 1}/{@code 0}),
-     * an integral's decimal, a floating value's IEEE bits as the VM records
-     * them, a String's content from its JSON string literal, quoted (Java
-     * null, {@code N}, is no String).
-     */
     public static String received(AttachRow attach) {
         String answered = attach.answeredValue() == null ? ""
                 : attach.answeredValue().trim();
@@ -62,15 +51,12 @@ public final class VmTermLowering {
             String content = ReadRow.stringContent(text);
             return content == null ? "" : VmExpressionIr.quote(content);
         }
-        // A reference's one literal is null; any other is a named object,
-        // a symbol and no literal.
         if (sort == Sort.REF) {
             return VmExpressionIr.SYMBOLIC_NULL.equals(text) ? "nullRef" : "";
         }
         return "";
     }
 
-    /** The same text, spelled the way an SMT symbol may be spelled. */
     public static String smtName(String value) {
         String normalized = (value == null || value.trim().isEmpty()
                 ? "anonymous" : value).replaceAll("[^A-Za-z0-9_]", "_");
@@ -81,14 +67,12 @@ public final class VmTermLowering {
         return normalized;
     }
 
-    /** The SMT sort one lowered Java value carries. */
     public enum Sort {
         BOOL("Bool"), INT("Int"),
         FLOAT32("(_ FloatingPoint 8 24)"),
         FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
         REF("Ref"), VALUE("Value"),
         ARRAY_VALUE("IndexedState"), MAP("AssocState"),
-        /** The solver's "no Java sort is known" sentinel. */
         UNKNOWN("");
 
         public final String smt;
@@ -116,7 +100,6 @@ public final class VmTermLowering {
         return FloatingKind.NONE;
     }
 
-    /** The Java sort one boxed container cell unboxes to. */
     public static ContainerSmtCodec.Sort unboxedCellSort(Sort sort) {
         return sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
                 : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
@@ -126,7 +109,6 @@ public final class VmTermLowering {
                 : ContainerSmtCodec.Sort.VALUE;
     }
 
-    /** The container codec's sort for one lowered value, or null. */
     public static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
         return sort == null || sort == Sort.UNKNOWN ? null
                 : sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
@@ -140,7 +122,6 @@ public final class VmTermLowering {
                 : ContainerSmtCodec.Sort.ASSOCIATIVE;
     }
 
-    /** The lowered sort one container codec value carries. */
     public static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
         return sort == null ? Sort.UNKNOWN
                 : sort == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
@@ -154,7 +135,6 @@ public final class VmTermLowering {
                 : Sort.MAP;
     }
 
-    /** A named refusal reason. */
     public enum Reason {
         UNSUPPORTED_JAVA_NUMERIC_PROMOTION(
                 "UnsupportedJavaNumericPromotion", true),
@@ -163,7 +143,6 @@ public final class VmTermLowering {
                 false),
         MODEL_SEMANTICS_MISSING("MODEL_SEMANTICS_MISSING", false),
 
-        // Binary operators.
         AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH(
                 "AmbiguousJavaIntegralUnaryWidth", false),
         NON_NUMERIC_OR_UNKNOWN_UNARY("NonNumericOrUnknownUnary", false),
@@ -185,17 +164,13 @@ public final class VmTermLowering {
                 "AmbiguousJavaIntegralBinaryWidth", false),
         BINARY_OPERATOR("BinaryOperator", false),
 
-        // Constants.
         INVALID_JAVA_BOOLEAN_LITERAL("InvalidJavaBooleanLiteral", false),
         INVALID_NUMERIC_LITERAL("InvalidNumericLiteral", false),
         UNSUPPORTED_CONSTANT_TYPE("UnsupportedConstantType", false),
 
-        /** A String whose Java nullness this lowering does not know. */
         JAVA_STRING_NULLNESS_UNKNOWN("JavaStringNullnessUnknown", false),
 
-        // Expression dispatch.
         ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
-        /** Named by the expression type alone. */
         UNKNOWN_EXPRESSION_TYPE("", false);
 
         private final String composed;
@@ -206,7 +181,6 @@ public final class VmTermLowering {
             this.composedNamesOrigin = composedNamesOrigin;
         }
 
-        /** The refusal subject: reason, origin if asked for, detail. */
         public String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
@@ -221,7 +195,6 @@ public final class VmTermLowering {
         }
     }
 
-    /** The Java type one VM expression states it evaluates to. */
     public static String expressionJavaType(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
@@ -232,26 +205,15 @@ public final class VmTermLowering {
         return optionalString(object, "_java_type");
     }
 
-    /** str.from_int covers only non-negative integers; Java's decimal
-     *  Integer.toString needs the leading '-' spelled out. */
     public static final String JAVA_INT_TO_STRING =
             "(define-fun java_int_to_string ((i Int)) String"
                     + " (ite (< i 0)"
                     + " (str.++ \"-\" (str.from_int (- i)))"
                     + " (str.from_int i)))";
 
-    /**
-     * Java's {@code String.toLowerCase}/{@code toUpperCase} over ASCII:
-     * each character of {@code s} in turn, A-Z to a-z (a-z to A-Z), every
-     * other character itself.  A recursion z3 unfolds (its
-     * {@code str.replace_all} over a symbolic receiver answers unknown).
-     * Exact only where every character is ASCII, the lowering's
-     * definedness ({@code SmtLowering#asciiCase}).
-     */
     public static final String JAVA_ASCII_LOWER = asciiCase("java_ascii_lower",
             65, 90, "+");
 
-    /** {@link #JAVA_ASCII_LOWER}'s other direction. */
     public static final String JAVA_ASCII_UPPER = asciiCase("java_ascii_upper",
             97, 122, "-");
 
@@ -266,22 +228,10 @@ public final class VmTermLowering {
                 + " (" + name + " (str.substr s 1 (- (str.len s) 1))))))";
     }
 
-    /**
-     * z3's alphabet as Java's: every character of every String a query
-     * names is a UTF-16 code unit, U+0000..U+FFFF, which every Java String
-     * is made of, so a {@code charAt} is a char wherever it is defined and no
-     * query states a range per character read (solr-bugs-snapshot-no-active
-     * Z2K: 13,188 unguarded char-range assertions, 44 of 46 MB, undecided
-     * in 900 s; with this option sat in 1.8 s).  Stated before any string
-     * literal is read.
-     */
     public static final String JAVA_CHARS = "(set-option :encoding bmp)";
 
-    /** The declarations every lowered query opens with. */
     public static List<String> preamble() {
         List<String> lines = new ArrayList<>();
-        // Wrapping arithmetic yields nested "mod 2^32" terms that only z3's
-        // simplex arithmetic closes; a strategy choice, not a meaning change.
         lines.add("(set-option :smt.arith.solver 2)");
         lines.add(JAVA_CHARS);
         lines.add("(declare-sort Ref 0)");
@@ -291,13 +241,10 @@ public final class VmTermLowering {
         return lines;
     }
 
-    /** The conjunction of these predicates, with the trivial ones and the
-     *  outer parentheses of a one-element conjunction removed. */
     public static String and(List<String> terms) {
         return booleanNary(terms, true);
     }
 
-    /** The disjunction of these predicates, likewise flattened. */
     public static String or(List<String> terms) {
         return booleanNary(terms, false);
     }
@@ -320,23 +267,17 @@ public final class VmTermLowering {
         return result.append(')').toString();
     }
 
-    /** One lowered value's Java integral domain, as an SMT predicate. */
     public static String integralRange(String lower, String value, String upper) {
         return "(and (<= " + lower + " " + value + ") (<= " + value + " "
                 + upper + "))";
     }
 
-    /** One lowered VM expression: its SMT text plus its Java-level facts. */
     public static final class Term {
         public final String text;
         public final Sort sort;
         public final IntegralWidth integralWidth;
-        /** Empty when unknown, "false" when a known non-null String, else
-         *  the nullable reference companion Bool. */
         public final String stringNullness;
-        /** Stable provenance used only for Java reference identity. */
         public final String stringReferenceOrigin;
-        /** Java evaluation definedness (notably String dereference guards). */
         public final String precondition;
 
         private Term(String text, Sort sort, IntegralWidth integralWidth,
@@ -353,8 +294,6 @@ public final class VmTermLowering {
             this.precondition = firstNonBlank(precondition, "true");
         }
 
-        /** A term whose String definedness is tracked: an unstated
-         *  nullness on a String means "known non-null". */
         public static Term of(String text, Sort sort) {
             return of(text, sort, IntegralWidth.NONE);
         }
@@ -374,7 +313,6 @@ public final class VmTermLowering {
                     precondition);
         }
 
-        /** A container codec's value: a String's nullness stays unknown. */
         public static Term vm(String text, Sort sort,
                               IntegralWidth integralWidth) {
             return new Term(text, sort, integralWidth, "", "", "true");
@@ -390,8 +328,6 @@ public final class VmTermLowering {
                     stringReferenceOrigin, value);
         }
 
-        /** The same value under another text (a name it is defined as),
-         *  every Java-level fact kept. */
         public Term withText(String value, String nullness) {
             return new Term(value, sort, integralWidth, nullness,
                     stringReferenceOrigin, precondition);

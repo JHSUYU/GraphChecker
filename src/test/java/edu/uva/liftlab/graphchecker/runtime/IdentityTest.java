@@ -15,11 +15,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-/**
- * Where work stands ({@link Identity}): a claimed start, the frames a task
- * runs on, a hop's scope root, the window's counts, and the occurrence
- * unnamed work opens.
- */
 @RunWith(FreshStatics.class)
 public class IdentityTest {
     private static final SourceRef NODE =
@@ -37,14 +32,12 @@ public class IdentityTest {
         RecordingWindow.reset();
     }
 
-    /** Runs {@code work} on a thread of its own and waits for it. */
     private static void on(Runnable work) throws InterruptedException {
         Thread thread = new Thread(work);
         thread.start();
         thread.join(5000L);
     }
 
-    /** {@code work}'s answer on a new thread claiming {@code carrier}. */
     private static <T> T claimed(Object carrier, Function<Object, T> work)
             throws InterruptedException {
         List<T> result = new ArrayList<T>();
@@ -55,8 +48,6 @@ public class IdentityTest {
         return result.get(0);
     }
 
-    /** A queue item carries its putter's scope to whichever consumer takes
-     *  it: one sender serves every node's calls. */
     @Test
     public void aSharedConsumerCarriesEachPuttersScope() throws Exception {
         Object putter = new Object();
@@ -78,12 +69,6 @@ public class IdentityTest {
         assertEquals(NODE, seen[0]);
     }
 
-    /**
-     * An occurrence's events count under the root hop it was opened under,
-     * whatever root hop opens inside it: each turn's send in one occurrence
-     * has an index of its own (HG5A, hdfs-adhoc-21: three heartbeats at one
-     * producer endpoint).  Where no occurrence runs, each turn counts afresh.
-     */
     @Test
     public void aTurnInsideAnOccurrenceRestartsNoCount() {
         String loop = "<a.Actor: void offerService()>#u3";
@@ -125,13 +110,6 @@ public class IdentityTest {
         }
     }
 
-    /**
-     * A daemon whose service loop's one entry no hop named: what it enters
-     * opens no occurrence until a hop names its work; then the outermost
-     * unnamed region opens one under the hop, for as long as the hop
-     * stands, decisions counting from 1 and entries folding into it.  The
-     * region's exit ends it too.  A start made under a scope names its work.
-     */
     @Test
     public void unnamedWorkOpensNoOccurrenceUntilAHopNamesIt()
             throws Exception {
@@ -176,7 +154,6 @@ public class IdentityTest {
         }));
     }
 
-    /** What one region entry opened: its context, or "none". */
     private static String opened(String region) {
         OccurrenceAddress address = Identity.occurrence(DN.key(), region,
                 true);

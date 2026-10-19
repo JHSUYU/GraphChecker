@@ -40,49 +40,15 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTyp
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * Root minting (SYMBOL-SCOPE §4): where a root's value comes from, at every
- * cell a plan can declare.
- *
- * <p>Six mint shapes (root argument, helper argument or local, exact
- * {@code getstatic}, heap field, receiver field, configured source), one
- * rule: the VM is the authority.  A propagated expression is kept
- * ({@link #retainPropagatedInput}), a container keeps its own expression
- * ({@link #declaredContainerCell}), a cut port is never minted on
- * ({@link #observeCutPortWithoutMinting}); only the rest becomes a symbol.</p>
- *
- * <p>ONE PLACE DECIDES A MINT'S VALUE: {@link #focusedRootValue}, on the
- * occurrence the RECORDING minted at.  Woven hook names stay in
- * {@link ConcolicRegionRuntime} as delegates.</p>
- */
 final class RootMint {
-    /**
-     * The clock roots each occurrence has read, as "owner address|root id":
-     * a root is one clock SITE, and an occurrence's root is that site's
-     * first reading there ({@link #materializePrimitiveValue}).
-     */
     private static final Set<String> CLOCK_READINGS =
             ConcurrentHashMap.newKeySet();
-    /**
-     * The value each configuration root's symbol stands for in this JVM:
-     * its first mint's.  The symbol is the key's, one per JVM (SYMBOL-SCOPE
-     * §4.3), so it holds ONE value ({@link #configurationAgrees}).
-     */
     private static final Map<String, String> CONFIGURATIONS =
             new ConcurrentHashMap<>();
 
     private RootMint() {
     }
 
-    /**
-     * Whether a mint of configuration {@code rootId} that runs at {@code
-     * value} may carry the root's symbol: the first mint of the root in this
-     * JVM fixes the value its symbol stands for, and a later mint at another
-     * value -- another default of an unset key, another node's
-     * configuration -- would state two values for one symbol, which a
-     * witness could plant one perturbation for.  That read is read
-     * concretely, named.
-     */
     static boolean configurationAgrees(String rootId, String value,
                                        String where) {
         String standing = CONFIGURATIONS.putIfAbsent(nonNull(rootId),
@@ -98,7 +64,6 @@ final class RootMint {
         return false;
     }
 
-    /** Called once per Java argument right after region entry. */
     static void symbolizeArgument(long token, int argumentIndex,
                                   Object value) {
         ActiveRegion active = ConcolicRegionRuntime.ownerRegion(token);
@@ -125,7 +90,6 @@ final class RootMint {
         }
     }
 
-    /** Symbolizes one scheduler-selected helper-method argument in-region. */
     static void symbolizeMethodArgument(String method, int argumentIndex,
                                         Object value) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
@@ -146,11 +110,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * Mints the declared root argument before Java control flow consumes it;
-     * Soot writes the result back to the parameter local.  Only a primitive
-     * becomes a symbol; everything else passes through.
-     */
     static Object materializeArgument(long token, int argumentIndex,
                                       Object boxedOrReference) {
         ActiveRegion active = ConcolicRegionRuntime.ownerRegion(token);
@@ -166,7 +125,6 @@ final class RootMint {
         return boxedOrReference;
     }
 
-    /** Mints a declared live-in at an exact in-region helper parameter. */
     static Object materializeMethodArgument(String method, int argumentIndex,
                                             Object boxedOrReference) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
@@ -188,7 +146,6 @@ final class RootMint {
         return boxedOrReference;
     }
 
-    /** Materializes a reference-valued live-in at its defining Jimple local. */
     static Object materializeReference(String method, int unitIndex,
                                               String local, Object value) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
@@ -217,10 +174,6 @@ final class RootMint {
         return value;
     }
 
-    /**
-     * Materializes a primitive live-in as a fresh box, which Soot unboxes
-     * back into the local so the symbolic expression reaches the branch.
-     */
     static Object materializePrimitive(String method, int unitIndex,
                                               String local,
                                               Object boxedValue) {
@@ -249,20 +202,8 @@ final class RootMint {
         return boxedValue;
     }
 
-    /**
-     * A planned marker of a door that roots no region (a demanded or a
-     * data-flow door, LibraryCatalog#rootsNothing) called at an invocation its task
-     * plans no input for -- a call only this world makes (solr-adhoc-09: the
-     * second {@code waitForState} after the first timed out) -- runs at its
-     * recorded polarity, concretely, and is named ({@link UnplannedInput}),
-     * so an admitted session that may parent grows it into a root of its own
-     * (PIPELINE §7.8).  Any other input's later call keeps its rule: a clock
-     * read again is a later instant of one root, a configuration one root
-     * per key, an accessor's every read its own.
-     */
     private static void unplanned(ActiveRegion active, SymbolizeAction marker,
                                   int k) {
-        // Past the bound's next call nothing more is grown or counted.
         if (k > UnplannedInput.MAX + 1) return;
         try {
             UnplannedInput input = UnplannedInput.of(
@@ -276,11 +217,9 @@ final class RootMint {
                             + "parent grows it into the input "
                             + input.grown());
         } catch (RuntimeException unnamed) {
-            // Never thrown into the program: the call ran concretely.
         }
     }
 
-    /** Materializes the primitive read by one exact {@code getstatic}. */
     static Object materializeStaticPrimitiveField(
             String method, int unitIndex, String fieldSignature,
             String fieldName, Object boxedValue) {
@@ -352,7 +291,6 @@ final class RootMint {
                 } catch (Throwable unsymbolized) {
                     carried = null;
                 }
-                // Asked before any write or mint: a propagated value wins.
                 if (retainPropagatedInput(active, action, value, carried,
                         action.symbol, action.fieldPath,
                         leafFieldSignature)) {
@@ -374,8 +312,6 @@ final class RootMint {
                         minted.recordedValue, 0L);
             } catch (Throwable throwable) {
                 readConcretely(active, action.symbol, value);
-                // Stated, never swallowed: a failed mint and an undeclared
-                // cell otherwise read identically from the corpus.
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         firstNonBlank(action.symbol, action.actionDigest),
                         "the declared heap-field input at "
@@ -387,14 +323,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * One read of one declared mint site.
-     *
-     * <p>A configured source is ONE symbol: every read of its site, in any
-     * occurrence or session, binds to it.  Trap: putting the read number in
-     * the label splits one marker into free variables a flip moves only
-     * one of.</p>
-     */
     static final class SourceSiteEntry {
         private final ConfiguredSourcePhaseContract.Occurrence phase;
         final String siteId;
@@ -409,12 +337,10 @@ final class RootMint {
             return phase.phaseId();
         }
 
-        /** HOOK: a tree's hook mints here; CONFIG: the engine's read. */
         RootCategory category() {
             return phase.category();
         }
 
-        /** A CONFIG site's static domain bound, or {@code ""}. */
         String domainMin() {
             return phase.domainMin();
         }
@@ -428,30 +354,12 @@ final class RootMint {
         }
     }
 
-    /**
-     * THE ACTIVATION THAT OWNS THIS MINT, or {@code null} when no admitted
-     * activation of this session does.
-     *
-     * <p>Asked by every mint before it symbolizes: a symbol is answerable
-     * only through the {@link edu.uva.liftlab.graphchecker.contract
-     * .RootMintRow} its activation publishes, so a mint is symbolized AND
-     * rowed, or refused by name.  Resolved at the region that OWNS the root
-     * ({@link ActiveRegion#rootOwner}).  No {@code d3Address} means not
-     * admitted.</p>
-     */
     static ActiveRegion mintOwner(ActiveRegion active, String rootId) {
         if (active == null || !RowRuntime.open()) return null;
         ActiveRegion owner = active.rootOwner(rootId);
         return owner.d3Address == null ? null : owner;
     }
 
-    /**
-     * Refuses one mint nothing admitted owns: the value stays concrete and
-     * the session states MINT_UNATTRIBUTED.  BLOCKING when the obligation
-     * assigns the root (the replay did not run what was asked), DIAGNOSTIC
-     * otherwise.  The other branch publishes the mint row
-     * ({@code RowPlaceholderMint#roots}); never a symbol without a row.
-     */
     static boolean mintUnattributed(ActiveRegion active, String rootId,
                                     String context) {
         if (mintOwner(active, rootId) != null) return false;
@@ -468,29 +376,14 @@ final class RootMint {
         return true;
     }
 
-    /** Whether the obligation this session runs assigns this root. */
     private static boolean assignedByTheWave(String rootId) {
         return !FocusedReplay.rootAssignment(nonNull(rootId)).isEmpty()
                 || FocusedReplay.clockSkew(nonNull(rootId)) != null;
     }
 
-    /**
-     * Mints one symbol for one entry of a declared mint site, or states what
-     * the read held where none was minted ({@link #readConcretely}): an
-     * occurrence run concretely, a mint refused, unattributed or failed.  A
-     * field that already carries a propagated expression keeps it, the row
-     * says {@code reused}, and the root is derived here.
-     *
-     * <p>Called from outside this repository, by the workload's
-     * {@code org.apache.hadoop.ipc.CausynthSymbolicSource}, and by the
-     * engine's configuration read ({@link #configuration}).</p>
-     */
     static boolean configuredSource(
             String sourceId, Object owner, String fieldSignature) {
-        // No owner on this entry is not a gap.
         if (owner == null) return false;
-        // A native reproduction writes the value its plant assigns; no
-        // engine runs there.
         if (RecordingPlant.planting()) {
             RecordingPlant.hook(nonNull(sourceId), owner,
                     nonNull(fieldSignature));
@@ -506,20 +399,15 @@ final class RootMint {
             readConcretely(active, nonNull(sourceId),
                     readExactField(owner, nonNull(fieldSignature)));
         } catch (Throwable ignored) {
-            // Observation must never alter the workload's own outcome.
         } finally {
             ConcolicRegionRuntime.resumeObservation();
         }
         return false;
     }
 
-    /** {@link #configuredSource}'s mint: whether a symbol was minted or
-     *  reused. */
     private static boolean mintConfiguredSource(ActiveRegion active,
                                                 String sourceId, Object owner,
                                                 String fieldSignature) {
-        // A region running concretely contributes literals, never a free
-        // root; asked first, as it owns no mint to refuse.
         if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, sourceId,
                 fieldSignature)) {
             return false;
@@ -533,7 +421,6 @@ final class RootMint {
             if (field == null || !field.getType().isPrimitive()) {
                 return false;
             }
-            // Before the VM is touched: no symbol without a row.
             if (mintUnattributed(active, nonNull(sourceId),
                     "configured source at " + entry.siteId)) {
                 return false;
@@ -542,8 +429,6 @@ final class RootMint {
             String declaringClass = field.getDeclaringClass().getName();
             String descriptor = javaTypeDescriptor(
                     field.getType().getTypeName());
-            // Did the value arrive with its own expression?  A VM with no
-            // answer for an unsymbolized field is answering "no".
             JsonElement carried;
             try {
                 carried = ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
@@ -554,13 +439,8 @@ final class RootMint {
             } catch (Throwable unsymbolized) {
                 carried = null;
             }
-            // #carriesInputAuthority's strict question (a configured source
-            // is a declared primitive): a ReadFrom wrapper of constants is
-            // not an expression of its own.
             boolean reused = VmExpressionIr.carriesSymbolicValue(carried);
             if (reused) RowRuntime.derivedRoot(sourceId);
-            // What the region observed, read before the plant overwrites it;
-            // a configuration's world value is already there (#configuration).
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
             if (!reused && entry.category() == RootCategory.CONFIG
@@ -568,16 +448,11 @@ final class RootMint {
                     entry.siteId)) {
                 return false;
             }
-            // The wave's value is written first: the app's Map re-key reads
-            // it back through this same path.
             String planted = "";
             if (!reused && entry.category() != RootCategory.CONFIG) {
                 planted = applyFocusedRootAssignment(active, nonNull(sourceId),
                         owner, nonNull(fieldSignature), descriptor);
             }
-            // ONE SYMBOL PER DECLARED SOURCE: the label is the source's
-            // alone, so a flip moves every read.  The row is still one per
-            // READ.
             String symbol = ConfiguredSourcePhaseContract.engineLabel(
                     nonNull(sourceId));
             if (!reused) {
@@ -594,9 +469,6 @@ final class RootMint {
                 return false;
             }
             active.pathRecordingStarted = true;
-            // A mint that PLANTED states what it ran at, or the root is
-            // stated twice and differently and Composer refuses the path.
-            // A CLOCK states its reading: FlipQuery bounds the cell by it.
             String stated = !planted.isEmpty()
                     && FocusedReplay.clockSkew(nonNull(sourceId)) == null
                     ? planted : observed;
@@ -605,7 +477,6 @@ final class RootMint {
                     stated);
             return true;
         } catch (Throwable failure) {
-            // Never into the workload's own read; never silent.
             RowRuntime.gap(GapKind.UNSTATED_VALUE,
                     assignedByTheWave(nonNull(sourceId)) ? GapClass.BLOCKING
                             : GapClass.DIAGNOSTIC,
@@ -620,14 +491,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * States what a declared root held where this replay read it and minted
-     * none ({@link RowRuntime#concreteReading}), at the occurrence a mint
-     * there is addressed at ({@code ActiveRegion#mintOccurrence}), so a
-     * reading and another session's mint of one occurrence compare.  A read
-     * no addressed activation owns stands at no occurrence and states
-     * nothing: its MINT_UNATTRIBUTED gap names it ({@link #mintUnattributed}).
-     */
     private static void readConcretely(ActiveRegion active, String rootId,
                                        Object value) {
         if (active == null) return;
@@ -637,15 +500,6 @@ final class RootMint {
                 ConcolicRegionRuntime.recordedScalar(value));
     }
 
-    /**
-     * The engine's configuration read, woven before the {@code getfield} of
-     * a configuration field (SYMBOL-SCOPE §4.3).  A configuration belongs
-     * to the world, not to an occurrence: the value an obligation assigns
-     * it is written at every read of it, on every node, whatever occurrence
-     * runs it; then the read mints as a configured source does, stating
-     * what it read.  It never throws into the workload's read: a failure
-     * is named, BLOCKING where the wave assigns the root.
-     */
     static void configuration(String sourceId, Object owner,
                               String fieldSignature) {
         if (owner == null) return;
@@ -668,9 +522,6 @@ final class RootMint {
         }
     }
 
-    /** Writes a configuration's assigned value into the field one read of
-     *  it loads, unless a mint of this replay stands there already (and
-     *  holds it). */
     private static void plantConfiguration(String sourceId, Object owner,
                                            String fieldSignature,
                                            String value) {
@@ -703,8 +554,6 @@ final class RootMint {
                             + " could not be written into "
                             + fieldSignature);
         } catch (Throwable failure) {
-            // A read of the workload's own field: never perturb it, and
-            // never lose the plant silently.
             RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
                     sourceId, "the wave's assignment for this configuration"
                             + " could not be written into " + fieldSignature
@@ -714,20 +563,10 @@ final class RootMint {
         }
     }
 
-    /**
-     * The value the wave asks of this root at its mint, or {@code ""}.
-     *
-     * <p>The one decision for every mint, applied only on an occurrence of
-     * the FOCUSED SET ({@code FocusedReplay#focused}); elsewhere it would
-     * state what the obligation never asked.  A clock is a SKEW added to
-     * {@code observed}, the instant this run read: every execution reads a
-     * clock fresh, and pinning the recorded instant leaves paths unsat.</p>
-     */
     static String focusedRootValue(ActiveRegion active,
                                            String rootId, Object observed) {
         FocusedReplay.mintReached(rootId);
         if (active == null) return "";
-        // At the region that OWNS the mint, as the recording resolved it.
         ActiveRegion owner = active.rootOwner(rootId);
         if (owner.d3Address == null) return "";
         if (!FocusedReplay.focused(owner.d3Address)) {
@@ -748,18 +587,12 @@ final class RootMint {
         return Long.toString(reading.longValue() + skew.longValue());
     }
 
-    /** One integral reading, or null when the value is not one. */
     private static Long readingOf(Object value) {
         return value instanceof Number && !(value instanceof Float)
                 && !(value instanceof Double)
                 ? Long.valueOf(((Number) value).longValue()) : null;
     }
 
-    /**
-     * Writes that value into the declared field the mint stands on.
-     *
-     * @return the value written (the mint states it), or {@code ""}
-     */
     private static String applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
@@ -768,7 +601,6 @@ final class RootMint {
         if (value.isEmpty()) return "";
         if (!active.mintIsPlaceable(owner)) return "";
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
-            // Filed only on a write: an unplaced one is ASSIGNMENT_UNPLANTED.
             FocusedReplay.planted(sourceId, !value.trim().equals(
                     ConcolicRegionRuntime.recordedScalar(observed)));
             return value;
@@ -784,7 +616,6 @@ final class RootMint {
                                                RuntimeTask task,
                                                ConcolicVmBroker api) {
         for (SymbolizeAction action : task.symbolize) {
-            // Nested heap fields are minted at the field-access hook.
             if (!"RECEIVER_FIELD".equals(action.location)) {
                 continue;
             }
@@ -847,15 +678,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * Mints the scalar leaf of one exact field read: the expression the VM
-     * then carries and the recorded value, or {@code null} when the leaf has
-     * no resolvable declaration.
-     *
-     * <p>Shared by the receiver-field ({@link #symbolizeField}) and heap-field
-     * ({@link #materializeField}) hooks, and where the wave's value reaches a
-     * field mint ({@link #focusedRootValue}).</p>
-     */
     private static MintedLeaf mintExactFieldLeaf(
             ActiveRegion active, SymbolizeAction action,
             ConcolicVmBroker api, Object owner, String leafFieldSignature,
@@ -871,8 +693,6 @@ final class RootMint {
         String descriptor = javaTypeDescriptor(field.type());
         String recorded = fieldMintRecordedValue(active, action, owner,
                 leafFieldSignature, descriptor, value);
-        // Re-read: after a plant the cell holds the wave's value, without
-        // one it holds what was read, so no plant flag is needed.
         Object held = readExactField(owner, leafFieldSignature);
         if (held == MissingValue.INSTANCE) held = value;
         String label = declaring(manualMintLabel(symbol,
@@ -890,7 +710,6 @@ final class RootMint {
         return new MintedLeaf(expression, recorded);
     }
 
-    /** One field leaf's mint: what the VM carries, and what the row may say. */
     private static final class MintedLeaf {
         private final JsonElement expression;
         private final String recordedValue;
@@ -901,15 +720,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * Plants the wave's value at one field mint ({@link #focusedRootValue})
-     * and returns what the mint OBSERVED there.
-     *
-     * <p>A mint row always states the observed value, even when a plant
-     * follows: a root with no stated value has no centre for a relative
-     * domain, so IMPORT refuses it (invariant 8).  The session's valuation is
-     * stated by the FOCUS row only.</p>
-     */
     static String fieldMintRecordedValue(
             ActiveRegion active, SymbolizeAction action, Object owner,
             String leafFieldSignature, String descriptor, Object value) {
@@ -937,8 +747,6 @@ final class RootMint {
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
-        // A configuration's root is its key's (SYMBOL-SCOPE §4.3), else the
-        // input's own.
         boolean config = !action.configSource.isEmpty();
         String root = config ? action.configSource : action.symbol;
         FocusedReplay.mintReached(root);
@@ -955,29 +763,20 @@ final class RootMint {
         } catch (Throwable unsymbolized) {
             carried = null;
         }
-        // A value carrying an expression was computed from a reading, which
-        // ran at its clock already: kept whole, never moved again.
         if (retainPropagatedInput(active, action, concrete, carried,
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        // No node owns it, so it is on no node's clock: the host's reading,
-        // named MINT_UNATTRIBUTED.
         if (mintUnattributed(active, action.symbol,
                 "declared primitive input at "
                         + firstNonBlank(fieldSignature, action.cell))) {
             return concrete;
         }
-        // A clock reads its node's clock (NodeClocks): the host's reading
-        // moved by the jump before it.
         ActiveRegion owner = active.rootOwner(action.symbol);
         String node = owner.d3Address.node().render();
         boolean clock = action.declaresWallClockRead()
                 && readingOf(concrete) != null;
         Object ran = clock ? clockReading(node, action, concrete) : concrete;
-        // The box minted here IS what the region reads back, so the plant
-        // goes into it (#focusedRootValue); a configuration's is the world's,
-        // whatever occurrence reads it.
         String assigned = config ? FocusedReplay.rootAssignment(root)
                 : focusedRootValue(active, action.symbol, concrete);
         Object planted = ran;
@@ -996,10 +795,6 @@ final class RootMint {
             }
         }
         if (config) {
-            // The key's one symbol holds one value in this JVM: a read at
-            // another is read concretely (#configurationAgrees).  One read
-            // twice in one occurrence is the box its first read minted, no
-            // second root row (invariant 8).
             if (!configurationAgrees(root, ConcolicRegionRuntime
                     .recordedScalar(planted), firstNonBlank(action.siteId,
                     action.cell))) {
@@ -1008,27 +803,18 @@ final class RootMint {
             Object read = active.configurationRead(root, action.symbol);
             if (read != null) return read;
         }
-        // A clock site read again in the occurrence that read it (a loop's
-        // bodies share one address) is a later instant of the same root at
-        // the same place: its node's clock, concrete.  One symbol for both
-        // would state two values for one source (IMPORT invariant 8).
         if (action.clock != null && !CLOCK_READINGS.add(owner.address()
                 + "|" + action.symbol)) {
             return ran;
         }
         Object fresh = freshPrimitiveBox(planted);
         try {
-            // A configuration is one symbol per key, in every occurrence and
-            // session; any other input one per occurrence.
             api.symbolizeField(fresh, "value", declaring(config
                     ? ConfiguredSourcePhaseContract.engineLabel(root)
                     : manualMintLabel(action.symbol,
                     active.activation.occurrenceId, true)));
             active.pathRecordingStarted = true;
             JsonElement expression = primitiveBoxExpression(api, fresh);
-            // What the region ran the root at: the box's value.  A clock
-            // also states how far its node's clock ran off the host there,
-            // the reading a skew is relative to (RootMintRow#hostReading).
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
                     ConcolicRegionRuntime.recordedScalar(planted),
@@ -1040,12 +826,9 @@ final class RootMint {
                                 .recordedScalar(ran)));
             }
             if (config) active.configurationMinted(root, fresh);
-            // The region takes a door fault: it ends the exchange in hand,
-            // as a native plant's does (any other root names no marker).
             if (Boolean.TRUE.equals(fresh)) {
                 Identity.doorFaulted(action.marker);
             }
-            // A doors-only occurrence decides its door unpaused.
             if (!action.marker.isEmpty()) {
                 ConcolicRegionRuntime.openDoorWindow(active);
             }
@@ -1062,13 +845,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * The value one declared clock reading runs at: its node's clock
-     * ({@link NodeClocks}), the host's reading moved by the skew of the jump
-     * before it in the recording's order.  The host's own box where there is
-     * none; where the mint's type cannot hold the instant, the host's, named
-     * BLOCKING.
-     */
     static Object clockReading(String node, SymbolizeAction action,
                                Object host) {
         long skew = NodeClocks.skew(node, action.clock, action.eventSeq);
@@ -1087,13 +863,6 @@ final class RootMint {
         return moved;
     }
 
-    /**
-     * How far a minted clock reading ran off the host's reading (the skew
-     * its row states), filed as a jump of its node's clock where the wave
-     * planted it: the clock runs on from there.  A reading the recording
-     * states no event for, or whose clock states no source, is on no
-     * clock's order, and the plant moves it alone (named).
-     */
     static long clockSkew(String node, SymbolizeAction action,
                           Object host, Object ran, boolean planted) {
         long skew = readingOf(ran).longValue() - readingOf(host).longValue();
@@ -1108,7 +877,6 @@ final class RootMint {
         return skew;
     }
 
-    /** Exact expression stored in a Java primitive wrapper's value field. */
     private static JsonElement primitiveBoxExpression(
             ConcolicVmBroker api, Object boxed) throws Exception {
         if (boxed == null) return null;
@@ -1119,10 +887,6 @@ final class RootMint {
                 boxed.getClass().getName(), "value", descriptor, boxed));
     }
 
-    /**
-     * Writes one value the wave stated into one exact field: the one place
-     * a replay's own value reaches the workload's heap.
-     */
     static boolean writeModeledField(Object owner, String fieldSignature,
                                      String valueType, String value) {
         Field field = declaredInstanceField(owner, fieldSignature);
@@ -1186,13 +950,6 @@ final class RootMint {
         }
     }
 
-    /**
-     * Whether a mint asked for under {@code label} did not happen: no symbol
-     * {@code expression} names carries the label.  The VM mints nothing on a
-     * JVM-wide object and never replaces an expression a value or a
-     * reference field already carries; the refusal is named by which one,
-     * and no row claims the mint.
-     */
     private static boolean mintRefused(JsonElement expression, String label,
                                        boolean jvmShared, String what,
                                        String subject) {
@@ -1213,7 +970,6 @@ final class RootMint {
         return true;
     }
 
-    /** What the VM says of {@code value}: whether it is JVM-wide. */
     private static boolean jvmShared(ConcolicVmBroker api, Object value) {
         try {
             JsonElement answer = JsonParser.parseString(api.expression(value));
@@ -1226,7 +982,6 @@ final class RootMint {
         }
     }
 
-    /** Keeps a VM-propagated value as this consumer's input authority. */
     private static boolean retainPropagatedInput(
             ActiveRegion active, SymbolizeAction action, Object value,
             JsonElement expression, String requestedSymbol,
@@ -1242,17 +997,6 @@ final class RootMint {
         return true;
     }
 
-    /**
-     * A declared communication cut port when nothing propagated into it yet:
-     * never minted on.
-     *
-     * <p>The producer's expression is attached AFTER this hook runs, so a
-     * mint here is a free root the attach overwrites, unconstrained in the
-     * formula.  A value that never arrives is already named by
-     * {@code RPC_ATTACH_SENDER_EXPRESSION_MISSING} and
-     * {@code WIRE_FLOW_VALUE_UNBOUND}.  Opens path recording so the VM still
-     * creates the read boundary; {@code true} means nothing left to do.</p>
-     */
     private static boolean observeCutPortWithoutMinting(
             ActiveRegion active, SymbolizeAction action) {
         if (!declaredCommunicationCutPort(action)) return false;
@@ -1260,10 +1004,6 @@ final class RootMint {
         return true;
     }
 
-    /**
-     * What the VM carries in one cell: a container's own expression, else
-     * the field's.
-     */
     static JsonElement cellExpression(ConcolicVmBroker api, Object owner,
                                       String declaringClass, String fieldName,
                                       String descriptor, Object value)
@@ -1281,34 +1021,16 @@ final class RootMint {
                 || value instanceof Collection<?>);
     }
 
-    /**
-     * Whether a declared cell holds a container the VM already speaks for.
-     *
-     * <p>ONE TEST for every leaf-minting path ({@link #symbolizeField},
-     * {@link #materializeField}, {@link #symbolize}): a container carries its
-     * own expression, and a leaf minted on it would replace that with a free
-     * variable.  Primitive paths need none: callers gate on
-     * {@link ModelValues#isPrimitiveBox}.</p>
-     */
     private static boolean declaredContainerCell(Object value) {
         return value != null && value != MissingValue.INSTANCE
                 && containerValue(value);
     }
 
-    /**
-     * THE label of a declared mint, registered BEFORE the VM store
-     * ({@link RowRuntime#declaredMintLabel}), so no activation closing on
-     * another thread can publish the store as its own write.
-     */
     private static String declaring(String label) {
         RowRuntime.declaredMintLabel(label);
         return label;
     }
 
-    /**
-     * Gives a manually minted primitive root the stable address of its
-     * planned occurrence; reference labels keep their wire identity.
-     */
     private static String manualMintLabel(String requestedSymbol,
                                   String plannedOccurrenceId,
                                   boolean primitiveRoot) {
@@ -1322,14 +1044,6 @@ final class RootMint {
         return requested + ".occ." + Digests.sha256(occurrence);
     }
 
-    /**
-     * Whether the value that arrived is already this input's authority.
-     *
-     * <p>Any propagated expression, except for a DECLARED primitive root,
-     * which asks the strict question (anything symbolic inside?): a
-     * {@code ReadFrom} of constants would otherwise keep it concrete forever.
-     * </p>
-     */
     private static boolean carriesInputAuthority(
             SymbolizeAction action, JsonElement expression) {
         return action != null && action.declaredSymbolicRoot
@@ -1338,11 +1052,6 @@ final class RootMint {
                 : VmExpressionIr.carriesPropagatedValue(expression);
     }
 
-    /**
-     * Whether this action names a declared communication port, on either side
-     * of the wire; same test as
-     * {@code ConcolicScheduler.SymbolicInputSelection.declaredCutPort}.
-     */
     private static boolean declaredCommunicationCutPort(
             SymbolizeAction action) {
         return action != null

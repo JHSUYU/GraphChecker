@@ -11,57 +11,22 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * A MODEL's world, as a replay plants it over a session's (an exploration
- * plants it so, ObligationFactory): every root the model moved, by root id,
- * at the occurrence the recording mints it -- a clock as a skew, any other
- * root as its value.  Read by CONFIRM, which plants it ({@link #plant}), and
- * by CONFIRM and COMPOSE alike to ask whether a session is itself that
- * model's run ({@link #ranBy}).
- *
- * <p>THE CLOCKS ARE THE MODEL'S ALONE.  On every clock cell the composition
- * anchors (its CLOCK roots) the model's clock is its jumps -- the moved
- * cells -- and every other cell runs on from the jump before it; a skew a
- * session planted there would be a jump the model does not make, carried on
- * by the replay's node clock ({@code runtime.NodeClocks}).  A jump's skew is
- * off the reading the composition anchored its cell to: the model's
- * instants are on that timeline, the recording's; the selected session is a
- * later replay whose host read its own (SOLR-18406 a37f2: 1168 s later).</p>
- *
- * <p>A moved root no row of the session or the recording names, one the
- * recording mints nowhere (no occurrence of a replay can be focused to
- * plant it), or a moved clock the composition anchors nowhere is a refusal,
- * named when the model is planted.</p>
- */
 public final class Moved {
-    /** Non-clock root id -> the model's value. */
     final Map<String, String> values = new LinkedHashMap<String, String>();
-    /** Clock root id -> the model's skew off its anchored reading. */
     final Map<String, String> skews = new LinkedHashMap<String, String>();
-    /** Root id -> the occurrence the recording mints it at. */
     final Map<String, String> mints = new LinkedHashMap<String, String>();
-    /** Every clock root id the composition anchors. */
     final Set<String> anchored = new LinkedHashSet<String>();
-    /** Root id -> the value the recording minted it at. */
     final Map<String, String> recorded = new LinkedHashMap<String, String>();
-    /** Why a moved root cannot be planted, or "". */
     String refusal = "";
 
     private Moved() {
     }
 
-    /**
-     * The model's {@code movedRoots} (a root id, or a clock cell's symbol,
-     * -> its value, or the model's instant) over the composition's clock
-     * {@code readings} (every CLOCK root id it anchors -> its reading), each
-     * named by the session's or the recording's rows, the recording's first.
-     */
     public static Moved of(Map<String, String> movedRoots,
                            Map<String, String> readings,
                            SessionReader session, SessionReader recording) {
         Moved moved = new Moved();
         moved.anchored.addAll(readings.keySet());
-        // By root id and by cell symbol; the recording's row first.
         Map<String, RootMintRow> named =
                 new LinkedHashMap<String, RootMintRow>();
         Map<String, RootMintRow> minted =
@@ -110,7 +75,6 @@ public final class Moved {
         if (refusal.isEmpty()) refusal = why;
     }
 
-    /** The model planted over the session's world, or refused. */
     void plant(Map<String, String> assignments,
                Map<String, String> clockDeltas,
                Map<String, String> mints) {
@@ -121,46 +85,20 @@ public final class Moved {
         mints.putAll(this.mints);
     }
 
-    /**
-     * Whether {@code session}, run in {@code world}, IS this model's run:
-     * the model plants (no refusal), its world planted no pairing (a pairing
-     * is a moved choice its own run took under an order the replay held, so
-     * CONFIRM makes it again in a replay of its own, strict), it planted no
-     * root beyond the model's moved ones at a value other than the
-     * recording's (such a world ran another model, which a replay of the
-     * claim's own decides), it minted every
-     * moved root at the model's value (its mint row), and its clocks are the
-     * model's jumps and nothing else ({@link #clocksOf}: skews, each off its
-     * own run's host, so the two timelines compare; an instant of the replay
-     * is not one of the recording's).  The one test of it: CONFIRM's
-     * ({@code ConfirmMain#realizedBy}) and COMPOSE's claim rank
-     * ({@code compose.ClaimPolicy}).
-     */
     public boolean ranBy(Corpus.World world, SessionReader session) {
         return ranRootsBy(world, session) && clocksOf(world.clockDeltas);
     }
 
-    /** {@link #ranBy} but its clocks: what a model that is not yet refined
-     *  (its clocks not yet pinned back) can already be judged by. */
     public boolean ranRootsBy(Corpus.World world, SessionReader session) {
         return world.pairings.isEmpty() && rootsOf(world, session);
     }
 
-    /**
-     * {@link #ranBy} of a claim that names pairings besides the model's
-     * moves (a world pairing's, {@code compose.ClaimPolicy}): the world
-     * planted exactly the pairings {@code readers} took, every other test
-     * as {@link #ranBy}'s.
-     */
     public boolean ranWorldBy(Corpus.World world, SessionReader session,
                               Set<String> readers) {
         return world.pairings.keySet().equals(readers)
                 && rootsOf(world, session) && clocksOf(world.clockDeltas);
     }
 
-    /** The model plants, its world planted no root beyond its moves at a
-     *  value other than the recording's, and it minted every moved root at
-     *  the model's value ({@link #ranBy}). */
     private boolean rootsOf(Corpus.World world, SessionReader session) {
         if (!refusal.isEmpty()) return false;
         for (Map.Entry<String, String> planted
@@ -186,13 +124,10 @@ public final class Moved {
         return true;
     }
 
-    /** How many roots and clocks the model moves. */
     int count() {
         return values.size() + skews.size();
     }
 
-    /** Whether this world's clocks are the model's: on every anchored
-     *  cell, the same skews planted (a skew compares as a number). */
     private boolean clocksOf(Map<String, String> clockDeltas) {
         Map<String, BigInteger> planted =
                 new LinkedHashMap<String, BigInteger>();

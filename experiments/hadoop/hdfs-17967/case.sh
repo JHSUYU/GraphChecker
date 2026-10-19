@@ -1,6 +1,3 @@
-# HDFS-17967: three DataNode relay paths that give up on a stale key instead
-# of refreshing it.  Declarations only.  DataXceiver is never woven (run()
-# would become the region root and swallow the anchored SASL occurrence).
 case "${1:?usage: case.sh pathA|pathB|pathC}" in
   pathA)
     repo=${GC_TREES}/hadoop-hdfs-study-r7

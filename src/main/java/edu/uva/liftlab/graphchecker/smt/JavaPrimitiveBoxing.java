@@ -4,7 +4,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Exact Java primitive-wrapper signatures shared by planning and replay. */
 public final class JavaPrimitiveBoxing {
     private static final Map<String, Primitive> BY_WRAPPER;
 
@@ -28,9 +27,6 @@ public final class JavaPrimitiveBoxing {
         return unboxing(returnMethod(cell));
     }
 
-    /** Whether a method is a wrapper's own nullary unboxing accessor ({@code
-     *  <java.lang.Long: long longValue()>}): it passes its receiver's value
-     *  on. */
     public static boolean unboxing(String methodSignature) {
         String signature = methodSignature == null ? ""
                 : methodSignature.trim();
@@ -44,12 +40,6 @@ public final class JavaPrimitiveBoxing {
         return false;
     }
 
-    /**
-     * The descriptor of the value a location of this descriptor holds: a
-     * wrapper's is its primitive's ({@code Ljava/lang/Long;} -> {@code J}),
-     * any other stays as stated.  A box is immutable and a store puts a new
-     * one, so its value (or null) is all a reader observes (SYMBOL-SCOPE F2).
-     */
     public static String valueDescriptor(String descriptor) {
         String stated = descriptor == null ? "" : descriptor.trim();
         String primitive = stated.startsWith("L") && stated.endsWith(";")
@@ -57,11 +47,6 @@ public final class JavaPrimitiveBoxing {
         return primitive.isEmpty() ? stated : primitive;
     }
 
-    /**
-     * The descriptor of the primitive this WRAPPER boxes ({@code Integer} ->
-     * {@code I}), or "".  The wrapper's own descriptor is
-     * {@link JavaPrimitiveSmtSemantics#javaTypeDescriptor}.
-     */
     public static String primitiveDescriptor(String wrapperType) {
         Primitive primitive = BY_WRAPPER.get(
                 JavaPrimitiveSmtSemantics.typeName(wrapperType));

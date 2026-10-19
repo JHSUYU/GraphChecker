@@ -20,14 +20,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * The one JSONL-row coercion family: null, JSON {@code null} and a wrong-typed
- * member mean the same thing everywhere.
- */
 public final class MapFields {
     private static final Type ROW =
             new TypeToken<Map<String, Object>>() { }.getType();
-    /** Whole numbers stay whole: a row id is not a double. */
     private static final Gson ROWS = new GsonBuilder()
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
@@ -35,14 +30,11 @@ public final class MapFields {
     private MapFields() {
     }
 
-    /** The map's JSONL lines, UTF-8, through the one opener ({@link
-     *  ArtifactIO#input}: gzip by file name). */
     public static BufferedReader rowReader(File file) throws IOException {
         return new BufferedReader(new InputStreamReader(
                 ArtifactIO.input(file.toPath()), StandardCharsets.UTF_8));
     }
 
-    /** The one JSONL reader: one row per non-blank line; null refused. */
     public static List<Map<String, Object>> readRows(File file)
             throws IOException {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -60,7 +52,6 @@ public final class MapFields {
         return result;
     }
 
-    /** The numeric elements of a list member; anything else is dropped. */
     public static Set<Long> longValues(Object value) {
         Set<Long> result = new LinkedHashSet<>();
         if (value instanceof Collection<?>) {
@@ -95,7 +86,6 @@ public final class MapFields {
         return value == null ? "" : String.valueOf(value);
     }
 
-    /** {@link #text} with a JSON {@code null} literal read as absent. */
     public static String stringValue(Object value) {
         return value == null || "null".equals(String.valueOf(value))
                 ? "" : String.valueOf(value);
@@ -124,7 +114,6 @@ public final class MapFields {
         return left == null || left.isEmpty() ? right : left;
     }
 
-    /** One row from alternating key and value arguments, in that order. */
     public static Map<String, Object> object(Object... keyValues) {
         Map<String, Object> row = new LinkedHashMap<>();
         for (int index = 0; index + 1 < keyValues.length; index += 2) {

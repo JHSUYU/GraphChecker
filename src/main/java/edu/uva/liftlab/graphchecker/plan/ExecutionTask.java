@@ -14,16 +14,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
-    /** How many tasks one campaign may contain; an unbounded plan is refused,
-     *  not started. Here because both the Soot pass and the replay JVM check
-     *  it. */
     public static final String MAX_TASKS_PROPERTY =
             "causynth.concolic.campaign.max.tasks";
     public static final int DEFAULT_MAX_TASKS = 64;
 
-    /** The declared campaign bound, or {@link #DEFAULT_MAX_TASKS}. */
     public static int maxCampaignTasks() {
         String configured = System.getProperty(MAX_TASKS_PROPERTY);
         configured = configured == null ? "" : configured.trim();
@@ -42,8 +37,6 @@ public final class ExecutionTask extends PlanRow {
         return value;
     }
 
-    /** Set when the task's region reads a tracked cell: its occurrence
-     *  observes branches from entry (SYMBOL-SCOPE F2). */
     public static final String READS_TRACKED_STATE = "readsTrackedState";
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
@@ -54,8 +47,6 @@ public final class ExecutionTask extends PlanRow {
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
 
-    /** {@code bound}/{@code phases}: what {@link #create} just encoded; null =
-     *  parse the wire. */
     private ExecutionTask(JsonObject source, LoopBoundPolicy bound,
                           List<ConfiguredSourcePhaseContract.Occurrence>
                                   phases) {
@@ -64,8 +55,6 @@ public final class ExecutionTask extends PlanRow {
         require(goalId(), "goalId");
         inputActions = InputActionCatalog.decode(encoded);
         loopBound = bound == null ? LoopBoundPolicy.decode(encoded) : bound;
-        // Once-only root: a region rooted on a service loop is entered once per
-        // iteration, at the body.
         JsonObject rootLoop = loopBodyRoot()
                 ? object(encoded, LoopBoundPolicy.ROOT_LOOP) : new JsonObject();
         rootLoopMethod = optionalString(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
@@ -96,10 +85,8 @@ public final class ExecutionTask extends PlanRow {
         return new ExecutionTask(encoded.deepCopy(), null, null);
     }
 
-    /** The methods whose conditional branches this task has woven. */
     public static final String BRANCH_METHODS = "branchMethods";
 
-    /** Creates the one task for a scheduler-selected occurrence union. */
     public static ExecutionTask create(
             RegionInstancePlan.Goal goal,
             String taskId,
@@ -119,8 +106,6 @@ public final class ExecutionTask extends PlanRow {
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
-        // Executable by construction; still written because a decoded row is
-        // externally authored.
         JsonObject admission = new JsonObject();
         admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
@@ -128,9 +113,6 @@ public final class ExecutionTask extends PlanRow {
                 goal.plan().configuredSourcePhases());
     }
 
-    /** Drops a {@code fieldPaths} that only repeats the action's {@code
-     *  fieldPath}, and states each action's digest
-     *  ({@link InputActionCatalog#stamp}). */
     private static JsonArray compactInputActions(JsonArray actions) {
         JsonArray result = new JsonArray();
         for (JsonElement element : actions) {
@@ -155,16 +137,6 @@ public final class ExecutionTask extends PlanRow {
 
     public String taskId() { return optionalString(encoded, "taskId"); }
 
-    /**
-     * THE ROOT HOOK this row's region opens at: its region and root method,
-     * and for a loop-body root that loop.  INSTRUMENT weaves ONE entry per
-     * group, however many planned occurrences share it, and a replay offers
-     * each invocation of it to every task of the group
-     * ({@code runtime.ConcolicTaskPlan#select}).  Woven once per row, sweep
-     * a40h2's 763 occurrences of {@code Configuration.get(String)} put 758
-     * entries in one body (15,980 units), which the woven-body verifier did
-     * not finish in 40 minutes.
-     */
     public String rootHookGroup() {
         boolean loop = loopBodyRoot();
         return (loop ? "LOOP\n" : "METHOD\n") + regionId() + "\n"
@@ -172,17 +144,10 @@ public final class ExecutionTask extends PlanRow {
                 + rootLoopHeaderUnitIndex : "");
     }
 
-    /**
-     * The enclosing method entry a loop-body root's iterations are addressed
-     * under (its root method), woven once for every loop-body row rooted
-     * there; "" for any other row.
-     */
     public String loopRootHookGroup() {
         return loopBodyRoot() ? rootMethod() : "";
     }
 
-    /** Whether this region is rooted at a service loop's body
-     *  ({@link LoopBoundPolicy#LOOP_BODY_ROOT}). */
     public boolean loopBodyRoot() {
         return LoopBoundPolicy.LOOP_BODY_ROOT.equals(rootAuthority());
     }
@@ -202,33 +167,24 @@ public final class ExecutionTask extends PlanRow {
 
     public String targetMethod() { return optionalString(encoded, "targetMethod"); }
 
-    /** {@link LoopBoundPolicy#LOOP_BODY_ROOT}: rooted at a service loop's body
-     *  (one iteration per activation). */
     public String rootAuthority() {
         return optionalString(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
     }
 
     public String rootLoopMethod() { return rootLoopMethod; }
 
-    /** Unit indices of the root loop's dominance-proved header and demanded
-     *  unit. */
     public int rootLoopHeaderUnitIndex() { return rootLoopHeaderUnitIndex; }
 
     public int rootLoopDemandedUnitIndex() {
         return rootLoopDemandedUnitIndex;
     }
 
-    /** Iteration-control sites the region's exits are installed on. */
     public Set<String> rootLoopControlSites() { return rootLoopControlSites; }
 
-    /** The root loop's {@code loopSiteId} (its {@code K_L} key in {@link
-     *  #loopBound()}), else "". */
     public String rootLoopSiteId() { return rootLoopSiteId; }
 
-    /** Retained loops whose concrete cardinality is exact, not a {@code K_L}. */
     public Set<String> fixedCountLoopSites() { return fixedCountLoopSites; }
 
-    /** Exact retained-loop catalog carried unchanged from static analysis. */
     public JsonArray retainedLoops() {
         return array(encoded, "retainedLoops").deepCopy();
     }
@@ -250,7 +206,6 @@ public final class ExecutionTask extends PlanRow {
         return Collections.unmodifiableSet(result);
     }
 
-    /** Non-blank strings of a JSON array member, in wire order. */
     static Set<String> textSet(JsonObject row, String field) {
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : array(row, field)) {
@@ -267,18 +222,12 @@ public final class ExecutionTask extends PlanRow {
 
     public InputActionCatalog inputActions() { return inputActions; }
 
-    /** The methods whose conditional branches INSTRUMENT weaves; which branches
-     *  is the Soot bodies' answer (every symbolic-operand
-     *  decision is recorded, so there is no per-branch selection). */
     public JsonArray branchMethods() {
         return array(encoded, BRANCH_METHODS).deepCopy();
     }
 
     public LoopBoundPolicy loopBound() { return loopBound; }
 
-    /** Where this occurrence exports or attaches a declared communication port.
-     *  Only declares where propagation happens; the VM's {@code VALUE_HANDOFF}
-     *  edge is the value relation, never a pairing from here. */
     public List<CommunicationHandoffSpec> communicationHandoffs() {
         return CommunicationHandoffSpec.decode(encoded);
     }
