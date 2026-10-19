@@ -309,7 +309,7 @@ public final class ObligationSolverMain {
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
         Z3 solver = new Z3(z3, budget, z3RoomMb);
-        Z3.Answer answer = Solved.at(ask.solved).answer(ask.querySha256,
+        Z3.Answer answer = Solved.at(ask.solved).answer(ask.solvedKey,
                 ask.modelSymbols, () -> solver.ask(
                         output -> body(query, body, output),
                         ask.modelSymbols, false));
