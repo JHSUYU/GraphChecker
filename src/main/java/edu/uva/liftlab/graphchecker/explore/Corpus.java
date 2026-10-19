@@ -2473,7 +2473,7 @@ public final class Corpus implements Arms.Rows {
         return FrozenSet.of(events);
     }
 
-    private static final java.util.regex.Pattern EXPRESSION_REF =
+    static final java.util.regex.Pattern EXPRESSION_REF =
             java.util.regex.Pattern.compile("EXPR\\.[0-9a-f]+");
 
     private static void readNodes(JsonElement expression,
