@@ -39,6 +39,20 @@ private:
   std::string _class;
 };
 
+// A constant the program held, by its name: the name of a constant of its
+// class.  Stored into a tracked location, it names what a read of the
+// location observed, so a compare of that read with a constant is a compare
+// of names (SymEnum::compare), as a constant valueOf named is.
+class EnumConstantName : public ConStringSymbolExp {
+public:
+  EnumConstantName(const std::string &name, const std::string &klass)
+      : ConStringSymbolExp(name), _class(klass) {}
+  virtual const char *enum_constant_class() { return _class.c_str(); }
+
+private:
+  std::string _class;
+};
+
 // The enum class `klass` is, or that a constant's own body subclasses: the
 // class directly under java.lang.Enum; NULL for any other.
 InstanceKlass *enum_class(Klass *klass) {
@@ -163,8 +177,9 @@ Expression *SymEnum::finish_method_helper(MethodSymbolizerHandle &handle) {
 }
 
 Expression *SymEnum::constant_name(oop value) {
-  return value == NULL || enum_class(value->klass()) == NULL ? NULL
-      : new ConStringSymbolExp(name_of(value));
+  InstanceKlass *klass = value == NULL ? NULL : enum_class(value->klass());
+  return klass == NULL ? NULL
+      : new EnumConstantName(name_of(value), class_name(klass));
 }
 
 Expression *SymEnum::compare(Expression *left, oop left_obj,

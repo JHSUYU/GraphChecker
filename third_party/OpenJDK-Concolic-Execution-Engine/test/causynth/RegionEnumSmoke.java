@@ -14,8 +14,10 @@ import java.util.Set;
  * the ordinal), and used as a key of a map and a set that hold constants the
  * program put there -- each by its name.  A compare with another enum class
  * is decided by the class, with null is a reference test, and through a
- * tracked field read is over the read.  An enum with a static array of its
- * own type still states its constants in ordinal order.
+ * tracked field read is over the read -- also when the field's writer stored
+ * a constant the program held, not one valueOf named (HBase's
+ * RegionState.State: `state == State.OPEN`, `equals`).  An enum with a static
+ * array of its own type still states its constants in ordinal order.
  */
 public final class RegionEnumSmoke {
     enum State {
@@ -49,9 +51,14 @@ public final class RegionEnumSmoke {
         State state;
     }
 
+    private static final class Held {
+        State state = State.DOWN;
+    }
+
     public static void main(String[] args) {
         Input input = new Input();
         Sink sink = new Sink();
+        Held held = new Held();
         // Held before the window: keys the program put, plain constants.
         Map<State, Integer> weights = new HashMap<State, Integer>();
         weights.put(State.ACTIVE, Integer.valueOf(1));
@@ -66,8 +73,15 @@ public final class RegionEnumSmoke {
         System.symbolizeField(input, "phase", "PHASE");
         System.observeField(sink, Sink.class.getName(), "state",
                 "L" + State.class.getName().replace('.', '/') + ";");
+        System.observeField(held, Held.class.getName(), "state",
+                "L" + State.class.getName().replace('.', '/') + ";");
         sink.state = State.getState(input.state);
         State state = sink.state;
+        held.state = State.RECOVERING;
+        State plain = held.state;
+        int heldCompared = 0;
+        if (plain == State.RECOVERING) heldCompared |= 1;
+        if (plain.equals(State.ACTIVE)) heldCompared |= 2;
 
         int compared = 0;
         if (state != State.ACTIVE) compared |= 1;
@@ -108,11 +122,12 @@ public final class RegionEnumSmoke {
         System.out.println("PATH " + path);
         System.out.println("WEIGHTS " + weightsVersions);
         System.out.println("SEEN " + seenVersions);
-        require(compared == 3 && "DOWN".equals(name) && "down".equals(text)
+        require(compared == 3 && heldCompared == 1 && "DOWN".equals(name)
+                        && "down".equals(text)
                         && ordinal == 1 && arm == 2 && !alive
                         && weight.intValue() == 2 && wasSeen && !running,
                 "the model changed what the program computed");
-        require(count(path, "\"_name\":\"equals\"") == 4
+        require(count(path, "\"_name\":\"equals\"") == 6
                         && path.contains("java/lang/Enum valueOf")
                         && path.contains("STATE")
                         && path.contains("ReadFromExpression"),

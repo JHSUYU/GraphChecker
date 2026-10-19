@@ -17,9 +17,11 @@ class MethodSymbolizer;
  * `MethodExpression("java/lang/Enum valueOf", [class, n, c0, ..., ck])`,
  * `n` the name and `c0..ck` the class's constant names in ordinal order (its
  * enum constant fields), a String-valued node COMPOSE lowers to `n` defined
- * where it is one of them.  A constant a container holds is its name too
- * (constant_name, ContainerSupport::concrete_value), so a key valueOf named
- * and one the program held agree.  `name()` and `Enum.toString()` of the
+ * where it is one of them.  A constant the program held is its name too,
+ * named of its class (constant_name, ContainerSupport::concrete_value): a
+ * container's key, so a key valueOf named and one the program held agree,
+ * and a store into a tracked location, so a read of the location compares
+ * with a constant by the names its writers stored.  `name()` and `Enum.toString()` of the
  * node are the node, `ordinal()` `MethodExpression("java/lang/Enum ordinal",
  * [node, c0, ..., ck])`; a reference compare with it is a compare of names
  * within its class (compare); a switch map javac or ecj made, loaded at its
