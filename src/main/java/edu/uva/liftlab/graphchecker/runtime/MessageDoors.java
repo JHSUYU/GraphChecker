@@ -173,6 +173,14 @@ public final class MessageDoors {
         return scope;
     }
 
+    public static void parsed(Object message) {
+        try {
+            MessageCodec.receive(message);
+        } catch (RuntimeException fault) {
+            doorFault("parsed", fault);
+        }
+    }
+
     public static void endInbound(Inbound scope) {
         if (scope == null || scope == Inbound.EMPTY || CURRENT.get() != scope) {
             return;
