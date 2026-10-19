@@ -1304,9 +1304,8 @@ stream_planner() {
   stream_round_plan "${round}" "${out}"
   jq -n --argjson wave "${stream_wave}" \
     --argjson truncated "${stream_truncated:-0}" \
-    --argjson depth "${stream_test_world_depth:-2147483647}" \
     '{wave: $wave, witnesses: [], branchesStopped: 0, truncated: $truncated,
-      anchorOccurrences: [{node: "anchor"}], maxWorldDepth: $depth}' \
+      anchorOccurrences: [{node: "anchor"}]}' \
     >"${out}/explore_manifest.json"
 }
 stream_compose() {
@@ -1388,10 +1387,8 @@ test_gated() {
 stream_loop_state() {
   declare -gA stream_reruns=() stream_growing=() stream_withdrawn=() \
     stream_rests=() stream_queued_at=() stream_flying=() stream_chain=() \
-    stream_confirming=() stream_entry_need=() stream_rerun_offpath=() \
-    stream_rerun_composed=()
+    stream_confirming=() stream_entry_need=()
   stream_uncaptured=()
-  stream_world_depth=2147483647
   stream_queue=()
   stream_pending=()
   stream_gate_owed=()
@@ -1558,132 +1555,6 @@ done <<'EOF'
 0|0|0|0||||0|b|on
 0|0|0|0||||0|t|on
 EOF
-
-offpath_focus="${test_tmp}/offpath-focus.jsonl"
-while IFS='|' read -r op_flip op_inherited op_depth op_want; do
-  jq -n -c --arg flip "${op_flip}" --argjson inherited "${op_inherited}" \
-    '{taskId: "TASK.seed",
-      flip: (if $flip == "yes" then {siteId: "S#u1", ordinal: 0,
-        outcome: true} else null end),
-      inheritedFlips: [range($inherited) | {siteId: "S#u\(.)", ordinal: 0,
-        outcome: false}]}' >"${offpath_focus}"
-  op_said=$(
-    stream_world_depth=${op_depth}
-    if campaign_stream_offpath "${offpath_focus}"; then echo off; else
-      echo on; fi
-  )
-  [[ "${op_said}" == "${op_want}" ]] \
-    || fail "STREAM-OFFPATH: flip ${op_flip}, ${op_inherited} inherited, \
-depth ${op_depth}: ${op_said}, not ${op_want}"
-done <<'EOF'
-yes|0|0|off
--|0|0|on
-yes|0|1|on
-yes|1|1|off
--|2|1|off
-yes|2|3|on
-yes|0|2147483647|on
-yes|40|2147483647|on
-EOF
-
-while IFS='|' read -r ib_where ib_off ib_composed ib_filter ib_want; do
-  ib_said=$(
-    declare -A stream_jobs=() stream_rerun_offpath=() \
-      stream_rerun_composed=()
-    stream_queue=()
-    stream_hard=()
-    stream_swaps=()
-    stream_gate_owed=()
-    stream_step_pid=""
-    stream_round_pid=""
-    stream_round_returned=""
-    stream_grow_pid=""
-    stream_grow_returned=""
-    case "${ib_where}" in
-      job) stream_jobs[4242]="RERUN obligations-0001 OB.r lift12 S.x" ;;
-      queue) stream_queue=("RERUN obligations-0001 OB.r S.x") ;;
-      swap) stream_swaps=("obligations-0001 OB.r S.x 0") ;;
-      gate) stream_gate_owed=("RERUN obligations-0001 OB.r lift12 0 S.x"$'\t'"s"$'\t'"w") ;;
-      solve) stream_queue=("OBLIGATION obligations-0001 OB.r") ;;
-    esac
-    [[ "${ib_off}" == no ]] || stream_rerun_offpath["OB.r S.x"]=1
-    [[ "${ib_composed}" == no ]] || stream_rerun_composed["OB.r S.x"]=1
-    if campaign_stream_idle ${ib_filter/-/}; then echo end; else echo on; fi
-  )
-  [[ "${ib_said}" == "${ib_want}" ]] \
-    || fail "STREAM-IDLE-BESIDE: a re-run (${ib_where}, off the path \
-${ib_off}, composed ${ib_composed}) under '${ib_filter}': ${ib_said}, not \
-${ib_want}"
-done <<'EOF'
-job|yes|no|-|on
-job|yes|no|offpath|end
-job|no|no|offpath|on
-job|yes|no|composed|end
-job|yes|yes|composed|on
-job|yes|yes|offpath|end
-queue|yes|no|offpath|end
-queue|no|no|offpath|on
-queue|yes|yes|composed|on
-swap|yes|no|composed|end
-swap|no|no|offpath|on
-swap|yes|yes|composed|on
-gate|yes|no|offpath|end
-gate|yes|yes|composed|on
-solve|no|no|offpath|on
-EOF
-
-(
-  beside="${test_tmp}/fixed-beside"
-  iteration_dir="${beside}/iteration-0000"
-  sessions="${iteration_dir}/sessions"
-  campaign_root=${beside}
-  stream_loop_state
-  stream_world_depth=0
-  stream_anchors='[{"node":"anchor"}]'
-  stream_round=3
-  stream_step_pid=""
-  stream_round_pid=""
-  stream_round_returned=""
-  stream_hard=()
-  stream_reruns_dropped=()
-  declare -A stream_jobs=()
-  stream_stop=""
-  stream_stop_detail=""
-  for fb_session in S.a S.b S.c S.d; do
-    mkdir -p "${sessions}/${fb_session}" \
-      "${iteration_dir}/obligations-0001/OB.${fb_session#S.}/grow-obligations-0002/OB.${fb_session#S.}"
-    stream_reruns["OB.${fb_session#S.} ${fb_session}"]="${iteration_dir}/obligations-0001/OB.${fb_session#S.}/grow-obligations-0002/OB.${fb_session#S.}"
-    stream_rerun_offpath["OB.${fb_session#S.} ${fb_session}"]=1
-    jq -n -c --arg at "$([[ "${fb_session}" == S.[ac] ]] && echo anchor \
-        || echo elsewhere)" '{occurrence: {node: $at}}' \
-      | gzip -c >"${sessions}/${fb_session}/targets.jsonl.gz"
-  done
-  stream_hold=4
-  stream_jobs[4242]="RERUN obligations-0002 OB.a lift12 S.a"
-  stream_jobs[4243]="RERUN obligations-0002 OB.d lift12 S.d"
-  stream_queue=("RERUN obligations-0002 OB.b S.b" \
-    "RERUN obligations-0002 OB.c S.c")
-  campaign_stream_fixed_beside 2>"${beside}/said"
-  [[ "${stream_stop}" == FIXED_POINT \
-      && "${!stream_rerun_composed[*]}" == *"OB.a S.a"* \
-      && "${!stream_rerun_composed[*]}" == *"OB.c S.c"* \
-      && ${#stream_rerun_composed[@]} -eq 2 \
-      && "${stream_queue[*]}" == "RERUN obligations-0002 OB.c S.c" \
-      && "${stream_reruns_dropped[*]}" == OB.b \
-      && "${stream_uncaptured[*]}" == S.b \
-      && -d "${beside}/explore-reaped/obligations-0002/OB.b" \
-      && ${#stream_jobs[@]} -eq 2 && "${stream_hold}" == 3 ]] \
-    || fail "FIXED-BESIDE: stop ${stream_stop}, composed \
-[${!stream_rerun_composed[*]}], queue [${stream_queue[*]}], dropped \
-[${stream_reruns_dropped[*]}], uncaptured [${stream_uncaptured[*]}], hold \
-${stream_hold}"
-  ! campaign_stream_idle composed \
-    || fail "FIXED-BESIDE: the end came with COMPOSE's re-runs owed"
-  unset 'stream_jobs[4242]'
-  stream_queue=()
-  campaign_stream_idle composed \
-    || fail "FIXED-BESIDE: a re-run COMPOSE does not wait for held the end"
-) || fail "FIXED-BESIDE failed"
 
 while IFS='|' read -r un_stop un_named un_corpus un_want; do
   un_dir="${test_tmp}/stream-uncaptured"
@@ -2075,15 +1946,13 @@ $(cat "${stream_dir}/exploration.json")"
   fi
 done
 
-while IFS='|' read -r gb_case gb_depth gb_target gb_sleep gb_session \
-    gb_free_want gb_reaped_want; do
-  gb_named="${gb_free_want}|${gb_reaped_want}"
-  stream_fixture "grow-beside-${gb_case}"
-  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
-  printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
-  {
-    printf '#!/usr/bin/env bash\nset -euo pipefail\nsleep %s\n' "${gb_sleep}"
-    cat <<'EOF'
+stream_fixture grow-lands
+mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+cat >"${stream_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+sleep 2
 mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
 jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
   sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
@@ -2093,73 +1962,61 @@ jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
   detail: "the grown region refused the flip"}' \
   >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
 EOF
-  } >"${stream_dir}/replay.sh"
-  chmod +x "${stream_dir}/replay.sh"
-  (
-    stream_stubs
-    [[ "${gb_depth}" == - ]] || stream_test_world_depth=${gb_depth}
-    concolic_replay_command="${stream_dir}/replay.sh"
-    replay_timeout_s=900
-    schedule_max_jobs=1
-    trace_test=T
-    custom_jdk_home=""
-    workload_work_dir="${stream_dir}"
-    stream_round_plan() {
-      case "$1" in
-        0) stream_propose "$2" OB.x ;;
-        1) printf '%s\n' \
+chmod +x "${stream_dir}/replay.sh"
+(
+  stream_stubs
+  concolic_replay_command="${stream_dir}/replay.sh"
+  replay_timeout_s=900
+  schedule_max_jobs=1
+  trace_test=T
+  custom_jdk_home=""
+  workload_work_dir="${stream_dir}"
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" OB.x ;;
+      1) printf '%s\n' \
 '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
-             >>"$2/growth.jsonl" ;;
-      esac
-    }
-    do_compose() { fail "GROW-BESIDE ${gb_case}: a witness was attempted"; }
-    run_java_main() {
-      local args=" $* " output plan
-      plan=${args##* --plan }
-      plan=${plan%% *}
-      output=${args##* --output }
-      output=${output%% *}
-      { cat "${plan}"
-        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
-      } >"${output}"
-    }
-    campaign_instrument() {
-      mkdir -p "$2"
-      : >"$2/woven"
-      printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
-    }
-    campaign_obligation_worker() {
-      local worker=$4
-      printf '%s\n' '{"taskId":"TASK.seed","flip":{"siteId":"S#u1","ordinal":0,"outcome":true},"inheritedFlips":[]}' \
-        >"${worker}/focused_task.jsonl"
-      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
-      jq -n -c --arg at "${gb_target}" \
-        '{occurrence: {node: $at}, observedFatal: false}' | gzip -c \
-        >"${worker}/sessions/SESSION.exposing/targets.jsonl.gz"
-    }
-    campaign_explore "${stream_dir}" iteration-0000
-  ) >"${stream_dir}/explore.log" 2>&1 \
-    || fail "GROW-BESIDE ${gb_case} did not finish: \
+           >>"$2/growth.jsonl" ;;
+    esac
+  }
+  do_compose() { fail "GROW-LANDS: a witness was attempted"; }
+  run_java_main() {
+    local args=" $* " output plan
+    plan=${args##* --plan }
+    plan=${plan%% *}
+    output=${args##* --output }
+    output=${output%% *}
+    { cat "${plan}"
+      printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+    } >"${output}"
+  }
+  campaign_instrument() {
+    mkdir -p "$2"
+    : >"$2/woven"
+    printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
+  }
+  campaign_obligation_worker() {
+    local worker=$4
+    printf '%s\n' '{"taskId":"TASK.seed","flip":{"siteId":"S#u1","ordinal":0,"outcome":true},"inheritedFlips":[]}' \
+      >"${worker}/focused_task.jsonl"
+    stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+    jq -n -c '{occurrence: {node: "elsewhere"}, observedFatal: false}' \
+      | gzip -c >"${worker}/sessions/SESSION.exposing/targets.jsonl.gz"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "GROW-LANDS did not finish: $(cat "${stream_dir}/explore.log")"
+gl_said="$(jq -r '[.stop, (.reaped | length), (.rerunsDropped | length)]
+  | join(" ")' "${stream_dir}/exploration.json") \
+$(ls "${stream_dir}/sessions" | paste -sd ' ' -) \
+$(cd "${stream_dir}" && ls -d obligations-* | paste -sd ' ' -) \
+$(paste -sd ' ' - <"${stream_dir}/obligations-0002/corpus.txt" || echo -) \
+$(cat "${stream_dir}/uncaptured_sessions.txt" 2>/dev/null || echo -)"
+[[ "${gl_said}" == "FIXED_POINT 0 0 SESSION.regrown obligations-0000 \
+obligations-0001 obligations-0002 SESSION.regrown -" ]] \
+  || fail "GROW-LANDS: a re-run one flip deep did not hold the fixed point \
+until it landed and a round planned over it: ${gl_said}: \
 $(cat "${stream_dir}/explore.log")"
-  gb_ended=$(jq -r '.stop' "${stream_dir}/exploration.json")
-  gb_landed=$(ls "${stream_dir}/sessions" | paste -sd ' ' -)
-  gb_free=$(cat "${stream_dir}/uncaptured_sessions.txt" 2>/dev/null \
-    || echo -)
-  [[ "${gb_ended}|${gb_landed}" == "FIXED_POINT|${gb_session}" ]] \
-    || fail "GROW-BESIDE ${gb_case}: ended ${gb_ended} with [${gb_landed}], \
-not FIXED_POINT with ${gb_session}: $(cat "${stream_dir}/explore.log")"
-  [[ -d "${stream_dir}/obligations-0002" ]] \
-    || fail "GROW-BESIDE ${gb_case}: the grown generation got no round of its \
-own before the fixed point: $(ls "${stream_dir}")"
-  gb_reaped=$(jq -r '.reaped | join(" ")' "${stream_dir}/exploration.json")
-  [[ "${gb_free}|${gb_reaped}" == "${gb_named}" ]] \
-    || fail "GROW-BESIDE ${gb_case}: uncaptured ${gb_free}, reaped \
-[${gb_reaped}], not ${gb_named}: $(cat "${stream_dir}/exploration.json")"
-done <<'EOF_BESIDE'
-composed|0|anchor|2|SESSION.regrown|-|
-free|0|elsewhere|600|SESSION.exposing|SESSION.exposing|OB.x
-uncapped|-|anchor|2|SESSION.regrown|-|
-EOF_BESIDE
 
 swap_due_n=0
 while IFS='|' read -r sd_confirming sd_witnesses sd_deferred sd_round \
@@ -2248,8 +2105,8 @@ while IFS='|' read -r inflight_case inflight_corpus inflight_grown; do
     } >"${round_dir}/growth.jsonl"
     printf '{"obligationId":"P1"}\n' >"${round_dir}/obligations.jsonl"
     : >"${round_dir}/in_flight.jsonl"
-    jq -n '{wave: 0, branchesStopped: 0, anchorOccurrences: [],
-      maxWorldDepth: 2147483647}' >"${round_dir}/explore_manifest.json"
+    jq -n '{wave: 0, branchesStopped: 0, anchorOccurrences: []}' \
+      >"${round_dir}/explore_manifest.json"
     campaign_stream_take_round "${round_dir}"
     [[ "$(cat "${inflight_dir}/grown.txt" 2>/dev/null || echo -)" \
         == "${inflight_grown}" ]] \

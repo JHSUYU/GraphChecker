@@ -125,9 +125,9 @@ cost us time at least once; the date or the case it came from is named so it can
   sharded walk sent 45 GB per walk because shared payloads were repeated per row.
 - Decompose a "slow round" before blaming the planner: 05's "70-min round 5" was 15 min of planning and 56 min
   of GROW waiting (2026-10-17, my error, corrected).
-- Structural waste is found by asking what each result fed: at world depth 0 every useful verdict came from
-  round 0, and GROW re-runs (36 % of replay time) could not feed exploration
-  (analysis/solr-2026-10-18/obligation-redundancy/).
+- Structural waste is found by asking what each result fed, through every reader: at world depth 0 no GROW re-run
+  (36 % of 07's replay time, analysis/solr-2026-10-18/obligation-redundancy/) parents an obligation, yet its session
+  is what the closure grows from (§8; SGF8-adhoc-39: 77 obligations, 48 paths came after its re-runs landed).
 
 ## 8. Debugging and verification
 
@@ -142,3 +142,7 @@ cost us time at least once; the date or the case it came from is named so it can
   but 224 of 309 brought new demand. Over-approximate in COMPOSE (havoc), confirm strictly.
 - Early-stopping replays is unsafe in general: under "no recorded-order pruning" the closure keeps reading rows
   until the test method ends; only the window close is a safe stop.
+- A speed rule that ends exploration must be argued against every reader of the sessions it skips: the closure
+  reads them all. The fixed point beside GROW re-runs (OPTIMIZATIONS 1.37, reverted 2026-10-19) skipped re-runs no
+  obligation could be cut from, but the closure's tasks in the regions they wove existed only once they landed
+  (SGF9-adhoc-39: 8 paths where SGF8 composed 57; all 7 SGF9 cases it ended left sessions no round planned over).

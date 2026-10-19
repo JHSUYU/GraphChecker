@@ -413,8 +413,8 @@ public final class ExploreMain {
         gaps.write();
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps.byKind(), skeleton, exposed,
-                truncated, ceilingCut, witnesses, wave(corpus),
-                bounds.maxWorldDepth, branches, concrete);
+                truncated, ceilingCut, witnesses, wave(corpus), branches,
+                concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
         manifest.add("boundedFlips", boundedFlips(iteration,
@@ -949,7 +949,7 @@ public final class ExploreMain {
                                        int exposed, int truncated,
                                        int ceilingCut,
                                        List<String> witnesses,
-                                       int wave, int maxWorldDepth,
+                                       int wave,
                                        Branches branches,
                                        Map<OccurrenceAddress,
                                                ClosurePlanner.Concrete>
@@ -966,7 +966,6 @@ public final class ExploreMain {
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("round", open.index);
         manifest.addProperty("wave", wave);
-        manifest.addProperty("maxWorldDepth", maxWorldDepth);
         manifest.addProperty("state", !open.empty() || exposed > 0
                 ? "OBLIGATIONS_PROPOSED" : frontier.inFlightCount() > 0
                 ? "AWAITING" : "FIXED_POINT");

@@ -2022,20 +2022,18 @@ bound) is dropped: not swapped in, the exposing session stays (what it would hav
 in flight), and its obligation is never re-run again (`<worker>/grow-dropped`; before 2026-10-15 it
 failed the campaign).
 
-A RE-RUN NO OBLIGATION CAN COME FROM HOLDS NO FIXED POINT (`campaign_stream_offpath`,
-`campaign_stream_fixed_beside`): every round's manifest states the world depth its paths were cut by
-(`maxWorldDepth`, `ObligationFactory.Bounds`; Integer.MAX_VALUE unbounded), and a re-run whose world
--- its focus row's own flip and the flips it inherited, as `ExploreCodec#readWorld` counts them -- holds
-more flips than that is off EXPLORE's critical path: no round ever cuts a path of its session
-(`ObligationFactory#candidates`). Unbounded, none is; only the owner's cap makes one. Once nothing is
-owed but such re-runs (`campaign_stream_idle offpath`), the exploration is at its FIXED_POINT beside
-them (SGF8-adhoc-07 at depth 0: 121 re-runs, 36 % of its replay-seconds, its last ~26 of 81 minutes
-re-runs alone), and COMPOSE waits only for the re-runs of the exposing sessions whose paths it composes
-(a target row at the declared occurrence, `campaign_stream_composes`; `stream_rerun_composed`), each
-landing as any re-run does, until none is owed (`campaign_stream_idle composed`) or the campaign's
-reserve is reached; a queued re-run of any other session is dropped at once, one running at the end.
-No round starts and no witness is attempted from then on (a stop is stated). A SESSION WHOSE RE-RUN
-DID NOT LAND -- dropped there, at a stop, never run (a GROW dropped at the end), or not finished -- and
+EVERY RE-RUN HOLDS THE FIXED POINT, whatever its world's depth (`campaign_stream_idle`): the exploration
+is at its fixed point only once no re-run is queued, running, swapping or owed its gate, and a growth that
+queued re-runs owes no round until they land (`campaign_stream_grow_take`; one that queued none owes one at
+once), each landing marking the corpus changed (`campaign_stream_swap`, `campaign_stream_move`), so a round
+plans over the re-runs' sessions before the fixed point can hold. The world-depth bound
+(`ObligationFactory.Bounds#maxWorldDepth`) only keeps a re-run's session from parenting an obligation
+(`ObligationFactory#candidates`); the closure (`ClosurePlanner#plan`) reads every session, and a re-run under
+a grown generation is the only session with rows in the regions it wove, so the grown tasks -- and the
+obligations cut on them from the seed's paths -- exist only once it landed (SGF8-adhoc-39 at depth 0: the
+round after its re-runs landed held 44 new tasks and 77 obligations, 48 of them composed paths; a fixed point
+declared beside the re-runs, OPTIMIZATIONS 1.37, reverted, composed 8 paths of 57 in SGF9). A SESSION WHOSE
+RE-RUN DID NOT LAND -- dropped at a stop, never run (a GROW dropped at the end), or not finished -- and
 that is still in the corpus is named in `uncaptured_sessions.txt` (`campaign_stream_uncaptured`,
 `contract.SessionDir#UNCAPTURED`; none after a witness, whose claim is the accepted attempt's): it ran
 the grown regions uninstrumented, so COMPOSE frees what its reads saw that no write states
@@ -2301,11 +2299,9 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
   declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
-- **FIXED_POINT.** Nothing queued, running or unlanded, no head step running, no round planning,
-  untaken or owed, and the last round, over every answer, proposed and exposed nothing -- but GROW
-  re-runs no obligation can come from (their worlds past the rounds' `maxWorldDepth`, §7.8), which
-  hold no fixed point: the exploration then ends once the re-runs of the paths COMPOSE composes have
-  landed, or at the campaign's reserve, the rest dropped and their sessions composed uncaptured.
+- **FIXED_POINT.** Nothing queued, running or unlanded -- a GROW re-run included, whatever its
+  world's depth (§7.8) --, no head step running, no round planning, untaken or owed, and the last
+  round, over every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** The planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),

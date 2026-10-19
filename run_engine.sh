@@ -3690,12 +3690,11 @@ campaign_explore() {
   local stream_classes="${iteration_dir}/instrumented-classes"
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
-  local stream_grow_owed=0
   local stream_generation=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
   local stream_share_said="" stream_round_due=false
-  local stream_stop_detail="" stream_anchors="[]" stream_world_depth=""
+  local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local stream_round_pid="" stream_round_dir=""
   local stream_round_returned="" stream_round_dropped=""
@@ -3720,7 +3719,7 @@ campaign_explore() {
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
-    stream_rests=() stream_rerun_offpath=() stream_rerun_composed=()
+    stream_rests=()
   local -a stream_uncaptured=()
   local -A stream_chain=() stream_chain_grown=()
   local -a stream_chain_witnesses=()
@@ -3747,15 +3746,6 @@ campaign_explore() {
         && -z "${stream_grow_pid}${stream_grow_returned}" \
         && -n "${stream_round_returned}" ]]; then
       campaign_stream_round_take
-    fi
-    if [[ "${stream_stop}" == FIXED_POINT && -z "${stream_step_pid}" ]] \
-        && ! campaign_claim_room; then
-      stream_stop_detail="${stream_stop_detail}; the campaign's reserve \
-($(campaign_reserve)s) ended COMPOSE's wait for the re-runs of the paths it \
-composes"
-      campaign_log "exploration: ${stream_stop_detail}"
-      campaign_stream_end
-      break
     fi
     if [[ "${stream_stop}" != WITNESSED && -z "${stream_step_pid}" ]] \
         && ! campaign_claim_room; then
@@ -3790,15 +3780,6 @@ ${stream_stop_detail}"
       fi
       break
     fi
-    if [[ -z "${stream_stop}" ]] && (( stream_grow_owed == 0 )) \
-        && campaign_stream_idle offpath; then
-      campaign_stream_fixed_beside
-    fi
-    if [[ "${stream_stop}" == FIXED_POINT ]] \
-        && campaign_stream_idle composed; then
-      campaign_stream_end
-      break
-    fi
     campaign_stream_wait
   done
   if [[ -n "${stream_ticker}" ]]; then
@@ -3821,102 +3802,11 @@ $(cat "${iteration_dir}"/obligations-*/*/host.txt 2>/dev/null \
 }
 
 campaign_stream_idle() {
-  local filter=${1:-} entry kind round id host status session
-  [[ -z "${stream_step_pid}${stream_round_pid}" \
-     && -z "${stream_round_returned}" \
-     && -z "${stream_grow_pid}${stream_grow_returned}" ]] || return 1
-  (( ${#stream_hard[@]} == 0 )) || return 1
-  for entry in "${stream_jobs[@]}"; do
-    read -r kind round id host session <<<"${entry}"
-    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
-      || return 1
-  done
-  for entry in "${stream_queue[@]}"; do
-    read -r kind round id session <<<"${entry}"
-    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
-      || return 1
-  done
-  for entry in "${stream_swaps[@]}"; do
-    read -r round id session _ <<<"${entry}"
-    campaign_stream_waived "${filter}" RERUN "${id} ${session}" || return 1
-  done
-  for entry in "${stream_gate_owed[@]}"; do
-    read -r kind round id host status session <<<"${entry%%$'\t'*}"
-    campaign_stream_waived "${filter}" "${kind}" "${id} ${session}" \
-      || return 1
-  done
-  return 0
-}
-
-campaign_stream_waived() {
-  [[ -n "$1" && "$2" == RERUN && -n "${stream_rerun_offpath[$3]:-}" ]] \
-    || return 1
-  [[ "$1" == offpath || -z "${stream_rerun_composed[$3]:-}" ]]
-}
-
-campaign_stream_offpath() {
-  local flips
-  flips=$(jq -r '(if (.flip | type) == "object" and (.flip | has("siteId"))
-      then 1 else 0 end) + ([.inheritedFlips[]? | objects] | length)' \
-    "$1") || return 1
-  (( flips > stream_world_depth ))
-}
-
-campaign_stream_fixed_beside() {
-  local entry kind round id host status session key owed=0 waited=0
-  local -a keys=() kept=()
-  stream_stop=FIXED_POINT
-  for entry in "${stream_jobs[@]}"; do
-    read -r kind round id host session <<<"${entry}"
-    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
-  done
-  for entry in "${stream_queue[@]}"; do
-    read -r kind round id session <<<"${entry}"
-    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
-  done
-  for entry in "${stream_swaps[@]}"; do
-    read -r round id session _ <<<"${entry}"
-    keys+=("${id} ${session}")
-  done
-  for entry in "${stream_gate_owed[@]}"; do
-    read -r kind round id host status session <<<"${entry%%$'\t'*}"
-    [[ "${kind}" != RERUN ]] || keys+=("${id} ${session}")
-  done
-  for key in "${keys[@]}"; do
-    owed=$((owed + 1))
-    if campaign_stream_composes "${key#* }"; then
-      stream_rerun_composed[${key}]=1
-      waited=$((waited + 1))
-    fi
-  done
-  for entry in "${stream_queue[@]}"; do
-    read -r kind round id session <<<"${entry}"
-    if [[ "${kind}" == RERUN \
-          && -z "${stream_rerun_composed["${id} ${session}"]:-}" ]]; then
-      unset 'stream_queued_at[$entry]'
-      stream_reruns_dropped+=("${id}")
-      mkdir -p "${campaign_root}/explore-reaped/${round}"
-      mv -- "${stream_reruns["${id} ${session}"]}" \
-        "${campaign_root}/explore-reaped/${round}/${id}"
-      campaign_stream_rerun_done "${id} ${session}" dropped
-      continue
-    fi
-    kept+=("${entry}")
-  done
-  stream_queue=("${kept[@]}")
-  stream_stop_detail="round $((stream_round - 1)) proposed nothing, exposed \
-nothing, and nothing is queued, running or unlanded but ${owed} GROW \
-re-run(s) no obligation can come from (each world past max-world-depth \
-${stream_world_depth}); COMPOSE waits for the ${waited} of sessions whose \
-paths it composes, the other $((owed - waited)) dropped"
-  campaign_log "exploration reached its fixed point: ${stream_stop_detail}"
-}
-
-campaign_stream_composes() {
-  campaign_rows "${sessions}/$1/targets.jsonl.gz" \
-    | jq -e -s --argjson anchors "${stream_anchors}" \
-      'any(.[]; .occurrence as $at | any($anchors[]; . == $at))' \
-      >/dev/null 2>&1
+  (( ${#stream_jobs[@]} + ${#stream_queue[@]} + ${#stream_hard[@]} \
+     + ${#stream_swaps[@]} + ${#stream_gate_owed[@]} == 0 )) \
+    && [[ -z "${stream_step_pid}${stream_round_pid}" \
+          && -z "${stream_round_returned}" \
+          && -z "${stream_grow_pid}${stream_grow_returned}" ]]
 }
 
 campaign_stream_uncaptured() {
@@ -3961,7 +3851,6 @@ campaign_stream_round_args() {
 campaign_stream_plan_due() {
   local entry
   (( stream_dirty == 1 )) || return 1
-  (( ${stream_grow_owed:-0} == 0 )) || return 0
   (( stream_landed > 0 )) && return 0
   for entry in "${stream_jobs[@]}"; do
     [[ "${entry}" == CONFIRM\ * || "${entry}" == HARD\ * ]] || return 1
@@ -4059,7 +3948,6 @@ campaign_stream_round_start() {
   stream_round=$((stream_round + 1))
   stream_dirty=0
   stream_landed=0
-  stream_grow_owed=0
   campaign_stream_round "${dir}" &
   stream_round_pid=$!
   stream_round_dir=${dir}
@@ -4449,10 +4337,6 @@ campaign_stream_take_round() {
       "${name} states no wave"
   stream_anchors=$(jq -c '.anchorOccurrences' \
     "${round_dir}/explore_manifest.json")
-  stream_world_depth=$(jq -er '.maxWorldDepth' \
-    "${round_dir}/explore_manifest.json") \
-    || campaign_fail EXPLORE ExploreMain "${round_dir}" \
-      "${name} states no maxWorldDepth"
   campaign_log "round $((10#${name##*-})) (wave ${wave}): ${proposed} \
 obligation(s), ${exposed} exposure(s), $(grep -c '' \
 "${round_dir}/in_flight.jsonl" || true) in flight, $(jq -r \
@@ -5900,8 +5784,6 @@ before, so it is not re-run again"
     campaign_stream_enqueue "RERUN $(basename "${round_dir}") \
 ${obligation_id} ${session}"
     stream_reruns["${obligation_id} ${session}"]=${rerun}
-    ! campaign_stream_offpath "${worker}/focused_task.jsonl" \
-      || stream_rerun_offpath["${obligation_id} ${session}"]=1
     stream_hold=$((stream_hold + 1))
     rerun_count=$((rerun_count + 1))
   done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
@@ -5912,8 +5794,7 @@ ${obligation_id} ${session}"
   done < <(jq -r "${campaign_growth_subject}"' subject as $s
       | select($s != null and (.obligationId // "") != "")
       | [.obligationId, $s, .sessionId // ""] | @tsv' "${growth}")
-  stream_dirty=1
-  stream_grow_owed=1
+  (( rerun_count > 0 )) || stream_dirty=1
   (( ${#stream_chain[@]} == 0 || stream_hold > 0 )) \
     || campaign_stream_chain_reattempt
 }
