@@ -572,6 +572,22 @@ fails the first `checkAndMutate` (NO_NONCE) after the server committed it. ns-rs
 
 **5. Run the group of 20.**
 
+**6. A znode's absence as state: tombstone lives + a store-read pairing flip** (H2 design, lead 2026-10-19: not
+built until a case's chain needs a read in an absent window; it serves Solr and HBase alike). Today neither system
+states absence: a delete takes only its parent's WRITE turn, a NoNode `getData` throws before the read hook, an
+`exists` of no node is a trace row only (`MessageDoors#read` returns for version < 0), and a re-create starts a new
+location life (`path#k`). (a) One location per path with (life, version) states: a create opens life k, a delete
+(a multi's delete op too) and every ephemeral of a closed or expired session (the expirer and the client's close ask
+the in-process server for the session's ephemerals) file a TOMBSTONE write ending it, a NoNode read is a STORE_READ
+of that tombstone (before any create: INITIAL absent), and a read's eligible writers are the path's creates, sets,
+deletes and expiries across lives; table tests in `MessageDoors`/`RecordedStore`, a Solr regression check (~half a
+day). Alone it moves nothing: a store read is held at the version its session read (CONFIRM's STATE row), so it only
+makes deleters writers in the chain and an absent read a held row. (b) A store-read pairing flip, `PairingFlip`
+generalized from VIEW reads to plain store reads: the replay holds the reader's READ turn until the asked version's
+WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it as `PAIRING_UNTAKEN` as for views
+(`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
+(`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,

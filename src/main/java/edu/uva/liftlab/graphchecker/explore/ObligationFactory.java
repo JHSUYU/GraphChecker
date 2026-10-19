@@ -922,6 +922,7 @@ public final class ObligationFactory {
         long budget = solver.timeoutMillis();
         List<String> rests = new ArrayList<String>();
         for (Corpus.Refuted world : refuted) rests.add(world.digest);
+        Solved.Key key = Solved.Key.of(query);
         HardAsk ask = new HardAsk(id, candidate.path.sessionId, question,
                 (candidate.forced ? "no world of this corpus takes the"
                         + " forced way to the throw from "
@@ -932,11 +933,12 @@ public final class ObligationFactory {
                         + rests.size() + " world(s) its replays refuted "
                         + "(WORLD_REFUTED), on which this rests: "
                         + String.join(", ", rests)),
-                gaps, built.modelSymbols, querySha256, solved.dir());
+                gaps, built.modelSymbols, querySha256,
+                key.of(built.modelSymbols), solved.dir());
         FlipQuery.Built asked = built;
         Z3.Answer answer;
         if (decided == null) {
-            answer = solved.answer(querySha256, asked.modelSymbols,
+            answer = solved.answer(key, asked.modelSymbols,
                     () -> solver.ask(asked.smt2, asked.modelSymbols, false));
         } else if (decided.querySha256.equals(ask.querySha256)) {
             answer = Z3.Answer.decided("sat", decided.values);
@@ -951,8 +953,7 @@ public final class ObligationFactory {
         Z3 asker = decided == null ? solver
                 : solver.alone(decided.budgetMillis, decided.roomMb);
         NearestWorld nearest = NearestWorld.of(text -> solved.answer(
-                ArtifactIO.sha256(Z3.modelQuery(text, asked.modelSymbols)),
-                asked.modelSymbols,
+                Z3.modelQuery(text, asked.modelSymbols), asked.modelSymbols,
                 () -> asker.ask(text, asked.modelSymbols, false)),
                 built.smt2, built.modelSymbols, built.recorded,
                 built.flipVariables, answer, decided == null);
@@ -971,8 +972,7 @@ public final class ObligationFactory {
             String held = heldToRecording(built, nearest.pins);
             String heldQuery = Z3.modelQuery(held, built.modelSymbols);
             Z3.Answer again = held.isEmpty() ? null
-                    : solved.answer(ArtifactIO.sha256(heldQuery),
-                    asked.modelSymbols,
+                    : solved.answer(heldQuery, asked.modelSymbols,
                     () -> asker.ask(held, asked.modelSymbols, false));
             if (again != null && again.decided() && again.sat()) {
                 Planted recorded = planted(corpus, candidate, built,

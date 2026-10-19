@@ -1480,6 +1480,11 @@ public final class ClosurePlanner {
                     || !Arms.namedOwner(location)) {
                 return false;
             }
+            SessionReader session = corpus.session(sessionId);
+            if (session != null && session.manifest().doorsOnly()
+                    .contains(occurrence.render())) {
+                return false;
+            }
             String key = sessionId + "|" + occurrence.id();
             Set<String> owners = held.get(key);
             if (owners == null) {
@@ -1667,7 +1672,8 @@ public final class ClosurePlanner {
                     sessionId, contributed.substring(split + 1))) {
                 writersOfVersion(walk, step, sessionId, demand.occurrence,
                         read.write().location(), read.write().version(),
-                        Collections.<String>emptySet(), null,
+                        walk.map.carriersAt(read.site(), read.javaType(),
+                                read.write().location().kind()), null,
                         demand.occurrence.id(), demand.occurrence::render,
                         () -> read.locationKey() + " (read at event "
                                 + read.readEventId() + ")");

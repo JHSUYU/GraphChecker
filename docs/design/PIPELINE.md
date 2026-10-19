@@ -850,8 +850,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   names in `clientNodes` (PLAN's rule, `RuntimeSelectedRegionFinalizer#pairs`, `explore.Corpus#client`) --, unless the read's session states it holding other objects only
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
-  location's, is no candidate; a static field, an owner that names no one object, or an occurrence
-  with no recorded access is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  location's, is no candidate; a static field, an owner that names no one object, an occurrence
+  with no recorded access, or one that ran for its doors alone in that session (its rows state its
+  doors, never what it touched) is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
   confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its
@@ -873,7 +874,15 @@ are counted, never dropped silently: `concreteAnchors` states how many
   reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
   no value and not followed, flipped at their fault decisions as every task is;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
-  `Corpus.expressionStateReads` (never for the anchor);
+  `Corpus.expressionStateReads` (never for the anchor), each read's carriers named by its own VM site
+  and type as a read row's are (`Corpus.StateRead#site`, `#javaType`): a read of a version no row
+  wrote -- its writer ran paused, for its doors alone -- has no recorded write to name its carrier,
+  and only its site makes the writer a static candidate, so a value demand that GROW unpauses
+  (hbase-bugs-master-active-time HZ5: master0's activation wrote `HMaster.masterActiveTime` paused,
+  `RemoteOperation`'s constructor read it at INITIAL inside the export of
+  `OpenRegionRequest.initiating_master_active_time`, and the planner named the carrier of that read
+  nowhere: T0 crossed as a constant, every world re-asked `throwOnOldMaster` under a key of its own
+  host clock, and CONFIRM refuted the claims on that leaf);
 - the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
   producer endpoint; every occurrence of the turn that sent it, on any of its threads and whatever
   its recorded place, a fault of which can stop the turn short of the send -- RestoreCmd's
@@ -1037,7 +1046,7 @@ An id drifts as sessions land (the factor, and so the input shape, grows), so on
 again under new ids (SOLR-18413 r5: 185 questions asked 717 times, 118 of the 166 re-asked with
 byte-identical queries). Its **question** (`ObligationFactory#question`) does not drift while what its
 answer rests on reads the same: `<flip>:<content>`, the flip (`#flip`: task, path, site, ordinal,
-flipped outcome), then a digest of its solver key -- the sha256 of the query as its solver is asked
+flipped outcome), then a digest of its query -- the sha256 of the text as its solver is asked
 it (or the refusal that leaves none) -- and all its replay is given -- the world it plants (the path's world: roots, clock skews,
 answers, inherited flips), the focused occurrence, the factor (a set) and the seed session of the focus row
 (the schedule cut is the path's session cut at the focus and factor), the declared occurrence, and
@@ -1054,22 +1063,46 @@ worker that did not finish. A settled question stands only while its worker hold
 `ADMITTED` one, while its session is in the corpus (`ObligationDir#answered`).
 
 **The solver key** (`explore/Solved`): what z3 decides of a query -- unsat, or sat and a model's
-values -- is a fact of the query's text alone, whatever obligation, world, task, focus or plan
-generation built it, and is kept under the text's sha256 in the iteration (`solved/<sha256>.json`)
-once z3 decided it; every later ask of the same text (the first ask, the held re-ask, the hard
-lane's: `HardAsk#solved` names the store) is answered with it and runs no z3 (SOLR-18413 b05: 312
-of 519 solver-decided asks asked a text asked before, 1417 s of solves). The answer is mapped for
+values -- is a fact of the query's text up to the names it declares, whatever obligation, world, task,
+focus or plan generation built it. Its key (`Solved.Key`) is the sha256 of the text's CANONICAL form
+(`SmtNames#canonical`): comments dropped (the task, path, session and symbol meanings a query states),
+each run of whitespace one space, and every name a top-level `declare-fun`, `declare-const`, `define-fun`
+or `define-fun-rec` of the text declares -- a root's, read's or handoff's variable, a writer choice, an
+object's `identity__`, a `container_dag__`, a `view_leaf__`, each of which names a run's handles --
+renamed by its first occurrence (`#0`, `#1`, ...; no name of a text begins with `#`), the fixed
+vocabulary (`SmtNames.BUILTIN`, the preamble's names) and every literal as written: a string, a number, a
+port, a clock reading stays as the run spelled it. Two texts of one canonical form are one formula under a
+bijective renaming of their declared names (each declared name is renamed at every occurrence, and the
+positions not renamed are equal token by token), so they are equisatisfiable and a model of one, renamed,
+is a model of the other (KLEE's independent-slice cache, keyed by the lowered cone, §7.5's `FlipQuery#cone`).
+The answer is kept under the key in the iteration (`solved/<key>.json`, its values under the canonical
+names) once z3 decided it; every later ask of a text with that key (the first ask, the held re-ask, the
+pinned asks of the nearest world, the hard lane's: `HardAsk#solvedKey` carries the key and the canonical
+names of the model symbols) is answered with it, its values renamed onto the ask's own names, and runs no
+z3: an UNSAT so answered settles its obligation with no z3 and no replay, as one z3 decided does; a SAT
+answer is the model the ask plants, and its replay is still owed (the world differs after the flip, the
+hdfs-11741 trap). A model value naming one of the text's declared names is not kept (`Solved#namesNone`:
+its renaming would be the text's own). The answer is mapped for
 each ask as z3's own is (`ObligationFactory#settled`, the model planted and checked for that
 candidate), so a kept answer writes what a z3 run deciding the same writes, and settles its
-question as that run would; the question stays its own replay key. A kept model is one model of
-the text, as a run gives one (each run races two engines). ONLY A WHOLE ANSWER IS KEPT, OR ANSWERS AN
-ASK (`Solved#whole`): unsat, or sat with a value of every symbol the text asks the model of -- a sat whose
-separate model run timed out, hit its cap or said unknown (`Z3#ask` keeps the verdict) answers its own
-ask only, never later ones, which would read an empty model, plant nothing and be refused for good; a
-timeout, a memout, unknown, an error or disagreeing engines say nothing of the text, and the next
-ask runs z3 at its own budget and room. Keeping and reading are best effort: a store that cannot be
-written or read (NFS) leaves the ask to z3. An entry is written whole (moved into place); an ask that
-does not see it yet asks z3.
+question as that run would; the question stays its own replay key (the exact text's sha256). A kept
+model is one model of the text, as a run gives one (each run races two engines). ONLY A WHOLE ANSWER IS
+KEPT, OR ANSWERS AN ASK (`Solved#whole`): unsat, or sat with a value of every symbol the text asks the
+model of -- a sat whose separate model run timed out, hit its cap or said unknown (`Z3#ask` keeps the
+verdict) answers its own ask only, never later ones, which would read an empty model, plant nothing and
+be refused for good; a timeout, a memout, unknown, an error or disagreeing engines say nothing of the
+text, and the next ask runs z3 at its own budget and room. Keeping and reading are best effort: a store
+that cannot be written or read (NFS) leaves the ask to z3. An entry is written whole (moved into place);
+an ask that does not see it yet asks z3. Measured offline over the gen-1 study's Solr corpora, every arm
+of a planned round at world depth 1 built as the solver builds it (`analysis/hbase-2026-10-19/reask/`):
+Z3S-18413 round 2, 4103 queries, every text distinct (no hit by the text), 1470 canonical keys: 2633
+asks answered from the store, 2054 of them UNSAT (settled, no z3), 579 SAT (the model handed on, the
+replay owed); 299 of them solved again on their own text agreed, the 10 SAT models satisfied their own
+texts renamed; solr-adhoc-39 round 5, 5526 texts, 4110 keys, 1416 asks from the store (1310 UNSAT), 164 re-solved
+both ways agreed; hbase-bugs-master-active-time's 92 asks of depth 0 were 92 texts and 6 keys. z3 decided Z3S's
+1470 keys in 38 s and 39's 4110 in 1363 s (the hits 37 s), and a worker that UNSAT settles takes ~2 s against minutes
+for a replay, so what the store saves is z3 time: whether a re-ask is dispatched at all is the ledger's (its
+dependence, above), and a SAT re-ask in another world is a pair world, whose replay depth > 0 asks for.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 

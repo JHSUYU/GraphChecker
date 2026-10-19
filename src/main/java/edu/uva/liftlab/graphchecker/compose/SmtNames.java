@@ -244,9 +244,68 @@ public final class SmtNames {
 
     private static final Function<String, String> KEEP = token -> null;
 
+    public static final class Canonical {
+        public final String text;
+        public final Map<String, String> names;
+
+        private Canonical(String text, Map<String, String> names) {
+            this.text = text;
+            this.names = Collections.unmodifiableMap(names);
+        }
+    }
+
+    public static Canonical canonical(String text) {
+        Set<String> declared = declaredNames(text);
+        Map<String, String> names = new LinkedHashMap<String, String>();
+        StringBuilder out = new StringBuilder();
+        pass(text, token -> {
+            if (!declared.contains(token)) return null;
+            String held = names.get(token);
+            if (held == null) {
+                held = "#" + names.size();
+                names.put(token, held);
+            }
+            return held;
+        }, null, Spelling.CANONICAL, out);
+        return new Canonical(out.toString().trim(), names);
+    }
+
+    private static Set<String> declaredNames(String text) {
+        Set<String> declared = new LinkedHashSet<String>();
+        List<String> tokens = tokens(text);
+        int depth = 0;
+        for (int at = 0; at < tokens.size(); at++) {
+            String token = tokens.get(at);
+            if (OPEN.equals(token)) {
+                depth++;
+                continue;
+            }
+            if (CLOSE.equals(token)) {
+                depth--;
+                continue;
+            }
+            if (depth != 1 || at == 0 || !OPEN.equals(tokens.get(at - 1))
+                    || !DECLARING.contains(token) || at + 1 >= tokens.size()) {
+                continue;
+            }
+            String name = tokens.get(at + 1);
+            if (name(name) && !BUILTIN.contains(name)
+                    && !preambleNames().contains(name)) {
+                declared.add(name);
+            }
+        }
+        return declared;
+    }
+
+    private static final Set<String> DECLARING =
+            Collections.unmodifiableSet(new LinkedHashSet<String>(
+                    Arrays.asList("declare-fun", "declare-const",
+                            "define-fun", "define-fun-rec")));
+
     private enum Spelling {
         AS_WRITTEN,
-        LEGAL
+        LEGAL,
+        CANONICAL
     }
 
     private static void pass(String text, Function<String, String> renames,
@@ -265,7 +324,9 @@ public final class SmtNames {
             if (value == ';') {
                 int end = text.indexOf('\n', index);
                 end = end < 0 ? text.length() : end;
-                if (out != null) out.append(text, index, end);
+                if (out != null && spelling != Spelling.CANONICAL) {
+                    out.append(text, index, end);
+                }
                 index = end;
                 continue;
             }
@@ -280,7 +341,15 @@ public final class SmtNames {
             if (!symbolCharacter(value)) {
                 if (kept != null && value == '(') kept.add(OPEN);
                 if (kept != null && value == ')') kept.add(CLOSE);
-                if (out != null) out.append(value);
+                if (out != null && spelling == Spelling.CANONICAL
+                        && Character.isWhitespace(value)) {
+                    if (out.length() > 0
+                            && out.charAt(out.length() - 1) != ' ') {
+                        out.append(' ');
+                    }
+                } else if (out != null) {
+                    out.append(value);
+                }
                 index++;
                 continue;
             }

@@ -73,6 +73,7 @@ import java.util.TreeSet;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -1075,6 +1076,7 @@ public class ExploreTest {
     @Test
     public void onlyAWholeAnswerIsKept() throws Exception {
         List<String> asks = Arrays.asList("x", "y");
+        String q = "(declare-const x Int)\n(declare-const y Int)\n";
         for (Object[] row : new Object[][]{
                 {"unsat", "", true},
                 {"sat", "x y", true},
@@ -1086,9 +1088,9 @@ public class ExploreTest {
             }
             Z3.Answer z3 = Z3.Answer.decided((String) row[0], values);
             Solved solved = Solved.in(tree.newFolder().toPath());
-            assertSame(z3, solved.answer("q", asks, () -> z3));
+            assertSame(z3, solved.answer(q, asks, () -> z3));
             int[] runs = {0};
-            solved.answer("q", asks, () -> {
+            solved.answer(q, asks, () -> {
                 runs[0]++;
                 return z3;
             });
@@ -1098,7 +1100,71 @@ public class ExploreTest {
                 Collections.<String, String>emptyMap());
         Solved unwritable = Solved.at(tree.newFile("a-file").toPath()
                 .resolve(Solved.DIR));
-        assertSame(unsat, unwritable.answer("q", asks, () -> unsat));
+        assertSame(unsat, unwritable.answer(q, asks, () -> unsat));
+    }
+
+    @Test
+    public void aQueryIsAnsweredForEveryRenamingOfItsNames() throws Exception {
+        String asked = "; task A path P session S1\n(set-logic ALL)\n"
+                + "(declare-fun x__aa () Int)\n(declare-fun y__bb () Int)\n"
+                + "(declare-fun s__cc () String)\n(define-fun d__dd () Int"
+                + " (+ x__aa 1))\n(assert (> x__aa 41))\n(assert (= y__bb"
+                + " d__dd))\n(assert (= s__cc \"x__aa\"))\n(assert (not (="
+                + " nullRef (string_ref s__cc))))\n(check-sat)\n(get-value"
+                + " ( x__aa y__bb s__cc))\n";
+        String renamed = asked.replace("; task A path P session S1",
+                "; task B path Q session S2\n; x__ee = a root")
+                .replace("x__aa ", "x__ee ").replace("x__aa)", "x__ee)")
+                .replace("y__bb", "y__ff").replace("s__cc", "s__gg")
+                .replace("d__dd", "d__hh").replace("\n(assert", "\n\n(assert");
+        assertTrue(renamed, renamed.contains("\"x__aa\""));
+        String[] others = {
+                asked.replace("41", "40"),
+                asked.replace("\"x__aa\"", "\"x__ee\""),
+                asked.replace("(assert (> x__aa 41))", "(assert (> y__bb 41))"),
+        };
+        assertEquals(Solved.Key.of(asked).sha256,
+                Solved.Key.of(renamed).sha256);
+        for (String other : others) {
+            assertNotEquals(other, Solved.Key.of(asked).sha256,
+                    Solved.Key.of(other).sha256);
+        }
+        assertFalse(Solved.Key.of(asked).names.containsKey("nullRef"));
+        Map<String, String> values = new LinkedHashMap<String, String>();
+        values.put("x__aa", "42");
+        values.put("y__bb", "43");
+        values.put("s__cc", "\"x__aa\"");
+        Z3.Answer sat = Z3.Answer.decided("sat", values);
+        Solved solved = Solved.in(tree.newFolder().toPath());
+        assertSame(sat, solved.answer(asked, Arrays.asList("x__aa", "y__bb",
+                "s__cc"), () -> sat));
+        Z3.Answer again = solved.answer(renamed, Arrays.asList("x__ee",
+                "y__ff", "s__gg"), () -> {
+            throw new AssertionError("a renaming of a kept query ran z3");
+        });
+        assertEquals("sat", again.status());
+        assertEquals("42", again.values().get("x__ee"));
+        assertEquals("43", again.values().get("y__ff"));
+        assertEquals("\"x__aa\"", again.values().get("s__gg"));
+        int[] runs = {0};
+        solved.answer(others[0], Arrays.asList("x__aa", "y__bb", "s__cc"),
+                () -> {
+                    runs[0]++;
+                    return sat;
+                });
+        assertEquals(1, runs[0]);
+        Map<String, String> naming = new LinkedHashMap<String, String>();
+        naming.put("x", "(+ y 1)");
+        Z3.Answer namesAnother = Z3.Answer.decided("sat", naming);
+        String twoNames = "(declare-const x Int)\n(declare-const y Int)\n";
+        solved.answer(twoNames, Arrays.asList("x"), () -> namesAnother);
+        runs[0] = 0;
+        solved.answer(twoNames, Arrays.asList("x"), () -> {
+            runs[0]++;
+            return namesAnother;
+        });
+        assertEquals("a model value naming the query's own symbols is not"
+                + " kept", 1, runs[0]);
     }
 
     @Test
@@ -1129,8 +1195,8 @@ public class ExploreTest {
                             "plan A", none, null));
             assertEquals(name + ": " + asked.result.detail(), row[1],
                     asked.result.verdict());
-            Path kept = solved.dir().resolve(edu.uva.liftlab.graphchecker
-                    .smt.ArtifactIO.sha256(asked.smt2) + ".json");
+            Path kept = solved.dir().resolve(
+                    Solved.Key.of(asked.smt2).sha256 + ".json");
             assertTrue(name + ": kept by its text", Files.exists(kept));
             ObligationFactory.Outcome again = corpus.asking(() ->
                     ObligationFactory.solve(corpus, candidate, new Z3(
@@ -1761,6 +1827,87 @@ public class ExploreTest {
         }
     }
 
+    @Test
+    public void aWriterThatRanForItsDoorsAloneIsDemandedThroughAReadInsideAValue()
+            throws Exception {
+        Path iteration = tree.newFolder("doors-only-writer").toPath();
+        OccurrenceAddress boot = occurrence("hdfs-case/dn0", "REGION.boot",
+                CausalContext.of(Role.of("BOOT"), "", 1),
+                "o.a.h.h.s.d.Boot#run#1");
+        LocationId limit = LocationId.of(LocationKind.INSTANCE, "9", "2");
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ReadFromExpression");
+        read.addProperty("_java_type", "I");
+        read.addProperty("readEventId", 3L);
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", 9L);
+        location.addProperty("slot", 2L);
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        read.add("location", location);
+        JsonObject site = new JsonObject();
+        site.addProperty("className", "example/Config");
+        site.addProperty("methodName", "limit");
+        site.addProperty("methodDescriptor", "()I");
+        site.addProperty("bci", 4);
+        read.add("site", site);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 1L);
+        observed.addProperty("versionKind", "INITIAL");
+        read.add("observedVersion", observed);
+        for (boolean ranWhole : new boolean[] {false, true}) {
+            Path at = iteration.resolve("ran-whole-" + ranWhole);
+            Files.createDirectories(at);
+            Session seed = new Session(at, "s-seed");
+            for (OccurrenceAddress each : Arrays.asList(TARGET, WRITER,
+                    boot)) {
+                seed.activation(each, false);
+            }
+            if (!ranWhole) seed.doorsOnly.add(boot.render());
+            seed.write(at(boot, Endpoint.stateSite("example.Boot", "run", 2,
+                    true), "Boot#run#2"), LocationId.of(LocationKind.INSTANCE,
+                    "77", "1"), 1L, "");
+            seed.writes.add(WriteRow.initial("s-seed", 0L, at(WRITER,
+                    Endpoint.initialSite("example.Config#limit()I#4:READ"),
+                    "Config#limit#4"), limit, 1L, "", "I"));
+            seed.expression("e.stored", read);
+            seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+            seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "7");
+            seed.anchored(TARGET);
+            seed.flush();
+            Files.write(at.resolve(StaticScopeMap.REGIONS),
+                    ("{\"regionId\":\"REGION.boot\",\"methods\":["
+                            + "\"<example.Boot: void run()>\","
+                            + "\"<example.Config: void init()>\"]}\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(at,
+                    targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                    scopeSite(StaticScopeMap.READ_SITE, "REGION.addkeys",
+                            "<example.Config: int limit()>#u1",
+                            "example.Config#limit()I",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", ""),
+                    scopeSite(StaticScopeMap.WRITE_SITE, "REGION.init",
+                            "<example.Config: void init()>#u1",
+                            "example.Config#init()V",
+                            "<example.Config: int limit>",
+                            "<example.Config: int limit>", "")));
+            ClosurePlanner.Plan plan = closure(Corpus.read(at, null), TARGET,
+                    map);
+            Set<String> whole = new LinkedHashSet<String>();
+            for (OccurrenceAddress each : plan.unpaused.keySet()) {
+                whole.add(each.render());
+            }
+            for (OccurrenceAddress each : plan.runWhole) {
+                whole.add(each.render());
+            }
+            assertEquals("ran whole " + ranWhole + ", planned: "
+                    + focused(plan), !ranWhole,
+                    focused(plan).contains(boot.render()));
+            assertEquals("ran whole " + ranWhole + ": " + whole, !ranWhole,
+                    whole.contains(boot.render()));
+        }
+    }
+
     private static List<String> focused(ClosurePlanner.Plan plan) {
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
@@ -1864,15 +2011,17 @@ public class ExploreTest {
                     GapClass.DIAGNOSTIC, "OB.1", "built");
             String sha = edu.uva.liftlab.graphchecker.smt.ArtifactIO
                     .sha256(query);
+            Solved.Key key = Solved.Key.of(query);
             Path solved = worker.resolve(Solved.DIR);
             new HardAsk("OB.1", "S", "the question",
                     "no world of this corpus takes the other arm at s#1",
-                    Collections.singletonList(built), symbols, sha, solved)
+                    Collections.singletonList(built), symbols, sha,
+                    key.of(symbols), solved)
                     .write(worker.resolve(HardAsk.FILE));
             ObligationSolverMain.decide(obligations, "OB.1", worker,
                     Paths.get("z3"), (Long) row[1], 1152);
             String says = Arrays.toString(row);
-            Path kept = solved.resolve(sha + ".json");
+            Path kept = solved.resolve(key.sha256 + ".json");
             assertEquals(says, !"NOT_ADMITTED".equals(row[2]),
                     Files.exists(kept));
             if (Files.exists(kept)) {

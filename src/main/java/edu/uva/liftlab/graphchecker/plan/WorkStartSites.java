@@ -94,13 +94,16 @@ public final class WorkStartSites {
     }
 
     private static final Set<String> SUBMISSION_NAMES =
-            names("execute", "submit", "schedule", "invokeAll");
+            names("execute", "submit", "schedule", "invokeAll", "newTimeout");
+
+    public static final String TIMER_TASK = "*.netty.util.TimerTask";
 
     private static final List<String> WORK_TYPES = Arrays.asList(
             "java.lang.Runnable",
             "java.util.concurrent.Callable",
             "java.util.concurrent.ForkJoinTask",
-            "java.util.Collection");
+            "java.util.Collection",
+            TIMER_TASK);
 
     private static Set<String> names(String... values) {
         return new LinkedHashSet<>(Arrays.asList(values));
@@ -161,7 +164,9 @@ public final class WorkStartSites {
     public static boolean entersWork(String methodName, int argumentCount,
                                      Types declaringType) {
         return argumentCount == 0 && shaped(WORK_ENTRIES, methodName,
-                declaringType);
+                declaringType)
+                || argumentCount == 1 && "run".equals(methodName)
+                && declaringType != null && declaringType.is(TIMER_TASK);
     }
 
     private static final String QUEUE_TYPE =
@@ -208,7 +213,8 @@ public final class WorkStartSites {
 
     public static boolean mayEnterWork(String methodName, int argumentCount) {
         return argumentCount == 0 && methodName != null
-                && named(WORK_ENTRIES, methodName);
+                && named(WORK_ENTRIES, methodName)
+                || argumentCount == 1 && "run".equals(methodName);
     }
 
     public static final class TimedWait {

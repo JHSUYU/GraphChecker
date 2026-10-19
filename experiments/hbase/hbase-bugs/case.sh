@@ -3,7 +3,7 @@ case "${1:?usage: case.sh <bug>}" in
   master-active-time)
     test_class=org.apache.hadoop.hbase.master.assignment.TestCausynthMasterActiveTime
     test_method=reportOpenedToTheNextMaster
-    target_occurrence=first
+    target_occurrence='auto0/master1#epoch0/region/REGION.f3a7cc84-4aa9-3e73-ae53-0232639dea95#1'
     recording_window=startup
     scope=(
       server:org/apache/hadoop/hbase/master/MasterRpcServices
@@ -19,8 +19,8 @@ case "${1:?usage: case.sh <bug>}" in
       common:org/apache/hadoop/hbase/util/DefaultEnvironmentEdge)
     ;;
   backup-lock-reply-lost)
-    test_class=org.apache.hadoop.hbase.backup.TestBackupManager
-    test_method=testStartBackupExclusiveOperation
+    test_class=org.apache.hadoop.hbase.backup.TestCausynthBackupLockReplyLost
+    test_method=takeAndReleaseTheBackupLock
     target_occurrence=first
     scope=(
       backup=:org/apache/hadoop/hbase/backup/impl/BackupSystemTable
