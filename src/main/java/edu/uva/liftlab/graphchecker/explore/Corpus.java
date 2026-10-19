@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.FrozenSet;
@@ -2331,12 +2332,36 @@ public final class Corpus implements Arms.Rows {
         private final String locationKey;
         private final long readEventId;
         private final WriteRow write;
+        private final String site;
+        private final String javaType;
 
         private StateRead(String locationKey, long readEventId,
-                          WriteRow write) {
+                          WriteRow write, JsonObject node) {
             this.locationKey = locationKey;
             this.readEventId = readEventId;
             this.write = write;
+            JsonObject at = node == null ? null : JsonFields.object(node,
+                    "site");
+            String className = at == null ? ""
+                    : JsonFields.optionalString(at, "className");
+            String method = at == null ? ""
+                    : JsonFields.optionalString(at, "methodName");
+            this.site = className.isEmpty() || method.isEmpty() ? ""
+                    : Endpoint.stateSite(JvmNames.stable(className)
+                            .replace('/', '.'), method,
+                    JsonFields.optionalString(at, "methodDescriptor"),
+                    Math.max(0, JsonFields.optionalInteger(at, "bci", 0)),
+                    false);
+            this.javaType = node == null ? ""
+                    : JsonFields.optionalString(node, "_java_type");
+        }
+
+        public String site() {
+            return site;
+        }
+
+        public String javaType() {
+            return javaType;
         }
 
         public String locationKey() {
@@ -2369,7 +2394,8 @@ public final class Corpus implements Arms.Rows {
         JsonObject expression = expression(sessionId, expressionRef);
         if (expression == null) return Collections.unmodifiableList(found);
         Map<String, Long> read = new LinkedHashMap<String, Long>();
-        readNodes(expression, read, ExpressionWalk.identitySet());
+        Map<String, JsonObject> nodes = new HashMap<String, JsonObject>();
+        readNodes(expression, read, ExpressionWalk.identitySet(), nodes);
         for (Map.Entry<String, Long> each : read.entrySet()) {
             WriteRow latest = null;
             for (WriteRow write : writesOf(sessionId, each.getKey())) {
@@ -2380,7 +2406,8 @@ public final class Corpus implements Arms.Rows {
             }
             if (latest == null) continue;
             found.add(new StateRead(each.getKey(),
-                    each.getValue().longValue(), latest));
+                    each.getValue().longValue(), latest,
+                    nodes.get(each.getKey())));
         }
         return Collections.unmodifiableList(found);
     }
@@ -2401,7 +2428,8 @@ public final class Corpus implements Arms.Rows {
                 term == null ? "" : term);
         Set<JsonElement> walked = ExpressionWalk.identitySet();
         while (refs.find()) {
-            readNodes(expression(sessionId, refs.group()), read, walked);
+            readNodes(expression(sessionId, refs.group()), read, walked,
+                    null);
         }
         return FrozenSet.of(read.keySet());
     }
@@ -2441,7 +2469,8 @@ public final class Corpus implements Arms.Rows {
 
     private static void readNodes(JsonElement expression,
                                   Map<String, Long> into,
-                                  Set<JsonElement> walked) {
+                                  Set<JsonElement> walked,
+                                  Map<String, JsonObject> nodes) {
         for (ExpressionWalk walk = ExpressionWalk.of(expression, walked);
              walk.hasNext(); ) {
             JsonObject node = walk.next();
@@ -2456,6 +2485,7 @@ public final class Corpus implements Arms.Rows {
             Long held = into.get(key);
             if (held == null || held.longValue() < event) {
                 into.put(key, Long.valueOf(event));
+                if (nodes != null) nodes.put(key, node);
             }
         }
     }
