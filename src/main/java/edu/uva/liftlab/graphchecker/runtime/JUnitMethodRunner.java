@@ -94,6 +94,7 @@ public final class JUnitMethodRunner {
                     + " ended; the run states nothing");
             halt(status);
         }
+        markEnding();
         int code = status;
         ConcolicRegionRuntime.endAdmission();
         try {
@@ -131,6 +132,20 @@ public final class JUnitMethodRunner {
         new Thread(root, () -> exit(0), "causynth-window-close").start();
         synchronized (ENDING) {
             standUntilHalt();
+        }
+    }
+
+    static final String ENDING_FILE = "workload_ending";
+
+    private static void markEnding() {
+        String worker = FocusedReplay.workerDir();
+        if (worker.isEmpty()) return;
+        try {
+            java.nio.file.Files.write(java.nio.file.Paths.get(worker,
+                    ENDING_FILE), new byte[0]);
+        } catch (java.io.IOException | RuntimeException unwritten) {
+            EngineConsole.println("Causynth could not mark its end in "
+                    + worker + ": " + unwritten);
         }
     }
 

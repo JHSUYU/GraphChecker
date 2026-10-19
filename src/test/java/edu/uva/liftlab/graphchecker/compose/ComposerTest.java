@@ -1777,6 +1777,53 @@ public class ComposerTest {
                 .body().contains("deleted5@w1"));
     }
 
+    @Test
+    public void aLongEnumChoicesDefinednessIsAFactWhereItsCompareIsStated() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        SmtLowering lowering = new SmtLowering(declared);
+        JsonObject state = enumValueOf("s");
+        JsonArray named = state.getAsJsonArray("_param_list");
+        named.set(1, vmString("toUpperCase", vmLeaf("SymbolExpression", "s",
+                "Ljava/lang/String;")));
+        while (named.size() > 2) named.remove(2);
+        for (char constant = 'A'; constant <= 'L'; constant++) {
+            named.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_STATE_OF_A_"
+                    + "LONG_NAMED_CONSTANT_" + constant, "java/lang/String"));
+        }
+        VmTermLowering.Term term = lowering.dispatch(vmString("equals",
+                vmLeaf("ConStringSymbolExp", "Y_L'String'_STATE_OF_A_LONG_"
+                        + "NAMED_CONSTANT_A", "java/lang/String"), state),
+                VmTermLowering.Sort.BOOL, "t");
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        lowering.assertPlain(term.precondition);
+        String compare = term.text;
+        List<String> facts = lowering.facts(Collections.singletonList(
+                compare));
+        assertTrue(compare + " " + facts, facts.stream().anyMatch(fact
+                -> fact.contains("defined_dag__")));
+    }
+
+    /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
+    private static JsonObject enumValueOf(String leaf) {
+        JsonObject valueOf = new JsonObject();
+        valueOf.addProperty("_type", "MethodExpression");
+        valueOf.addProperty("_name", "java/lang/Enum valueOf");
+        valueOf.addProperty("_java_type", "Lorg/x/State;");
+        JsonArray arguments = new JsonArray();
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_org.x.State",
+                "java/lang/String"));
+        arguments.add(vmLeaf("SymbolExpression", leaf, "Ljava/lang/String;"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                "java/lang/String"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_DOWN",
+                "java/lang/String"));
+        valueOf.add("_param_list", arguments);
+        return valueOf;
+    }
+
     /** Whether key 5 of a map that stores {@code value} there is null. */
     private static JsonObject stored(JsonObject value) {
         JsonObject put = relation("ASSOCIATIVE", "PUT", "java/util/Map",

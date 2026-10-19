@@ -176,6 +176,15 @@ last integration merge a28597a8f (compaction 3-4) passed its gate at the stop (m
   saved little (14 round 4: 523 -> 427; the old 12,438 were view guards that 3.4 removes). The final round runs the
   study checks at world depth 0 (owner), where the bound never fires. Redo D2 with the review's fixes, and the
   generation-1 redundancy study (analysis/solr-2026-10-18/gen1/), before any depth > 0 default.
+- The generation-1 study (analysis/solr-2026-10-18/gen1/FINDINGS.txt): generation 1 is mostly the seed's arms asked again
+  in every world (14: 3,065 obligations on 60 distinct arms, 97.6 % re-asks of 16 arms; 39: 11,252 on 254; Z3S-18413:
+  6,106 on 418); the world's change misses the re-ask's cone in 81 / 100 / 84 %, yet only 0 / 27 / 42 % are provably
+  the same query, because replays vary run constants (port digits in HTTP buffers, clock-derived times, object
+  numbering, writer sets after the held prefix). The path to depth > 0, in order: (1) replays reproduce the seed's run
+  constants (ports, clock base, object numbering) -- then <= 80 / 98 / 83 % become provable repeats; (2) a KLEE-style
+  answer cache keyed on the lowered cone sub-query (UNSAT/NOT_FLIPPABLE settle; a SAT still replays its world);
+  (3) D2 redone with its review's fixes and a parent lookup by flip, not by drifting id (513 / 1,530 / 1,581 missed);
+  (4) fault pairs commute only with clean effect sets (0 provable today, 32-43 % after noise).
 - D1 done (gated): solr-int 5396683d6 merged (f06ec4845); the key stays the whole-guard key -- the parked solr-armkey
   key (3bfdca7bc, cherry-picked in ee0edfcb1) is reverted: `explore.KeyGate` (kept as the key's merge gate,
   OPERATIONS §6) finds on Z3S-18413 one key folding an UNSAT depth-1 fault world with two satisfiable siblings
