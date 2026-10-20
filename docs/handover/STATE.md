@@ -59,18 +59,23 @@ OpenRegionRequest, master chores and periodic flushes never due, the 34 token ho
 (985a0dfe91, 6 workloads), `/bigtemp/vnr3ne/wt/hb-zk-trees-14` (f9340f2aab), `/bigtemp/vnr3ne/wt/hb-rpc-trees-5`
 (f9340f2aab). Every case runs at world depth 0 except 34 (depth 1).
 
-**Results at the stop** (each row: `docs/checks/HBASE.md` §E; STATUS "HBase checks"):
+**Results** (second session, 2026-10-19 23:40 on; updated 2026-10-20 05:20; each row: `docs/checks/HBASE.md` §E and
+STATUS "HBase checks"; first-session runs under `/bigtemp/vnr3ne/gc-out/hbase-<agent>/accept-<run>` as before, second-session
+runs carry the tags NP/NZ/NR/NC/NE):
 
-| case | result | run (`/bigtemp/vnr3ne/gc-out/hbase-<agent>/accept-<run>`) |
+| case | result | run |
 | --- | --- | --- |
-| hbase-bugs-backup-lock-reply-lost (#12) | **PASS**: SAT MARKER_FLIPPED, confirmed, reproduced 10/10, control 0/10, 551 s | rpc R5-bak |
-| hbase-adhoc-04 = HBASE-30484 | **SAT MARKER_FLIPPED, confirmed in the VM**, 631 s; REPRODUCE: no native run (ORDER_UNHELD, TODO HBase 3) | checks HC21-04 |
-| hbase-adhoc-22 = HBASE-30483 | right claim composed (HC13, SAT_UNCONFIRMED); rerun after the CONFIRM fix stopped in COMPOSE | checks HC13-22, HC20-22 |
-| hbase-bugs-master-active-time (#11) | claims moved nothing (unplaced T0); fixed offline (CLOCK_SKEW claim); rerun stopped in EXPLORE | zk HZ17-mat, HZ18-mat |
-| hbase-bugs-ns-rsgroup-removal (#13) | earlier claims rode wrong chains; tree workaround 985a0dfe91 merged; not run on it | checks HC14/15-nsrg |
-| 08, 13, 34, 37, 31 (old workload) | UNSAT_CLOSED, all **vacuous** (vacuity.py), each with its reason in §E | checks HC12-08, platform HP9-13, zk HZ18-34, HZ2-37, rpc R10-31 |
-| 10, 11, 15, 24, 31 (new), 14, 21 | stopped mid-run or failed early on a fixed defect; rerun (TODO HBase 1) | §E |
-| 07, 12, 19, 20, 28, 35 | not run on the current code | |
+| hbase-bugs-backup-lock-reply-lost (#12) | **PASS**: SAT MARKER_FLIPPED (the lock CAS's reply lost), confirmed, reproduced 10/10, control 0/10 | rpc R5-bak |
+| hbase-adhoc-04 = HBASE-30484 | **PASS**: SAT MARKER_FLIPPED (a REQUEST fault on the observer's GetActiveMaster: the enable after the snapshot advanced is lost), confirmed, reproduced 7/10, control 0/10, 889 s | rpc NR3-04 |
+| hbase-adhoc-22 = HBASE-30483 | **PASS**: STATE_PAIRING_FLIPPED, no fault (the creation's read of the namespace total joined to the original create's addTable, before the asynchronous deletion's release; the truncate writes none), confirmed, reproduced 10/10, control 0/10 | checks NC15-22 |
+| hbase-bugs-ns-rsgroup-removal (#13) | **PASS**: SAT MARKER_FLIPPED (the master's namespace hbase:meta Mutate REQUEST fault -> held insertion retry -> the removal reads 0 -> :227), confirmed, reproduced 10/10 (REPRODUCE alone over a copy), control 0/10 | checks NC12-nsrg, repro-NC12-nsrg-1 |
+| hbase-bugs-master-active-time (#11) | in progress: tree f77ef97b65 (explicit initializer) + 5d776469b0 (run-relative clock, 60 s gap); round 0 demands master0's activation again | zk NZ4-mat |
+| hbase-adhoc-34 | **PASS**: SAT MARKER_FLIPPED (a ZooKeeper READ SessionExpired on keys/1's getData: refreshKeys aborts, the key stays missing at :160), reproduced 10/10, control 0/10 | zk NZ3-34 |
+| hbase-adhoc-28, 35 | done: UNSAT, vacuous by construction, class C (28: a configuration constant the JDK decides; 35: needs a corrupt hbase:meta) | platform NP4-28, NP2-35 |
+| hbase-adhoc-24, 37 | UNSAT, vacuous: the guard flips only on a read of an absent znode (TODO HBase 10) | zk NZ3-24, HZ2-37 |
+| hbase-adhoc-13 | UNSAT, vacuous: data through a region's store (TODO HBase 9) | platform HP9-13 |
+| 07, 08, 10, 11, 12, 14, 15, 21, 31 | running or rerunning (08 and 14: every claim so far refuted by the client thread's program order, TODO HBase 15: to be recorded as a named bound) | §E |
+| 19, 20 | not run yet (SEED-only first) | |
 
 **Where things are:** the briefs, notes and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/` (COMMON.txt, H*.txt
 briefs, RUNS.txt, `handover/H1-H5.md` (copied to [hbase-agents/](hbase-agents/)) -- each agent's runs, launch helpers, traps and leftovers --, readings.md,
