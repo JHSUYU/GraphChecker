@@ -560,11 +560,9 @@ in batch ssh -- lift15 failed that from lift03 (HP10-14) --, heads on hosts of t
 every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readings.md`):
 - **hbase-adhoc-04 = HBASE-30484**: DONE, PASS (NR3-04, 2026-10-20: SAT confirmed, reproduced 7/10, control 0/10;
   HBASE.md §E).
-- **hbase-bugs-master-active-time (#11)**: on the configured-skew workaround (owner 2026-10-20; tree 190d7eda00,
-  STATUS "tree: master-active-time's configured skew"). NZ11-mat (275e72578, trees-10 26bae096c3): CONFIRM confirmed
-  .later=-2001 (the selected session is itself the run), but the claim was FORMULA_SAT and REPRODUCE refused the CONFIG
-  plant; both fixed (explored worlds as valuations, PlantSites' configSource key). Next: NZ12-mat, CONFIRM and
-  REPRODUCE k/N with control 0/N, report.py PASS (expected MARKER_FLIPPED). Item 20 records the formula's over-pinned T1.
+- **hbase-bugs-master-active-time (#11)**: DONE, PASS (NZ12-mat, 2026-10-20: SAT MARKER_FLIPPED {.later=-2001}, confirmed,
+  reproduced 3/10 by repro-NZ13-mat, control 0/10; on the configured-skew workaround, HBASE.md §E). Item 11 has the 7/10
+  the native anchor drift costs; item 20 the formula's over-pinned T1.
 - **hbase-bugs-ns-rsgroup-removal (#13)**: run on tree 985a0dfe91 (tree set `/bigtemp/vnr3ne/wt/hb-checks-trees-20`,
   built, its 6 workloads native-PASS; launch command in H4.md). Expected chain: an `HBASE_RPC` REQUEST fault on the
   master's hbase:meta Mutate in `CREATE_NAMESPACE_INSERT_INTO_NS_TABLE` (one attempt in automatic mode) ->
@@ -666,6 +664,13 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
 (`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
 
 **11. Smaller HBase items.**
+- A native run's anchor drifts upstream (hbase-bugs-master-active-time repro-NZ13-mat: 3/10). All 10 planted runs threw
+  at master1's first `reportRegionStateTransition` (REGION.f3a7cc84, iteration 0). 7 did so under another `Anchor:`
+  context hash: the report's producer, rs0's `AssignRegionHandler`, stands under rs0's `executeProcedures` anchor, and
+  native timing picks which of master0's open requests rs0 served (ctx e362ba75 vs 23a8fa7d), so the declared
+  occurrence's id differs while the event is the same. 5 of the 7 also left a realized EVENT order holding
+  (`RpcConnection#scheduleTimeoutTask` START). A native at-anchor match that ignores the upstream request's identity
+  (region, site, iteration, node) would count them; not built.
 - Two region servers' ZooKeeper event threads ran under `workload/unregistered ... Lost:UNKNOWN` in hbase-adhoc-24's NZ3-24
   (LINEAGE_LOST 56 named rows; their getData rows stand on no node): a ZooKeeper event thread of a server started before
   its registration is no node's; check `CausynthNodes` registration of `ZKWatcher` event threads if a case needs them.
