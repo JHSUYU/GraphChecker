@@ -1813,7 +1813,14 @@ live set does); out of heap twice, or once at that most, it is `REPLAY_BOUNDED`.
 CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`): out of heap at twice the
 heap, the CONFIRM ended for memory at its full need (`campaign_replay_full_need_mb`); a second end fails the
 seed's REPLAY and bounds the CONFIRM by name (`campaign_replay_bounded`: its confirmation refuted as
-`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). Checked live on vm-force10 with
+`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). A remote REPLAY whose worker
+ends with no answer of its own at 255 (its ssh lost: an ssh client ended by a signal exits so, and the peer's
+watchdog then ends the payload) or past 128 (a signal) was killed by infrastructure, not by its question: its run
+goes aside under `<worker>/killed-<n>/` with the session it opened, and its entry is queued again unchanged, at
+most twice (`campaign_stream_killed_again`, `campaign_killed_attempts`); a third such end, or any other failure,
+is the worker's unfinished answer `NOT_ADMITTED` as before (`campaign_obligation_unfinished`). HZ14-mat: 24 replays
+on lift06/07 ended at once at 20:40:14 when the head's ssh clients on lift11 were ended, each answered
+`NOT_ADMITTED` before this. Checked live on vm-force10 with
 the replay's heap overridden to 256 MB (`CAUSYNTH_WORKLOAD_JAVA_OPTS`): `Terminating due to
 java.lang.OutOfMemoryError`, exit 3, the run set aside under `ended-1`, `replay_again` naming the heap. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
 THE CONTROL PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
