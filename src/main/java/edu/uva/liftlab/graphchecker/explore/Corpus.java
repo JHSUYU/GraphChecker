@@ -206,6 +206,7 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, OccurrenceAddress>();
     private final Map<String, Set<String>> namedBy =
             new LinkedHashMap<String, Set<String>>();
+    private final Map<String, Seen> seen = new HashMap<String, Seen>();
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
@@ -1427,7 +1428,8 @@ public final class Corpus implements Arms.Rows {
 
     public List<OccurrenceAddress> doorsOf(String producerEndpointId,
                                            OccurrenceAddress served,
-                                           Map<String, Integer> cut) {
+                                           Map<String, Integer> cut,
+                                           List<OccurrenceAddress> earlier) {
         List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 senderOf(producerEndpointId),
@@ -1447,6 +1449,7 @@ public final class Corpus implements Arms.Rows {
         StanceIndex index = stanceIndex();
         Set<String> asked = new HashSet<String>(stances);
         asked.addAll(handlers);
+        asked.add(own);
         int count = 0;
         List<int[]> standing = new ArrayList<int[]>();
         for (String stance : asked) {
@@ -1466,15 +1469,52 @@ public final class Corpus implements Arms.Rows {
             OccurrenceAddress occurrence = index.occurrences.get(place);
             if (occurrence.equals(served)) continue;
             String stance = index.stances[place];
-            if (stances.contains(stance) && !stance.equals(own)) {
-                if (!doors.contains(occurrence)) doors.add(occurrence);
+            if (stance.equals(own)) {
+                if (ranBefore(occurrence, served)) {
+                    if (!earlier.contains(occurrence)) earlier.add(occurrence);
+                    cut.merge(EARLIER_IN_TURN, 1, Integer::sum);
+                } else {
+                    cut.merge(OWN_TURN, 1, Integer::sum);
+                }
             } else if (stances.contains(stance)) {
-                cut.merge(OWN_TURN, 1, Integer::sum);
+                if (!doors.contains(occurrence)) doors.add(occurrence);
             } else if (handlers.contains(stance)) {
                 cut.merge(HANDLER_TURN, 1, Integer::sum);
             }
         }
         return doors;
+    }
+
+    private boolean ranBefore(OccurrenceAddress occurrence,
+                              OccurrenceAddress served) {
+        Seen at = seen.get(occurrence.id());
+        Seen of = seen.get(served.id());
+        return at != null && of != null && at.session.equals(of.session)
+                && at.first < of.last;
+    }
+
+    private static final class Seen {
+        final String session;
+        final long first;
+        final long last;
+
+        Seen(String session, long first, long last) {
+            this.session = session;
+            this.first = first;
+            this.last = last;
+        }
+    }
+
+    private static void seenAt(Map<String, long[]> at,
+                               OccurrenceAddress occurrence, long seq) {
+        if (occurrence == null || seq <= 0L) return;
+        long[] span = at.get(occurrence.id());
+        if (span == null) {
+            at.put(occurrence.id(), new long[] {seq, seq});
+        } else {
+            span[0] = Math.min(span[0], seq);
+            span[1] = Math.max(span[1], seq);
+        }
     }
 
     private static final class StanceIndex {
@@ -1517,6 +1557,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     public static final String OWN_TURN = "own turn";
+    public static final String EARLIER_IN_TURN = "earlier in its turn";
     public static final String HANDLER_TURN = "handlers";
 
     private static List<Fact> facts(SessionReader session) {
@@ -1639,6 +1680,7 @@ public final class Corpus implements Arms.Rows {
             indexSchedule(session.sessionId(), of.schedule);
         }
         sessionById.put(session.sessionId(), session);
+        Map<String, long[]> spans = new HashMap<String, long[]>();
         if (session.manifest() != null) {
             clientNodes.addAll(session.manifest().clientNodes());
         }
@@ -1655,6 +1697,7 @@ public final class Corpus implements Arms.Rows {
         }
         for (DecisionRow row : session.decisions()) {
             if (!apart) remember(session.sessionId(), row.occurrence());
+            seenAt(spans, row.occurrence(), row.seq());
             for (String cell : row.clockReadings().keySet()) {
                 declaredSymbols.put(cell, Sort.INT);
             }
@@ -1663,6 +1706,7 @@ public final class Corpus implements Arms.Rows {
             if (row.seq() >= world || apart) continue;
             add(exports, row.endpoint().id(), row);
             remember(session.sessionId(), row.endpoint().occurrence());
+            seenAt(spans, row.endpoint().occurrence(), row.seq());
             occurrenceByEndpoint.put(row.endpoint().id(),
                     row.endpoint().occurrence());
         }
@@ -1679,6 +1723,7 @@ public final class Corpus implements Arms.Rows {
             }
             if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
+            seenAt(spans, row.endpoint().occurrence(), row.seq());
             occurrenceByEndpoint.put(row.endpoint().id(),
                     row.endpoint().occurrence());
             if (row.producer() != null) {
@@ -1703,6 +1748,7 @@ public final class Corpus implements Arms.Rows {
             located(writersOn, row.endpoint().occurrence(),
                     session.sessionId());
             remember(session.sessionId(), row.endpoint().occurrence());
+            seenAt(spans, row.endpoint().occurrence(), row.seq());
             if (!row.initial()) {
                 located(writtenLocations, row.endpoint().occurrence(),
                         location);
@@ -1726,17 +1772,24 @@ public final class Corpus implements Arms.Rows {
                 continue;
             }
             remember(session.sessionId(), row.occurrence());
+            seenAt(spans, row.occurrence(), row.seq());
         }
         for (ReadRow row : session.reads()) {
             if (apart) continue;
             located(readersOn, row.endpoint().occurrence(),
                     session.sessionId());
             remember(session.sessionId(), row.endpoint().occurrence());
+            seenAt(spans, row.endpoint().occurrence(), row.seq());
             located(readLocations, row.endpoint().occurrence(),
                     SmtLowering.locationKey(row.location()));
             occurrenceByEndpoint.put(row.endpoint().id(),
                     row.endpoint().occurrence());
             touch(row.endpoint().occurrence(), row.location());
+        }
+        for (Map.Entry<String, long[]> span : spans.entrySet()) {
+            if (apart) break;
+            seen.putIfAbsent(span.getKey(), new Seen(session.sessionId(),
+                    span.getValue()[0], span.getValue()[1]));
         }
     }
 
