@@ -1,0 +1,1 @@
+{"sourceId":"CONFIG:causynth.hbase.master.clock.skew.ms","declaredDomainMin":"-600000","declaredDomainMax":"+600000","why":"hbase-bugs-master-active-time's tree reads a master's clock skew as this configuration value at activation (HMaster#CAUSYNTH_CLOCK_SKEW, 0 unless set); nothing compares it, so its domain is declared: masters' clocks up to ten minutes apart either way"}
