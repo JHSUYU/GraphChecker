@@ -867,6 +867,17 @@ public final class MessageDoors {
         return CURRENT.get();
     }
 
+    static Inbound setAside() {
+        Inbound held = CURRENT.get();
+        CURRENT.remove();
+        return held;
+    }
+
+    static void putBack(Inbound held) {
+        if (held == null) CURRENT.remove();
+        else CURRENT.set(held);
+    }
+
     public static long enterCarriedScope(Object scope, String role,
                                          String api) {
         return guarded("enterCarriedScope", role, 0L, () ->

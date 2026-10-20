@@ -609,20 +609,20 @@ Becomes needed when a claim's selected path takes a value through a read whose w
 session and runs whole now: then merge it with a ComposerTest (a doors-only writer in the session, the plan running it
 whole, its carrier read at INITIAL: freed; the same read in a session that ran it whole: held).
 
-**8. An async continuation stands in its registrant's occurrence** (lead 2026-10-19: an identity change for every
-system, with its own review; being built on `hbase-rpc` since hbase-adhoc-11 and -12 hit it with no workload workaround; until it lands a workload whose
-chain passes a procedure poll before its next request makes that operation its own synchronous call on the test
-thread, hbase-adhoc-21's disable). HBase's async client sends the next request of a chain from the client event loop,
-inside the callbacks of the previous reply (`CausynthRpc#starting`: a request made in a reply's exchange stands on it).
-The fold rule mints that request's producer endpoint in the reply-leg occurrence (`RpcConnection#finishCall`, anchored
-on the reply), and where the chain passes a procedure poll (`getProcedureResult`, rescheduled on the HashedWheelTimer
-until the procedure is done) the request goes out of the k-th poll's reply: k is timing, so its anchor differs between
-passes (hbase-adhoc-21 HC11-21: `MasterService.RestoreSnapshot` planned under `7be160aff4b342f7`, ran under
-`b6701a92041c9536`). A sync client sends it from the caller's own occurrence, counted per verb (IDENTITY §3), and the
-polls move only `GetProcedureResult`'s own k. Two mechanisms: (a) a `CompletableFuture` continuation (`whenComplete`,
-`thenApply`/`thenCompose`/`handle`, HBase's `FutureUtils#addListener`) is a lineage start at its registration, claimed
-where it runs, and a claim inside a running occurrence opens the claimant's own occurrence instead of folding into it;
-(b) a reply-leg occurrence folds into its sender's occurrence across threads. (a) is the lead's choice.
+**8. A continuation chain re-registered per poll stands under the poll count.** A continuation now stands at its
+registrant's address wherever it runs (IDENTITY §6, `runtime/Continuations`; hbase-adhoc-11 and 12's `Admin#move`).
+A chain that re-registers itself per poll (a procedure's `getProcedureResult`, rescheduled on the HashedWheelTimer
+until the procedure is done) nests one start frame per poll, so the request after it stands under the poll count k,
+which is timing (hbase-adhoc-21 HC11-21: `MasterService.RestoreSnapshot` planned under `7be160aff4b342f7`, ran under
+`b6701a92041c9536`). Until a poll stops counting (a claim of the same start site under itself restarting at its own
+frame), such a workload makes the operation its own synchronous call on the test thread (hbase-adhoc-21's restore
+without the failsafe snapshot). Also open from the review of hbase-rpc 7384c1e61 (`review-cont/REVIEW.txt`): the VM's
+activation stack, store-read rows and wire exports do not stand apart in a continuation (M3: a marker on
+`ConcolicRegionRuntime` like `SILENCED`, popped at the claim's end, then a case whose planned region registers a
+listener); an unnamed registrant folds where it runs and files no gap (L3); a queue claim inside a continuation with no
+woven frame between can drop the continuation's start frames (L4); `LineageScan` selects registrations by the exact
+owner `CompletableFuture`/`CompletionStage`, the weave by hierarchy (L5a); Netty and Guava future listeners and static
+`supplyAsync`/`runAsync` are no continuations (L5b); a poll chain's index grows by one frame per poll (L6).
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

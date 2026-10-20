@@ -162,6 +162,13 @@ public final class Identity {
             }
         }
 
+        private void standApart() {
+            scopeBase = starts.peek().depth;
+            Region apart = new Region(scopeBase);
+            apart.apart = true;
+            regions.add(apart);
+        }
+
         private void claimUnnamed(boolean thread) {
             if (thread) {
                 unnamedThread = true;
@@ -199,6 +206,7 @@ public final class Identity {
             for (int index = regions.size() - 1; index >= 0; index--) {
                 Region open = regions.get(index);
                 if (open.occurrence != null) return open;
+                if (open.apart) return null;
             }
             return null;
         }
@@ -415,13 +423,23 @@ public final class Identity {
         private final Attribution.Reference starter;
         private final boolean adopted;
         private final int unnamedAt;
+        private final boolean continuation;
+        private final int regions;
+        private final int scopeBase;
+        private final String requestVerb;
+        private MessageDoors.Inbound inbound;
+        private boolean aside;
 
-        private ClaimScope(State state) {
+        private ClaimScope(State state, boolean continuation) {
             this.serial = state.claimSerial;
             this.work = state.work;
             this.starter = state.starter;
             this.adopted = state.adopted;
             this.unnamedAt = state.unnamedAt;
+            this.continuation = continuation;
+            this.regions = state.regions.size();
+            this.scopeBase = state.scopeBase;
+            this.requestVerb = state.requestVerb;
         }
     }
 
@@ -429,12 +447,13 @@ public final class Identity {
         State state = CURRENT.get();
         if (!state.claimed) {
             state.claimed = true;
-            adopt(state, Thread.currentThread(), false);
+            adopt(state, Thread.currentThread(), false, false);
         }
         return state;
     }
 
-    private static void adopt(State state, Object carrier, boolean item) {
+    private static void adopt(State state, Object carrier, boolean item,
+                              boolean continuation) {
         Start start = carrier == null || STARTS.isEmpty() ? null
                 : STARTS.remove(carrier);
         if (item && (start == null || start == Start.UNNAMED)) state.serves();
@@ -444,10 +463,11 @@ public final class Identity {
             state.claimUnnamed(own);
             return;
         }
-        boolean ranHere = !own && start.ranHere(state);
+        boolean ranHere = !own && !continuation && start.ranHere(state);
         state.openStart(start, own, ranHere, item ? ClaimKind.ITEM
                 : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
                 : ClaimKind.QUEUED_TASK);
+        if (continuation) state.standApart();
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
@@ -464,7 +484,9 @@ public final class Identity {
             return;
         }
         State state = state();
-        String named = state.requestVerb;
+        boolean continuation = carrier instanceof Continuations.Carrier;
+        String named = continuation ? Continuations.registrant()
+                : state.requestVerb;
         String site = named.isEmpty() ? stable : stable + ":" + named;
         int window = RecordingWindow.index();
         int iteration = state.nextStartEvent(site, window);
@@ -478,7 +500,9 @@ public final class Identity {
                                 + ExecutionIndex.of(frames).render(),
                         Thread.currentThread(), state.top(), state.depth(),
                         window, handsOff(submittedTo)));
-        ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+        if (!continuation) {
+            ScheduleLog.observe(ScheduleEvent.Kind.START, site);
+        }
     }
 
     private static boolean handsOff(Object executor) {
@@ -553,11 +577,25 @@ public final class Identity {
     }
 
     public static long claimStart(Object carrier) {
+        return claimStart(carrier, false);
+    }
+
+    static long claimStart(Object carrier, boolean continuation) {
         if (carrier == null) return 0L;
         State state = state();
-        ClaimScope scope = new ClaimScope(state);
+        ClaimScope scope = new ClaimScope(state, continuation);
         state.claimScopes.push(scope);
-        claim(state, carrier, false);
+        try {
+            claim(state, carrier, false, continuation);
+            if (continuation) {
+                scope.inbound = MessageDoors.setAside();
+                scope.aside = true;
+                state.requestVerb = "";
+            }
+        } catch (RuntimeException | Error failed) {
+            endClaim(scope.id);
+            throw failed;
+        }
         return scope.id;
     }
 
@@ -590,19 +628,28 @@ public final class Identity {
         state.starter = scope.starter;
         state.adopted = scope.adopted;
         state.unnamedAt = scope.unnamedAt;
+        if (scope.continuation) {
+            while (state.regions.size() > scope.regions) {
+                state.regions.remove(state.regions.size() - 1);
+            }
+            state.scopeBase = scope.scopeBase;
+            state.requestVerb = scope.requestVerb;
+            if (scope.aside) MessageDoors.putBack(scope.inbound);
+        }
         if (state.scopeBase > state.depth()) state.scopeBase = state.depth();
         state.journal();
     }
 
     static void claimItem(Object item) {
         if (item == null) return;
-        claim(state(), item, true);
+        claim(state(), item, true, false);
     }
 
-    private static void claim(State state, Object carrier, boolean item) {
+    private static void claim(State state, Object carrier, boolean item,
+                              boolean continuation) {
         state.work = carrier;
         state.endUnnamedWork();
-        adopt(state, carrier, item);
+        adopt(state, carrier, item, continuation);
     }
 
     public static long enterFrame(String callSiteId, Object receiver) {
@@ -925,7 +972,11 @@ public final class Identity {
     }
 
     private static int nameless(State state) {
+        int from = 0;
         for (int index = 0; index < state.regions.size(); index++) {
+            if (state.regions.get(index).apart) from = index + 1;
+        }
+        for (int index = from; index < state.regions.size(); index++) {
             Region region = state.regions.get(index);
             if (region.occurrence != null) {
                 return region.occurrence.lineageLost() ? index : -1;
@@ -1067,6 +1118,7 @@ public final class Identity {
         private Region before;
         private long namedBy;
         private long root;
+        private boolean apart;
 
         private Region(int base) {
             this.base = base;

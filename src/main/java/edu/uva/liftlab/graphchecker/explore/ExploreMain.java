@@ -250,6 +250,8 @@ public final class ExploreMain {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> waiting =
                 new LinkedHashSet<OccurrenceAddress>();
+        Map<String, Set<OccurrenceAddress>> unrecorded =
+                new LinkedHashMap<String, Set<OccurrenceAddress>>();
         List<String> witnesses = witnesses(corpus, roots);
         int truncated = 0;
         int ceilingCut = 0;
@@ -291,6 +293,12 @@ public final class ExploreMain {
                 grown.putIfAbsent(exposure.getKey(), exposure.getValue());
             }
             waiting.addAll(plan.waiting);
+            for (Map.Entry<String, Set<OccurrenceAddress>> read
+                    : plan.unrecordedWriters.entrySet()) {
+                unrecorded.computeIfAbsent(read.getKey(),
+                        key -> new LinkedHashSet<OccurrenceAddress>())
+                        .addAll(read.getValue());
+            }
             for (Map.Entry<OccurrenceAddress, String> door
                     : plan.unpaused.entrySet()) {
                 unpaused.putIfAbsent(door.getKey(), door.getValue());
@@ -333,13 +341,16 @@ public final class ExploreMain {
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
                 candidates);
-        Frontier.Round open = frontier.open(round, forced.force,
-                forced.candidates);
+        Set<String> planned = plannedOccurrences(iteration);
+        List<Obligation> first = new ArrayList<Obligation>();
+        if (forced.force != null) first.add(forced.force);
+        first.addAll(PathReruns.of(corpus, anchorTask(tasks, roots),
+                unrecorded, planned, gaps::accept));
+        Frontier.Round open = frontier.open(round, first, forced.candidates);
 
         Files.createDirectories(out);
         WaveGraph graph = WaveGraph.of(corpus);
         writing.add(Parallel.beside("graph", () -> graph.write(out, round)));
-        Set<String> planned = plannedOccurrences(iteration);
         Set<OccurrenceAddress> unreproduced =
                 new LinkedHashSet<OccurrenceAddress>(grown.keySet());
         unreproduced.addAll(waiting);

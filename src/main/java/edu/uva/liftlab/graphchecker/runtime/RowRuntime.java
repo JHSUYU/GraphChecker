@@ -788,9 +788,17 @@ public final class RowRuntime {
     }
 
     public static long claimStart(Object carrier) {
+        return claim(carrier, false);
+    }
+
+    static long claimContinuation(Object carrier) {
+        return claim(carrier, true);
+    }
+
+    private static long claim(Object carrier, boolean continuation) {
         if (carrier == null) return 0L;
         try {
-            return Identity.claimStart(carrier);
+            return Identity.claimStart(carrier, continuation);
         } catch (Throwable unnamed) {
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     carrier.getClass().getName(),

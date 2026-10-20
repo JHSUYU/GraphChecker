@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Parallel;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -18,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -218,9 +220,11 @@ final class WaveGraph {
         row.addProperty("node", occurrence.node().render());
         row.addProperty("occurrence", occurrence.render());
         row.addProperty("sessionId", sessionId);
-        row.addProperty("obligationId", sessionId.isEmpty() ? ""
-                : corpus.session(sessionId).obligations().get(0)
-                .obligationId());
+        List<ObligationResult> run = sessionId.isEmpty()
+                ? Collections.<ObligationResult>emptyList()
+                : corpus.session(sessionId).obligations();
+        row.addProperty("obligationId", run.isEmpty() ? ""
+                : run.get(0).obligationId());
         return row;
     }
 

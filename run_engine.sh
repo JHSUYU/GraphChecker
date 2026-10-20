@@ -5661,10 +5661,13 @@ campaign_unpauses() {
 campaign_stream_grow() {
   local round_dir=$1 generation
   local growth=${2:-${round_dir}/growth.jsonl}
-  [[ -z "$(campaign_exposures "${growth}" | awk -F'\t' '$1 == ""')" ]] \
-    || campaign_fail EXPLORE ExploreMain "${growth}" \
-      "an exposure names no obligation; only a focused replay's exposure \
-can be grown into"
+  local planned_only
+  planned_only=$(campaign_exposures "${growth}" | awk -F'\t' '$1 == ""' \
+    | grep -c '' || true)
+  (( planned_only == 0 )) || campaign_log "$(basename "${round_dir}"): \
+${planned_only} exposure(s) only the seed ran grow the plan alone: no replay \
+is re-run for them, the anchor's path re-runs once they are planned \
+(PathReruns)"
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"
   mkdir -p "${generation}"
