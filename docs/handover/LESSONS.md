@@ -51,6 +51,9 @@ cost us time at least once; the date or the case it came from is named so it can
   after every relaunch.
 - Never `git add -A`; never rebuild a snapshot (`~/gc-run/sgf*`) a run reads; worktree creation over NFS can take
   more than 2 min (run it in the background).
+- Move a branch that a worktree has checked out only inside that worktree (`git -C <worktree> merge --ff-only <commit>`),
+  never with `git branch -f` from another checkout: the ref moves, the worktree's index and files stay behind, and the
+  next fast-forward there carries the stale files as staged changes (2026-10-19 night, the plain `system/hbase` worktree).
 
 - HBase with no WAL (owner 2026-10-19): a master's local region keeps its procedures only in memory until a flush,
   so a standby master that takes over as soon as the active one's znode goes loads the region while the old master is
