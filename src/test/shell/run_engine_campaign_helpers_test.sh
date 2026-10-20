@@ -1636,6 +1636,51 @@ OBLIGATION|solve_again|0
 RERUN||1
 EOF
 
+ka_dir=${test_tmp}/killed-again
+while IFS='|' read -r ka_kind ka_host ka_status ka_result ka_prior ka_want; do
+  rm -rf -- "${ka_dir}"
+  mkdir -p "${ka_dir}/worker/sessions/OB.k-s1"
+  echo '{"pathSessionId":""}' >"${ka_dir}/worker/focused_task.jsonl"
+  echo replay >"${ka_dir}/worker/replay.log"
+  [[ "${ka_result}" == - ]] || echo '{"verdict":"ADMITTED"}' \
+    >"${ka_dir}/worker/obligation_result.jsonl"
+  for (( ka_at = 1; ka_at <= ka_prior; ka_at++ )); do
+    mkdir -p "${ka_dir}/worker/killed-${ka_at}"
+  done
+  ka_said=$(
+    declare -A stream_withdrawn=()
+    campaign_log() { :; }
+    campaign_reap_on_host() { :; }
+    campaign_sessions_naming() { find "$2" -mindepth 1 -maxdepth 1 -type d; }
+    campaign_stream_enqueue() { echo "queued $*"; }
+    if campaign_stream_killed_again "${ka_kind}" obligations-0001 OB.k \
+        "${ka_host}" "${ka_status}" "${ka_dir}/worker" "C P"; then
+      echo again
+    else
+      echo verdict
+    fi
+  )
+  [[ "${ka_said}" == *"${ka_want}" ]] \
+    || fail "KILLED-AGAIN: a ${ka_kind} on ${ka_host} ending ${ka_status} \
+(result ${ka_result}, ${ka_prior} earlier) said '${ka_said}', not ${ka_want}"
+  if [[ "${ka_want}" == again ]]; then
+    [[ "${ka_said}" == "queued REPLAY obligations-0001 OB.k C P"* \
+        && -s "${ka_dir}/worker/killed-$((ka_prior + 1))/replay.log" \
+        && -d "${ka_dir}/worker/killed-$((ka_prior + 1))/sessions/OB.k-s1" \
+        && ! -e "${ka_dir}/worker/replay.log" ]] \
+      || fail "KILLED-AGAIN: the killed replay was not set aside and queued \
+again: ${ka_said}"
+  fi
+done <<'EOF'
+REPLAY|lift12|255|-|0|again
+REPLAY|lift12|143|-|1|again
+REPLAY|lift12|255|-|2|verdict
+REPLAY|lift12|1|-|0|verdict
+REPLAY|lift12|255|ADMITTED|0|verdict
+REPLAY|localhost|255|-|0|verdict
+OBLIGATION|lift12|255|-|0|verdict
+EOF
+
 (
   reap_dir=${test_tmp}/stream-reap
   mkdir -p "${reap_dir}"
@@ -2495,5 +2540,28 @@ done
       | LC_ALL=C sort -z | xargs -0 -r sha256sum) | sha256sum \
       | awk '{print $1}')" ]] \
   || fail "the tree digest is not the sorted listing's"
+
+fq_iteration="${test_tmp}/fault-queue"
+for fq_id in G1 F1 G2 F2; do
+  mkdir -p "${fq_iteration}/obligations-0003/${fq_id}"
+  fq_flag=false
+  [[ "${fq_id}" != F* ]] || fq_flag=true
+  echo "{\"faultFlip\":${fq_flag}}" \
+    >"${fq_iteration}/obligations-0003/${fq_id}/focused_task.jsonl"
+done
+fq_said=$(
+  iteration_dir=${fq_iteration}
+  stream_queue=()
+  declare -A stream_queued_at=()
+  for fq_entry in "REPLAY obligations-0003 F1 T" "REPLAY obligations-0003 G1 T" \
+      "REPLAY obligations-0003 F2 T" "OBLIGATION obligations-0004 O1" \
+      "REPLAY obligations-0003 G2 T" "CONFIRM - C1"; do
+    campaign_stream_enqueue "${fq_entry}"
+  done
+  printf '%s\n' "${stream_queue[@]}" | awk '{print $1 ":" $3}' | paste -sd' '
+)
+[[ "${fq_said}" == "CONFIRM:C1 OBLIGATION:O1 REPLAY:G2 REPLAY:G1 REPLAY:F1 REPLAY:F2" ]] \
+  || fail "FAULT-QUEUE: a fault flip's replay waits behind every other entry, \
+the others in their old order; the queue was '${fq_said}'"
 
 echo "run_engine campaign helper tests passed"

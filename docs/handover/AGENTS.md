@@ -336,3 +336,22 @@ rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and 
   it with SendMessage (context kept). Stop stale background waiters (until-loops on files that never appear).
 - At a stop, every agent commits gated work, commits the rest as 'WIP (not gated): <what>' on its branch (not a
   stash), kills its JVMs by pid and reports branch, head, done, WIP, next step and traps in <= 8 lines.
+
+## Lessons from the 2026-10-19 HBase day (five agents, one day)
+
+- Split by mechanism, not by case: H1 platform (harness, cluster, replay fidelity), H2 ZooKeeper doors, H3 RPC doors
+  and identity, H4 checks and workloads, H5 a read-only-first engine analyst (offline COMPOSE/PLAN on run inputs).
+  Each agent then ran the cases its mechanism decides (RUNS.txt in the analysis dir). The analyst found most of the
+  general engine fixes (re-asks, vacuity, arrivals, re-runs, clock placement) from saved run inputs, without cluster time.
+- One COMMON brief plus a per-agent brief (`analysis/hbase-2026-10-19/COMMON.txt`, `H*.txt`); every policy change
+  (a new worker pool, a tree commit to build from, an owner ruling) is broadcast to all agents at once and appended to
+  RUNS.txt, since an agent's context does not see the others' messages.
+- When the API usage limit stops agents mid-step, resume each one with SendMessage (the agent id), giving the current
+  branch heads and its open items; it continues from its transcript.
+- Tree changes from several agents land on one tree branch (`gc/hbase-checks`) through the lead: an agent commits on
+  its own `gc/hb-*` branch and builds its own tree set and Maven repository; the lead fast-forwards and pushes the fork.
+- A handover note per agent (`handover/H<n>.md`: runs with dirs, snapshots, tree sets, verdict, vacuity, wall; next
+  step per case; branch heads and unmerged work; traps with evidence; leftovers) made the shared docs writable in one
+  pass by the lead; agents do not edit shared docs at a stop.
+- Agents wrongly attributed cases now and then (the lead's own summary said #12 was H2's; it was H3's): keep the case
+  ownership table in RUNS.txt and check it before relaying.

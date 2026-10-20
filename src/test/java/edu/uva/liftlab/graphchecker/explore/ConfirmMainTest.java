@@ -469,6 +469,56 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void aRePairingOnTheSeedPathIsAMoveAndReachesTheReplay()
+            throws Exception {
+        Path iteration = iteration();
+        Endpoint earlier = endpoint(MINT, "a.Manager#tick()#6:WRITE");
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Arrays.asList(WriteRow.of("sel", 5L, earlier, CELL, 4L,
+                        "EXPR.w0", "I"), WriteRow.of("sel", 10L, writer,
+                        CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        Object[][] table = {
+                {earlier, null, false},
+                {writer, null, true},
+                {null, "writer_arm__1__w", false}};
+        for (Object[] row : table) {
+            Path claim = claim("FAULT:IPC", "true");
+            JsonObject recorded = ExploreCodec.readObject(claim);
+            recorded.addProperty("seedSessionId", "sel");
+            recorded.getAsJsonObject("claim").add("movedRoots",
+                    new JsonObject());
+            if (row[1] != null) {
+                JsonArray repaired = new JsonArray();
+                repaired.add((String) row[1]);
+                recorded.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                        .add("repairedArms", repaired);
+            }
+            if (row[0] != null) {
+                JsonObject arm = new JsonObject();
+                arm.addProperty("selector", "writer_arm__1__w");
+                arm.addProperty("sessionId", "sel");
+                JsonArray fills = new JsonArray();
+                fills.add(Interaction.of(InteractionKind.STATE,
+                        (Endpoint) row[0], after).id());
+                arm.add("interactionIds", fills);
+                recorded.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                        .getAsJsonArray("selectedArms").add(arm);
+            }
+            Files.write(claim, recorded.toString().getBytes(
+                    StandardCharsets.UTF_8));
+            Path out = folder.newFolder().toPath();
+            String refusal = "";
+            try {
+                ConfirmMain.write(iteration, claim, manifest(), out);
+            } catch (ConfirmMain.Refused refused) {
+                refusal = refused.getMessage();
+            }
+            assertEquals(row[0] + "/" + row[1] + ": " + refusal, row[2],
+                    refusal.startsWith("the claim moves nothing"));
+        }
+    }
+
+    @Test
     public void aHealthyRunRefutesOnlyWhereItPlantedTheModel()
             throws Exception {
         JsonObject claim = ExploreCodec.readObject(claim("FAULT:IPC",

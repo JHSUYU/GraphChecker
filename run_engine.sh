@@ -5356,6 +5356,9 @@ campaign_stream_ended() {
         && campaign_stream_replay_again "${kind}" "${round}" "${id}" \
           "${session}" "${worker}" "${stream_job_tree[${pid}]}"; then
       requeued=1
+    elif campaign_stream_killed_again "${kind}" "${round}" "${id}" \
+        "${host}" "${status}" "${worker}" "${stream_job_tree[${pid}]}"; then
+      requeued=1
     elif [[ "${status}" -eq 0 ]] && campaign_stream_solves "${kind}"; then
       again=$(jq -r '.why // ""' "${worker}/solve_again" 2>/dev/null) \
         || again=""
@@ -5422,6 +5425,42 @@ of ${charge} MB; answered NOT_ADMITTED"
 
 campaign_stream_replays() {
   [[ "${1:-}" == REPLAY || "${1:-}" == RERUN || "${1:-}" == CONFIRM ]]
+}
+
+campaign_killed_attempts=2
+
+campaign_stream_killed_again() {
+  local kind=$1 round=$2 id=$3 host=$4 status=$5 worker=$6 tree=$7
+  local ended=0 aside file path=""
+  [[ "${kind}" == REPLAY ]] || return 1
+  (( status == 255 || status > 128 )) || return 1
+  ! campaign_host_is_local "${host}" || return 1
+  ls -- "${worker}" >/dev/null 2>&1 || true
+  [[ ! -s "${worker}/obligation_result.jsonl" ]] || return 1
+  for aside in "${worker}"/killed-*; do
+    [[ ! -d "${aside}" ]] || ended=$((ended + 1))
+  done
+  (( ended < campaign_killed_attempts )) || return 1
+  aside="${worker}/killed-$((ended + 1))"
+  mkdir -p -- "${aside}"
+  for file in "${campaign_replay_ended_files[@]}" stdout.log stderr.log \
+      ssh.log replay-stdout.log replay-stderr.log replay-host.txt; do
+    [[ ! -e "${worker}/${file}" ]] || mv -f -- "${worker}/${file}" "${aside}/"
+  done
+  campaign_reap_on_host "${host}" "${worker}"
+  campaign_withdraw_sessions "${id}" "${worker}/sessions" \
+    "${aside}/sessions" "its replay's worker on ${host} ended with exit \
+${status} before it answered, and it is asked again"
+  campaign_log "REPLAY ${id} on ${host}: its worker ended with exit \
+${status} (its ssh connection lost, or a signal) before it answered: no \
+verdict; set aside in ${aside} and asked again"
+  path=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
+    2>/dev/null) || path=""
+  if [[ -n "${path}" && -n "${stream_withdrawn[${path}]:-}" ]]; then
+    campaign_stream_replay_drop "REPLAY ${round} ${id} ${tree}" "${path}"
+    return 0
+  fi
+  campaign_stream_enqueue "REPLAY ${round} ${id} ${tree}"
 }
 
 campaign_stream_replay_again() {
@@ -5517,14 +5556,27 @@ campaign_stream_enqueue() {
   case "${entry%% *}" in
     CONFIRM|RERUN) stream_queue=("${entry}" "${stream_queue[@]}") ;;
     *)
-      while (( at < ${#stream_queue[@]} )) \
-          && [[ "${stream_queue[at]}" != REPLAY\ * ]]; do
-        at=$((at + 1))
-      done
-      stream_queue=("${stream_queue[@]:0:at}" "${entry}" \
-        "${stream_queue[@]:at}") ;;
+      if campaign_stream_fault_replay "${entry}"; then
+        stream_queue+=("${entry}")
+      else
+        while (( at < ${#stream_queue[@]} )) \
+            && [[ "${stream_queue[at]}" != REPLAY\ * ]]; do
+          at=$((at + 1))
+        done
+        stream_queue=("${stream_queue[@]:0:at}" "${entry}" \
+          "${stream_queue[@]:at}")
+      fi ;;
   esac
   stream_queued_at[${entry}]=$(date +%s)
+}
+
+campaign_stream_fault_replay() {
+  local kind round id
+  read -r kind round id _ <<<"$1"
+  [[ "${kind}" == REPLAY ]] || return 1
+  [[ "$(jq -r '.faultFlip // false' \
+    "${iteration_dir}/${round}/${id}/focused_task.jsonl" 2>/dev/null)" \
+    == true ]]
 }
 
 campaign_stream_collected() {

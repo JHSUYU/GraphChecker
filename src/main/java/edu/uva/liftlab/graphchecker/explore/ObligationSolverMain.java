@@ -485,6 +485,9 @@ public final class ObligationSolverMain {
                 outcome.clockDeltas, outcome.rootMints, outcome.pairings,
                 cut);
         if (outcome.openArm) focus.addProperty(FocusedReplay.OPEN_ARM, true);
+        if (corpus.fault(candidate.path.sessionId, candidate.decision)) {
+            focus.addProperty(FAULT_FLIP, true);
+        }
         focus.addProperty(PATH_SESSION, candidate.path.sessionId);
         JsonObject published = publish(out, outcome.obligation,
                 outcome.result, outcome.smt2, outcome.gaps, focus);
@@ -555,6 +558,7 @@ public final class ObligationSolverMain {
     }
 
     private static final String PLAN = "execution_task_plan.jsonl";
+    static final String FAULT_FLIP = "faultFlip";
 
     private static void ask(Path file, String question) throws IOException {
         Files.write(file, (question + System.lineSeparator())

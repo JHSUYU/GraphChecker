@@ -138,6 +138,7 @@ public final class ConfirmMain {
         if ((witness.sessionId.equals(witness.seedSessionId)
                 || witness.session.forced())
                 && object(witness.decided, "movedRoots").size() == 0
+                && witness.repaired.isEmpty()
                 && ownDeliveries(witness.sessionId, witness.arms)
                 && witness.sawChosen) {
             throw Refused.noCounterfactual("the claim moves nothing: its "
@@ -212,6 +213,7 @@ public final class ConfirmMain {
                 new LinkedHashSet<OccurrenceAddress>();
         final Set<String> history = new LinkedHashSet<String>();
         final Set<String> chosenAt = new LinkedHashSet<String>();
+        final List<String> repaired = new ArrayList<String>();
 
         private Witness(JsonObject claim, JsonObject manifest, Path iteration)
                 throws IOException {
@@ -258,6 +260,11 @@ public final class ConfirmMain {
                 if (ordinalOfPath.equals(
                         Refutations.ordinal(optionalString(arm, "selector")))) {
                     arms.add(arm);
+                }
+            }
+            for (String selector : strings(valuation, "repairedArms")) {
+                if (ordinalOfPath.equals(Refutations.ordinal(selector))) {
+                    repaired.add(selector);
                 }
             }
             session = SessionReader.read(iteration, sessionId);
@@ -937,6 +944,7 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, List<WriteRow>>();
         private final Map<String, ReadRow> readers =
                 new LinkedHashMap<String, ReadRow>();
+        private final List<ReadRow> reads = new ArrayList<ReadRow>();
         private final Map<String, WriteRow> joined =
                 new LinkedHashMap<String, WriteRow>();
         private final Set<String> past = new LinkedHashSet<String>();
@@ -1073,6 +1081,7 @@ public final class ConfirmMain {
             }
             for (ReadRow read : session.reads()) {
                 place(read.endpoint(), read.seq());
+                reads.add(read);
             }
             for (ExportRow export : session.exports()) {
                 place(export.endpoint(), export.seq());
@@ -1139,23 +1148,24 @@ public final class ConfirmMain {
                 if (!selector.startsWith("writer_arm__")) continue;
                 Set<String> fills = new LinkedHashSet<String>(
                         strings(arm, "interactionIds"));
+                Map<String, WriteRow> byVersion =
+                        new LinkedHashMap<String, WriteRow>();
+                for (ReadRow read : reads) {
+                    WriteRow held = filled(fills, read);
+                    if (held != null) {
+                        byVersion.merge(SmtLowering.locationKey(
+                                read.location()) + "@"
+                                + read.observedVersion(), held,
+                                (one, other) -> RowOrder.compare(other, one)
+                                        > 0 ? other : one);
+                    }
+                }
                 for (ReadRow read : readers.values()) {
-                    WriteRow held = null;
-                    for (WriteRow write : byLocation.getOrDefault(
-                            SmtLowering.locationKey(read.location()),
-                            Collections.<WriteRow>emptyList())) {
-                        if (!fills.contains(Interaction.of(
-                                InteractionKind.STATE, write.endpoint(),
-                                read.endpoint()).id())
-                                || held != null && held.version()
-                                == read.observedVersion()) {
-                            continue;
-                        }
-                        if (held == null || write.version()
-                                == read.observedVersion()
-                                || RowOrder.compare(write, held) > 0) {
-                            held = write;
-                        }
+                    WriteRow held = filled(fills, read);
+                    if (held == null) {
+                        held = byVersion.get(SmtLowering.locationKey(
+                                read.location()) + "@"
+                                + read.observedVersion());
                     }
                     if (held != null) chosen.put(read.endpoint().id(), held);
                 }
@@ -1190,6 +1200,25 @@ public final class ConfirmMain {
                 }
             }
             return chosen;
+        }
+
+        private WriteRow filled(Set<String> fills, ReadRow read) {
+            WriteRow held = null;
+            for (WriteRow write : byLocation.getOrDefault(
+                    SmtLowering.locationKey(read.location()),
+                    Collections.<WriteRow>emptyList())) {
+                if (!fills.contains(Interaction.of(InteractionKind.STATE,
+                        write.endpoint(), read.endpoint()).id())
+                        || held != null && held.version()
+                        == read.observedVersion()) {
+                    continue;
+                }
+                if (held == null || write.version() == read.observedVersion()
+                        || RowOrder.compare(write, held) > 0) {
+                    held = write;
+                }
+            }
+            return held;
         }
 
         private boolean ran(Map<String, WriteRow> chosen) {

@@ -155,3 +155,71 @@ cost us time at least once; the date or the case it came from is named so it can
   reads them all. The fixed point beside GROW re-runs (OPTIMIZATIONS 1.37, reverted 2026-10-19) skipped re-runs no
   obligation could be cut from, but the closure's tasks in the regions they wove existed only once they landed
   (SGF9-adhoc-39: 8 paths where SGF8 composed 57; all 7 SGF9 cases it ended left sessions no round planned over).
+
+## 9. HBase (2026-10-19: what moving the engine to a new system taught us)
+
+Order of work that paid off on HBase: make every run identical first (names, placement, periodic work), then
+widen what the engine can see, then debug cases one by one, reading each claim's chain before trusting it.
+
+**Make a run repeatable before debugging anything.** Each item was found as a seed replay or a CONFIRM that diverged
+from its recording; each is now a tree workaround named in STATUS "Per-system surface".
+- Run constants: host name `localhost`, ports in creation order, start codes `1700000000000 + 1000 x order` (R3-10:
+  meta on rs1 in the recording, rs0 in the replay; start codes are the run's constants, so a check that needs a
+  restarted server's new start code needs a workload that restarts one -- hbase-adhoc-31).
+- One master at a time (the first alone, a standby once it is active); region servers report for duty in order and
+  the balancer's destinations are sorted, so hbase:meta is on `auto0/rs0` in every run (HZ9-24, HZ12-24: fixed twice,
+  4d3cc2d197 then c246d3fe1c -- ordering only the registrations was not enough).
+- Periodic work a 30 s recording never reaches and a 10x slower replay does: the WAL roller (a disabled WAL never
+  clears a roll request and the roller spins, HZ6-24), periodic memstore flushes, and the master's chores --
+  balancer, catalog janitor, cleaners, normalizer, hbck, replication statistics, a system table's fixed 5-minute flush
+  (HZ17-24: the balancer moved regions 8 minutes into the seed replay, one close stayed CLOSING, the test's put retried
+  without end). All are `NEVER_MS` in automatic mode (tree f9340f2aab). When a seed replay stalls, grep its
+  `replay.log` for chore names first. Consequence: a check whose race partner IS a chore (13: CatalogJanitor's GC;
+  04: the quota observer) must drive that chore from its workload.
+- Procedure steps: each push hands off through `CausynthStep` (START at a do-nothing executor, so a step is a
+  HANDOFF_TASK), and the next step is handed off INSIDE the claimed step, not in its `finally` (464505d240: from the
+  finally it captured the worker's poll WAKE, and steps' occurrences drifted between runs).
+- Async continuations (`CompletableFuture` listeners) stand at their registrant's address wherever they run
+  (`Continuations#carry`; review-cont found two HIGH defects before merge). A chain that re-registers per poll nests
+  one frame per poll (TODO HBase 8): make that operation a synchronous call in the workload (21).
+- Netty: one event loop group per node; a timer task is a lineage start.
+
+**An UNSAT is not a result until `tools/analysis/vacuity.py` says it is not vacuous.** At 19:30 every HBase UNSAT
+so far was vacuous: fatal arms literal false (37, 13), map reads at INITIAL with no writer (34, 08, 22, nsrg), writers
+dropped as same-thread (15), INITIAL plus BLOCKING (31). Run it on every UNSAT before writing a STATUS row.
+
+**A SAT that "moves nothing" is a faithfulness hole, not a schedule problem.** When CONFIRM refutes on ORDER or
+WIRE edges, read the claim's `movedRoots` first. `{}` on the seed path (fatalObserved false) means a symbol in the
+fatal's cone is neither pinned nor a root: an unplaced clock cell (#11 HZ17-mat: master0's activation T0, read only
+in re-runs on another node; fixed 208ac1899, placement by any node of the same JVM clock), or an `unsupported__` leaf
+for an unmodelled operation (HP8-15: `String.equals` with ARGUMENT_DYNAMIC_TYPE_UNMODELED; open, TODO HBase).
+
+**A workaround can remove what another fix needs.** Removing `masterSystemTime` from OpenRegionRequest (a clock
+export with no mint row) also removed master0's only clock readings from the seed, which left T0 unplaced (H2).
+After a workaround, rerun the cases it touches and look for new `DECLARATION_MISSING` / unplaced gaps.
+
+**Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
+startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no
+world can flip. Concrete-by-construction checks (an untracked compare, data through a region's store: 13's meta
+cells) are vacuous until a workaround gives them a value the engine tracks (nsrg: a per-group count, 985a0dfe91).
+
+**Target selectors.** A region whose method is called only from another region's body is folded into it: 31's
+`throwOnWrongStartCode(long)` never had an occurrence (SEED: DECLARED_TARGET_OCCURRENCE_UNOBSERVED); name the
+enclosing region's occurrence. Check the seed's observed occurrences before a long run.
+
+**Fault kinds multiply replays.** 10 queued 210 `HBASE_RPC` REQUEST faults (70 client calls x IOException,
+ConnectionClosedException, CallQueueTooBigException), ~10 min of replay each; that, not the 241 refused arms (seconds
+each, decided on the worker), was why it did not converge. Compare a fault kind to the run with NO fault: CQTBE is
+rejected before it runs and retried on the same cached location = the recording plus time (cut, H3); a
+ConnectionClosedException clears the master stub cache and the registry's endpoints (kept).
+
+**One counterfactual per bug is not required** (RULES): HBASE-30484's workload drives the quota observer twice with
+`hbase.client.retries.number=0`, so one lost enable is one fault at depth 0; otherwise raise that case's depth.
+
+**Cluster use.** A planner head is charged its full heap for life (OPTIMIZATIONS 1.36): 23.2 GB on a 30 GB host
+whose cap is 22.1 GB, so no replay ran beside it, while HBase's engine JVMs peaked at ~3 GB (9.6 GB at most): size
+`engine_memory_mb` from the system's measured `engine_peak_mb` files (HBase: 12288 since 2026-10-20). Two heads on a 3-host group left one replay host and R17-10
+starved for an hour. Replays use all 14 hosts (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`), heads stay on the agent's own
+hosts (at most 2-3), detached in their own session: heads run from one shell on lift11 were all TERMed when another
+round's stop ended that shell's ssh clients (HZ14: 24 exit-255 kills; killed replays are now re-queued, at most twice).
+Concurrent `git worktree add` races on `.git/config`: take `/localtmp/vnr3ne/worktree-add.lock` (flock).

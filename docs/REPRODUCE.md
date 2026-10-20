@@ -218,7 +218,8 @@ and one HBase tree, the branch `graphchecker/hbase-checks` of the public fork `h
 `1790942bb2` backported to Java 8, with the adapter, every case's target marker and the workloads of the tree's own.
 Every HBase case explores at world depth 0 (`CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0` in both `case.sh` files), as Solr's
 final round did: a flip is asked from the recording's paths only (the engine's default, 3, re-asks the same arms in
-every world: STATE §S of the Solr round, TODO "Solr: after SGF9" item 5).
+every world: STATE §S of the Solr round, TODO "Solr: after SGF9" item 5). A case that needs k counterfactuals gets
+depth k on its own `case.sh` line (RULES: several counterfactuals are fine): hbase-adhoc-34 runs at depth 1.
 No HDFS: every workload's mini cluster runs on the local filesystem (STATUS "Per-system surface", HBase, "tree:
 cluster and bounds").
 

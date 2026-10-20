@@ -1764,7 +1764,12 @@ the obligation's. The replay's answer replaces the solver's row as a new inode
 (`campaign_write_whole`), never in place: written on another host than the row it replaces, an
 NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: the replay's row,
 then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
-first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
+first first -- a confirmation or GROW re-run queued at the front, a solve or a REPLAY ahead of every queued REPLAY,
+except the REPLAY of a fault flip (its solver's focus row states `faultFlip`: the flipped decision reaches a `FAULT`
+root, `Corpus#fault`), which waits behind every other entry, so a door fault at each of many client calls queues
+behind the flips of the target's own guards (`campaign_stream_enqueue`; hbase-adhoc-10's R17-10 queued 210 of its 233
+REPLAYs as client door faults ahead of them); nothing is dropped, and the wait bound still starts the entry waiting
+longest -- while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the host of `campaign_worker_hosts` (empty: this machine, no
 ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`: the ceiling less
 the room heads hold there and the larger of its live charges and its real use, as the head's view
@@ -1818,7 +1823,14 @@ live set does); out of heap twice, or once at that most, it is `REPLAY_BOUNDED`.
 CONFIRM run once more in place (`campaign_session_replay`, `campaign_confirm_claim`): out of heap at twice the
 heap, the CONFIRM ended for memory at its full need (`campaign_replay_full_need_mb`); a second end fails the
 seed's REPLAY and bounds the CONFIRM by name (`campaign_replay_bounded`: its confirmation refuted as
-`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). Checked live on vm-force10 with
+`REPLAY_BOUNDED: the confirmation replay ...`, never decided over no replay). A remote REPLAY whose worker
+ends with no answer of its own at 255 (its ssh lost: an ssh client ended by a signal exits so, and the peer's
+watchdog then ends the payload) or past 128 (a signal) was killed by infrastructure, not by its question: its run
+goes aside under `<worker>/killed-<n>/` with the session it opened, and its entry is queued again unchanged, at
+most twice (`campaign_stream_killed_again`, `campaign_killed_attempts`); a third such end, or any other failure,
+is the worker's unfinished answer `NOT_ADMITTED` as before (`campaign_obligation_unfinished`). HZ14-mat: 24 replays
+on lift06/07 ended at once at 20:40:14 when the head's ssh clients on lift11 were ended, each answered
+`NOT_ADMITTED` before this. Checked live on vm-force10 with
 the replay's heap overridden to 256 MB (`CAUSYNTH_WORKLOAD_JAVA_OPTS`): `Terminating due to
 java.lang.OutOfMemoryError`, exit 3, the run set aside under `ended-1`, `replay_again` naming the heap. A replay's heap is half its basis, at least 4 GB (`campaign_replay_heap_mb`).
 THE CONTROL PLANE IS RECORDED (`campaign_stream_event`, `<iteration>/stream_events.tsv`): each admission with the head's
@@ -3517,10 +3529,16 @@ name (`CONFIRM refused:`, exit 1): a defect of the rows, `refutes` false, so a c
 with it is a `RUN_DEFECT`.
 
 - **The run as recorded**: a claim whose selected session is the seed's or a forced one (§7.10: the
-  recording's world), that moves no root and no clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
-  is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a run of
-  it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
-  excludes it.
+  recording's world), that moves no root and no clock, re-pairs no arm (the valuation's `repairedArms`
+  for its path is empty), every selected arm the seed's own delivery and every chosen write the one its
+  read saw, is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a
+  run of it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
+  excludes it. A re-pairing is a move: a read of the join closure takes the write the model chose for
+  its version (`StateClosure#chosen`), named by the arm's STATE interaction with that read or with any
+  read of the same location and version -- the composer's symbol is one per version, and its arm may
+  name a later read of it, past the cutoff (hbase-adhoc-22: the arm named the quota total's read inside
+  `addTable`, the anchor's own read in `getRegionCount` saw the same version) -- so a seed-path
+  re-pairing goes to its replay.
 - **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
   run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
   a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
