@@ -3721,7 +3721,8 @@ campaign_explore() {
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
-    stream_rests=()
+    stream_rests=() stream_worlds=() stream_world_of=()
+  local -a stream_duplicates=()
   local -a stream_uncaptured=()
   local -A stream_chain=() stream_chain_grown=()
   local -a stream_chain_witnesses=()
@@ -5333,7 +5334,7 @@ campaign_stream_wait() {
 
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer again
-  local rests="" requeued=0
+  local rests="" world="" requeued=0
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
@@ -5381,10 +5382,19 @@ campaign_stream_ended() {
     elif [[ "${answer}" == SAT_MODEL_READY\|* ]]; then
       rests=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
         2>/dev/null) || rests=""
+      world=$(jq -r '.world // ""' "${worker}/focused_task.jsonl" \
+        2>/dev/null) || world=""
       if [[ -n "${rests}" && -n "${stream_withdrawn[${rests}]:-}" ]]; then
         campaign_stream_replay_drop \
           "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" "${rests}"
+      elif [[ -n "${world}" && -n "${stream_worlds[${world}]:-}" ]]; then
+        campaign_stream_duplicate "${kind} ${round} ${id} ${host} 0" \
+          "${world}" "${stream_worlds[${world}]}"
       else
+        if [[ -n "${world}" ]]; then
+          stream_worlds[${world}]=${id}
+          stream_world_of[${id}]=${world}
+        fi
         campaign_log "obligation ${id}: solved on ${host}, its replay queued"
         [[ -z "${rests}" ]] || stream_rests[${id}]=${rests}
         campaign_stream_enqueue \
@@ -5611,6 +5621,25 @@ worker did not stage"
   stream_gate_owed+=("${entry}"$'\t'"${worker}/sessions/${named}"$'\t'"${worker}")
 }
 
+campaign_stream_duplicate() {
+  local entry=$1 world=$2 first=$3 kind round id host status worker
+  read -r kind round id host status <<<"${entry}"
+  worker="${iteration_dir}/${round}/${id}"
+  jq -n -c --arg id "${id}" --arg detail "DUPLICATE_WORLD: its model plants \
+world ${world}, which obligation ${first} already replays (queued, running or \
+landed): that replay answers it, the path it was asked from changing only the \
+schedule prefix, which is timing" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "DUPLICATE_WORLD", sessionId: "", detail: $detail}' \
+    | campaign_write_whole "${worker}/obligation_result.jsonl"
+  [[ ! -e "${worker}/question.asked" ]] \
+    || mv -f -- "${worker}/question.asked" "${worker}/question.txt"
+  stream_duplicates+=("${id}:${first}")
+  campaign_log "obligation ${id}: world ${world} is obligation ${first}'s; \
+DUPLICATE_WORLD, no replay"
+  campaign_stream_land "${entry} -"
+}
+
 campaign_stream_land() {
   local kind round id host status session worker verdict
   read -r kind round id host status session <<<"$1"
@@ -5618,6 +5647,11 @@ campaign_stream_land() {
   worker="${iteration_dir}/${round}/${id}"
   verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl" \
     2>/dev/null) || verdict="?"
+  if [[ "${kind}" == REPLAY && "${verdict}" != ADMITTED \
+      && "$(declare -p stream_world_of 2>/dev/null)" == "declare -A"* ]] \
+      && [[ -n "${stream_world_of[${id}]:-}" ]]; then
+    unset "stream_worlds[${stream_world_of[${id}]}]"
+  fi
   campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
   if [[ "${kind}" == HARD && "${verdict}" == NOT_ADMITTED ]] && jq -e \
       '.detail // "" | startswith("SOLVER_TIMEOUT")
@@ -6091,6 +6125,8 @@ campaign_stream_manifest() {
     "${stream_reruns_dropped[@]}"
   campaign_json_strings "${lists}/confirmsReaped.json" \
     "${stream_confirms_reaped[@]}"
+  campaign_json_strings "${lists}/duplicateWorlds.json" \
+    "${stream_duplicates[@]}"
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
     --argjson rounds "${stream_round}" --argjson steps "${stream_steps}" \
@@ -6101,6 +6137,7 @@ campaign_stream_manifest() {
     --slurpfile afterWitness "${lists}/afterWitness.json" \
     --slurpfile rerunsDropped "${lists}/rerunsDropped.json" \
     --slurpfile confirmsReaped "${lists}/confirmsReaped.json" \
+    --slurpfile duplicateWorlds "${lists}/duplicateWorlds.json" \
     --argjson roundDue "${stream_round_due}" \
     --arg roundDropped "${stream_round_dropped}" \
     --slurpfile attempts "${attempts}" \
@@ -6110,7 +6147,8 @@ campaign_stream_manifest() {
       witnessAttempts: ($attempts | sort_by(.attempt)),
       cancelled: $cancelled[0], reaped: $reaped[0],
       rerunsDropped: $rerunsDropped[0],
-      confirmsReaped: $confirmsReaped[0], roundDue: $roundDue,
+      confirmsReaped: $confirmsReaped[0],
+      duplicateWorlds: $duplicateWorlds[0], roundDue: $roundDue,
       roundDropped: (if $roundDropped == "" then null else $roundDropped end),
       afterWitness: $afterWitness[0]}' \
     >"${iteration_dir}/exploration.json"

@@ -488,6 +488,10 @@ public final class ObligationSolverMain {
         if (corpus.fault(candidate.path.sessionId, candidate.decision)) {
             focus.addProperty(FAULT_FLIP, true);
         }
+        if (!candidate.forced) {
+            focus.addProperty(ExploreCodec.WORLD, ObligationFactory
+                    .wholeWorldDigest(ExploreCodec.readWorld(focus)));
+        }
         focus.addProperty(PATH_SESSION, candidate.path.sessionId);
         JsonObject published = publish(out, outcome.obligation,
                 outcome.result, outcome.smt2, outcome.gaps, focus);

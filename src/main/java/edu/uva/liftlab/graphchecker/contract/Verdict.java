@@ -4,5 +4,6 @@ public enum Verdict {
     SAT_MODEL_READY,
     UNSAT,
     ADMITTED,
-    NOT_ADMITTED
+    NOT_ADMITTED,
+    DUPLICATE_WORLD
 }
