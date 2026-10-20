@@ -558,10 +558,8 @@ tree sets, launch commands). Nothing runs on any lift.
 `gc/hbase-checks` 985a0dfe91 built with its own Maven repository, image vm-force12, workers every host the head reaches
 in batch ssh -- lift15 failed that from lift03 (HP10-14) --, heads on hosts of their own; `tools/analysis/vacuity.py` on
 every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readings.md`):
-- **hbase-adhoc-04 = HBASE-30484**: SAT MARKER_FLIPPED, confirmed in the VM (HC21-04, 631 s; the moved root is the
-  REQUEST fault of the observer's `RawAsyncHBaseAdmin#enableTable`). Read its `.smt` by hand; declare its expected
-  mechanism (an `HBASE_RPC` REQUEST fault, MARKER_FLIPPED) where `experiments/accept/report.py` reads it; fix REPRODUCE
-  (item 3) and rerun for the native 10/10.
+- **hbase-adhoc-04 = HBASE-30484**: DONE, PASS (NR3-04, 2026-10-20: SAT confirmed, reproduced 7/10, control 0/10;
+  HBASE.md §E).
 - **hbase-bugs-master-active-time (#11)**: rerun on `system/hbase` (>= 208ac1899: unplaced clocks placed). Offline
   its claim 0 is CLOCK_SKEW, T0 = T1 + 60001 ms; CONFIRM must plant T0 on master0's clock at its activation reading
   (`HMaster#finishActiveMasterInitialization`, `EnvironmentEdgeManager#currentTime`) and deliver it as the
@@ -594,7 +592,7 @@ HZ13-mat, 2026-10-19), each standing behind a workaround or open:
   0002: `2efac300f9e6d4d6` model "1792454828365", run "1792455517516"), while the replay's clocks are not the
   recording's. Open: such a leaf should be held to the model's clock value (planted) or compared by its expression.
 
-**3. An order no hold realizes is checked, not refused (built 2026-10-20, H3; verify on 04).** HC21-04's
+**3. An order no hold realizes is checked, not refused (built 2026-10-20, H3; 04 reproduced with it, NR3-04 7/10).** HC21-04's
 REPRODUCE planted nothing ("ORDER_UNHELD" on client0's `FutureUtils#addListener` continuation in
 `AsyncMasterRequestRpcRetryingCaller#doCall`). The chosen read (the flush's `TableStateManager` table-state map at
 the DisableTableProcedure step's DISABLED write) orders every other writer before that step; the step is a hand-off
@@ -673,7 +671,11 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
 **11. Smaller HBase items.**
 - A procedure step that only met a busy entity lock (`LOCK_EVENT_WAIT`) or yielded is a step too, so where two
   procedures contend the later steps' occurrences can be renumbered between runs; if a case shows it, hand the next step
-  off from the empty step's own hand-off context.
+  off from the empty step's own hand-off context. Shown natively by hbase-adhoc-04 (owner ruling: 7/10 is a PASS, not
+  pursued): in repro-NR4-04 the DisableTableProcedure's DISABLED step (activation `4fb72968fe9e4893`) never ran under
+  its confirmed identity in 2 of 10 runs and createTable's ENABLED step (`3072f5195129abb3`) in 3, where
+  `ProcedureFutureUtil#suspendIfNecessary` suspended a step in one run and not in the other, so the next hand-off nests
+  one level deeper or shallower (NR3-04: 3 of 10).
 - StaleRuns (COMPOSE frees a value a stale run left concrete) was built and reverted (655b88023): on HZ7-mat it changed
   nothing; rebuild only when a claim's path takes a value through a read whose writer ran paused and runs whole now.
 - Identity of threads libraries start (ZooKeeper's EventThread, Netty loops): per-node Netty groups and timer lineage
