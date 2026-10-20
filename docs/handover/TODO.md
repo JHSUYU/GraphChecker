@@ -657,9 +657,12 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
   procedures contend the later steps' occurrences can be renumbered between runs; if a case shows it, hand the next step
   off from the empty step's own hand-off context. Shown natively by hbase-adhoc-04 (owner ruling: 7/10 is a PASS, not
   pursued): in repro-NR4-04 the DisableTableProcedure's DISABLED step (activation `4fb72968fe9e4893`) never ran under
-  its confirmed identity in 2 of 10 runs and createTable's ENABLED step (`3072f5195129abb3`) in 3, where
-  `ProcedureFutureUtil#suspendIfNecessary` suspended a step in one run and not in the other, so the next hand-off nests
-  one level deeper or shallower (NR3-04: 3 of 10).
+  its confirmed identity in 2 of 10 runs and createTable's ENABLED step (`3072f5195129abb3`) in 3 (NR3-04: 3 of 10).
+  The 2 DISABLED-step misses are not a nesting difference. In runs 4 and 6 (`final/reproduce/run-*/runtime_trace.jsonl`)
+  the disable's second step stands at `call@1/call@0/disableTable@0/handOff#u18@0/run#u23@0/...`, where the reproduced
+  runs stand at `call@0/call@0/...` at the same nesting: the worker's `call@k` drift of item 21, which its design
+  removes. The 3 ENABLED-step misses (runs 1, 8, 9) were not examined: `suspendIfNecessary` nesting one level deeper or
+  shallower when it suspends a step in one run and not in another remains possible there.
 - A refuted message re-pairing is re-found on every other path, ~10-15 min of COMPOSE+CONFIRM each (hbase-adhoc-31
   NR8-31: 9 claims, all rs3's executeProcedures consumer re-paired to another session's message, until
   campaign_max_claims). A sound cross-path exclusion needs a refutation reason that does not depend on the path's world
@@ -847,18 +850,62 @@ every `.later` < -2000. Yet the selected path is satisfiable at -2001 alone: bin
 Harmless for the claim, since an explored world is now a valuation (`Composer#exploredWorlds`), but a root's range
 is not stated. Recorded only, not chased.
 
-**21. CONFIRM plans regions for the model's chosen writer only, not for the writers it must hold around it** (H3;
-hbase-adhoc-10 NR13-10, NR19-10). A STATE edge holds every other writer of the location before the chosen writer or
-after the reader (PIPELINE §10); an ORDER can name only a writer that stands in an activation of the CONFIRM replay.
-10's claims re-pair the unassign's read of `RegionStateNode.procedure` (:765) to an earlier assign TRSP's attach; the
-writer that must come after the read is that TRSP's `unsetProcedure` in `TransitRegionStateProcedure#confirmOpened`
-(:332, a procedure step), which ran in no planned activation, so every claim was refused "the run observed
-INSTANCE/<n>#72@<v> ..., stored outside every activation, which no ORDER holds" (NR13-10: 5 of 5; NR19-10, with
-TransitRegionStateProcedure in the case's scope: claims 0-4; its claims 5-8 got TRSP-step ORDER holds that did not exit
-within 300 s). A fix would plan, for each held location, the regions enclosing its other recorded writers (here the TRSP
-step running confirmOpened) into the CONFIRM task, so each such write stands in an activation an ORDER can name; or,
-where no activation can be planned, check the read's observed writer at the read instead of holding (as checked orders,
-item 3) -- observed, not enforced.
+**21. A procedure step's address carried its worker's earlier steps, so most later steps ran unactivated (E2,
+2026-10-20; fixed on `hbase-e21`: a hand-off claim stands apart, IDENTITY §3; the validation runs are below).**
+hbase-adhoc-10's claims re-pair the unassign's read of `RegionStateNode.procedure` (:765) to createTable's TRSP attach
+(`setProcedure` inside the CreateTableProcedure step). The writer that must then come after the read is that TRSP's
+`unsetProcedure` in `TransitRegionStateProcedure#confirmOpened` (:332, a later step of the child TRSP). NR13-10 (5 of 5)
+and NR19-10 claims 0-4 were refuted with "the run observed INSTANCE/<n>#72@<v> ..., stored outside every activation,
+which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from the refusals.
+- What proves it (NR19-10, `gc-out/hbase-rpc/accept-NR19-10`):
+  - ConfirmMain plans no regions. A CONFIRM replay runs the iteration's seed plan, as every replay does
+    (`campaign_confirm_claim` -> `seed-replay/execution_task_plan.jsonl`). That plan does list every createTable child
+    TRSP step, confirmOpened's included: 41 occurrences of `REGION.5bad444f` (`ProcedureExecutor#executeProcedure`)
+    under createTable's anchor.
+  - Claim 0000's selected session `598b2edd` activated 8 of them; its anchor read observed v16429, an
+    `UNATTRIBUTED_STORE` ("its store ran outside every activation"). Session `24c1e6c4`, the one that ran at the seed's
+    addresses, activated all 41. Of the 215 sessions, 197 activated 7-8 and 6 all 41. The CONFIRM replay of 0000
+    activated 7.
+  - So the session states no write row for the later writer. `StateClosure` takes "every other writer of the location"
+    from write rows only, so `expected_edges.jsonl` held the STATE row and one ORDER (the attach before the reader) and
+    nothing for `unsetProcedure`. The replay ran it unactivated again, and the close found a version no row states.
+- The mechanism (`Identity`, before the fix):
+  - An occurrence's index runs from the thread's scope base (`regionEnter` = `from(scopeBase)`). A PEWorker's scope base
+    is its poll wake. Below the step's claim stands the frame of `TraceUtil.trace(this::runProcedure)`'s lambda,
+    `ProcedureExecutor$WorkerThread$runProcedure__886228627#call()`, at `call@k`, where `k` counts that worker's
+    runProcedure calls since its last wake: timing.
+  - A claimed start's frames are the starter's snapshot from its own scope base (`startWork`), so the next step's start,
+    filed inside the claim (`CausynthStep#run`'s finally, `#u23`), carries that `k`. Every later step of a procedure
+    therefore carries one `call@k` per earlier step, e.g.
+    `call@0/call@5/call@1/call@0/call@0/createTable@0/.../handOff#u18@0/run#u23@0/run#u23@0/run#u23@0/run@0/access$1300@0/executeProcedure@0`.
+    One step on a busier worker renamed every step after it.
+  - The schedule context already left a consumer's own frames out (`State#consumedStart`, IDENTITY §8); the
+    occurrence index did not.
+- The fix (`Identity#adopt`, `#endClaim`):
+  - A consumed `HANDOFF_TASK` claim (not own, not ran here) stands apart as a continuation does (`State#standApart`):
+    its scope base becomes the claim's depth, below an opaque region.
+  - `endClaim` restores the regions and the scope base for every claim that stood apart. The request verb and the
+    set-aside inbound stay continuation-only.
+  - A step's address is now its start's frames plus the frames after the claim, the same in every run. Start keys
+    and `CLAIM` keys become stable with it. Schedule contexts do not change (`handoffs()` starts at
+    `max(scopeBase, consumedStart)`, which is the same depth). `QUEUED_TASK` and `ITEM` claims are not touched; a JDK
+    pool worker has no woven frame below its claim, so Solr's Overseer Runners keep their addresses.
+  - Tests: `IdentityTest#aHandOffStandsOnItsStartWhateverItsWorkerRanBefore` (a hand-off claimed under a worker frame
+    entered 0 or 2 times before stands at one address, and so does the next step it files, claimed on another thread;
+    it failed on the old code with `call@0/...` vs `call@2/...`, `call@2/call@2/...` for the next step) and
+    `#aHandOffItsStarterRunsInlineKeepsItsStartersFrames` (a ran-here claim keeps today's address).
+- Expected effects:
+  - **10:** every confirmOpened step activated in the selected session, so its `unsetProcedure` is an "other writer".
+    `StateClosure` then holds its step at the claim's entry behind the unassign's read. `admin.createTable` is
+    synchronous (the CreateTableProcedure waits for its children), so the unassign is never called and the order times
+    out after 300 s. That is the real program-order refutation that NR19-10's claims 5-8 already got (TODO HBase 15's
+    class), so 10 stays a named bound until item 15 excludes the model at COMPOSE.
+  - **04's native misses:** see item 11. In repro-NR4-04, 2 of its 5 misses were this drift, natively.
+  - Replays get heavier, since later steps are now activated (concolic rows for ~5x the step occurrences on 10: 41 instead of 7-8).
+- Risk: every HBase procedure step's occurrence id, start key and claim key changes. No case selector or data row names
+  one; the PASS runs (04, 22, nsrg, mat, #12) were made under the old identity, so rerun them on the change (the
+  exclusive series does). Not built: checking the read's observed writer instead of holding; it cannot confirm a
+  read that saw the wrong version, and with stable steps nothing needs it.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

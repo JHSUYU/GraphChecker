@@ -227,6 +227,86 @@ public class IdentityTest {
     }
 
     @Test
+    public void aHandOffStandsOnItsStartWhateverItsWorkerRanBefore()
+            throws Exception {
+        String call = "<a.Worker: java.lang.Object call()>";
+        String body = "<a.Step: void body()>";
+        String submit = "<a.Admin: void submit()>#u4";
+        String next = "<a.Step: void run()>#u23";
+        List<List<String>> stood = new ArrayList<List<String>>();
+        for (int before : new int[] {0, 2}) {
+            reset();
+            Object source = new Object();
+            RuntimeTraceContext.registerSource(source, DN);
+            long request = RuntimeTraceContext.beginRequest(source, "test");
+            Object first = new Object();
+            Object second = new Object();
+            Identity.startWork(submit, first, handOffs());
+            RuntimeTraceContext.endRequest(request);
+            List<String> seen = new ArrayList<String>();
+            for (Object step : new Object[] {first, second}) {
+                on(() -> {
+                    for (int earlier = 0; earlier < before; earlier++) {
+                        Identity.exitFrame(Identity.enterFrame(call, null));
+                    }
+                    long worker = Identity.enterFrame(call, null);
+                    long claim = Identity.claimStart(step);
+                    long run = Identity.enterFrame(body, null);
+                    seen.add(Identity.occurrence(DN.key(), "REGION.step",
+                            true).render());
+                    if (step == first) {
+                        Identity.startWork(next, second, handOffs());
+                    }
+                    Identity.regionExit(null);
+                    Identity.exitFrame(run);
+                    Identity.endClaim(claim);
+                    Identity.exitFrame(worker);
+                });
+            }
+            stood.add(seen);
+        }
+        assertEquals(stood.get(0), stood.get(1));
+        String idx = "/idx:" + submit + "@0/" + body + "@0";
+        Object[][] table = {
+            {stood.get(0).get(0), idx},
+            {stood.get(0).get(1), idx + "/" + next + "@0/" + body + "@0"}};
+        for (Object[] row : table) {
+            String said = (String) row[0];
+            assertEquals(said, true, said.endsWith((String) row[1]));
+        }
+    }
+
+    @Test
+    public void aHandOffItsStarterRunsInlineKeepsItsStartersFrames()
+            throws Exception {
+        String test = "<a.Test: void run()>#u2";
+        String submit = "<a.Admin: void submit()>#u4";
+        String body = "<a.Step: void body()>";
+        Object source = new Object();
+        RuntimeTraceContext.registerSource(source, DN);
+        long request = RuntimeTraceContext.beginRequest(source, "test");
+        long frame = Identity.enterFrame(test, null);
+        Object step = new Object();
+        Identity.startWork(submit, step, handOffs());
+        long claim = Identity.claimStart(step);
+        long run = Identity.enterFrame(body, null);
+        String at = Identity.occurrence(DN.key(), "REGION.step", true)
+                .render();
+        Identity.regionExit(null);
+        Identity.exitFrame(run);
+        Identity.endClaim(claim);
+        Identity.exitFrame(frame);
+        RuntimeTraceContext.endRequest(request);
+        assertEquals(DN.key() + "/region/REGION.step/ctx:Root:CLIENT/test#1"
+                + "/idx:" + test + "@0/" + submit + "@0/" + body + "@0", at);
+    }
+
+    private static ThreadPoolExecutor handOffs() {
+        return new ThreadPoolExecutor(0, 1, 1L, TimeUnit.SECONDS,
+                new SynchronousQueue<Runnable>());
+    }
+
+    @Test
     @FreshStatics.Rows(4)
     public void aHandOffServesOnlyWorkAnotherThreadStarted() throws Exception {
         String step = "<a.Step: void run()>#u23";
