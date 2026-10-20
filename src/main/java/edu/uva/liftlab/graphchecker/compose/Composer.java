@@ -1616,6 +1616,7 @@ public final class Composer {
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
+        Hold hold = null;
         if (!target.reachedAnchor()) {
             pathConcrete.put("way:" + session, way != null
                     ? new Concrete("WAY", way.siteId() + "#" + way.ordinal(),
@@ -1640,6 +1641,9 @@ public final class Composer {
             if (!fatal.isEmpty() && !unknown(fatal, refusals, subject)) {
                 fatalArm = terms.size();
                 terms.add(fatal);
+                if (symbolicWay) {
+                    hold = hold(session, fatalTerm, fatal, subject);
+                }
             }
             terms.addAll(healthyDecisions(session, ordinal, path.decisions,
                     symbolicWay ? cutoff - 1 : cutoff, relevant));
@@ -1658,6 +1662,9 @@ public final class Composer {
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
                 fatalArm = terms.size();
                 terms.add(phi);
+                if (!target.observedFatal()) {
+                    hold = hold(session, published, phi, subject);
+                }
             }
         }
 
@@ -1736,6 +1743,9 @@ public final class Composer {
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
                 familyTerms, observed, repairing.planted);
+        if (hold != null) {
+            terms.set(fatalArm, hold.held(terms.get(fatalArm), joins));
+        }
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
         composedFamilies.commit();
@@ -2254,6 +2264,96 @@ public final class Composer {
             return true;
         }
         return false;
+    }
+
+    private Hold hold(String session, String expression, String fatal,
+                      String subject) {
+        Set<String> leaves = lowering.havocLeaves(fatal);
+        if (leaves.isEmpty()) return null;
+        if (!Collections.disjoint(leaves, lowering.framedLeaves())) {
+            return unheld(session, subject, "a value a frame wrote on an"
+                    + " arrival its occurrence refused, which moves with that"
+                    + " frame's producer");
+        }
+        SessionReader rows = corpus.session(session);
+        SmtLowering.SessionJoin join = corpus.join(session);
+        Hold hold = new Hold(session);
+        for (String mover : lowering.movers(expression)) {
+            if (mover.startsWith(SmtLowering.READ_MOVER)) {
+                hold.reads.add(mover.substring(
+                        SmtLowering.READ_MOVER.length()));
+                continue;
+            }
+            if (join.viewLeaf(mover) != null) {
+                return unheld(session, subject, "the view leaf " + mover
+                        + ", which moves with its view's pairing too");
+            }
+            String recorded = recordedAs(rows, mover);
+            if (recorded == null) {
+                return unheld(session, subject, "the clock or unminted"
+                        + " value " + mover + ", whose recorded value this"
+                        + " path does not state");
+            }
+            hold.recorded.add(recorded);
+        }
+        return hold;
+    }
+
+    private Hold unheld(String session, String subject, String why) {
+        gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                GapClass.DIAGNOSTIC, subject, "the fatal arm the recording"
+                        + " did not take rests on an operation the lowering"
+                        + " has no semantics for and on " + why + ", so it"
+                        + " is not held to its recording: free,"
+                        + " over-approximated (CONFIRM filters)"));
+        return null;
+    }
+
+    private final class Hold {
+        private final String session;
+        private final List<String> recorded = new ArrayList<String>();
+        private final Set<String> reads = new LinkedHashSet<String>();
+
+        private Hold(String session) {
+            this.session = session;
+        }
+
+        String held(String fatal, Map<String, String> joins) {
+            List<String> asRecorded = new ArrayList<String>(recorded);
+            SmtLowering.SessionJoin join = corpus.join(session);
+            for (String read : reads) {
+                int at = read.lastIndexOf('@');
+                for (String symbol : join.readSymbols(read.substring(0, at),
+                        Long.parseLong(read.substring(at + 1)))) {
+                    String stated = joins.get(symbol);
+                    if (stated != null) asRecorded.add(stated);
+                }
+            }
+            return asRecorded.isEmpty() ? "false" : "(and " + fatal
+                    + " (not " + VmTermLowering.and(asRecorded) + "))";
+        }
+    }
+
+    private String recordedAs(SessionReader rows, String symbol) {
+        if (rows == null) return null;
+        for (RootMintRow root : rows.roots()) {
+            if (!root.symbol().equals(symbol)) continue;
+            if (root.kind() == RootKind.CLOCK) return null;
+            Sort sort = sortOf(root);
+            String literal = smtLiteral(root.recordedValue(), sort);
+            if (literal.isEmpty()) return null;
+            if (lowering.statedSort(symbol) == null) {
+                lowering.declareStated(symbol, sort);
+            }
+            return "(= " + symbol + " " + literal + ")";
+        }
+        for (AttachRow attach : rows.attaches()) {
+            if (!attach.symbol().equals(symbol)) continue;
+            Term received = arrived(attach);
+            return received == null ? null
+                    : "(= " + symbol + " " + received.text + ")";
+        }
+        return null;
     }
 
     private Term arrived(AttachRow attach) {

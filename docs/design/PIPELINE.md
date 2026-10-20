@@ -2707,6 +2707,27 @@ with its own class; a dropped path is never silent: the claim names every admitt
 COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
 and an UNSAT says nothing about them.
 
+A FATAL ARM THE RECORDING DID NOT TAKE IS HELD TO ITS RECORDING WHERE NOTHING IT RESTS ON MOVED
+(`Composer#hold`, `Composer.Hold#held`). Where a path's fatal arm -- the published phi of a target row whose
+run did not throw (`observedFatal` false), or the other arm of the symbolic guard it left the way at -- names
+a free leaf of that kind (`SmtLowering#havocLeaves`, through the shared terms), the arm becomes
+`(and fatal (not H))`, H the conjunction over every mover of the arm's published expression
+(`SmtLowering#movers`, the walk every pin asks) at its recorded value: a root at its mint's value in the
+path's session, an attach at its arrival, a re-paired read at its stated join in this path (the read takes
+its observed write: the `joins` entry of each read symbol of that location and version); with no mover the arm
+is `false`. Sound in two parts. (a) In the program the arm's expression is a function of its movers: the
+unmodeled operation computes on operands the expression states, so with every mover at its recorded value
+the expression has its recorded value, the healthy one. (b) CONFIRM plants only movers (roots, clock skews,
+answers, pairings), so a world where every mover is at its recorded value replays the recording and cannot
+be confirmed: excluding it loses no confirmable claim. A read the path states nowhere adds nothing to H by
+(b): the formula never moves it. Three movers have no recorded value H can state, and leave the arm free,
+named (`UNSTATED_VALUE` DIAGNOSTIC on the phi, "not held to its recording"): a clock (or a symbol no mint or
+attach of the session states), a view leaf (it moves with its view's pairing too), and a frame's leaf (it moves
+with the frame's producer, which the walk does not reach). A fatal the recording took is never held. Before,
+the free leaf let `ClaimPolicy#closed` take the run as recorded for a witness: hbase-adhoc-15 HP8-15's seed path,
+whose phi `"OPEN".equals(state)` (an enum read the lowering stated at REF) was a leaf nothing pinned, was
+claimed `FORMULA_SAT` moving nothing, and CONFIRM refuted it.
+
 THE COMPOSER'S HEAP BOUNDS ITS PATHS (`Composer#HEAP_SHARE`, 0.8): once its old generation is past that
 share after a sweep (`HeapWatch#oldGenerationSwept`), the admitted paths not yet composed are left out, each
 named `COMPOSE_HEAP_BOUND` (DIAGNOSTIC, in `refusedPaths`, so a witness among the composed ones still goes to

@@ -195,7 +195,8 @@ dropped as same-thread (15), INITIAL plus BLOCKING (31). Run it on every UNSAT b
 WIRE edges, read the claim's `movedRoots` first. `{}` on the seed path (fatalObserved false) means a symbol in the
 fatal's cone is neither pinned nor a root: an unplaced clock cell (#11 HZ17-mat: master0's activation T0, read only
 in re-runs on another node; fixed 208ac1899, placement by any node of the same JVM clock), or an `unsupported__` leaf
-for an unmodelled operation (HP8-15: `String.equals` with ARGUMENT_DYNAMIC_TYPE_UNMODELED; open, TODO HBase).
+for an unmodelled operation (HP8-15: `String.equals` of an enum read the lowering stated at REF; fixed: an enum read
+that does not move is its writer's name, and a fatal arm the recording did not take is held where nothing it rests on moved).
 
 **A workaround can remove what another fix needs.** Removing `masterSystemTime` from OpenRegionRequest (a clock
 export with no mint row) also removed master0's only clock readings from the seed, which left T0 unplaced (H2).

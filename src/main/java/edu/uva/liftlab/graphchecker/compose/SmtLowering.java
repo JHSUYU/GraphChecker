@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Reason;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
@@ -55,6 +56,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiPredicate;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1582,25 +1584,27 @@ public final class SmtLowering {
             if ("ConStringSymbolExp".equals(type)) {
                 return read && stringLiteral(node) != null ? node : null;
             }
-            if (!VmRows.GUARDED_READ_TYPE.equals(type)
-                    || !unstatedVersion(node)) {
-                return null;
-            }
+            if (!VmRows.GUARDED_READ_TYPE.equals(type)) return null;
+            JsonElement held = heldValue(node);
+            if (held == null) return null;
             read = true;
-            at = observedVersionExpression(node);
+            at = held;
         }
         return null;
     }
 
-    private boolean unstatedVersion(JsonObject read) {
+    private JsonElement heldValue(JsonObject read) {
         String key = locationKey(JsonFields.object(read, "location"));
         long version = VmRows.joinedVersion(read);
-        if (key.isEmpty() || version < 0L) return true;
-        JsonElement written = join.writeExpression(key, version);
-        return (written == null || written.isJsonNull())
-                && join.frameOfWrite(key, version) == null
-                && "".equals(mintedReadSymbol(join, version))
-                && !join.repaired(key, VmRows.readEvent(read));
+        JsonElement observed = observedVersionExpression(read);
+        if (key.isEmpty() || version < 0L) return observed;
+        if (join.frameOfWrite(key, version) != null
+                || !"".equals(mintedReadSymbol(join, version))
+                || join.repaired(key, VmRows.readEvent(read))) {
+            return null;
+        }
+        return observed != null && !observed.isJsonNull() ? observed
+                : join.writeExpression(key, version);
     }
 
     private static List<String> enumNames(JsonArray arguments, int from) {
@@ -1677,7 +1681,7 @@ public final class SmtLowering {
                 joined = attempting(() -> binder.join(value));
                 if (joined.lowered()) return binder.joined(commit(joined));
                 if (join.repaired(key, event)) {
-                    cut.add("read " + key + "@" + version);
+                    cut.add(READ_MOVER + key + "@" + version);
                 }
                 cut.addAll(movers(value, true));
                 cut.addAll(movers(written, true));
@@ -1750,6 +1754,22 @@ public final class SmtLowering {
         return !movers(expression, false).isEmpty();
     }
 
+    static final String HAVOC = "unsupported__";
+
+    static final String READ_MOVER = "read ";
+
+    public Set<String> movers(String term) {
+        Set<String> found = new LinkedHashSet<String>();
+        for (String name : SmtNames.names(term)) {
+            if (SmtNames.reference(name)) {
+                found.addAll(movers(new JsonPrimitive(name), true));
+            } else if (join.moves(name)) {
+                found.add(name);
+            }
+        }
+        return found;
+    }
+
     private Set<String> movers(JsonElement expression, boolean all) {
         Set<String> found = new LinkedHashSet<String>();
         if (expression == null || expression.isJsonNull()) return found;
@@ -1788,7 +1808,7 @@ public final class SmtLowering {
                         "location"));
                 long version = VmRows.joinedVersion(object);
                 if (join.repaired(key, VmRows.readEvent(object))) {
-                    found.add("read " + key + "@" + version);
+                    found.add(READ_MOVER + key + "@" + version);
                     if (!all) return found;
                 }
                 for (String minted : join.mintedReadSymbols(version)) {
@@ -3079,7 +3099,7 @@ public final class SmtLowering {
     private Term free(Sort sort, IntegralWidth width) {
         Sort declared = sort == null || sort == Sort.UNKNOWN
                 ? Sort.VALUE : sort;
-        String name = symbols.mint("unsupported__",
+        String name = symbols.mint(HAVOC,
                 scope + "#" + declared + "#" + freeConstants++, 10);
         declare(name, declared);
         return Term.of(name, declared, width == IntegralWidth.NONE
@@ -3337,12 +3357,24 @@ public final class SmtLowering {
     public Set<String> reachedSymbols(Iterable<String> texts) {
         Set<String> into = new LinkedHashSet<String>();
         Set<String> seen = new LinkedHashSet<String>();
-        for (String text : texts) reachedSymbols(text, seen, into);
+        for (String text : texts) {
+            reached(text, seen, name -> {
+                if (!minted(name)) into.add(name);
+            });
+        }
         return into;
     }
 
-    private void reachedSymbols(String text, Set<String> seen,
-                                Set<String> into) {
+    public Set<String> havocLeaves(String text) {
+        Set<String> leaves = new LinkedHashSet<String>();
+        reached(text, new HashSet<String>(), name -> {
+            if (name.startsWith(HAVOC)) leaves.add(name);
+        });
+        return leaves;
+    }
+
+    private void reached(String text, Set<String> seen,
+                         Consumer<String> visit) {
         if (text == null || text.isEmpty()) return;
         Deque<Iterator<String>> names = new ArrayDeque<Iterator<String>>();
         names.push(SmtNames.names(text).iterator());
@@ -3358,8 +3390,7 @@ public final class SmtLowering {
                 names.push(shared.names().iterator());
                 continue;
             }
-            if (minted(name)) continue;
-            into.add(name);
+            visit.accept(name);
         }
     }
 
