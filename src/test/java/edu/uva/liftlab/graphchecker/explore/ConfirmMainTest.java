@@ -54,6 +54,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.Rule;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
@@ -332,6 +333,59 @@ public class ConfirmMainTest {
         }
         assertEquals(Collections.singletonList("STATE "
                 + Confirmation.id(reader) + "@3"), held);
+    }
+
+    @Test
+    public void aStoreReadPairedWithALaterTombstoneIsHeldUntilItAndNoEarlier()
+            throws Exception {
+        Path iteration = iteration();
+        LocationId store = LocationId.of(LocationKind.STORE, "HBASE_ZK",
+                "/hbase/flush-table-proc/acquired/t");
+        long tombstone = MessageDoors.TOMBSTONE;
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Arrays.asList(WriteRow.of("sel", 10L, writer, store, 0L, "",
+                        "[B"), WriteRow.of("sel", 35L, producer, store,
+                        tombstone, "", "[B")), RowCodec::writeWrite);
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Arrays.asList(ReadRow.of("sel", 30L, reader, store, 0L,
+                        "S_barrier0", "[B", null), ReadRow.of("sel", 45L,
+                        after, store, tombstone, "S_gone", "[B", null)),
+                RowCodec::writeRead);
+        SessionReader session = SessionReader.read(iteration, "sel");
+        Object[][] rows = {
+                {reader, Confirmation.storeWriter(tombstone), "STATE "
+                        + Confirmation.storeWriter(tombstone) + "@" + tombstone
+                        + " STORE_HOLD " + store.key() + "@" + tombstone, 30L},
+                {reader, Confirmation.id(writer), "STATE "
+                        + Confirmation.id(writer) + "@0", Long.MAX_VALUE},
+                {after, Confirmation.storeWriter(0L), "PAIRING_UNHELD", 0L},
+        };
+        for (Object[] row : rows) {
+            Map<String, String> pairings = Collections.singletonMap(
+                    Confirmation.id((Endpoint) row[0]), (String) row[1]);
+            List<String> held = new ArrayList<String>();
+            long cut;
+            try {
+                ConfirmMain.Holding holding = ConfirmMain.holding(session,
+                        pairings);
+                for (JsonObject edge : holding.edges) {
+                    String kind = edge.get("kind").getAsString();
+                    held.add("STATE".equals(kind) ? "STATE " + edge.get(
+                            "writer").getAsString() + "@" + edge.get(
+                            "version").getAsString()
+                            : kind + " " + edge.get("location").getAsString()
+                            + "@" + edge.get("version").getAsString());
+                }
+                cut = holding.cutBefore;
+            } catch (ConfirmMain.Refused refused) {
+                held.add(refused.getMessage().substring(0,
+                        refused.getMessage().indexOf(':')));
+                cut = 0L;
+            }
+            assertEquals(String.valueOf(row[1]), row[2], String.join(" ",
+                    held));
+            assertEquals(String.valueOf(row[1]), (long) (Long) row[3], cut);
+        }
     }
 
     @Test

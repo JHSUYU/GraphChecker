@@ -36,6 +36,7 @@ public final class RecordingPlant {
     public static final String ROOT = "ROOT";
     public static final String ORDER = "ORDER";
     public static final String VIEW_HOLD = "VIEW_HOLD";
+    public static final String STORE_HOLD = "STORE_HOLD";
     public static final String SCOPE = "scope";
     public static final String CHECK = "check";
     public static final String TARGET = "TARGET";

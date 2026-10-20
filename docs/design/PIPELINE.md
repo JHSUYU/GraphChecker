@@ -1257,9 +1257,19 @@ as a flip of the world (depth) and among a path's owed arms. No query is asked: 
 its session ran, up to the read, and the world is that session's with the read paired to the decode
 of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's
 rows (`ConfirmMain#holding`). The replay takes it where the read observed that version
-(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw -- and why, where its hold knows: overridden by whom, or given way at VIEW_HOLD_MAX (`Confirmation#untakenBecause`) --, and a read
+(`FocusedReplay#pairedRead`); another version is `PAIRING_UNTAKEN` naming the one it saw -- and why, where its hold knows: overridden by whom, or given way at VIEW_HOLD_MAX (`Confirmation#untakenBecause`) --, and a read
 that never ran leaves its occurrence unflipped (the prefix abandoned). A child inherits the pairing
 as a pairing of its world, never as a decision to take.
+A plain STORE read is offered the same way, only later: its earliest read of each location in the
+occurrence (or its role prefix) is offered each tombstone of that location the session wrote after
+it (`MessageDoors.TOMBSTONE`, a delete's write, IDENTITY §7.2; `PairingFlip#tombstones`, dependence
+`STORE`) -- a znode's absence, which no term names (hbase-adhoc-24: `data == null` where the
+barrier's read finds no node). Its writer is named by its version, `Confirmation#storeWriter`
+(`STORE@<version>`): a store location has one tombstone per life, and the run that takes the
+pairing may delete on another path than the session did (a timeout's finally block is another copy
+of the call). The world holds the read past the tombstone: a `STORE_HOLD` row (§7.6), the prefix
+cut before the read. A pairing of a store read with a version the session wrote before the one it
+read is refused (`PAIRING_UNHELD`): no hold defers a store write.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
@@ -1594,7 +1604,16 @@ Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMIN
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
-the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
+the flipped world may read it again, CONFIRM's for the read's activation; for a plain STORE read
+paired with a later tombstone of its location (§7.4), one `STORE_HOLD {reader, readerOccurrence,
+location, version}` row: the reader's first `READ` turn of that location in that occurrence
+(`MessageDoors#reading`, before the store's call) waits until this run has written that version
+(`Confirmation#storeReading`), at most the order timeout (300 s), past which the read goes on, the
+hold is unrealized by name (a CONFIRM mismatch) and the read, which then finds another version, is
+`PAIRING_UNTAKEN` ("was never written"), so a run that never deletes refutes the pairing and never
+waits for ever; the read is then compared by version, its STATE row's writer `STORE@<version>`; no
+schedule slot is held (a watch callback's work takes none), and REPRODUCE plants no `STORE_HOLD`
+natively (TODO HBase 10); for a node's VIEW, whose
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's PUBLICATIONS of the view past the paired version are deferred,
 not its threads (`MessageDoors#publishing`, at Solr's `ZkStateReader#updateWatchedCollection`,
@@ -3701,7 +3720,8 @@ with it is a `RUN_DEFECT`.
   `ORDER` rows (§7.5: the node's later publications of the view are deferred until the reader's work
   is done, never the reader's own, at most VIEW_HOLD_MAX; a VIEW row's read is checked exactly, no
   `readerAnyTurn`; a view read the model did not pair is not held: held at its observed version, a
-  hold that gave way at VIEW_HOLD_MAX refuted SGF7-18413's real witness, 2026-10-16), else
+  hold that gave way at VIEW_HOLD_MAX refuted SGF7-18413's real witness, 2026-10-16), for a STORE
+  read its world paired with a later tombstone one `STORE_HOLD` row (§7.6), else
   `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its

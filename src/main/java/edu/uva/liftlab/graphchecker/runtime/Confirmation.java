@@ -80,6 +80,8 @@ public final class Confirmation {
     private static final List<String> OBSERVED = new ArrayList<String>();
     private static final Set<String> EXITED = new HashSet<String>();
     private static final List<ViewHold> VIEW_HOLDS = new ArrayList<ViewHold>();
+    private static final List<StoreHold> STORE_HOLDS =
+            new ArrayList<StoreHold>();
     private static final List<String> UNREALIZED = new ArrayList<String>();
     private static String unread = "";
     private static volatile boolean failFast;
@@ -148,7 +150,7 @@ public final class Confirmation {
         synchronized (LOCK) {
             return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty()
                     || !BEFORE.isEmpty() || !CHECKED.isEmpty()
-                    || !VIEW_HOLDS.isEmpty();
+                    || !VIEW_HOLDS.isEmpty() || !STORE_HOLDS.isEmpty();
         }
     }
 
@@ -192,6 +194,18 @@ public final class Confirmation {
     }
 
     private static final String VIEW_WRITER = "VIEW@";
+
+    public static String storeWriter(long version) {
+        return STORE_WRITER + version;
+    }
+
+    private static final String STORE_WRITER = "STORE@";
+
+    public static boolean paired(String writer, WriteRow write) {
+        return writer.equals(writer(write))
+                || write.location().kind() == LocationKind.STORE
+                && writer.equals(storeWriter(write.version()));
+    }
 
     public static String writer(WriteRow write) {
         return write.location().kind() == LocationKind.VIEW
@@ -733,6 +747,11 @@ public final class Confirmation {
                             + viewHoldMaxRecorded() + " ms of recorded time)";
                 }
             }
+            for (StoreHold hold : STORE_HOLDS) {
+                if (hold.reader.equals(reader) && !hold.untaken.isEmpty()) {
+                    return hold.untaken;
+                }
+            }
             return "";
         }
     }
@@ -1108,6 +1127,72 @@ public final class Confirmation {
 
     private static final Set<String> OVERDUE = new LinkedHashSet<String>();
 
+    private static final class StoreHold {
+        final String occurrence;
+        final String reader;
+        final String location;
+        final String awaits;
+        boolean reached;
+        String untaken = "";
+
+        StoreHold(String occurrence, String reader, String location,
+                  long version) {
+            this.occurrence = occurrence;
+            this.reader = reader;
+            this.location = location;
+            this.awaits = location + "@" + version;
+        }
+    }
+
+    static void storeReading(OccurrenceAddress at, LocationId location) {
+        if (at == null || location == null || !ordering()) return;
+        String occurrence = at.anyDelivery().id();
+        synchronized (LOCK) {
+            StoreHold hold = null;
+            for (StoreHold each : STORE_HOLDS) {
+                if (!each.reached && each.occurrence.equals(occurrence)
+                        && each.location.equals(location.key())) {
+                    hold = each;
+                    break;
+                }
+            }
+            if (hold == null) return;
+            hold.reached = true;
+            if (WROTE.containsKey(hold.awaits)) return;
+            FocusedReplay.worldActed();
+            HOLD_MOVES.incrementAndGet();
+            long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
+                    ORDER_TIMEOUT_MS);
+            long deadline = System.currentTimeMillis() + timeout;
+            try {
+                while (!WROTE.containsKey(hold.awaits)) {
+                    if (RecordingPlant.orderGaveWay()) return;
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0L) {
+                        hold.untaken = "held " + timeout + " ms at its READ"
+                                + " turn and " + hold.awaits + " was never"
+                                + " written";
+                        UNREALIZED.add("STORE_HOLD " + hold.reader + ": the"
+                                + " world pairs it with " + hold.awaits
+                                + ", which this run did not write within "
+                                + timeout + " ms, so the read went on");
+                        mismatched();
+                        return;
+                    }
+                    try {
+                        LOCK.wait(Math.min(left, 200L));
+                    } catch (InterruptedException interrupted) {
+                        hold.untaken = "interrupted while held";
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            } finally {
+                HOLD_MOVES.incrementAndGet();
+            }
+        }
+    }
+
     static List<String> close() {
         List<String> mismatches = new ArrayList<String>();
         boolean compared = expected();
@@ -1179,7 +1264,8 @@ public final class Confirmation {
     private static boolean taken(String reader, String writer,
                                  String observed) {
         String at = VIEW_AT.get(reader);
-        return writer.equals(WROTE.get(observed))
+        return (writer.startsWith(STORE_WRITER)
+                || writer.equals(WROTE.get(observed)))
                 && (at == null || at.equals(observed));
     }
 
@@ -1197,7 +1283,7 @@ public final class Confirmation {
                 ? row.get(member).getAsString() : null;
     }
 
-    static String key(LocationId location, long version) {
+    public static String key(LocationId location, long version) {
         return location.kind() + "/" + location.owner() + "#"
                 + location.slot() + "@" + version;
     }
@@ -1253,7 +1339,8 @@ public final class Confirmation {
                                 && row.get(AFTER_ANCHOR).getAsBoolean()) {
                             BEHIND_ANCHOR.add(reader);
                         }
-                        if (writer.startsWith(VIEW_WRITER)) {
+                        if (writer.startsWith(VIEW_WRITER)
+                                || writer.startsWith(STORE_WRITER)) {
                             String location = optionalString(row, "location");
                             if (location.isEmpty()) {
                                 throw new IllegalStateException("STATE read "
@@ -1288,6 +1375,12 @@ public final class Confirmation {
                                     + hold.waitsFor(),
                                     row.get(RecordingPlant.ROW).getAsInt());
                         }
+                    } else if (RecordingPlant.STORE_HOLD.equals(kind)) {
+                        STORE_HOLDS.add(new StoreHold(
+                                optionalString(row, "readerOccurrence"),
+                                optionalString(row, "reader"),
+                                optionalString(row, "location"),
+                                row.get("version").getAsLong()));
                     } else if (RecordingPlant.ORDER.equals(kind)
                             && optionalString(row, RecordingPlant.SCOPE)
                             .isEmpty()) {
@@ -1318,9 +1411,10 @@ public final class Confirmation {
                 CHECKED.clear();
                 PLANTED.clear();
                 VIEW_HOLDS.clear();
+                STORE_HOLDS.clear();
             }
             ordering = BEFORE.isEmpty() && CHECKED.isEmpty()
-                    && VIEW_HOLDS.isEmpty() ? 1 : 2;
+                    && VIEW_HOLDS.isEmpty() && STORE_HOLDS.isEmpty() ? 1 : 2;
         }
     }
 }

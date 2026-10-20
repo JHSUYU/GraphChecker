@@ -238,6 +238,12 @@ public final class MessageDoors {
         guarded("reading", location, () -> {
             boolean paused = pause();
             try {
+                ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+                if (active != null && active.d3Address != null) {
+                    Confirmation.storeReading(active.d3Address, storeLocation(
+                            transport, life(transport, trimmed(location), -1L,
+                                    false)));
+                }
                 turn(ScheduleEvent.Kind.READ, transport, location);
             } finally {
                 resume(paused);

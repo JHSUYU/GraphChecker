@@ -258,7 +258,7 @@ public final class FocusedReplay {
                 + obligation.flippedOutcome());
     }
 
-    static void viewRead(Endpoint reader, long version) {
+    static void pairedRead(Endpoint reader, long version) {
         load();
         if (task == null || reader == null) return;
         String id = Confirmation.id(reader);
@@ -277,7 +277,7 @@ public final class FocusedReplay {
                 } else {
                     REFUSALS.put(asked, PAIRING_UNTAKEN + ": read " + id
                             + " observed version " + version + " of its"
-                            + " view, the pairing flip asks version "
+                            + " location, the pairing flip asks version "
                             + obligation.pairedVersion()
                             + (because.isEmpty() ? "" : " (" + because + ")"));
                 }
@@ -442,7 +442,7 @@ public final class FocusedReplay {
                                 sessionId, obligation.pairing()
                                 ? "the focused prefix reproduced and read "
                                 + obligation.pairedReader() + " took version "
-                                + obligation.pairedVersion() + " of its view"
+                                + obligation.pairedVersion() + " of its location"
                                 : obligation.flips()
                                 ? "the focused prefix reproduced and "
                                 + trimmed(obligation.siteId()) + "#"
