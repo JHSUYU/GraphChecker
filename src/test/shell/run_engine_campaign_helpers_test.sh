@@ -2541,4 +2541,27 @@ done
       | awk '{print $1}')" ]] \
   || fail "the tree digest is not the sorted listing's"
 
+fq_iteration="${test_tmp}/fault-queue"
+for fq_id in G1 F1 G2 F2; do
+  mkdir -p "${fq_iteration}/obligations-0003/${fq_id}"
+  fq_flag=false
+  [[ "${fq_id}" != F* ]] || fq_flag=true
+  echo "{\"faultFlip\":${fq_flag}}" \
+    >"${fq_iteration}/obligations-0003/${fq_id}/focused_task.jsonl"
+done
+fq_said=$(
+  iteration_dir=${fq_iteration}
+  stream_queue=()
+  declare -A stream_queued_at=()
+  for fq_entry in "REPLAY obligations-0003 F1 T" "REPLAY obligations-0003 G1 T" \
+      "REPLAY obligations-0003 F2 T" "OBLIGATION obligations-0004 O1" \
+      "REPLAY obligations-0003 G2 T" "CONFIRM - C1"; do
+    campaign_stream_enqueue "${fq_entry}"
+  done
+  printf '%s\n' "${stream_queue[@]}" | awk '{print $1 ":" $3}' | paste -sd' '
+)
+[[ "${fq_said}" == "CONFIRM:C1 OBLIGATION:O1 REPLAY:G2 REPLAY:G1 REPLAY:F1 REPLAY:F2" ]] \
+  || fail "FAULT-QUEUE: a fault flip's replay waits behind every other entry, \
+the others in their old order; the queue was '${fq_said}'"
+
 echo "run_engine campaign helper tests passed"

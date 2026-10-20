@@ -5556,14 +5556,27 @@ campaign_stream_enqueue() {
   case "${entry%% *}" in
     CONFIRM|RERUN) stream_queue=("${entry}" "${stream_queue[@]}") ;;
     *)
-      while (( at < ${#stream_queue[@]} )) \
-          && [[ "${stream_queue[at]}" != REPLAY\ * ]]; do
-        at=$((at + 1))
-      done
-      stream_queue=("${stream_queue[@]:0:at}" "${entry}" \
-        "${stream_queue[@]:at}") ;;
+      if campaign_stream_fault_replay "${entry}"; then
+        stream_queue+=("${entry}")
+      else
+        while (( at < ${#stream_queue[@]} )) \
+            && [[ "${stream_queue[at]}" != REPLAY\ * ]]; do
+          at=$((at + 1))
+        done
+        stream_queue=("${stream_queue[@]:0:at}" "${entry}" \
+          "${stream_queue[@]:at}")
+      fi ;;
   esac
   stream_queued_at[${entry}]=$(date +%s)
+}
+
+campaign_stream_fault_replay() {
+  local kind round id
+  read -r kind round id _ <<<"$1"
+  [[ "${kind}" == REPLAY ]] || return 1
+  [[ "$(jq -r '.faultFlip // false' \
+    "${iteration_dir}/${round}/${id}/focused_task.jsonl" 2>/dev/null)" \
+    == true ]]
 }
 
 campaign_stream_collected() {
