@@ -194,6 +194,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
+| `ORDER_OBSERVED` | a checked `ORDER` (`check: true`: one no hold realizes) whose activation entered after what it is ordered after had exited: observed in order, not held (DIAGNOSTIC; `final/confirm.json` `ordersObserved`), [PIPELINE.md §10](PIPELINE.md) |
 | `PAIRING_OVERRIDDEN` | a pairing's hold of a node's view stood before its read, and the system put a version past the paired one in force at once (a publication no hold defers, or a refresh's decode its reader reads as it is): the pairing cannot be realized in this run (DIAGNOSTIC; the read's `PAIRING_UNTAKEN` names it), [PIPELINE.md §7.5](PIPELINE.md) |
 | `CLAIM_REFUTED` | a model CONFIRM refuted (`<iteration>/refuted_claims.jsonl`), which the composition excludes (DIAGNOSTIC; BLOCKING when the file cannot be read), [PIPELINE.md §10](PIPELINE.md) |
 | `CLOSURE_CONFINED` | writers of a demanded field PLAN did not cross to for a reader that never touched it, every object they wrote it on confined where the reader is not as far as the recorded heap shows; one row per reader and field with the count and first few (DIAGNOSTIC; result.json `confinedWriters`), [SYMBOL-SCOPE.md §4.4](SYMBOL-SCOPE.md) |
@@ -299,11 +300,13 @@ field=<f> <subject>`.
   and location, not its reader), `ORDER {before, after}`
   (activation keys; `after` the last activation entered before the event it orders -- a `HANDOFF_TASK`'s too, unless the
   session's manifest names it in `servingTasks` -- or, for a queued task, a queue item, a serving hand-off task or claimed
-  work of no stated kind, the send that started it, `Confirmation#submitter`), every endpoint
+  work of no stated kind, the send that started it, `Confirmation#submitter`; `check: true` and
+  the later end's own activation where no hold realizes the order: no such send, or the earlier
+  end stands under its anchor chain), every endpoint
   id and activation key as every delivery of its stored message names it (`Confirmation#id`), `MARKER {root, value}`, `ANCHOR {occurrence, seq}`. A run whose obligation
   flips nothing (`Obligation.confirming`) owes these rows: missing or unreadable, it files a
   `CONFIRM_MISMATCH`. `final/confirm.json` is `{schemaVersion 1, kind CONFIRMATION, confirmed,
-  refutes, reason, sessionId}`; a refuted claim is a row `{schemaVersion 1, kind REFUTED_CLAIM,
+  refutes, reason, sessionId}` (and `ordersChecked`, `ordersObserved` where the edges check an order); a refuted claim is a row `{schemaVersion 1, kind REFUTED_CLAIM,
   model {findingKind, pathId, arms, assignment, moved}, claimed, reason}` of
   `<iteration>/refuted_claims.jsonl`, and EMIT copies them into `result.json` `refutedClaims`
   ([PIPELINE.md §10](PIPELINE.md)).

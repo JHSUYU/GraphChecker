@@ -3619,8 +3619,15 @@ with it is a `RUN_DEFECT`.
   kind (`ActivationRow#heldWhereItRuns` false: a server pipeline applying one request after
   another, the writer's among them, would deadlock held), the entry of the send that started it, its
   anchor's producer followed up the chain while that send is such work too
-  (`Confirmation#submitter`; none refuses the confirmation, `ORDER_UNHELD`, naming the claim's
-  kind); a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
+  (`Confirmation#submitter`); an order no hold realizes is **checked** instead: where no such
+  send started the work (a continuation's claim names none: hbase-adhoc-04's DisableTable request
+  is sent inside `FutureUtils#addListener`'s continuation, so the DisableTableProcedure step it
+  started stood on no holdable send, `ORDER_UNHELD`, and REPRODUCE planted nothing), or where the
+  order's earlier end stands under that send's anchor chain (`Confirmation#standsUnder`: the
+  same procedure's DISABLING step before its DISABLED step, both under the request's anchor -- held
+  at the send it would wait on its own effect until the timeout), the row carries `check: true`
+  and sits at the later end's own activation (`StateClosure#held`, `#holdBefore`); every order a
+  hold realizes is held as before; a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
   on a `SynchronousQueue`: Solr's Overseer command Runners) holds nothing of its executor's queue
   behind it and is held where it runs, unless the session's manifest names it in `servingTasks`
   (it took work another thread started on its thread, any queue item no named start filed among
@@ -3663,7 +3670,11 @@ with it is a `RUN_DEFECT`.
   placeholder of the run observed a version of its `location` its writer wrote, an INITIAL included,
   and it holds no order), and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
-  mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
+  mismatch); a checked `ORDER` (`check: true`) is never waited for: when its activation first
+  enters, the named activations must already have exited (`Confirmation#checked`), each one that
+  had is an `ORDER_OBSERVED` DIAGNOSTIC gap (the order observed, not held), and one that had not is
+  a mismatch as an order not held in time; every difference is a `CONFIRM_MISMATCH` gap in the
+  session. `MARKER` and `ANCHOR` rows
   are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips
   nothing), or a replay whose world plants pairings (`FocusedReplay.pairs`), whose
   `expected_edges.jsonl` is missing or unreadable compares nothing and files one `EDGES:` mismatch
@@ -3685,7 +3696,10 @@ with it is a `RUN_DEFECT`.
   nothing: a defect of the engine.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
-sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says a
+sessionId}`, the same shape for a refusal, `realized.json` and the decision; a decision over
+edges with checked orders also states `ordersChecked` (the `check` rows of its
+`expected_edges.jsonl`) and `ordersObserved` (the run's `ORDER_OBSERVED` gaps: orders observed in
+place, not held; one that was not is the `CONFIRM_MISMATCH` the reason names). `refutes` says a
 replay or ConfirmMain refuted the claim: its replay did not reach the fatal at the anchor (above),
 or ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A task ConfirmMain
 refused by name (`CONFIRM refused:`, `PAIRING_UNHELD` or rows that state no runnable model) and a
@@ -3766,7 +3780,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   nobody;
 - an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
   port's call-return capture and the regions declaring it IN;
-- CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10) of what the model
+- CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, `check: true` where no
+  hold realizes the order, §10) of what the model
   chose -- a read it chose a writer for, at the locations the fatal rests on, with every other
   writer of the location around it -- and those holding the pairings the world plants (an INITIAL
   pairing holds every other writer of the location after the read), each pair once; not a row only
@@ -3910,7 +3925,9 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
   released stays released; an interrupt meanwhile is kept pending, the event still after what the
   confirmed world made before it). Each row is held at most half the run's bound
   (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`) and states what it came to:
-  held (`PLANT_APPLIED`), waited for (`PLANT_HOLDING`), or not held in time (`PLANT_UNHELD`). The
+  held (`PLANT_APPLIED`), waited for (`PLANT_HOLDING`), or not held in time (`PLANT_UNHELD`); a
+  checked ORDER row (`check: true`, §10) is never waited for and states `PLANT_OBSERVED` when what it
+  orders before its activation had exited as it first entered, else `PLANT_UNHELD` at once. The
   first row not held releases every hold of both scopes (`RecordingPlant#gaveWay`): the run no
   longer runs the confirmed world, so it reproduces nothing whatever it reaches, and holding the
   rest would only stall it. What an UNHELD row waited for that comes after all is a `PLANT_LATE`
@@ -3924,7 +3941,7 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, rootsPlanted, ordersHeld, fatal, atAnchor, control, reproduced}` (a control run never reproduced), read off its trace's plant rows
+planted, rootsPlanted, ordersHeld, ordersChecked, ordersObserved, fatal, atAnchor, control, reproduced}` (a control run never reproduced; `ordersChecked` the plant's checked ORDER rows, `ordersObserved` those the run observed in order, each unapplied row stating whether it was `checked`), read off its trace's plant rows
 (each flushed as it is written, `CausynthTraceRecorder#writePlantRow`, so a run its bound kills keeps
 them; the trace is closed only by the run's end, §5) against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
 rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`
@@ -3942,11 +3959,12 @@ take the fatal arm, and at the anchor, is the program's own rate of the fatal on
 timing, the evidence a reproduction's rate is read against (a plant whose rows hold little of the
 chain, a CLOCK root alone or a VIEW_HOLD alone, reproduces as often as the workload throws by
 itself), and never a gate. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
-planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, reason, control:
-{runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
+planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, checked,
+checkedObserved, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
 anchor (planted or not), reproduced, could not hold an ORDER in time (of them, one whose
-before-event came late, one whose before-event never came), still held one when they ended, the
-runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
+before-event came late, one whose before-event never came; a checked ORDER not observed in order
+counts here), still held one when they ended, the plant's checked ORDER rows and the runs that
+observed every one in order, the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
 that stated no answer; the log
 states "reproduced in k of N ...; control k' of N". REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
 and the realized order only makes a native run faithful to the world CONFIRM saw. The share of runs

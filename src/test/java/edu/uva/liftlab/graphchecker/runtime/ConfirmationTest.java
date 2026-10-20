@@ -263,4 +263,28 @@ public class ConfirmationTest {
         assertTrue(mismatches.get(0), mismatches.get(0)
                 .startsWith("ORDER " + writer));
     }
+    @Test
+    @FreshStatics.Rows(2)
+    public void aCheckedOrderIsObservedWhereItsLaterEndEntersNeverWaitedFor()
+            throws Exception {
+        boolean realized = FreshStatics.row() == 0;
+        String writer = Endpoint.activation(DECODER, ExecutionIndex.empty());
+        handed("", Arrays.asList("{'kind':'ORDER','before':'" + writer
+                + "','after':'" + UNTIL + "','check':true}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "60000");
+        assertTrue(Confirmation.ordering());
+        if (realized) Confirmation.exited(writer);
+        long started = System.nanoTime();
+        Confirmation.entering(UNTIL);
+        Confirmation.entering(UNTIL);
+        assertTrue("a checked order is never waited for",
+                System.nanoTime() - started < 5_000_000_000L);
+        List<String> mismatches = Confirmation.close();
+        List<String> observed = Confirmation.observed();
+        assertEquals(realized ? 0 : 1, mismatches.size());
+        assertEquals(realized ? 1 : 0, observed.size());
+        String named = realized ? observed.get(0) : mismatches.get(0);
+        assertTrue(named, named.startsWith("ORDER " + UNTIL + ": "));
+        assertTrue(named, named.contains(writer));
+    }
 }

@@ -945,8 +945,11 @@ order:
   its close: a ConcurrentUpdate client's Runner polling its update queue, the take in a callee
   that returns) and claimed work of no stated kind (§4's `threadKey`), which held there would hold
   every item queued behind it: it is held at the send that started it, its anchor's producer
-  (`Confirmation#submitter`), up the chain while that send is such work too, and with none an
-  `ORDER_UNHELD` names the claim's kind. A hand-off task held in place holds what it holds there:
+  (`Confirmation#submitter`), up the chain while that send is such work too. An order no hold
+  realizes -- no such send (a continuation's claim names none), or the earlier end stands under
+  that send's anchor chain (`Confirmation#standsUnder`: held there it would wait on its own
+  effect) -- is checked at the work's own activation instead, never waited for (PIPELINE §10).
+  A hand-off task held in place holds what it holds there:
   an Overseer command its `LockTree` lock, so a command of an overlapping lock ordered before it
   stays parked, and its worker the pool's room (an `AbortPolicy` pool past its maximum rejects the
   next submission); both end at the order's timeout as an order not held in time;
