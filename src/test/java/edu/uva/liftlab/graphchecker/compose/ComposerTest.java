@@ -1492,6 +1492,42 @@ public class ComposerTest {
         assertTrue(term.text, term.text.contains("\"OPEN\""));
     }
 
+    @Test
+    public void aHealthyFatalOnAnUnmodeledOperationHoldsWhereNothingItRestsOnMoved()
+            throws Exception {
+        String opened = "EXPR.0000000000000a01";
+        Object[][] table = {
+                {"it rests on nothing that moves", "(not " + opened + ")",
+                        ClaimKind.NO_SUPPORTED_WITNESS},
+                {"it rests on a marker too", "(and (not " + opened + ") "
+                        + MARKER + ")", ClaimKind.MARKER_FLIPPED},
+        };
+        for (Object[] row : table) {
+            String name = (String) row[0];
+            Path iteration = folder.newFolder("unmodeled-" + name.replace(' ',
+                    '-')).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.marker("false");
+            seed.expression(opened, vmString("equals", vmLeaf(
+                    "ConStringSymbolExp", "Y_L'String'_OPEN",
+                    "java/lang/String"), vmLeaf("SymbolExpression",
+                    "M_L'org/x/State'_412", "Lorg/x/State;")));
+            seed.target((String) row[1], false, true);
+            seed.write();
+
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 4), solver());
+            assertEquals(name + ": " + decision.claim().gaps(), row[2],
+                    decision.claim().kind());
+            if (row[2] == ClaimKind.MARKER_FLIPPED) {
+                assertTrue(name + ": the claim names what moved: "
+                                + decision.claim().movedRoots(),
+                        decision.claim().movedRoots().containsKey(
+                                MARKER_ROOT));
+            }
+        }
+    }
+
     private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
         valueOf.addProperty("_type", "MethodExpression");

@@ -1657,7 +1657,8 @@ public final class Composer {
             String phi = lowering.statedTerm(published, "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
                 fatalArm = terms.size();
-                terms.add(phi);
+                terms.add(target.observedFatal() ? phi
+                        : heldToRecording(session, published, phi));
             }
         }
 
@@ -2254,6 +2255,42 @@ public final class Composer {
             return true;
         }
         return false;
+    }
+
+    private String heldToRecording(String session, String published,
+                                   String phi) {
+        if (!SmtLowering.havocs(phi)) return phi;
+        SessionReader rows = corpus.session(session);
+        List<String> asRecorded = new ArrayList<String>();
+        for (String mover : lowering.movers(published)) {
+            String recorded = recordedAs(rows, mover);
+            if (recorded == null) return phi;
+            asRecorded.add(recorded);
+        }
+        return "(and " + phi + " (not " + VmTermLowering.and(asRecorded)
+                + "))";
+    }
+
+    private String recordedAs(SessionReader rows, String symbol) {
+        if (rows == null) return null;
+        for (RootMintRow root : rows.roots()) {
+            if (!root.symbol().equals(symbol)) continue;
+            if (root.kind() == RootKind.CLOCK) return null;
+            Sort sort = sortOf(root);
+            String literal = smtLiteral(root.recordedValue(), sort);
+            if (literal.isEmpty()) return null;
+            if (lowering.statedSort(symbol) == null) {
+                lowering.declareStated(symbol, sort);
+            }
+            return "(= " + symbol + " " + literal + ")";
+        }
+        for (AttachRow attach : rows.attaches()) {
+            if (!attach.symbol().equals(symbol)) continue;
+            Term received = arrived(attach);
+            return received == null ? null
+                    : "(= " + symbol + " " + received.text + ")";
+        }
+        return null;
     }
 
     private Term arrived(AttachRow attach) {

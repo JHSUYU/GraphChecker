@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Reason;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
@@ -1750,6 +1751,27 @@ public final class SmtLowering {
         return !movers(expression, false).isEmpty();
     }
 
+    static final String HAVOC = "unsupported__";
+
+    static boolean havocs(String text) {
+        for (String name : SmtNames.names(text)) {
+            if (name.startsWith(HAVOC)) return true;
+        }
+        return false;
+    }
+
+    public Set<String> movers(String term) {
+        Set<String> found = new LinkedHashSet<String>();
+        for (String name : SmtNames.names(term)) {
+            if (SmtNames.reference(name)) {
+                found.addAll(movers(new JsonPrimitive(name), true));
+            } else if (join.moves(name)) {
+                found.add(name);
+            }
+        }
+        return found;
+    }
+
     private Set<String> movers(JsonElement expression, boolean all) {
         Set<String> found = new LinkedHashSet<String>();
         if (expression == null || expression.isJsonNull()) return found;
@@ -3079,7 +3101,7 @@ public final class SmtLowering {
     private Term free(Sort sort, IntegralWidth width) {
         Sort declared = sort == null || sort == Sort.UNKNOWN
                 ? Sort.VALUE : sort;
-        String name = symbols.mint("unsupported__",
+        String name = symbols.mint(HAVOC,
                 scope + "#" + declared + "#" + freeConstants++, 10);
         declare(name, declared);
         return Term.of(name, declared, width == IntegralWidth.NONE
