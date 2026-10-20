@@ -33,6 +33,28 @@ public class WorkStartSitesTest {
                 "newTimeout", 3));
     }
 
+    @Test
+    public void aContinuationIsRegisteredOnACompletionStageWithAFunction() {
+        Object[][] table = {
+            {"whenComplete", "java.util.concurrent.CompletableFuture", true},
+            {"thenCompose", "java.util.concurrent.CompletionStage", true},
+            {"exceptionally", "org.example.Retries", false},
+            {"complete", "java.util.concurrent.CompletableFuture", false},
+        };
+        for (Object[] row : table) {
+            assertEquals(Arrays.toString(row), row[2],
+                    WorkStartSites.registersContinuation((String) row[0],
+                            hierarchy((String) row[1])));
+            assertEquals(Arrays.toString(row), row[2],
+                    WorkStartSites.mayHandOffWork(((String) row[1])
+                            .replace('.', '/'), (String) row[0], 1));
+        }
+        assertEquals(true, WorkStartSites.continues(
+                "java.util.function.BiConsumer"));
+        assertEquals(false, WorkStartSites.continues(
+                "java.util.concurrent.Executor"));
+    }
+
     private static WorkStartSites.Types hierarchy(String name) {
         List<String> names = Arrays.asList(name, "java.lang.Object");
         return typeName -> typeName.startsWith("*")

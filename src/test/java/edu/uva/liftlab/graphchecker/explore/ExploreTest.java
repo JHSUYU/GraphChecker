@@ -42,6 +42,7 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -1959,6 +1960,8 @@ public class ExploreTest {
                         1L, "", "I"));
             }
             seed.expression("EXPR.0a1b", read);
+            seed.decision(TARGET, "BlockTokenSecretManager#u120", 1, true,
+                    "EXPR.0a1b");
             seed.target(TARGET, "BlockTokenSecretManager"
                     + "#retrieveDataEncryptionKey#8", "(not EXPR.0a1b)");
             seed.flush();
@@ -1991,6 +1994,89 @@ public class ExploreTest {
             reached.addAll(plan.waiting);
             assertEquals(row[0] + ": " + reached + " " + focused(plan),
                     row[4], reached.contains(writer));
+            assertEquals(row[0] + ": only the seed ran it, so it grows the "
+                    + "plan alone, in the seed's name",
+                    (Boolean) row[4] ? "s-seed" : null,
+                    plan.exposed.get(writer));
+            Task anchor = null;
+            for (Task task : plan.tasks) {
+                if (task.focused().equals(TARGET)) anchor = task;
+            }
+            assertTrue(row[0] + ": unplanned yet, no re-run",
+                    PathReruns.of(corpus, anchor, plan.unrecordedWriters,
+                            Collections.<String>emptySet(), gap -> { })
+                            .isEmpty());
+            List<Obligation> reruns = PathReruns.of(corpus, anchor,
+                    plan.unrecordedWriters, Collections.singleton(
+                            writer.render()), gap -> { });
+            assertEquals(row[0] + ": planned, the seed's path re-runs its "
+                    + "world: " + reruns, (Boolean) row[4] ? 1 : 0,
+                    reruns.size());
+            if (reruns.isEmpty()) continue;
+            Obligation rerun = reruns.get(0);
+            assertTrue(rerun.rerun() && !rerun.force());
+            assertEquals("the anchor's own decision, as recorded",
+                    Arrays.asList("BlockTokenSecretManager#u120", 1, true),
+                    Arrays.<Object>asList(rerun.siteId(), rerun.ordinal(),
+                            rerun.flippedOutcome()));
+            assertEquals("a row of the round as any obligation", rerun,
+                    ExploreCodec.readObligation(
+                            ExploreCodec.writeObligation(rerun)));
+            Path wave = iteration.resolve("obligations-0001");
+            Files.createDirectories(wave);
+            RowCodec.writeAll(wave.resolve("obligations.jsonl"),
+                    Collections.singletonList(rerun),
+                    ExploreCodec::writeObligation);
+            Path worker = wave.resolve(rerun.obligationId());
+            ObligationSolverMain.solve(corpus, iteration,
+                    wave.resolve("obligations.jsonl"), rerun.obligationId(),
+                    worker, Paths.get("z3"), 10_000L, 1152, null);
+            assertEquals("no query: the world is replayed as recorded",
+                    Verdict.SAT_MODEL_READY, RowCodec.readAll(
+                            worker.resolve(ObligationDir.RESULT),
+                            RowCodec::readObligationResult).get(0).verdict());
+            JsonObject focus = ExploreCodec.readObject(
+                    worker.resolve(ObligationDir.FOCUSED_TASK));
+            assertEquals("s-seed", focus.get("pathSessionId").getAsString());
+            assertTrue("the replay is judged by its recorded arm: " + focus,
+                    focus.getAsJsonObject("flip").get("outcome")
+                            .getAsBoolean());
+        }
+    }
+
+    @Test
+    public void aDecisionOnNoStoreValueStaysOnTheZooKeeperChain()
+            throws Exception {
+        LocationId stored = LocationId.of(LocationKind.STORE, "HBASE_ZK",
+                "/hbase/keys/1");
+        LocationId held = LocationId.of(LocationKind.MAP, "7", "-3");
+        Object[][] rows = {
+            {"a constant", "(not (= 3 4))", true},
+            {"a store value off the chain", "(= zk_key 1)", false},
+            {"a map the store's value was put in", "(= map_key 1)", true},
+            {"both", "(= (+ zk_key map_key) 2)", true},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            Path iteration = tree.newFolder("zk-keys-" + at++).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.read(at(TARGET, "Zk#getData#3:READ", "Zk#getData#3"),
+                    stored, 0L, "zk_key", "1");
+            seed.read(at(TARGET, "Keys#get#5:READ", "Keys#get#5"), held, 2L,
+                    "map_key", "1");
+            seed.decision(TARGET, "Keys#u9", 1, true, (String) row[1]);
+            seed.flush();
+            Corpus corpus = Corpus.read(iteration, null);
+            JsonObject chained = new JsonObject();
+            chained.addProperty("kind", ZkChain.OCCURRENCE);
+            chained.addProperty("occurrenceId", TARGET.render());
+            ZkKeys keys = ZkKeys.of(ZkChain.of(
+                    Collections.singletonList(chained)));
+            DecisionRow decision = corpus.path("s-seed", TARGET).decisions
+                    .get(0);
+            assertEquals(row[0] + "", row[2],
+                    keys.flippable(corpus, "s-seed", decision));
         }
     }
 

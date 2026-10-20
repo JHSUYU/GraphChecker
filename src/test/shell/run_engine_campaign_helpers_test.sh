@@ -2018,6 +2018,47 @@ obligations-0001 obligations-0002 SESSION.regrown -" ]] \
 until it landed and a round planned over it: ${gl_said}: \
 $(cat "${stream_dir}/explore.log")"
 
+stream_fixture grow-plan-only
+(
+  stream_stubs
+  schedule_max_jobs=1
+  stream_round_plan() {
+    case "$1" in
+      0) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.seed","obligationId":""}' \
+           >>"$2/growth.jsonl" ;;
+    esac
+  }
+  do_compose() { fail "GROW-PLAN-ONLY: a witness was attempted"; }
+  run_java_main() {
+    local args=" $* " output plan
+    plan=${args##* --plan }
+    plan=${plan%% *}
+    output=${args##* --output }
+    output=${output%% *}
+    { cat "${plan}"
+      printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY:SESSION.seed"}\n'
+    } >"${output}"
+  }
+  campaign_instrument() {
+    mkdir -p "$2"
+    : >"$2/woven"
+    printf '%s\n' "$3" >"$(dirname "$2")/weave_key"
+  }
+  campaign_obligation_worker() { fail "GROW-PLAN-ONLY: a replay was run"; }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "GROW-PLAN-ONLY did not finish: $(cat "${stream_dir}/explore.log")"
+gp_said="$(jq -r '.stop' "${stream_dir}/exploration.json") \
+$(jq -r 'select(.taskId == "TASK.grown") | .taskId' \
+  "${stream_dir}/execution_task_plan.jsonl") \
+$(find "${stream_dir}" -name 'grow-obligations-*' | grep -c '' || true) \
+$(grep -c 'grow the plan alone' "${stream_dir}/explore.log" || true)"
+[[ "${gp_said}" == "FIXED_POINT TASK.grown 0 1" ]] \
+  || fail "GROW-PLAN-ONLY: an exposure only the seed ran did not grow the plan \
+alone, without a re-run, to a fixed point: ${gp_said}: \
+$(cat "${stream_dir}/explore.log")"
+
 swap_due_n=0
 while IFS='|' read -r sd_confirming sd_witnesses sd_deferred sd_round \
     sd_read sd_jobs sd_want; do

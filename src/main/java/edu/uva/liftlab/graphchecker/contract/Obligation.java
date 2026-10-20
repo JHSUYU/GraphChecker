@@ -15,12 +15,14 @@ public final class Obligation extends Value {
     private final Map<String, String> answers;
     private final List<String> unproducible;
     private final boolean force;
+    private final boolean rerun;
 
     private Obligation(String obligationId, String taskId, String pathId,
                        String siteId, int ordinal, boolean flippedOutcome,
                        Map<String, String> rootAssignments,
                        Map<String, String> answers,
-                       List<String> unproducible, boolean force) {
+                       List<String> unproducible, boolean force,
+                       boolean rerun) {
         this.obligationId = obligationId;
         this.taskId = taskId;
         this.pathId = pathId;
@@ -31,6 +33,7 @@ public final class Obligation extends Value {
         this.answers = answers;
         this.unproducible = unproducible;
         this.force = force;
+        this.rerun = rerun;
     }
 
     public static Obligation of(String obligationId, String taskId,
@@ -43,7 +46,20 @@ public final class Obligation extends Value {
                 Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
                 Fields.text(siteId, "siteId"), Fields.ordinal(ordinal, "ordinal"),
                 flippedOutcome, Fields.copy(rootAssignments),
-                Fields.copy(answers), Fields.copy(unproducible), false);
+                Fields.copy(answers), Fields.copy(unproducible), false,
+                false);
+    }
+
+    public static Obligation rerunning(String obligationId, String taskId,
+                                       String pathId, String siteId,
+                                       int ordinal, boolean recordedOutcome) {
+        return new Obligation(Fields.text(obligationId, "obligationId"),
+                Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
+                Fields.text(siteId, "siteId"), Fields.ordinal(ordinal,
+                "ordinal"), recordedOutcome,
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String>emptyList(), false, true);
     }
 
     public static Obligation confirming(String obligationId, String taskId,
@@ -54,7 +70,7 @@ public final class Obligation extends Value {
         return new Obligation(Fields.text(obligationId, "obligationId"),
                 Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
                 "", 0, false, Fields.copy(rootAssignments),
-                Fields.copy(answers), Fields.copy(unproducible), false);
+                Fields.copy(answers), Fields.copy(unproducible), false, false);
     }
 
     public static Obligation forcing(String obligationId, String taskId,
@@ -63,11 +79,15 @@ public final class Obligation extends Value {
                 Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
                 "", 0, false, Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(),
-                Collections.<String>emptyList(), true);
+                Collections.<String>emptyList(), true, false);
     }
 
     public boolean force() {
         return force;
+    }
+
+    public boolean rerun() {
+        return rerun;
     }
 
     public boolean flips() {
@@ -132,12 +152,13 @@ public final class Obligation extends Value {
     Object[] parts() {
         return new Object[] {obligationId, taskId, pathId, siteId, ordinal,
                 flippedOutcome, rootAssignments, answers, unproducible,
-                force};
+                force, rerun};
     }
 
     @Override
     public String toString() {
         return "Obligation{" + obligationId + (force ? " FORCE}"
-                : " " + siteId + "#" + ordinal + "->" + flippedOutcome + "}");
+                : " " + (rerun ? "RERUN " : "") + siteId + "#" + ordinal
+                + "->" + flippedOutcome + "}");
     }
 }

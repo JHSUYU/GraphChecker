@@ -105,6 +105,39 @@ public final class WorkStartSites {
             "java.util.Collection",
             TIMER_TASK);
 
+    public static final String CONTINUED = "java.util.concurrent.CompletionStage";
+
+    private static final Set<String> CONTINUED_OWNERS = names(
+            "java/util/concurrent/CompletableFuture",
+            "java/util/concurrent/CompletionStage");
+
+    private static final Set<String> CONTINUATIONS = names("whenComplete",
+            "whenCompleteAsync", "handle", "handleAsync", "thenApply",
+            "thenApplyAsync", "thenAccept", "thenAcceptAsync", "thenRun",
+            "thenRunAsync", "thenCompose", "thenComposeAsync",
+            "exceptionally", "thenCombine", "thenCombineAsync",
+            "thenAcceptBoth", "thenAcceptBothAsync", "runAfterBoth",
+            "runAfterBothAsync", "applyToEither", "applyToEitherAsync",
+            "acceptEither", "acceptEitherAsync", "runAfterEither",
+            "runAfterEitherAsync");
+
+    public static final List<String> CONTINUATION_TYPES = Arrays.asList(
+            "java.util.function.Function", "java.util.function.BiFunction",
+            "java.util.function.Consumer", "java.util.function.BiConsumer",
+            "java.lang.Runnable");
+
+    public static boolean registersContinuation(String calleeName,
+                                                Types receiverType) {
+        return calleeName != null && receiverType != null
+                && CONTINUATIONS.contains(calleeName)
+                && (receiverType.is(CONTINUED)
+                || receiverType.is("java.util.concurrent.CompletableFuture"));
+    }
+
+    public static boolean continues(String parameterType) {
+        return CONTINUATION_TYPES.contains(parameterType);
+    }
+
     private static Set<String> names(String... values) {
         return new LinkedHashSet<>(Arrays.asList(values));
     }
@@ -201,7 +234,9 @@ public final class WorkStartSites {
         if (argumentCount == 0 && named(RECEIVER_STARTS, calleeName)) {
             return true;
         }
-        if (argumentCount >= 1 && SUBMISSION_NAMES.contains(calleeName)) {
+        if (argumentCount >= 1 && SUBMISSION_NAMES.contains(calleeName)
+                || CONTINUED_OWNERS.contains(ownerInternalName)
+                && CONTINUATIONS.contains(calleeName)) {
             return true;
         }
         boolean concurrent = ownerInternalName != null

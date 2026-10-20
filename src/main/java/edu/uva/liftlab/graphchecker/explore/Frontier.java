@@ -205,18 +205,18 @@ public final class Frontier {
         settled.putIfAbsent(obligationId, reason);
     }
 
-    public Round open(int index, Obligation first,
+    public Round open(int index, List<Obligation> first,
                       List<ObligationFactory.Candidate> candidates) {
         List<Obligation> obligations = new ArrayList<Obligation>();
         Set<String> proposed = new LinkedHashSet<String>();
         int held = 0;
-        if (first != null && !settled.containsKey(first.obligationId())) {
-            if (inFlightIds.contains(first.obligationId())) {
+        for (Obligation asked : first) {
+            if (settled.containsKey(asked.obligationId())) continue;
+            if (inFlightIds.contains(asked.obligationId())) {
                 held++;
-            } else {
-                proposed.add(first.obligationId());
-                proposedBy.put(first.obligationId(), first.taskId());
-                obligations.add(first);
+            } else if (proposed.add(asked.obligationId())) {
+                proposedBy.put(asked.obligationId(), asked.taskId());
+                obligations.add(asked);
             }
         }
         for (ObligationFactory.Candidate candidate : candidates) {
