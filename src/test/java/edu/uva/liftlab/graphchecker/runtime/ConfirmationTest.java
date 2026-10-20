@@ -128,6 +128,7 @@ public class ConfirmationTest {
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
         Endpoint held = endpoint(ANCHOR, "XCH.2.resp.expire-at");
         Endpoint polled = turn(2);
+        Endpoint behind = endpoint(MINT, "a.Manager#tick()#9:READ");
         handed(confirm(""), Arrays.asList(wire(consumer, chosen, null),
                 wire(held, chosen, "2000"),
                 state(reader, "", WRITER.id(), "121"),
@@ -135,6 +136,7 @@ public class ConfirmationTest {
                 state(polled, ",'readerAnyTurn':'"
                         + Confirmation.anyTurn(polled) + "'", WRITER.id(),
                         "123"),
+                state(behind, ",'afterAnchor':true", WRITER.id(), "124"),
                 "{'kind':'MARKER','root':'FAULT:IPC','value':true}"));
         assertEquals("the chosen producer is no mismatch", "",
                 Confirmation.attached(consumer, chosen, null).mismatch);
@@ -154,7 +156,8 @@ public class ConfirmationTest {
         Confirmation.read(turn(1), CELL, 123L, ReadRow.UNKNOWN_VERSION);
         Confirmation.wrote(CELL, 123L, WRITER, false);
         List<String> close = Confirmation.close();
-        assertEquals(close.toString(), 2, close.size());
+        assertEquals("a read held behind the anchor is not required: "
+                + close, 2, close.size());
         assertTrue(close.get(0), close.get(0).startsWith("STATE "
                 + reader.id() + ": the model joined this read to writer "
                 + WRITER.id() + " (version 121), the run observed")

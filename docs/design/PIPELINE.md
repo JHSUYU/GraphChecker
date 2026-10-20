@@ -3767,7 +3767,18 @@ with it is a `RUN_DEFECT`.
   never for an INITIAL, which every read observes before the first write, so the exact reader must;
   a `mint` row, a placeholder's, which lands on whichever occurrence reads the cell first, when a
   placeholder of the run observed a version of its `location` its writer wrote, an INITIAL included,
-  and it holds no order), and holds each `ORDER` activation's
+  and it holds no order; a STATE row marked `afterAnchor` is not compared at all,
+  `ConfirmMain#afterAnchor`: the plan's ORDER rows hold its reader behind an end inside the anchor's
+  occurrence, directly or through further ORDER rows -- its activation key under a held activation,
+  or its activation's claim (`Confirmation#claim`) the held claim -- and the reader is not in the
+  anchor's occurrence itself; a reader merely recorded later is never marked. By the model's own
+  order such a reader runs only after the anchor's occurrence made the read that decides its fatal,
+  so what it reads cannot decide that fatal; whatever its activation writes that the anchor's
+  occurrence reads later shows in those reads' own STATE rows, which stay required, and its ORDER
+  row is held and checked as any other. A run that took the fatal often ends before such a reader
+  runs: hbase-adhoc-22 NC11 claims 1-3 held DeleteTableProcedure's release step behind the
+  creation's region-count read, observed the fatal at the anchor, and were refuted only because the
+  release step's own read of the count never ran), and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); a checked `ORDER` (`check: true`) is never waited for: when its activation first
   enters, the named activations must already have exited (`Confirmation#checked`), each one that
@@ -3795,7 +3806,9 @@ with it is a `RUN_DEFECT`.
   nothing: a defect of the engine.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
-sessionId}`, the same shape for a refusal, `realized.json` and the decision; a decision over
+sessionId}`, the same shape for a refusal, `realized.json` and the decision; a decision whose
+`expected_edges.jsonl` marks STATE rows `afterAnchor` names their readers (`afterAnchor`, the rows
+the close did not require); a decision over
 edges with checked orders also states `ordersChecked` (the `check` rows of its
 `expected_edges.jsonl`) and `ordersObserved` (the run's `ORDER_OBSERVED` gaps: orders observed in
 place, not held; one that was not is the `CONFIRM_MISMATCH` the reason names). `refutes` says a
