@@ -112,9 +112,21 @@ public final class GapLedgerMain {
         Strings strings = new Strings();
         List<Path> files = gapFiles(iteration);
         for (Path file : files) stageOf(file);
-        List<List<Row>> raised = new ArrayList<List<Row>>(Parallel.map(files,
-                file -> stageRows(file, stageOf(file), strings),
-                Parallel.directoriesAtOnce()));
+        Path closure = null;
+        for (Path file : files) {
+            if (generation(file) > generation(closure)) closure = file;
+        }
+        List<Path> ordered = new ArrayList<Path>(files.size());
+        if (closure != null) ordered.add(closure);
+        for (Path file : files) {
+            if (!file.equals(closure)) ordered.add(file);
+        }
+        Path last = closure;
+        List<List<Row>> raised = new ArrayList<List<Row>>(Parallel.map(
+                ordered, file -> generation(file) < 0 || file.equals(last)
+                        ? stageRows(file, stageOf(file), strings)
+                        : superseded(stageRows(file, stageOf(file), strings),
+                        last), Parallel.directoriesAtOnce()));
         Path campaign = iteration.resolve(CAMPAIGN_GAPS);
         if (Files.isRegularFile(campaign) && Files.size(campaign) > 0) {
             raised.add(stageRows(campaign, "IMPORT", strings));
@@ -129,6 +141,29 @@ public final class GapLedgerMain {
         }
         raised.add(declared);
         return new Ledger(files.size(), raised);
+    }
+
+    private static final Pattern GENERATION =
+            Pattern.compile("obligations-([0-9]+)");
+
+    static int generation(Path file) {
+        Path directory = file == null ? null : file.getParent();
+        if (directory == null || directory.getFileName() == null) return -1;
+        java.util.regex.Matcher number = GENERATION.matcher(
+                directory.getFileName().toString());
+        return number.matches() ? Integer.parseInt(number.group(1)) : -1;
+    }
+
+    private static List<Row> superseded(List<Row> rows, Path last) {
+        String reason = "superseded by " + last.getParent().getFileName()
+                + ": an earlier generation's closure gap the last closure"
+                + " does not raise";
+        List<Row> kept = new ArrayList<Row>(rows.size());
+        for (Row row : rows) {
+            kept.add(row.diagnostic ? row : new Row(row.stage, row.source,
+                    row.code, row.subject, row.detail, true, reason));
+        }
+        return kept;
     }
 
     static List<Path> gapFiles(Path iteration) throws IOException {

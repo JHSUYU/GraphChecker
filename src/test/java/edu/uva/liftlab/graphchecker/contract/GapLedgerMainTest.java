@@ -128,6 +128,51 @@ public class GapLedgerMainTest {
                 published.get("sha256").getAsString());
     }
 
+    /**
+     * A generation's own closure gaps stand only in the last generation
+     * that wrote a closure file: one the exploration's later closures no
+     * longer raise is superseded (hbase-adhoc-31 F1H: three occurrences
+     * unrun in generations 3-10 and run from 11 on held the run at
+     * RUN_DEFECT), and a session's or worker's file counts as before.
+     */
+    @Test
+    public void anEarlierGenerationsClosureGapIsSupersededByTheLastClosure()
+            throws Exception {
+        Path root = folder.getRoot().toPath();
+        fixture(root);
+        Path iteration = root.resolve("iteration-0000");
+        gzip(iteration.resolve("obligations-0003/gaps.jsonl.gz"),
+                "{\"sessionId\":\"\",\"kind\":\"ADMISSION_GAP\",\"cls\":\"BLOCKING\",\"subject\":\"OCC.unrun\",\"detail\":\"no session ran it\"}",
+                "{\"sessionId\":\"\",\"kind\":\"ADMISSION_GAP\",\"cls\":\"BLOCKING\",\"subject\":\"OCC.still\",\"detail\":\"no session ran it\"}");
+        gzip(iteration.resolve("obligations-0003/def456/gaps.jsonl.gz"),
+                "{\"sessionId\":\"W3\",\"kind\":\"UNSTATED_VALUE\",\"cls\":\"BLOCKING\",\"subject\":\"OBL.refused\",\"detail\":\"refused\"}");
+        gzip(iteration.resolve("obligations-0011/gaps.jsonl.gz"),
+                "{\"sessionId\":\"\",\"kind\":\"ADMISSION_GAP\",\"cls\":\"BLOCKING\",\"subject\":\"OCC.still\",\"detail\":\"no session ran it\"}");
+        gzip(iteration.resolve("obligations-0012/abc999/gaps.jsonl.gz"),
+                "{\"sessionId\":\"W4\",\"kind\":\"TASK_UNANSWERED\",\"cls\":\"DIAGNOSTIC\",\"subject\":\"OBL.late\",\"detail\":\"x\"}");
+        ledger(root);
+        JsonObject whole = JsonParser.parseString(new String(
+                Files.readAllBytes(root.resolve("final/gaps.json")),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        List<String> blocking = new ArrayList<String>();
+        for (JsonElement row : whole.getAsJsonArray("gaps")) {
+            blocking.add(row.getAsJsonObject().get("subject").getAsString());
+        }
+        assertTrue(blocking.toString(), blocking.contains("OCC.still"));
+        assertTrue(blocking.toString(), blocking.contains("OBL.refused"));
+        assertTrue(blocking.toString(), !blocking.contains("OCC.unrun"));
+        assertTrue(blocking.toString(), !blocking.contains("OCC.x"));
+        List<String> superseded = new ArrayList<String>();
+        for (JsonElement row : whole.getAsJsonArray("telemetryGaps")) {
+            JsonObject gap = row.getAsJsonObject();
+            if (gap.get("classReason").getAsString()
+                    .startsWith("superseded by obligations-0011")) {
+                superseded.add(gap.get("subject").getAsString());
+            }
+        }
+        assertEquals("[OCC.unrun, OCC.x]", superseded.toString());
+    }
+
     @Test
     public void aGapFileWhereNoStageWritesFailsTheLedger() throws Exception {
         Path root = folder.getRoot().toPath();
