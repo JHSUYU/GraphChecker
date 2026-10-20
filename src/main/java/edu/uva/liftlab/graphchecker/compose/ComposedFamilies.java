@@ -961,6 +961,9 @@ final class ComposedFamilies {
             List<String> refused = new ArrayList<String>(
                     lowering.openRefusals());
             conjuncts.addAll(lowering.end());
+            if (stated) {
+                composer.unplacedClocks(session, conjuncts, joins, local);
+            }
             if (!stated || !local.isEmpty() || !refused.isEmpty()) {
                 lastRefusal = !local.isEmpty() ? local.get(0).kind() + " "
                         + local.get(0).subject() + ": "
