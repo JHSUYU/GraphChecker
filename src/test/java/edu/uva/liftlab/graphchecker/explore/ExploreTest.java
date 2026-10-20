@@ -2002,13 +2002,17 @@ public class ExploreTest {
             for (Task task : plan.tasks) {
                 if (task.focused().equals(TARGET)) anchor = task;
             }
+            Frontier frontier = new Frontier(corpus, plan.tasks,
+                    plan.flipSites);
+            Map<String, List<ObligationResult>> none =
+                    Collections.<String, List<ObligationResult>>emptyMap();
             assertTrue(row[0] + ": unplanned yet, no re-run",
                     PathReruns.of(corpus, anchor, plan.unrecordedWriters,
-                            Collections.<String>emptySet(), gap -> { })
-                            .isEmpty());
+                            Collections.<String>emptySet(), frontier, none,
+                            gap -> { }).isEmpty());
             List<Obligation> reruns = PathReruns.of(corpus, anchor,
                     plan.unrecordedWriters, Collections.singleton(
-                            writer.render()), gap -> { });
+                            writer.render()), frontier, none, gap -> { });
             assertEquals(row[0] + ": planned, the seed's path re-runs its "
                     + "world: " + reruns, (Boolean) row[4] ? 1 : 0,
                     reruns.size());
@@ -2041,6 +2045,30 @@ public class ExploreTest {
             assertTrue("the replay is judged by its recorded arm: " + focus,
                     focus.getAsJsonObject("flip").get("outcome")
                             .getAsBoolean());
+            String flip = ObligationFactory.flip(rerun.taskId(),
+                    rerun.pathId(), rerun.siteId(), rerun.ordinal(),
+                    rerun.flippedOutcome());
+            frontier.inFlight(Collections.singletonList(rerun));
+            assertTrue("one re-run of a path at a time",
+                    PathReruns.of(corpus, anchor, plan.unrecordedWriters,
+                            Collections.singleton(writer.render()),
+                            frontier, none, gap -> { }).isEmpty());
+            Session again = new Session(iteration, "s-again");
+            again.activation(TARGET, false);
+            again.activation(writer, false, true);
+            again.flush();
+            Corpus landed = Corpus.read(iteration, null);
+            assertTrue("a landed re-run that ran the writers owes no other",
+                    PathReruns.of(landed, anchor, plan.unrecordedWriters,
+                            Collections.singleton(writer.render()),
+                            new Frontier(landed, plan.tasks, plan.flipSites),
+                            Collections.singletonMap(flip,
+                                    Collections.singletonList(
+                                            ObligationResult.of(
+                                                    rerun.obligationId(),
+                                                    Verdict.ADMITTED,
+                                                    "s-again", "ran"))),
+                            gap -> { }).isEmpty());
         }
     }
 

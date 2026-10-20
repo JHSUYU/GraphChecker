@@ -6,14 +6,18 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,7 +32,8 @@ final class PathReruns {
 
     static List<Obligation> of(Corpus corpus, Task anchor,
                                Map<String, Set<OccurrenceAddress>> unrecorded,
-                               Set<String> planned,
+                               Set<String> planned, Frontier frontier,
+                               Map<String, List<ObligationResult>> answers,
                                Consumer<GapRow> gaps) {
         List<Obligation> reruns = new ArrayList<Obligation>();
         if (anchor == null) return reruns;
@@ -42,11 +47,32 @@ final class PathReruns {
             }
             Set<String> writers = writers(corpus, sessionId,
                     reading.getValue(), planned);
-            if (writers.isEmpty()) continue;
-            Obligation rerun = session.manifest().forced()
+            Obligation rerun = writers.isEmpty() ? null
+                    : session.manifest().forced()
                     ? forced(corpus, anchor, writers)
                     : recorded(corpus, anchor, sessionId, writers);
             if (rerun == null) continue;
+            String flip = ObligationFactory.flip(rerun.taskId(),
+                    rerun.pathId(), rerun.siteId(), rerun.ordinal(),
+                    rerun.flippedOutcome());
+            if (frontier.flying(flip)) continue;
+            for (ObligationResult ran : answers.getOrDefault(flip,
+                    Collections.<ObligationResult>emptyList())) {
+                if (ran.verdict() != Verdict.ADMITTED
+                        || ran.sessionId().isEmpty()) {
+                    continue;
+                }
+                for (Iterator<String> each = writers.iterator();
+                     each.hasNext();) {
+                    ActivationRow whole = corpus.activation(ran.sessionId(),
+                            OccurrenceAddress.parse(each.next()));
+                    if (whole != null && whole.instrumented()) each.remove();
+                }
+            }
+            if (writers.isEmpty()) continue;
+            rerun = session.manifest().forced()
+                    ? forced(corpus, anchor, writers)
+                    : recorded(corpus, anchor, sessionId, writers);
             reruns.add(rerun);
             gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,

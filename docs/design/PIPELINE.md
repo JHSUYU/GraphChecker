@@ -945,8 +945,9 @@ unplanned (the ZooKeeper chain's off-chain writers); offline its four occurrence
 no row wrote, the occurrences holding a write site of the read's carrier are kept
 (`Plan#unrecordedWriters`); where the session is the seed or a FORCE replay and some of them are
 planned now and ran unplanned there, the anchor's path in it is re-run
-(`PathReruns`, an obligation ahead of the round's flips as FORCE is, once per path and set of
-writers, a DIAGNOSTIC `RERUN <obligation>` row naming them): the seed's as a `rerun` obligation on
+(`PathReruns`, an obligation ahead of the round's flips as FORCE is, one per path in flight, for
+the writers no landed re-run of the path ran whole -- every round's growth proposed another, HC15-nsrg
+15 in 20 rounds --, a DIAGNOSTIC `RERUN <obligation>` row naming them): the seed's as a `rerun` obligation on
 its own world -- no query, the path's schedule cut, judged ADMITTED where the anchor's decision
 (the target row's guard ordinal, else the path's last) takes its recorded arm again
 (`ObligationSolverMain#rerun`) -- and a FORCE path as a FORCE obligation of its own id; its session
