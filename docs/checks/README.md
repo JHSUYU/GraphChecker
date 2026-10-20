@@ -123,7 +123,7 @@ left) is [../STATUS.md](../STATUS.md) "Solr checks" and [../handover/TODO.md](..
 | check | site (our tree) | guard | workload (test) | state |
 | --- | --- | --- | --- | --- |
 | hbase-adhoc-04r | AbstractStateMachineTableProcedure.java:163 (re-sited to the server) | `!ts.isEnabledOrEnabling()` | `TestMobStoreScanner#testMobStoreScanner` (admin.flush -> FlushTabl... | **PASS** = HBASE-30484 (as hbase-adhoc-04, our workload TestCausynthQuotaEnableAfterAdvance) |
-| hbase-adhoc-07r | SnapshotManager.java:1046 (re-sited to the server) | table state ENABLED at restore | `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot` (3 RS) | running at the 2026-10-20 handover (as hbase-adhoc-07) |
+| hbase-adhoc-07r | SnapshotManager.java:1046 (re-sited to the server) | table state ENABLED at restore | `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot` (3 RS) | no verdict yet: the exclusive run decides (as hbase-adhoc-07) |
 | hbase-adhoc-08 | `master/ClusterSchemaServiceImpl.java:111` | `TableNamespaceManager.cache.get(ns)==null` | `namespace/TestNamespaceAuditor#testTableOperations` (2 masters, qu... | named bound (claims refuted by the client's program order) |
 | hbase-adhoc-10 | `master/assignment/AssignmentManager.java:765` | `regionNode.getProcedure()!=null` | `regionserver/TestRegionMove#testDisableAndMove` (2 RS) | named bound (claim cap; a later writer no ORDER holds, TODO HBase 21) |
 | hbase-adhoc-11 | `AssignmentManager.java:769` | `!regionNode.isInState(expected)` | same | named bound (budget; client program order) |

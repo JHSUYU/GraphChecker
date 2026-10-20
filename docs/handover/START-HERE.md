@@ -32,7 +32,8 @@ The study checks (each row: HBASE.md §E, STATUS "HBase checks"):
   order, TODO HBase 15; for 10 a hold CONFIRM cannot place, TODO HBase 21): 08, 10, 11, 12, 14, 15, 31.
 - **Vacuous, waiting on an engine model:** 24, 37 (a znode's absence as state, TODO HBase 10).
 - **RUN_DEFECT:** 13 (its guard is stated after a tree workaround, but the seed replay drifts at the second merge, TODO HBase 19).
-- **Running at this handover:** 07 (see §5).
+- **No verdict yet:** 07: its replays (~22 min, 3.7 GB each) cannot converge on a shared pool; the exclusive run decides
+  (NP20-07 stopped at EXPLORE round 25 with 1811 verdicts and 469 in flight).
 
 ## 2. Read, in this order
 
@@ -85,7 +86,7 @@ A case is done as follows:
 
 1. **The owner's exclusive series** (TODO HBase 1): every case once alone on all 14 hosts, for its final verdict and its time
    breakdown, as HDFS's EX1. 07 needs about 5-10 h alone (heavy replays plus a serial claim loop): give it a 12 h budget.
-2. **07, running at this handover**: its HBASE.md §E row says what it reached; the exclusive run decides it.
+2. **07**: no verdict yet; its HBASE.md §E row says what NP20-07 reached; the exclusive run decides it.
 3. **Engine items with the most return** (TODO HBase): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would
    close 08, 12, 14, 15 and shorten 07's and nsrg's claim loops), 10 (a znode's absence as state: 24, 37), 19 (a chore's
    START given up at its trigger's next event: 13), 9 (data through a region's store).
