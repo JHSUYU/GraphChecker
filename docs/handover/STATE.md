@@ -63,10 +63,10 @@ active master.
 | hbase-adhoc-34 | **PASS**: SAT MARKER_FLIPPED (a ZooKeeper READ fault on refreshKeys), reproduced 10/10, control 0/10 | zk NZ3-34 |
 | hbase-adhoc-21 | UNSAT_CLOSED at FIXED_POINT, substantive | checks NC16-21 |
 | hbase-adhoc-19, 20, 28, 35 | UNSAT, vacuous by construction (class C) | checks NC18-19, NC19-20; platform NP4-28, NP2-35 |
-| hbase-adhoc-08, 12, 14, 15, 31 | named bound: SAT_UNCONFIRMED at the claim cap or budget, every claim refuted by CONFIRM (mostly the client thread's program order, TODO HBase 15) | checks NC14-08; rpc NR16-12, NR8-31; platform NP10-14, NP9-15 |
+| hbase-adhoc-08, 11, 12, 14, 15, 31 | named bound: SAT_UNCONFIRMED at the claim cap or budget, every claim refuted by CONFIRM (mostly the client thread's program order, TODO HBase 15) | checks NC14-08; rpc NR18-11, NR16-12, NR8-31; platform NP10-14, NP9-15 |
 | hbase-adhoc-24, 37 | UNSAT, vacuous: a znode's absence as state (TODO HBase 10) | zk NZ3-24, HZ2-37 |
 | hbase-adhoc-13 | RUN_DEFECT: guard stated (tree workaround), seed replay drifts at the second merge (TODO HBase 19) | platform NP18-13 |
-| hbase-adhoc-07, 10, 11 | running at the handover; §E says what each reached | platform NP20-07; rpc NR19-10, NR18-11 |
+| hbase-adhoc-07, 10 | running at the handover; §E says what each reached | platform NP20-07; rpc NR19-10 |
 
 **Where things are:** the second session's briefs, helpers and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/`
 (COMMON.txt, H*.txt briefs, `launch.sh`, `wait-run.sh`, `watchdog.sh`, `readings.md`, the gate logs, H5's `reask/`); the

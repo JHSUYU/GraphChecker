@@ -126,7 +126,7 @@ left) is [../STATUS.md](../STATUS.md) "Solr checks" and [../handover/TODO.md](..
 | hbase-adhoc-07r | SnapshotManager.java:1046 (re-sited to the server) | table state ENABLED at restore | `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot` (3 RS) | running at the 2026-10-20 handover (as hbase-adhoc-07) |
 | hbase-adhoc-08 | `master/ClusterSchemaServiceImpl.java:111` | `TableNamespaceManager.cache.get(ns)==null` | `namespace/TestNamespaceAuditor#testTableOperations` (2 masters, qu... | named bound (claims refuted by the client's program order) |
 | hbase-adhoc-10 | `master/assignment/AssignmentManager.java:765` | `regionNode.getProcedure()!=null` | `regionserver/TestRegionMove#testDisableAndMove` (2 RS) | running at the 2026-10-20 handover (unassign selector) |
-| hbase-adhoc-11 | `AssignmentManager.java:769` | `!regionNode.isInState(expected)` | same | running at the 2026-10-20 handover (unassign selector) |
+| hbase-adhoc-11 | `AssignmentManager.java:769` | `!regionNode.isInState(expected)` | same | named bound (budget; client program order) |
 | hbase-adhoc-12 | `AssignmentManager.java:772` | `isTableDisabled(table)` | same | named bound (claims refuted by the client's program order) |
 | hbase-adhoc-13 | `master/assignment/MergeTableRegionsProcedure.java:499` | `regionStateStore.hasMergeRegions(ri)` (meta Get) | master/assignment/TestMergeTableRegionsProcedure#testMergeTwoRegio... | RUN_DEFECT (seed drift at the second merge; TODO HBase 19) |
 | hbase-adhoc-14 | `MergeTableRegionsProcedure.java:503` | `regionStates.getRegionState(enc)==null` | same | named bound (budget; client program order) |

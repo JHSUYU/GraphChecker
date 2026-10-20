@@ -29,10 +29,10 @@ The study checks (each row: HBASE.md §E, STATUS "HBase checks"):
 - **Class C, vacuous by construction:** 19, 20 (the test builds both descriptors it compares), 28 (a configuration constant the JDK
   decides), 35 (needs a corrupt hbase:meta).
 - **Named bound** (every claim refuted by CONFIRM, mostly because it orders a step against the test thread's synchronous program
-  order, TODO HBase 15): 08, 12, 14, 15, 31.
+  order, TODO HBase 15): 08, 11, 12, 14, 15, 31.
 - **Vacuous, waiting on an engine model:** 24, 37 (a znode's absence as state, TODO HBase 10).
 - **RUN_DEFECT:** 13 (its guard is stated after a tree workaround, but the seed replay drifts at the second merge, TODO HBase 19).
-- **Running at this handover:** 07, 10, 11 (see §5).
+- **Running at this handover:** 07, 10 (see §5).
 
 ## 2. Read, in this order
 
@@ -85,7 +85,7 @@ A case is done as follows:
 
 1. **The owner's exclusive series** (TODO HBase 1): every case once alone on all 14 hosts, for its final verdict and its time
    breakdown, as HDFS's EX1. 07 needs about 5-10 h alone (heavy replays plus a serial claim loop): give it a 12 h budget.
-2. **The three cases running at this handover** (07, 10, 11): their HBASE.md §E rows say what they reached.
+2. **The two cases running at this handover** (07, 10): their HBASE.md §E rows say what they reached.
 3. **Engine items with the most return** (TODO HBase): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would
    close 08, 12, 14, 15 and shorten 07's and nsrg's claim loops), 10 (a znode's absence as state: 24, 37), 19 (a chore's
    START given up at its trigger's next event: 13), 9 (data through a region's store).
