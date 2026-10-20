@@ -687,6 +687,18 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
   H1-H4.md (e) can go once nothing reads them; `system/hbase` is not pushed to GitHub (owner's OK needed); the fork's
   `graphchecker/hbase-checks` is pushed at 985a0dfe91.
 
+**12. Provenance through a construction-only container field of a copy-on-write object** (hbase-bugs-ns-rsgroup-removal
+NC3-nsrg, worked around in the tree 100878f553, STATUS "the H4 checks' stated guards"). `RSGroupInfoManagerImpl#getRSGroup`
+read `holder.groupName2Group.get(name)`: the guard's term names the MAP read of the holder's map, whose only static writer
+is `RSGroupInfoHolder`'s constructor storing into its own object (`ownObject`: only the guards choosing which
+construction runs, `flushConfig(Map)#u3`, SYMBOL-SCOPE §3), while the REFERENCE read of `holder` naming WHICH holder (and
+so which map) is in no term, so the store that hands the new holder on (`flushConfig(Map)#u30 holder = new ...`, guarded by
+`removeRSGroup#u52`, the namespace check) never offers its occurrences: the removal's static-candidate demand had flip
+sites `[flushConfig(Map)#u3]` only (offline planner over NC3's corpus), `#u52` was never a flip site in 127 rounds (NC1),
+the count read was never demanded and neither the namespace Mutate fault nor the race was asked. The general fix: a
+demanded read of a container reached through a construction-only field also demands the read of the reference that
+handed its owner on (`Provenance`, PROVENANCE sites), so the handing-on store's writers and guards join the closure.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
