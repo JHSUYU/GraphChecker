@@ -763,7 +763,7 @@ to no open case's benefit): NC7's corpus composes the fault claim first (MARKER_
 NC12's confirmed root) in 114 s with 798 z3 runs. The sound F4 needs new records (design below). PARKED (lead,
 2026-10-20): 2-3 days of identity/schedule work for two study cases whose results already stand as named bounds (hbase-adhoc-08
 NC14-08 and hbase-adhoc-14: every claim up to `campaign_max_claims` refuted by the client's program order) fails the owner's
-workaround-over-grinding rule. Build it when a case's verdict depends on it.
+workaround-over-grinding rule. Build it when a case's verdict depends on it. Cases it bounds now (each a named bound `campaign_max_claims`, every claim refuted by CONFIRM after a full replay, about 8-10 min a claim for CONFIRM plus 2-12 min for its COMPOSE): hbase-adhoc-08 NC14-08 (9 claims, 6507 s), hbase-adhoc-14 (the merge's `encodedRegionsMap` read before CreateTable's put, NP10-14), hbase-adhoc-15 NP9-15 (9 claims, CONFIRM 475-531 s each, COMPOSE 154-730 s each, 11381 s: the merge before CreateTable's steps and the OPENED reports), hbase-bugs-ns-rsgroup-removal NC7 (its program-order claims; NC12's fault claim confirmed).
 - The chains it must state. nsrg runs: R1's handler turn, then its RESPONSE, then the reply reader (`Anchor:r1`, netty),
   where `RawAsyncHBaseAdmin`'s `RpcCallback` completes the RPC future G. Then `AsyncMasterRequestRpcRetryingCaller`'s
   `whenComplete` continuation C, registered on G, completes the caller's future F, and the test thread's
