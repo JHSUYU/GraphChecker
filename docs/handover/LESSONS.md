@@ -231,7 +231,9 @@ the way: a CONFIG root's domain is its recording widened only by the literals it
 compares needs a declared domain (`root-domains.jsonl`; NZ7-mat: the skew pinned to 0); and a CONFIG root is one symbol
 per configuration key, so two nodes reading one key share it -- the plant is per mint occurrence, the formula is not
 (NZ8-mat: a replay planting -2001 at master1's read alone observed the fatal while every valuation, both masters
-shifted alike, was UNSAT); give per-node keys where nodes must differ.
+shifted alike, was UNSAT); give per-node keys where nodes must differ -- as constants: a configuration
+root is named only for a constant key (`ConfigRoots`), so a computed `key + "." + startcode` made no root at all
+(NZ9-mat).
 
 **Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
 startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no
