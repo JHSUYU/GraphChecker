@@ -38,6 +38,7 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -1733,6 +1734,107 @@ public class ComposerTest {
             assertFalse(name + ": the nearer world injects no fault: "
                     + decision.claim().movedRoots(),
                     decision.claim().movedRoots().containsKey(MARKER_ROOT));
+        }
+    }
+
+    @Test
+    public void aCellTheRecordingNeverReadIsPlacedByAnotherNodesReadingOfTheSameJvmClock()
+            throws Exception {
+        Object[][] table = {
+                {"the same JVM clock", Clock.WALL, ClaimKind.CLOCK_SKEW},
+                {"another JVM clock", Clock.MONOTONIC,
+                        ClaimKind.NO_SUPPORTED_WITNESS},
+        };
+        for (Object[] row : table) {
+            String name = (String) row[0];
+            Path iteration = folder.newFolder("placed-" + name.replace(' ',
+                    '-')).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.root(PRODUCER, "ROOT.T1", "clock_t1", RootKind.CLOCK, "700");
+            seed.target("false", false, true);
+            seed.write();
+            Session rerun = new Session(iteration, "s1", true);
+            rerun.root(PRODUCER, "ROOT.T1", "clock_t1", RootKind.CLOCK, "900");
+            rerun.roots.add(RootMintRow.of("s1", ++rerun.seq, ANCHOR,
+                    "ROOT.T0", "clock_t0", RootKind.CLOCK, RootCategory.CLOCK,
+                    "950", null, null, true,
+                    Clock.of(1_000_000L, (String) row[1]), 0L));
+            rerun.decision(ANCHOR, "anchor#u1", "(or (> clock_t0 2000) (not "
+                    + "(> clock_t0 2000)))", "ROOT.T0", 950L);
+            rerun.target("(> clock_t0 2000)", false, true);
+            rerun.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(name + ": " + decision.claim().gaps(), row[2],
+                    decision.claim().kind());
+            if (row[2] != ClaimKind.CLOCK_SKEW) continue;
+            String floor = null;
+            for (RootDomain domain : composition.roots()) {
+                if (domain.rootId().equals("ROOT.T0")) floor = domain.min();
+            }
+            assertEquals(name + ": the seed's reading of the other node's "
+                    + "cell, plus the time the rerun's host ran between the "
+                    + "two", "750", floor);
+            String moved = decision.claim().movedRoots().get("clock_t0");
+            assertNotNull(name + ": the claim names the cell it moved: "
+                    + decision.claim().movedRoots(), moved);
+            assertTrue(name + ": " + moved,
+                    Long.parseLong(moved.trim()) > 2000L);
+        }
+    }
+
+    @Test
+    public void aMessageArmRestingOnACellWithNoInstantIsNoOption()
+            throws Exception {
+        Endpoint sent = Endpoint.of(PRODUCER, "PORT.time", at("export#1", 0),
+                0);
+        Object[][] table = {
+                {"the same JVM clock", Clock.WALL,
+                        ClaimKind.MESSAGE_PAIRING_FLIPPED},
+                {"another JVM clock", Clock.MONOTONIC,
+                        ClaimKind.NO_SUPPORTED_WITNESS},
+        };
+        for (Object[] row : table) {
+            String name = (String) row[0];
+            Path iteration = folder.newFolder("arm-" + name.replace(' ',
+                    '-')).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.activation(PRODUCER, "thread#" + PRODUCER.regionId(), false,
+                    true);
+            seed.root(PRODUCER, "ROOT.T1", "clock_t1", RootKind.CLOCK, "700");
+            seed.expression("EXPR.v1.c", integer("J", 700L));
+            seed.export(sent, "EXPR.v1.c", "J", 1L, "700");
+            seed.attach(Endpoint.of(ANCHOR, "PORT.time", at("attach#1", 0),
+                    0), "vh", "J", "700", sent);
+            seed.target("(> vh 2000)", false, true);
+            seed.write();
+            Session rerun = new Session(iteration, "s1", true);
+            rerun.activation(PRODUCER, "thread#" + PRODUCER.regionId(), true,
+                    true);
+            rerun.root(PRODUCER, "ROOT.T1", "clock_t1", RootKind.CLOCK, "900");
+            rerun.roots.add(RootMintRow.of("s1", ++rerun.seq, PRODUCER,
+                    "ROOT.T0", "clock_t0", RootKind.CLOCK, RootCategory.CLOCK,
+                    "950", null, null, true,
+                    Clock.of(1_000_000L, (String) row[1]), 0L));
+            rerun.decision(PRODUCER, "nn#u1", "(or (> clock_t0 0) (not (> "
+                    + "clock_t0 0)))", "ROOT.T0", 950L);
+            rerun.expression("EXPR.v1.t0", symbol("clock_t0", "J"));
+            rerun.export(sent, "EXPR.v1.t0", "J", 1L, "950");
+            rerun.attach(Endpoint.of(ANCHOR, "PORT.time", at("attach#1", 0),
+                    0), "vh", "J", "950", sent);
+            rerun.write();
+
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 4), solver());
+            assertEquals(name + ": " + decision.claim().gaps(), row[2],
+                    decision.claim().kind());
+            if (row[2] == ClaimKind.MESSAGE_PAIRING_FLIPPED) {
+                assertNotNull(name + ": the claim names the cell it moved: "
+                                + decision.claim().movedRoots(),
+                        decision.claim().movedRoots().get("clock_t0"));
+            }
         }
     }
 

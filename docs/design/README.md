@@ -188,7 +188,8 @@ waits for its own pages only.
   family of writer arms (exactly one is chosen), each guarded by the path condition that produced
   it. Eligibility is one rule (`Arms#eligible`).
 - Every clock cell is placed on the recording's timeline before any path composes (`Composer#placeClocks`, every seed
-  reading an anchor); a cell no session can place refuses only the paths that name it.
+  reading an anchor, the same node's first, else any node's of the same JVM clock); a cell no session can place
+  refuses only the paths and the message arms that name it.
 - What is symbolic stays symbolic. A value whose stated producer moves (by `movers()`, the one
   predicate) is a FREE leaf; a value no row states the producer of is HELD at its recorded value,
   named in `concrete[]` ("producer unstated"); a container state the VM marked incomplete is

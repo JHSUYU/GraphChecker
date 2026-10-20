@@ -3101,10 +3101,17 @@ is a window; otherwise the root is pinned. `placeClocks`, before any path compos
 clock cell of the corpus on the recording's timeline -- the seed's reading, or, for a cell the seed
 never read (a region woven after it, an occurrence a replay moved: hdfs-17897 NP3, dn0's `addKeys`
 run under the command queue's anchor instead of the heartbeat's), the seed's reading of the nearest
-cell (by seq) of the same clock of the same node that a session reading it also read, plus the time
-that session's host read between the two; every seed reading anchors, whatever the formula names. A
+cell (by seq) of the same JVM clock (`contract.Clock#same`) that a session reading it also read --
+on the same node where that session read one, else on any of its nodes (`Composer#nearestAnchor`: a
+session is one JVM, and a mint's host reading is that JVM's clock with the node's skew taken off, so
+placing translates one timeline onto the other and moves nothing; HZ17-mat: master0's activation
+cell, read only by re-runs whose other cells were master1's and client0's, was unplaced, so 112 of
+114 paths were refused and the two left named it free through a message arm) -- plus the time that
+session's host read between the two; every seed reading anchors, whatever the formula names. A
 cell no session can place refuses each path whose own terms name it, by name (`DECLARATION_MISSING`,
-DIAGNOSTIC, in `refusedPaths`: no claim could say whether a witness moved it), beside
+DIAGNOSTIC, in `refusedPaths`: no claim could say whether a witness moved it), and each message arm
+whose closure names it (`ComposedFamilies.ArmBody#end`: an arm delivering it would leave it free,
+outside every domain and every claim's moved roots), beside
 `unstatedRoots` at step (1b); every other path composes, and only when every path is refused does the
 ADMISSION_GAP close the composition. `clocks`: every clock cell the formula names gets its reading
 (one still in the formula with none is named, DIAGNOSTIC, and has no domain) and a domain, floor =
@@ -3119,7 +3126,8 @@ Every session's instants are on that one timeline too: a replay runs on its own 
 later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
 clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
 base at a cell is how far its host read the cell later than the recording (at the cell where the
-recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
+recording read it, else at the nearest cell both read, chosen as a placement's anchor is;
+`Composer#clockBases`),
 and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
 constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,
 `#onTimeline`); the recording's own constants stay. hdfs-11741 L1: dn1's first expiry check compared

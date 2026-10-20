@@ -1987,19 +1987,26 @@ public final class Composer {
         }
     }
 
+    void unplacedClocks(String session, List<String> terms,
+                        Map<String, String> joins, List<GapRow> refusals) {
+        if (!unplacedClocks.isEmpty()) {
+            unplacedClocks(session, named(terms, joins), refusals);
+        }
+    }
+
     private void unplacedClocks(String session, Set<String> named,
                                 List<GapRow> refusals) {
         for (Map.Entry<String, String> cell : unplacedClocks.entrySet()) {
             if (!named.contains(cell.getKey())) continue;
             refusals.add(GapRow.of(session, GapKind.DECLARATION_MISSING,
-                    GapClass.DIAGNOSTIC, cell.getValue(), "this path rests "
-                            + "on clock cell " + cell.getKey() + ", which the "
+                    GapClass.DIAGNOSTIC, cell.getValue(), "this rests on "
+                            + "clock cell " + cell.getKey() + ", which the "
                             + "recording never read, and no session that "
-                            + "read it read a cell of the same clock the "
-                            + "recording read, so it has no instant on the "
-                            + "recording's timeline: no claim could say "
-                            + "whether a witness moved it, and the path is "
-                            + "not in the disjunction"));
+                            + "read it read a cell of the same JVM clock "
+                            + "the recording read, so it has no instant on "
+                            + "the recording's timeline: no claim could say "
+                            + "whether a witness moved it, so neither a path "
+                            + "nor a message arm resting on it is composed"));
         }
     }
 
@@ -2863,9 +2870,9 @@ public final class Composer {
                                 + "recording's timeline (the recording never "
                                 + "read it, and no session that read it read "
                                 + "a cell of the same clock the recording "
-                                + "read) and reaches the formula though the "
-                                + "paths naming it were refused, so it has "
-                                + "no domain and no order");
+                                + "read) and is declared though the paths "
+                                + "and message arms naming it were refused, "
+                                + "so it has no domain and no order");
                 continue;
             }
             readings.put(row.symbol(), placed);
@@ -2974,22 +2981,8 @@ public final class Composer {
             for (RootMintRow row : session.getValue()) {
                 Long base = anchored.get(row);
                 if (base == null) {
-                    RootMintRow nearest = null;
-                    for (RootMintRow anchor : anchored.keySet()) {
-                        if (!anchor.occurrence().node().equals(
-                                row.occurrence().node())
-                                || row.clock() == null
-                                || !row.clock().same(anchor.clock())) {
-                            continue;
-                        }
-                        long distance = Math.abs(anchor.seq() - row.seq());
-                        if (nearest == null || distance
-                                < Math.abs(nearest.seq() - row.seq())
-                                || (distance == Math.abs(nearest.seq()
-                                - row.seq()) && anchor.seq() < nearest.seq())) {
-                            nearest = anchor;
-                        }
-                    }
+                    RootMintRow nearest = nearestAnchor(row,
+                            anchored.keySet());
                     base = nearest == null ? null : anchored.get(nearest);
                 }
                 if (base != null && base != 0L) late.put(row.symbol(), base);
@@ -3037,16 +3030,33 @@ public final class Composer {
         for (RootMintRow cell : rows) {
             Long host = number(cell.hostReading());
             if (cell.kind() != RootKind.CLOCK || host == null) continue;
-            RootMintRow nearest = null;
-            long from = 0L;
+            Map<RootMintRow, RootMintRow> seedOf =
+                    new LinkedHashMap<RootMintRow, RootMintRow>();
             for (RootMintRow anchor : read) {
                 RootMintRow same = corpus.rootOf(cell.sessionId(),
                         anchor.rootId());
-                Long sameHost = same == null ? null
-                        : number(same.hostReading());
-                if (sameHost == null || !anchor.occurrence().node().equals(
-                        cell.occurrence().node())
-                        || !cell.clock().same(same.clock())) {
+                if (same != null && number(same.hostReading()) != null) {
+                    seedOf.put(same, anchor);
+                }
+            }
+            RootMintRow nearest = nearestAnchor(cell, seedOf.keySet());
+            if (nearest != null) {
+                return readings.get(seedOf.get(nearest).symbol())
+                        + (host - number(nearest.hostReading()));
+            }
+        }
+        return null;
+    }
+
+    private static RootMintRow nearestAnchor(RootMintRow cell,
+                                             Collection<RootMintRow> anchors) {
+        if (cell.clock() == null) return null;
+        for (boolean sameNode : new boolean[] {true, false}) {
+            RootMintRow nearest = null;
+            for (RootMintRow anchor : anchors) {
+                if ((sameNode && !anchor.occurrence().node().equals(
+                        cell.occurrence().node()))
+                        || !cell.clock().same(anchor.clock())) {
                     continue;
                 }
                 long distance = Math.abs(anchor.seq() - cell.seq());
@@ -3055,12 +3065,9 @@ public final class Composer {
                 if (distance < best || (distance == best
                         && anchor.seq() < nearest.seq())) {
                     nearest = anchor;
-                    from = sameHost;
                 }
             }
-            if (nearest != null) {
-                return readings.get(nearest.symbol()) + (host - from);
-            }
+            if (nearest != null) return nearest;
         }
         return null;
     }

@@ -176,7 +176,14 @@ largest replay cost seen in SGF9; confirm which roots produce the volume, then b
 
 **5. Smaller items, each with its evidence.**
 - Unplaced clock cells: 19 composed 2 of 44 paths (41 refused, `Composer#unplacedClocks`); placing node0's clock cell
-  composes 28 of 44 and still decides NO_SUPPORTED_WITNESS (`c19/FINDINGS.txt`).
+  composes 28 of 44 and still decides NO_SUPPORTED_WITNESS (`c19/FINDINGS.txt`). COMPOSE now places a cell by another
+  node's reading of the same JVM clock (`Composer#nearestAnchor`; HZ17-mat 2 -> 112 of 114 paths composed); 19 not rerun on it.
+- A free leaf for an unmodeled operation (`SmtLowering#free`, UNSTATED_VALUE) in the seed's own fatal makes the seed
+  path satisfiable as recorded: HP8-15 (hbase-adhoc-15) path 3b16839a's phi rests on `OpStrExpression.equals`
+  ARGUMENT_DYNAMIC_TYPE_UNMODELED (`unsupported__703a92087c`), z3 set it true where the recording ran it false, and
+  `ClaimPolicy#closed` took the free formula's model -- the run as recorded -- as a FORMULA_SAT witness, which CONFIRM
+  refuted ("moves nothing"). Model the argument's dynamic type, or hold an unmodeled operation to its recorded result
+  wherever its operands are at theirs.
 - A re-run that lands mid-round is seen one round late (~6.5 min a link; 50 of 1019's 160 min were waits).
 - Chains of doors-only growths: with the fixed point waiting for every re-run (b9ecc0ba2), the fresh-clone run of 38
   (`accept-FC6STOP-adhoc-38`, no witness that run) spent rounds 47-64 growing one doors-only occurrence "run whole" at a
