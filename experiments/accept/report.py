@@ -92,6 +92,9 @@ EXPECTED_MECHANISM = {
         "kinds": ("MARKER_FLIPPED",),
         "fault": ("org.apache.hadoop.hbase.ipc.AbstractRpcClient",),
         "clocks": False},
+    "hbase-adhoc-22": {
+        "kinds": ("STATE_PAIRING_FLIPPED",),
+        "clocks": False},
     "hbase-bugs-ns-rsgroup-removal": {
         "kinds": ("MARKER_FLIPPED",),
         "fault": ("org.apache.hadoop.hbase.ipc.AbstractRpcClient",),
