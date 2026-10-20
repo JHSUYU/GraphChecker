@@ -3919,7 +3919,10 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   `<transport>#RESPONSE` sent under R1's anchor, earlier than R2's SEND; a chain R1 -> R2 -> R3 is
   the same comparison); an asynchronous call whose reply comes later, claimed work (a procedure step
   under R1, which can run after R1's reply), another client stance, or an end under no client request
-  keeps its row (hbase-bugs-ns-rsgroup-removal NC12: the witness replay's AddRSGroup was sent three
+  keeps its row. The rule rests on the RPC being synchronous at the wire -- an `*Async` admin call
+  still waits for its reply, the procedure id -- and on the earlier end being the handler's own turn
+  before that reply, so it holds in every run, not only as recorded (hbase-bugs-ns-rsgroup-removal
+  NC12: the witness replay's AddRSGroup was sent three
   times, its last attempt's anchor never came natively, and its row to the later MoveServers gave
   way in 10 of 10 runs that took the fatal at the anchor with the fault planted); `plant.log` names
   each ("REPRODUCE leaves out implied ORDER", with the two schedule rows that imply it), and
