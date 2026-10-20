@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr ended; HBase stopped for a handover (2026-10-19 night)
+# State: HDFS finished; Solr ended; HBase: all five owner bugs PASS (second session handover, 2026-10-20)
 
 HBase: section H below (the current work). Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,78 +11,71 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## H. HBase (2026-10-19, stopped by the owner at 23:10 for a handover) -- read this first if you take over HBase
+## H. HBase (second session handover, 2026-10-20) -- read this first if you take over HBase
 
-The owner's goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check" (RULES "HBase: the goal and its scope"). One
-day of work by a lead and five coding agents (H1 platform, H2 ZooKeeper, H3 RPC, H4 checks and workloads, H5 engine
-analysis) built the HBase platform on `system/solr`'s engine and ran the 22 cases of `experiments/hbase/hbase-cases.tsv`
-until the owner stopped everything for a handover ("请你停下所有任务，更新所有文档"). Nothing runs on any lift. Read
-[START-HERE.md](START-HERE.md), then [TODO.md](TODO.md) "HBase" (item 1: the next runs, in order), then LESSONS §9.
+The owner's goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check" (RULES "HBase: the goal and its scope").
+The first session (2026-10-19, a lead and five coding agents) built the HBase platform on `system/solr`'s engine; the owner
+stopped it for a handover at 23:10. The second session (2026-10-19 23:40 to 2026-10-20, a new lead and five agents: H1
+platform, H2 ZooKeeper, H3 RPC, H4 checks, H5 engine analysis) took over from START-HERE and ran every case of
+`experiments/hbase/hbase-cases.tsv`. **All five of the owner's bugs PASS.** Read [START-HERE.md](START-HERE.md), then
+[TODO.md](TODO.md) "HBase" (item 1: the owner's exclusive series), then LESSONS §9.
 
 **`system/hbase`** (local only, NOT pushed; = `hbase-int`; worktrees `/bigtemp/vnr3ne/wt/gc-hbase` and
-`/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges): `system/solr`'s engine plus, all gated (mvn package + the
-shell test on lift11), with docs:
-- doors: `HBASE_RPC` REQUEST (`AbstractRpcClient#callMethod`; IOException, ConnectionClosedException -- no
-  CallQueueTooBigException, a named small-scope declaration) and RESPONSE (`RpcConnection#finishCall`); ZooKeeper as on
-  Solr through `RecoverableZooKeeper` HOOK rows (`experiments/hbase/doors.jsonl`);
-- identity: the reply-leg rule (a request made inside a reply's exchange stands on that reply), async continuations
-  (`runtime/Continuations`: a `CompletableFuture` listener stands at its registrant's address wherever it runs), Netty
-  timer tasks as lineage starts, lineage over the workload's own test class family;
-- VM (image `/bigtemp/vnr3ne/vm-force12/j2sdk-image`, sources 5aa55a2ce): a held enum constant named of its class, no
-  silent enum compare (`REF_OPERAND_UNSTATED`), sorted maps a named bound (`ordered_map_unmodeled`);
-- PLAN/EXPLORE: a client (EXTERNAL_APP) pairs with writers on any node; doors-only and unrecorded writers are demanded
-  (`UNRECORDED_WRITER`); a second static demand walk from writer guards; the anchor's path is re-run once its reads'
-  writers are planned, in its own world, one at a time; an arm over reads no row wrote is keyed apart;
-- COMPOSE/DECIDE/CONFIRM: arrivals held by their own run's arm; `clockDriven` redefined; claims with the fewest moved
-  fault markers first; the claim loop excludes only the selected path's arms; a clock cell the recording never read is
-  placed by the nearest reading of the same JVM clock on any node, and an arm resting on an unplaced cell is refused;
-  CONFIRM holds a wire leaf to its text only where its term names a moved root; a seed-path re-pairing is a move;
-- scheduler: replays killed by the infrastructure (exit 255 / >128) are re-queued at most twice; a fault flip's replay
-  waits behind every other queued entry; one solver key per canonical query text (re-asks answered once, any depth);
-- tools: `tools/analysis/vacuity.py` (is an UNSAT vacuous? CHECKING trap 24).
-Second session (2026-10-19 night on): `hbase-reask`'s WIP is finished and merged (8cb3cdfeb: an enum compare over reads that do
-not move is its writer's name; an untaken fatal over an unmodeled operation is held to its recording where nothing it
-rests on moved), with H3's checked orders (93122386b), H4's own-turn earlier doors as control producers (e49ff4485) and
-H2's declared-read receivers for PLAN's fetches (f6e07b3c9). The agents' branches `hbase-platform`, `hbase-zk`, `hbase-rpc`,
-`hbase-checks`, `hbase-reask` are fully merged (worktrees `/bigtemp/vnr3ne/wt/gc-hb-{platform,zk,rpc,checks,reask}`).
+`/bigtemp/vnr3ne/wt/gc-hbase-merge`, the latter for merges and gates on lift11): `system/solr`'s engine plus the first
+session's HBase work (doors `HBASE_RPC` and ZooKeeper, continuation and timer identity, the VM's enums and sorted maps,
+PLAN/COMPOSE/CONFIRM fixes, `tools/analysis/vacuity.py`) and, from the second session, each gated:
+- heads: `engine_memory_mb` 12288 for both HBase workflow files (measured peaks ~3 GB; a head is charged its heap for life);
+- CONFIRM/REPRODUCE: an order no hold realizes is checked at its later end (93122386b); the native plant leaves out orders
+  in turn-counted roots (b9dfcedc5) and orders a client thread's synchronous replies imply (a4e586d4b,
+  `contract.ClientProgramOrder`); a moved root's mint is looked up in the arm session that names it (2a42e96d4); a STATE
+  row whose reader the plan holds behind the anchor is not required (86cdb2603); CONFIG roots are planted natively at their
+  getter, and an answer equal to what the producer sent is no plant (49c5698b7, 57de8ed4e);
+- identity/schedule: a hand-off serves only work another thread started (4a06f9d88); a claimed hand-off held where it runs
+  is held at its claim's entry, with structural and cycle fallbacks (4f80eb7f3, a4b7879e9);
+- PLAN/EXPLORE: an own-turn door that ran earlier is a control producer (e49ff4485); PLAN's fetches cover declared reads'
+  receivers (f6e07b3c9); DUPLICATE_WORLD: a world is replayed once (ddcbbb8ec); EXPLORE stops at once on a BLOCKING
+  TARGET_FATAL_IN_RECORDING (07737dc35); readers re-open a file replaced under them (ESTALE, c27f51a03);
+- COMPOSE/DECIDE: an enum compare over reads that do not move is its writer's name, an untaken fatal over an unmodelled
+  operation is held to its movers (8cb3cdfeb); an explored session's own run is claimed first (47975f1e3); a confirmed
+  claim that reproduces 0/N is a fallback and the loop tries the next (32a71ff21); the free-model witness keeps roots
+  outside the selected path's cone at their recorded values (275e72578); fatal-observing explored worlds are valuations
+  (49c5698b7);
+- data: case rows, scopes and selectors (`experiments/hbase/hbase-adhoc/checks.tsv`), `hbase-bugs/root-domains.jsonl`
+  (#11's skew roots), 34's ZOOKEEPER client faults, report.py's expected mechanisms for every bug check.
 
-**The tree:** `/u/vnr3ne/hbase` branch `gc/hbase-checks` = 985a0dfe91 = the fork's `graphchecker/hbase-checks`
-(`https://github.com/JHSUYU/hbase.git`, pushed): Apache HBase master 1790942bb2 backported to Java 8, with the adapter
-(`CausynthHBaseCluster`, `CausynthRpc`, `CausynthStep`, `CausynthNodes`, `RecoverableZooKeeper` hooks), every case's
-target marker, our workloads, and the named workarounds (STATUS "Per-system surface", HBase column): local filesystem,
-`DisabledWALProvider`, run constants (host `localhost`, ports and start codes by creation order), one master at a time,
-region servers in order and meta on rs0, procedure steps handed off inside their claim, no master system time in
-OpenRegionRequest, master chores and periodic flushes never due, the 34 token hook (no Kerberos), the stated guards
-(tracked int fields / counts), nsrg's one-attempt namespace put and insertion-retry hold. Agent tree branches
-`gc/hb-{platform,zk,rpc,checks}` hold nothing unmerged. Current tree sets (built, natives PASS):
-`/bigtemp/vnr3ne/wt/hb-platform-trees-9` (f9340f2aab, 16 workloads), `/bigtemp/vnr3ne/wt/hb-checks-trees-20`
-(985a0dfe91, 6 workloads), `/bigtemp/vnr3ne/wt/hb-zk-trees-14` (f9340f2aab), `/bigtemp/vnr3ne/wt/hb-rpc-trees-5`
-(f9340f2aab). Every case runs at world depth 0 except 34 (depth 1).
+**The tree:** `/u/vnr3ne/hbase` branch `gc/hbase-checks` = the fork's `graphchecker/hbase-checks`
+(`https://github.com/JHSUYU/hbase.git`, pushed after every merge): Apache HBase master 1790942bb2 backported to Java 8 with
+the adapter and the named workarounds (STATUS "Per-system surface", HBase column). The second session added: the
+encoded-region map as a ConcurrentHashMap (14), 34's workload, the light loads of 24 and 07, nsrg's tracked group map,
+#11's automatic-mode active time (start code + a configured skew, per-master constant keys), the state guards of 07, 11, 12
+comparing the enum they read, 13's merge-qualifier map and synchronous janitor scan, and one region-server load report per
+active master.
 
-**Results** (second session, 2026-10-19 23:40 on; updated 2026-10-20 05:20; each row: `docs/checks/HBASE.md` §E and
-STATUS "HBase checks"; first-session runs under `/bigtemp/vnr3ne/gc-out/hbase-<agent>/accept-<run>` as before, second-session
-runs carry the tags NP/NZ/NR/NC/NE):
+**Results** (each row: `docs/checks/HBASE.md` §E and STATUS "HBase checks"; run dirs `/bigtemp/vnr3ne/gc-out/hbase-<agent>/accept-<run>`):
 
 | case | result | run |
 | --- | --- | --- |
-| hbase-bugs-backup-lock-reply-lost (#12) | **PASS**: SAT MARKER_FLIPPED (the lock CAS's reply lost), confirmed, reproduced 10/10, control 0/10 | rpc R5-bak |
-| hbase-adhoc-04 = HBASE-30484 | **PASS**: SAT MARKER_FLIPPED (a REQUEST fault on the observer's GetActiveMaster: the enable after the snapshot advanced is lost), confirmed, reproduced 7/10, control 0/10, 889 s | rpc NR3-04 |
-| hbase-adhoc-22 = HBASE-30483 | **PASS**: STATE_PAIRING_FLIPPED, no fault (the creation's read of the namespace total joined to the original create's addTable, before the asynchronous deletion's release; the truncate writes none), confirmed, reproduced 10/10, control 0/10 | checks NC15-22 |
-| hbase-bugs-ns-rsgroup-removal (#13) | **PASS**: SAT MARKER_FLIPPED (the master's namespace hbase:meta Mutate REQUEST fault -> held insertion retry -> the removal reads 0 -> :227), confirmed, reproduced 10/10 (REPRODUCE alone over a copy), control 0/10 | checks NC12-nsrg, repro-NC12-nsrg-1 |
-| hbase-bugs-master-active-time (#11) | in progress: tree f77ef97b65 (explicit initializer) + 5d776469b0 (run-relative clock, 60 s gap); round 0 demands master0's activation again | zk NZ4-mat |
-| hbase-adhoc-34 | **PASS**: SAT MARKER_FLIPPED (a ZooKeeper READ SessionExpired on keys/1's getData: refreshKeys aborts, the key stays missing at :160), reproduced 10/10, control 0/10 | zk NZ3-34 |
-| hbase-adhoc-28, 35 | done: UNSAT, vacuous by construction, class C (28: a configuration constant the JDK decides; 35: needs a corrupt hbase:meta) | platform NP4-28, NP2-35 |
-| hbase-adhoc-24, 37 | UNSAT, vacuous: the guard flips only on a read of an absent znode (TODO HBase 10) | zk NZ3-24, HZ2-37 |
-| hbase-adhoc-13 | UNSAT, vacuous: data through a region's store (TODO HBase 9) | platform HP9-13 |
-| 07, 08, 10, 11, 12, 14, 15, 21, 31 | running or rerunning (08 and 14: every claim so far refuted by the client thread's program order, TODO HBase 15: to be recorded as a named bound) | §E |
-| 19, 20 | not run yet (SEED-only first) | |
+| hbase-bugs-backup-lock-reply-lost (#12) | **PASS**: SAT MARKER_FLIPPED (the lock CAS's reply lost), reproduced 10/10, control 0/10 | rpc R5-bak |
+| hbase-adhoc-04 = HBASE-30484 | **PASS**: SAT MARKER_FLIPPED (a REQUEST fault on the observer's GetActiveMaster), reproduced 7/10, control 0/10 | rpc NR3-04 |
+| hbase-adhoc-22 = HBASE-30483 | **PASS**: STATE_PAIRING_FLIPPED, no fault, reproduced 10/10, control 0/10 | checks NC15-22 |
+| hbase-bugs-ns-rsgroup-removal (#13) | **PASS**: SAT MARKER_FLIPPED (the master's namespace hbase:meta Mutate REQUEST fault), reproduced 10/10, control 0/10 | checks NC12-nsrg, repro-NC12-nsrg-1 |
+| hbase-bugs-master-active-time (#11) | **PASS**: SAT MARKER_FLIPPED (master1's configured skew -2001 ms), reproduced 3/10, control 0/10 | zk NZ12-mat, repro-NZ13-mat |
+| hbase-adhoc-34 | **PASS**: SAT MARKER_FLIPPED (a ZooKeeper READ fault on refreshKeys), reproduced 10/10, control 0/10 | zk NZ3-34 |
+| hbase-adhoc-21 | UNSAT_CLOSED at FIXED_POINT, substantive | checks NC16-21 |
+| hbase-adhoc-19, 20, 28, 35 | UNSAT, vacuous by construction (class C) | checks NC18-19, NC19-20; platform NP4-28, NP2-35 |
+| hbase-adhoc-08, 12, 14, 15, 31 | named bound: SAT_UNCONFIRMED at the claim cap or budget, every claim refuted by CONFIRM (mostly the client thread's program order, TODO HBase 15) | checks NC14-08; rpc NR16-12, NR8-31; platform NP10-14, NP9-15 |
+| hbase-adhoc-24, 37 | UNSAT, vacuous: a znode's absence as state (TODO HBase 10) | zk NZ3-24, HZ2-37 |
+| hbase-adhoc-13 | RUN_DEFECT: guard stated (tree workaround), seed replay drifts at the second merge (TODO HBase 19) | platform NP18-13 |
+| hbase-adhoc-07, 10, 11 | running at the handover; §E says what each reached | platform NP20-07; rpc NR19-10, NR18-11 |
 
-**Where things are:** the briefs, notes and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/` (COMMON.txt, H*.txt
-briefs, RUNS.txt, `handover/H1-H5.md` (copied to [hbase-agents/](hbase-agents/)) -- each agent's runs, launch helpers, traps and leftovers --, readings.md,
-`reask/` (H5's offline COMPOSE/PLAN tools and findings), `checks/` (H4's launch/wait/native scripts and probes),
-`platform/`, `zk/`, `rpc/` (launch helpers), `int-gate*` logs); run outputs `/bigtemp/vnr3ne/gc-out/hbase-{platform,
-zk,rpc,checks}`; snapshots `/u/vnr3ne/gc-run/hb-*`; Maven repositories `/bigtemp/vnr3ne/m2/hbase-*` (one per tree set
-builder); the image `/bigtemp/vnr3ne/vm-force12`.
+**Where things are:** the second session's briefs, helpers and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/`
+(COMMON.txt, H*.txt briefs, `launch.sh`, `wait-run.sh`, `watchdog.sh`, `readings.md`, the gate logs, H5's `reask/`); the
+first session's `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/`; run outputs `/bigtemp/vnr3ne/gc-out/hbase-{platform,zk,rpc,
+checks,reask}`; shared snapshots `/u/vnr3ne/gc-run/hb-int-1..13` (the newest: `hb-int-13`), the agents' `hb2-*`; shared tree
+sets `/bigtemp/vnr3ne/wt/hb-int-trees-1..4` (Maven repositories `/bigtemp/vnr3ne/m2/hbase-int*`; the newest, `-4` =
+fb3ca18bb6, predates the last tree commits: rebuild for the exclusive series), the agents' `hb2-*-trees-*`; the image
+`/bigtemp/vnr3ne/vm-force12`. Old snapshots and tree sets can go once nothing reads them (`tools/rounds/snapshot-gc.sh`;
+`git -C /u/vnr3ne/hbase worktree remove`), keeping the PASS runs' (second-session-H*.md name them).
 
 ## S. Solr after the final round SGF9 (2026-10-19) -- read this first if you take over Solr
 
