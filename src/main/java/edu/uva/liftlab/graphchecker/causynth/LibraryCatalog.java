@@ -46,7 +46,7 @@ public final class LibraryCatalog {
 
     static {
         MEMBERS.put(DOOR, names("transport", "direction", "method", "before",
-                "after", "faults", "result", "sites"));
+                "after", "faults", "result", "sites", "why"));
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
         MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
         MEMBERS.put(CODEC, names("codec", "classes"));

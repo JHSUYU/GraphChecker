@@ -138,8 +138,7 @@ public class LibraryCatalogTest {
         assertEquals(Arrays.asList("FAULT:HBASE_RPC:REQUEST at " + ipc
                         + "AbstractRpcClient#callMethod false [java.io."
                         + "IOException, org.apache.hadoop.hbase.exceptions."
-                        + "ConnectionClosedException, org.apache.hadoop.hbase."
-                        + "CallQueueTooBigException] " + ipc
+                        + "ConnectionClosedException] " + ipc
                         + "AbstractRpcClient",
                 "FAULT:HBASE_RPC:RESPONSE at " + ipc + "RpcConnection"
                         + "#finishCall false [java.io.IOException, " + ipc
