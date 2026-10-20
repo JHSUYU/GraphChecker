@@ -197,14 +197,16 @@ final class ComposedFamilies {
         public final String occurrenceId;
         public final boolean clocked;
         public final Set<String> nested;
+        public final Set<String> roots;
 
         BoundLeaf(String symbol, String javaType, String occurrenceId,
-                  boolean clocked, Set<String> nested) {
+                  boolean clocked, Set<String> nested, Set<String> roots) {
             this.symbol = symbol;
             this.javaType = javaType;
             this.occurrenceId = occurrenceId;
             this.clocked = clocked;
             this.nested = Collections.unmodifiableSet(nested);
+            this.roots = Collections.unmodifiableSet(roots);
         }
 
         public boolean held(String anchorId) {
@@ -214,7 +216,8 @@ final class ComposedFamilies {
 
     public static Map<String, String> texts(Collection<ArmChoice> selected,
                                             Map<String, String> model,
-                                            String anchorId) {
+                                            String anchorId,
+                                            Collection<String> moved) {
         Map<String, BoundLeaf> bySymbol =
                 new LinkedHashMap<String, BoundLeaf>();
         Map<String, String> consumerOf = new LinkedHashMap<String, String>();
@@ -229,6 +232,8 @@ final class ComposedFamilies {
         for (Map.Entry<String, BoundLeaf> leaf : bySymbol.entrySet()) {
             if (!leaf.getValue().held(anchorId)
                     || clocked(leaf.getKey(), bySymbol,
+                    new LinkedHashSet<String>())
+                    || !moves(leaf.getKey(), bySymbol, moved,
                     new LinkedHashSet<String>())) {
                 continue;
             }
@@ -248,6 +253,20 @@ final class ComposedFamilies {
         return sort == VmTermLowering.Sort.BOOL
                 || sort == VmTermLowering.Sort.INT && !"C".equals(javaType)
                 ? value : null;
+    }
+
+    private static boolean moves(String symbol,
+                                 Map<String, BoundLeaf> bySymbol,
+                                 Collection<String> moved, Set<String> seen) {
+        BoundLeaf leaf = bySymbol.get(symbol);
+        if (leaf == null || !seen.add(symbol)) return false;
+        for (String root : leaf.roots) {
+            if (moved.contains(root)) return true;
+        }
+        for (String nested : leaf.nested) {
+            if (moves(nested, bySymbol, moved, seen)) return true;
+        }
+        return false;
     }
 
     private static boolean clocked(String symbol,
@@ -786,10 +805,12 @@ final class ComposedFamilies {
         AttachRow consumer = arm.attach();
         boolean clocked = false;
         Set<String> nested = new LinkedHashSet<String>();
+        Set<String> roots = new LinkedHashSet<String>();
         for (String name : lowering.reachedSymbols(
                 Collections.singletonList(delivered.text))) {
             RootMintRow root = corpus.rootBySymbol(session, name);
             clocked |= root != null && root.kind() == RootKind.CLOCK;
+            if (root != null) roots.add(root.rootId());
             if (!name.equals(arm.symbol())
                     && corpus.attach(session, name) != null) {
                 nested.add(name);
@@ -797,7 +818,7 @@ final class ComposedFamilies {
         }
         bound.put(consumer.endpoint().id(), new BoundLeaf(arm.symbol(),
                 consumer.javaType(), consumer.endpoint().occurrence().id(),
-                clocked, nested));
+                clocked, nested, roots));
     }
 
     private String producerBody(int ordinal, String selector,

@@ -433,7 +433,8 @@ public final class ComposeMain {
             JsonArray arms = new JsonArray();
             Map<String, String> received = ComposedFamilies.texts(
                     outcome.selectedArms().values(),
-                    outcome.answer().values(), composition.anchor().id());
+                    outcome.answer().values(), composition.anchor().id(),
+                    outcome.valuation().moved().keySet());
             for (Map.Entry<String, ComposedFamilies.ArmChoice> taken
                     : outcome.selectedArms().entrySet()) {
                 ComposedFamilies.ArmChoice arm = taken.getValue();
