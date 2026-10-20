@@ -401,8 +401,9 @@ On this cluster:
    `CAUSYNTH_CAMPAIGN_WORKER_HOSTS` and execs the snapshot's `tools/rounds/launch-run.sh`; `STOP_AFTER=SEED` stops after
    the seed (a selector check: `DECLARED_TARGET_OCCURRENCE_UNOBSERVED` lists every observed occurrence), `OCCURRENCE=`
    overrides the target selector. Check the run's `.job` file names vm-force12.
-4. **Workers and heads.** A planner head is charged its whole heap for life (~23 GB of a 30 GB host whose cap is 22.1
-   GB), so its host runs no replay: give replays every host (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = lift02-15) and put at
+4. **Workers and heads.** A planner head is charged its whole heap's footprint for life: 13.4 GB since the HBase
+   `engine_memory_mb` is 12288 (2026-10-20; at 21504 it was 23.2 GB of a host whose cap is 22.1 GB, and its host ran no
+   replay), so a head's host keeps ~8.7 GB for replays. Give replays every host (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = lift02-15) and put at
    most 2-3 heads per agent on its own hosts. PREFLIGHT fails if the head cannot reach a worker host in batch ssh or the
    host cannot see the snapshot (HP10-14: lift15 from lift03): check `ssh -o BatchMode=yes <host> ls <snapshot>/run_engine.sh`
    from the head, or drop that host.

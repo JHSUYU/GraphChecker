@@ -217,7 +217,8 @@ ConnectionClosedException clears the master stub cache and the registry's endpoi
 `hbase.client.retries.number=0`, so one lost enable is one fault at depth 0; otherwise raise that case's depth.
 
 **Cluster use.** A planner head is charged its full heap for life (OPTIMIZATIONS 1.36): 23.2 GB on a 30 GB host
-whose cap is 22.1 GB, so no replay runs beside it. Two heads on a 3-host group left one replay host and R17-10
+whose cap is 22.1 GB, so no replay ran beside it, while HBase's engine JVMs peaked at ~3 GB (9.6 GB at most): size
+`engine_memory_mb` from the system's measured `engine_peak_mb` files (HBase: 12288 since 2026-10-20). Two heads on a 3-host group left one replay host and R17-10
 starved for an hour. Replays use all 14 hosts (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`), heads stay on the agent's own
 hosts (at most 2-3), detached in their own session: heads run from one shell on lift11 were all TERMed when another
 round's stop ended that shell's ssh clients (HZ14: 24 exit-255 kills; killed replays are now re-queued, at most twice).
