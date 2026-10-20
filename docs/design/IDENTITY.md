@@ -613,7 +613,25 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is no cause; what it
-  fetched is read where the objects it was parsed into are read (below).
+  fetched is read where the objects it was parsed into are read (below). The read that installs the
+  context is stated before it, so it is no row of the occurrence it names; where a callback's data
+  read must be one, the adapter names the cause first by the children it listed:
+  `childrenFetched(transport, parent, children, owner)` installs the message of the newest filed
+  create `<parent>/<child>@0` among them not yet delivered to that node under that kind (filing
+  order, `MessageDoors#newestFiled`), the same install a `fetched` makes, so the version the
+  callback then reads is a row of its occurrence and a read that finds no node leaves its address
+  as it was. Only HBase's procedure member calls it (`ZKProcedureMemberRpcs#waitForNewProcedures`,
+  STATUS "Per-system surface"), hbase-adhoc-24's barrier read.
+- `deleted(transport, path, owner)`: a delete (the adapter's `delete`, each delete of a multi) ends
+  the path's current life with a write of version `MessageDoors.TOMBSTONE` (`Integer.MAX_VALUE - 1`,
+  above every ZooKeeper version), stated as `stored` states a version (a write row, a `STORE_WRITE`
+  trace row) with no SEND and no content; a later create opens the next life. `absent(transport,
+  path, op, owner)`: a read that found no node (a NoNode `getData`, a null `exists`) is a STORE read
+  of that tombstone where the path's current life has one filed -- after a bounded wait
+  (`FILED_WAIT_MS`) for a write in flight at the path on another thread, as a decode waits --, and
+  otherwise no row, as before (no INITIAL absence, no expiry of a session's ephemerals: TODO HBase
+  10). Only HBase's `RecoverableZooKeeper` calls them; the tombstone's file is the delete's, before
+  `causynthDeleted`, its door.
 - `decoded(transport, key, product)`: the objects a fetch of `key` was parsed into (the adapter's
   product: Solr's `ClusterState.load`, `Aliases.fromJSON`) hold that version (`runtime/Provenance`):
   the product's graph is walked once -- instance fields of application objects, the contents of

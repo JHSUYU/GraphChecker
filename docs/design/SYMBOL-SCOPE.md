@@ -485,7 +485,8 @@ frozen plan states (`explore.ClosurePlanner#storeFetches`, `STORE_FETCH`), contr
 flipped at their fault decisions -- one predicate, PLAN's.
 
 A watch callback's occurrence is named only by the first version it reads (IDENTITY §7.2,
-`MessageDoors#fetched`), so a door before that read ran in no occurrence: nothing records it, nothing
+`MessageDoors#fetched`; or, for HBase's procedure member, by the children it listed,
+`MessageDoors#childrenFetched`), so a door before that read ran in no occurrence: nothing records it, nothing
 mints or plants it, and a read it failed would leave the callback unnamed. A data read
 (Solr's `SolrZkClient#getData`, HBase's `RecoverableZooKeeper#getData`) therefore places its door
 after the read's hook, where the reply reaches the caller after the client's retries: the fault is
@@ -617,8 +618,9 @@ retry loop is inline: each public method takes its turn, runs the loop (moved un
 `*Retrying` method, whose own door call is a `DOOR_UNPLACED` covered by its caller's door), then calls
 its hook, so every door stands at the retry boundary: `ZooKeeper#setData`, `#create`, `#delete` and
 `#multiInternal` in `RecoverableZooKeeper#setData`, `#create`, `#delete` and `#multi` after
-`causynthWrote` (`causynthDeleted` for a delete, an empty hook; a multi's `causynthWrote(Iterable,
-List)` files every result first, so its door follows all of its writes, a delete-only multi's too);
+`causynthWrote` (`causynthDeleted` for a delete, an empty hook after the delete's tombstone,
+IDENTITY §7.2; a multi's `causynthWrote(Iterable, List)` files every result first, its deletes'
+tombstones too, so its door follows all of its writes, a delete-only multi's too);
 `ZooKeeper#getData` in the private `getData(String,Watcher,Boolean,Stat)` before `causynthReplied`
 (a lost reply, as Solr's), `#exists` and `#getChildren(String,Watcher)` in the private
 `exists`/`getChildren(String,Watcher,Boolean)`, which both public overloads call, before
