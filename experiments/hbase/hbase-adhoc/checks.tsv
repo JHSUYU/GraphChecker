@@ -1,5 +1,5 @@
 # NN	test class	test method	window	target occurrence	scope (the case's own classes)...
-04	org.apache.hadoop.hbase.mob.TestMobStoreScanner	testMobStoreScanner	up	first	server=:org/apache/hadoop/hbase/master/procedure/AbstractStateMachineTableProcedure	server=:org/apache/hadoop/hbase/master/TableStateManager
+04	org.apache.hadoop.hbase.quotas.TestCausynthQuotaEnableAfterAdvance	enableAfterTheSnapshotAdvanced	up	first	server=:org/apache/hadoop/hbase/master/procedure/AbstractStateMachineTableProcedure	server=:org/apache/hadoop/hbase/master/TableStateManager
 07	org.apache.hadoop.hbase.snapshot.TestRestoreFlushSnapshotFromClient	testRestoreSnapshot	up	first	server=:org/apache/hadoop/hbase/master/snapshot/SnapshotManager	server=:org/apache/hadoop/hbase/master/TableStateManager
 08	org.apache.hadoop.hbase.namespace.TestNamespaceAuditor	testTableOperations	up	first	server=:org/apache/hadoop/hbase/master/ClusterSchemaServiceImpl	server=:org/apache/hadoop/hbase/master/TableNamespaceManager
 10	org.apache.hadoop.hbase.regionserver.TestRegionMove	testDisableAndMove	up	first	server=:org/apache/hadoop/hbase/master/assignment/AssignmentManager	server=:org/apache/hadoop/hbase/master/assignment/RegionStateNode
