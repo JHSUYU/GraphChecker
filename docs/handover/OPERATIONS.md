@@ -419,8 +419,9 @@ On this cluster:
    copied jar; direct z3 on a `candidate.smt2`: drop its `(check-sat)`, assert a `path_selector__N` and your pins, check.
 8. **Merge gate** (integration worktree `/bigtemp/vnr3ne/wt/gc-hbase-merge`, one mvn per worktree at a time):
    `env -u BASH_ENV tools/onlift.sh -h lift11 -g 10 bash -c 'mvn -q -o package > <log> 2>&1; echo MVN=$?; bash src/test/shell/run_engine_campaign_helpers_test.sh > <log2> 2>&1; echo SHELL=$?'`;
-   then fast-forward `system/hbase`. Known flake under load: the shell test's PLANNER-LIVE fixture (10 s wait): rerun
-   once. (`ExploreTest#aQueryTextIsAnsweredOnceWhateverAsksIt` raced a 1 ms z3 timeout against a trivial query; its
+   then fast-forward `system/hbase`. Known flakes under load: the shell test's PLANNER-LIVE fixture (10 s wait) and
+   `ScheduleLogTest#aViewsPublicationIsHeldAtItsPlaceByTheNodesPublisher` (its restart half, at lift11 load 50; it passed
+   3/3 on lift14 at load 15-30, gate29): rerun once, on a host with less load. (`ExploreTest#aQueryTextIsAnsweredOnceWhateverAsksIt` raced a 1 ms z3 timeout against a trivial query; its
    timeout case now asks a stand-in z3 that never answers, 2026-10-20.)
 9. **Tree changes** go to an agent's `gc/hb-*` branch, then fast-forward/merge into `gc/hbase-checks` and push the fork:
    `git push fork gc/hbase-checks:graphchecker/hbase-checks` (allowed; apache never). Name each workaround in STATUS
