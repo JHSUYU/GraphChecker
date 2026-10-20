@@ -1234,4 +1234,43 @@ public class ContractTest {
     private static JsonObject reline(JsonObject row) {
         return RowCodec.fromLine(RowCodec.toLine(row));
     }
+
+    @Test
+    public void aFileAnotherHostReplacedWhileItWasReadIsReadAgain()
+            throws IOException {
+        Path file = iteration.newFile("obligation_result.jsonl").toPath();
+        Files.write(file, "{}\n".getBytes(StandardCharsets.UTF_8));
+        int[] opens = {0};
+        assertEquals("the replaced file, opened afresh", "{}", new String(
+                RowCodec.reopened(file, () -> {
+                    if (++opens[0] == 1) {
+                        throw new IOException("Stale file handle");
+                    }
+                    return Files.readAllBytes(file);
+                }), StandardCharsets.UTF_8).trim());
+        assertEquals(2, opens[0]);
+        opens[0] = 0;
+        try {
+            RowCodec.reopened(file, () -> {
+                opens[0]++;
+                throw new IOException("Stale file handle");
+            });
+            fail("stale on every open");
+        } catch (IOException stale) {
+            assertTrue(stale.getMessage(), stale.getMessage().startsWith(
+                    file + ": Stale file handle on each of 3 fresh opens"));
+        }
+        assertEquals(3, opens[0]);
+        opens[0] = 0;
+        try {
+            RowCodec.reopened(file, () -> {
+                opens[0]++;
+                throw new IOException("Input/output error");
+            });
+            fail("another failure");
+        } catch (IOException other) {
+            assertEquals("Input/output error", other.getMessage());
+        }
+        assertEquals("any other failure is not read again", 1, opens[0]);
+    }
 }

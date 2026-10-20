@@ -685,9 +685,42 @@ public final class RowCodec {
     static <T> List<T> readAll(Path file, RowPool pool,
                                Function<JsonObject, T> reader)
             throws IOException {
-        List<T> rows = new ArrayList<>();
-        readEach(file, pool, reader, rows::add);
-        return rows;
+        return reopened(file, () -> {
+            List<T> rows = new ArrayList<>();
+            readEach(file, pool, reader, rows::add);
+            return rows;
+        });
+    }
+
+    public interface Read<T> {
+        T read() throws IOException;
+    }
+
+    static final String STALE = "Stale file handle";
+    static final int STALE_READS = 3;
+
+    public static <T> T reopened(Path file, Read<T> read) throws IOException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return read.read();
+            } catch (IOException failed) {
+                if (!stale(failed)) throw failed;
+                if (attempt >= STALE_READS) {
+                    throw new IOException(file + ": " + STALE + " on each of "
+                            + attempt + " fresh opens (a writer on another"
+                            + " host replaced it while it was read)", failed);
+                }
+            }
+        }
+    }
+
+    private static boolean stale(Throwable failed) {
+        for (Throwable at = failed; at != null; at = at.getCause()) {
+            if (at.getMessage() != null && at.getMessage().contains(STALE)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static <T> void readEach(Path file, Function<JsonObject, T> reader,
@@ -777,10 +810,12 @@ public final class RowCodec {
     }
 
     public static List<JsonObject> readJsonl(Path file) throws IOException {
-        RowPool pool = new RowPool();
-        List<JsonObject> rows = new ArrayList<>();
-        eachLine(file, line -> rows.add(fromLine(line, pool)));
-        return rows;
+        return reopened(file, () -> {
+            RowPool pool = new RowPool();
+            List<JsonObject> rows = new ArrayList<>();
+            eachLine(file, line -> rows.add(fromLine(line, pool)));
+            return rows;
+        });
     }
 
     static void eachLine(Path file, Predicate<String> each)

@@ -691,7 +691,8 @@ public final class ExploreMain {
                 ObligationDir.QUESTION_ASKED}) {
             Path question = worker.resolve(file);
             if (!Files.isRegularFile(question)) continue;
-            String text = new String(Files.readAllBytes(question),
+            String text = new String(RowCodec.reopened(question,
+                    () -> Files.readAllBytes(question)),
                     StandardCharsets.UTF_8).trim();
             int colon = text.indexOf(':');
             if (colon > 0) return text.substring(0, colon);

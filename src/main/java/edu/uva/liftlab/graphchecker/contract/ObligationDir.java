@@ -75,7 +75,8 @@ public final class ObligationDir {
             for (Path worker : SessionDir.directories(wave, "*")) {
                 Path file = worker.resolve(QUESTION);
                 if (!Files.isRegularFile(file)) continue;
-                String question = new String(Files.readAllBytes(file),
+                String question = new String(RowCodec.reopened(file,
+                        () -> Files.readAllBytes(file)),
                         StandardCharsets.UTF_8).trim();
                 List<ObligationResult> rows = RowCodec.readAll(
                         worker.resolve(RESULT),
