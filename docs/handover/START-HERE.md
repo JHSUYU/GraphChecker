@@ -29,7 +29,8 @@ The study checks (each row: HBASE.md §E, STATUS "HBase checks"):
 - **Class C, vacuous by construction:** 19, 20 (the test builds both descriptors it compares), 28 (a configuration constant the JDK
   decides), 35 (needs a corrupt hbase:meta).
 - **Named bound** (every claim refuted by CONFIRM, mostly because it orders a step against the test thread's synchronous program
-  order, TODO HBase 15; for 10 a hold CONFIRM cannot place, TODO HBase 21): 08, 10, 11, 12, 14, 15, 31.
+  order, TODO HBase 15; for 10 a hold CONFIRM cannot place, TODO HBase 21): 08, 10, 11, 12, 14, 15.
+- **Vacuous, a run constant:** 31 (the start-code compare has one writer; TODO HBase 11).
 - **SAT, confirmed in the VM:** 24 (the store pairing of the procedure member's barrier read with the barrier's tombstone, TODO HBase 10;
   not reproduced natively: no native STORE_HOLD).
 - **Vacuous, needs a workload:** 37 (no absent window in its workload: a failover with an unordered reader, TODO HBase 10).

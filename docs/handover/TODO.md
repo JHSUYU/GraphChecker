@@ -689,6 +689,12 @@ by that very read (its first fetch), so the read was no row and a NoNode read wo
   - Fixed (E2): the reply legs of an occurrence include those of the recorded occurrences standing under its address
     (PIPELINE §7.2). Look for the same hole wherever a rule keys on "what this occurrence sent or ran": a continuation's
     events are no longer its registrant's occurrence's.
+- hbase-adhoc-31's start code has one writer: start codes are run constants (1700000000000 + 1000 x creation order), so
+  `throwOnWrongStartCode` flips only where a request carrying a restarted server's OLD start code reaches its new
+  incarnation, and no session delivers one (F1H-adhoc-31: both guard reads single-writer INITIAL, offered 0/24; NR8-31's
+  claims re-paired rs3's consumer to another session's message, all refuted). 31 needs the second start code as a writer:
+  a workload whose master retries a remote procedure to the restarted server under its old ServerName (a region server
+  restart while the dispatch is in flight), or a configured per-incarnation start-code skew as #11's active time.
 - A refuted message re-pairing is re-found on every other path, ~10-15 min of COMPOSE+CONFIRM each (hbase-adhoc-31
   NR8-31: 9 claims, all rs3's executeProcedures consumer re-paired to another session's message, until
   campaign_max_claims). A sound cross-path exclusion needs a refutation reason that does not depend on the path's world

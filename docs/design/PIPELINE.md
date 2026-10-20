@@ -4211,7 +4211,12 @@ recording's own is not kept apart.
    side on the host's cores — a path matching
    `*/sessions/*/gaps.jsonl.gz` as REPLAY (a withdrawn exposing session under `before-*/sessions/`
    included), any other under `obligations-*/` as EXPLORE (a session withdrawn to
-   `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT; `campaign_gaps.jsonl` rows at their
+   `timed-out-sessions/` or `refused-sessions/` included), anywhere else fails EMIT. A generation's own closure file
+   (`obligations-NNNN/gaps.jsonl.gz`, ExploreMain's) stands only for the newest generation that wrote one: each
+   generation re-derives its closure over the whole corpus, so an earlier generation's BLOCKING row is DIAGNOSTIC,
+   `superseded by obligations-NNNN`, and the newest closure file is read first, so its class wins for a row both raise
+   (hbase-adhoc-31 F1H: three occurrences no session had run in generations 3-10 ran from 11 on, yet held the run at
+   RUN_DEFECT); a session's or worker's file under `obligations-NNNN/<id>/` counts whatever its generation. `campaign_gaps.jsonl` rows at their
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `telemetryCount`, `byStage`, `byCode`,
    one row per distinct (stage, source, code, subject, detail), texts in their UTF-8 byte order (Gson's
