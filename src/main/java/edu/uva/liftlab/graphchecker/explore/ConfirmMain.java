@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.contract.ClientProgramOrder;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -444,6 +445,22 @@ public final class ConfirmMain {
             OccurrenceAddress at = mintOf(world, rootId);
             if (at != null) stable.add(RealizedOrder.scope(at));
         }
+        if (!Files.isDirectory(confirmedSession)) {
+            throw new Refused("the session CONFIRM saw (" + confirmedSession
+                    + ") is not there, so its order cannot be held");
+        }
+        SessionDir confirmed = SessionDir.of(
+                confirmedSession.getParent().getParent(),
+                confirmedSession.getFileName().toString());
+        ClientProgramOrder program = ClientProgramOrder.of(
+                SessionReader.readSchedule(confirmed));
+        Set<String> unclaimed = new HashSet<String>();
+        for (ActivationRow ran : SessionReader.read(confirmed).activations()) {
+            if (ran.claimKind() == null
+                    || ran.claimKind() == ActivationRow.ClaimKind.NONE) {
+                unclaimed.add(ran.occurrence().id());
+            }
+        }
         int turnOrders = 0;
         for (JsonObject edge : witness.edges(iteration, world)) {
             String kind = optionalString(edge, "kind");
@@ -466,16 +483,24 @@ public final class ConfirmMain {
                 }
                 continue;
             }
+            String implied = RecordingPlant.ORDER.equals(kind)
+                    ? implied(witness.orderEnds.get(order), program, unclaimed)
+                    : "";
+            if (!implied.isEmpty()) {
+                if (!witness.history.contains(order)) {
+                    System.err.println("REPRODUCE leaves out implied ORDER "
+                            + order.replace('\n', ' ') + ": " + implied
+                            + ", and its earlier end ran in the turn that"
+                            + " took that request in, so every run orders it");
+                }
+                continue;
+            }
             if (RecordingPlant.ORDER.equals(kind)
                     && !witness.history.contains(order) && orders.add(order)
                     || RecordingPlant.VIEW_HOLD.equals(kind)
                     && orders.add(edge.toString())) {
                 rows.add(edge);
             }
-        }
-        if (!Files.isDirectory(confirmedSession)) {
-            throw new Refused("the session CONFIRM saw (" + confirmedSession
-                    + ") is not there, so its order cannot be held");
         }
         Set<OccurrenceAddress> mints = new LinkedHashSet<OccurrenceAddress>();
         for (JsonObject row : rows) {
@@ -541,6 +566,21 @@ public final class ConfirmMain {
         summary.addProperty("fatalArms", rows.size() - context);
         summary.addProperty("placeholderPairings", placeholders);
         return summary;
+    }
+
+    static String implied(OccurrenceAddress[] ends,
+                          ClientProgramOrder program, Set<String> unclaimed) {
+        if (ends == null || ends.length < 2 || ends[0] == null
+                || !unclaimed.contains(ends[0].id())) {
+            return "";
+        }
+        String earlier = program.clientRequest(ends[0]);
+        String later = program.clientRequest(ends[1]);
+        if (earlier == null || later == null || earlier.equals(later)
+                || !program.repliedBefore(earlier, later)) {
+            return "";
+        }
+        return program.said(earlier, later);
     }
 
     private static String turnEnd(OccurrenceAddress[] ends,

@@ -3909,7 +3909,21 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   map; no native run ever ran a step under a poll WAKE, so that write's exit never came and 10 of 10
   runs that took the fatal at the anchor with the root planted reproduced nothing); `plant.log` names
   each such row and its context ("REPRODUCE leaves out ORDER"), the summary and `reproduce.json`
-  count them (`turnOrders`): a native reproduction did not enforce them, CONFIRM did. A checked row
+  count them (`turnOrders`): a native reproduction did not enforce them, CONFIRM did. Nor is a row
+  whose order causality implies in every run (`ConfirmMain#implied`, over
+  `contract.ClientProgramOrder`, the one reading of a client thread's happens-before COMPOSE is to
+  share): its earlier end stands directly under a request R1 and ran in the turn that took R1 in (its
+  activation in the confirmed session claims no work, so it ended before that turn's reply), its
+  later end stands under a request R2, one client stance sent both, and the confirmed session's
+  schedule has that stance's node receiving a reply of R1 before the stance sent R2 (a RECV of a
+  `<transport>#RESPONSE` sent under R1's anchor, earlier than R2's SEND; a chain R1 -> R2 -> R3 is
+  the same comparison); an asynchronous call whose reply comes later, claimed work (a procedure step
+  under R1, which can run after R1's reply), another client stance, or an end under no client request
+  keeps its row (hbase-bugs-ns-rsgroup-removal NC12: the witness replay's AddRSGroup was sent three
+  times, its last attempt's anchor never came natively, and its row to the later MoveServers gave
+  way in 10 of 10 runs that took the fatal at the anchor with the fault planted); `plant.log` names
+  each ("REPRODUCE leaves out implied ORDER", with the two schedule rows that imply it), and
+  `reproduce.json` counts them (`impliedOrders`). A checked row
   (`check: true`, §10) is tested at its later end's activation entry, the frame a hold would use,
   which comes no later than the event it orders, so a check can only under-count reproductions. A read the model
   chose at is one whose writer it chose, or one at a location it chose at
@@ -4082,11 +4096,11 @@ timing, the evidence a reproduction's rate is read against (a plant whose rows h
 chain, a CLOCK root alone or a VIEW_HOLD alone, reproduces as often as the workload throws by
 itself), and never a gate. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
 planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, checked,
-checkedObserved, turnOrders, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
+checkedObserved, turnOrders, impliedOrders, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
 anchor (planted or not), reproduced, could not hold an ORDER in time (of them, one whose
 before-event came late, one whose before-event never came; a checked ORDER not observed in order
 counts here), still held one when they ended, the plant's checked ORDER rows and the runs that
-observed every one in order, the plant's rows left out as turn-counted (`turnOrders`), the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
+observed every one in order, the plant's rows left out as turn-counted (`turnOrders`) and as implied by a client thread's replies (`impliedOrders`), the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
 that stated no answer; the log
 states "reproduced in k of N ...; control k' of N". REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
 and the realized order only makes a native run faithful to the world CONFIRM saw. The share of runs

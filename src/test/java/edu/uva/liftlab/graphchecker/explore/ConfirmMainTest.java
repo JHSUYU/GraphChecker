@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ClientProgramOrder;
 import edu.uva.liftlab.graphchecker.contract.ExpressionLogs;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -1072,5 +1073,67 @@ public class ConfirmMainTest {
                     edge.get("before").getAsString());
         }
         assertEquals(1, held);
+    }
+
+    @Test
+    public void anOrderTheClientsRepliesImplyIsLeftOutOfTheNativePlant() {
+        String client = "auto0/client0#epoch0|Root:CLIENT/test#1";
+        List<ScheduleEvent> schedule = Arrays.asList(
+                ScheduleEvent.of(1L, ScheduleEvent.Kind.SEND, client,
+                        "HBASE_RPC#REQUEST:MasterService.AddRSGroup", 0, "",
+                        "r1"),
+                ScheduleEvent.of(2L, ScheduleEvent.Kind.SEND,
+                        "auto0/master0#epoch0|Anchor:r1@HBASE_RPC/test",
+                        "HBASE_RPC#RESPONSE", 0, "", "p1"),
+                ScheduleEvent.of(3L, ScheduleEvent.Kind.RECV,
+                        "auto0/client0#epoch0|Anchor:p1@HBASE_RPC/test",
+                        "HBASE_RPC#RESPONSE", 0, "", ""),
+                ScheduleEvent.of(4L, ScheduleEvent.Kind.SEND, client,
+                        "HBASE_RPC#REQUEST:MasterService.MoveServers", 0, "",
+                        "r2"),
+                ScheduleEvent.of(5L, ScheduleEvent.Kind.SEND,
+                        "auto0/client0#epoch0|Root:CLIENT/test#2",
+                        "HBASE_RPC#REQUEST:MasterService.MoveServers", 0, "",
+                        "r3"),
+                ScheduleEvent.of(6L, ScheduleEvent.Kind.SEND, client,
+                        "HBASE_RPC#REQUEST:MasterService.CreateNamespace", 0,
+                        "", "r5"),
+                ScheduleEvent.of(7L, ScheduleEvent.Kind.SEND, client,
+                        "HBASE_RPC#REQUEST:MasterService.RemoveRSGroup", 0,
+                        "", "r6"),
+                ScheduleEvent.of(8L, ScheduleEvent.Kind.SEND,
+                        "auto0/master0#epoch0|Anchor:r5@HBASE_RPC/test",
+                        "HBASE_RPC#RESPONSE", 0, "", "p5"),
+                ScheduleEvent.of(9L, ScheduleEvent.Kind.RECV,
+                        "auto0/client0#epoch0|Anchor:p5@HBASE_RPC/test",
+                        "HBASE_RPC#RESPONSE", 0, "", ""));
+        ClientProgramOrder program = ClientProgramOrder.of(schedule);
+        OccurrenceAddress added = under("REGION.add", "r1");
+        Object[][] table = {
+            {"one client thread received r1's reply before it sent r2",
+                    added, under("REGION.move", "r2"), true, true},
+            {"the earlier end is claimed work: it can outlive the reply",
+                    added, under("REGION.move", "r2"), false, false},
+            {"the same thread sent r6 before r5's reply came",
+                    under("REGION.create", "r5"),
+                    under("REGION.remove", "r6"), true, false},
+            {"another client thread sent r3",
+                    added, under("REGION.move", "r3"), true, false},
+        };
+        for (Object[] row : table) {
+            OccurrenceAddress before = (OccurrenceAddress) row[1];
+            java.util.Set<String> unclaimed = (Boolean) row[3]
+                    ? Collections.singleton(before.id())
+                    : Collections.<String>emptySet();
+            String said = ConfirmMain.implied(new OccurrenceAddress[] {
+                    before, (OccurrenceAddress) row[2]}, program, unclaimed);
+            assertEquals((String) row[0] + ": " + said, row[4],
+                    !said.isEmpty());
+        }
+    }
+
+    private static OccurrenceAddress under(String region, String request) {
+        return OccurrenceAddress.parse("auto0/master0#epoch0/region/" + region
+                + "/ctx:Anchor:" + request + "@HBASE_RPC/test/idx:");
     }
 }
