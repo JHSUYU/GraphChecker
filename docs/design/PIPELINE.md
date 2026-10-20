@@ -950,7 +950,8 @@ the writers no landed re-run of the path ran whole -- every round's growth propo
 15 in 20 rounds --, a DIAGNOSTIC `RERUN <obligation>` row naming them): the seed's as a `rerun` obligation on
 its own world -- no query, the path's schedule cut, judged ADMITTED where the anchor's decision
 (the target row's guard ordinal, else the path's last) takes its recorded arm again
-(`ObligationSolverMain#rerun`) -- and a FORCE path as a FORCE obligation of its own id; its session
+(`ObligationSolverMain#rerun`), its focus row marked `rerun` so that arm is no flip of its world
+(`ExploreCodec#readWorld`: the session stands in the path's world, at its depth) -- and a FORCE path as a FORCE obligation of its own id; its session
 joins the corpus as any admitted session, and the next round flips on rows that name the writers
 (hbase-adhoc-34 HZ12: the anchor's read of `allKeys` at INITIAL in the seed and the FORCE path, its
 writer the region server's `start()` that only a flip leaving the anchor had re-run whole). A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
@@ -1150,7 +1151,11 @@ candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's
 decisions first; where the iteration has a ZooKeeper chain, a decision is one only where it rests on
 a root, a message's field, a heap read or a chain read (`explore.ZkKeys`, SYMBOL-SCOPE §6.4) -- store
 values off `zk_chain.jsonl` and decoded containers decide none --, the rest
-counted in a DIAGNOSTIC `zk-keys` row; a term that names nothing classified is no off-chain decision
+counted in a DIAGNOSTIC `zk-keys` row; an arm's dependence names the reads its guard rests on that
+observed a version no row wrote (`ObligationFactory#keyed`, `ClosurePlanner#unrecorded`), so the
+arm over a path whose writers ran unplanned and the same arm over a re-run that recorded them are
+two questions (hbase-adhoc-34 HZ14: the seed's refused #u79 settled the re-run's, which then held
+the writers' rows); a term that names nothing classified is no off-chain decision
 and is offered (`FlipQuery` decides it: hbase-adhoc-34's anchor guard read a map no row wrote, and
 its arm was dropped as "off the chain" though no store value was in it). Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the

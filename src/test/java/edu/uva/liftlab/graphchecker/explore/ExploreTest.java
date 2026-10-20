@@ -2045,6 +2045,8 @@ public class ExploreTest {
             assertTrue("the replay is judged by its recorded arm: " + focus,
                     focus.getAsJsonObject("flip").get("outcome")
                             .getAsBoolean());
+            assertTrue("and runs the path's own world: no flip of its own",
+                    ExploreCodec.readWorld(focus).flips.isEmpty());
             String flip = ObligationFactory.flip(rerun.taskId(),
                     rerun.pathId(), rerun.siteId(), rerun.ordinal(),
                     rerun.flippedOutcome());
@@ -2070,6 +2072,52 @@ public class ExploreTest {
                                                     "s-again", "ran"))),
                             gap -> { }).isEmpty());
         }
+    }
+
+    @Test
+    public void anArmOverAReadNoRowWroteIsAnotherQuestionThanOverAWrittenOne()
+            throws Exception {
+        LocationId limit = LocationId.of(LocationKind.INSTANCE, "9", "2");
+        Object[][] rows = {
+            {"s-held", false}, {"s-held-again", false}, {"s-written", true},
+        };
+        Path iteration = tree.newFolder("held-arms").toPath();
+        for (Object[] row : rows) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, false);
+            Endpoint at = at(TARGET, "example.Config#limit()I#4:READ",
+                    "Config#limit#4");
+            session.writes.add(WriteRow.initial((String) row[0], 0L, at,
+                    limit, 1L, "", "I"));
+            if ((Boolean) row[1]) {
+                session.write(at(TARGET, "example.Config#set(I)V#2:WRITE",
+                        "Config#set#2"), limit, 2L, "", "I");
+            }
+            session.read(at, limit, (Boolean) row[1] ? 2L : 1L, "read_limit",
+                    "4");
+            session.decision(TARGET, "Config#u7", 1, true, "(> read_limit 3)");
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = Task.of(ClosurePlanner.taskId(TARGET), TARGET,
+                Collections.<OccurrenceAddress>emptyList(), "s-held");
+        List<ObligationFactory.Keyed> arms =
+                new ArrayList<ObligationFactory.Keyed>();
+        List<String> sessions = new ArrayList<String>();
+        for (Corpus.RecordedPath path : corpus.pathsOf(TARGET)) {
+            arms.add(new ObligationFactory.Keyed(task, path, 0));
+            sessions.add(path.sessionId);
+        }
+        List<String> keys = ObligationFactory.dependences(corpus, arms);
+        Map<String, String> bySession = new LinkedHashMap<String, String>();
+        for (int at = 0; at < keys.size(); at++) {
+            bySession.put(sessions.get(at), keys.get(at));
+        }
+        assertEquals("two paths that read what no row wrote ask one question",
+                bySession.get("s-held"), bySession.get("s-held-again"));
+        assertFalse("a path whose read a row wrote asks another: "
+                        + bySession, bySession.get("s-held").equals(
+                bySession.get("s-written")));
     }
 
     @Test
