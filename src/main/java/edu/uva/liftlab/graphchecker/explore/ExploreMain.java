@@ -345,7 +345,7 @@ public final class ExploreMain {
         List<Obligation> first = new ArrayList<Obligation>();
         if (forced.force != null) first.add(forced.force);
         first.addAll(PathReruns.of(corpus, anchorTask(tasks, roots),
-                unrecorded, planned, gaps::accept));
+                unrecorded, planned, frontier, byFlip, gaps::accept));
         Frontier.Round open = frontier.open(round, first, forced.candidates);
 
         Files.createDirectories(out);
