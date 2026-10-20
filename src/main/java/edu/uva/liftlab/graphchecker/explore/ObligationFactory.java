@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonPrimitive;
 
 import edu.uva.liftlab.graphchecker.compose.Independence;
+import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -371,10 +372,20 @@ public final class ObligationFactory {
             text.append(decided.getKey()).append('x')
                     .append(decided.getValue().size()).append('/');
         }
+        Set<String> held = new TreeSet<String>();
+        for (ReadRow read : corpus.readsOn(path.sessionId, task.focused())) {
+            String location = SmtLowering.locationKey(read.location());
+            if (rests.locations().contains(location)
+                    && ClosurePlanner.unrecorded(corpus, path.sessionId,
+                    location, read.observedVersion())) {
+                held.add(read.endpoint().site());
+            }
+        }
         return ArtifactIO.digest(text + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
                 corpus.feeders(task), rests.locations(), stated)
-                + (domains.isEmpty() ? "" : "\n" + domains), 16);
+                + (domains.isEmpty() ? "" : "\n" + domains)
+                + (held.isEmpty() ? "" : "\nheld " + held), 16);
     }
 
     private static void domains(Corpus corpus, String sessionId, String term,

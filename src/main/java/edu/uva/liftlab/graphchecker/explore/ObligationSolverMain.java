@@ -539,6 +539,7 @@ public final class ObligationSolverMain {
                 Collections.<String, String>emptyMap(),
                 Collections.<String, String>emptyMap(), cut);
         focus.addProperty(PATH_SESSION, candidate.path.sessionId);
+        focus.addProperty(ExploreCodec.RERUN, true);
         JsonObject published = publish(out, proposal, ObligationResult.of(
                 proposal.obligationId(), Verdict.SAT_MODEL_READY, "",
                 PathReruns.RERUN + ": the world of path " + proposal.pathId()

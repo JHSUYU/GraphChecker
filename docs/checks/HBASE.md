@@ -191,9 +191,14 @@ reads and whose code writes what it reads (owner 2026-10-19: "范围弄小点").
     ZKProcedureCoordinator, ZKProcedureUtil. C: ZK data lost, format check.
 13. **hbase-adhoc-28**: `HBaseServerBase.java:353`, `TestInfoServers#testInfoServersRedirect`, needs P5; scope
     HBaseServerBase, common util/Addressing. C: config string.
-14. **hbase-adhoc-31**: `RSRpcServices.java:1880` (thrown type ServiceException), `TestRegionMove#testDisableAndMove`;
-    scope RSRpcServices, HRegionServer, procedure/RSProcedureDispatcher, ServerManager, MasterRpcServices. C: CLOCK
-    moves both sides.
+14. **hbase-adhoc-31**: `RSRpcServices.java:1880` (thrown type ServiceException),
+    `TestRetainAssignmentOnRestart#testForceRetainAssignment` (2026-10-19, was TestRegionMove: the guard compares the
+    region server's own start code with the master's copy, both run constants there, so no world flips it): a region
+    server stops and starts again on the same port with a new start code, and the master retains its regions on it.
+    The target is the restarted server's first check (auto0/rs3); the flip needs the master's open request to carry
+    the old incarnation's start code, a STATE re-pairing of `RegionStateNode.regionLocation` read for the open to its
+    write by the first assignment. Scope RSRpcServices, procedure/RSProcedureDispatcher, assignment/RegionStateNode,
+    assignment/RegionRemoteProcedureBase.
 15. **hbase-adhoc-34**: `AuthenticationTokenSecretManager.java:160`, `TestGenerateDelegationToken#testOnlyToken`,
     needs P2 + MiniKdc on the VM; scope AuthenticationTokenSecretManager, ZKSecretWatcher, ipc/ServerRpcConnection.
     C (the adjacent :135 expiry is the CLOCK-checkable sibling, not a study item).
@@ -260,7 +265,7 @@ the class whose code writes that field.
 | hbase-adhoc-22 | NamespaceStateManager:168 | TestCausynthTruncatedTableQuota#createWhileATruncatedTableIsDeleted (ours) | up | `auto0/master0#epoch0/region/REGION.ebc27075-13a0-35bd-8787-ae2532aac65d#2`: the created table's check (the 1st is the truncated table's own creation; seed HC1SEED-22 observed exactly these 2) | NamespaceStateManager, NamespaceTableAndRegionInfo | 12-14 s, 3/3 | ready |
 | hbase-adhoc-24 | ZKProcedureMemberRpcs:210 | TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback | up | first | ZKProcedureMemberRpcs, ZKProcedureCoordinator | 37 s | ready (its data crosses ZooKeeper: the ZOOKEEPER doors) |
 | hbase-adhoc-28 | HBaseServerBase:353 | TestInfoServers#testInfoServersRedirect | startup | first | HBaseServerBase, common util/Addressing | 9 s | ready |
-| hbase-adhoc-31 | RSRpcServices:1880 (ServiceException) | TestRegionMove#testDisableAndMove | up | first | RSRpcServices, master/procedure/RSProcedureDispatcher | 12 s | ready |
+| hbase-adhoc-31 | RSRpcServices:1880 (ServiceException) | TestRetainAssignmentOnRestart#testForceRetainAssignment | up | the restarted server's first (auto0/rs3) | RSRpcServices, master/procedure/RSProcedureDispatcher, master/assignment/RegionStateNode, RegionRemoteProcedureBase | 19 s | ready |
 | hbase-adhoc-34 | AuthenticationTokenSecretManager:160 | TestCausynthTokenKeys#anotherServerValidatesTheKeyMastersToken (ours, owner 2026-10-19: no MiniKdc, no Kerberos; every server's token secret manager runs on a simple-authentication cluster, `RpcServer#CAUSYNTH_TOKEN_SECRETS`; the key master's token validated by the other server's manager, the identifier decoded from its bytes) | startup (the keys are made and distributed through ZooKeeper while the cluster starts: the key master's write and the other server's read of `/hbase/tokenauth/keys`) | first | AuthenticationTokenSecretManager, ZKSecretWatcher | 7.5 s | workload replaced; not yet run |
 | hbase-adhoc-35 | HBaseFsck:2742 (anonymous visitor) | TestHBaseFsckReplication#test | up | first | util/HBaseFsck, util/HbckRegionInfo | 9 s | ready |
 | hbase-adhoc-37 | MasterAddressTracker:206 | TestRSStatusPage#testStatusPage (expects `text/html`: the Java 8 tree serves the page without a charset) | up | first (the test's `getActiveMasterInfoPort`) | zookeeper MasterAddressTracker, master/ActiveMasterManager | 13 s | **UNSAT_CLOSED, vacuous** (HZ2-37, `gc-out/hbase-zk/accept-HZ2-37`, 502 s, 2 paths, no root; FSHLog tree; `tools/analysis/vacuity.py`: the fatal arm is literal false on both paths, the guard decided with no term). Reading: the guard's read is in the chain only as a store read -- the target occurrence's STORE_READ of `/hbase/master` v0 through `RecoverableZooKeeper#getData`, in the zk chain's path and keys, its writer (the active master's create) before the `up` window --, but `data == null` is decided over a concrete local: no symbol names whether the read found a node, so no world could flip it. A flip needs a read in an absent window (no master znode), which this workload never has and the store model cannot state (TODO HBase 6) |
