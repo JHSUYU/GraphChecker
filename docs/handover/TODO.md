@@ -1,4 +1,4 @@
-# TODO: HDFS finished; Solr ended; HBase in progress (handover 2026-10-19 night)
+# TODO: HDFS finished; Solr ended; HBase: all five owner bugs PASS, the exclusive series next (handover 2026-10-20)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -548,48 +548,27 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   final8, `sg3f-trees` -> final7, `sg3e-trees` -> final5 (the fork's today). A case.sh `repo=` resolves under GC_TREES;
   the default `/bigtemp/vnr3ne/wt/lucene-solr-checks` is an old directory, never the one to run.
 
-## HBase (`system/hbase`; stopped by the owner 2026-10-19 23:10 for a handover -- the current plan)
+## HBase (`system/hbase`; second session handover 2026-10-20 -- the current plan)
 
-Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E,
-each agent's handover note [hbase-agents/H1-H5.md](hbase-agents/) (copies of `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/handover/H1-H5.md`) (exact run dirs, snapshots,
-tree sets, launch commands). Nothing runs on any lift.
+Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
+the agents' handover notes are [hbase-agents/](hbase-agents/) (`H1-H5.md` first session, `second-session-H*.md` second
+session: exact run dirs, snapshots, tree sets, commits). All five of the owner's bugs PASS; every study check has a result
+class except 07, 10, 11 (running at the handover, their §E rows say what they reached).
 
-**1. The next runs, in this order** (OPERATIONS §10: a snapshot of `system/hbase`'s head, a tree set of
-`gc/hbase-checks` 985a0dfe91 built with its own Maven repository, image vm-force12, workers every host the head reaches
-in batch ssh -- lift15 failed that from lift03 (HP10-14) --, heads on hosts of their own; `tools/analysis/vacuity.py` on
-every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readings.md`):
-- **hbase-adhoc-04 = HBASE-30484**: DONE, PASS (NR3-04, 2026-10-20: SAT confirmed, reproduced 7/10, control 0/10;
-  HBASE.md §E).
-- **hbase-bugs-master-active-time (#11)**: DONE, PASS (NZ12-mat, 2026-10-20: SAT MARKER_FLIPPED {.later=-2001}, confirmed,
-  reproduced 3/10 by repro-NZ13-mat, control 0/10; on the configured-skew workaround, HBASE.md §E). Item 11 has the 7/10
-  the native anchor drift costs; item 20 the formula's over-pinned T1.
-- **hbase-bugs-ns-rsgroup-removal (#13)**: run on tree 985a0dfe91 (tree set `/bigtemp/vnr3ne/wt/hb-checks-trees-20`,
-  built, its 6 workloads native-PASS; launch command in H4.md). Expected chain: an `HBASE_RPC` REQUEST fault on the
-  master's hbase:meta Mutate in `CREATE_NAMESPACE_INSERT_INTO_NS_TABLE` (one attempt in automatic mode) ->
-  `addOrUpdateNamespace` throws before `cached()` -> `removeRSGroup` reads `namespacesInGroup == 0` and removes the group
-  -> the held retry inserts the namespace -> CreateTableProcedure's `checkGroupExists` #3 reads null -> :227. Risk:
-  PLAN may not admit that Mutate door as a control producer; then check the count's writer is in the closure.
-- **hbase-adhoc-22 = HBASE-30483**: rerun with the full budget (COMPOSE alone > 10 min). The right claim exists (HC13);
-  if "run published no target row at anchor ..." recurs, read CONFIRM's replay at that anchor
-  (`accept-HC13-22/.../final/refuted/000*`).
-- Then 10, 11, 12 (on >= 8da6eb24d: CallQueueTooBigException cut, fault replays queued last), 31 (new workload,
-  selector `REGION.4a0683a9...#1`), 15 (tree set 9; read the NOT_ADMITTED first), 24 (seed replay once the chores are
-  off), 21 (workaround 23ff06c9ba), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
-  `STOP_AFTER=SEED`, to check the occurrence).
+**1. The owner's exclusive series** (owner 2026-10-20: "最终我们会让每个case独占集群跑一遍，这种极致并行往往可以优化性能"):
+every case once alone on all 14 hosts (workers lift02-15; the head on a host that reaches every worker, never lift02/03 or
+lift11), on one snapshot of `system/hbase` and one shared tree set of `gc/hbase-checks`'s head built with all workloads
+(the last shared sets, `hb-int-trees-3`/`-4`, predate H1's region-server report change and H2's last #11 commits: rebuild),
+image vm-force12, recording each case's verdict and its stage times (`analysis/solr-2026-10-14/final-stats.py`) as HDFS's
+EX1 (PERFORMANCE.md §6). Budgets: 14400 s, and 43200 s for 07 (measured on NP20-07: ~50 concurrent replays at 3.7 GB each
+when alone, 500-800 replays of 25-30 min, then a serial claim loop of up to 8 CONFIRMs of ~30 min). Order: the five bugs
+first, then the study checks. The heavy cases are not to be narrowed for it (owner: heavy replays are fine).
 
-**2. master-active-time's CONFIRM: two engine challenges** (H2, HZ13-mat; both stand behind workarounds or partial fixes):
-
-HZ13-mat, 2026-10-19), each standing behind a workaround or open:
-- A clock planted in a retried occurrence is exported with no root mint row. `RootMint` planted
-  `OpenRegionRequest.MasterSystemTime`'s reading (`DefaultEnvironmentEdge#currentTime`) as a symbolic `Long` box in
-  the dispatch region's retried occurrences (`TimeoutExecutorThread#run#u27` -> `ExecuteProceduresRemoteCall#run`, a
-  forced RPC fault's retry), the export cites it (session `1d963972f9596c7c-d98683ce`: expressions node 3301, export
-  seq 2650), but the session's roots name no such symbol, so COMPOSE refused every arm resting on it as
-  `UNSTATED_VALUE` and the seed path with them. Workaround: STATUS "tree: master-active-time's dispatch export" (no
-  master system time in automatic mode). The fix publishes a planted clock's mint row wherever its box is exported.
-- CONFIRM compares a WIRE leaf a clock carries with the text the model's session recorded (refuted HZ13-mat 0000 and
-  0002: `2efac300f9e6d4d6` model "1792454828365", run "1792455517516"), while the replay's clocks are not the
-  recording's. Open: such a leaf should be held to the model's clock value (planted) or compared by its expression.
+**2. master-active-time (#11): done** (NZ12-mat PASS, 2026-10-20) through the owner's direct workaround: in automatic mode a
+master's active time is its start code plus a configured skew (`causynth.hbase.master.clock.skew.ms.first|.later`, constant
+keys, domains in `experiments/hbase/hbase-bugs/root-domains.jsonl`), so the bug's clock skew is one CONFIG root. The two
+CONFIRM challenges listed here before (a planted clock's mint row in a retried occurrence; a clock-carried WIRE leaf) are
+off #11's path now; items 17 and 20 keep what remains of the clock problem.
 
 **3. An order no hold realizes is checked, not refused (built 2026-10-20, H3; 04 reproduced with it, NR3-04 7/10).** HC21-04's
 REPRODUCE planted nothing ("ORDER_UNHELD" on client0's `FutureUtils#addListener` continuation in
@@ -603,11 +582,11 @@ end's own activation (`check: true`, PIPELINE §10/§10b): observed in order or 
 Open: a hold at a send whose earlier end depends on that send through work no anchor chain names (a continuation
 registered by its reply) still waits until the order's timeout.
 
-**4. A free `unsupported__` leaf in the seed's own fatal** (15): fixed on `hbase-reask` (TODO "Solr: after SGF9" §5,
-PIPELINE §8): offline on HP8-15's corpus the claim is STATE_PAIRING_FLIPPED on path 62 (RegionStateNode.state re-paired
-to OPENING plus one FAULT marker) instead of FORMULA_SAT on the seed; H1 reruns 15.
+**4. A free `unsupported__` leaf in the seed's own fatal** (15): fixed (8cb3cdfeb, PIPELINE §8). Left: 197 leaves on
+NP9-15 sit in path conditions only (`String.equals` with an unmodelled argument type after a re-paired procedure-state
+read; second-session-H5.md), a model gap, not a soundness one.
 
-**5. Unmerged work.** `hbase-reask` 231264aad (WIP, not gated: item 4). Everything else of H1-H5 is in `system/hbase`.
+**5. Unmerged work.** None: every agent branch of both sessions is merged into `system/hbase`.
 
 **6. hbase-adhoc-34: done** (NZ3-34 PASS, 2026-10-20). Left open from it: a provenance site on a container field (`allKeys` in `retrievePassword`) still reads its receiver, the manager no decode registered; the fetch was asked through a declared read's receiver (f6e07b3c9). A guard that reads only a container's value, with no field read of the decoded value in its occurrence, would still cross to no fetch: then a container provenance site should take the versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
 
@@ -620,7 +599,7 @@ planner's serial path to save parallel seconds: not done. The cost was 210 REQUE
 does not converge, measure which client calls' faults reach the guard's cone at all before asking them.
 Since H5's DUPLICATE_WORLD (PIPELINE §7.3): the repetition behind NR1STOP-10's growth -- the anchor path's two re-runs
 in the seed's world re-ran all 70 client doors and each door fault was asked again from each re-run's path, 279 of the
-315 fault replays queued at the stop repeating a world already replayed -- is gone; rerun 10 on it.
+315 fault replays queued at the stop repeating a world already replayed -- is gone (NR13-10/NR19-10 ran on it).
 
 
 **8. A continuation chain re-registered per poll stands under the poll count.** A continuation now stands at its
@@ -725,7 +704,7 @@ program-order exclusion (the test thread registers the delete, doCall@5, before 
 would confirm nothing there; HC14/HC15-nsrg: 85 orders, all held where they run, all in natural order. 22's real
 blocker is that its procedure steps are `servingTasks` (item 14).
 
-**14. Procedure steps marked serving by their own continuations (fixed on `hbase-reask`, not yet rerun).** Since tree
+**14. Procedure steps marked serving by their own continuations (fixed: 4a06f9d88, then the claim-entry hold 4f80eb7f3/a4b7879e9; HBASE-30483 confirmed on it, NC15-22).** Since tree
 1dda23ecc5 (steps are `HANDOFF_TASK`s) and engine 28ec6763b (a continuation's claim is never run-here, so always
 consumed), every step's own hbase:meta write -- `AsyncSingleRequestRpcRetryingCaller#doCall:108` /
 `AsyncRegionLocator#getRegionLocation:158` -> `FutureUtils#addListener:64` on a done future, its listener run inline on
