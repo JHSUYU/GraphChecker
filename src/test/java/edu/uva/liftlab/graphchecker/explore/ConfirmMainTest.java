@@ -882,4 +882,45 @@ public class ConfirmMainTest {
             folder.create();
         }
     }
+    @Test
+    public void aTurnCountedOrderIsLeftOutOfTheNativePlantOnly()
+            throws Exception {
+        Path iteration = iteration();
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        world.add("rootAssignments", new JsonObject());
+        world.add("rootMints", new JsonObject());
+        world.add("clockDeltas", new JsonObject());
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                new byte[0]);
+        Endpoint polled = endpoint("hdfs/nn0#epoch0/region/REGION.08ab84c9/"
+                + "ctx:Root:WAKE/a.Pool.poll#3/idx:<a.Manager: void tick()>@0",
+                "a.Manager#tick()#7:WRITE");
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Collections.singletonList(WriteRow.of("sel", 10L, polled,
+                        CELL, 5L, "EXPR.w", "I")), RowCodec::writeWrite);
+        Path claim = claim("HDFS.SERIAL", "119981");
+        chose(claim, polled, reader);
+        Path plant = folder.newFile().toPath();
+        JsonObject summary = ConfirmMain.writePlant(iteration, claim,
+                manifest(), targetScopeMap(),
+                iteration.resolve("sessions").resolve("sel"), plant);
+        assertEquals("a poll's turn is the VM's timing", 1,
+                summary.get("turnOrders").getAsInt());
+        assertEquals(Collections.<JsonObject>emptyList(),
+                ordersOf(RowCodec.readJsonl(plant)));
+        Path out = folder.newFolder().toPath();
+        ConfirmMain.write(iteration, claim, manifest(), out);
+        int held = 0;
+        for (JsonObject edge : edges(out)) {
+            if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
+            held++;
+            assertEquals("CONFIRM still holds it", Confirmation.activation(
+                    polled.occurrence(), ExecutionIndex.empty()),
+                    edge.get("before").getAsString());
+        }
+        assertEquals(1, held);
+    }
 }
