@@ -222,7 +222,8 @@ public final class KeyGate {
                 ExploreCodec::readObligation);
         if (rows.isEmpty()) return null;
         Obligation obligation = rows.get(0);
-        if (obligation.force() || Obligation.pairing(obligation.siteId())) {
+        if (obligation.force() || obligation.rerun()
+                || Obligation.pairing(obligation.siteId())) {
             return null;
         }
         List<ObligationResult> answers = RowCodec.readAll(result,

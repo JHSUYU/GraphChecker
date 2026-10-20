@@ -434,6 +434,9 @@ public final class ObligationSolverMain {
         }
         ObligationFactory.Candidate candidate =
                 ObligationFactory.locate(corpus, proposal);
+        if (candidate != null && proposal.rerun()) {
+            return rerun(iteration, obligations, proposal, candidate, out);
+        }
         if (candidate == null) {
             return publish(out, proposal,
                     ObligationResult.of(obligationId,
@@ -517,6 +520,36 @@ public final class ObligationSolverMain {
                 Collections.<GapRow>emptyList(), focus);
         ask(out.resolve(ObligationDir.QUESTION_ASKED), ForcedFlip.flip(proposal)
                 + ":" + ForcedFlip.FORCE + " " + proposal.obligationId());
+        return published;
+    }
+
+    private static JsonObject rerun(Path iteration, Path obligations,
+                                    Obligation proposal,
+                                    ObligationFactory.Candidate candidate,
+                                    Path out) throws IOException {
+        Task task = candidate.task;
+        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
+                candidate.path.sessionId, targetOccurrences(candidate), true,
+                out);
+        JsonObject focus = ExploreCodec.writeFocusRow(task.focused(),
+                declaredTarget(obligations), task.seedSessionId(),
+                task.factor(), proposal,
+                Collections.<Corpus.Flip>emptyList(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(), cut);
+        focus.addProperty(PATH_SESSION, candidate.path.sessionId);
+        JsonObject published = publish(out, proposal, ObligationResult.of(
+                proposal.obligationId(), Verdict.SAT_MODEL_READY, "",
+                PathReruns.RERUN + ": the world of path " + proposal.pathId()
+                        + " replayed as recorded, the writers its reads"
+                        + " lacked now planned"), "",
+                Collections.<GapRow>emptyList(), focus);
+        ask(out.resolve(ObligationDir.QUESTION_ASKED),
+                ObligationFactory.flip(proposal.taskId(), proposal.pathId(),
+                        proposal.siteId(), proposal.ordinal(),
+                        proposal.flippedOutcome()) + ":" + PathReruns.RERUN
+                        + " " + proposal.obligationId());
         return published;
     }
 

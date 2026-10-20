@@ -144,7 +144,7 @@ public final class ExposedRegionPlanMain {
         List<JsonObject> exposures = new ArrayList<>();
         for (JsonObject row : growth) {
             String kind = optionalString(row, "kind");
-            if (EXPOSED_REGION.equals(kind) || ZkChain.EDGE.equals(kind)
+            if ((EXPOSED_REGION.equals(kind) || ZkChain.EDGE.equals(kind))
                     && !tasked.contains(optionalString(row, "occurrence"))) {
                 exposures.add(row);
             }

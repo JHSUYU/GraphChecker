@@ -92,6 +92,7 @@ public final class ClosurePlanner {
         public final Map<OccurrenceAddress, String> unpaused;
         public final Set<OccurrenceAddress> runWhole;
         public final Concrete concrete;
+        public final Map<String, Set<OccurrenceAddress>> unrecordedWriters;
 
         private Plan(List<Task> tasks, Map<String, String> why,
                      Map<String, Set<String>> flipSites,
@@ -99,7 +100,8 @@ public final class ClosurePlanner {
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
                      Set<String> ceilingCut,
                      Map<OccurrenceAddress, String> unpaused,
-                     Set<OccurrenceAddress> runWhole, Concrete concrete) {
+                     Set<OccurrenceAddress> runWhole, Concrete concrete,
+                     Map<String, Set<OccurrenceAddress>> unrecordedWriters) {
             this.unpaused = Collections.unmodifiableMap(unpaused);
             this.runWhole = Collections.unmodifiableSet(runWhole);
             this.tasks = Collections.unmodifiableList(tasks);
@@ -110,6 +112,8 @@ public final class ClosurePlanner {
             this.truncated = Collections.unmodifiableSet(truncated);
             this.ceilingCut = Collections.unmodifiableSet(ceilingCut);
             this.concrete = concrete;
+            this.unrecordedWriters =
+                    Collections.unmodifiableMap(unrecordedWriters);
         }
     }
 
@@ -323,7 +327,7 @@ public final class ClosurePlanner {
         }
         return new Plan(tasks, why, flips,
                 exposed, waiting, truncated, ceilingCut, unpaused, runWhole,
-                concrete);
+                concrete, walk.unrecorded);
     }
 
     static String methodOf(String site) {
@@ -555,7 +559,11 @@ public final class ClosurePlanner {
             return;
         }
         if (corpus.namedBy(occurrence).contains(seed)) {
-            waiting.add(occurrence);
+            if (UNRECORDED_WRITER.equals(demand.why)) {
+                exposed.put(occurrence, seed);
+            } else {
+                waiting.add(occurrence);
+            }
             return;
         }
         if (!stopped.isEmpty()) {
@@ -1073,6 +1081,8 @@ public final class ClosurePlanner {
                 new ConcurrentHashMap<String, Boolean>();
         private final Set<String> faultless = ConcurrentHashMap.newKeySet();
         private final Set<String> anchorTerms = ConcurrentHashMap.newKeySet();
+        private final Map<String, Set<OccurrenceAddress>> unrecorded =
+                new ConcurrentHashMap<String, Set<OccurrenceAddress>>();
         private final Set<String> cut = ConcurrentHashMap.newKeySet();
         private final Map<String, Long> storeExpanded =
                 new ConcurrentHashMap<String, Long>();
@@ -2211,6 +2221,10 @@ public final class ClosurePlanner {
             step.offer(Arrays.<Object>asList(UNRECORDED_WRITER, site, guards,
                     node), ran, UNRECORDED_WRITER, guards, sessionId,
                     location);
+            Set<OccurrenceAddress> lacked = walk.unrecorded.computeIfAbsent(
+                    sessionId, key -> ConcurrentHashMap.newKeySet());
+            lacked.addAll(holders);
+            lacked.addAll(ran);
             if (!ran.isEmpty()) return;
         }
         if (!holders.isEmpty()) return;
