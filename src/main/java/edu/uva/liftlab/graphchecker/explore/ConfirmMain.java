@@ -43,6 +43,7 @@ import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
@@ -1602,6 +1603,9 @@ public final class ConfirmMain {
             }
             String location = SmtLowering.locationKey(held.location());
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
+            boolean storePaired = held.location().kind() == LocationKind.STORE
+                    && (held.version() != read.observedVersion()
+                    || held.version() == MessageDoors.TOMBSTONE);
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
@@ -1610,7 +1614,9 @@ public final class ConfirmMain {
                         Confirmation.anyTurn(read.endpoint()));
             }
             edge.addProperty("mint", mint);
-            edge.addProperty("writer", Confirmation.writer(held));
+            edge.addProperty("writer", storePaired
+                    ? Confirmation.storeWriter(held.version())
+                    : Confirmation.writer(held));
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
             holding.edges.add(edge);
@@ -1618,6 +1624,7 @@ public final class ConfirmMain {
             if (!held.initial()) {
                 holding.cone.add(held.endpoint().occurrence());
             }
+            if (storePaired) holding.edges.add(storeHold(holding, read, held));
             if (mint || held.location().kind() == LocationKind.STORE) continue;
             if (held.location().kind() == LocationKind.VIEW) {
                 if (!Confirmation.hookPublishes(held.location())) {
@@ -1695,6 +1702,30 @@ public final class ConfirmMain {
             holding.edges.add(row);
         }
         return holding;
+    }
+
+    private static JsonObject storeHold(Holding holding, ReadRow read,
+                                        WriteRow held) {
+        String reader = Confirmation.id(read.endpoint());
+        if (held.version() != read.observedVersion()
+                && !RowOrder.before(read, held)) {
+            throw new Refused("PAIRING_UNHELD: read " + reader + " of "
+                    + held.location() + " is held to version "
+                    + held.version() + ", which the session wrote before"
+                    + " the version " + read.observedVersion() + " it read,"
+                    + " and no hold defers a store write: a store read is"
+                    + " held only past a later write of its location");
+        }
+        JsonObject hold = new JsonObject();
+        hold.addProperty("kind", RecordingPlant.STORE_HOLD);
+        hold.addProperty("reader", reader);
+        hold.addProperty("readerOccurrence",
+                read.endpoint().occurrence().anyDelivery().id());
+        hold.addProperty("location", held.location().key());
+        hold.addProperty("version", held.version());
+        holding.cutBefore = Math.min(holding.cutBefore, read.seq());
+        holding.reordered.add(read.endpoint().occurrence().id());
+        return hold;
     }
 
     static Set<String> afterAnchor(List<JsonObject> edges, String anchor,
@@ -1801,7 +1832,7 @@ public final class ConfirmMain {
             for (WriteRow write : closure.byLocation.getOrDefault(
                     SmtLowering.locationKey(read.location()),
                     Collections.<WriteRow>emptyList())) {
-                if (!writer.equals(Confirmation.writer(write))
+                if (!Confirmation.paired(writer, write)
                         || held != null && held.version()
                         == read.observedVersion()) {
                     continue;

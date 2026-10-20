@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -243,6 +244,57 @@ public class ConfirmationTest {
                 && close.get(0).contains("could not be read")
                 : close.get(0).startsWith("EDGES: this CONFIRM run found"
                 + " no readable " + Confirmation.FILE));
+    }
+
+    @Test
+    @FreshStatics.Rows(2)
+    public void aStoreReadWaitsForItsTombstoneAndOneNeverWrittenIsUntaken()
+            throws Exception {
+        boolean written = FreshStatics.row() == 0;
+        LocationId node = LocationId.of(LocationKind.STORE, "ZK", "/b/p");
+        long tombstone = MessageDoors.TOMBSTONE;
+        Endpoint reader = endpoint(ANCHOR, "ZK#READ:.b.p");
+        handed(Fixtures.focusRow(ANCHOR, "'obligationId':'OBL.1',"
+                + "'pathId':'p1','flip':{'siteId':'" + Obligation.PAIRING
+                + Confirmation.id(reader) + "','ordinal':" + (tombstone + 1L)
+                + ",'outcome':true},'pairings':{'" + Confirmation.id(reader)
+                + "':'" + Confirmation.storeWriter(tombstone) + "'}") + "\n",
+                Arrays.asList(state(reader, ",'location':'" + node.key()
+                        + "'", Confirmation.storeWriter(tombstone),
+                        "" + tombstone), "{'kind':'"
+                        + RecordingPlant.STORE_HOLD + "','reader':'"
+                        + Confirmation.id(reader) + "','readerOccurrence':'"
+                        + READER.anyDelivery().id() + "','location':'"
+                        + node.key() + "','version':" + tombstone + "}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+        assertTrue(Confirmation.ordering());
+        long[] read = new long[1];
+        Thread held = new Thread(() -> {
+            Confirmation.storeReading(READER, node);
+            read[0] = System.nanoTime();
+        });
+        held.start();
+        Thread.sleep(100L);
+        long deleted = System.nanoTime();
+        if (written) Confirmation.wrote(node, tombstone, WRITER, false);
+        held.join(5000L);
+        assertTrue("the read went on only once its tombstone was written,"
+                + " or at the bound", read[0] >= deleted);
+        long observed = written ? tombstone : 0L;
+        Confirmation.read(reader, node, observed, ReadRow.UNKNOWN_VERSION);
+        FocusedReplay.pairedRead(reader, observed);
+        ObligationResult result = FocusedReplay.results("s").get(0);
+        List<String> close = Confirmation.close();
+        assertEquals(result.detail(), written ? Verdict.ADMITTED
+                : Verdict.NOT_ADMITTED, result.verdict());
+        assertEquals(close.toString(), written, close.isEmpty());
+        if (!written) {
+            assertTrue(result.detail(), result.detail().startsWith(
+                    "PAIRING_UNTAKEN: ") && result.detail().contains(
+                    "was never written"));
+            assertTrue(close.toString(), close.get(0).startsWith(
+                    "STORE_HOLD " + Confirmation.id(reader)));
+        }
     }
 
     @Test

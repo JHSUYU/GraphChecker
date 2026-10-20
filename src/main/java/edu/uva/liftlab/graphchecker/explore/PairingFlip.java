@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.util.ArrayList;
@@ -32,6 +33,7 @@ final class PairingFlip {
     static final int PER_READ = 8;
     static final String BOUND = "pairing-bound";
     private static final String DEPENDENCE = "VIEW";
+    private static final String STORE_DEPENDENCE = "STORE";
 
     private PairingFlip() {
     }
@@ -53,6 +55,10 @@ final class PairingFlip {
             return offered;
         }
         for (ReadRow read : reads(corpus, task, session)) {
+            if (read.location().kind() == LocationKind.STORE) {
+                offered.addAll(tombstones(corpus, task, path, read));
+                continue;
+            }
             if (!Confirmation.hookPublishes(read.location())) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, site(read),
@@ -102,6 +108,28 @@ final class PairingFlip {
         return offered;
     }
 
+    private static List<ObligationFactory.Candidate> tombstones(
+            Corpus corpus, Task task, Corpus.RecordedPath path,
+            ReadRow read) {
+        List<ObligationFactory.Candidate> offered =
+                new ArrayList<ObligationFactory.Candidate>();
+        String location = SmtLowering.locationKey(read.location());
+        Set<Long> later = new TreeSet<Long>();
+        for (WriteRow write : corpus.writesOf(path.sessionId, location)) {
+            if (write.version() == MessageDoors.TOMBSTONE
+                    && read.observedVersion() != MessageDoors.TOMBSTONE
+                    && RowOrder.before(read, write)) {
+                later.add(write.version());
+            }
+        }
+        for (long version : later) {
+            offered.add(new ObligationFactory.Candidate(task, path, read,
+                    version, ObligationFactory.obligationId(task.taskId(),
+                    site(read), ordinal(version), true, STORE_DEPENDENCE)));
+        }
+        return offered;
+    }
+
     private static boolean decodedBefore(WriteRow decode, ReadRow read) {
         return decode.initial() || RowOrder.before(decode, read);
     }
@@ -124,6 +152,7 @@ final class PairingFlip {
         Map<String, ReadRow> earliest = new LinkedHashMap<String, ReadRow>();
         for (ReadRow read : session.reads()) {
             if (read.location().kind() != LocationKind.VIEW
+                    && read.location().kind() != LocationKind.STORE
                     || read.observedVersion() < 0L) {
                 continue;
             }
@@ -148,7 +177,8 @@ final class PairingFlip {
         SessionReader session = corpus.session(path.sessionId);
         if (session == null) return null;
         for (ReadRow read : session.reads()) {
-            if (read.location().kind() == LocationKind.VIEW
+            if ((read.location().kind() == LocationKind.VIEW
+                    || read.location().kind() == LocationKind.STORE)
                     && site(read).equals(obligation.siteId())) {
                 return new ObligationFactory.Candidate(task, path, read,
                         obligation.pairedVersion(), obligation.obligationId());
@@ -164,8 +194,10 @@ final class PairingFlip {
         ReadRow read = candidate.pairedRead;
         Corpus.World inherited = corpus.world(candidate.path.sessionId);
         Map<String, String> paired = new LinkedHashMap<String, String>();
-        paired.put(Confirmation.id(read.endpoint()),
-                Confirmation.viewWriter(candidate.pairedVersion));
+        boolean store = read.location().kind() == LocationKind.STORE;
+        paired.put(Confirmation.id(read.endpoint()), store
+                ? Confirmation.storeWriter(candidate.pairedVersion)
+                : Confirmation.viewWriter(candidate.pairedVersion));
         Map<String, String> pairings =
                 ObligationFactory.overlay(inherited.pairings, paired);
         String question = question(candidate, inherited, paired, given);
@@ -206,8 +238,9 @@ final class PairingFlip {
                 inherited.answers, Collections.<String>emptyList());
         return new ObligationFactory.Outcome(solved, ObligationResult.of(id,
                 Verdict.SAT_MODEL_READY, "", "read " + read.endpoint()
-                        + " of " + read.location() + " takes its node's"
-                        + " decode of version " + candidate.pairedVersion
+                        + " of " + read.location() + (store ? " takes the"
+                        + " store's version " : " takes its node's decode of"
+                        + " version ") + candidate.pairedVersion
                         + " (it observed " + read.observedVersion() + "), in"
                         + " the world of " + candidate.path.sessionId
                         + " with " + pairings.size() + " planted"

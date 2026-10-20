@@ -458,6 +458,7 @@ public final class RowRuntime {
                 location, version, storeSymbol(location, version), STORE_TYPE,
                 null).withTie(position.tie));
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
+        FocusedReplay.pairedRead(at, version);
     }
 
     public static void viewWrite(OccurrenceAddress occurrence,
@@ -531,7 +532,7 @@ public final class RowRuntime {
                 version, "V_" + Digests.digest(at.id(), 16), "J",
                 Long.toString(version)).withTie(position.tie));
         Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
-        FocusedReplay.viewRead(at, version);
+        FocusedReplay.pairedRead(at, version);
     }
 
     private static final Set<String> STORE_READS =

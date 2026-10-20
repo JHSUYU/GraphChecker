@@ -404,6 +404,7 @@ public class ConcolicHookAbiTest {
             case "doors.Outbound": return MessageDoors.Outbound.class;
             case "doors.Inbound": return MessageDoors.Inbound.class;
             case "runnable": return Runnable.class;
+            case "list": return java.util.List.class;
             case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
             default: throw new IllegalStateException(
                     "unmapped type: " + name);

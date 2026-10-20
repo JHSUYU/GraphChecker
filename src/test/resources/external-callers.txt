@@ -24,6 +24,7 @@ annotation.Debug makeSymbolicBoolean boolean string
 # CausynthSolrCluster), ZooKeeper (CausynthZk, CausynthZkCluster) and HBase
 # (CausynthRpc, CausynthHBaseCluster, RecoverableZooKeeper's store doors,
 # ZKWatcher) trees call themselves.
+runtime.MessageDoors absent boolean string string string object
 runtime.MessageDoors beginNodeStartup long object
 runtime.MessageDoors beginNodeStartup long string string string
 runtime.MessageDoors beginRequest long object string
@@ -31,8 +32,10 @@ runtime.MessageDoors beginTick long object string
 runtime.MessageDoors beginWorkloadCall long string
 runtime.MessageDoors callStarting void
 runtime.MessageDoors capturingContent boolean
+runtime.MessageDoors childrenFetched void string string list object
 runtime.MessageDoors consumed void string string
 runtime.MessageDoors decoded void string string object
+runtime.MessageDoors deleted void string string object
 runtime.MessageDoors endInbound void
 runtime.MessageDoors endInbound void doors.Inbound
 runtime.MessageDoors endNodeStartup void long

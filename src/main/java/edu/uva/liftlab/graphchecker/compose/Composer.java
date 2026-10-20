@@ -824,8 +824,9 @@ public final class Composer {
             String session = selected.path().sessionId;
             for (Map.Entry<String, ReadRow> realized
                     : realizedPairings(selected).entrySet()) {
-                if (anotherWriter(corpus, session, Collections
-                        .singletonList(realized.getValue()))) {
+                if (realized.getValue().location().kind()
+                        == LocationKind.STORE || anotherWriter(corpus, session,
+                        Collections.singletonList(realized.getValue()))) {
                     taken.put(realized.getKey(), realized.getValue());
                 }
             }
@@ -845,8 +846,7 @@ public final class Composer {
                 if (writer == null || realized.containsKey(reader)) continue;
                 WriteRow write = corpus.writeOf(session, SmtLowering
                         .locationKey(read.location()), read.observedVersion());
-                if (write != null
-                        && writer.equals(Confirmation.writer(write))) {
+                if (write != null && Confirmation.paired(writer, write)) {
                     realized.put(reader, read);
                 }
             }

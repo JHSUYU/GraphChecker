@@ -626,21 +626,35 @@ f9340f2aab). Reaching 13 needs a model of a Put -> store -> Get (a STORE door ke
 ZooKeeper's store is keyed by path) and a workload that drives the janitor, as 04 drives the quota observer.
 
 
-**10. A znode's absence as state: tombstone lives + a store-read pairing flip** (H2 design, lead 2026-10-19: not
-built until a case's chain needs a read in an absent window; it serves Solr and HBase alike). Today neither system
-states absence: a delete takes only its parent's WRITE turn, a NoNode `getData` throws before the read hook, an
-`exists` of no node is a trace row only (`MessageDoors#read` returns for version < 0), and a re-create starts a new
-location life (`path#k`). (a) One location per path with (life, version) states: a create opens life k, a delete
-(a multi's delete op too) and every ephemeral of a closed or expired session (the expirer and the client's close ask
-the in-process server for the session's ephemerals) file a TOMBSTONE write ending it, a NoNode read is a STORE_READ
-of that tombstone (before any create: INITIAL absent), and a read's eligible writers are the path's creates, sets,
-deletes and expiries across lives; table tests in `MessageDoors`/`RecordedStore`, a Solr regression check (~half a
-day). Alone it moves nothing: a store read is held at the version its session read (CONFIRM's STATE row), so it only
-makes deleters writers in the chain and an absent read a held row. (b) A store-read pairing flip, `PairingFlip`
-generalized from VIEW reads to plain store reads: the replay holds the reader's READ turn until the asked version's
-WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it as `PAIRING_UNTAKEN` as for views
-(`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
-(`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
+**10. A znode's absence as state: what remains** (H2 design, lead 2026-10-19; built by E3 2026-10-20). Built: (a)
+tombstones -- a delete (each delete of a multi too) files its path's tombstone, version `MessageDoors.TOMBSTONE`, and a
+NoNode `getData` or a null `exists` is a STORE read of it where one is filed (IDENTITY §7.2 `deleted`/`absent`); (b) the
+store-read pairing flip -- a STORE read is offered each later tombstone of its location, held at its READ turn until
+the tombstone is written (`STORE_HOLD`, PIPELINE §7.4/§7.6); (c) narrow -- HBase's procedure member names its callback
+by the barrier create it listed (`MessageDoors#childrenFetched`, STATUS "Per-system surface", "hbase-adhoc-24's
+procedure member anchor"), so hbase-adhoc-24's barrier read is a STORE read of the target occurrence. hbase-adhoc-24: SAT,
+confirmed in the VM (X105-24, HBASE.md §E). What remains:
+- INITIAL absence (a NoNode read before any create in the window: needs an INITIAL row for STORE locations) and the
+  ephemerals of a closed or expired session (the in-process server's list at the expirer and the client's close): a
+  NoNode read no filed tombstone names is no row, as before.
+- One location per path across lives (H2's design): a read of life k+1 paired with life k's tombstone (a failover's
+  read, hbase-adhoc-37) needs it, and a hold of the next life's create behind the reader; today a tombstone is the last
+  version of its own life's location `path#k`, and only a later tombstone of the read's own life is offered.
+- The general (c): any watch callback naming its cause by the children it listed would re-anchor every children
+  callback whose first data read named another version (the region-server tracker's); only the procedure member does.
+- REPRODUCE plants no `STORE_HOLD` natively (a native hold of the reader's ZooKeeper read until the delete): a bug
+  check resting on a store pairing would need it; 24 is a study check.
+- hbase-adhoc-37 (`MasterAddressTracker:206`) has no absent window: the test thread reads `/hbase/master` after the
+  master's create and nothing deletes it in the window (the absent version before the create is unreachable: the test
+  waits for the master). It needs a failover workload with a read the failover does not order (e.g. the backup
+  master's status page fetched asynchronously while master0 stops) and one location per path.
+
+*Why 24 needs all three (NZ3-24, `gc-out/hbase-zk/accept-NZ3-24`):* the absent window is `ZKProcedureUtil#clearZNodes`'s
+multi delete of `/hbase/flush-table-proc/acquired/TestFlushTable` in `Procedure#call`'s finally; all three region
+servers are expected members, so a member's barrier read follows the delete only if the coordinator gives up on it
+(`hbase.flush.master.timeoutMillis`, 60 s, a `java.util.Timer`; the seed replay's procedure takes ~12 s, so the timeout
+stays as it is), and the held member then reads NoNode -> null -> the throw. Before (c) the member's callback was named
+by that very read (its first fetch), so the read was no row and a NoNode read would have left the callback unnamed.
 
 **11. Smaller HBase items.**
 - A native run's anchor drifts upstream (hbase-bugs-master-active-time repro-NZ13-mat: 3/10). All 10 planted runs threw

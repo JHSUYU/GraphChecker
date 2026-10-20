@@ -29,6 +29,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 public final class MessageDoors {
     public static final String REQUEST = "REQUEST";
     public static final String RESPONSE = "RESPONSE";
+    public static final long TOMBSTONE = Integer.MAX_VALUE - 1L;
 
     private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
 
@@ -237,6 +238,12 @@ public final class MessageDoors {
         guarded("reading", location, () -> {
             boolean paused = pause();
             try {
+                ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+                if (active != null && active.d3Address != null) {
+                    Confirmation.storeReading(active.d3Address, storeLocation(
+                            transport, life(transport, trimmed(location), -1L,
+                                    false)));
+                }
                 turn(ScheduleEvent.Kind.READ, transport, location);
             } finally {
                 resume(paused);
@@ -393,7 +400,10 @@ public final class MessageDoors {
             Object document = StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
-            if (message.active()) STORED.put(transport + "\n" + key, message);
+            if (message.active()) {
+                STORED.put(transport + "\n" + key, message);
+                FILINGS.put(transport + "\n" + key, FILED.incrementAndGet());
+            }
             written(transport, key, owner, position, document);
         } catch (RuntimeException fault) {
             doorFault("stored " + key, fault);
@@ -401,6 +411,124 @@ public final class MessageDoors {
             storeEnded(transport, store);
             resume(paused);
         }
+    }
+
+    private static final Map<String, Long> FILINGS =
+            new ConcurrentHashMap<String, Long>();
+    private static final AtomicLong FILED = new AtomicLong();
+
+    public static void deleted(String transport, String path, Object owner) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            written(transport, trimmed(path) + "@" + TOMBSTONE, owner,
+                    Identity.enginePosition(), null);
+        } catch (RuntimeException fault) {
+            doorFault("deleted " + path, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    public static boolean absent(String transport, String path, String op,
+                                 Object owner) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            String bare = trimmed(path);
+            if (absentVersion(transport, bare) != TOMBSTONE) return false;
+            read(transport, bare + "@" + TOMBSTONE, op, owner);
+            return true;
+        } catch (RuntimeException fault) {
+            doorFault("absent " + path, fault);
+            return false;
+        } finally {
+            resume(paused);
+        }
+    }
+
+    static long absentVersion(String transport, String path) {
+        Thread reader = Thread.currentThread();
+        long began = System.currentTimeMillis();
+        synchronized (STORING) {
+            while (!tombstoned(transport, path)
+                    && !inFlight(transport, path, reader).isEmpty()) {
+                long left = began + FILED_WAIT_MS
+                        - System.currentTimeMillis();
+                if (left <= 0L) break;
+                try {
+                    STORING.wait(left);
+                } catch (InterruptedException interrupted) {
+                    reader.interrupt();
+                    break;
+                }
+            }
+        }
+        return tombstoned(transport, path) ? TOMBSTONE : -1L;
+    }
+
+    private static boolean tombstoned(String transport, String path) {
+        synchronized (LIVES) {
+            int[] held = LIVES.get(trimmed(transport) + "\n" + trimmed(path));
+            return held != null && held[2] != 0;
+        }
+    }
+
+    public static void childrenFetched(String transport, String parent,
+                                       List<String> children, Object owner) {
+        if (children == null || children.isEmpty()
+                || NOTIFIED.get() == null) {
+            return;
+        }
+        boolean paused = false;
+        try {
+            paused = pause();
+            String kind = NOTIFIED.get();
+            String node = RuntimeTraceContext.ownedSource(owner).key();
+            String folder = trimmed(parent).endsWith("/") ? trimmed(parent)
+                    : trimmed(parent) + "/";
+            List<String> keys = new ArrayList<String>();
+            Set<String> delivered = new java.util.HashSet<String>();
+            for (String child : children) {
+                String key = folder + trimmed(child) + "@0";
+                if (DELIVERIES.containsKey(delivery(node, transport, key,
+                        kind))) {
+                    delivered.add(key);
+                } else if (filed(transport, key) != null) {
+                    keys.add(key);
+                }
+            }
+            String newest = newestFiled(transport, keys, delivered);
+            Outbound message = newest == null ? null
+                    : STORED.get(transport + "\n" + newest);
+            if (message != null) {
+                receive(transport, newest, owner, message, kind);
+            }
+        } catch (RuntimeException fault) {
+            doorFault("childrenFetched " + parent, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    static String newestFiled(String transport, List<String> keys,
+                              Set<String> delivered) {
+        String newest = null;
+        long at = -1L;
+        for (String key : keys) {
+            Long order = FILINGS.get(transport + "\n" + key);
+            if (order == null || delivered.contains(key)) continue;
+            if (order > at) {
+                at = order;
+                newest = key;
+            }
+        }
+        return newest;
+    }
+
+    private static String delivery(String node, String transport, String key,
+                                   String kind) {
+        return node + "\n" + transport + "\n" + key + "\n" + kind;
     }
 
     private static void written(String transport, String key, Object owner,
@@ -665,11 +793,15 @@ public final class MessageDoors {
         synchronized (LIVES) {
             int[] held = LIVES.get(key);
             if (held == null) {
-                held = new int[] {1, 0};
+                held = new int[] {1, 0, 0};
                 LIVES.put(key, held);
             }
-            if (write && version == 0L && held[1] != 0) held[0]++;
+            if (write && version == 0L && held[1] != 0) {
+                held[0]++;
+                held[2] = 0;
+            }
             if (write || version > 0L) held[1] = 1;
+            if (write && version == TOMBSTONE) held[2] = 1;
             return held[0] == 1 ? trimmed(path)
                     : trimmed(path) + LIFE + held[0];
         }
@@ -822,11 +954,16 @@ public final class MessageDoors {
         if (kind == null) return;
         Outbound message = filed(transport, key);
         if (message == null) return;
+        receive(transport, key, owner, message, kind);
+    }
+
+    private static void receive(String transport, String key, Object owner,
+                                Outbound message, String kind) {
         NOTIFIED.remove();
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
-        int delivery = DELIVERIES.merge(RuntimeTraceContext.ownedSource(owner)
-                .key() + "\n" + transport + "\n" + key + "\n" + kind, 1,
+        int delivery = DELIVERIES.merge(delivery(RuntimeTraceContext
+                .ownedSource(owner).key(), transport, key, kind), 1,
                 Integer::sum);
         String via = delivery == 1 ? kind : kind + "." + delivery;
         long token = message.trace.isEmpty() ? 0L

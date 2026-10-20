@@ -30,7 +30,9 @@ The study checks (each row: HBASE.md §E, STATUS "HBase checks"):
   decides), 35 (needs a corrupt hbase:meta).
 - **Named bound** (every claim refuted by CONFIRM, mostly because it orders a step against the test thread's synchronous program
   order, TODO HBase 15; for 10 a hold CONFIRM cannot place, TODO HBase 21): 08, 10, 11, 12, 14, 15, 31.
-- **Vacuous, waiting on an engine model:** 24, 37 (a znode's absence as state, TODO HBase 10).
+- **SAT, confirmed in the VM:** 24 (the store pairing of the procedure member's barrier read with the barrier's tombstone, TODO HBase 10;
+  not reproduced natively: no native STORE_HOLD).
+- **Vacuous, needs a workload:** 37 (no absent window in its workload: a failover with an unordered reader, TODO HBase 10).
 - **RUN_DEFECT:** 13 (its guard is stated after a tree workaround, but the seed replay drifts at the second merge, TODO HBase 19).
 - **No verdict yet:** 07: its replays (~22 min, 3.7 GB each) cannot converge on a shared pool; the exclusive run decides
   (NP20-07 stopped at EXPLORE round 25 with 1811 verdicts and 469 in flight).
@@ -88,6 +90,6 @@ A case is done as follows:
    breakdown, as HDFS's EX1. 07 needs about 5-10 h alone (heavy replays plus a serial claim loop): give it a 12 h budget.
 2. **07**: no verdict yet; its HBASE.md §E row says what NP20-07 reached; the exclusive run decides it.
 3. **Engine items with the most return** (TODO HBase): 15 (the client thread's happens-before as JOIN rows, 2-3 days: it would
-   close 08, 12, 14, 15 and shorten 07's and nsrg's claim loops), 10 (a znode's absence as state: 24, 37), 19 (a chore's
+   close 08, 12, 14, 15 and shorten 07's and nsrg's claim loops), 10 (what remains of a znode's absence as state: 37's failover workload, INITIAL absence, expiries), 19 (a chore's
    START given up at its trigger's next event: 13), 9 (data through a region's store).
 4. **Push `system/hbase`** to GitHub once the owner agrees.
