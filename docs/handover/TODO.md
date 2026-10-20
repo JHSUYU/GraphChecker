@@ -844,6 +844,19 @@ every `.later` < -2000. Yet the selected path is satisfiable at -2001 alone: bin
 Harmless for the claim, since an explored world is now a valuation (`Composer#exploredWorlds`), but a root's range
 is not stated. Recorded only, not chased.
 
+**21. CONFIRM plans regions for the model's chosen writer only, not for the writers it must hold around it** (H3;
+hbase-adhoc-10 NR13-10, NR19-10). A STATE edge holds every other writer of the location before the chosen writer or
+after the reader (PIPELINE §10); an ORDER can name only a writer that stands in an activation of the CONFIRM replay.
+10's claims re-pair the unassign's read of `RegionStateNode.procedure` (:765) to an earlier assign TRSP's attach; the
+writer that must come after the read is that TRSP's `unsetProcedure` in `TransitRegionStateProcedure#confirmOpened`
+(:332, a procedure step), which ran in no planned activation, so every claim was refused "the run observed
+INSTANCE/<n>#72@<v> ..., stored outside every activation, which no ORDER holds" (NR13-10: 5 of 5; NR19-10, with
+TransitRegionStateProcedure in the case's scope: claims 0-4; its claims 5-8 got TRSP-step ORDER holds that did not exit
+within 300 s). A fix would plan, for each held location, the regions enclosing its other recorded writers (here the TRSP
+step running confirmOpened) into the CONFIRM task, so each such write stands in an activation an ORDER can name; or,
+where no activation can be planned, check the read's observed writer at the read instead of holding (as checked orders,
+item 3) -- observed, not enforced.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
