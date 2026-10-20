@@ -752,28 +752,44 @@ alternative writer and the observed one, with W2 in a NONE turn directly under c
 R2 of the same stance, and F4(R1, R2), is not concurrent with X (`Arms#eligible`'s check of the writes between), so the
 earlier writer is not eligible. Built offline with `repliedBefore` as F4 (not merged, lead 2026-10-20: a completeness risk
 to no open case's benefit): NC7's corpus composes the fault claim first (MARKER_FLIPPED on `REGION.ac7e6e0e..in.26120816`,
-NC12's confirmed root) in 114 s with 798 z3 runs. The sound F4 is a JOIN row (design below); build it if a case needs it
-(14 may, H1).
-- JOIN (design, not built): woven like `Continuations` (Soot, the classes woven for lineage) at three kinds of site. (i) A
-  call to `Future#get()`, `Future#get(long, TimeUnit)` or `CompletableFuture#join()` that returns: a schedule row `JOIN`
-  {context, site, completer, completerSeq} on the waiter. For HBase every synchronous Admin and Table call goes through
-  `FutureUtils#get`, which is woven, so one site covers the test thread. (ii) A call to `CompletableFuture#complete` or
-  `#completeExceptionally` that returns true: the future's identity (`RuntimeObjectIdentity`) maps to the completing
-  activation, its claim key under claimed work, and the schedule seq. This is in memory only, no row. (iii) A dependent
-  future that a carried continuation's registration returns (`CausynthPipeline#carryContinuations`) is completed by that
-  continuation's claim when it ends (`Continuations#claimed`). A `thenCompose` dependent, or a future completed in code
-  that is not woven, has no completer: its JOIN names none and gives no fact (sound, no gain). HBase's
-  `AsyncMasterRequestRpcRetryingCaller#lambda$doCall$5`, which completes the caller's future, is not woven today, so the
-  weaving set must take every client class with a `complete*` call site.
-  F4 then reads: R1's reply reader, through claims, reaches the completer; then the JOIN on the waiter; then the waiter's
-  later registrations, which carry its stance; then SEND R2.
-  JOIN is an observation, never an event to replay: `SchedulePrefix`, CONFIRM holds and REPRODUCE must skip it, or a
-  prefix waits on a consequence.
-  Cost: one JOIN per blocking get in woven code. That is about the number of synchronous client calls: 22 about 75
-  (36 single, 32 master and 7 batch doCall claims, against 4319 schedule rows), nsrg about 21 (867 rows), 10 about 76
-  (32743 rows), under 2 %. Estimate: about one day of code (contract kind and codec, weave, runtime, Corpus facts,
-  Arms, prefix and plant exclusion, tests, docs). The proof also needs a fresh seed, because only new recordings carry
-  JOIN rows (1-2 h of runs per case).
+NC12's confirmed root) in 114 s with 798 z3 runs. The sound F4 needs new records (design below). PARKED (lead,
+2026-10-20): 2-3 days of identity/schedule work for two study cases whose results already stand as named bounds (hbase-adhoc-08
+NC14-08 and hbase-adhoc-14: every claim up to `campaign_max_claims` refuted by the client's program order) fails the owner's
+workaround-over-grinding rule. Build it when a case's verdict depends on it.
+- The chains it must state. nsrg runs: R1's handler turn, then its RESPONSE, then the reply reader (`Anchor:r1`, netty),
+  where `RawAsyncHBaseAdmin`'s `RpcCallback` completes the RPC future G. Then `AsyncMasterRequestRpcRetryingCaller`'s
+  `whenComplete` continuation C, registered on G, completes the caller's future F, and the test thread's
+  `FutureUtils#get(F)` returns. The test thread then registers `doCall@k+1`, which sends R2, under which the read X runs.
+  14's merge is an in-JVM submit after the synchronous createTable returned: a START, not a SEND, so the fact must order
+  the waiter's later events, not only its sends.
+  Every hop "a future completed, so its continuation ran" is itself a completion edge. A row that names only F's completer
+  does not reach R1.
+- Records. Positions are VM event ids, the space of the rows' `seq` and the schedule's `vmEvent`.
+  (a) COMPLETE, in memory only: woven before `CompletableFuture#complete` / `#completeExceptionally` (when the future is
+  not done), and at the end of a carried continuation's claim for the dependent future its registration returned. It maps
+  the future (`RuntimeObjectIdentity`) to its completer {occurrence, activation or claim key, event id}. A `thenCompose`
+  dependent, or a completion in code that is not woven, has none: no fact (sound, no gain).
+  (b) A schedule row `JOIN`, woven after `Future#get()`, `#get(long, TimeUnit)` or `CompletableFuture#join()` returns:
+  {waiter context, occurrence, event id; after = the future's completer}. For HBase every synchronous Admin and Table call
+  goes through the woven `FutureUtils#get`.
+  (c) CLAIM rows gain `after`. For a continuation it holds the completer of the future it was registered on
+  (`CausynthPipeline#carryContinuations` passes the call's receiver). For any claim it holds its registration point
+  {registrant occurrence, event id}, because continuation registrations write no START row today.
+  `LineageScan` keeps every class with a `complete*`, `get` or `join` call (`AsyncMasterRequestRpcRetryingCaller`, which
+  completes the caller's future, is not woven today).
+  JOIN is observation-only: it is written without `admit` or holds, and `SchedulePrefix`, `ScheduleLog`'s order load and
+  REPRODUCE skip it. The new CLAIM field is ignored by enforcement.
+- One helper, contract `HappensBefore`, built from a session's schedule, activations and rows, absorbs
+  `ClientProgramOrder`. Its nodes are (occurrence, event id). Its edges: program order inside one activation; F2, SEND(e)
+  to the turn `Anchor(e)`; F3, a NONE handler turn's events to its RESPONSE and then to the reply reader; completer to
+  CLAIM `after` and to JOIN; registration to claim. hb(W2, X) holds when W2 reaches X's past. `Arms#eligible`'s check of
+  the writes between and `ConfirmMain#implied` (REPRODUCE, H4) both read it.
+- Cost and proof. One JOIN per blocking get in woven code, about the number of synchronous client calls: 22 about 75 (of
+  4319 schedule rows), nsrg about 21 (of 867), 10 about 76 (of 32743), under 2 %. Estimate: 2-3 days of code (contract
+  kind, field and codec; weave; runtime; HappensBefore; Arms and ConfirmMain; prefix, order-load and plant exclusion;
+  tests; docs), H3's review (identity and schedule). Then SEED-only runs of 08 and 14 to show the JOIN and CLAIM `after`
+  rows, and a fresh SEED and EXPLORE of nsrg, since only new recordings carry them. Then re-COMPOSE offline on the three
+  corpora: their refuted program-order models gone, NC12's fault claim kept.
 
 **16. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
 (`campaign_stream_admit_host`) that no host admits only logs "waiting for room" and retries; nothing reserves room for
