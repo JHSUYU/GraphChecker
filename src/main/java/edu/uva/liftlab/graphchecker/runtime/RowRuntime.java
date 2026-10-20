@@ -1032,6 +1032,10 @@ public final class RowRuntime {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
                     mismatch.substring(0, mismatch.indexOf(':')), mismatch);
         }
+        for (String observed : Confirmation.observed()) {
+            gap(GapKind.ORDER_OBSERVED, GapClass.DIAGNOSTIC,
+                    observed.substring(0, observed.indexOf(':')), observed);
+        }
         String unreached = FocusedReplay.forcing() ? ForcedArms.unreached()
                 : "";
         if (!unreached.isEmpty()) FocusedReplay.decideForced(unreached);
