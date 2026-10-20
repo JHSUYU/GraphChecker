@@ -206,8 +206,12 @@ the engine does not see) moved the guard's read from `HMaster.masterActiveTime` 
 include master0's activation, so PLAN no longer demanded that occurrence as a static candidate writer, it stayed
 doors-only in every generation, and the old master's active time reached the guard only as other sessions' constants
 (NZ3-mat: no session minted any master0 activation clock). The replacement keeps the guard on the field and blocks the
-impossible INITIAL pairing with an explicit initializer. Before rerunning, check that the guard reads the same location
-and that PLAN still unpauses the writers the chain needs (`growth.jsonl` `DOORS_ONLY_UNPAUSED`).
+impossible INITIAL pairing with a holder read beside the field. Before rerunning, check that the guard reads the same
+location and that PLAN still unpauses the writers the chain needs (`growth.jsonl` `DOORS_ONLY_UNPAUSED`). And an
+initializer cannot block a pairing: the engine's INITIAL version of a field is its value after `<init>` (the row sits at
+the constructing call, e.g. `GeneratedMethodAccessor#invoke:INITIAL`, its expression that value -- NZ3-mat's holder
+INITIAL was `Long.MAX_VALUE`, NZ4-mat's `masterActiveTime = 0` INITIAL was 0), so only the INITIAL value decides what a
+re-pairing to it can reach.
 
 **Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
 startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no
