@@ -9,6 +9,9 @@ case "${window}" in
 esac
 read -r -a scope <<<"${classes}"
 case "$1" in
-  34) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
+  34)
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1
+    client_fault_transports+=(ZOOKEEPER)
+    ;;
   *) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
 esac
