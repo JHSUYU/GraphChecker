@@ -904,7 +904,17 @@ are counted, never dropped silently: `concreteAnchors` states how many
   asynchronous one on its event loop, whose callbacks send the next request of the chain
   (HBase's `RpcConnection#finishCall`; Solr's `Http2SolrClient` listener;
   hbase-bugs-backup-lock-reply-lost: the lock's checkAndMutate goes out of the reply to its location
-  lookup, and its own reply's door is the bug's fault). A control producer contributes no
+  lookup, and its own reply's door is the bug's fault). Its own turn's earlier doors too: every
+  occurrence standing where it stands (its node and causal context: the turn the message that
+  started it began) that ran before it -- PLAN by the recording's root calls (an occurrence's first
+  before the demanded one's last), EXPLORE by the rows of the first session that ran both
+  (`Corpus#doorsOf`'s `earlier`) -- and decided a fault (`CONTROL_PRODUCER`): a fault there can end
+  the turn before it (hbase-bugs-ns-rsgroup-removal: the master's hbase:meta Mutate in
+  CREATE_NAMESPACE_INSERT_INTO_NS_TABLE precedes `TableNamespaceManager#cached`, the writer of the
+  count the removal reads, in the same procedure turn). This only widens what is offered -- no
+  recorded order removes a candidate --: the own turn's occurrences after it (or that ran in no
+  session beside it) stay cut, as before, and both counts are DIAGNOSTIC `ADMISSION_GAP` rows
+  ("earlier in turn", "own turn"). A control producer contributes no
   value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
   six hops of request and queue-item doors behind the store writers' items doubled the plan).
   One door is a value: the SENDER of a message that started the writer of a store version a demand
