@@ -85,6 +85,10 @@ cost us time at least once; the date or the case it came from is named so it can
   can stay cached "absent" for 30-60 s. So create files before any reader starts, open instead of stat
   (close-to-open consistency), and use an append-only journal instead of a directory listing for state other
   hosts must see (withdrawn.txt for GROW swaps). A file protocol between hosts is too slow: use TCP.
+- A rename-over replace gives a remote reader holding the old file ESTALE: readers re-open. (NR10-11, 2026-10-20: the
+  head replaced two `obligation_result.jsonl` files with DUPLICATE_WORLD verdicts, `cat > .part; mv -f`, while the
+  planner on another lift was reading them, and the planner died with "Stale file handle"; `RowCodec#reopened`, under
+  `readAll`, `readJsonl` and the question reads, now re-reads from a fresh open, at most 3 times.)
 - D-state processes are NFS hangs: look at every check-in. Moving many files serially is slow (a GROW swap was
   ~9.6 s): batch them.
 - Home quota 100 GB: bulky data on /bigtemp/vnr3ne, per-lift scratch on /localtmp/vnr3ne. Delete heap dumps
