@@ -621,10 +621,12 @@ before `retrievePassword` (the key's watch event not yet processed), so refreshK
 occurrence and one READ fault reaches :160 at depth 0. Engine option: a provenance site on a container field takes the
 versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
 
-**7. hbase-adhoc-10's cost.** R17-10: 241 of 281 NOT_ADMITTED are one `FlipQuery#build` refusal ("this query declares no
-variable of its own, and its occurrence read values no row of the corpus wrote") at procedure-framework decisions --
-seconds each on the worker, no replay; PLAN could refuse them up front with the same predicate (saves ~240 short jobs).
-The cost was 210 REQUEST-fault replays (~10 min each), now 140 behind the guard's own flips (8da6eb24d). If 10 still
+**7. hbase-adhoc-10's cost.** R17-10: 244 of 281 NOT_ADMITTED are one `FlipQuery#build` refusal ("this query declares no
+variable of its own, and its occurrence read values no row of the corpus wrote") at 29 procedure-framework sites. Measured
+(H5, 2026-10-20, each obligation dir's host.txt to its result): 459 s of solver time in all (median 1.5 s, at most 36 s),
+answered on the hosts' served solvers beside other questions, no replay -- against 111,500 s of ADMITTED replays (36,
+median 3,957 s) and 8,995 s of NOT_ADMITTED ones. Refusing them in PLAN would put a query build per candidate on the
+planner's serial path to save parallel seconds: not done. The cost was 210 REQUEST-fault replays (~10 min each), now 140 behind the guard's own flips (8da6eb24d). If 10 still
 does not converge, measure which client calls' faults reach the guard's cone at all before asking them.
 
 

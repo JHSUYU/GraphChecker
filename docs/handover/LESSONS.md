@@ -212,8 +212,8 @@ cells) are vacuous until a workaround gives them a value the engine tracks (nsrg
 enclosing region's occurrence. Check the seed's observed occurrences before a long run.
 
 **Fault kinds multiply replays.** 10 queued 210 `HBASE_RPC` REQUEST faults (70 client calls x IOException,
-ConnectionClosedException, CallQueueTooBigException), ~10 min of replay each; that, not the 241 refused arms (seconds
-each, decided on the worker), was why it did not converge. Compare a fault kind to the run with NO fault: CQTBE is
+ConnectionClosedException, CallQueueTooBigException), ~10 min of replay each; that, not the 244 refused arms (459 s of
+solver time in all, decided on the worker), was why it did not converge. Compare a fault kind to the run with NO fault: CQTBE is
 rejected before it runs and retried on the same cached location = the recording plus time (cut, H3); a
 ConnectionClosedException clears the master stub cache and the registry's endpoints (kept).
 
