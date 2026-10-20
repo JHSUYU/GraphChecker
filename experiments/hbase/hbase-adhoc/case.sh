@@ -8,4 +8,7 @@ case "${window}" in
   *) echo "check $1: unknown window '${window}' (up: once the cluster is up; startup: before its HBase cluster starts)" >&2; return 2 ;;
 esac
 read -r -a scope <<<"${classes}"
-export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+case "$1" in
+  34) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
+  *) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
+esac
