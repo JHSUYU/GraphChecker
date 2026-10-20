@@ -561,7 +561,18 @@ lock), hand the next step off again from the empty step's own hand-off context i
   the event loop that writes the call after the connection's queue only copies its header (IDENTITY §7.1). A declared
   `WIRE_FLOW` row's export stays on its thread's envelope; HBase declares none.
 
-**2. HBase #14 (master-active-time) to a confirmed CLOCK witness.**
+**2. HBase #14 (master-active-time) to a confirmed CLOCK witness.** Two engine challenges found on the way (H2,
+HZ13-mat, 2026-10-19), each standing behind a workaround or open:
+- A clock planted in a retried occurrence is exported with no root mint row. `RootMint` planted
+  `OpenRegionRequest.MasterSystemTime`'s reading (`DefaultEnvironmentEdge#currentTime`) as a symbolic `Long` box in
+  the dispatch region's retried occurrences (`TimeoutExecutorThread#run#u27` -> `ExecuteProceduresRemoteCall#run`, a
+  forced RPC fault's retry), the export cites it (session `1d963972f9596c7c-d98683ce`: expressions node 3301, export
+  seq 2650), but the session's roots name no such symbol, so COMPOSE refused every arm resting on it as
+  `UNSTATED_VALUE` and the seed path with them. Workaround: STATUS "tree: master-active-time's dispatch export" (no
+  master system time in automatic mode). The fix publishes a planted clock's mint row wherever its box is exported.
+- CONFIRM compares a WIRE leaf a clock carries with the text the model's session recorded (refuted HZ13-mat 0000 and
+  0002: `2efac300f9e6d4d6` model "1792454828365", run "1792455517516"), while the replay's clocks are not the
+  recording's. Open: such a leaf should be held to the model's clock value (planted) or compared by its expression.
 
 **3. Mark the 17 checked study points** (`docs/checks/HBASE.md`):
 
