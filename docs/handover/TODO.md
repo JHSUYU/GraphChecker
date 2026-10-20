@@ -632,7 +632,8 @@ NoNode `getData` or a null `exists` is a STORE read of it where one is filed (ID
 store-read pairing flip -- a STORE read is offered each later tombstone of its location, held at its READ turn until
 the tombstone is written (`STORE_HOLD`, PIPELINE §7.4/§7.6); (c) narrow -- HBase's procedure member names its callback
 by the barrier create it listed (`MessageDoors#childrenFetched`, STATUS "Per-system surface", "hbase-adhoc-24's
-procedure member anchor"), so hbase-adhoc-24's barrier read is a STORE read of the target occurrence. What remains:
+procedure member anchor"), so hbase-adhoc-24's barrier read is a STORE read of the target occurrence. hbase-adhoc-24: SAT,
+confirmed in the VM (X105-24, HBASE.md §E). What remains:
 - INITIAL absence (a NoNode read before any create in the window: needs an INITIAL row for STORE locations) and the
   ephemerals of a closed or expired session (the in-process server's list at the expirer and the client's close): a
   NoNode read no filed tombstone names is no row, as before.
