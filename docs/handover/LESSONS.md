@@ -201,6 +201,13 @@ that does not move is its writer's name, and a fatal arm the recording did not t
 **A workaround can remove what another fix needs.** Removing `masterSystemTime` from OpenRegionRequest (a clock
 export with no mint row) also removed master0's only clock readings from the seed, which left T0 unplaced (H2).
 After a workaround, rerun the cases it touches and look for new `DECLARATION_MISSING` / unplaced gaps.
+It happened a second time on #11 (2026-10-20): a holder field published with `serviceStarted` (to state a happens-before
+the engine does not see) moved the guard's read from `HMaster.masterActiveTime` to a field whose static writers did not
+include master0's activation, so PLAN no longer demanded that occurrence as a static candidate writer, it stayed
+doors-only in every generation, and the old master's active time reached the guard only as other sessions' constants
+(NZ3-mat: no session minted any master0 activation clock). The replacement keeps the guard on the field and blocks the
+impossible INITIAL pairing with an explicit initializer. Before rerunning, check that the guard reads the same location
+and that PLAN still unpauses the writers the chain needs (`growth.jsonl` `DOORS_ONLY_UNPAUSED`).
 
 **Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
 startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no

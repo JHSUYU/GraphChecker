@@ -665,6 +665,9 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
 (`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
 
 **11. Smaller HBase items.**
+- Two region servers' ZooKeeper event threads ran under `workload/unregistered ... Lost:UNKNOWN` in hbase-adhoc-24's NZ3-24
+  (LINEAGE_LOST 56 named rows; their getData rows stand on no node): a ZooKeeper event thread of a server started before
+  its registration is no node's; check `CausynthNodes` registration of `ZKWatcher` event threads if a case needs them.
 - A procedure step that only met a busy entity lock (`LOCK_EVENT_WAIT`) or yielded is a step too, so where two
   procedures contend the later steps' occurrences can be renumbered between runs; if a case shows it, hand the next step
   off from the empty step's own hand-off context. Shown natively by hbase-adhoc-04 (owner ruling: 7/10 is a PASS, not
@@ -799,7 +802,7 @@ satisfiable (polarity undecided, so the CLOCK_SKEW claim was never named) and ev
 same pairing became its own FORMULA_SAT claim (claims 0 and 1: `writer_arm` INITIAL|INSTANCE/<obj>#664, refused in the
 replay by `ServerNotRunningYetException` and by ORDER `ad500b7c5e0bdd13`), ~25 min each (DECIDE 1191 s over a 187 MB
 formula, 424 paths), because the claim loop excludes only the selected path's arms. Worked around in the tree (STATUS
-"tree: master-active-time's served active time"). The engine fix: a read that follows, on its thread, a read of a
+"tree: master-active-time's active time written at construction"). The engine fix: a read that follows, on its thread, a read of a
 volatile that saw write W excludes every version its location had before the last write that precedes W on W's thread
 (the JMM's synchronizes-with); or exclude a refuted pairing by its reader site and slot across paths. Also from NZ2-mat
 (H5's probe, `analysis/hbase-2026-10-20/reask/probe-mat/`): 301 message arms bound the hand-off leaf (the initiating
