@@ -1804,7 +1804,7 @@ NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: 
 then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
 first first -- a confirmation or GROW re-run queued at the front, a solve or a REPLAY ahead of every queued REPLAY,
 except the REPLAY of a fault flip (its solver's focus row states `faultFlip`: the flipped decision reaches a `FAULT`
-root, `Corpus#fault`), which waits behind every other entry, so a door fault at each of many client calls queues
+root, `Corpus#fault`; a pairing flip flips no decision and is never one), which waits behind every other entry, so a door fault at each of many client calls queues
 behind the flips of the target's own guards (`campaign_stream_enqueue`; hbase-adhoc-10's R17-10 queued 210 of its 233
 REPLAYs as client door faults ahead of them); nothing is dropped, and the wait bound still starts the entry waiting
 longest -- while the exploration runs fewer than its share of a shared pool (below; a REPLAY

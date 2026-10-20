@@ -485,7 +485,8 @@ public final class ObligationSolverMain {
                 outcome.clockDeltas, outcome.rootMints, outcome.pairings,
                 cut);
         if (outcome.openArm) focus.addProperty(FocusedReplay.OPEN_ARM, true);
-        if (corpus.fault(candidate.path.sessionId, candidate.decision)) {
+        if (!candidate.pairing()
+                && corpus.fault(candidate.path.sessionId, candidate.decision)) {
             focus.addProperty(FAULT_FLIP, true);
         }
         if (!candidate.forced) {
