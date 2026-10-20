@@ -2564,4 +2564,42 @@ fq_said=$(
   || fail "FAULT-QUEUE: a fault flip's replay waits behind every other entry, \
 the others in their old order; the queue was '${fq_said}'"
 
+dw_iteration=${test_tmp}/duplicate-world
+mkdir -p "${dw_iteration}/obligations-0003/OB.d" \
+  "${dw_iteration}/obligations-0002/OB.a" "${dw_iteration}/obligations-0002/OB.b" \
+  "${dw_iteration}/obligations-0002/OB.c"
+echo "flip:question" >"${dw_iteration}/obligations-0003/OB.d/question.asked"
+echo '{"obligationId":"OB.a","verdict":"NOT_ADMITTED","sessionId":""}' \
+  >"${dw_iteration}/obligations-0002/OB.a/obligation_result.jsonl"
+echo '{"obligationId":"OB.b","verdict":"ADMITTED","sessionId":"OB.b-s1"}' \
+  >"${dw_iteration}/obligations-0002/OB.b/obligation_result.jsonl"
+echo '{"obligationId":"OB.c","verdict":"NOT_ADMITTED","sessionId":"OB.c-s1"}' \
+  >"${dw_iteration}/obligations-0002/OB.c/obligation_result.jsonl"
+dw_said=$(
+  iteration_dir=${dw_iteration}
+  results=${dw_iteration}/results.jsonl
+  : >"${results}"
+  stream_dirty=0
+  stream_duplicates=()
+  declare -A stream_flying=() stream_worlds=([w1]=OB.a [w2]=OB.b [w3]=OB.c) \
+    stream_world_of=([OB.a]=w1 [OB.b]=w2 [OB.c]=w3)
+  campaign_log() { :; }
+  campaign_stream_duplicate "OBLIGATION obligations-0003 OB.d lift12 0" w1 \
+    OB.a
+  campaign_stream_land "REPLAY obligations-0002 OB.a lift12 0 -"
+  campaign_stream_land "REPLAY obligations-0002 OB.b lift12 0 -"
+  campaign_stream_land "REPLAY obligations-0002 OB.c lift12 0 -"
+  echo "worlds=${!stream_worlds[*]} duplicates=${stream_duplicates[*]}"
+  jq -r '.verdict' "${results}" | paste -sd' '
+)
+[[ "${dw_said}" == $'worlds=w2 duplicates=OB.d:OB.a\nDUPLICATE_WORLD NOT_ADMITTED ADMITTED NOT_ADMITTED' ]] \
+  || fail "DUPLICATE-WORLD: a model of a world already replayed is settled \
+DUPLICATE_WORLD with no replay, and a replay that lands anything but ADMITTED \
+gives its world back; the head said '${dw_said}'"
+jq -e '.verdict == "DUPLICATE_WORLD" and (.detail | contains("obligation OB.a"))' \
+  "${dw_iteration}/obligations-0003/OB.d/obligation_result.jsonl" >/dev/null \
+  && [[ -s "${dw_iteration}/obligations-0003/OB.d/question.txt" ]] \
+  || fail "DUPLICATE-WORLD: the duplicate's row names the replay that answers \
+it and its question is answered"
+
 echo "run_engine campaign helper tests passed"

@@ -619,6 +619,9 @@ answered on the hosts' served solvers beside other questions, no replay -- again
 median 3,957 s) and 8,995 s of NOT_ADMITTED ones. Refusing them in PLAN would put a query build per candidate on the
 planner's serial path to save parallel seconds: not done. The cost was 210 REQUEST-fault replays (~10 min each), now 140 behind the guard's own flips (8da6eb24d). If 10 still
 does not converge, measure which client calls' faults reach the guard's cone at all before asking them.
+Since H5's DUPLICATE_WORLD (PIPELINE §7.3): the repetition behind NR1STOP-10's growth -- the anchor path's two re-runs
+in the seed's world re-ran all 70 client doors and each door fault was asked again from each re-run's path, 279 of the
+315 fault replays queued at the stop repeating a world already replayed -- is gone; rerun 10 on it.
 
 
 **8. A continuation chain re-registered per poll stands under the poll count.** A continuation now stands at its

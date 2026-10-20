@@ -1144,6 +1144,27 @@ both ways agreed; hbase-bugs-master-active-time's 92 asks of depth 0 were 92 tex
 for a replay, so what the store saves is z3 time: whether a re-ask is dispatched at all is the ledger's (its
 dependence, above), and a SAT re-ask in another world is a pair world, whose replay depth > 0 asks for.
 
+A WORLD IS REPLAYED ONCE (`DUPLICATE_WORLD`). A SAT model's focus row states its world, `world`: the whole-world
+digest `ObligationFactory#wholeWorldDigest` of what the replay plants and is asked -- the root assignments (each
+planted at the seed's mint of its root, a function of the root), clock deltas, answered handoffs, planted pairings,
+the inherited flips and the flip itself (its focused occurrence, site, ordinal and arm), `ExploreCodec#readWorld`
+over the row (`ObligationSolverMain`; a FORCE and a path re-run carry none: a FORCE forces an arm, a re-run replays
+its path's world as more instrumentation asks). The head keeps the worlds it queued (`run_engine.sh`
+`stream_worlds`): a SAT whose world a queued, running or landed replay already plants is not replayed; its result
+is `DUPLICATE_WORLD`, naming that obligation (`campaign_stream_duplicate`; `exploration.json` `duplicateWorlds`,
+`<obligation>:<the one replaying its world>`), an answered arm (`ObligationResult#settlesArm`) whose question is
+answered too, and that replay's session is its answer. A replay that lands anything but ADMITTED (bounded,
+refused, a path withdrawn, or run and not taking the arm, which the frontier asks again by its own rule, §7.3)
+gives its world back, so the next ask of it replays: offline over NR1STOP-10, NP6-15, NC7-nsrg and NC5-22, no
+world an ADMITTED replay reached is lost (NP6-15 976 replays -> 224, NC7-nsrg 192 -> 38, NR1STOP-10's 466 models
+-> 188 replays). Sound in two parts: a replay is what it plants, and
+the path a model was asked from sets only the schedule prefix the replay is held to, which is timing, no
+counterfactual dimension (the owner's rule: worlds are planted values, never interleavings); and what the
+instrumentation planned since the first replay adds is the closure's, which re-runs that session as for any
+session (GROW, §7.8). hbase-adhoc-10 NR1STOP-10: the anchor path's two re-runs in the seed's world re-ran every
+one of the 70 client doors, so each door fault was asked again from each re-run's path (412 asks, 140 worlds);
+445 SAT models were 157 worlds, and 279 of the 315 fault replays queued at the stop repeated one.
+
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
 Paths of the task's occurrence, smallest world first, cut only from sessions that may parent an

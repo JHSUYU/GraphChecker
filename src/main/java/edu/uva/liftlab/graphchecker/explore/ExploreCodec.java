@@ -67,6 +67,7 @@ public final class ExploreCodec {
 
     static final String FORCE = "force";
     static final String RERUN = "rerun";
+    static final String WORLD = "world";
 
     public static Obligation readObligation(JsonObject json) {
         if (optionalBool(json, FORCE, false)) {
