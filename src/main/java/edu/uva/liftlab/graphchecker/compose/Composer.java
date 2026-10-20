@@ -685,6 +685,18 @@ public final class Composer {
                     Collections.<String>emptyList());
         }
 
+        public Map<String, String> inCone(String selector,
+                                          Map<String, String> model) {
+            Set<String> cone = cone(selector);
+            Map<String, String> kept = new LinkedHashMap<String, String>(model);
+            for (RootMintRow root : declaredRoots.values()) {
+                if (!named(cone, root.symbol())) {
+                    kept.remove(SmtNames.legalSymbols(root.symbol()));
+                }
+            }
+            return kept;
+        }
+
         public Valuation modelValuation(int ordinal,
                                         Map<String, String> model) {
             Map<String, String> assignment =

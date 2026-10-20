@@ -212,10 +212,8 @@ public final class ClaimPolicy {
             }
         }
         if (witness == null && free.witness()) {
-            Outcome modelled = new Outcome(composition.modelValuation(
-                    outcomes.size(), formula.values()),
-                    Collections.<String>emptyList(), formula,
-                    free.selected(), free.selectedArms());
+            Outcome modelled = inCone(composition, asks, outcomes.size(),
+                    free);
             if (plantable(composition, modelled, unplantable)) {
                 outcomes.add(modelled);
                 witness = modelled;
@@ -247,6 +245,22 @@ public final class ClaimPolicy {
                 refined.valuation().ordinal(),
                 movedRoots(composition, refined), claim.polarityDecides(),
                 gaps), outcomes, formula);
+    }
+
+    private static Outcome inCone(Composer.Composition composition,
+                                  Disjunction asks, int ordinal,
+                                  Outcome free) {
+        Map<String, String> model = free.answer().values();
+        Outcome full = new Outcome(composition.modelValuation(ordinal, model),
+                Collections.<String>emptyList(), free.answer(),
+                free.selected(), free.selectedArms());
+        Composer.Valuation least = composition.modelValuation(ordinal,
+                composition.inCone(free.selected().selector(), model));
+        if (least.moved().equals(full.valuation().moved())) return full;
+        Outcome asked = outcome(composition, asks, least,
+                Collections.<String>emptyList(), false, free,
+                REFINE_BUDGET_MS);
+        return asked.witness() ? asked : full;
     }
 
     private static boolean asRecorded(Composer.Composition composition,

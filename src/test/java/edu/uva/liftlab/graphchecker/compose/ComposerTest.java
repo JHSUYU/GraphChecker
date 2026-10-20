@@ -1160,6 +1160,11 @@ public class ComposerTest {
             session.target(reachable ? "(and M_ONE M_TWO M_THREE)"
                     : "(and M_ONE M_TWO M_THREE (not M_ONE))", false, true);
             session.write();
+            Session other = new Session(iteration, "s1", true);
+            other.serial("7", "-600000", "600000");
+            other.target("(and (< " + SERIAL + " 0) (not (< " + SERIAL
+                    + " 0)))", false, true);
+            other.write();
             Composer.Composition composition = compose(iteration, 8);
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
@@ -1182,8 +1187,12 @@ public class ComposerTest {
             assertEquals(reachable ? ClaimKind.FORMULA_SAT
                     : ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
             if (reachable) {
-                assertEquals("all three moved", 3,
-                        decision.claim().movedRoots().size());
+                assertEquals("all three moved, and the root the path never "
+                                + "names stays where the run left it: "
+                                + decision.claim().movedRoots(),
+                        new LinkedHashSet<String>(Arrays.asList("ROOT.M_ONE",
+                                "ROOT.M_TWO", "ROOT.M_THREE")),
+                        decision.claim().movedRoots().keySet());
             }
             assertFalse(decision.claim().blocked());
         }

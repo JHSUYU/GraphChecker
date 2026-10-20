@@ -3519,7 +3519,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      valuation. Unsat: `NO_SUPPORTED_WITNESS` (UNSAT_CLOSED). Undecided within the budget: BLOCKING
      (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
      plant, else at the formula's own model (`Composition#modelValuation`: each declared root at the
-     model's value), refined as a named claim is (`leastClocks`, `withMargin`), composer
+     model's value; a root outside the selected path's cone, `Composition#cone`, at its recorded
+     value wherever the path, asked again so, still reaches the fatal, `ClaimPolicy#inCone`,
+     `Composition#inCone`: hbase-bugs-master-active-time NZ10-mat's model moved a skew root and 30
+     fault markers its path never names, and CONFIRM refused the skew root, minted nowhere it
+     looked), refined as a named claim is (`leastClocks`, `withMargin`), composer
      imprecision until CONFIRM says otherwise, planted and judged like any claim, a refutation
      excluded before the claim is decided again; an enumerated witness that is
      the run as recorded (the seed's path, no root moved, no clock jumped, no arm re-paired) is
