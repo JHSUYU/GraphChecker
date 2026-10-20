@@ -3644,9 +3644,11 @@ with it is a `RUN_DEFECT`.
   hold realizes is held as before; a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
   on a `SynchronousQueue`: Solr's Overseer command Runners) holds nothing of its executor's queue
   behind it and is held where it runs, unless the session's manifest names it in `servingTasks`
-  (it took work another thread started on its thread, any queue item no named start filed among
-  it: a ConcurrentUpdate client's Runner polling
-  its update queue). Held in place, such a task holds what it holds at the hold: an Overseer
+  (it took work another thread started on its thread, or work of an unknown or ended starter, any
+  queue item no named start filed among it: a ConcurrentUpdate client's Runner polling
+  its update queue; never for work it filed and claims itself, an inline continuation of its own:
+  `Identity.State#openStart`, so an HBase procedure step is held on its worker, hbase-adhoc-22's
+  deletion's release among them). Held in place, such a task holds what it holds at the hold: an Overseer
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other
