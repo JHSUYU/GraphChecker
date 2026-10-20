@@ -732,7 +732,7 @@ claim finishes another order's earlier end before the event (a cycle of entry ho
 its event. NC10-22 (hb-int-5) is the first live run of the entry hold. First runs on the fix: check
 `servingTasks` holds no step start and that no ORDER on a step times out.
 
-**13. COMPOSE orders a client thread's synchronous call past its own later event** (hbase-bugs-ns-rsgroup-removal
+**15. COMPOSE orders a client thread's synchronous call past its own later event** (hbase-bugs-ns-rsgroup-removal
 NC7-nsrg, `gc-out/hbase-checks/accept-NC7-nsrg/out/hbase-bugs-ns-rsgroup-removal/schedule/witness-confirm/000*` and
 `final/refuted/000*`). The STATE_PAIRING claims composed there hold the writes of the test thread's synchronous
 `moveServers`/`addRSGroup` calls (`RSGroupInfoManagerImpl#flushConfig > resetRSGroupMap > RSGroupInfoHolder.<init>`) until
@@ -741,7 +741,7 @@ after those calls returned (program order of one thread). CONFIRM refutes each a
 minutes a claim; 4 witness attempts and the final claims of NC7). A model fix states the client thread's program order
 between its synchronous calls (an ORDER no world can reverse is no arm), so such re-pairings are never composed.
 
-**15. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
+**16. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
 (`campaign_stream_admit_host`) that no host admits only logs "waiting for room" and retries; nothing reserves room for
 it, so while the shared pool is busy every smaller start of every run is admitted ahead of it, and a large one may never
 fit. Measured on hbase-adhoc-15 NP6-15 (`gc-out/hbase-platform/accept-NP6STOP-15-starved`, hb-int-2, five agents'
