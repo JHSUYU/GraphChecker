@@ -3272,11 +3272,11 @@ public final class Composer {
                     "(not " + VmTermLowering.and(conjuncts) + ")");
             refutationNames.put(name, model);
             gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
-                    "CONFIRM refuted the model on this path with arms "
+                    "an earlier claim's model on this path, with arms "
                             + model.arms + " at " + model.assignment
                             + (model.moved.isEmpty() ? ""
                             : " moving " + model.moved)
-                            + ", so it is excluded: " + model.reason);
+                            + ", is excluded: " + model.reason);
         }
     }
 

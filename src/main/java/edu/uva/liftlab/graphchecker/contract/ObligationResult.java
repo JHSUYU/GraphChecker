@@ -62,6 +62,7 @@ public final class ObligationResult extends Value {
 
     public boolean settlesArm() {
         return verdict == Verdict.ADMITTED || verdict == Verdict.UNSAT
+                || verdict == Verdict.DUPLICATE_WORLD
                 || verdict == Verdict.NOT_ADMITTED && refutation == null
                 && (detail.startsWith(WORLD_RAN + ":")
                 || detail.startsWith(ARM_REFUSED + ":"));

@@ -588,6 +588,7 @@ public final class ExploreMain {
                 if (atArm != null) refusals.add(atArm);
                 for (ObligationResult answer : answers.getOrDefault(flip,
                         Collections.<ObligationResult>emptyList())) {
+                    if (answer.verdict() == Verdict.DUPLICATE_WORLD) continue;
                     if (answer.verdict() == Verdict.ADMITTED) return "TAKEN";
                     if (answer.armRefusal() != null) {
                         refusals.add(answer.armRefusal());

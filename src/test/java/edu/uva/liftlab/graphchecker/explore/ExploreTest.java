@@ -1210,9 +1210,13 @@ public class ExploreTest {
             assertEquals(name, asked.smt2, again.smt2);
             assertEquals(name, asked.settles, again.settles);
             Files.delete(kept);
+            Path silent = tree.newFile(name + "-silent-z3").toPath();
+            Files.write(silent, "#!/bin/sh\nexec sleep 60\n"
+                    .getBytes(StandardCharsets.UTF_8));
+            assertTrue(silent.toFile().setExecutable(true));
             ObligationFactory.Outcome timedOut = corpus.asking(() ->
                     ObligationFactory.solve(corpus, candidate, new Z3(
-                            Paths.get("z3"), 1L, 1152), solved, "plan C",
+                            silent, 300L, 1152), solved, "plan C",
                             none, null));
             assertTrue(name + ": " + timedOut.result.detail(),
                     timedOut.result.detail().startsWith("SOLVER_TIMEOUT"));
@@ -2766,4 +2770,37 @@ public class ExploreTest {
                                     null, clients));
         }
     }
+
+    @Test
+    public void aModelsWorldIsWhatItPlantsNotThePathItWasAskedFrom() {
+        String base = "{\"focusedOccurrenceId\":\"occ1\",\"obligationId\":"
+                + "\"OB.%s\",\"pathId\":\"%s\",\"pathSessionId\":\"%s\","
+                + "\"flip\":{\"siteId\":\"%s\",\"ordinal\":1,"
+                + "\"outcome\":true},\"inheritedFlips\":[],"
+                + "\"rootAssignments\":{\"%s\":\"true\"},\"clockDeltas\":{},"
+                + "\"answers\":{},\"pairings\":{},\"schedulePrefix\":"
+                + "{\"sessionId\":\"%s\",\"events\":%d}}";
+        String seed = String.format(base, "a", "p1", "seed", "a.C#u61",
+                "ROOT.door.IOE", "seed", 1612);
+        Object[][] table = {
+                {"asked from a re-run's path", String.format(base, "b", "p2",
+                        "rerun1", "a.C#u61", "ROOT.door.IOE", "rerun1", 2405),
+                        true},
+                {"another fault kind", String.format(base, "c", "p2",
+                        "rerun1", "a.C#u66", "ROOT.door.CCE", "rerun1", 2405),
+                        false},
+                {"the same root at another decision", String.format(base, "d",
+                        "p1", "seed", "a.C#u70", "ROOT.door.IOE", "seed",
+                        1612), false},
+        };
+        String world = ObligationFactory.wholeWorldDigest(ExploreCodec.readWorld(
+                JsonParser.parseString(seed).getAsJsonObject()));
+        for (Object[] row : table) {
+            String other = ObligationFactory.wholeWorldDigest(
+                    ExploreCodec.readWorld(JsonParser.parseString(
+                            (String) row[1]).getAsJsonObject()));
+            assertEquals((String) row[0], row[2], world.equals(other));
+        }
+    }
+
 }

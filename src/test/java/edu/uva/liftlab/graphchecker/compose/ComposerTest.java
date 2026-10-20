@@ -1017,6 +1017,39 @@ public class ComposerTest {
                         .get(SERIAL_ROOT)) > 5);
     }
 
+    @Test
+    public void anExploredSessionsOwnRunIsClaimedBeforeAFaultlessMechanism()
+            throws Exception {
+        String phi = "(or (> " + CLOCK + " 1000) " + MARKER + ")";
+        Object[][] table = {
+            {"an explored replay ran the fault and observed the fatal",
+                    true, ClaimKind.MARKER_FLIPPED, "true"},
+            {"no explored replay observed it: fewest faults first",
+                    false, ClaimKind.CLOCK_SKEW, null},
+        };
+        for (Object[] row : table) {
+            boolean witnessed = (Boolean) row[1];
+            Path iteration = folder.newFolder().toPath();
+            for (String id : witnessed ? new String[] {"s0", "s1"}
+                    : new String[] {"s0"}) {
+                boolean explored = id.equals("s1");
+                Session session = new Session(iteration, id, explored);
+                session.marker(explored ? "true" : "false");
+                session.clock("700");
+                session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
+                        + " 1000) (not (> " + CLOCK + " 1000)))",
+                        CLOCK_ROOT, 700L);
+                session.target(phi, explored, true);
+                session.write();
+            }
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                    compose(iteration, 8), solver());
+            assertEquals((String) row[0], row[2], decision.claim().kind());
+            assertEquals((String) row[0], row[3],
+                    decision.claim().movedRoots().get(MARKER_ROOT));
+        }
+    }
+
     private static long asked(Path log) throws IOException {
         return Files.readAllLines(log).size();
     }

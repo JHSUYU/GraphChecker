@@ -575,7 +575,7 @@ every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readi
   (`accept-HC13-22/.../final/refuted/000*`).
 - Then 10, 11, 12 (on >= 8da6eb24d: CallQueueTooBigException cut, fault replays queued last), 31 (new workload,
   selector `REGION.4a0683a9...#1`), 15 (tree set 9; read the NOT_ADMITTED first), 24 (seed replay once the chores are
-  off), 21 (workaround 23ff06c9ba), 34 (item 6), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
+  off), 21 (workaround 23ff06c9ba), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
   `STOP_AFTER=SEED`, to check the occurrence).
 
 **2. master-active-time's CONFIRM: two engine challenges** (H2, HZ13-mat; both stand behind workarounds or partial fixes):
@@ -610,14 +610,7 @@ to OPENING plus one FAULT marker) instead of FORMULA_SAT on the seed; H1 reruns 
 
 **5. Unmerged work.** `hbase-reask` 231264aad (WIP, not gated: item 4). Everything else of H1-H5 is in `system/hbase`.
 
-**6. hbase-adhoc-34: a READ-door fault on refreshKeys.** Vacuous in HZ14/15/18: rs0 holds key 1 from
-`ZKSecretWatcher.start` before the test, so `retrievePassword`'s first `allKeys.get` hits and `refreshKeys` never runs
-in the target occurrence; PLAN offers no READ-door fault because the provenance site (`allKeys` in
-`retrievePassword`) reads the manager, whose decode is not registered (`UNSTATED_VALUE` "this provenance site read a
-AuthenticationTokenSecretManager no decode registered"). Workload option (cheap): the test calls `other.removeKey(keyId)`
-before `retrievePassword` (the key's watch event not yet processed), so refreshKeys and its doors run in the target
-occurrence and one READ fault reaches :160 at depth 0. Engine option: a provenance site on a container field takes the
-versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
+**6. hbase-adhoc-34: done** (NZ3-34 PASS, 2026-10-20). Left open from it: a provenance site on a container field (`allKeys` in `retrievePassword`) still reads its receiver, the manager no decode registered; the fetch was asked through a declared read's receiver (f6e07b3c9). A guard that reads only a container's value, with no field read of the decoded value in its occurrence, would still cross to no fetch: then a container provenance site should take the versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
 
 **7. hbase-adhoc-10's cost.** R17-10: 244 of 281 NOT_ADMITTED are one `FlipQuery#build` refusal ("this query declares no
 variable of its own, and its occurrence read values no row of the corpus wrote") at 29 procedure-framework sites. Measured
@@ -626,6 +619,9 @@ answered on the hosts' served solvers beside other questions, no replay -- again
 median 3,957 s) and 8,995 s of NOT_ADMITTED ones. Refusing them in PLAN would put a query build per candidate on the
 planner's serial path to save parallel seconds: not done. The cost was 210 REQUEST-fault replays (~10 min each), now 140 behind the guard's own flips (8da6eb24d). If 10 still
 does not converge, measure which client calls' faults reach the guard's cone at all before asking them.
+Since H5's DUPLICATE_WORLD (PIPELINE §7.3): the repetition behind NR1STOP-10's growth -- the anchor path's two re-runs
+in the seed's world re-ran all 70 client doors and each door fault was asked again from each re-run's path, 279 of the
+315 fault replays queued at the stop repeating a world already replayed -- is gone; rerun 10 on it.
 
 
 **8. A continuation chain re-registered per poll stands under the poll count.** A continuation now stands at its
@@ -686,6 +682,79 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
 - Housekeeping: old snapshots (`/u/vnr3ne/gc-run/hb-*`) and tree sets (`/bigtemp/vnr3ne/wt/hb-*-trees-*`) listed in
   H1-H4.md (e) can go once nothing reads them; `system/hbase` is not pushed to GitHub (owner's OK needed); the fork's
   `graphchecker/hbase-checks` is pushed at 985a0dfe91.
+
+**12. Provenance through a construction-only container field of a copy-on-write object** (hbase-bugs-ns-rsgroup-removal
+NC3-nsrg, worked around in the tree 100878f553, STATUS "the H4 checks' stated guards"). `RSGroupInfoManagerImpl#getRSGroup`
+read `holder.groupName2Group.get(name)`: the guard's term names the MAP read of the holder's map, whose only static writer
+is `RSGroupInfoHolder`'s constructor storing into its own object (`ownObject`: only the guards choosing which
+construction runs, `flushConfig(Map)#u3`, SYMBOL-SCOPE §3), while the REFERENCE read of `holder` naming WHICH holder (and
+so which map) is in no term, so the store that hands the new holder on (`flushConfig(Map)#u30 holder = new ...`, guarded by
+`removeRSGroup#u52`, the namespace check) never offers its occurrences: the removal's static-candidate demand had flip
+sites `[flushConfig(Map)#u3]` only (offline planner over NC3's corpus), `#u52` was never a flip site in 127 rounds (NC1),
+the count read was never demanded and neither the namespace Mutate fault nor the race was asked. The general fix: a
+demanded read of a container reached through a construction-only field also demands the read of the reference that
+handed its owner on (`Provenance`, PROVENANCE sites), so the handing-on store's writers and guards join the closure.
+
+**13. A continuation's registration as its submitter (designed, parked: no current case needs it).** An order whose
+work's submitter chain (`Confirmation#submitter`) ends at a continuation claim names no send, so it is checked, never
+held (every master admin call is sent inside `AsyncMasterRequestRpcRetryingCaller#doCall`'s `FutureUtils#addListener`
+continuation). Design (H5, 2026-10-20): `Identity#startWork`, for a continuation carrier and when ordering, calls
+`Confirmation.entering` on the registration (the Start key the rows carry as `ActivationRow#threadKey` after `start:`,
+its context normalized as activations are), before the registering call, so the listener runs after the hold whether
+it would run inline or late; `ConfirmMain.StateClosure#held` holds there instead of checking, except where the
+registrant is an event loop or a reply leg, or the earlier end's own chain reaches a later registration of the same
+registrant (program order: the held thread would wait on work it has not issued) -- those stay checked. Measured
+(offline ConfirmMain plans of every refuted claim, `analysis/hbase-2026-10-20/reask/confirm/*.probe`): NC2-22's 30
+orders are all checked because of a client continuation, 22 match natural timing and 8 (one per claim: the deletion's
+release after the creation's count read, the bug's counterfactual) contradict it, and those 8 fall under the
+program-order exclusion (the test thread registers the delete, doCall@5, before the create, doCall@6), so the hold
+would confirm nothing there; HC14/HC15-nsrg: 85 orders, all held where they run, all in natural order. 22's real
+blocker is that its procedure steps are `servingTasks` (item 14).
+
+**14. Procedure steps marked serving by their own continuations (fixed on `hbase-reask`, not yet rerun).** Since tree
+1dda23ecc5 (steps are `HANDOFF_TASK`s) and engine 28ec6763b (a continuation's claim is never run-here, so always
+consumed), every step's own hbase:meta write -- `AsyncSingleRequestRpcRetryingCaller#doCall:108` /
+`AsyncRegionLocator#getRegionLocation:158` -> `FutureUtils#addListener:64` on a done future, its listener run inline on
+the PEWorker -- made `State#openStart` mark the step serving (NE3-22's seed replay, a debug snapshot of 8b4ae7a9f: all 5
+claim kinds that marked a step were same-thread continuations; no item claim did), so every ORDER on a step went to the
+client's send or was checked. Now only work another thread started (or an unknown or ended starter) marks a hand-off
+serving. Offline on NC5-22 `refuted/0000` with its session's step starts dropped from `servingTasks` as the rule now
+drops them (`analysis/hbase-2026-10-20/reask/confirm/nc5-22-0000-{orig,sim}`): its 3 ORDER rows go from check:true
+(through the client continuation) to held where they run, the deletion's release at the DeleteTableProcedure step.
+Seeds with step starts in `servingTasks` before the fix: 22 (27), 10 (48), 14 (54), 04 (12), mat (12), nsrg (3-4), 35
+(4), 28 (3), 34 (3); 04 keeps its PASS (confirmed under the old rule; the change only adds holds). A step so held is
+held at its claim's entry (`Confirmation#claim`, before `acquireLock` and `beforeExec`; PIPELINE §10 has the argument),
+since a TRSP step held at the last activation before its write would sit on its RegionStateNode lock, which the admin
+move/unassign's `preTransitCheck` (10/11/12's targets) and region state reports also take, and as NC9-22's release was
+held inside `synchronized NamespaceStateManager#removeTable` (the creation blocked on that monitor, 300 s timeout) --
+except where the earlier end runs inside the held claim (its `threadKey` the claim's or extending it: H3's review) or the
+claim finishes another order's earlier end before the event (a cycle of entry holds: NC9-22's final claim), held before
+its event. NC10-22 (hb-int-5) is the first live run of the entry hold. First runs on the fix: check
+`servingTasks` holds no step start and that no ORDER on a step times out.
+
+**15. COMPOSE orders a client thread's synchronous call past its own later event** (hbase-bugs-ns-rsgroup-removal
+NC7-nsrg, `gc-out/hbase-checks/accept-NC7-nsrg/out/hbase-bugs-ns-rsgroup-removal/schedule/witness-confirm/000*` and
+`final/refuted/000*`). The STATE_PAIRING claims composed there hold the writes of the test thread's synchronous
+`moveServers`/`addRSGroup` calls (`RSGroupInfoManagerImpl#flushConfig > resetRSGroupMap > RSGroupInfoHolder.<init>`) until
+the declared target occurrence (the later CreateTable's group check) exits, which the same client thread can only reach
+after those calls returned (program order of one thread). CONFIRM refutes each after the 300 s order timeout (about 10
+minutes a claim; 4 witness attempts and the final claims of NC7). A model fix states the client thread's program order
+between its synchronous calls (an ORDER no world can reverse is no arm), so such re-pairings are never composed.
+
+**16. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
+(`campaign_stream_admit_host`) that no host admits only logs "waiting for room" and retries; nothing reserves room for
+it, so while the shared pool is busy every smaller start of every run is admitted ahead of it, and a large one may never
+fit. Measured on hbase-adhoc-15 NP6-15 (`gc-out/hbase-platform/accept-NP6STOP-15-starved`, hb-int-2, five agents'
+runs on lift02-15): from about 02:28 to its stop at 03:00 (2026-10-20) it sat at EXPLORE round 175 (wave 10) with 133
+obligations and 0 in flight, each obligation solve charged 7917 MB after "its host's solver ended for memory before it
+answered; asked again of a host's solver" (the re-ask at twice its slot); every host refused it (e.g. lift10 26496 MB
+charged / 12156 MB in use, lift04 19584 MB charged + 15488 MB held for a head, against the 22109 MB limit, 70 % of
+31583 MB) while smaller replays of the other runs kept being admitted. The precedent is the head step's hold
+(`campaign_head_hold_room`: a waiting head step writes its need as a `heads/*.hold` on the host with the most room,
+which `campaign_host_head_room` subtracts from every other start there, so that host drains until the step fits; the
+hold goes when it is placed). Extend it to stream starts: a start that waited longer than a bound (minutes), or whose
+need exceeds what any host admits beside the charges standing, holds its need the same way on the host with the most
+room (one hold per run at a time, the largest waiting need), released when it is placed or the run ends.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

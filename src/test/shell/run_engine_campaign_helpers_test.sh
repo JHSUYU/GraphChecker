@@ -2288,6 +2288,69 @@ jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
     == '["m__4__a"]' ]] \
   || fail "a refuted model kept an arm of another path than the one it \
 selected, which no refutation of that path can compose"
+reset_config
+campaign_budget_s=100
+campaign_reserve_s=20
+reproduce_min_s=1
+campaign_started_s=${SECONDS}
+rm -rf -- "${campaign_final}"
+reproduced_claim() {
+  next_claim true refuted_claims
+  jq -n --argjson runs "$1" --argjson reproduced "$2" \
+    '{runs: $runs, reproduced: $reproduced}' >"${campaign_final}/reproduce.json"
+  mkdir -p "${campaign_final}/reproduce"
+}
+while IFS='|' read -r unrep_case unrep_runs unrep_reproduced unrep_next; do
+  rm -rf -- "${campaign_final}"
+  reproduced_claim "${unrep_runs}" "${unrep_reproduced}"
+  if [[ "${unrep_next}" == next ]]; then
+    unrep_out=$(campaign_unreproduced "${next_iteration}" 2>&1) \
+      || fail "UNREPRODUCED ${unrep_case}: no next claim: ${unrep_out}"
+    [[ -s "${campaign_final}/unreproduced/0000/reproduce.json" \
+        && -s "${campaign_final}/unreproduced/0000/claim.json" \
+        && ! -e "${campaign_final}/claim.json" ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim did not move aside"
+    [[ "$(jq -r 'select(.outcome == "unreproduced") | .model.pathId' \
+        "${next_iteration}/refuted_claims.jsonl")" == P ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim was not excluded"
+    [[ "${unrep_out}" == *"kept as the fallback verdict"* ]] \
+      || fail "UNREPRODUCED ${unrep_case}: not named: ${unrep_out}"
+  else
+    ! campaign_unreproduced "${next_iteration}" >/dev/null \
+      || fail "UNREPRODUCED ${unrep_case}: the loop went on"
+    [[ -s "${campaign_final}/claim.json" \
+        && ! -e "${campaign_final}/unreproduced" ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim left final/"
+  fi
+done <<'EOF'
+reproduced 0 of 10|10|0|next
+reproduced 3 of 10|10|3|stop
+no native run|0|0|stop
+EOF
+rm -rf -- "${campaign_final}"
+reproduced_claim 10 0
+campaign_unreproduced "${next_iteration}" >/dev/null \
+  || fail "FALLBACK: the first unreproduced claim did not go aside"
+next_claim false refuted_claims
+campaign_fallback >/dev/null
+[[ "$(jq -r '.stood' "${campaign_final}/fallback.json")" == true \
+    && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" == true \
+    && "$(jq -r '.reproduced' "${campaign_final}/reproduce.json")" == 0 \
+    && "$(jq -r '.confirmed' "${campaign_final}/superseded/confirm.json")" \
+      == false ]] \
+  || fail "FALLBACK: with no later reproduction the fallback did not stand"
+rm -rf -- "${campaign_final}"
+reproduced_claim 10 0
+campaign_unreproduced "${next_iteration}" >/dev/null \
+  || fail "FALLBACK: the first unreproduced claim did not go aside"
+reproduced_claim 10 2
+campaign_fallback >/dev/null
+[[ "$(jq -r '.stood' "${campaign_final}/fallback.json")" == false \
+    && "$(jq -r '.reproduced' "${campaign_final}/reproduce.json")" == 2 \
+    && ! -e "${campaign_final}/superseded" ]] \
+  || fail "FALLBACK: a later reproduced claim did not stay the verdict"
+rm -rf -- "${campaign_final}"
+unset -f reproduced_claim
 unset -f next_claim
 reset_config
 
@@ -2563,5 +2626,43 @@ fq_said=$(
 [[ "${fq_said}" == "CONFIRM:C1 OBLIGATION:O1 REPLAY:G2 REPLAY:G1 REPLAY:F1 REPLAY:F2" ]] \
   || fail "FAULT-QUEUE: a fault flip's replay waits behind every other entry, \
 the others in their old order; the queue was '${fq_said}'"
+
+dw_iteration=${test_tmp}/duplicate-world
+mkdir -p "${dw_iteration}/obligations-0003/OB.d" \
+  "${dw_iteration}/obligations-0002/OB.a" "${dw_iteration}/obligations-0002/OB.b" \
+  "${dw_iteration}/obligations-0002/OB.c"
+echo "flip:question" >"${dw_iteration}/obligations-0003/OB.d/question.asked"
+echo '{"obligationId":"OB.a","verdict":"NOT_ADMITTED","sessionId":""}' \
+  >"${dw_iteration}/obligations-0002/OB.a/obligation_result.jsonl"
+echo '{"obligationId":"OB.b","verdict":"ADMITTED","sessionId":"OB.b-s1"}' \
+  >"${dw_iteration}/obligations-0002/OB.b/obligation_result.jsonl"
+echo '{"obligationId":"OB.c","verdict":"NOT_ADMITTED","sessionId":"OB.c-s1"}' \
+  >"${dw_iteration}/obligations-0002/OB.c/obligation_result.jsonl"
+dw_said=$(
+  iteration_dir=${dw_iteration}
+  results=${dw_iteration}/results.jsonl
+  : >"${results}"
+  stream_dirty=0
+  stream_duplicates=()
+  declare -A stream_flying=() stream_worlds=([w1]=OB.a [w2]=OB.b [w3]=OB.c) \
+    stream_world_of=([OB.a]=w1 [OB.b]=w2 [OB.c]=w3)
+  campaign_log() { :; }
+  campaign_stream_duplicate "OBLIGATION obligations-0003 OB.d lift12 0" w1 \
+    OB.a
+  campaign_stream_land "REPLAY obligations-0002 OB.a lift12 0 -"
+  campaign_stream_land "REPLAY obligations-0002 OB.b lift12 0 -"
+  campaign_stream_land "REPLAY obligations-0002 OB.c lift12 0 -"
+  echo "worlds=${!stream_worlds[*]} duplicates=${stream_duplicates[*]}"
+  jq -r '.verdict' "${results}" | paste -sd' '
+)
+[[ "${dw_said}" == $'worlds=w2 duplicates=OB.d:OB.a\nDUPLICATE_WORLD NOT_ADMITTED ADMITTED NOT_ADMITTED' ]] \
+  || fail "DUPLICATE-WORLD: a model of a world already replayed is settled \
+DUPLICATE_WORLD with no replay, and a replay that lands anything but ADMITTED \
+gives its world back; the head said '${dw_said}'"
+jq -e '.verdict == "DUPLICATE_WORLD" and (.detail | contains("obligation OB.a"))' \
+  "${dw_iteration}/obligations-0003/OB.d/obligation_result.jsonl" >/dev/null \
+  && [[ -s "${dw_iteration}/obligations-0003/OB.d/question.txt" ]] \
+  || fail "DUPLICATE-WORLD: the duplicate's row names the replay that answers \
+it and its question is answered"
 
 echo "run_engine campaign helper tests passed"

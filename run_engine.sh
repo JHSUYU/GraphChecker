@@ -3721,7 +3721,8 @@ campaign_explore() {
   local -a stream_hard=()
   local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   local -A stream_reruns=() stream_growing=() stream_withdrawn=() \
-    stream_rests=()
+    stream_rests=() stream_worlds=() stream_world_of=()
+  local -a stream_duplicates=()
   local -a stream_uncaptured=()
   local -A stream_chain=() stream_chain_grown=()
   local -a stream_chain_witnesses=()
@@ -5333,7 +5334,7 @@ campaign_stream_wait() {
 
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer again
-  local rests="" requeued=0
+  local rests="" world="" requeued=0
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
@@ -5381,10 +5382,19 @@ campaign_stream_ended() {
     elif [[ "${answer}" == SAT_MODEL_READY\|* ]]; then
       rests=$(jq -r '.pathSessionId // ""' "${worker}/focused_task.jsonl" \
         2>/dev/null) || rests=""
+      world=$(jq -r '.world // ""' "${worker}/focused_task.jsonl" \
+        2>/dev/null) || world=""
       if [[ -n "${rests}" && -n "${stream_withdrawn[${rests}]:-}" ]]; then
         campaign_stream_replay_drop \
           "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" "${rests}"
+      elif [[ -n "${world}" && -n "${stream_worlds[${world}]:-}" ]]; then
+        campaign_stream_duplicate "${kind} ${round} ${id} ${host} 0" \
+          "${world}" "${stream_worlds[${world}]}"
       else
+        if [[ -n "${world}" ]]; then
+          stream_worlds[${world}]=${id}
+          stream_world_of[${id}]=${world}
+        fi
         campaign_log "obligation ${id}: solved on ${host}, its replay queued"
         [[ -z "${rests}" ]] || stream_rests[${id}]=${rests}
         campaign_stream_enqueue \
@@ -5611,6 +5621,25 @@ worker did not stage"
   stream_gate_owed+=("${entry}"$'\t'"${worker}/sessions/${named}"$'\t'"${worker}")
 }
 
+campaign_stream_duplicate() {
+  local entry=$1 world=$2 first=$3 kind round id host status worker
+  read -r kind round id host status <<<"${entry}"
+  worker="${iteration_dir}/${round}/${id}"
+  jq -n -c --arg id "${id}" --arg detail "DUPLICATE_WORLD: its model plants \
+world ${world}, which obligation ${first} already replays (queued, running or \
+landed): that replay answers it, the path it was asked from changing only the \
+schedule prefix, which is timing" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "DUPLICATE_WORLD", sessionId: "", detail: $detail}' \
+    | campaign_write_whole "${worker}/obligation_result.jsonl"
+  [[ ! -e "${worker}/question.asked" ]] \
+    || mv -f -- "${worker}/question.asked" "${worker}/question.txt"
+  stream_duplicates+=("${id}:${first}")
+  campaign_log "obligation ${id}: world ${world} is obligation ${first}'s; \
+DUPLICATE_WORLD, no replay"
+  campaign_stream_land "${entry} -"
+}
+
 campaign_stream_land() {
   local kind round id host status session worker verdict
   read -r kind round id host status session <<<"$1"
@@ -5618,6 +5647,11 @@ campaign_stream_land() {
   worker="${iteration_dir}/${round}/${id}"
   verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl" \
     2>/dev/null) || verdict="?"
+  if [[ "${kind}" == REPLAY && "${verdict}" != ADMITTED \
+      && "$(declare -p stream_world_of 2>/dev/null)" == "declare -A"* ]] \
+      && [[ -n "${stream_world_of[${id}]:-}" ]]; then
+    unset "stream_worlds[${stream_world_of[${id}]}]"
+  fi
   campaign_log "obligation ${id}: host=${host} verdict=${verdict}"
   if [[ "${kind}" == HARD && "${verdict}" == NOT_ADMITTED ]] && jq -e \
       '.detail // "" | startswith("SOLVER_TIMEOUT")
@@ -6091,6 +6125,8 @@ campaign_stream_manifest() {
     "${stream_reruns_dropped[@]}"
   campaign_json_strings "${lists}/confirmsReaped.json" \
     "${stream_confirms_reaped[@]}"
+  campaign_json_strings "${lists}/duplicateWorlds.json" \
+    "${stream_duplicates[@]}"
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
     --argjson rounds "${stream_round}" --argjson steps "${stream_steps}" \
@@ -6101,6 +6137,7 @@ campaign_stream_manifest() {
     --slurpfile afterWitness "${lists}/afterWitness.json" \
     --slurpfile rerunsDropped "${lists}/rerunsDropped.json" \
     --slurpfile confirmsReaped "${lists}/confirmsReaped.json" \
+    --slurpfile duplicateWorlds "${lists}/duplicateWorlds.json" \
     --argjson roundDue "${stream_round_due}" \
     --arg roundDropped "${stream_round_dropped}" \
     --slurpfile attempts "${attempts}" \
@@ -6110,7 +6147,8 @@ campaign_stream_manifest() {
       witnessAttempts: ($attempts | sort_by(.attempt)),
       cancelled: $cancelled[0], reaped: $reaped[0],
       rerunsDropped: $rerunsDropped[0],
-      confirmsReaped: $confirmsReaped[0], roundDue: $roundDue,
+      confirmsReaped: $confirmsReaped[0],
+      duplicateWorlds: $duplicateWorlds[0], roundDue: $roundDue,
       roundDropped: (if $roundDropped == "" then null else $roundDropped end),
       afterWitness: $afterWitness[0]}' \
     >"${iteration_dir}/exploration.json"
@@ -6667,8 +6705,31 @@ campaign_last_round_millis() {
   [[ -z "${last}" ]] || echo "${last}"
 }
 
+campaign_claim_artifacts=(candidate.smt2 candidate_composition_manifest.json
+  claim.json compose_inputs.sha256 compose.log confirm confirm.json reproduce
+  reproduce.json)
+
+campaign_claims_decided() {
+  local kind count total=0
+  for kind in refuted unreproduced; do
+    count=$(find "${campaign_final}/${kind}" -mindepth 1 -maxdepth 1 \
+      2>/dev/null | grep -c '' || true)
+    total=$(( total + count ))
+  done
+  echo "${total}"
+}
+
+campaign_move_claim() {
+  local into=$1 name
+  mkdir -p "${into}"
+  for name in "${campaign_claim_artifacts[@]}"; do
+    [[ ! -e "${campaign_final}/${name}" ]] \
+      || mv -- "${campaign_final}/${name}" "${into}/"
+  done
+}
+
 campaign_next_claim() {
-  local iteration_dir=$1 dir name model seen=0 decided
+  local iteration_dir=$1 dir model seen=0 decided refuted
   [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
     && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" != true ]] \
@@ -6687,21 +6748,88 @@ the next composition could repeat it, so there is no next claim"
 has no room for another claim"
     return 1
   fi
-  decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
-    2>/dev/null | grep -c '' || true)
+  decided=$(campaign_claims_decided)
   if (( decided >= campaign_max_claims )); then
     campaign_log "the claim was decided again ${decided} time(s), the bound \
 (campaign_max_claims=${campaign_max_claims}): the last claim is published"
     return 1
   fi
-  dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${decided}")
-  mkdir -p "${dir}"
-  for name in candidate.smt2 candidate_composition_manifest.json claim.json \
-      compose_inputs.sha256 compose.log confirm confirm.json; do
-    [[ ! -e "${campaign_final}/${name}" ]] \
-      || mv -- "${campaign_final}/${name}" "${dir}/"
-  done
+  refuted=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${refuted}")
+  campaign_move_claim "${dir}"
   campaign_log "the claim was excluded (${dir}): composing the next one"
+}
+
+campaign_unreproduced() {
+  local iteration_dir=$1 reproduce="${campaign_final}/reproduce.json"
+  local runs kept decided dir model
+  [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
+      == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
+    && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" == true \
+    && -s "${reproduce}" ]] || return 1
+  runs=$(jq -r '.runs // 0' "${reproduce}")
+  [[ "${runs}" =~ ^[0-9]+$ ]] || runs=0
+  (( runs > 0 )) \
+    && [[ "$(jq -r '.reproduced // 0' "${reproduce}")" == 0 ]] || return 1
+  if ! campaign_claim_room; then
+    campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s), and the campaign budget (campaign_budget_s=${campaign_budget_s}) has \
+no room for another claim"
+    return 1
+  fi
+  decided=$(campaign_claims_decided)
+  if (( decided >= campaign_max_claims )); then
+    campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s), and ${decided} claim(s) were decided, the bound \
+(campaign_max_claims=${campaign_max_claims})"
+    return 1
+  fi
+  kept=$(find "${campaign_final}/unreproduced" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  dir=$(printf '%s/unreproduced/%04d' "${campaign_final}" "${kept}")
+  model=$(campaign_claim_model "${campaign_final}/claim.json")
+  [[ -n "${model}" ]] || return 1
+  jq -n -c --argjson model "${model}" --arg claimed "${dir}" \
+    --arg reason "confirmed in the VM, reproduced in 0 of ${runs} native \
+run(s): kept as a fallback verdict and excluded, so the next claim is tried" \
+    '{schemaVersion: 1, kind: "REFUTED_CLAIM", model: $model,
+      claimed: $claimed, outcome: "unreproduced", reason: $reason}' \
+    >>"${iteration_dir}/refuted_claims.jsonl"
+  campaign_move_claim "${dir}"
+  campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s): kept $( (( kept == 0 )) && echo "as the fallback verdict" \
+    || echo "beside the fallback") (${dir}) and excluded: composing the next \
+one"
+}
+
+campaign_fallback() {
+  local fallback="${campaign_final}/unreproduced/0000" stood=true
+  local superseded="" reason
+  [[ -d "${fallback}" ]] || return 0
+  if [[ "$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}" \
+        2>/dev/null)" == SAT_CANDIDATE \
+      && "$(jq -r '.confirmed' "${campaign_final}/confirm.json" 2>/dev/null)" \
+        == true \
+      && "$(jq -r '.reproduced // 0' "${campaign_final}/reproduce.json" \
+        2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+    stood=false
+    reason="a later claim reproduced natively: it is the verdict, and the \
+fallback stays beside it"
+  else
+    superseded="${campaign_final}/superseded"
+    campaign_move_claim "${superseded}"
+    cp -r -- "${fallback}"/. "${campaign_final}/"
+    reason="no later claim reproduced natively: the first confirmed claim \
+stands, reproduced in 0 of $(jq -r '.runs' "${campaign_final}/reproduce.json") \
+native run(s); what the loop ended on is ${superseded}"
+  fi
+  jq -n --arg fallback "${fallback}" --argjson stood "${stood}" \
+    --arg superseded "${superseded}" --arg reason "${reason}" \
+    '{schemaVersion: 1, kind: "FALLBACK", fallback: $fallback, stood: $stood,
+      superseded: $superseded, reason: $reason}' \
+    >"${campaign_final}/fallback.json"
+  campaign_log "fallback: ${reason}"
 }
 
 campaign_reproduce() {
@@ -7431,11 +7559,16 @@ do_campaign() {
   campaign_stage EXPLORE campaign_explore "${iteration_dir}" "${iteration_id}"
   campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}"
   campaign_claim_stages "${iteration_dir}"
-  while campaign_next_claim "${iteration_dir}"; do
+  while :; do
+    while campaign_next_claim "${iteration_dir}"; do
+      campaign_claim_stages "${iteration_dir}"
+    done
+    campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
+    campaign_unreproduced "${iteration_dir}" || break
     campaign_claim_stages "${iteration_dir}"
   done
+  campaign_fallback
   campaign_stage EMIT campaign_emit "${iteration_dir}"
-  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
   campaign_exit_verdict
 }
 

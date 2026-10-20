@@ -23,8 +23,8 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json`, `compose_inputs.sha256` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json`; a refuted claim's row in `refuted_claims.jsonl` | never (a failure is "unconfirmed"; after a refutation, while the budget has room, COMPOSE..CONFIRM run again for the next claim, the refuted one in `final/refuted/NNNN/`, §10) |
+| REPRODUCE | `campaign_reproduce` after each confirmed claim, before EMIT; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool; `campaign_unreproduced`, `campaign_fallback` | `final/reproduce/`, `final/reproduce.json`; `final/unreproduced/NNNN/`, `final/fallback.json` | never (a claim reproduced in 0 runs is kept as the fallback and the next claim composed, §10b) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
-| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
 | — | `campaign_exit_verdict` (reads `result.json`) | — | exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -1143,6 +1143,27 @@ both ways agreed; hbase-bugs-master-active-time's 92 asks of depth 0 were 92 tex
 1470 keys in 38 s and 39's 4110 in 1363 s (the hits 37 s), and a worker that UNSAT settles takes ~2 s against minutes
 for a replay, so what the store saves is z3 time: whether a re-ask is dispatched at all is the ledger's (its
 dependence, above), and a SAT re-ask in another world is a pair world, whose replay depth > 0 asks for.
+
+A WORLD IS REPLAYED ONCE (`DUPLICATE_WORLD`). A SAT model's focus row states its world, `world`: the whole-world
+digest `ObligationFactory#wholeWorldDigest` of what the replay plants and is asked -- the root assignments (each
+planted at the seed's mint of its root, a function of the root), clock deltas, answered handoffs, planted pairings,
+the inherited flips and the flip itself (its focused occurrence, site, ordinal and arm), `ExploreCodec#readWorld`
+over the row (`ObligationSolverMain`; a FORCE and a path re-run carry none: a FORCE forces an arm, a re-run replays
+its path's world as more instrumentation asks). The head keeps the worlds it queued (`run_engine.sh`
+`stream_worlds`): a SAT whose world a queued, running or landed replay already plants is not replayed; its result
+is `DUPLICATE_WORLD`, naming that obligation (`campaign_stream_duplicate`; `exploration.json` `duplicateWorlds`,
+`<obligation>:<the one replaying its world>`), an answered arm (`ObligationResult#settlesArm`) whose question is
+answered too, and that replay's session is its answer. A replay that lands anything but ADMITTED (bounded,
+refused, a path withdrawn, or run and not taking the arm, which the frontier asks again by its own rule, §7.3)
+gives its world back, so the next ask of it replays: offline over NR1STOP-10, NP6-15, NC7-nsrg and NC5-22, no
+world an ADMITTED replay reached is lost (NP6-15 976 replays -> 224, NC7-nsrg 192 -> 38, NR1STOP-10's 466 models
+-> 188 replays). Sound in two parts: a replay is what it plants, and
+the path a model was asked from sets only the schedule prefix the replay is held to, which is timing, no
+counterfactual dimension (the owner's rule: worlds are planted values, never interleavings); and what the
+instrumentation planned since the first replay adds is the closure's, which re-runs that session as for any
+session (GROW, §7.8). hbase-adhoc-10 NR1STOP-10: the anchor path's two re-runs in the seed's world re-ran every
+one of the 70 client doors, so each door fault was asked again from each re-run's path (412 asks, 140 worlds);
+445 SAT models were 157 worlds, and 279 of the 315 fault replays queued at the stop repeated one.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
@@ -3409,10 +3430,19 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match, fewest moved fault markers first (`RootCategory.FAULT` roots a witness's
-   valuation moves, `Composition#faultsMoved`), then the order below within each count: a witness
-   injecting no failure is the nearer world, and a refuted fault claim costs a CONFIRM loop (HZ10:
-   77 sat door-marker valuations ranked ahead of the clock world; the two claimed were refuted). First of all, a seed replay that observed the fatal at the declared
+4. The claim, first match. First of all an explored session's own run, at any count of moved
+   fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: the selected session's own run
+   as defined below, a replay that planted those roots, pairings and orders and observed the fatal
+   at the anchor, which CONFIRM confirms as "itself the run"; if CONFIRM refutes it, the claim loop
+   excludes its arms and the next composition takes the order below): a world a replay already ran
+   to the fatal is ahead of every world only the model holds (hbase-bugs-ns-rsgroup-removal NC7:
+   EXPLORE's replay of the namespace Mutate's fault observed the fatal, while every claim composed
+   moved no fault -- STATE re-pairings holding the client's synchronous calls past their own
+   thread's later events, each refused by a 300 s order timeout). Then fewest moved fault markers
+   first (`RootCategory.FAULT` roots a witness's valuation moves, `Composition#faultsMoved`), then
+   the order below within each count: a witness injecting no failure is the nearer world, and a
+   refuted fault claim costs a CONFIRM loop (HZ10: 77 sat door-marker valuations ranked ahead of the
+   clock world; the two claimed were refuted). First of all, a seed replay that observed the fatal at the declared
    occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
    counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
    `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
@@ -3427,8 +3457,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else DIAGNOSTIC `UNATTESTED_ARM`): its `mechanism`.
-     Within the rank, a witness that is its selected session's own run is claimed first
-     (`ClaimPolicy.Reading#ownRun`: the selected path observed the fatal, every arm the model takes on
+     Its own-run part is asked in the first pass above, so within the rank only the rest is left
+     (`ClaimPolicy.Reading#ownRun`, the test of the own run: the selected path observed the fatal, every arm the model takes on
      it is its own run's pairing, `Composition#repaired`, and the session ran the model's world --
      its moved roots at the model's values, its clocks the model's jumps, no planted pairing,
      `Composition#ranModel`, `explore.Moved#ranBy`, the very test CONFIRM's `realizedBy` confirms
@@ -3585,12 +3615,20 @@ with it is a `RUN_DEFECT`.
   the composition anchors, the skews its world planted are exactly the claim's jumps; skews compare,
   each off its own run's host), the session is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
-  overlaid with the model (`ConfirmMain.Moved`): every moved root, by root id, at the recording's
-  mint occurrence -- any other root as its value, a clock as its skew off the reading the
+  overlaid with the model (`ConfirmMain.Moved`): every moved root, by root id, at its mint
+  occurrence -- the recording's; else, for a root whose occurrence only the grown plan runs, the
+  selected session's mint row, else the mint row of the session of a selected arm whose body names
+  it (the claim's arm row lists the root ids its delivered terms reach, `roots`;
+  hbase-bugs-master-active-time's T0, master0's activation clock, reaches the seed path through
+  such an arm) -- any other root as its value, a clock as its skew off the reading the
   composition anchored its cell to (the manifest's `roots`) -- and, on every clock cell the
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
-  the model runs those cells on from the jump before them. A moved root the recording mints
-  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The
+  the model runs those cells on from the jump before them. Where each moved root's mint came from
+  is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
+  plan as the worker's `mint_from.json`). A moved root none of them mints, one those sessions mint
+  at different occurrences, or a moved clock the composition anchors nowhere, refuses the
+  confirmation by name; a mint the replay never reaches confirms nothing (the fatal must still be
+  observed at the anchor). The
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
@@ -3644,9 +3682,50 @@ with it is a `RUN_DEFECT`.
   hold realizes is held as before; a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
   on a `SynchronousQueue`: Solr's Overseer command Runners) holds nothing of its executor's queue
   behind it and is held where it runs, unless the session's manifest names it in `servingTasks`
-  (it took work another thread started on its thread, any queue item no named start filed among
-  it: a ConcurrentUpdate client's Runner polling
-  its update queue). Held in place, such a task holds what it holds at the hold: an Overseer
+  (it took work another thread started on its thread, or work of an unknown or ended starter, any
+  queue item no named start filed among it: a ConcurrentUpdate client's Runner polling
+  its update queue; never for work it filed and claims itself, an inline continuation of its own:
+  `Identity.State#openStart`, so an HBase procedure step is held on its worker, hbase-adhoc-22's
+  deletion's release among them). Such a claimed hand-off is held at its claim's entry, not at
+  the last activation before the event, unless the order's earlier end runs inside the held claim
+  itself: its occurrence's `threadKey` is the claim's (another occurrence of the same step) or
+  extends it (a claim nested in it on that thread: a continuation or a hand-off the step filed and
+  ran inline), or names no activation row -- held at the entry it would wait on itself
+  (`StateClosure#inside`; H3's review); then it is held before its event as any other activation is.
+  Nor where the claim, in its program order, finishes the earlier end of another order before the
+  event (an activation of the claim whose last event comes before it, `ConfirmMain#prefixed`,
+  `StateClosure#untangle`): held at the entry, the claim would delay what another order waits on,
+  and any chain of waits back to it -- through its own earlier end's claim or a third claim -- is
+  a deadlock (NC9-22's final claim: the creation's step entry-held until the release exits while
+  the deletion's step is entry-held until the creation's read exits); such an order returns to the
+  hold before its event, the old hold point, so the demotion costs no soundness.
+  The rule is structural, never the recording's order: a CONFIRM order is often the recording
+  reversed (hbase-adhoc-22's release, recorded before the creation's read, held after it). Held at
+  the entry, the ORDER row's `after` is the claim's name
+  (`Confirmation#claim`: `CLAIM ` and the row's `threadKey` start key, its context named as
+  activations are, a WAKE turn or a delivery's count left out), which `Identity#adopt` enters as it
+  opens the claim, before the claimed work runs and before its `CLAIM` schedule event is observed,
+  so no realized order runs other events ahead of the held work (an HBase step: `CausynthStep.run` in
+  `ProcedureExecutor$WorkerThread#runProcedure`, before `executeProcedure` takes the procedure's
+  scheduler locks, `acquireLock`, and before `beforeExec`, where a TransitRegionStateProcedure takes
+  its RegionStateNode lock, which the admin move/unassign's `preTransitCheck` and every region
+  state report also take: held at the last activation before its write, a TRSP step would sit on
+  that lock while its earlier end waited for it, an order not held in time). The hold is stronger
+  than the order asks -- everything the claimed work does waits, not only its event -- and still
+  realizes it: the event cannot run before the claim's entry. It deadlocks only where the earlier
+  end needs something the held work does before its event; what a step does before its event is
+  its own: its scheduler locks (taken after the entry, so not held while held), its procedure's
+  execution lock (`IdLock` by procedure id, taken in `runProcedure` before the step and never by
+  another procedure's work), its own state reads and writes, and the RPCs and child procedures it
+  starts, which run only once the step runs; another procedure's step or an RPC handler waits on
+  none of these. Held at the last activation before its event instead, a step sits on whatever it
+  holds there: NC9-22 held the deletion's release inside `synchronized
+  NamespaceStateManager#removeTable`, the creation's `synchronized
+  checkAndUpdateNamespaceTableCount` blocked on that monitor, and the order timed out (300 s). The case where one would: an earlier end that is the effect of this step's own
+  prefix and that the step then waits for synchronously -- a step's hbase:meta write through the
+  client, awaited with `FutureUtils#get`, whose region server handler's write were the earlier end;
+  meta cells are no tracked location (TODO HBase 9), so no STATE pairing and no order names such a
+  write today. Held in place, such a task holds what it holds at the hold: an Overseer
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other
@@ -3770,9 +3849,20 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 
 ## 10b. REPRODUCE: the confirmed world, natively
 
-After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
-`SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
-VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map
+After CONFIRM confirmed a `SAT_CANDIDATE`, before EMIT, it is run again on the stock JDK, in the
+recording weave, with nothing of the concolic VM (`campaign_reproduce`). A confirmed claim that
+reproduced in 0 of its native runs (`runs` > 0; a claim with no native run at all is not judged so)
+is kept as the campaign's fallback verdict and excluded (`campaign_unreproduced`: its model joins
+`refuted_claims.jsonl` with `outcome` `unreproduced`, its artifacts move to
+`final/unreproduced/NNNN/`), and the claim loop composes the next claim, within the same budget room
+and `campaign_max_claims` bound as a refuted claim (§10; both kinds count); the first confirmed claim
+that reproduces in at least one run ends the loop and is the verdict. If none does, the first kept
+claim stands (`campaign_fallback`: `final/unreproduced/0000/` is copied back into `final/`, what the
+loop ended on moved to `final/superseded/`), and `final/fallback.json` `{fallback, stood, superseded,
+reason}` names it either way; `report.py` names the fallback and the reproduction in its row
+(hbase-adhoc-22 NC5: the first confirmed claim was an EXPLORE replay whose fault only shifted timing,
+reproduced 0/10, while the bug's own STATE claim waited behind it). Every case gets the same rule:
+a study check's reproduction only adds to its verdict. `ConfirmMain --iteration --claim --manifest --static-scope-map
 --confirmed-session <dir> --plant <file>` writes the plant from a subset of what CONFIRM itself
 plants and holds (`ConfirmMain.Witness`, the one reading of the claim both make: the selected
 session's world under the model's moved roots, and the edges the model chose; of CONFIRM's holds,
@@ -3886,7 +3976,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
 Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reason`):
 - by CONFIRM's own reading of the claim (`CONFIRM refused:`, §10): a valuation that selects no
   path, an unparseable anchor, a manifest stating no selector, `restsOn` or `cutoff` for the path,
-  a moved root the recording mints nowhere or a moved clock no reading anchors, and the edges'
+  a moved root no source mints (the recording, the selected session, an arm naming it) or mints at
+  two occurrences, a moved clock no reading anchors, and the edges'
   refusals (`STATE_CONFLICT`, `PAIRING_UNSTATED`, a selected arm whose consumer its session states
   no attach for);
 - `NATIVE_PLANT_UNSUPPORTED`: a root minted other than at a call's return (an argument, a field or

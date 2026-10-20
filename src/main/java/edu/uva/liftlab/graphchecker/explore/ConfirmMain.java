@@ -66,6 +66,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 public final class ConfirmMain {
     static final String OBLIGATION_ID = "CONFIRM";
     static final String REALIZED = "realized.json";
+    static final String MINT_FROM = "mint_from.json";
 
     private ConfirmMain() {
     }
@@ -153,15 +154,18 @@ public final class ConfirmMain {
                 witness.anchor, witness.sawChosen);
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
-                    Collections.singletonList(
+                    Collections.singletonList(mintFrom(
                             confirmation(true, false, realized,
-                                    witness.sessionId)));
+                                    witness.sessionId),
+                            witness.moved.mintFrom)));
             JsonObject summary = witness.summary();
             summary.addProperty("realizedBy", witness.sessionId);
             return summary;
         }
 
         World world = witness.planted();
+        RowCodec.writeJsonl(out.resolve(MINT_FROM), Collections.singletonList(
+                ExploreCodec.strings(witness.moved.mintFrom)));
 
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
                 witness.session.forced() ? witness.seedSessionId
@@ -206,6 +210,9 @@ public final class ConfirmMain {
         final List<JsonObject> arms;
         final SessionReader session;
         final SessionReader recording;
+        final Map<String, SessionReader> armSessions =
+                new LinkedHashMap<String, SessionReader>();
+        final List<Moved.Naming> namings = new ArrayList<Moved.Naming>();
         final StateClosure closure;
         final Map<String, WriteRow> chosen;
         final Set<String> restsOn;
@@ -274,6 +281,14 @@ public final class ConfirmMain {
             }
             session = SessionReader.read(iteration, sessionId);
             recording = SessionReader.read(iteration, seedSessionId);
+            armSessions.put(sessionId, session);
+            for (JsonObject arm : arms) {
+                List<String> named = strings(arm, ComposeMain.ROOTS);
+                String armSession = optionalString(arm, "sessionId");
+                if (named.isEmpty() || armSession.isEmpty()) continue;
+                namings.add(new Moved.Naming(armSession(iteration,
+                        armSession), named));
+            }
             closure = new StateClosure(session, anchor, cutoff);
             chosen = closure.chosen(arms);
             chosen.keySet().removeIf(reader -> !restsOn.contains(
@@ -291,13 +306,23 @@ public final class ConfirmMain {
                 }
             }
             world = obligationWorld(iteration, sessionId);
-            moved = moved(decided, manifest, session, recording);
+            moved = moved(decided, manifest, session, recording, namings);
             sawChosen = closure.ran(chosen);
         }
 
         static Witness of(Path iteration, JsonObject claim,
                           JsonObject manifest) throws IOException {
             return new Witness(claim, manifest, iteration);
+        }
+
+        private SessionReader armSession(Path iteration, String armSession)
+                throws IOException {
+            SessionReader read = armSessions.get(armSession);
+            if (read == null) {
+                read = SessionReader.read(iteration, armSession);
+                armSessions.put(armSession, read);
+            }
+            return read;
         }
 
         World planted() {
@@ -309,17 +334,9 @@ public final class ConfirmMain {
 
         List<JsonObject> edges(Path iteration, World planted)
                 throws IOException {
-            Map<String, SessionReader> armSessions =
-                    new LinkedHashMap<String, SessionReader>();
-            armSessions.put(sessionId, session);
             for (JsonObject arm : arms) {
                 String armSession = optionalString(arm, "sessionId");
-                if (armSession.isEmpty()
-                        || armSessions.containsKey(armSession)) {
-                    continue;
-                }
-                armSessions.put(armSession, SessionReader.read(iteration,
-                        armSession));
+                if (!armSession.isEmpty()) armSession(iteration, armSession);
             }
             List<JsonObject> edges = new ArrayList<JsonObject>();
             cone.add(anchor);
@@ -356,7 +373,10 @@ public final class ConfirmMain {
         Map<String, RootCategory> categories() {
             Map<String, RootCategory> categories =
                     new LinkedHashMap<String, RootCategory>();
-            for (SessionReader rows : Arrays.asList(recording, session)) {
+            List<SessionReader> sources = new ArrayList<SessionReader>(
+                    Arrays.asList(recording, session));
+            for (Moved.Naming naming : namings) sources.add(naming.session);
+            for (SessionReader rows : sources) {
                 for (RootMintRow row : rows.roots()) {
                     categories.putIfAbsent(row.rootId(), row.category());
                 }
@@ -700,7 +720,8 @@ public final class ConfirmMain {
 
     private static Moved moved(JsonObject decided, JsonObject manifest,
                                SessionReader session,
-                               SessionReader recording) {
+                               SessionReader recording,
+                               List<Moved.Naming> namings) {
         Map<String, String> readings = new LinkedHashMap<String, String>();
         for (JsonElement element : array(manifest, "roots")) {
             JsonObject root = element.getAsJsonObject();
@@ -710,11 +731,30 @@ public final class ConfirmMain {
             }
         }
         return Moved.of(ExploreCodec.map(object(decided, "movedRoots")),
-                readings, session, recording);
+                readings, session, recording, namings);
     }
 
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
+        Path planted = worker.resolve(MINT_FROM);
+        List<JsonObject> from = Files.isReadable(planted)
+                ? RowCodec.readJsonl(planted)
+                : Collections.<JsonObject>emptyList();
+        return mintFrom(withOrders(claimFile, worker, sessions), from.isEmpty()
+                ? Collections.<String, String>emptyMap()
+                : ExploreCodec.map(from.get(0)));
+    }
+
+    private static JsonObject mintFrom(JsonObject confirmation,
+                                       Map<String, String> from) {
+        if (!from.isEmpty()) {
+            confirmation.add("mintFrom", ExploreCodec.strings(from));
+        }
+        return confirmation;
+    }
+
+    private static JsonObject withOrders(Path claimFile, Path worker,
+                                         Path sessions) throws IOException {
         JsonObject decided = decision(claimFile, worker, sessions);
         Path edges = worker.resolve(Confirmation.FILE);
         int checked = Files.isReadable(edges)
@@ -1069,6 +1109,9 @@ public final class ConfirmMain {
             Hold hold = held(first, then, thenSeq);
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
+            holding.pairs.add(new Pair(first, then, thenSeq, order,
+                    hold.activation != null
+                            && hold.activation.startsWith(Confirmation.CLAIM)));
             holding.ends.put(order, new OccurrenceAddress[] {
                     first.occurrence, hold.occurrence});
             if (hold.checked) holding.checked.add(order);
@@ -1083,6 +1126,7 @@ public final class ConfirmMain {
         private static final class Exit {
             private final String activation;
             private final OccurrenceAddress occurrence;
+            private final List<Frame> frames;
             private final long seq;
 
             private Exit(OccurrenceAddress occurrence, List<Frame> frames,
@@ -1090,8 +1134,22 @@ public final class ConfirmMain {
                 this.activation = Confirmation.activation(occurrence,
                         ExecutionIndex.of(frames));
                 this.occurrence = occurrence;
+                this.frames = frames;
                 this.seq = seq;
             }
+        }
+
+        private long exited(Exit first) {
+            long exited = first.seq;
+            for (Placed other : placed.getOrDefault(first.occurrence.id(),
+                    Collections.<Placed>emptyList())) {
+                if (other.frames.size() >= first.frames.size()
+                        && other.frames.subList(0, first.frames.size())
+                        .equals(first.frames)) {
+                    exited = Math.max(exited, other.seq);
+                }
+            }
+            return exited;
         }
 
         private Exit exit(Endpoint event, long seq) {
@@ -1117,9 +1175,14 @@ public final class ConfirmMain {
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames,
                          boolean checked) {
+                this(occurrence, Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames)), checked);
+            }
+
+            private Hold(OccurrenceAddress occurrence, String activation,
+                         boolean checked) {
                 this.occurrence = occurrence;
-                this.activation = Confirmation.activation(occurrence,
-                        ExecutionIndex.of(frames));
+                this.activation = activation;
                 this.checked = checked;
             }
         }
@@ -1132,13 +1195,80 @@ public final class ConfirmMain {
             } catch (IllegalStateException unheld) {
                 return holdBefore(event, seq, true);
             }
-            if (send == null) return holdBefore(event, seq, false);
+            if (send == null) {
+                ActivationRow row = activations.get(event.occurrence().id());
+                return row != null && row.claimed()
+                        && row.claimKind() == ActivationRow.ClaimKind.HANDOFF_TASK
+                        && !inside(first.occurrence, row.threadKey())
+                        ? new Hold(event.occurrence(),
+                        Confirmation.claim(row.threadKey()), false)
+                        : holdBefore(event, seq, false);
+            }
             if (Confirmation.standsUnder(first.occurrence, send,
                     activations::get)) {
                 return holdBefore(event, seq, true);
             }
             return new Hold(send.occurrence(), send.activationFrames(),
                     false);
+        }
+
+        private void untangle(Holding holding) {
+            Map<String, List<String>> demoted =
+                    new LinkedHashMap<String, List<String>>();
+            Set<String> kept = new HashSet<String>();
+            List<String> claims = new ArrayList<String>();
+            List<String> firsts = new ArrayList<String>();
+            List<Long> firstSeqs = new ArrayList<Long>();
+            List<Long> thenSeqs = new ArrayList<Long>();
+            for (Pair pair : holding.pairs) {
+                ActivationRow then = activations.get(
+                        pair.then.occurrence().id());
+                ActivationRow first = activations.get(
+                        pair.first.occurrence.id());
+                claims.add(pair.entry ? then.threadKey() : null);
+                firsts.add(first == null ? null : first.threadKey());
+                firstSeqs.add(exited(pair.first));
+                thenSeqs.add(pair.seq);
+            }
+            List<Boolean> prefixed = prefixed(claims, firsts, firstSeqs,
+                    thenSeqs);
+            for (int index = 0; index < holding.pairs.size(); index++) {
+                Pair pair = holding.pairs.get(index);
+                if (!prefixed.get(index)) {
+                    kept.add(pair.order);
+                    continue;
+                }
+                Hold hold = holdBefore(pair.then, pair.seq, false);
+                String order = pair.first.activation + "\n" + hold.activation;
+                demoted.computeIfAbsent(pair.order,
+                        key -> new ArrayList<String>()).add(order);
+                holding.ends.put(order, new OccurrenceAddress[] {
+                        pair.first.occurrence, hold.occurrence});
+            }
+            if (demoted.isEmpty()) return;
+            List<String> orders = new ArrayList<String>(holding.orders);
+            holding.orders.clear();
+            for (String order : orders) {
+                if (kept.contains(order)) holding.orders.add(order);
+                for (String instead : demoted.getOrDefault(order,
+                        Collections.<String>emptyList())) {
+                    holding.orders.add(instead);
+                    if (holding.chosenOrders.contains(order)) {
+                        holding.chosenOrders.add(instead);
+                    }
+                }
+                if (!kept.contains(order)) {
+                    holding.chosenOrders.remove(order);
+                    holding.ends.remove(order);
+                }
+            }
+        }
+
+
+        private boolean inside(OccurrenceAddress earlier, String claim) {
+            ActivationRow row = activations.get(earlier.id());
+            return row == null || row.threadKey().equals(claim)
+                    || row.threadKey().startsWith(claim + "/");
         }
 
         private Hold holdBefore(Endpoint event, long seq, boolean checked) {
@@ -1322,7 +1452,44 @@ public final class ConfirmMain {
         }
     }
 
+    static List<Boolean> prefixed(List<String> claims, List<String> firsts,
+                                  List<Long> firstSeqs, List<Long> thenSeqs) {
+        List<Boolean> prefixed = new ArrayList<Boolean>();
+        for (int index = 0; index < claims.size(); index++) {
+            String claim = claims.get(index);
+            boolean prefix = false;
+            for (int other = 0; claim != null && other < claims.size();
+                 other++) {
+                String first = firsts.get(other);
+                prefix |= other != index && first != null
+                        && (first.equals(claim)
+                        || first.startsWith(claim + "/"))
+                        && firstSeqs.get(other) < thenSeqs.get(index);
+            }
+            prefixed.add(prefix);
+        }
+        return prefixed;
+    }
+
+    private static final class Pair {
+        private final StateClosure.Exit first;
+        private final Endpoint then;
+        private final long seq;
+        private final String order;
+        private final boolean entry;
+
+        private Pair(StateClosure.Exit first, Endpoint then, long seq,
+                     String order, boolean entry) {
+            this.first = first;
+            this.then = then;
+            this.seq = seq;
+            this.order = order;
+            this.entry = entry;
+        }
+    }
+
     static final class Holding {
+        private final List<Pair> pairs = new ArrayList<Pair>();
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
         long cutBefore = Long.MAX_VALUE;
@@ -1444,6 +1611,7 @@ public final class ConfirmMain {
                 }
             }
         }
+        closure.untangle(holding);
         for (String order : holding.orders) {
             String[] ends = order.split("\n", 2);
             JsonObject row = new JsonObject();

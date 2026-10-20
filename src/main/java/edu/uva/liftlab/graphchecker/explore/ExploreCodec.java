@@ -67,6 +67,7 @@ public final class ExploreCodec {
 
     static final String FORCE = "force";
     static final String RERUN = "rerun";
+    static final String WORLD = "world";
 
     public static Obligation readObligation(JsonObject json) {
         if (optionalBool(json, FORCE, false)) {
@@ -214,7 +215,7 @@ public final class ExploreCodec {
                 optionalString(json, "world"));
     }
 
-    private static JsonObject strings(Map<String, String> values) {
+    static JsonObject strings(Map<String, String> values) {
         JsonObject json = new JsonObject();
         for (Map.Entry<String, String> entry : values.entrySet()) {
             json.addProperty(entry.getKey(), entry.getValue());
