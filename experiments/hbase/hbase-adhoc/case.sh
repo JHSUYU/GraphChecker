@@ -13,5 +13,9 @@ case "$1" in
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1
     client_fault_transports+=(ZOOKEEPER)
     ;;
+  07)
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+    client_fault_transports=(ZOOKEEPER)
+    ;;
   *) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
 esac
