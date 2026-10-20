@@ -70,6 +70,10 @@ public final class Confirmation {
             new HashMap<String, Set<String>>();
     private static final Map<String, Integer> PLANTED =
             new HashMap<String, Integer>();
+    private static final Map<String, Set<String>> CHECKED =
+            new HashMap<String, Set<String>>();
+    private static final Set<String> CHECK_SEEN = new HashSet<String>();
+    private static final List<String> OBSERVED = new ArrayList<String>();
     private static final Set<String> EXITED = new HashSet<String>();
     private static final List<ViewHold> VIEW_HOLDS = new ArrayList<ViewHold>();
     private static final List<String> UNREALIZED = new ArrayList<String>();
@@ -139,7 +143,8 @@ public final class Confirmation {
         load();
         synchronized (LOCK) {
             return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty()
-                    || !BEFORE.isEmpty() || !VIEW_HOLDS.isEmpty();
+                    || !BEFORE.isEmpty() || !CHECKED.isEmpty()
+                    || !VIEW_HOLDS.isEmpty();
         }
     }
 
@@ -269,70 +274,125 @@ public final class Confirmation {
                 + row.claimedAs(servingTasks) + "), no send outside one");
     }
 
+    public static boolean standsUnder(OccurrenceAddress occurrence,
+                                      Endpoint send,
+                                      Function<String, ActivationRow> rows) {
+        String sent = id(send);
+        OccurrenceAddress at = occurrence;
+        for (int hop = 0; hop < SUBMITTER_HOPS && at != null; hop++) {
+            ActivationRow row = rows.apply(at.id());
+            Endpoint producer = row == null ? null : row.anchorProducer();
+            if (producer == null) return false;
+            if (id(producer).equals(sent)) return true;
+            at = producer.occurrence();
+        }
+        return false;
+    }
+
     static boolean ordering() {
         if (ordering == 0) load();
         return ordering == 2;
     }
 
     static void entering(String activation) {
-        Set<String> missing;
         synchronized (LOCK) {
-            Set<String> before = BEFORE.get(activation);
-            if (before == null || RecordingPlant.orderGaveWay()) return;
-            Set<String> waiting = new LinkedHashSet<String>(before);
-            waiting.removeAll(EXITED);
-            planted(RecordingPlant.HOLDING, activation, waiting);
-            long thread = Thread.currentThread().getId();
-            boolean holding = !waiting.isEmpty();
-            if (holding) {
-                FocusedReplay.worldActed();
-                WAITING.put(thread, new Hold(activation, before));
-                HOLD_MOVES.incrementAndGet();
-            }
-            long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
-                    ORDER_TIMEOUT_MS);
-            long deadline = System.currentTimeMillis() + timeout;
-            try {
-                while (!EXITED.containsAll(before)) {
-                    if (RecordingPlant.orderGaveWay()) return;
-                    long left = deadline - System.currentTimeMillis();
-                    if (left <= 0L) {
-                        missing = new LinkedHashSet<String>(before);
-                        missing.removeAll(EXITED);
-                        UNREALIZED.add("ORDER " + activation + ": the model"
-                                + " orders it after " + missing + ", which"
-                                + " did not exit within " + timeout + " ms,"
-                                + " so this program cannot realize the"
-                                + " model's order");
-                        mismatched();
-                        Set<String> held = new LinkedHashSet<String>(before);
-                        held.removeAll(missing);
-                        planted(RecordingPlant.APPLIED, activation, held);
-                        planted(RecordingPlant.UNHELD, activation, missing);
-                        if (RecordingPlant.planting()) {
-                            for (String late : missing) {
-                                OVERDUE.add(activation + "\n" + late);
-                            }
-                            RecordingPlant.gaveWay();
-                        }
-                        return;
-                    }
-                    try {
-                        LOCK.wait(Math.min(left, 200L));
-                    } catch (InterruptedException interrupted) {
-                        ENDED_WAITING.computeIfAbsent(thread,
-                                key -> new ArrayList<Hold>()).add(new Hold(
-                                activation, before));
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
-                }
-            } finally {
-                WAITING.remove(thread);
-                if (holding) HOLD_MOVES.incrementAndGet();
-            }
-            planted(RecordingPlant.APPLIED, activation, before);
+            if (waited(activation)) checked(activation);
         }
+    }
+
+    private static void checked(String activation) {
+        Set<String> before = CHECKED.get(activation);
+        if (before == null || RecordingPlant.orderGaveWay()
+                || !CHECK_SEEN.add(activation)) {
+            return;
+        }
+        Set<String> missing = new LinkedHashSet<String>(before);
+        missing.removeAll(EXITED);
+        for (String first : before) {
+            if (missing.contains(first)) continue;
+            OBSERVED.add("ORDER " + activation + ": checked, not held, and"
+                    + " observed: it entered after " + first + " exited");
+            planted(RecordingPlant.OBSERVED, activation,
+                    Collections.singleton(first));
+        }
+        if (missing.isEmpty()) return;
+        UNREALIZED.add("ORDER " + activation + ": the model orders it after "
+                + missing + ", which no hold realizes, so the order is"
+                + " checked, and they had not exited when it entered");
+        mismatched();
+        planted(RecordingPlant.UNHELD, activation, missing);
+        if (RecordingPlant.planting()) {
+            for (String late : missing) {
+                OVERDUE.add(activation + "\n" + late);
+            }
+            RecordingPlant.gaveWay();
+        }
+    }
+
+    static List<String> observed() {
+        synchronized (LOCK) {
+            return new ArrayList<String>(OBSERVED);
+        }
+    }
+
+    private static boolean waited(String activation) {
+        Set<String> before = BEFORE.get(activation);
+        if (RecordingPlant.orderGaveWay()) return false;
+        if (before == null) return true;
+        Set<String> waiting = new LinkedHashSet<String>(before);
+        waiting.removeAll(EXITED);
+        planted(RecordingPlant.HOLDING, activation, waiting);
+        long thread = Thread.currentThread().getId();
+        boolean holding = !waiting.isEmpty();
+        if (holding) {
+            FocusedReplay.worldActed();
+            WAITING.put(thread, new Hold(activation, before));
+            HOLD_MOVES.incrementAndGet();
+        }
+        long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
+                ORDER_TIMEOUT_MS);
+        long deadline = System.currentTimeMillis() + timeout;
+        try {
+            while (!EXITED.containsAll(before)) {
+                if (RecordingPlant.orderGaveWay()) return false;
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0L) {
+                    Set<String> missing = new LinkedHashSet<String>(before);
+                    missing.removeAll(EXITED);
+                    UNREALIZED.add("ORDER " + activation + ": the model"
+                            + " orders it after " + missing + ", which"
+                            + " did not exit within " + timeout + " ms,"
+                            + " so this program cannot realize the"
+                            + " model's order");
+                    mismatched();
+                    Set<String> held = new LinkedHashSet<String>(before);
+                    held.removeAll(missing);
+                    planted(RecordingPlant.APPLIED, activation, held);
+                    planted(RecordingPlant.UNHELD, activation, missing);
+                    if (RecordingPlant.planting()) {
+                        for (String late : missing) {
+                            OVERDUE.add(activation + "\n" + late);
+                        }
+                        RecordingPlant.gaveWay();
+                    }
+                    return false;
+                }
+                try {
+                    LOCK.wait(Math.min(left, 200L));
+                } catch (InterruptedException interrupted) {
+                    ENDED_WAITING.computeIfAbsent(thread,
+                            key -> new ArrayList<Hold>()).add(new Hold(
+                            activation, before));
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        } finally {
+            WAITING.remove(thread);
+            if (holding) HOLD_MOVES.incrementAndGet();
+        }
+        planted(RecordingPlant.APPLIED, activation, before);
+        return true;
     }
 
     private static final AtomicLong HOLD_MOVES = new AtomicLong();
@@ -1200,7 +1260,8 @@ public final class Confirmation {
                     } else if (RecordingPlant.ORDER.equals(kind)
                             && optionalString(row, RecordingPlant.SCOPE)
                             .isEmpty()) {
-                        BEFORE.computeIfAbsent(optionalString(row, "after"),
+                        (RecordingPlant.checked(row) ? CHECKED : BEFORE)
+                                .computeIfAbsent(optionalString(row, "after"),
                                 key -> new LinkedHashSet<String>())
                                 .add(optionalString(row, "before"));
                         if (row.has(RecordingPlant.ROW)) {
@@ -1222,10 +1283,12 @@ public final class Confirmation {
                 TURNED.clear();
                 MINT.clear();
                 BEFORE.clear();
+                CHECKED.clear();
                 PLANTED.clear();
                 VIEW_HOLDS.clear();
             }
-            ordering = BEFORE.isEmpty() && VIEW_HOLDS.isEmpty() ? 1 : 2;
+            ordering = BEFORE.isEmpty() && CHECKED.isEmpty()
+                    && VIEW_HOLDS.isEmpty() ? 1 : 2;
         }
     }
 }

@@ -32,6 +32,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -187,6 +188,7 @@ public final class ConfirmMain {
         summary.addProperty("rootAssignments", world.assignments.size());
         summary.addProperty("clockDeltas", world.clockDeltas.size());
         summary.addProperty("expectedEdges", edges.size());
+        summary.addProperty("checkedOrders", checkedOrders(edges));
         summary.add("schedulePrefix", cut.toJson());
         return summary;
     }
@@ -483,11 +485,23 @@ public final class ConfirmMain {
         summary.addProperty("clocks", world.clockDeltas.size());
         summary.addProperty("answers", world.answers.size());
         summary.addProperty("orders", orders.size());
+        summary.addProperty("checkedOrders", checkedOrders(rows));
         summary.addProperty("realizedOrders", realized.size());
         summary.addProperty("clockReadings", context - planted);
         summary.addProperty("fatalArms", rows.size() - context);
         summary.addProperty("placeholderPairings", placeholders);
         return summary;
+    }
+
+    private static int checkedOrders(List<JsonObject> edges) {
+        int checked = 0;
+        for (JsonObject edge : edges) {
+            if (RecordingPlant.ORDER.equals(optionalString(edge, "kind"))
+                    && RecordingPlant.checked(edge)) {
+                checked++;
+            }
+        }
+        return checked;
     }
 
     private static JsonObject assignedRoot(String rootId, String value,
@@ -659,6 +673,30 @@ public final class ConfirmMain {
 
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
+        JsonObject decided = decision(claimFile, worker, sessions);
+        Path edges = worker.resolve(Confirmation.FILE);
+        int checked = Files.isReadable(edges)
+                ? checkedOrders(RowCodec.readJsonl(edges)) : 0;
+        if (checked == 0) return decided;
+        int observed = 0;
+        String sessionId = optionalString(decided, "sessionId");
+        Path gaps = sessionId.isEmpty() ? null
+                : sessions.resolve(sessionId).resolve(SessionDir.GAPS);
+        if (gaps != null && Files.isReadable(gaps)) {
+            for (JsonObject gap : RowCodec.readJsonl(gaps)) {
+                if (GapKind.ORDER_OBSERVED.name().equals(
+                        optionalString(gap, "kind"))) {
+                    observed++;
+                }
+            }
+        }
+        decided.addProperty("ordersChecked", checked);
+        decided.addProperty("ordersObserved", observed);
+        return decided;
+    }
+
+    private static JsonObject decision(Path claimFile, Path worker,
+                                       Path sessions) throws IOException {
         List<JsonObject> results =
                 RowCodec.readJsonl(worker.resolve(ObligationDir.RESULT));
         JsonObject result = results.isEmpty() ? new JsonObject()
@@ -986,9 +1024,10 @@ public final class ConfirmMain {
             if (first.occurrence.id().equals(then.occurrence().id())) {
                 return null;
             }
-            Hold hold = held(then, thenSeq);
+            Hold hold = held(first, then, thenSeq);
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
+            if (hold.checked) holding.checked.add(order);
             holding.cone.add(first.occurrence);
             holding.cone.add(hold.occurrence);
             if (thenSeq < first.seq) {
@@ -1030,27 +1069,35 @@ public final class ConfirmMain {
         private static final class Hold {
             private final OccurrenceAddress occurrence;
             private final String activation;
+            private final boolean checked;
 
-            private Hold(OccurrenceAddress occurrence, List<Frame> frames) {
+            private Hold(OccurrenceAddress occurrence, List<Frame> frames,
+                         boolean checked) {
                 this.occurrence = occurrence;
                 this.activation = Confirmation.activation(occurrence,
                         ExecutionIndex.of(frames));
+                this.checked = checked;
             }
         }
 
-        private Hold held(Endpoint event, long seq) {
+        private Hold held(Exit first, Endpoint event, long seq) {
             Endpoint send;
             try {
                 send = Confirmation.submitter(event.occurrence(),
                         activations::get, servingTasks);
             } catch (IllegalStateException unheld) {
-                throw new Refused(unheld.getMessage());
+                return holdBefore(event, seq, true);
             }
-            return send == null ? holdBefore(event, seq)
-                    : new Hold(send.occurrence(), send.activationFrames());
+            if (send == null) return holdBefore(event, seq, false);
+            if (Confirmation.standsUnder(first.occurrence, send,
+                    activations::get)) {
+                return holdBefore(event, seq, true);
+            }
+            return new Hold(send.occurrence(), send.activationFrames(),
+                    false);
         }
 
-        private Hold holdBefore(Endpoint event, long seq) {
+        private Hold holdBefore(Endpoint event, long seq, boolean checked) {
             List<Frame> own = event.activationFrames();
             List<Frame> hold = own;
             long latest = Long.MIN_VALUE;
@@ -1068,7 +1115,7 @@ public final class ConfirmMain {
             if (hold == own && outermost(event)) {
                 hold = Collections.<Frame>emptyList();
             }
-            return new Hold(event.occurrence(), hold);
+            return new Hold(event.occurrence(), hold, checked);
         }
 
         private StateClosure(SessionReader session) {
@@ -1238,6 +1285,7 @@ public final class ConfirmMain {
         final Set<OccurrenceAddress> cone =
                 new LinkedHashSet<OccurrenceAddress>();
         private final Set<String> orders = new LinkedHashSet<String>();
+        private final Set<String> checked = new LinkedHashSet<String>();
         private final Set<String> chosenOrders = new LinkedHashSet<String>();
 
         private void order(String order, boolean chosen) {
@@ -1356,6 +1404,9 @@ public final class ConfirmMain {
             row.addProperty("kind", "ORDER");
             row.addProperty("before", ends[0]);
             row.addProperty("after", ends[1]);
+            if (holding.checked.contains(order)) {
+                row.addProperty(RecordingPlant.CHECK, true);
+            }
             holding.edges.add(row);
         }
         return holding;

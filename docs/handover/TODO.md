@@ -599,12 +599,17 @@ HZ13-mat, 2026-10-19), each standing behind a workaround or open:
   0002: `2efac300f9e6d4d6` model "1792454828365", run "1792455517516"), while the replay's clocks are not the
   recording's. Open: such a leaf should be held to the model's clock value (planted) or compared by its expression.
 
-**3. REPRODUCE cannot hold a client call issued inside a reply callback** (04, HC21-04 `reproduce.json`: "no native
-run: ORDER_UNHELD" on client0's `FutureUtils#addListener` work item in `AsyncMasterRequestRpcRetryingCaller#doCall`,
-under which `RawAsyncHBaseAdmin#enableTable`'s request is sent). CONFIRM ran it (the witness session is itself the run);
-the native reproducer has no hold for a continuation's work item. Read how CONFIRM holds continuations
-(`runtime/Continuations`, IDENTITY §6) and give REPRODUCE the same; or, under the workaround rule, make the observer's
-enable a synchronous call in automatic mode (named in STATUS).
+**3. An order no hold realizes is checked, not refused (built 2026-10-20, H3; verify on 04).** HC21-04's
+REPRODUCE planted nothing ("ORDER_UNHELD" on client0's `FutureUtils#addListener` continuation in
+`AsyncMasterRequestRpcRetryingCaller#doCall`). The chosen read (the flush's `TableStateManager` table-state map at
+the DisableTableProcedure step's DISABLED write) orders every other writer before that step; the step is a hand-off
+task that serves the procedure scheduler, so its hold walks to its anchor's producer, the test's DisableTable
+request, which is sent inside a continuation (claimed, no producer); and the same procedure's DISABLING step stands
+under that request's anchor, so a hold there would have waited on its own effect. CONFIRM had no such hold either:
+HC21 confirmed only because its selected session was itself the run. Now such an order is checked at its later
+end's own activation (`check: true`, PIPELINE §10/§10b): observed in order or a mismatch, never waited for.
+Open: a hold at a send whose earlier end depends on that send through work no anchor chain names (a continuation
+registered by its reply) still waits until the order's timeout.
 
 **4. A free `unsupported__` leaf in the seed's own fatal** (15): TODO "Solr: after SGF9" §5 has the mechanism and the
 WIP (`hbase-reask` 231264aad).

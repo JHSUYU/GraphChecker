@@ -12,6 +12,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionLogs;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -39,6 +40,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -831,5 +833,53 @@ public class ConfirmMainTest {
             held.add(order);
         }
         return held;
+    }
+    @Test
+    public void anOrderNoHoldRealizesIsCheckedWhereItsLaterEndRuns()
+            throws Exception {
+        Endpoint send = endpoint(PRODUCER, "a.Convert#send()#3:SEND");
+        Object[][] rows = {
+                {"held where it runs", null, null, reader.activation(),
+                        false},
+                {"held at the send that started it", send, null,
+                        send.activation(), false},
+                {"no send started it", null, null, reader.activation(), true},
+                {"its writer stands under that send", send, send,
+                        reader.activation(), true},
+        };
+        for (int index = 0; index < rows.length; index++) {
+            Object[] row = rows[index];
+            String name = (String) row[0];
+            Path iteration = iteration();
+            List<ActivationRow> activations = new ArrayList<ActivationRow>();
+            if (index > 0) {
+                activations.add(ActivationRow.of("sel", anchor, "TASK.r",
+                        false, true, ActivationRow.CLAIMED + "pool#1",
+                        ActivationRow.ClaimKind.QUEUED_TASK,
+                        (Endpoint) row[1]));
+            }
+            if (row[2] != null) {
+                activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                        false, true, "thread-7",
+                        ActivationRow.ClaimKind.NONE, (Endpoint) row[2]));
+            }
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").activations(),
+                    activations, RowCodec::writeActivation);
+            Path out = folder.newFolder("checked-" + index).toPath();
+            ConfirmMain.write(iteration, claim("M_J_clock.sel"), manifest(),
+                    out);
+            int orders = 0;
+            for (JsonObject edge : edges(out)) {
+                if (!"ORDER".equals(edge.get("kind").getAsString())) continue;
+                orders++;
+                assertEquals(name, writer.activation(),
+                        edge.get("before").getAsString());
+                assertEquals(name, row[3], edge.get("after").getAsString());
+                assertEquals(name, row[4], RecordingPlant.checked(edge));
+            }
+            assertEquals(name, 1, orders);
+            folder.delete();
+            folder.create();
+        }
     }
 }

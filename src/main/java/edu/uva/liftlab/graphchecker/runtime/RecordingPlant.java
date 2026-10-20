@@ -30,12 +30,14 @@ public final class RecordingPlant {
     static final String HOLDING = "PLANT_HOLDING";
     static final String UNHELD = "PLANT_UNHELD";
     static final String LATE = "PLANT_LATE";
+    static final String OBSERVED = "PLANT_OBSERVED";
     static final String UNWRITTEN = "PLANT_UNWRITTEN";
     static final String FATAL = "PLANT_FATAL";
     public static final String ROOT = "ROOT";
     public static final String ORDER = "ORDER";
     public static final String VIEW_HOLD = "VIEW_HOLD";
     public static final String SCOPE = "scope";
+    public static final String CHECK = "check";
     public static final String TARGET = "TARGET";
     public static final String CLOCK_SITE = "CLOCK_SITE";
     public static final String ANSWER = "ANSWER";
@@ -83,6 +85,12 @@ public final class RecordingPlant {
 
     static boolean planting() {
         return PLANTING;
+    }
+
+    public static boolean checked(JsonObject order) {
+        JsonElement check = order.get(CHECK);
+        return check != null && check.isJsonPrimitive()
+                && check.getAsBoolean();
     }
 
     static String file() {
