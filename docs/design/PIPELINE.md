@@ -3534,7 +3534,10 @@ with it is a `RUN_DEFECT`.
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it, and `value`, the arm's `texts` entry for a delivery into the
-  anchor), `STATE` per read of the anchor's join closure (each reached
+  anchor whose delivered term names a root the claim's valuation moved, `ComposedFamilies#texts`:
+  a recording's text or a clock's reading is no value the model states, so the run is not held to it
+  -- hbase-bugs-master-active-time HZ13 refuted a fault claim on the old master's active time, a
+  recorded text the report carried, against the replay's own clock), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
