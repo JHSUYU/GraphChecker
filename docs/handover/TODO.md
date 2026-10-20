@@ -626,21 +626,78 @@ f9340f2aab). Reaching 13 needs a model of a Put -> store -> Get (a STORE door ke
 ZooKeeper's store is keyed by path) and a workload that drives the janitor, as 04 drives the quota observer.
 
 
-**10. A znode's absence as state: tombstone lives + a store-read pairing flip** (H2 design, lead 2026-10-19: not
-built until a case's chain needs a read in an absent window; it serves Solr and HBase alike). Today neither system
-states absence: a delete takes only its parent's WRITE turn, a NoNode `getData` throws before the read hook, an
-`exists` of no node is a trace row only (`MessageDoors#read` returns for version < 0), and a re-create starts a new
-location life (`path#k`). (a) One location per path with (life, version) states: a create opens life k, a delete
-(a multi's delete op too) and every ephemeral of a closed or expired session (the expirer and the client's close ask
-the in-process server for the session's ephemerals) file a TOMBSTONE write ending it, a NoNode read is a STORE_READ
-of that tombstone (before any create: INITIAL absent), and a read's eligible writers are the path's creates, sets,
-deletes and expiries across lives; table tests in `MessageDoors`/`RecordedStore`, a Solr regression check (~half a
-day). Alone it moves nothing: a store read is held at the version its session read (CONFIRM's STATE row), so it only
-makes deleters writers in the chain and an absent read a held row. (b) A store-read pairing flip, `PairingFlip`
-generalized from VIEW reads to plain store reads: the replay holds the reader's READ turn until the asked version's
-WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it as `PAIRING_UNTAKEN` as for views
-(`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
-(`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
+**10. A znode's absence as state: tombstones, a store-read pairing flip, and a callback anchored before its read**
+(H2 design, lead 2026-10-19; E3 read the mechanism and both workloads 2026-10-20, owner ruling the same day: "不管咋样，
+产出一个差不多的.smt就行" -- not built; 24 and 37 keep their UNSAT `.smt`, vacuous for this reason, as their result).
+It serves Solr and HBase alike; only HBase's tree would call the new doors.
+
+*What states absence today: nothing.* A delete takes only its parent's WRITE turn (`MessageDoors#storingChild`) and
+files no row (`RecoverableZooKeeper#causynthDeleted` is an empty door; a multi's `causynthWrote` files only its
+creates and sets); a NoNode `getData` throws inside `getDataRetrying` before `causynthRead`; an `exists` of no node
+reaches `MessageDoors#read` at version -1, which returns; a re-create opens a new location life (`path#k`,
+`MessageDoors#life`).
+
+*Do the workloads have an absent window?*
+- **hbase-adhoc-24** (`ZKProcedureMemberRpcs:210`, `!isPBMagicPrefix(data)`, `data == null` from `ZKUtil#getData`'s
+  NoNode): yes, but only past the coordinator's timeout. The absent window is `ZKProcedureUtil#clearZNodes`'s multi
+  delete of `/hbase/flush-table-proc/acquired/TestFlushTable` in `Procedure#call`'s finally (master0, region
+  `REGION.ae2931d2`, a doors-only activation in the seed). All three region servers host the table's regions, so all
+  three are expected members (the coordinator's `exists` of `acquired/TestFlushTable/{rs0,rs1,rs2}` in NZ3-24's
+  schedule): the member's read can follow the delete only if the coordinator gives up on it, i.e. the
+  `TimeoutExceptionInjector` (`hbase.flush.master.timeoutMillis`, 60000 ms, a `java.util.Timer`) aborts the
+  procedure, the finally clears the znodes, and the held member then reads NoNode -> null -> the throw. A hold of
+  ~60 s plus the VM's cleanup fits `Confirmation.ORDER_TIMEOUT_MS` (300 s). Two facts from NZ3-24's seed
+  (`gc-out/hbase-zk/accept-NZ3-24`, session `seed-result-6152e935`) make it more than (a)+(b): (i) the target's own
+  `getData` is no session row and takes no schedule turn -- the member's watch callback is unawaited work, and the
+  target occurrence (`auto0/rs0 REGION.af7a51a0 ctx:Anchor:67954919bf9ba17a@HBASE_ZK.ZKPROCEDUREMEMBERRPCS$1`,
+  anchorProducer = the coordinator's create SEND of the barrier znode) is opened by that very read: `MessageDoors#fetch`
+  installs the create's message as the callback's first fetched version, `Identity#hopOpened` names the unnamed region,
+  and the read itself was stated (it is not) before the occurrence existed; (ii) so a NoNode read there would install
+  no anchor (or a deleter's), and the occurrence the fatal runs in would not be the declared one.
+- **hbase-adhoc-37** (`MasterAddressTracker:206`, `data == null`): no. The only reader is the test thread's
+  `getActiveMasterInfoPort` after `LocalHBaseCluster#startup` and `waitForMetaOnline`; the only writer of
+  `/hbase/master` is master0's create at activation, before the read in the test's program order; nothing deletes it in
+  the window. The one absent version, before the create, is unreachable (a hold of the create behind the read
+  deadlocks the test's wait for the master). The static `getMasterInfoPort(ZKWatcher)` is called only by
+  `ActiveMasterManager#getActiveMasterInfoPort` (the test, `backupMasterStatus.jsp`), so 37 needs a new workload: a
+  failover (master0 stops, its `/hbase/master` deleted; master1 creates it) with a read on a thread the failover does
+  not order -- e.g. the backup master's status page fetched asynchronously -- and a recording in which that read
+  deterministically sees a node. A synchronous fetch before or after the stop gives no realizable hold.
+
+*The design as E3 would build it* (each part general; the hooks in `RecoverableZooKeeper`):
+- (a) Tombstones. A new door `MessageDoors#deleted(transport, path, owner)` from `delete` (in place of the empty
+  `causynthDeleted`) and from each `DeleteResult` of a multi files a STORE write of the path's current life at the
+  version `TOMBSTONE` (a constant above every ZooKeeper version and below `Integer.MAX_VALUE`, so a pairing ordinal
+  `version + 1` stays an int), with a SEND like `stored`. A NoNode `getData` (caught and rethrown) and a null `exists`
+  state a STORE read of that tombstone when the path's current life has one filed; an absence no filed tombstone names
+  (before any create in the window, or a session's ephemeral the server removed) stays unstated -- INITIAL absent needs
+  an INITIAL row for STORE locations, and ephemerals of a closed or expired session need the in-process server's list:
+  neither is needed by 24. Per-life locations are kept: a tombstone is the last version of its life, so a read of life
+  k pairs with life k's tombstone; a read of life k+1 paired with life k's tombstone (a failover read, 37) needs the one
+  location per path of H2's design.
+- (b) The store-read pairing flip. `PairingFlip#candidates` offers, for the focused occurrence's earliest STORE read of
+  each location, each tombstone of that location the session filed after the read (at most `PER_READ`). The pairing's
+  writer is the version (as a view's, `Confirmation#viewWriter`), not the deleter's endpoint: a tombstone written on a
+  timeout path is a different endpoint (javac copies a finally block per exit, so `sendGlobalBarrierComplete`'s call
+  site differs), and one life has one tombstone. `ConfirmMain#holding` turns it into a `STORE_HOLD` row (reader, reader
+  context, location, version) with the schedule cut before the read; `Confirmation` waits at `MessageDoors#reading`
+  for the reader's first READ turn of that location until the tombstone has been filed (bounded by the order timeout),
+  so no prefix slot is involved (the member takes none); `RowRuntime#storeRead` reports the version to
+  `FocusedReplay#viewRead` (taken, else `PAIRING_UNTAKEN`); `Confirmation#taken` and `Composition#realizedPairings`
+  compare a version writer by the version observed. Composition's world-pairing claim (`ClaimPolicy#worldPairing`,
+  the read in the anchor's occurrence = `FatalPath.ANCHOR`) and CONFIRM then need nothing new. Holding the next life's
+  create behind the reader is not needed by 24.
+- (c) The callback anchored before the read it flips. A watch callback's first children read installs the message of
+  the newest listed child create not yet delivered there (a new `MessageDoors#childrenFetched(transport, parent,
+  children, owner)` from `getChildren`, sharing `fetch`'s install), so 24's member stands on the barrier create from
+  `listChildrenAndWatchForNewChildren` on, its `getData` is a STORE read row of the target occurrence, and a NoNode
+  read leaves the address unchanged (same producer, same `via`, same delivery count). It changes the anchor of every
+  HBase children callback whose first data fetch named another version (the region-server tracker's), so rerun the
+  HBase cases; the narrow alternative is the same door called from `ZKProcedureMemberRpcs#waitForNewProcedures` only
+  (a named tree workaround).
+- Tests: table tests in `MessageDoorsTest`/`ConfirmMainTest` (tombstone version per life, absent read stated only after
+  a filed tombstone, store pairing candidates after the read, the STORE_HOLD row and cut). Estimate: (a) half a day,
+  (b) a day, (c) half a day, then 24's live run (a flip replay of 60 s+ per pairing).
 
 **11. Smaller HBase items.**
 - A native run's anchor drifts upstream (hbase-bugs-master-active-time repro-NZ13-mat: 3/10). All 10 planted runs threw
