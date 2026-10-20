@@ -553,7 +553,7 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
 the agents' handover notes are [hbase-agents/](hbase-agents/) (`H1-H5.md` first session, `second-session-H*.md` second
 session: exact run dirs, snapshots, tree sets, commits). All five of the owner's bugs PASS; every study check has a result
-class except 07, 10 (running at the handover, their §E rows say what they reached).
+class except 07 (running at the handover; its §E row says what it reached).
 
 **1. The owner's exclusive series** (owner 2026-10-20: "最终我们会让每个case独占集群跑一遍，这种极致并行往往可以优化性能"):
 every case once alone on all 14 hosts (workers lift02-15; the head on a host that reaches every worker, never lift02/03 or
