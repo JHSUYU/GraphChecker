@@ -675,6 +675,11 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
   its confirmed identity in 2 of 10 runs and createTable's ENABLED step (`3072f5195129abb3`) in 3, where
   `ProcedureFutureUtil#suspendIfNecessary` suspended a step in one run and not in the other, so the next hand-off nests
   one level deeper or shallower (NR3-04: 3 of 10).
+- A refuted message re-pairing is re-found on every other path, ~10-15 min of COMPOSE+CONFIRM each (hbase-adhoc-31
+  NR8-31: 9 claims, all rs3's executeProcedures consumer re-paired to another session's message, until
+  campaign_max_claims). A sound cross-path exclusion needs a refutation reason that does not depend on the path's world
+  (the same consumer/producer pair may be feasible where the old incarnation's request is really resent); the same
+  family as master-active-time's cross-session constant arms.
 - StaleRuns (COMPOSE frees a value a stale run left concrete) was built and reverted (655b88023): on HZ7-mat it changed
   nothing; rebuild only when a claim's path takes a value through a read whose writer ran paused and runs whole now.
 - Identity of threads libraries start (ZooKeeper's EventThread, Netty loops): per-node Netty groups and timer lineage
