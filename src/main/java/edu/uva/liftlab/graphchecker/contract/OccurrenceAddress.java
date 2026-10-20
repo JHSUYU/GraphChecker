@@ -112,6 +112,14 @@ public final class OccurrenceAddress extends Value {
         return context.isLost();
     }
 
+    public boolean standsUnder(OccurrenceAddress outer) {
+        java.util.List<Frame> above = outer.index.frames();
+        java.util.List<Frame> own = index.frames();
+        return node.equals(outer.node) && context.equals(outer.context)
+                && own.size() > above.size()
+                && own.subList(0, above.size()).equals(above);
+    }
+
     public String render() {
         return node.render() + REGION_MARKER + regionId + CONTEXT_MARKER
                 + context.render() + INDEX_MARKER + index.render();

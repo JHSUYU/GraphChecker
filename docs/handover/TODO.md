@@ -663,6 +663,14 @@ WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it a
   runs stand at `call@0/call@0/...` at the same nesting: the worker's `call@k` drift of item 21, which its design
   removes. The 3 ENABLED-step misses (runs 1, 8, 9) were not examined: `suspendIfNecessary` nesting one level deeper or
   shallower when it suspends a step in one run and not in another remains possible there.
+- Continuations standing apart (0e146608a, IDENTITY §6) moved a request sent from a continuation out of its registrant's
+  occurrence. hbase-bugs-backup-lock-reply-lost fell from PASS (R5-bak) to UNSAT_CLOSED (X214-bak with E2's fix,
+  X216-bakbase without it): PLAN planned the target alone.
+  - Bisect, IMPORT-only runs on hb-int-trees-5: old engine + new tree planned 3 tasks, new engine + old tree 1; first-parent
+    0d280de21 planned 3, 0e146608a planned 1.
+  - Fixed (E2): the reply legs of an occurrence include those of the recorded occurrences standing under its address
+    (PIPELINE §7.2). Look for the same hole wherever a rule keys on "what this occurrence sent or ran": a continuation's
+    events are no longer its registrant's occurrence's.
 - A refuted message re-pairing is re-found on every other path, ~10-15 min of COMPOSE+CONFIRM each (hbase-adhoc-31
   NR8-31: 9 claims, all rs3's executeProcedures consumer re-paired to another session's message, until
   campaign_max_claims). A sound cross-path exclusion needs a refutation reason that does not depend on the path's world
