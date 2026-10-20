@@ -2353,6 +2353,75 @@ public class ExploreTest {
                 ExploreCodec::readObligation);
     }
 
+    @Test
+    public void aDoorEarlierInItsOwnTurnIsAControlProducerOfTheOccurrence()
+            throws IOException {
+        CausalContext started = CausalContext.of("m-create", "HBASE_RPC");
+        OccurrenceAddress client = occurrence("hb/client0", "REGION.door",
+                CausalContext.of(Role.of("CLIENT"), "test", 1), "Admin#create#1");
+        OccurrenceAddress writer = occurrence("hb/master0", "REGION.cached",
+                started, "Manager#addOrUpdate#4");
+        OccurrenceAddress before = occurrence("hb/master0", "REGION.door",
+                started, "Table#put#2");
+        OccurrenceAddress after = occurrence("hb/master0", "REGION.door",
+                started, "Table#put#9");
+        Object[][] table = {
+            {"seed", "seed", "[" + before.render() + "]", 1, 1},
+            {"seed", "s-other", "[]", 0, 2},
+        };
+        for (Object[] row : table) {
+            Path iteration = tree.newFolder().toPath();
+            Map<String, Session> sessions = new LinkedHashMap<>();
+            for (String id : new String[] {"seed", "s-other"}) {
+                sessions.put(id, new Session(iteration, id));
+            }
+            Session own = sessions.get((String) row[0]);
+            Session door = sessions.get((String) row[1]);
+            own.activation(client, false);
+            door.activation(before, false);
+            door.decision(before, "AbstractRpcClient#u66", 1, false, "");
+            own.activation(writer, false);
+            own.decision(writer, "Manager#u3", 1, true, "");
+            own.activation(after, false);
+            own.decision(after, "AbstractRpcClient#u66", 1, false, "");
+            for (Session session : sessions.values()) session.flush();
+            RowCodec.writeJsonl(SessionDir.of(iteration, "seed").schedule(),
+                    Arrays.asList(RowCodec.writeScheduleEvent(ScheduleEvent.of(
+                            1L, ScheduleEvent.Kind.SEND, client.node().render()
+                                    + "|" + client.context().render(),
+                            "HBASE_RPC#REQUEST:MasterService.CreateNamespace",
+                            0, client.id(), "m-create")),
+                            RowCodec.writeScheduleEvent(ScheduleEvent.of(2L,
+                                    ScheduleEvent.Kind.RECV, writer.node()
+                                            .render() + "|"
+                                            + started.render(),
+                                    "HBASE_RPC#REQUEST", 0, "", ""))));
+            Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
+            List<OccurrenceAddress> earlier =
+                    new ArrayList<OccurrenceAddress>();
+            List<OccurrenceAddress> doors = Corpus.read(iteration, null)
+                    .doorsOf("m-create", writer, cut, earlier);
+            List<String> said = new ArrayList<String>();
+            for (OccurrenceAddress each : earlier) said.add(each.render());
+            String label = "door ran in " + row[1];
+            assertEquals(label, "[" + client.render() + "]",
+                    renders(doors));
+            assertEquals(label, row[2], said.toString());
+            assertEquals(label, row[3], cut.getOrDefault(
+                    Corpus.EARLIER_IN_TURN, 0));
+            assertEquals(label, row[4], cut.getOrDefault(Corpus.OWN_TURN,
+                    0));
+        }
+    }
+
+    private static String renders(List<OccurrenceAddress> occurrences) {
+        List<String> rendered = new ArrayList<String>();
+        for (OccurrenceAddress each : occurrences) {
+            rendered.add(each.render());
+        }
+        return rendered.toString();
+    }
+
     private static Obligation named(List<Obligation> obligations,
                                     String site) {
         for (Obligation obligation : obligations) {

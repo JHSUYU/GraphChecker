@@ -1643,22 +1643,42 @@ public final class ClosurePlanner {
         }
     }
 
+    private static String turnSaid(String part, String endpoint) {
+        if (Corpus.EARLIER_IN_TURN.equals(part)) {
+            return " occurrence(s) of this occurrence's own turn ran before"
+                    + " it: each that decided a fault is its control producer,"
+                    + " a fault there can end the turn before it";
+        }
+        if (Corpus.OWN_TURN.equals(part)) {
+            return " occurrence(s) of this occurrence's own turn ran after it"
+                    + " (or in no session beside it), so no fault of theirs"
+                    + " ends the turn before it, and they hold no door of"
+                    + " message " + endpoint + " that started it: they are"
+                    + " what it started";
+        }
+        return " occurrence(s) of turns standing on the message (its"
+                + " handlers) hold no door of message " + endpoint
+                + " that started it: they are what it started";
+    }
+
     private static void doorsOf(Walk walk, Step step, String endpoint) {
         Corpus corpus = walk.corpus;
         Demand demand = step.demand;
         Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
+        List<OccurrenceAddress> earlier = new ArrayList<OccurrenceAddress>();
         List<OccurrenceAddress> doors = corpus.doorsOf(endpoint,
-                demand.occurrence, cut);
+                demand.occurrence, cut, earlier);
         for (Map.Entry<String, Integer> each : cut.entrySet()) {
             step.once(demand.occurrence.id() + "|" + endpoint + "|"
                     + each.getKey(), () -> GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     demand.occurrence.render(), each.getValue()
-                            + " occurrence(s) of " + (Corpus.OWN_TURN.equals(
-                            each.getKey()) ? "this occurrence's own turn"
-                            : "turns standing on the message (its handlers)")
-                            + " hold no door of message " + endpoint
-                            + " that started it: they are what it started"));
+                            + turnSaid(each.getKey(), endpoint)));
+        }
+        for (OccurrenceAddress before : earlier) {
+            if (walk.faulted(before)) {
+                step.next(new Demand(before, CONTROL_PRODUCER, false));
+            }
         }
         OccurrenceAddress sender = corpus.senderOf(endpoint);
         for (OccurrenceAddress door : doors) {

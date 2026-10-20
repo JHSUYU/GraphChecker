@@ -862,14 +862,10 @@ public final class RuntimeSelectedRegionFinalizer {
             byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
         }
         Map<String, Long> seeds = new LinkedHashMap<>();
+        Set<String> cells = scopeMap.receiverCells();
         for (String target : targets) {
-            Set<Integer> objects = new HashSet<>();
-            for (String cell : scopeMap.provenanceCells()) {
-                objects.addAll(objectsOf(program.activations.get(target),
-                        cell, false));
-            }
-            for (Map.Entry<String, Long> read
-                    : store.versionsOf(objects).entrySet()) {
+            for (Map.Entry<String, Long> read : store.versionsOf(receivers(
+                    program.activations.get(target), cells)).entrySet()) {
                 seeds.merge(read.getKey(), read.getValue(), Math::max);
             }
         }
@@ -978,7 +974,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                    RecordedMessages messages,
                                    RecordedStore store,
                                    Collection<String> targets) {
-        Set<String> cells = scopeMap.provenanceCells();
+        Set<String> cells = scopeMap.receiverCells();
         if (store.isEmpty() || cells.isEmpty()) return;
         Map<String, String> byId = new HashMap<>();
         for (String occurrence : program.activations.keySet()) {
@@ -986,11 +982,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         Set<String> crossed = new LinkedHashSet<>();
         for (String target : targets) {
-            Map<String, Object> activation = program.activations.get(target);
-            Set<Integer> objects = new HashSet<>();
-            for (String cell : cells) {
-                objects.addAll(objectsOf(activation, cell, false));
-            }
+            Set<Integer> objects = receivers(program.activations.get(target),
+                    cells);
             int depth = walk.depth(target) + 1;
             askFetches(program, walk, scopeMap, store, byId, target, objects,
                     depth);
@@ -1011,8 +1004,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                     STORE_ITEM_PRODUCER_ADMISSION);
                         }
                     }
-                    for (String door : doorsOf(messages, program,
-                            OccurrenceAddress.parse(writer))) {
+                    for (String door : doorsOf(messages, program, writer)) {
                         String held = byId.get(door);
                         if (held == null || walk.reached.contains(held)
                                 || walk.excluded.contains(held)
@@ -1271,8 +1263,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 served.add(occurrence);
-                Set<String> doors = doorsOf(messages, program,
-                        OccurrenceAddress.parse(occurrence));
+                Set<String> doors = doorsOf(messages, program, occurrence);
                 doors.addAll(messages.replyLegsOf(
                         OccurrenceAddress.parse(occurrence), readers));
                 for (String door : doors) {
@@ -1292,39 +1283,59 @@ public final class RuntimeSelectedRegionFinalizer {
         } while (progressed);
     }
 
-    private static Set<String> doorsOf(RecordedMessages messages,
-                                       StaticProgram program,
-                                       OccurrenceAddress occurrence) {
+    static Set<String> doorsOf(RecordedMessages messages,
+                               StaticProgram program, String served) {
+        OccurrenceAddress occurrence = OccurrenceAddress.parse(served);
         Set<String> doors = new LinkedHashSet<>(messages.doorsOf(occurrence));
         Set<String> stances = messages.doorStancesOf(occurrence);
         Set<String> handlers = messages.handlerStancesOf(occurrence);
         if (stances.isEmpty() && handlers.isEmpty()) return doors;
         String own = ContextShape.Stance.of(occurrence).render();
+        long last = lastRootCall(program.activations.get(served));
+        int earlier = 0;
         int ownTurn = 0;
         int handling = 0;
         Map<String, List<String>> byStance = program.activationsByStance();
         Set<String> asked = new LinkedHashSet<>(stances);
         asked.addAll(handlers);
+        asked.add(own);
         for (String stance : asked) {
             for (String activation : byStance.getOrDefault(stance,
                     Collections.<String>emptyList())) {
                 String id = OccurrenceAddress.parse(activation).id();
                 if (id.equals(occurrence.id())) continue;
-                if (stances.contains(stance) && !stance.equals(own)) {
-                    doors.add(id);
+                if (stance.equals(own)) {
+                    long first = firstRootCall(
+                            program.activations.get(activation));
+                    if (first >= 0L && first < last) {
+                        doors.add(id);
+                        earlier++;
+                    } else {
+                        ownTurn++;
+                    }
                 } else if (stances.contains(stance)) {
-                    ownTurn++;
+                    doors.add(id);
                 } else {
                     handling++;
                 }
             }
         }
+        if (earlier > 0) {
+            planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, occurrence.id() + " earlier in turn",
+                    earlier + " other occurrence(s) of this occurrence's own"
+                            + " turn ran before it: each holding a door that"
+                            + " decided a fault is its control producer, a"
+                            + " fault there can end the turn before it");
+        }
         if (ownTurn > 0) {
             planGap(program.planGaps, GapKind.ADMISSION_GAP,
                     GapClass.DIAGNOSTIC, occurrence.id() + " own turn",
                     ownTurn + " other occurrence(s) of this occurrence's own"
-                            + " turn hold no door of the message that started"
-                            + " it: they are what it started too");
+                            + " turn ran after it, so no fault of theirs ends"
+                            + " the turn before it, and they hold no door of"
+                            + " the message that started it: they are what"
+                            + " it started too");
         }
         if (handling > 0) {
             planGap(program.planGaps, GapKind.ADMISSION_GAP,
@@ -1337,12 +1348,48 @@ public final class RuntimeSelectedRegionFinalizer {
         return doors;
     }
 
+    private static long firstRootCall(Map<String, Object> activation) {
+        long first = -1L;
+        for (long call : rootCalls(activation)) {
+            if (call >= 0L && (first < 0L || call < first)) first = call;
+        }
+        return first;
+    }
+
+    private static long lastRootCall(Map<String, Object> activation) {
+        long last = -1L;
+        for (long call : rootCalls(activation)) last = Math.max(last, call);
+        return last;
+    }
+
+    private static List<Long> rootCalls(Map<String, Object> activation) {
+        if (activation == null) return Collections.<Long>emptyList();
+        List<Long> calls = new ArrayList<>();
+        Object shared = activation.get(SHARED_ADDRESS_ROOT_CALLS);
+        if (shared instanceof Collection) {
+            for (Object call : (Collection<?>) shared) {
+                calls.add(longNumber(call, -1L));
+            }
+        }
+        calls.add(longNumber(activation.get("rootCallId"), -1L));
+        return calls;
+    }
+
     private static boolean readsAFault(List<RootRead> reads) {
         if (reads == null) return false;
         for (RootRead read : reads) {
             if (read.fault) return true;
         }
         return false;
+    }
+
+    private static Set<Integer> receivers(Map<String, Object> activation,
+                                          Collection<String> cells) {
+        Set<Integer> objects = new HashSet<>();
+        for (String cell : cells) {
+            objects.addAll(objectsOf(activation, cell, false));
+        }
+        return objects;
     }
 
     private static Set<Integer> objectsOf(Map<String, Object> activation,

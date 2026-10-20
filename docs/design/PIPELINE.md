@@ -242,9 +242,13 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 
 A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
 read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
-on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
-the other fetches, on its node, of a location what it read was decoded from; each such occurrence is
-admitted, `STORE_FETCH_V1`, `RuntimeSelectedRegionFinalizer#askFetches`); its other captures are
+on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read --
+an object the target read a slice field on, a provenance site's receiver or a declared read's
+(`StaticScopeMap#receiverCells`: hbase-adhoc-34 reads `AuthenticationKey.id` on the key its own
+`refreshKeys` decoded from `/hbase/tokenauth/keys/1`) --, and the other fetches, on its node, of a
+location what it read was decoded from; each such occurrence is admitted, `STORE_FETCH_V1`,
+`RuntimeSelectedRegionFinalizer#askFetches`; the ZooKeeper chain is seeded with the versions of the
+same objects); its other captures are
 woven but never asked, and the seed's log line counts them (`data-flow doors: N store read(s) in the
 M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
 occurrence(s), K admitted only as such`).
@@ -904,7 +908,17 @@ are counted, never dropped silently: `concreteAnchors` states how many
   asynchronous one on its event loop, whose callbacks send the next request of the chain
   (HBase's `RpcConnection#finishCall`; Solr's `Http2SolrClient` listener;
   hbase-bugs-backup-lock-reply-lost: the lock's checkAndMutate goes out of the reply to its location
-  lookup, and its own reply's door is the bug's fault). A control producer contributes no
+  lookup, and its own reply's door is the bug's fault). Its own turn's earlier doors too: every
+  occurrence standing where it stands (its node and causal context: the turn the message that
+  started it began) that ran before it -- PLAN by the recording's root calls (an occurrence's first
+  before the demanded one's last), EXPLORE by the rows of the first session that ran both
+  (`Corpus#doorsOf`'s `earlier`) -- and decided a fault (`CONTROL_PRODUCER`): a fault there can end
+  the turn before it (hbase-bugs-ns-rsgroup-removal: the master's hbase:meta Mutate in
+  CREATE_NAMESPACE_INSERT_INTO_NS_TABLE precedes `TableNamespaceManager#cached`, the writer of the
+  count the removal reads, in the same procedure turn). This only widens what is offered -- no
+  recorded order removes a candidate --: the own turn's occurrences after it (or that ran in no
+  session beside it) stay cut, as before, and both counts are DIAGNOSTIC `ADMISSION_GAP` rows
+  ("earlier in turn", "own turn"). A control producer contributes no
   value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
   six hops of request and queue-item doors behind the store writers' items doubled the plan).
   One door is a value: the SENDER of a message that started the writer of a store version a demand
@@ -2696,6 +2710,27 @@ parse of a shard's hash range, and the composition kept none). Any other refusal
 with its own class; a dropped path is never silent: the claim names every admitted path
 COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
 and an UNSAT says nothing about them.
+
+A FATAL ARM THE RECORDING DID NOT TAKE IS HELD TO ITS RECORDING WHERE NOTHING IT RESTS ON MOVED
+(`Composer#hold`, `Composer.Hold#held`). Where a path's fatal arm -- the published phi of a target row whose
+run did not throw (`observedFatal` false), or the other arm of the symbolic guard it left the way at -- names
+a free leaf of that kind (`SmtLowering#havocLeaves`, through the shared terms), the arm becomes
+`(and fatal (not H))`, H the conjunction over every mover of the arm's published expression
+(`SmtLowering#movers`, the walk every pin asks) at its recorded value: a root at its mint's value in the
+path's session, an attach at its arrival, a re-paired read at its stated join in this path (the read takes
+its observed write: the `joins` entry of each read symbol of that location and version); with no mover the arm
+is `false`. Sound in two parts. (a) In the program the arm's expression is a function of its movers: the
+unmodeled operation computes on operands the expression states, so with every mover at its recorded value
+the expression has its recorded value, the healthy one. (b) CONFIRM plants only movers (roots, clock skews,
+answers, pairings), so a world where every mover is at its recorded value replays the recording and cannot
+be confirmed: excluding it loses no confirmable claim. A read the path states nowhere adds nothing to H by
+(b): the formula never moves it. Three movers have no recorded value H can state, and leave the arm free,
+named (`UNSTATED_VALUE` DIAGNOSTIC on the phi, "not held to its recording"): a clock (or a symbol no mint or
+attach of the session states), a view leaf (it moves with its view's pairing too), and a frame's leaf (it moves
+with the frame's producer, which the walk does not reach). A fatal the recording took is never held. Before,
+the free leaf let `ClaimPolicy#closed` take the run as recorded for a witness: hbase-adhoc-15 HP8-15's seed path,
+whose phi `"OPEN".equals(state)` (an enum read the lowering stated at REF) was a leaf nothing pinned, was
+claimed `FORMULA_SAT` moving nothing, and CONFIRM refuted it.
 
 THE COMPOSER'S HEAP BOUNDS ITS PATHS (`Composer#HEAP_SHARE`, 0.8): once its old generation is past that
 share after a sweep (`HeapWatch#oldGenerationSwept`), the admitted paths not yet composed are left out, each

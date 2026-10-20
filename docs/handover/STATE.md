@@ -40,8 +40,11 @@ shell test on lift11), with docs:
 - scheduler: replays killed by the infrastructure (exit 255 / >128) are re-queued at most twice; a fault flip's replay
   waits behind every other queued entry; one solver key per canonical query text (re-asks answered once, any depth);
 - tools: `tools/analysis/vacuity.py` (is an UNSAT vacuous? CHECKING trap 24).
-Not merged: `hbase-reask` 231264aad (WIP, TODO HBase 4). The agents' branches `hbase-platform`, `hbase-zk`, `hbase-rpc`,
-`hbase-checks` are fully merged (worktrees `/bigtemp/vnr3ne/wt/gc-hb-{platform,zk,rpc,checks,reask}`).
+Second session (2026-10-19 night on): `hbase-reask`'s WIP is finished and merged (8cb3cdfeb: an enum compare over reads that do
+not move is its writer's name; an untaken fatal over an unmodeled operation is held to its recording where nothing it
+rests on moved), with H3's checked orders (93122386b), H4's own-turn earlier doors as control producers (e49ff4485) and
+H2's declared-read receivers for PLAN's fetches (f6e07b3c9). The agents' branches `hbase-platform`, `hbase-zk`, `hbase-rpc`,
+`hbase-checks`, `hbase-reask` are fully merged (worktrees `/bigtemp/vnr3ne/wt/gc-hb-{platform,zk,rpc,checks,reask}`).
 
 **The tree:** `/u/vnr3ne/hbase` branch `gc/hbase-checks` = 985a0dfe91 = the fork's `graphchecker/hbase-checks`
 (`https://github.com/JHSUYU/hbase.git`, pushed): Apache HBase master 1790942bb2 backported to Java 8, with the adapter

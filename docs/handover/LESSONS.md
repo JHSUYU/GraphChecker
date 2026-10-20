@@ -51,6 +51,9 @@ cost us time at least once; the date or the case it came from is named so it can
   after every relaunch.
 - Never `git add -A`; never rebuild a snapshot (`~/gc-run/sgf*`) a run reads; worktree creation over NFS can take
   more than 2 min (run it in the background).
+- Move a branch that a worktree has checked out only inside that worktree (`git -C <worktree> merge --ff-only <commit>`),
+  never with `git branch -f` from another checkout: the ref moves, the worktree's index and files stay behind, and the
+  next fast-forward there carries the stale files as staged changes (2026-10-19 night, the plain `system/hbase` worktree).
 
 - HBase with no WAL (owner 2026-10-19): a master's local region keeps its procedures only in memory until a flush,
   so a standby master that takes over as soon as the active one's znode goes loads the region while the old master is
@@ -192,7 +195,8 @@ dropped as same-thread (15), INITIAL plus BLOCKING (31). Run it on every UNSAT b
 WIRE edges, read the claim's `movedRoots` first. `{}` on the seed path (fatalObserved false) means a symbol in the
 fatal's cone is neither pinned nor a root: an unplaced clock cell (#11 HZ17-mat: master0's activation T0, read only
 in re-runs on another node; fixed 208ac1899, placement by any node of the same JVM clock), or an `unsupported__` leaf
-for an unmodelled operation (HP8-15: `String.equals` with ARGUMENT_DYNAMIC_TYPE_UNMODELED; open, TODO HBase).
+for an unmodelled operation (HP8-15: `String.equals` of an enum read the lowering stated at REF; fixed: an enum read
+that does not move is its writer's name, and a fatal arm the recording did not take is held where nothing it rests on moved).
 
 **A workaround can remove what another fix needs.** Removing `masterSystemTime` from OpenRegionRequest (a clock
 export with no mint row) also removed master0's only clock readings from the seed, which left T0 unplaced (H2).
@@ -208,8 +212,8 @@ cells) are vacuous until a workaround gives them a value the engine tracks (nsrg
 enclosing region's occurrence. Check the seed's observed occurrences before a long run.
 
 **Fault kinds multiply replays.** 10 queued 210 `HBASE_RPC` REQUEST faults (70 client calls x IOException,
-ConnectionClosedException, CallQueueTooBigException), ~10 min of replay each; that, not the 241 refused arms (seconds
-each, decided on the worker), was why it did not converge. Compare a fault kind to the run with NO fault: CQTBE is
+ConnectionClosedException, CallQueueTooBigException), ~10 min of replay each; that, not the 244 refused arms (459 s of
+solver time in all, decided on the worker), was why it did not converge. Compare a fault kind to the run with NO fault: CQTBE is
 rejected before it runs and retried on the same cached location = the recording plus time (cut, H3); a
 ConnectionClosedException clears the master stub cache and the registry's endpoints (kept).
 
