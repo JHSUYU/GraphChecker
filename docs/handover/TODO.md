@@ -729,6 +729,15 @@ claim finishes another order's earlier end before the event (a cycle of entry ho
 its event. NC10-22 (hb-int-5) is the first live run of the entry hold. First runs on the fix: check
 `servingTasks` holds no step start and that no ORDER on a step times out.
 
+**13. COMPOSE orders a client thread's synchronous call past its own later event** (hbase-bugs-ns-rsgroup-removal
+NC7-nsrg, `gc-out/hbase-checks/accept-NC7-nsrg/out/hbase-bugs-ns-rsgroup-removal/schedule/witness-confirm/000*` and
+`final/refuted/000*`). The STATE_PAIRING claims composed there hold the writes of the test thread's synchronous
+`moveServers`/`addRSGroup` calls (`RSGroupInfoManagerImpl#flushConfig > resetRSGroupMap > RSGroupInfoHolder.<init>`) until
+the declared target occurrence (the later CreateTable's group check) exits, which the same client thread can only reach
+after those calls returned (program order of one thread). CONFIRM refutes each after the 300 s order timeout (about 10
+minutes a claim; 4 witness attempts and the final claims of NC7). A model fix states the client thread's program order
+between its synchronous calls (an ORDER no world can reverse is no arm), so such re-pairings are never composed.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,

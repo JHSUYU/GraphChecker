@@ -3409,10 +3409,19 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match, fewest moved fault markers first (`RootCategory.FAULT` roots a witness's
-   valuation moves, `Composition#faultsMoved`), then the order below within each count: a witness
-   injecting no failure is the nearer world, and a refuted fault claim costs a CONFIRM loop (HZ10:
-   77 sat door-marker valuations ranked ahead of the clock world; the two claimed were refuted). First of all, a seed replay that observed the fatal at the declared
+4. The claim, first match. First of all an explored session's own run, at any count of moved
+   fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: the selected session's own run
+   as defined below, a replay that planted those roots, pairings and orders and observed the fatal
+   at the anchor, which CONFIRM confirms as "itself the run"; if CONFIRM refutes it, the claim loop
+   excludes its arms and the next composition takes the order below): a world a replay already ran
+   to the fatal is ahead of every world only the model holds (hbase-bugs-ns-rsgroup-removal NC7:
+   EXPLORE's replay of the namespace Mutate's fault observed the fatal, while every claim composed
+   moved no fault -- STATE re-pairings holding the client's synchronous calls past their own
+   thread's later events, each refused by a 300 s order timeout). Then fewest moved fault markers
+   first (`RootCategory.FAULT` roots a witness's valuation moves, `Composition#faultsMoved`), then
+   the order below within each count: a witness injecting no failure is the nearer world, and a
+   refuted fault claim costs a CONFIRM loop (HZ10: 77 sat door-marker valuations ranked ahead of the
+   clock world; the two claimed were refuted). First of all, a seed replay that observed the fatal at the declared
    occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
    counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
    `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
@@ -3427,8 +3436,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    confirm it as one; `UNPRODUCIBLE_ANSWER` DIAGNOSTIC names the root and the reads, once.
    - a moved valuation that is a witness — under the as-happened pins when the recording decides —
      whose moved roots are in no unattested arm (else DIAGNOSTIC `UNATTESTED_ARM`): its `mechanism`.
-     Within the rank, a witness that is its selected session's own run is claimed first
-     (`ClaimPolicy.Reading#ownRun`: the selected path observed the fatal, every arm the model takes on
+     Its own-run part is asked in the first pass above, so within the rank only the rest is left
+     (`ClaimPolicy.Reading#ownRun`, the test of the own run: the selected path observed the fatal, every arm the model takes on
      it is its own run's pairing, `Composition#repaired`, and the session ran the model's world --
      its moved roots at the model's values, its clocks the model's jumps, no planted pairing,
      `Composition#ranModel`, `explore.Moved#ranBy`, the very test CONFIRM's `realizedBy` confirms

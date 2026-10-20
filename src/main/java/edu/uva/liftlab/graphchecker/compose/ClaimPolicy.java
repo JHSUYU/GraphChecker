@@ -283,6 +283,12 @@ public final class ClaimPolicy {
         for (int faults = 0; claimed == null
                 && faults <= reading.mostFaults(); faults++) {
             reading.faults = faults;
+            claimed = reading.ownWitness(false);
+            if (claimed == null) claimed = reading.ownWitness(true);
+        }
+        for (int faults = 0; claimed == null
+                && faults <= reading.mostFaults(); faults++) {
+            reading.faults = faults;
             claimed = reading.movedRoot(false);
             if (claimed == null) claimed = reading.clockOrPairing();
             if (claimed == null) claimed = reading.movedRoot(true);
@@ -403,11 +409,12 @@ public final class ClaimPolicy {
                             ? "it stated no reason" : reason)));
         }
 
-        Decision movedRoot(boolean configuration) {
-            Decision own = recordingDecides
-                    ? movedAsHappened(configuration, true)
+        Decision ownWitness(boolean configuration) {
+            return recordingDecides ? movedAsHappened(configuration, true)
                     : movedFree(configuration, true);
-            if (own != null) return own;
+        }
+
+        Decision movedRoot(boolean configuration) {
             return recordingDecides ? movedAsHappened(configuration, false)
                     : movedFree(configuration, false);
         }
