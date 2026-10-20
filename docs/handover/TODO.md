@@ -699,6 +699,36 @@ the count read was never demanded and neither the namespace Mutate fault nor the
 demanded read of a container reached through a construction-only field also demands the read of the reference that
 handed its owner on (`Provenance`, PROVENANCE sites), so the handing-on store's writers and guards join the closure.
 
+**13. A continuation's registration as its submitter (designed, parked: no current case needs it).** An order whose
+work's submitter chain (`Confirmation#submitter`) ends at a continuation claim names no send, so it is checked, never
+held (every master admin call is sent inside `AsyncMasterRequestRpcRetryingCaller#doCall`'s `FutureUtils#addListener`
+continuation). Design (H5, 2026-10-20): `Identity#startWork`, for a continuation carrier and when ordering, calls
+`Confirmation.entering` on the registration (the Start key the rows carry as `ActivationRow#threadKey` after `start:`,
+its context normalized as activations are), before the registering call, so the listener runs after the hold whether
+it would run inline or late; `ConfirmMain.StateClosure#held` holds there instead of checking, except where the
+registrant is an event loop or a reply leg, or the earlier end's own chain reaches a later registration of the same
+registrant (program order: the held thread would wait on work it has not issued) -- those stay checked. Measured
+(offline ConfirmMain plans of every refuted claim, `analysis/hbase-2026-10-20/reask/confirm/*.probe`): NC2-22's 30
+orders are all checked because of a client continuation, 22 match natural timing and 8 (one per claim: the deletion's
+release after the creation's count read, the bug's counterfactual) contradict it, and those 8 fall under the
+program-order exclusion (the test thread registers the delete, doCall@5, before the create, doCall@6), so the hold
+would confirm nothing there; HC14/HC15-nsrg: 85 orders, all held where they run, all in natural order. 22's real
+blocker is that its procedure steps are `servingTasks` (item 14).
+
+**14. Procedure steps marked serving by their own continuations (fixed on `hbase-reask`, not yet rerun).** Since tree
+1dda23ecc5 (steps are `HANDOFF_TASK`s) and engine 28ec6763b (a continuation's claim is never run-here, so always
+consumed), every step's own hbase:meta write -- `AsyncSingleRequestRpcRetryingCaller#doCall:108` /
+`AsyncRegionLocator#getRegionLocation:158` -> `FutureUtils#addListener:64` on a done future, its listener run inline on
+the PEWorker -- made `State#openStart` mark the step serving (NE3-22's seed replay, a debug snapshot of 8b4ae7a9f: all 5
+claim kinds that marked a step were same-thread continuations; no item claim did), so every ORDER on a step went to the
+client's send or was checked. Now only work another thread started (or an unknown or ended starter) marks a hand-off
+serving. Offline on NC5-22 `refuted/0000` with its session's step starts dropped from `servingTasks` as the rule now
+drops them (`analysis/hbase-2026-10-20/reask/confirm/nc5-22-0000-{orig,sim}`): its 3 ORDER rows go from check:true
+(through the client continuation) to held where they run, the deletion's release at the DeleteTableProcedure step.
+Seeds with step starts in `servingTasks` before the fix: 22 (27), 10 (48), 14 (54), 04 (12), mat (12), nsrg (3-4), 35
+(4), 28 (3), 34 (3); 04 keeps its PASS (confirmed under the old rule; the change only adds holds). First runs on the
+fix: check `servingTasks` holds no step start, and that a held step does not wait on a lock its earlier end needs.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
