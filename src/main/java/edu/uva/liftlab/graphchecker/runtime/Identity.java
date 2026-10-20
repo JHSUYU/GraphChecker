@@ -431,6 +431,7 @@ public final class Identity {
         private final String requestVerb;
         private MessageDoors.Inbound inbound;
         private boolean aside;
+        private boolean apart;
 
         private ClaimScope(State state, boolean continuation) {
             this.serial = state.claimSerial;
@@ -470,7 +471,12 @@ public final class Identity {
                 : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
                 : ClaimKind.QUEUED_TASK;
         state.openStart(start, own, ranHere, kind);
-        if (continuation) state.standApart();
+        if (continuation || !own && kind == ClaimKind.HANDOFF_TASK) {
+            state.standApart();
+            if (!state.claimScopes.isEmpty()) {
+                state.claimScopes.peek().apart = true;
+            }
+        }
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
@@ -635,11 +641,13 @@ public final class Identity {
         state.starter = scope.starter;
         state.adopted = scope.adopted;
         state.unnamedAt = scope.unnamedAt;
-        if (scope.continuation) {
+        if (scope.continuation || scope.apart) {
             while (state.regions.size() > scope.regions) {
                 state.regions.remove(state.regions.size() - 1);
             }
             state.scopeBase = scope.scopeBase;
+        }
+        if (scope.continuation) {
             state.requestVerb = scope.requestVerb;
             if (scope.aside) MessageDoors.putBack(scope.inbound);
         }

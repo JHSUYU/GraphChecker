@@ -224,9 +224,22 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   origin: the inbound scope for `ANCHOR` (which pooled handler serves a request is scheduling, not
   identity), the scope start for `SCOPE_ROOT` (a request, a carried scope, a wake turn), the claimed
   start frame for `STARTED_ROOT` (a daemon tick). A claimed start opens no scope
-  (`RuntimeTraceContext#claimCarried`): a task's index runs from the claiming thread's base (a pool
-  worker's own) through its start frame and holds none of the starter's frames, so two starts from
-  one site in two calls of the method holding it can share an address.
+  (`RuntimeTraceContext#claimCarried`). Its frames stand above the claiming thread's levels
+  (`State#openStart`): the starter's frames from the starter's scope base plus the start frame,
+  for work another thread started; the start frame alone, for the thread's own start or work its
+  starter runs inline (ran here).
+  - A queued task or a queue item: the index runs from the claiming thread's base, a pool worker's
+    own, through those frames.
+  - A hand-off task (`HANDOFF_TASK`, work another thread started) stands apart, as a continuation
+    does (§6, `State#standApart`): its scope base is the claim's depth, below an opaque region, and
+    `Identity#endClaim` restores both. Its index is its start's frames plus what runs after the
+    claim, and holds none of its worker's own frames.
+  - Why: a PEWorker enters `TraceUtil.trace(this::runProcedure)`'s lambda `call()` between its poll
+    wake and the step's claim, at `call@k`, where `k` counts that worker's steps since its last wake.
+    Each next step's start, filed inside the claim, carried it, so one step on a busier worker
+    renamed every later step of its procedure (TODO HBase 21: hbase-adhoc-10's sessions activated
+    7-8 of the seed plan's 41 createTable-chain steps; hbase-adhoc-04's disable step stood at
+    `call@1/...` in 2 of 10 native runs).
 - **Occurrence index** = frames from the scope base to the region entry (`#regionEnter`); for an
   occurrence a hop named (§1), the frames from the hop's scope base to where the hop opened, empty
   for a hop opened in the region's own method. Its events are indexed from its entry's base, as
@@ -450,7 +463,7 @@ reply-leg occurrence of the previous call's response. Both take one path, so bot
 address and in one schedule context: the claim is never run-here (it stands on copies of the
 start's frames, which become its scope base, whichever thread runs it), it stands apart from
 whatever occurrence its thread runs (`State#standApart`: an opaque region below which no region
-folds), and the thread's inbound and request in hand are put aside until the claim ends
+folds; a hand-off task's claim stands apart alike, §3, without the rest of this paragraph), and the thread's inbound and request in hand are put aside until the claim ends
 (`MessageDoors#setAside`), so a request the continuation makes starts a level of its own in the
 registrant's context. The start is named by the registration site and the first caller outside
 the registering class (`Continuations#registrant`: `FutureUtils#addListener`'s
@@ -1062,7 +1075,8 @@ by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose thei
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
 randomness is keyed by the schedule context (before the window by node and handoffs), site and
 count, never by an occurrence a GROW may rename, equal in both passes where one thread alone draws
-under that key (SYMBOL-SCOPE.md §4.5).
+under that key (SYMBOL-SCOPE.md §4.5). Across runs, which worker claims a hand-off and what that
+worker ran before is timing, so a hand-off task's address holds none of its worker's frames (§3).
 
 ## 11. Current limits
 

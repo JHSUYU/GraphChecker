@@ -3747,7 +3747,14 @@ with it is a `RUN_DEFECT`.
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other
   writer of the location the held write is of before the writer or after the reader, held alike, and
-  for an INITIAL the model chose every writer of the location after the reader), `MARKER`
+  for an INITIAL the model chose every writer of the location after the reader. Only a write row of
+  the selected session names such a writer. A store that ran outside every activation in that
+  session (`UNATTRIBUTED_STORE`) has no row, so no order holds it, and the run's read of its version
+  is the `CONFIRM_MISMATCH` "stored outside every activation, which no ORDER holds". A CONFIRM
+  replay runs the iteration's seed plan as every replay does, so such a writer is one the plan
+  names under another address, or none. hbase-adhoc-10's `TransitRegionStateProcedure#confirmOpened`
+  steps were the first: their addresses carried their workers' frames until a hand-off claim stood
+  apart (IDENTITY §3, TODO HBase 21)), `MARKER`
   per planted marker, `ANCHOR`. Endpoints and activations are named as every delivery of their
   stored message is (`Confirmation#id`, `OccurrenceAddress#anyDelivery`: a watcher's second
   delivery of one version, `KIND.n`, is the store's timing, so a run that took one delivery where
