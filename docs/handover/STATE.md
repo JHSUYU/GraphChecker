@@ -66,7 +66,7 @@ active master.
 | hbase-adhoc-08, 10, 11, 12, 14, 15, 31 | named bound: SAT_UNCONFIRMED at the claim cap or budget, every claim refuted by CONFIRM (mostly the client thread's program order, TODO HBase 15; 10: a later writer outside every activation, TODO HBase 21) | checks NC14-08; rpc NR19-10, NR18-11, NR16-12, NR8-31; platform NP10-14, NP9-15 |
 | hbase-adhoc-24 | **SAT, CONFIRMED in the VM**: STATE_PAIRING_FLIPPED, no moved root -- the member's barrier read held past the coordinator's timeout cleanup reads no node (TODO HBase 10); not reproduced natively (no native STORE_HOLD) | e10 X105-24 |
 | hbase-adhoc-37 | UNSAT, vacuous: its workload has no absent window (TODO HBase 10) | zk HZ2-37 |
-| hbase-adhoc-13 | RUN_DEFECT: guard stated (tree workaround), seed replay drifts at the second merge (TODO HBase 19) | platform NP18-13 |
+| hbase-adhoc-13 | UNSAT, vacuous: the seed's order holds now (TODO HBase 19 fixed, tree finished-step hand-off); the .smt's check read states no version (the VM's map writer set incomplete) | e19 X193-13 |
 | hbase-adhoc-07 | no verdict: stopped at EXPLORE round 25 (1811 verdicts, 469 in flight; replays ~22 min, 3.7 GB); the exclusive run decides | platform NP20STOP-07-exclusiveDecides |
 
 **Where things are:** the second session's briefs, helpers and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/`

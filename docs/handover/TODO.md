@@ -668,8 +668,12 @@ by that very read (its first fetch), so the read was no row and a NoNode read wo
   (LINEAGE_LOST 56 named rows; their getData rows stand on no node): a ZooKeeper event thread of a server started before
   its registration is no node's; check `CausynthNodes` registration of `ZKWatcher` event threads if a case needs them.
 - A procedure step that only met a busy entity lock (`LOCK_EVENT_WAIT`) or yielded is a step too, so where two
-  procedures contend the later steps' occurrences can be renumbered between runs; if a case shows it, hand the next step
-  off from the empty step's own hand-off context. Shown natively by hbase-adhoc-04 (owner ruling: 7/10 is a PASS, not
+  procedures contend the later steps' occurrences can be renumbered between runs; the general fix: hand the next step
+  off from the empty step's own hand-off context. hbase-adhoc-13 showed it in its seed (X192-13: the second merge's prepare
+  ran at `handOff#u18@2/CausynthStep run()#u23@0/...`, planned `handOff#u18@2/lambda run@0/...`), because a procedure's
+  finish and lock release make no event and the replay let the next procedure's step meet a lock the recording had seen
+  released; worked around in the tree (STATUS "tree: a finished procedure's last hand-off"), which orders the release,
+  not the renumbering where timing still contends (CONFIRM, natives). Shown natively by hbase-adhoc-04 (owner ruling: 7/10 is a PASS, not
   pursued): in repro-NR4-04 the DisableTableProcedure's DISABLED step (activation `4fb72968fe9e4893`) never ran under
   its confirmed identity in 2 of 10 runs and createTable's ENABLED step (`3072f5195129abb3`) in 3 (NR3-04: 3 of 10).
   The 2 DISABLED-step misses are not a nesting difference. In runs 4 and 6 (`final/reproduce/run-*/runtime_trace.jsonl`)
@@ -862,7 +866,8 @@ passed, 1374 given up). Fixed in `ScheduleLog#pastItsLoopLocked` (IDENTITY §8).
 waiting thread's own sites, but a recorded slot names no thread, so a task run on another thread under its submitter's
 context (`CatalogJanitor#triggerNow`'s chore under the test thread's) could still be passed by the submitter's next event
 at a site it made itself; telling them apart needs the thread in the schedule's rows. No current case shows it (13's
-workload runs the janitor's scan on the test thread).
+workload runs the janitor's scan on the test thread). 13's seed holds its order now (X193-13); what keeps 13 vacuous is its check's
+read, which states no version (HBASE.md §E): the next step there is a seed replay with the VM's shared-state capture kept.
 
 **20. The formula pins a moved root to the one value its replay ran** (H2; hbase-bugs-master-active-time NZ10-mat,
 NZ11-mat). master0's T0 is the constant 1700000000000 and master1's T1 = 1700000002000 + `.later`, so the fatal holds for
