@@ -23,8 +23,8 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json`, `compose_inputs.sha256` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
 | CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json`; a refuted claim's row in `refuted_claims.jsonl` | never (a failure is "unconfirmed"; after a refutation, while the budget has room, COMPOSE..CONFIRM run again for the next claim, the refuted one in `final/refuted/NNNN/`, §10) |
+| REPRODUCE | `campaign_reproduce` after each confirmed claim, before EMIT; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool; `campaign_unreproduced`, `campaign_fallback` | `final/reproduce/`, `final/reproduce.json`; `final/unreproduced/NNNN/`, `final/fallback.json` | never (a claim reproduced in 0 runs is kept as the fallback and the next claim composed, §10b) |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed |
-| REPRODUCE | `campaign_reproduce`; `explore.ConfirmMain --plant`, `reproduce_runs` native runs with the plant over the worker pool | `final/reproduce/`, `final/reproduce.json` | never (it ranks a finding, and moves no claim) |
 | — | `campaign_exit_verdict` (reads `result.json`) | — | exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -3849,9 +3849,20 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 
 ## 10b. REPRODUCE: the confirmed world, natively
 
-After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
-`SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
-VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map
+After CONFIRM confirmed a `SAT_CANDIDATE`, before EMIT, it is run again on the stock JDK, in the
+recording weave, with nothing of the concolic VM (`campaign_reproduce`). A confirmed claim that
+reproduced in 0 of its native runs (`runs` > 0; a claim with no native run at all is not judged so)
+is kept as the campaign's fallback verdict and excluded (`campaign_unreproduced`: its model joins
+`refuted_claims.jsonl` with `outcome` `unreproduced`, its artifacts move to
+`final/unreproduced/NNNN/`), and the claim loop composes the next claim, within the same budget room
+and `campaign_max_claims` bound as a refuted claim (§10; both kinds count); the first confirmed claim
+that reproduces in at least one run ends the loop and is the verdict. If none does, the first kept
+claim stands (`campaign_fallback`: `final/unreproduced/0000/` is copied back into `final/`, what the
+loop ended on moved to `final/superseded/`), and `final/fallback.json` `{fallback, stood, superseded,
+reason}` names it either way; `report.py` names the fallback and the reproduction in its row
+(hbase-adhoc-22 NC5: the first confirmed claim was an EXPLORE replay whose fault only shifted timing,
+reproduced 0/10, while the bug's own STATE claim waited behind it). Every case gets the same rule:
+a study check's reproduction only adds to its verdict. `ConfirmMain --iteration --claim --manifest --static-scope-map
 --confirmed-session <dir> --plant <file>` writes the plant from a subset of what CONFIRM itself
 plants and holds (`ConfirmMain.Witness`, the one reading of the claim both make: the selected
 session's world under the model's moved roots, and the edges the model chose; of CONFIRM's holds,

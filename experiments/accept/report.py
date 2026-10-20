@@ -347,6 +347,15 @@ if buggy != "-" or other != "-":
 note = " ".join(note.split())
 if len(note) > 180:
     note = note[:177] + "..."
+reproduction = load("reproduce.json")
+if reproduction.get("runs"):
+    note += " | reproduced %s/%s natively" % (reproduction.get("reproduced", 0),
+                                              reproduction.get("runs"))
+fallback = load("fallback.json")
+if fallback:
+    note += " | FALLBACK %s" % ("stood: no later claim reproduced"
+                                if fallback.get("stood")
+                                else "kept aside: a later claim reproduced")
 
 status_path = os.path.join(work, "status")
 exit_code, elapsed = "?", "?"
@@ -575,6 +584,13 @@ if cone:
                    % (len(off), ", ".join("`%s`" % v for v in sorted(set(off)))))
     out.append("")
 
+
+if fallback:
+    out += ["## Fallback", "",
+            "A confirmed claim that reproduced in 0 native runs is kept as the"
+            " fallback verdict and excluded, and the claim loop composes on"
+            " (fallback.json): %s -- %s" % (fallback.get("fallback", "?"),
+                                          fallback.get("reason", "")), ""]
 
 if refuted:
     out += ["## Refuted claims", "",

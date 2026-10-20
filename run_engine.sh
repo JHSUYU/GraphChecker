@@ -6705,8 +6705,31 @@ campaign_last_round_millis() {
   [[ -z "${last}" ]] || echo "${last}"
 }
 
+campaign_claim_artifacts=(candidate.smt2 candidate_composition_manifest.json
+  claim.json compose_inputs.sha256 compose.log confirm confirm.json reproduce
+  reproduce.json)
+
+campaign_claims_decided() {
+  local kind count total=0
+  for kind in refuted unreproduced; do
+    count=$(find "${campaign_final}/${kind}" -mindepth 1 -maxdepth 1 \
+      2>/dev/null | grep -c '' || true)
+    total=$(( total + count ))
+  done
+  echo "${total}"
+}
+
+campaign_move_claim() {
+  local into=$1 name
+  mkdir -p "${into}"
+  for name in "${campaign_claim_artifacts[@]}"; do
+    [[ ! -e "${campaign_final}/${name}" ]] \
+      || mv -- "${campaign_final}/${name}" "${into}/"
+  done
+}
+
 campaign_next_claim() {
-  local iteration_dir=$1 dir name model seen=0 decided
+  local iteration_dir=$1 dir model seen=0 decided refuted
   [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
     && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" != true ]] \
@@ -6725,21 +6748,88 @@ the next composition could repeat it, so there is no next claim"
 has no room for another claim"
     return 1
   fi
-  decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
-    2>/dev/null | grep -c '' || true)
+  decided=$(campaign_claims_decided)
   if (( decided >= campaign_max_claims )); then
     campaign_log "the claim was decided again ${decided} time(s), the bound \
 (campaign_max_claims=${campaign_max_claims}): the last claim is published"
     return 1
   fi
-  dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${decided}")
-  mkdir -p "${dir}"
-  for name in candidate.smt2 candidate_composition_manifest.json claim.json \
-      compose_inputs.sha256 compose.log confirm confirm.json; do
-    [[ ! -e "${campaign_final}/${name}" ]] \
-      || mv -- "${campaign_final}/${name}" "${dir}/"
-  done
+  refuted=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${refuted}")
+  campaign_move_claim "${dir}"
   campaign_log "the claim was excluded (${dir}): composing the next one"
+}
+
+campaign_unreproduced() {
+  local iteration_dir=$1 reproduce="${campaign_final}/reproduce.json"
+  local runs kept decided dir model
+  [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
+      == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
+    && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" == true \
+    && -s "${reproduce}" ]] || return 1
+  runs=$(jq -r '.runs // 0' "${reproduce}")
+  [[ "${runs}" =~ ^[0-9]+$ ]] || runs=0
+  (( runs > 0 )) \
+    && [[ "$(jq -r '.reproduced // 0' "${reproduce}")" == 0 ]] || return 1
+  if ! campaign_claim_room; then
+    campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s), and the campaign budget (campaign_budget_s=${campaign_budget_s}) has \
+no room for another claim"
+    return 1
+  fi
+  decided=$(campaign_claims_decided)
+  if (( decided >= campaign_max_claims )); then
+    campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s), and ${decided} claim(s) were decided, the bound \
+(campaign_max_claims=${campaign_max_claims})"
+    return 1
+  fi
+  kept=$(find "${campaign_final}/unreproduced" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  dir=$(printf '%s/unreproduced/%04d' "${campaign_final}" "${kept}")
+  model=$(campaign_claim_model "${campaign_final}/claim.json")
+  [[ -n "${model}" ]] || return 1
+  jq -n -c --argjson model "${model}" --arg claimed "${dir}" \
+    --arg reason "confirmed in the VM, reproduced in 0 of ${runs} native \
+run(s): kept as a fallback verdict and excluded, so the next claim is tried" \
+    '{schemaVersion: 1, kind: "REFUTED_CLAIM", model: $model,
+      claimed: $claimed, outcome: "unreproduced", reason: $reason}' \
+    >>"${iteration_dir}/refuted_claims.jsonl"
+  campaign_move_claim "${dir}"
+  campaign_log "the confirmed claim reproduced in 0 of ${runs} native \
+run(s): kept $( (( kept == 0 )) && echo "as the fallback verdict" \
+    || echo "beside the fallback") (${dir}) and excluded: composing the next \
+one"
+}
+
+campaign_fallback() {
+  local fallback="${campaign_final}/unreproduced/0000" stood=true
+  local superseded="" reason
+  [[ -d "${fallback}" ]] || return 0
+  if [[ "$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}" \
+        2>/dev/null)" == SAT_CANDIDATE \
+      && "$(jq -r '.confirmed' "${campaign_final}/confirm.json" 2>/dev/null)" \
+        == true \
+      && "$(jq -r '.reproduced // 0' "${campaign_final}/reproduce.json" \
+        2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+    stood=false
+    reason="a later claim reproduced natively: it is the verdict, and the \
+fallback stays beside it"
+  else
+    superseded="${campaign_final}/superseded"
+    campaign_move_claim "${superseded}"
+    cp -r -- "${fallback}"/. "${campaign_final}/"
+    reason="no later claim reproduced natively: the first confirmed claim \
+stands, reproduced in 0 of $(jq -r '.runs' "${campaign_final}/reproduce.json") \
+native run(s); what the loop ended on is ${superseded}"
+  fi
+  jq -n --arg fallback "${fallback}" --argjson stood "${stood}" \
+    --arg superseded "${superseded}" --arg reason "${reason}" \
+    '{schemaVersion: 1, kind: "FALLBACK", fallback: $fallback, stood: $stood,
+      superseded: $superseded, reason: $reason}' \
+    >"${campaign_final}/fallback.json"
+  campaign_log "fallback: ${reason}"
 }
 
 campaign_reproduce() {
@@ -7469,11 +7559,16 @@ do_campaign() {
   campaign_stage EXPLORE campaign_explore "${iteration_dir}" "${iteration_id}"
   campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}"
   campaign_claim_stages "${iteration_dir}"
-  while campaign_next_claim "${iteration_dir}"; do
+  while :; do
+    while campaign_next_claim "${iteration_dir}"; do
+      campaign_claim_stages "${iteration_dir}"
+    done
+    campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
+    campaign_unreproduced "${iteration_dir}" || break
     campaign_claim_stages "${iteration_dir}"
   done
+  campaign_fallback
   campaign_stage EMIT campaign_emit "${iteration_dir}"
-  campaign_stage REPRODUCE campaign_reproduce "${iteration_dir}"
   campaign_exit_verdict
 }
 

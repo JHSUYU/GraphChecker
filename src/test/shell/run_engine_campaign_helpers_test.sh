@@ -2288,6 +2288,69 @@ jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
     == '["m__4__a"]' ]] \
   || fail "a refuted model kept an arm of another path than the one it \
 selected, which no refutation of that path can compose"
+reset_config
+campaign_budget_s=100
+campaign_reserve_s=20
+reproduce_min_s=1
+campaign_started_s=${SECONDS}
+rm -rf -- "${campaign_final}"
+reproduced_claim() {
+  next_claim true refuted_claims
+  jq -n --argjson runs "$1" --argjson reproduced "$2" \
+    '{runs: $runs, reproduced: $reproduced}' >"${campaign_final}/reproduce.json"
+  mkdir -p "${campaign_final}/reproduce"
+}
+while IFS='|' read -r unrep_case unrep_runs unrep_reproduced unrep_next; do
+  rm -rf -- "${campaign_final}"
+  reproduced_claim "${unrep_runs}" "${unrep_reproduced}"
+  if [[ "${unrep_next}" == next ]]; then
+    unrep_out=$(campaign_unreproduced "${next_iteration}" 2>&1) \
+      || fail "UNREPRODUCED ${unrep_case}: no next claim: ${unrep_out}"
+    [[ -s "${campaign_final}/unreproduced/0000/reproduce.json" \
+        && -s "${campaign_final}/unreproduced/0000/claim.json" \
+        && ! -e "${campaign_final}/claim.json" ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim did not move aside"
+    [[ "$(jq -r 'select(.outcome == "unreproduced") | .model.pathId' \
+        "${next_iteration}/refuted_claims.jsonl")" == P ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim was not excluded"
+    [[ "${unrep_out}" == *"kept as the fallback verdict"* ]] \
+      || fail "UNREPRODUCED ${unrep_case}: not named: ${unrep_out}"
+  else
+    ! campaign_unreproduced "${next_iteration}" >/dev/null \
+      || fail "UNREPRODUCED ${unrep_case}: the loop went on"
+    [[ -s "${campaign_final}/claim.json" \
+        && ! -e "${campaign_final}/unreproduced" ]] \
+      || fail "UNREPRODUCED ${unrep_case}: the claim left final/"
+  fi
+done <<'EOF'
+reproduced 0 of 10|10|0|next
+reproduced 3 of 10|10|3|stop
+no native run|0|0|stop
+EOF
+rm -rf -- "${campaign_final}"
+reproduced_claim 10 0
+campaign_unreproduced "${next_iteration}" >/dev/null \
+  || fail "FALLBACK: the first unreproduced claim did not go aside"
+next_claim false refuted_claims
+campaign_fallback >/dev/null
+[[ "$(jq -r '.stood' "${campaign_final}/fallback.json")" == true \
+    && "$(jq -r '.confirmed' "${campaign_final}/confirm.json")" == true \
+    && "$(jq -r '.reproduced' "${campaign_final}/reproduce.json")" == 0 \
+    && "$(jq -r '.confirmed' "${campaign_final}/superseded/confirm.json")" \
+      == false ]] \
+  || fail "FALLBACK: with no later reproduction the fallback did not stand"
+rm -rf -- "${campaign_final}"
+reproduced_claim 10 0
+campaign_unreproduced "${next_iteration}" >/dev/null \
+  || fail "FALLBACK: the first unreproduced claim did not go aside"
+reproduced_claim 10 2
+campaign_fallback >/dev/null
+[[ "$(jq -r '.stood' "${campaign_final}/fallback.json")" == false \
+    && "$(jq -r '.reproduced' "${campaign_final}/reproduce.json")" == 2 \
+    && ! -e "${campaign_final}/superseded" ]] \
+  || fail "FALLBACK: a later reproduced claim did not stay the verdict"
+rm -rf -- "${campaign_final}"
+unset -f reproduced_claim
 unset -f next_claim
 reset_config
 
