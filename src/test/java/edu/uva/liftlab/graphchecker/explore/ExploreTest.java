@@ -1210,9 +1210,13 @@ public class ExploreTest {
             assertEquals(name, asked.smt2, again.smt2);
             assertEquals(name, asked.settles, again.settles);
             Files.delete(kept);
+            Path silent = tree.newFile(name + "-silent-z3").toPath();
+            Files.write(silent, "#!/bin/sh\nexec sleep 60\n"
+                    .getBytes(StandardCharsets.UTF_8));
+            assertTrue(silent.toFile().setExecutable(true));
             ObligationFactory.Outcome timedOut = corpus.asking(() ->
                     ObligationFactory.solve(corpus, candidate, new Z3(
-                            Paths.get("z3"), 1L, 1152), solved, "plan C",
+                            silent, 300L, 1152), solved, "plan C",
                             none, null));
             assertTrue(name + ": " + timedOut.result.detail(),
                     timedOut.result.detail().startsWith("SOLVER_TIMEOUT"));
