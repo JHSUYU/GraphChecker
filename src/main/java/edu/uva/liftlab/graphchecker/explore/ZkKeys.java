@@ -41,6 +41,7 @@ final class ZkKeys {
                     Collections.singletonList(term)));
         }
         SmtNames.symbols(term, symbols);
+        boolean offChain = false;
         for (String symbol : symbols) {
             Corpus.SymbolKind kind = corpus.symbolKind(sessionId, symbol);
             if (kind == Corpus.SymbolKind.UNKNOWN) continue;
@@ -48,7 +49,10 @@ final class ZkKeys {
                 AttachRow attach = corpus.attach(sessionId, symbol);
                 ContentPort.Parsed leaf = attach == null ? null
                         : ContentPort.parse(attach.endpoint().site());
-                if (leaf != null && !onChain(leaf)) continue;
+                if (leaf != null && !onChain(leaf)) {
+                    offChain = true;
+                    continue;
+                }
             } else if (kind == Corpus.SymbolKind.READ) {
                 ReadRow read = corpus.read(sessionId, symbol);
                 LocationKind location = read == null ? null
@@ -57,12 +61,13 @@ final class ZkKeys {
                         || location == LocationKind.VIEW)
                         && !paths.contains(read.location().slot())
                         && !pointers.containsKey(read.location().slot())) {
+                    offChain = true;
                     continue;
                 }
             }
             return true;
         }
-        return false;
+        return !offChain;
     }
 
     private boolean onChain(ContentPort.Parsed leaf) {

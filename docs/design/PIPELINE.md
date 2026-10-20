@@ -934,13 +934,25 @@ version no recorded write states -- its INITIAL, or one no row has -- was writte
 ran unplanned, so every occurrence on the reader's node that ran with no instrumented activation and
 whose region holds a static write site of the read's carrier is demanded as a value
 (`UNRECORDED_WRITER`, `ClosurePlanner#unrecorded`, `Walk#holders`), unbounded like a member -- it has
-no seed, so it is exposed to GROW or waits -- but for an occurrence entered in one of the system's
+no seed, so it is exposed to GROW, and one only the seed ran grows the plan alone (an `EXPOSED_REGION`
+row in the seed's name and no obligation: no replay is re-run for it, §7.8) -- but for an occurrence entered in one of the system's
 view classes (§3.4: a view's content is its store's, the chain's) and for a carrier a view class
 declares; its rows state its doors only, so it is never judged to hold other objects only
 (`Walk#holdsOthersOnly`). hbase-bugs-ns-rsgroup-removal HC9: the namespace procedure's group lookup
 read `RSGroupInfoHolder.groupName2Group` at INITIAL, written by `moveServers`, which PLAN left
 unplanned (the ZooKeeper chain's off-chain writers); offline its four occurrences are exposed
-(Z3S-18413: 2 more exposures, tasks and proposals unchanged). A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
+(Z3S-18413: 2 more exposures, tasks and proposals unchanged). For each session that read a version
+no row wrote, the occurrences holding a write site of the read's carrier are kept
+(`Plan#unrecordedWriters`); where the session is the seed or a FORCE replay and some of them are
+planned now and ran unplanned there, the anchor's path in it is re-run
+(`PathReruns`, an obligation ahead of the round's flips as FORCE is, once per path and set of
+writers, a DIAGNOSTIC `RERUN <obligation>` row naming them): the seed's as a `rerun` obligation on
+its own world -- no query, the path's schedule cut, judged ADMITTED where the anchor's decision
+(the target row's guard ordinal, else the path's last) takes its recorded arm again
+(`ObligationSolverMain#rerun`) -- and a FORCE path as a FORCE obligation of its own id; its session
+joins the corpus as any admitted session, and the next round flips on rows that name the writers
+(hbase-adhoc-34 HZ12: the anchor's read of `allKeys` at INITIAL in the seed and the FORCE path, its
+writer the region server's `start()` that only a flip leaving the anchor had re-run whole). A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
 not a task. A decider the seed's closure left out for its class's planned first member (§3) runs
 unplanned in every replay: no activation row names it, so it is no static candidate, and its class is
 asked through the planned member. One anchor's walk scans one site's holders on one node once and offers an occurrence
@@ -1136,8 +1148,10 @@ the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declar
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first; where the iteration has a ZooKeeper chain, a decision is one only where it rests on
 a root, a message's field, a heap read or a chain read (`explore.ZkKeys`, SYMBOL-SCOPE §6.4) -- store
-values off `zk_chain.jsonl`, decoded containers and nothing classified decide none --, the rest
-counted in a DIAGNOSTIC `zk-keys` row. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
+values off `zk_chain.jsonl` and decoded containers decide none --, the rest
+counted in a DIAGNOSTIC `zk-keys` row; a term that names nothing classified is no off-chain decision
+and is offered (`FlipQuery` decides it: hbase-adhoc-34's anchor guard read a map no row wrote, and
+its arm was dropped as "off the chain" though no store value was in it). Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the
 closure ceiling of 1024), `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
@@ -1994,7 +2008,8 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 ### 7.8 GROW
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
-and its obligation), `UNPLANNED_INPUT` rows or `ZK_EDGE` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
+and its obligation; none where only the seed ran it: that row grows the plan alone, no replay is
+re-run for it, and the anchor's path re-runs once it is planned, §7.7), `UNPLANNED_INPUT` rows or `ZK_EDGE` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
 GROW's re-runs, as what was queued before them stays queued: they start at once, in flight from the
 round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980

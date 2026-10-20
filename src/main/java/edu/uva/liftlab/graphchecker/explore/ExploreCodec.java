@@ -61,16 +61,26 @@ public final class ExploreCodec {
         json.add("answers", strings(obligation.answers()));
         json.add("unproducible", list(obligation.unproducible()));
         if (obligation.force()) json.addProperty(FORCE, true);
+        if (obligation.rerun()) json.addProperty(RERUN, true);
         return json;
     }
 
     static final String FORCE = "force";
+    static final String RERUN = "rerun";
 
     public static Obligation readObligation(JsonObject json) {
         if (optionalBool(json, FORCE, false)) {
             return Obligation.forcing(optionalString(json, "obligationId"),
                     optionalString(json, "taskId"),
                     optionalString(json, "pathId"));
+        }
+        if (optionalBool(json, RERUN, false)) {
+            return Obligation.rerunning(optionalString(json, "obligationId"),
+                    optionalString(json, "taskId"),
+                    optionalString(json, "pathId"),
+                    optionalString(json, "siteId"),
+                    optionalInteger(json, "ordinal", 0),
+                    optionalBool(json, "flippedOutcome", false));
         }
         return Obligation.of(optionalString(json, "obligationId"),
                 optionalString(json, "taskId"),
