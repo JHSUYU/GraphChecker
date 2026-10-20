@@ -733,13 +733,47 @@ its event. NC10-22 (hb-int-5) is the first live run of the entry hold. First run
 `servingTasks` holds no step start and that no ORDER on a step times out.
 
 **15. COMPOSE orders a client thread's synchronous call past its own later event** (hbase-bugs-ns-rsgroup-removal
-NC7-nsrg, `gc-out/hbase-checks/accept-NC7-nsrg/out/hbase-bugs-ns-rsgroup-removal/schedule/witness-confirm/000*` and
-`final/refuted/000*`). The STATE_PAIRING claims composed there hold the writes of the test thread's synchronous
-`moveServers`/`addRSGroup` calls (`RSGroupInfoManagerImpl#flushConfig > resetRSGroupMap > RSGroupInfoHolder.<init>`) until
-the declared target occurrence (the later CreateTable's group check) exits, which the same client thread can only reach
-after those calls returned (program order of one thread). CONFIRM refutes each after the 300 s order timeout (about 10
-minutes a claim; 4 witness attempts and the final claims of NC7). A model fix states the client thread's program order
-between its synchronous calls (an ORDER no world can reverse is no arm), so such re-pairings are never composed.
+NC7-nsrg, `gc-out/hbase-checks/accept-NC7-nsrgSTOP-claimloop/.../schedule/witness-confirm/000*` and `final/refuted/000*`;
+measured 2026-10-20, H5). Its final claims 0 and 1 join the CreateTable step's group read (`acbbc512`, under request
+`d339f15a`) to INITIAL of the rsgroup map, or to the startup worker's flushConfig (v18/v50), past the writes of the test
+thread's earlier synchronous calls: v200/v202 in AddRSGroup's handler turn (claimKind NONE, `Anchor:dca8879d`) and
+v473/v475 and v776/v778 in MoveServers' handler turns, all of them under the test stance `Root:CLIENT/test#1`, whose
+reply RECV rows (401/533/871) come before R2's SEND (1023). The 4 witness attempts have the same shape. CONFIRM refutes each
+one after the 300 s order timeout, and composing them cost 704 s and 317 s (36899 and 42922 z3 runs). hbase-adhoc-22 NC11 is
+NOT this case (no truncate write exists; its claims skip only DeleteTableProcedure's release, claimed work), and neither is
+#11 NZ2-mat (INITIAL of master1's own activation write, and the cross-session constants).
+Facts that hold in every world executing both events: F1, program order inside one activation; F2, SEND(e) before the
+turn `Anchor(e)`; F3, a handler turn's own (claimKind NONE) events before its RESPONSE SEND, before that reply's RECV on
+the sender. F4, "the client waited for R1's reply before it sent R2", is NOT in the records: nothing records a thread
+returning from `FutureUtils#get`, and `contract.ClientProgramOrder#repliedBefore` (H4, REPRODUCE) reads the recorded
+order, which an asynchronous call whose reply came early also shows. The completion poll (a procedure step reaches the
+client only through the poll handler's read of the procedure state) is left out. Rule (b): a write W2 between the
+alternative writer and the observed one, with W2 in a NONE turn directly under client request R1, X under client request
+R2 of the same stance, and F4(R1, R2), is not concurrent with X (`Arms#eligible`'s check of the writes between), so the
+earlier writer is not eligible. Built offline with `repliedBefore` as F4 (not merged, lead 2026-10-20: a completeness risk
+to no open case's benefit): NC7's corpus composes the fault claim first (MARKER_FLIPPED on `REGION.ac7e6e0e..in.26120816`,
+NC12's confirmed root) in 114 s with 798 z3 runs. The sound F4 is a JOIN row (design below); build it if a case needs it
+(14 may, H1).
+- JOIN (design, not built): woven like `Continuations` (Soot, the classes woven for lineage) at three kinds of site. (i) A
+  call to `Future#get()`, `Future#get(long, TimeUnit)` or `CompletableFuture#join()` that returns: a schedule row `JOIN`
+  {context, site, completer, completerSeq} on the waiter. For HBase every synchronous Admin and Table call goes through
+  `FutureUtils#get`, which is woven, so one site covers the test thread. (ii) A call to `CompletableFuture#complete` or
+  `#completeExceptionally` that returns true: the future's identity (`RuntimeObjectIdentity`) maps to the completing
+  activation, its claim key under claimed work, and the schedule seq. This is in memory only, no row. (iii) A dependent
+  future that a carried continuation's registration returns (`CausynthPipeline#carryContinuations`) is completed by that
+  continuation's claim when it ends (`Continuations#claimed`). A `thenCompose` dependent, or a future completed in code
+  that is not woven, has no completer: its JOIN names none and gives no fact (sound, no gain). HBase's
+  `AsyncMasterRequestRpcRetryingCaller#lambda$doCall$5`, which completes the caller's future, is not woven today, so the
+  weaving set must take every client class with a `complete*` call site.
+  F4 then reads: R1's reply reader, through claims, reaches the completer; then the JOIN on the waiter; then the waiter's
+  later registrations, which carry its stance; then SEND R2.
+  JOIN is an observation, never an event to replay: `SchedulePrefix`, CONFIRM holds and REPRODUCE must skip it, or a
+  prefix waits on a consequence.
+  Cost: one JOIN per blocking get in woven code. That is about the number of synchronous client calls: 22 about 75
+  (36 single, 32 master and 7 batch doCall claims, against 4319 schedule rows), nsrg about 21 (867 rows), 10 about 76
+  (32743 rows), under 2 %. Estimate: about one day of code (contract kind and codec, weave, runtime, Corpus facts,
+  Arms, prefix and plant exclusion, tests, docs). The proof also needs a fresh seed, because only new recordings carry
+  JOIN rows (1-2 h of runs per case).
 
 **16. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
 (`campaign_stream_admit_host`) that no host admits only logs "waiting for room" and retries; nothing reserves room for
