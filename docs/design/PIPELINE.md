@@ -3915,7 +3915,10 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   declared clock reading of the plan (an observed one, as a replay mints it): context, applied by
   nobody;
 - an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
-  port's call-return capture and the regions declaring it IN;
+  port's call-return capture and the regions declaring it IN; an answer equal to the arrival the
+  confirmed session's attach recorded (what its producer sent anyway) is no row
+  (`ConfirmMain#answers`: hbase-bugs-master-active-time NZ12-mat's flip obligation answered master1's
+  RegionStateTransition attach with T0 as sent, a message field no native run answers);
 - CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, `check: true` where no
   hold realizes the order, §10) of what the model
   chose -- a read it chose a writer for, at the locations the fatal rests on, with every other

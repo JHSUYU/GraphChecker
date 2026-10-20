@@ -889,8 +889,13 @@ public class ConfirmMainTest {
         String site = "<a.Master: void activate()>#u13";
         Object[][] table = {
                 {"the getter's action names the root as its source",
-                        "CONFIG:skew", site + " " + getter},
-                {"no action names it", "", null},
+                        "CONFIG:skew", null, site + " " + getter},
+                {"the world also answers an attach with what its producer "
+                        + "sent: no plant", "CONFIG:skew", "119979",
+                        site + " " + getter},
+                {"an answer the producer did not send, at a port no capture "
+                        + "states", "CONFIG:skew", "5", null},
+                {"no action names it", "", null, null},
         };
         Path iteration = iteration();
         Path focus = iteration.resolve("obligations-0000").resolve("w1")
@@ -908,6 +913,13 @@ public class ConfirmMainTest {
                                 RootCategory.CONFIG, "0", null, null, true,
                                 null, 0L)), RowCodec::writeRootMint);
         for (Object[] row : table) {
+            JsonObject answered = world.deepCopy();
+            JsonObject answers = new JsonObject();
+            if (row[2] != null) {
+                answers.addProperty(consumer.id(), (String) row[2]);
+            }
+            answered.add("answers", answers);
+            RowCodec.writeJsonl(focus, Collections.singletonList(answered));
             JsonObject action = new JsonObject();
             action.addProperty("portId", "REGION.08ab84c9.in.p");
             action.addProperty(InputActionCatalog.DECLARED_CONFIG_SOURCE,
@@ -929,18 +941,25 @@ public class ConfirmMainTest {
                 ConfirmMain.writePlant(iteration, claim("CONFIG:skew",
                         "-2001"), manifest(), targetScopeMap(),
                         iteration.resolve("sessions").resolve("sel"), plant);
-                if (row[2] == null) fail((String) row[0]);
+                if (row[3] == null) fail((String) row[0]);
             } catch (ConfirmMain.Refused refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()
-                        .startsWith("NATIVE_PLANT_UNSUPPORTED: root "
-                                + "CONFIG:skew"));
-                assertNull((String) row[0], row[2]);
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED: "
+                                + (row[2] == null ? "root CONFIG:skew"
+                                : "the world answers attach")));
+                assertNull((String) row[0], row[3]);
                 continue;
             }
-            JsonObject root = RowCodec.readJsonl(plant).get(0);
+            List<JsonObject> rows = RowCodec.readJsonl(plant);
+            for (JsonObject planted : rows) {
+                assertFalse((String) row[0] + ": " + planted,
+                        RecordingPlant.ANSWER.equals(planted.get("kind")
+                                .getAsString()));
+            }
+            JsonObject root = rows.get(0);
             JsonObject call = root.getAsJsonArray("sites").get(0)
                     .getAsJsonObject();
-            assertEquals((String) row[0], "CONFIG CONFIG:skew -2001 " + row[2],
+            assertEquals((String) row[0], "CONFIG CONFIG:skew -2001 " + row[3],
                     root.get("category").getAsString() + " "
                             + root.get("rootId").getAsString() + " "
                             + root.get("value").getAsString() + " "

@@ -687,8 +687,17 @@ public final class ConfirmMain {
                         attach.endpoint());
             }
         }
+        Map<String, String> sent = new LinkedHashMap<String, String>();
+        for (AttachRow attach : witness.session.attaches()) {
+            sent.putIfAbsent(attach.endpoint().id(), attach.arrival());
+        }
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<String, String> answer : answers.entrySet()) {
+            String arrival = sent.get(answer.getKey());
+            if (arrival != null && arrival.trim().equals(
+                    answer.getValue().trim())) {
+                continue;
+            }
             Endpoint endpoint = attached.get(answer.getKey());
             String port = endpoint == null ? "" : endpoint.site();
             PlantSites.Capture capture = sites.capture(port);
