@@ -756,6 +756,23 @@ hold goes when it is placed). Extend it to stream starts: a start that waited lo
 need exceeds what any host admits beside the charges standing, holds its need the same way on the host with the most
 room (one hold per run at a time, the largest waiting need), released when it is placed or the run ends.
 
+**17. COMPOSE has no happens-before through a volatile publication; a refuted INITIAL pairing returns per path and
+session** (hbase-bugs-master-active-time, NZ2-mat 2026-10-20). `MasterRpcServices#reportRegionStateTransition` calls
+`checkServiceStarted` (volatile `HMaster.serviceStarted`, written in `startServiceThreads` after
+`finishActiveMasterInitialization` wrote `masterActiveTime`) before `throwOnOldMaster` reads `masterActiveTime`, so no run
+reads that field's INITIAL value there. COMPOSE offered the INITIAL re-pairing anyway: it made the recorded valuation
+satisfiable (polarity undecided, so the CLOCK_SKEW claim was never named) and every path or session variant of the
+same pairing became its own FORMULA_SAT claim (claims 0 and 1: `writer_arm` INITIAL|INSTANCE/<obj>#664, refused in the
+replay by `ServerNotRunningYetException` and by ORDER `ad500b7c5e0bdd13`), ~25 min each (DECIDE 1191 s over a 187 MB
+formula, 424 paths), because the claim loop excludes only the selected path's arms. Worked around in the tree (STATUS
+"tree: master-active-time's served active time"). The engine fix: a read that follows, on its thread, a read of a
+volatile that saw write W excludes every version its location had before the last write that precedes W on W's thread
+(the JMM's synchronizes-with); or exclude a refuted pairing by its reader site and slot across paths. Also from NZ2-mat
+(H5's probe, `analysis/hbase-2026-10-20/reask/probe-mat/`): 301 message arms bound the hand-off leaf (the initiating
+active time) to other sessions' recorded constants, 15 of 16 above the seed's T1 because those sessions ran up to an hour
+later in wall time -- worked around by a run-relative clock (STATUS "tree: run-relative clock"); the general fix is a
+leaf a clock carries taking its producer session's clock value relative to that session's own timeline.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
