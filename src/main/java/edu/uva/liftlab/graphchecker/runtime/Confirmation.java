@@ -245,7 +245,7 @@ public final class Confirmation {
                 frames);
     }
 
-    private static final String CLAIM = "CLAIM ";
+    public static final String CLAIM = "CLAIM ";
 
     public static String claim(String threadKey) {
         String key = threadKey.startsWith(ActivationRow.CLAIMED)

@@ -921,17 +921,45 @@ public class ConfirmMainTest {
                 {"a hand-off held at its claim's entry", null, null,
                         Confirmation.claim(ActivationRow.CLAIMED + step),
                         false},
+                {"both ends in one hand-off claim", null, null,
+                        reader.activation(), false},
+                {"the earlier end in a continuation the claim runs", null,
+                        null, reader.activation(), false},
+                {"the earlier end on another worker, recorded after the"
+                        + " event", null, null, Confirmation.claim(
+                        ActivationRow.CLAIMED + step), false},
         };
         for (int index = 0; index < rows.length; index++) {
             Object[] row = rows[index];
             String name = (String) row[0];
             Path iteration = iteration();
             List<ActivationRow> activations = new ArrayList<ActivationRow>();
-            if (index == 4) {
+            if (index >= 4) {
                 activations.add(ActivationRow.of("sel", anchor, "TASK.r",
                         false, true, ActivationRow.CLAIMED + step,
                         ActivationRow.ClaimKind.HANDOFF_TASK, null));
-            } else if (index > 0) {
+            }
+            if (index == 4) {
+                activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                        false, true, "thread-7",
+                        ActivationRow.ClaimKind.NONE, null));
+            } else if (index == 7) {
+                activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                        false, true, ActivationRow.CLAIMED + step.replace(
+                                "#u23@0", "#u23@1"),
+                        ActivationRow.ClaimKind.HANDOFF_TASK, null));
+                RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                        Collections.singletonList(WriteRow.of("sel", 50L,
+                                writer, CELL, 5L, "EXPR.w", "I")),
+                        RowCodec::writeWrite);
+            } else if (index >= 5) {
+                activations.add(ActivationRow.of("sel", mint, "TASK.w",
+                        false, true, ActivationRow.CLAIMED + step
+                                + (index == 5 ? "" : "/<a.Cont: void accept("
+                                + "java.lang.Object)>#u3:a.Step.write@0"),
+                        index == 5 ? ActivationRow.ClaimKind.HANDOFF_TASK
+                                : ActivationRow.ClaimKind.QUEUED_TASK, null));
+            } else if (index > 0 && index < 4) {
                 activations.add(ActivationRow.of("sel", anchor, "TASK.r",
                         false, true, ActivationRow.CLAIMED + "pool#1",
                         ActivationRow.ClaimKind.QUEUED_TASK,
@@ -961,6 +989,49 @@ public class ConfirmMainTest {
             folder.create();
         }
     }
+    @Test
+    public void aClaimRunningAnotherOrdersEarlierEndBeforeItsEventIsNotHeldAtItsEntry() {
+        String c = "start:m|ctx|<a.C: void run()>@0";
+        String d = "start:m|ctx|<a.D: void run()>@0";
+        String e = "start:m|ctx|<a.E: void run()>@0";
+        String thread = "worker#7";
+        Object[][] table = {
+                {"22: the release waits for the creation's read; the"
+                        + " creation's write waits for the release",
+                        new String[] {d, c}, new String[] {c, d},
+                        new long[] {30L, 12L}, new long[] {12L, 40L},
+                        Arrays.asList(false, true)},
+                {"two claims, each running the other's earlier end first",
+                        new String[] {c, d}, new String[] {d, c},
+                        new long[] {10L, 20L}, new long[] {30L, 35L},
+                        Arrays.asList(true, true)},
+                {"three claims in a cycle", new String[] {c, d, e},
+                        new String[] {d, e, c}, new long[] {10L, 12L, 15L},
+                        new long[] {33L, 34L, 36L},
+                        Arrays.asList(true, true, true)},
+                {"an earlier end in a continuation the claim ran first",
+                        new String[] {c, d}, new String[] {d,
+                        c + "/<a.K: void accept(java.lang.Object)>#u3:a.C.run@0"},
+                        new long[] {45L, 5L}, new long[] {31L, 40L},
+                        Arrays.asList(true, false)},
+                {"its own earlier end for an order held elsewhere runs first",
+                        new String[] {c, null}, new String[] {thread, c},
+                        new long[] {10L, 20L}, new long[] {30L, 35L},
+                        Arrays.asList(true, false)},
+        };
+        for (Object[] row : table) {
+            String[] claims = (String[]) row[1];
+            String[] firsts = (String[]) row[2];
+            List<Long> firstSeqs = new ArrayList<Long>();
+            List<Long> thenSeqs = new ArrayList<Long>();
+            for (long seq : (long[]) row[3]) firstSeqs.add(seq);
+            for (long seq : (long[]) row[4]) thenSeqs.add(seq);
+            assertEquals((String) row[0], row[5], ConfirmMain.prefixed(
+                    Arrays.asList(claims), Arrays.asList(firsts), firstSeqs,
+                    thenSeqs));
+        }
+    }
+
     @Test
     public void aTurnCountedOrderIsLeftOutOfTheNativePlantOnly()
             throws Exception {

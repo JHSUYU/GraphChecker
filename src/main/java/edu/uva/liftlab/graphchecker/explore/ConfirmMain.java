@@ -1109,6 +1109,9 @@ public final class ConfirmMain {
             Hold hold = held(first, then, thenSeq);
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
+            holding.pairs.add(new Pair(first, then, thenSeq, order,
+                    hold.activation != null
+                            && hold.activation.startsWith(Confirmation.CLAIM)));
             holding.ends.put(order, new OccurrenceAddress[] {
                     first.occurrence, hold.occurrence});
             if (hold.checked) holding.checked.add(order);
@@ -1123,6 +1126,7 @@ public final class ConfirmMain {
         private static final class Exit {
             private final String activation;
             private final OccurrenceAddress occurrence;
+            private final List<Frame> frames;
             private final long seq;
 
             private Exit(OccurrenceAddress occurrence, List<Frame> frames,
@@ -1130,8 +1134,22 @@ public final class ConfirmMain {
                 this.activation = Confirmation.activation(occurrence,
                         ExecutionIndex.of(frames));
                 this.occurrence = occurrence;
+                this.frames = frames;
                 this.seq = seq;
             }
+        }
+
+        private long exited(Exit first) {
+            long exited = first.seq;
+            for (Placed other : placed.getOrDefault(first.occurrence.id(),
+                    Collections.<Placed>emptyList())) {
+                if (other.frames.size() >= first.frames.size()
+                        && other.frames.subList(0, first.frames.size())
+                        .equals(first.frames)) {
+                    exited = Math.max(exited, other.seq);
+                }
+            }
+            return exited;
         }
 
         private Exit exit(Endpoint event, long seq) {
@@ -1181,6 +1199,7 @@ public final class ConfirmMain {
                 ActivationRow row = activations.get(event.occurrence().id());
                 return row != null && row.claimed()
                         && row.claimKind() == ActivationRow.ClaimKind.HANDOFF_TASK
+                        && !inside(first.occurrence, row.threadKey())
                         ? new Hold(event.occurrence(),
                         Confirmation.claim(row.threadKey()), false)
                         : holdBefore(event, seq, false);
@@ -1191,6 +1210,65 @@ public final class ConfirmMain {
             }
             return new Hold(send.occurrence(), send.activationFrames(),
                     false);
+        }
+
+        private void untangle(Holding holding) {
+            Map<String, List<String>> demoted =
+                    new LinkedHashMap<String, List<String>>();
+            Set<String> kept = new HashSet<String>();
+            List<String> claims = new ArrayList<String>();
+            List<String> firsts = new ArrayList<String>();
+            List<Long> firstSeqs = new ArrayList<Long>();
+            List<Long> thenSeqs = new ArrayList<Long>();
+            for (Pair pair : holding.pairs) {
+                ActivationRow then = activations.get(
+                        pair.then.occurrence().id());
+                ActivationRow first = activations.get(
+                        pair.first.occurrence.id());
+                claims.add(pair.entry ? then.threadKey() : null);
+                firsts.add(first == null ? null : first.threadKey());
+                firstSeqs.add(exited(pair.first));
+                thenSeqs.add(pair.seq);
+            }
+            List<Boolean> prefixed = prefixed(claims, firsts, firstSeqs,
+                    thenSeqs);
+            for (int index = 0; index < holding.pairs.size(); index++) {
+                Pair pair = holding.pairs.get(index);
+                if (!prefixed.get(index)) {
+                    kept.add(pair.order);
+                    continue;
+                }
+                Hold hold = holdBefore(pair.then, pair.seq, false);
+                String order = pair.first.activation + "\n" + hold.activation;
+                demoted.computeIfAbsent(pair.order,
+                        key -> new ArrayList<String>()).add(order);
+                holding.ends.put(order, new OccurrenceAddress[] {
+                        pair.first.occurrence, hold.occurrence});
+            }
+            if (demoted.isEmpty()) return;
+            List<String> orders = new ArrayList<String>(holding.orders);
+            holding.orders.clear();
+            for (String order : orders) {
+                if (kept.contains(order)) holding.orders.add(order);
+                for (String instead : demoted.getOrDefault(order,
+                        Collections.<String>emptyList())) {
+                    holding.orders.add(instead);
+                    if (holding.chosenOrders.contains(order)) {
+                        holding.chosenOrders.add(instead);
+                    }
+                }
+                if (!kept.contains(order)) {
+                    holding.chosenOrders.remove(order);
+                    holding.ends.remove(order);
+                }
+            }
+        }
+
+
+        private boolean inside(OccurrenceAddress earlier, String claim) {
+            ActivationRow row = activations.get(earlier.id());
+            return row == null || row.threadKey().equals(claim)
+                    || row.threadKey().startsWith(claim + "/");
         }
 
         private Hold holdBefore(Endpoint event, long seq, boolean checked) {
@@ -1374,7 +1452,44 @@ public final class ConfirmMain {
         }
     }
 
+    static List<Boolean> prefixed(List<String> claims, List<String> firsts,
+                                  List<Long> firstSeqs, List<Long> thenSeqs) {
+        List<Boolean> prefixed = new ArrayList<Boolean>();
+        for (int index = 0; index < claims.size(); index++) {
+            String claim = claims.get(index);
+            boolean prefix = false;
+            for (int other = 0; claim != null && other < claims.size();
+                 other++) {
+                String first = firsts.get(other);
+                prefix |= other != index && first != null
+                        && (first.equals(claim)
+                        || first.startsWith(claim + "/"))
+                        && firstSeqs.get(other) < thenSeqs.get(index);
+            }
+            prefixed.add(prefix);
+        }
+        return prefixed;
+    }
+
+    private static final class Pair {
+        private final StateClosure.Exit first;
+        private final Endpoint then;
+        private final long seq;
+        private final String order;
+        private final boolean entry;
+
+        private Pair(StateClosure.Exit first, Endpoint then, long seq,
+                     String order, boolean entry) {
+            this.first = first;
+            this.then = then;
+            this.seq = seq;
+            this.order = order;
+            this.entry = entry;
+        }
+    }
+
     static final class Holding {
+        private final List<Pair> pairs = new ArrayList<Pair>();
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
         long cutBefore = Long.MAX_VALUE;
@@ -1496,6 +1611,7 @@ public final class ConfirmMain {
                 }
             }
         }
+        closure.untangle(holding);
         for (String order : holding.orders) {
             String[] ends = order.split("\n", 2);
             JsonObject row = new JsonObject();

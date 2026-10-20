@@ -16,7 +16,9 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -284,6 +286,15 @@ public class ConfirmationTest {
                 Confirmation.claim("n|Root:WAKE/a.P#3|x@0"),
                 Confirmation.claim(ActivationRow.CLAIMED
                         + "n|Root:WAKE/a.P#5|x@0"));
+        List<Long> claimedAt = Collections.synchronizedList(
+                new ArrayList<Long>());
+        ScheduleLog.install(row -> {
+            if ("CLAIM".equals(row.has("kind") ? row.get("kind")
+                    .getAsString() : "")) {
+                claimedAt.add(System.nanoTime());
+            }
+        });
+        RecordingWindow.open();
         Object source = new Object();
         RuntimeTraceContext.registerSource(source, node);
         long request = RuntimeTraceContext.beginRequest(source, "test");
@@ -307,6 +318,9 @@ public class ConfirmationTest {
         assertEquals(key, claimed[0]);
         assertTrue("the hand-off ran only after the writer exited",
                 entered[0] >= exited);
+        assertEquals("its CLAIM is observed once", 1, claimedAt.size());
+        assertTrue("and only once the hold let it go",
+                claimedAt.get(0) >= exited);
         assertTrue(Confirmation.close().isEmpty());
     }
 

@@ -474,12 +474,12 @@ public final class Identity {
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
-        ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
-                start.frame().callSite());
         if (!own && kind == ClaimKind.HANDOFF_TASK
                 && Confirmation.ordering()) {
             Confirmation.entering(Confirmation.claim(start.key));
         }
+        ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
+                start.frame().callSite());
     }
 
     public static void startWork(String startSiteId, Object carrier,

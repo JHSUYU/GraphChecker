@@ -722,7 +722,11 @@ Seeds with step starts in `servingTasks` before the fix: 22 (27), 10 (48), 14 (5
 (4), 28 (3), 34 (3); 04 keeps its PASS (confirmed under the old rule; the change only adds holds). A step so held is
 held at its claim's entry (`Confirmation#claim`, before `acquireLock` and `beforeExec`; PIPELINE §10 has the argument),
 since a TRSP step held at the last activation before its write would sit on its RegionStateNode lock, which the admin
-move/unassign's `preTransitCheck` (10/11/12's targets) and region state reports also take. First runs on the fix: check
+move/unassign's `preTransitCheck` (10/11/12's targets) and region state reports also take, and as NC9-22's release was
+held inside `synchronized NamespaceStateManager#removeTable` (the creation blocked on that monitor, 300 s timeout) --
+except where the earlier end runs inside the held claim (its `threadKey` the claim's or extending it: H3's review) or the
+claim finishes another order's earlier end before the event (a cycle of entry holds: NC9-22's final claim), held before
+its event. NC10-22 (hb-int-5) is the first live run of the entry hold. First runs on the fix: check
 `servingTasks` holds no step start and that no ORDER on a step times out.
 
 ## ZooKeeper (`system/zookeeper` = main today)
