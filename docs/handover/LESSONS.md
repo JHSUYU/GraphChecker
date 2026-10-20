@@ -226,7 +226,12 @@ run-relative clock (`base + now - the JVM's start`) does not make sessions' time
 clock cell stays one symbol shared by all sessions, but each session's origin enters as its own constant, so an arm of a
 session whose JVM started earlier delivers a time that passes for later (NZ6-mat: origins 347 s apart satisfied the
 check with nothing moved). The owner's ruling then: work the case around directly -- the active time a run constant plus
-a configured skew, one CONFIG root the engine moves (STATUS "tree: master-active-time's configured skew").
+a configured skew, one CONFIG root the engine moves (STATUS "tree: master-active-time's configured skew"). Two traps on
+the way: a CONFIG root's domain is its recording widened only by the literals it is compared with, so a value nothing
+compares needs a declared domain (`root-domains.jsonl`; NZ7-mat: the skew pinned to 0); and a CONFIG root is one symbol
+per configuration key, so two nodes reading one key share it -- the plant is per mint occurrence, the formula is not
+(NZ8-mat: a replay planting -2001 at master1's read alone observed the fatal while every valuation, both masters
+shifted alike, was UNSAT); give per-node keys where nodes must differ.
 
 **Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
 startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no
