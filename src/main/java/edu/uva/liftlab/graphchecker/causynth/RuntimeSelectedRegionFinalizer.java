@@ -862,14 +862,10 @@ public final class RuntimeSelectedRegionFinalizer {
             byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
         }
         Map<String, Long> seeds = new LinkedHashMap<>();
+        Set<String> cells = scopeMap.receiverCells();
         for (String target : targets) {
-            Set<Integer> objects = new HashSet<>();
-            for (String cell : scopeMap.provenanceCells()) {
-                objects.addAll(objectsOf(program.activations.get(target),
-                        cell, false));
-            }
-            for (Map.Entry<String, Long> read
-                    : store.versionsOf(objects).entrySet()) {
+            for (Map.Entry<String, Long> read : store.versionsOf(receivers(
+                    program.activations.get(target), cells)).entrySet()) {
                 seeds.merge(read.getKey(), read.getValue(), Math::max);
             }
         }
@@ -978,7 +974,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                    RecordedMessages messages,
                                    RecordedStore store,
                                    Collection<String> targets) {
-        Set<String> cells = scopeMap.provenanceCells();
+        Set<String> cells = scopeMap.receiverCells();
         if (store.isEmpty() || cells.isEmpty()) return;
         Map<String, String> byId = new HashMap<>();
         for (String occurrence : program.activations.keySet()) {
@@ -986,11 +982,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         Set<String> crossed = new LinkedHashSet<>();
         for (String target : targets) {
-            Map<String, Object> activation = program.activations.get(target);
-            Set<Integer> objects = new HashSet<>();
-            for (String cell : cells) {
-                objects.addAll(objectsOf(activation, cell, false));
-            }
+            Set<Integer> objects = receivers(program.activations.get(target),
+                    cells);
             int depth = walk.depth(target) + 1;
             askFetches(program, walk, scopeMap, store, byId, target, objects,
                     depth);
@@ -1343,6 +1336,15 @@ public final class RuntimeSelectedRegionFinalizer {
             if (read.fault) return true;
         }
         return false;
+    }
+
+    private static Set<Integer> receivers(Map<String, Object> activation,
+                                          Collection<String> cells) {
+        Set<Integer> objects = new HashSet<>();
+        for (String cell : cells) {
+            objects.addAll(objectsOf(activation, cell, false));
+        }
+        return objects;
     }
 
     private static Set<Integer> objectsOf(Map<String, Object> activation,

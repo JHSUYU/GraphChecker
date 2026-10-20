@@ -242,9 +242,13 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 
 A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
 read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
-on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
-the other fetches, on its node, of a location what it read was decoded from; each such occurrence is
-admitted, `STORE_FETCH_V1`, `RuntimeSelectedRegionFinalizer#askFetches`); its other captures are
+on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read --
+an object the target read a slice field on, a provenance site's receiver or a declared read's
+(`StaticScopeMap#receiverCells`: hbase-adhoc-34 reads `AuthenticationKey.id` on the key its own
+`refreshKeys` decoded from `/hbase/tokenauth/keys/1`) --, and the other fetches, on its node, of a
+location what it read was decoded from; each such occurrence is admitted, `STORE_FETCH_V1`,
+`RuntimeSelectedRegionFinalizer#askFetches`; the ZooKeeper chain is seeded with the versions of the
+same objects); its other captures are
 woven but never asked, and the seed's log line counts them (`data-flow doors: N store read(s) in the
 M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
 occurrence(s), K admitted only as such`).
