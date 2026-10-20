@@ -631,7 +631,10 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   (`FILED_WAIT_MS`) for a write in flight at the path on another thread, as a decode waits --, and
   otherwise no row, as before (no INITIAL absence, no expiry of a session's ephemerals: TODO HBase
   10). Only HBase's `RecoverableZooKeeper` calls them; the tombstone's file is the delete's, before
-  `causynthDeleted`, its door.
+  `causynthDeleted`, its door, and an absent read is stated by the hook the read uses when it finds
+  the node (`causynthRead` with no stat, `causynthStoreRead` at -1), so its endpoint -- whose site
+  index names that hook -- is the same read's, which a pairing with the tombstone names (X103-24: a
+  separate hook made it another endpoint, and the pairing was never taken).
 - `decoded(transport, key, product)`: the objects a fetch of `key` was parsed into (the adapter's
   product: Solr's `ClusterState.load`, `Aliases.fromJSON`) hold that version (`runtime/Provenance`):
   the product's graph is walked once -- instance fields of application objects, the contents of
