@@ -195,7 +195,7 @@ reads and whose code writes what it reads (owner 2026-10-19: "范围弄小点").
     `TestRetainAssignmentOnRestart#testForceRetainAssignment` (2026-10-19, was TestRegionMove: the guard compares the
     region server's own start code with the master's copy, both run constants there, so no world flips it): a region
     server stops and starts again on the same port with a new start code, and the master retains its regions on it.
-    The target is the restarted server's first check (auto0/rs3); the flip needs the master's open request to carry
+    The target is the restarted server's first check (auto0/rs3, REGION.4a0683a9 = throwOnWrongStartCode(ExecuteProceduresRequest), #1); the flip needs the master's open request to carry
     the old incarnation's start code, a STATE re-pairing of `RegionStateNode.regionLocation` read for the open to its
     write by the first assignment. Scope RSRpcServices, procedure/RSProcedureDispatcher, assignment/RegionStateNode,
     assignment/RegionRemoteProcedureBase.
