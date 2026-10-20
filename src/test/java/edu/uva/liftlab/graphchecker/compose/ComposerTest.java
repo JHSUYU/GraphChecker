@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -74,6 +75,7 @@ import java.util.function.Supplier;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -1474,56 +1476,175 @@ public class ComposerTest {
     }
 
     @Test
-    public void aHeldEnumNameIsTheValueOfAReadNoWriteRowStates() {
-        SmtLowering lowering = new SmtLowering(
-                new LinkedHashMap<String, VmTermLowering.Sort>());
-        JsonObject state = read("INSTANCE", 130L, 96L, 1242L, "L");
-        state.addProperty(VmRows.WRITER_SET_COMPLETE, true);
-        state.getAsJsonObject(VmRows.OBSERVED_VERSION).add("expression",
-                vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
-                        "java/lang/String"));
-        VmTermLowering.Term term = lowering.dispatch(vmString("equals",
-                vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
-                        "java/lang/String"), state),
-                VmTermLowering.Sort.BOOL, "t");
-        assertTrue(lowering.openRefusals().toString(),
-                lowering.openRefusals().isEmpty());
-        assertEquals(term.text, VmTermLowering.Sort.BOOL, term.sort);
-        assertTrue(term.text, term.text.contains("\"OPEN\""));
-    }
-
-    @Test
-    public void aHealthyFatalOnAnUnmodeledOperationHoldsWhereNothingItRestsOnMoved()
-            throws Exception {
-        String opened = "EXPR.0000000000000a01";
+    public void aHeldEnumNameIsTheValueOfAReadThatDoesNotMove() {
         Object[][] table = {
-                {"it rests on nothing that moves", "(not " + opened + ")",
-                        ClaimKind.NO_SUPPORTED_WITNESS},
-                {"it rests on a marker too", "(and (not " + opened + ") "
-                        + MARKER + ")", ClaimKind.MARKER_FLIPPED},
+                {"no write row states its version", false, false, true},
+                {"a write row states it: the read's join", true, false, true},
+                {"a family re-pairs the read: its own value", true, true,
+                        false},
         };
         for (Object[] row : table) {
             String name = (String) row[0];
-            Path iteration = folder.newFolder("unmodeled-" + name.replace(' ',
-                    '-')).toPath();
-            Session seed = new Session(iteration, "s0", false);
-            seed.marker("false");
-            seed.expression(opened, vmString("equals", vmLeaf(
-                    "ConStringSymbolExp", "Y_L'String'_OPEN",
-                    "java/lang/String"), vmLeaf("SymbolExpression",
-                    "M_L'org/x/State'_412", "Lorg/x/State;")));
-            seed.target((String) row[1], false, true);
-            seed.write();
+            boolean stated = (Boolean) row[1];
+            boolean repaired = (Boolean) row[2];
+            JsonObject node = read("INSTANCE", 99L, 96L, 3913L, "L");
+            node.addProperty(VmRows.WRITER_SET_COMPLETE, true);
+            node.getAsJsonObject(VmRows.OBSERVED_VERSION).add("expression",
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
+                            "java/lang/String"));
+            JsonObject copy = read("INSTANCE", 733L, 48L, 6053L, "L");
+            copy.addProperty(VmRows.WRITER_SET_COMPLETE, true);
+            copy.getAsJsonObject(VmRows.OBSERVED_VERSION).add("expression",
+                    node);
+            String key = SmtLowering.locationKey(copy.getAsJsonObject(
+                    "location"));
+            SmtLowering lowering = new SmtLowering(
+                    new LinkedHashMap<String, VmTermLowering.Sort>());
+            lowering.begin("s0", SmtLowering.repairing(
+                    new SmtLowering.SessionJoin() {
+                        @Override
+                        public JsonElement writeExpression(String location,
+                                                           long version) {
+                            return stated && key.equals(location)
+                                    && version == 6053L ? node : null;
+                        }
 
-            ClaimPolicy.Decision decision = ClaimPolicy.decide(
-                    compose(iteration, 4), solver());
-            assertEquals(name + ": " + decision.claim().gaps(), row[2],
+                        @Override
+                        public List<WriteRow> writes(String location) {
+                            return Collections.<WriteRow>emptyList();
+                        }
+
+                        @Override
+                        public List<ReadRow> reads(String location) {
+                            return Collections.<ReadRow>emptyList();
+                        }
+
+                        @Override
+                        public Set<String> mintedReadSymbols(long version) {
+                            return Collections.<String>emptySet();
+                        }
+
+                        @Override
+                        public Set<String> readSymbols(String location,
+                                                       long version) {
+                            return Collections.<String>emptySet();
+                        }
+
+                        @Override
+                        public boolean moves(String symbol) {
+                            return false;
+                        }
+
+                        @Override
+                        public boolean repaired(String location, long event) {
+                            return false;
+                        }
+
+                        @Override
+                        public boolean concurrent(OccurrenceAddress reader,
+                                                  OccurrenceAddress writer) {
+                            return false;
+                        }
+                    }, (location, event) -> repaired && key.equals(location),
+                    (reader, writer) -> false), null);
+            VmTermLowering.Term term = lowering.dispatch(vmString("equals",
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_OPEN",
+                            "java/lang/String"), copy),
+                    VmTermLowering.Sort.BOOL, "t");
+            List<String> refusals = lowering.openRefusals();
+            assertEquals(name + ": " + term.text, VmTermLowering.Sort.BOOL,
+                    term.sort);
+            if ((Boolean) row[3]) {
+                assertTrue(name + ": " + refusals, refusals.isEmpty());
+                assertTrue(name + ": " + term.text,
+                        term.text.contains("\"OPEN\""));
+            } else {
+                assertFalse(name + ": a read that moves is never its recorded"
+                        + " name: " + term.text, term.text.contains(
+                        "(= \"OPEN\" \"OPEN\")"));
+            }
+        }
+    }
+
+    @Test
+    public void anUntakenFatalOnAnUnmodeledOperationHoldsWhereNothingItRestsOnMoved()
+            throws Exception {
+        String opened = "EXPR.0000000000000a01";
+        String way = "Gate#isOpened#u3";
+        String clocked = "(and (not " + opened + ") (> " + CLOCK + " 0))";
+        Object[][] table = {
+                {"it rests on nothing that moves", "(not " + opened + ")",
+                        "", ClaimKind.NO_SUPPORTED_WITNESS},
+                {"it rests on a marker too", "(and (not " + opened + ") "
+                        + MARKER + ")", "", ClaimKind.MARKER_FLIPPED},
+                {"another run took the fatal", "(not " + opened + ")",
+                        "taken", null},
+                {"the way guard's other arm", "(or " + opened + " " + MARKER
+                        + ")", "way", ClaimKind.MARKER_FLIPPED},
+                {"it rests on a clock", clocked, "clock", null},
+        };
+        for (Object[] row : table) {
+            String name = (String) row[0];
+            String shape = (String) row[2];
+            Path iteration = folder.newFolder("unmodeled-" + name.replace(' ',
+                    '-').replace("'", "")).toPath();
+            List<String> ids = "taken".equals(shape)
+                    ? Arrays.asList("s0", "s1")
+                    : Collections.singletonList("s0");
+            for (String id : ids) {
+                boolean took = "s1".equals(id);
+                Session session = new Session(iteration, id, took);
+                session.marker(took ? "true" : "false");
+                if ("clock".equals(shape)) session.clock("5");
+                session.expression(opened, vmString("equals", vmLeaf(
+                        "ConStringSymbolExp", "Y_L'String'_OPEN",
+                        "java/lang/String"), vmLeaf("SymbolExpression",
+                        "M_L'org/x/State'_412", "Lorg/x/State;")));
+                if ("way".equals(shape)) {
+                    session.decision(ANCHOR, way, false, (String) row[1]);
+                    session.target("true", false, false);
+                } else {
+                    session.target((String) row[1], took, true);
+                }
+                session.write();
+            }
+            Path map = iteration.resolve(StaticScopeMap.FILE);
+            Files.write(map, Collections.singletonList("{\"kind\":\""
+                    + StaticScopeMap.SITE_KIND + "\",\"role\":\""
+                    + StaticScopeMap.TARGET_SITE + "\",\"regionId\":\""
+                    + ANCHOR.regionId() + "\",\"siteId\":\"T#1\","
+                    + "\"guards\":[\"" + ANCHOR_SITE + "\",\"" + way
+                    + "\"]}"), StandardCharsets.UTF_8);
+            Composer.Composition composition = compose(iteration, ANCHOR, 4,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            if ("taken".equals(shape)) {
+                boolean free = false;
+                for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                    free |= "sat".equals(outcome.answer().status())
+                            && "s1".equals(outcome.selected().path()
+                            .sessionId);
+                }
+                assertTrue(name + ": the run that took it stays free: "
+                        + decision.outcomes(), free);
+                assertNotEquals(name, ClaimKind.NO_SUPPORTED_WITNESS,
+                        decision.claim().kind());
+                continue;
+            }
+            if ("clock".equals(shape)) {
+                assertTrue(name + ": named, not held: "
+                                + composition.gaps(),
+                        says(composition.gaps(), GapKind.UNSTATED_VALUE,
+                                "the clock or unminted value " + CLOCK));
+                continue;
+            }
+            assertEquals(name + ": " + decision.claim().gaps(), row[3],
                     decision.claim().kind());
-            if (row[2] == ClaimKind.MARKER_FLIPPED) {
-                assertTrue(name + ": the claim names what moved: "
-                                + decision.claim().movedRoots(),
-                        decision.claim().movedRoots().containsKey(
-                                MARKER_ROOT));
+            if (row[3] == ClaimKind.MARKER_FLIPPED) {
+                assertEquals(name + ": the claim names what moved",
+                        Collections.singletonMap(MARKER_ROOT, "true"),
+                        decision.claim().movedRoots());
             }
         }
     }

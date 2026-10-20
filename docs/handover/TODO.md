@@ -179,18 +179,13 @@ largest replay cost seen in SGF9; confirm which roots produce the volume, then b
 - Unplaced clock cells: 19 composed 2 of 44 paths (41 refused, `Composer#unplacedClocks`); placing node0's clock cell
   composes 28 of 44 and still decides NO_SUPPORTED_WITNESS (`c19/FINDINGS.txt`). COMPOSE now places a cell by another
   node's reading of the same JVM clock (`Composer#nearestAnchor`; HZ17-mat 2 -> 112 of 114 paths composed); 19 not rerun on it.
-- A free leaf for an unmodeled operation (`SmtLowering#free`, UNSTATED_VALUE) in the seed's own fatal makes the seed
-  path satisfiable as recorded: HP8-15 (hbase-adhoc-15) seed path 3b16839a's phi (`not RegionState#isOpened()`, i.e.
-  `"OPEN".equals(state)`, `OpStrExpression.equals` ARGUMENT_DYNAMIC_TYPE_UNMODELED) lowers to the free leaf
-  `unsupported__0d3bc12011`; the anchor's own decision on that node (seq 6059, outcome false) is the fatal's, not in the
-  path condition, so nothing pins the leaf (`unsupported__703a92087c` is another node: `Procedure#isSuccess` seq 5993,
-  forced true by the path condition). `ClaimPolicy#closed` took the free formula's model -- the run as recorded -- as a
-  FORMULA_SAT witness, which CONFIRM refuted ("moves nothing"). Only 15 has such leaves (458; 245 of 246 path fatals;
-  none in 10, 11, 22, 34, mat, nsrg). WIP: `hbase-reask` 231264aad (`Composer#heldToRecording`: a healthy fatal on a
-  havoc leaf is held to its recording where every mover of the phi is at its recorded value; not gated, not measured on
-  HP8-15). A probe through `SmtLowering.forSession` says the phi's movers are two re-pairable reads (`INSTANCE/733#48`,
-  `INSTANCE/99#96`), which the WIP cannot state -- measure in the Composer's own lowering first. Alternatives: model the
-  argument's dynamic type, or take an unmodeled node's recorded value from a decision row on the same node.
+- A free leaf for an unmodeled operation in a fatal arm the recording did not take is held to its recording where
+  nothing it rests on moved (`Composer#hold`, PIPELINE §8; HP8-15's seed path was claimed FORMULA_SAT moving nothing);
+  an enum compare over a chain of reads none of which moves is the name its last writer stored, written or not
+  (`SmtLowering#enumRead`: HP8-15's 213 phi leaves). Left on HP8-15: 245 leaves in the path condition, `Procedure#isSuccess`
+  over `Procedure.state` at a version no write row states that the anchor's family re-pairs: held OWN at the read's
+  REF concrete value, so the writers' enum names are `ARM_SORT_MISMATCH` and no world re-pairs that read; an OWN enum read
+  could state the name its observed version carries instead (not built: no case needs that re-pairing yet).
 - A re-run that lands mid-round is seen one round late (~6.5 min a link; 50 of 1019's 160 min were waits).
 - Chains of doors-only growths: with the fixed point waiting for every re-run (b9ecc0ba2), the fresh-clone run of 38
   (`accept-FC6STOP-adhoc-38`, no witness that run) spent rounds 47-64 growing one doors-only occurrence "run whole" at a
@@ -606,8 +601,9 @@ the native reproducer has no hold for a continuation's work item. Read how CONFI
 (`runtime/Continuations`, IDENTITY §6) and give REPRODUCE the same; or, under the workaround rule, make the observer's
 enable a synchronous call in automatic mode (named in STATUS).
 
-**4. A free `unsupported__` leaf in the seed's own fatal** (15): TODO "Solr: after SGF9" §5 has the mechanism and the
-WIP (`hbase-reask` 231264aad).
+**4. A free `unsupported__` leaf in the seed's own fatal** (15): fixed on `hbase-reask` (TODO "Solr: after SGF9" §5,
+PIPELINE §8): offline on HP8-15's corpus the claim is STATE_PAIRING_FLIPPED on path 62 (RegionStateNode.state re-paired
+to OPENING plus one FAULT marker) instead of FORMULA_SAT on the seed; H1 reruns 15.
 
 **5. Unmerged work.** `hbase-reask` 231264aad (WIP, not gated: item 4). Everything else of H1-H5 is in `system/hbase`.
 
