@@ -1034,6 +1034,58 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void aReadTheModelHoldsBehindTheAnchorIsNotRequired() {
+        String release = Confirmation.CLAIM
+                + "m|Anchor:d|<a.P: void step()>@0";
+        String creation = Confirmation.CLAIM
+                + "m|Anchor:c|<a.P: void step()>@0";
+        Map<String, String> claims = new LinkedHashMap<String, String>();
+        claims.put("R|", release);
+        claims.put("A|", creation);
+        String read = "A|<a.N: int count()>@0";
+        String removal = "R|<a.N: void remove()>@0";
+        String nested = "W|<a.Q: void run()>@0/<a.N: int count()>@0";
+        Object[][] table = {
+                {"22: the release step's own read, its claim held behind the"
+                        + " anchor's read", removal,
+                        Arrays.asList(order(read, release)), true},
+                {"a read inside the anchor occurrence",
+                        "A|<a.N: void add()>@0",
+                        Arrays.asList(order(read, creation)), false},
+                {"a read held behind another occurrence's end", removal,
+                        Arrays.asList(order("B|<a.N: void add()>@0", release)),
+                        false},
+                {"a read inside an activation held behind a held claim's end",
+                        nested, Arrays.asList(order(read, release),
+                        order(removal, "W|<a.Q: void run()>@0")), true},
+                {"a read merely recorded after the anchor", nested,
+                        Collections.<JsonObject>emptyList(), false},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<JsonObject> edges = new ArrayList<JsonObject>(
+                    (List<JsonObject>) row[2]);
+            JsonObject state = JsonParser.parseString("{'kind':'STATE',"
+                    + "'reader':'r','mint':false,'writer':'w','version':3}")
+                    .getAsJsonObject();
+            edges.add(state);
+            assertEquals((String) row[0], row[3], !ConfirmMain.afterAnchor(
+                    edges, "A|", claims, Collections.singletonMap("r",
+                            (String) row[1])).isEmpty());
+            assertEquals((String) row[0], row[3],
+                    state.has(Confirmation.AFTER_ANCHOR));
+        }
+    }
+
+    private static JsonObject order(String before, String after) {
+        JsonObject order = new JsonObject();
+        order.addProperty("kind", "ORDER");
+        order.addProperty("before", before);
+        order.addProperty("after", after);
+        return order;
+    }
+
+    @Test
     public void aTurnCountedOrderIsLeftOutOfTheNativePlantOnly()
             throws Exception {
         Path iteration = iteration();

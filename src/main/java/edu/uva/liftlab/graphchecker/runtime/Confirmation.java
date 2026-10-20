@@ -38,6 +38,7 @@ public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
     public static final String INITIAL = "INITIAL";
     public static final String PRODUCER_QUESTION = "producerQuestion";
+    public static final String AFTER_ANCHOR = "afterAnchor";
     public static final String ORDER_TIMEOUT_PROPERTY =
             "causynth.confirm.order.timeout.ms";
     static final long ORDER_TIMEOUT_MS = 300000L;
@@ -52,6 +53,8 @@ public final class Confirmation {
             new LinkedHashSet<String>();
     private static final Map<String, String> STATE =
             new LinkedHashMap<String, String>();
+    private static final Set<String> BEHIND_ANCHOR =
+            new HashSet<String>();
     private static final Map<String, String> TURNS =
             new LinkedHashMap<String, String>();
     private static final Set<String> TURNED = new HashSet<String>();
@@ -1140,6 +1143,7 @@ public final class Confirmation {
                         + observed));
             }
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
+                if (BEHIND_ANCHOR.contains(edge.getKey())) continue;
                 String observed = READ.get(edge.getKey());
                 String version = VERSION.get(edge.getKey());
                 if (!INITIAL.equals(edge.getValue())
@@ -1245,6 +1249,10 @@ public final class Confirmation {
                         }
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
+                        if (row.has(AFTER_ANCHOR)
+                                && row.get(AFTER_ANCHOR).getAsBoolean()) {
+                            BEHIND_ANCHOR.add(reader);
+                        }
                         if (writer.startsWith(VIEW_WRITER)) {
                             String location = optionalString(row, "location");
                             if (location.isEmpty()) {
@@ -1300,6 +1308,7 @@ public final class Confirmation {
                         + " compared";
                 WIRE.clear();
                 STATE.clear();
+                BEHIND_ANCHOR.clear();
                 VERSION.clear();
                 VIEW_AT.clear();
                 TURNS.clear();

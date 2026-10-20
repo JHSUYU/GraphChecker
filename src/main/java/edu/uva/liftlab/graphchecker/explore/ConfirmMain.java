@@ -362,6 +362,8 @@ public final class ConfirmMain {
             orderEnds.putAll(state.ends);
             orderEnds.putAll(pairings.ends);
             heldOnce(edges);
+            afterAnchor(edges, Confirmation.activation(anchor,
+                    ExecutionIndex.empty()), claims(session), readers(session));
             edges.addAll(markerEdges(manifest, planted.assignments));
             JsonObject anchorRow = new JsonObject();
             anchorRow.addProperty("kind", "ANCHOR");
@@ -780,9 +782,29 @@ public final class ConfirmMain {
         List<JsonObject> from = Files.isReadable(planted)
                 ? RowCodec.readJsonl(planted)
                 : Collections.<JsonObject>emptyList();
-        return mintFrom(withOrders(claimFile, worker, sessions), from.isEmpty()
+        return mintFrom(namedAfterAnchor(withOrders(claimFile, worker,
+                sessions), worker), from.isEmpty()
                 ? Collections.<String, String>emptyMap()
                 : ExploreCodec.map(from.get(0)));
+    }
+
+    private static JsonObject namedAfterAnchor(JsonObject confirmation,
+                                               Path worker)
+            throws IOException {
+        Path edges = worker.resolve(Confirmation.FILE);
+        if (!Files.isReadable(edges)) return confirmation;
+        JsonArray readers = new JsonArray();
+        for (JsonObject edge : RowCodec.readJsonl(edges)) {
+            if ("STATE".equals(optionalString(edge, "kind"))
+                    && edge.has(Confirmation.AFTER_ANCHOR)
+                    && edge.get(Confirmation.AFTER_ANCHOR).getAsBoolean()) {
+                readers.add(optionalString(edge, "reader"));
+            }
+        }
+        if (readers.size() > 0) {
+            confirmation.add(Confirmation.AFTER_ANCHOR, readers);
+        }
+        return confirmation;
     }
 
     private static JsonObject mintFrom(JsonObject confirmation,
@@ -1664,6 +1686,79 @@ public final class ConfirmMain {
             holding.edges.add(row);
         }
         return holding;
+    }
+
+    static Set<String> afterAnchor(List<JsonObject> edges, String anchor,
+                                   Map<String, String> claims,
+                                   Map<String, String> readers) {
+        Set<String> held = new LinkedHashSet<String>();
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (JsonObject edge : edges) {
+                if (!"ORDER".equals(optionalString(edge, "kind"))) continue;
+                String after = optionalString(edge, "after");
+                String before = optionalString(edge, "before");
+                if (held.contains(after)) continue;
+                if (before.startsWith(anchor)
+                        || behind(before, held, claims)) {
+                    held.add(after);
+                    grew = true;
+                }
+            }
+        }
+        Set<String> marked = new LinkedHashSet<String>();
+        for (JsonObject edge : edges) {
+            if (!"STATE".equals(optionalString(edge, "kind"))
+                    || edge.has("mint") && edge.get("mint").getAsBoolean()) {
+                continue;
+            }
+            String reader = optionalString(edge, "reader");
+            String at = readers.get(reader);
+            if (at == null || at.startsWith(anchor)
+                    || !behind(at, held, claims)) {
+                continue;
+            }
+            edge.addProperty(Confirmation.AFTER_ANCHOR, true);
+            marked.add(reader);
+        }
+        return marked;
+    }
+
+    private static boolean behind(String activation, Set<String> held,
+                                  Map<String, String> claims) {
+        String claim = claims.get(activation.substring(0,
+                activation.indexOf('|') + 1));
+        for (String hold : held) {
+            if (hold.equals(claim) || activation.equals(hold)
+                    || activation.startsWith(hold.endsWith("|") ? hold
+                    : hold + "/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Map<String, String> claims(SessionReader session) {
+        Map<String, String> claims = new HashMap<String, String>();
+        for (ActivationRow row : session.activations()) {
+            if (!row.claimed()) continue;
+            claims.putIfAbsent(Confirmation.activation(row.occurrence(),
+                    ExecutionIndex.empty()),
+                    Confirmation.claim(row.threadKey()));
+        }
+        return claims;
+    }
+
+    private static Map<String, String> readers(SessionReader session) {
+        Map<String, String> readers = new HashMap<String, String>();
+        for (ReadRow read : session.reads()) {
+            readers.putIfAbsent(Confirmation.id(read.endpoint()),
+                    Confirmation.activation(read.endpoint().occurrence(),
+                            ExecutionIndex.of(read.endpoint()
+                                    .activationFrames())));
+        }
+        return readers;
     }
 
     private static void heldOnce(List<JsonObject> edges) {

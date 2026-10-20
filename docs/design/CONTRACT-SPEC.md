@@ -295,9 +295,10 @@ field=<f> <subject>`.
   spellings and compares exactly after that (`Confirmation#attached`): another node or any other difference refutes;
   `producerQuestion
   {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
-  session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
+  session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location, afterAnchor?}` (`writer`
   `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`; a `mint` row is compared by its writer
-  and location, not its reader), `ORDER {before, after}`
+  and location, not its reader; `afterAnchor` true: the plan's ORDER rows hold the reader behind an
+  end inside the anchor's occurrence, and the close does not compare the row, PIPELINE §10), `ORDER {before, after}`
   (activation keys; `after` the last activation entered before the event it orders -- for a claimed `HANDOFF_TASK` the
   session's manifest does not name in `servingTasks`, the claim's name, `Confirmation#claim` (`CLAIM <start key>`), entered
   as the claim opens -- or, for a queued task, a queue item, a serving hand-off task or claimed
