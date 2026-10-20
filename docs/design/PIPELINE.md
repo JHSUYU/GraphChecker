@@ -3656,7 +3656,28 @@ with it is a `RUN_DEFECT`.
   queue item no named start filed among it: a ConcurrentUpdate client's Runner polling
   its update queue; never for work it filed and claims itself, an inline continuation of its own:
   `Identity.State#openStart`, so an HBase procedure step is held on its worker, hbase-adhoc-22's
-  deletion's release among them). Held in place, such a task holds what it holds at the hold: an Overseer
+  deletion's release among them). Such a claimed hand-off is held at its claim's entry, not at
+  the last activation before the event: the ORDER row's `after` is the claim's name
+  (`Confirmation#claim`: `CLAIM ` and the row's `threadKey` start key, its context named as
+  activations are, a WAKE turn or a delivery's count left out), which `Identity#adopt` enters as it
+  opens the claim, before the claimed work runs (an HBase step: `CausynthStep.run` in
+  `ProcedureExecutor$WorkerThread#runProcedure`, before `executeProcedure` takes the procedure's
+  scheduler locks, `acquireLock`, and before `beforeExec`, where a TransitRegionStateProcedure takes
+  its RegionStateNode lock, which the admin move/unassign's `preTransitCheck` and every region
+  state report also take: held at the last activation before its write, a TRSP step would sit on
+  that lock while its earlier end waited for it, an order not held in time). The hold is stronger
+  than the order asks -- everything the claimed work does waits, not only its event -- and still
+  realizes it: the event cannot run before the claim's entry. It deadlocks only where the earlier
+  end needs something the held work does before its event; what a step does before its event is
+  its own: its scheduler locks (taken after the entry, so not held while held), its procedure's
+  execution lock (`IdLock` by procedure id, taken in `runProcedure` before the step and never by
+  another procedure's work), its own state reads and writes, and the RPCs and child procedures it
+  starts, which run only once the step runs; another procedure's step or an RPC handler waits on
+  none of these. The case where one would: an earlier end that is the effect of this step's own
+  prefix and that the step then waits for synchronously -- a step's hbase:meta write through the
+  client, awaited with `FutureUtils#get`, whose region server handler's write were the earlier end;
+  meta cells are no tracked location (TODO HBase 9), so no STATE pairing and no order names such a
+  write today. Held in place, such a task holds what it holds at the hold: an Overseer
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other

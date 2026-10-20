@@ -908,6 +908,8 @@ public class ConfirmMainTest {
     public void anOrderNoHoldRealizesIsCheckedWhereItsLaterEndRuns()
             throws Exception {
         Endpoint send = endpoint(PRODUCER, "a.Convert#send()#3:SEND");
+        String step = "n0#epoch0|Root:WAKE/a.Scheduler.poll#2|<a.Step: void"
+                + " run()>#u23@0";
         Object[][] rows = {
                 {"held where it runs", null, null, reader.activation(),
                         false},
@@ -916,13 +918,20 @@ public class ConfirmMainTest {
                 {"no send started it", null, null, reader.activation(), true},
                 {"its writer stands under that send", send, send,
                         reader.activation(), true},
+                {"a hand-off held at its claim's entry", null, null,
+                        Confirmation.claim(ActivationRow.CLAIMED + step),
+                        false},
         };
         for (int index = 0; index < rows.length; index++) {
             Object[] row = rows[index];
             String name = (String) row[0];
             Path iteration = iteration();
             List<ActivationRow> activations = new ArrayList<ActivationRow>();
-            if (index > 0) {
+            if (index == 4) {
+                activations.add(ActivationRow.of("sel", anchor, "TASK.r",
+                        false, true, ActivationRow.CLAIMED + step,
+                        ActivationRow.ClaimKind.HANDOFF_TASK, null));
+            } else if (index > 0) {
                 activations.add(ActivationRow.of("sel", anchor, "TASK.r",
                         false, true, ActivationRow.CLAIMED + "pool#1",
                         ActivationRow.ClaimKind.QUEUED_TASK,

@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -17,6 +18,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -263,6 +267,49 @@ public class ConfirmationTest {
         assertTrue(mismatches.get(0), mismatches.get(0)
                 .startsWith("ORDER " + writer));
     }
+    @Test
+    public void aHandOffIsHeldAtItsClaimsEntry() throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Lineage.resetForTests();
+        RecordingWindow.reset();
+        SourceRef node = new SourceRef("CLUSTER_NODE", "HMASTER", "t/m0", 0L);
+        String site = "<a.Step: void handOff(a.Procedure)>#u18";
+        String key = node.key() + "|Root:CLIENT/test#1|" + site + "@0";
+        String writer = Endpoint.activation(DECODER, ExecutionIndex.empty());
+        handed("", Arrays.asList(order(writer, Confirmation.claim(
+                ActivationRow.CLAIMED + key))));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "60000");
+        assertTrue(Confirmation.ordering());
+        assertEquals("a turn count is no part of a claim's name",
+                Confirmation.claim("n|Root:WAKE/a.P#3|x@0"),
+                Confirmation.claim(ActivationRow.CLAIMED
+                        + "n|Root:WAKE/a.P#5|x@0"));
+        Object source = new Object();
+        RuntimeTraceContext.registerSource(source, node);
+        long request = RuntimeTraceContext.beginRequest(source, "test");
+        Object step = new Object();
+        Identity.startWork(site, step, new ThreadPoolExecutor(0, 1, 1L,
+                TimeUnit.SECONDS, new SynchronousQueue<Runnable>()));
+        RuntimeTraceContext.endRequest(request);
+        long[] entered = new long[1];
+        String[] claimed = new String[1];
+        Thread worker = new Thread(() -> {
+            long claim = Identity.claimStart(step);
+            entered[0] = System.nanoTime();
+            claimed[0] = Identity.claimedStart();
+            Identity.endClaim(claim);
+        });
+        worker.start();
+        Thread.sleep(100L);
+        long exited = System.nanoTime();
+        Confirmation.exited(writer);
+        worker.join(5000L);
+        assertEquals(key, claimed[0]);
+        assertTrue("the hand-off ran only after the writer exited",
+                entered[0] >= exited);
+        assertTrue(Confirmation.close().isEmpty());
+    }
+
     @Test
     @FreshStatics.Rows(2)
     public void aCheckedOrderIsObservedWhereItsLaterEndEntersNeverWaitedFor()

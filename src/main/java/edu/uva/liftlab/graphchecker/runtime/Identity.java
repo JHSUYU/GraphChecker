@@ -466,15 +466,20 @@ public final class Identity {
             return;
         }
         boolean ranHere = !own && !continuation && start.ranHere(state);
-        state.openStart(start, own, ranHere, item ? ClaimKind.ITEM
+        ClaimKind kind = item ? ClaimKind.ITEM
                 : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
-                : ClaimKind.QUEUED_TASK);
+                : ClaimKind.QUEUED_TASK;
+        state.openStart(start, own, ranHere, kind);
         if (continuation) state.standApart();
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
         ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
                 start.frame().callSite());
+        if (!own && kind == ClaimKind.HANDOFF_TASK
+                && Confirmation.ordering()) {
+            Confirmation.entering(Confirmation.claim(start.key));
+        }
     }
 
     public static void startWork(String startSiteId, Object carrier,

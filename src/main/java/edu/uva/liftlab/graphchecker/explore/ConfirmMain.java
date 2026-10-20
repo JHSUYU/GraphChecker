@@ -1157,9 +1157,14 @@ public final class ConfirmMain {
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames,
                          boolean checked) {
+                this(occurrence, Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames)), checked);
+            }
+
+            private Hold(OccurrenceAddress occurrence, String activation,
+                         boolean checked) {
                 this.occurrence = occurrence;
-                this.activation = Confirmation.activation(occurrence,
-                        ExecutionIndex.of(frames));
+                this.activation = activation;
                 this.checked = checked;
             }
         }
@@ -1172,7 +1177,14 @@ public final class ConfirmMain {
             } catch (IllegalStateException unheld) {
                 return holdBefore(event, seq, true);
             }
-            if (send == null) return holdBefore(event, seq, false);
+            if (send == null) {
+                ActivationRow row = activations.get(event.occurrence().id());
+                return row != null && row.claimed()
+                        && row.claimKind() == ActivationRow.ClaimKind.HANDOFF_TASK
+                        ? new Hold(event.occurrence(),
+                        Confirmation.claim(row.threadKey()), false)
+                        : holdBefore(event, seq, false);
+            }
             if (Confirmation.standsUnder(first.occurrence, send,
                     activations::get)) {
                 return holdBefore(event, seq, true);

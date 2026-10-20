@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -242,6 +243,28 @@ public final class Confirmation {
                                     ExecutionIndex frames) {
         return Endpoint.activation(occurrence.anyDelivery().anyTurn(),
                 frames);
+    }
+
+    private static final String CLAIM = "CLAIM ";
+
+    public static String claim(String threadKey) {
+        String key = threadKey.startsWith(ActivationRow.CLAIMED)
+                ? threadKey.substring(ActivationRow.CLAIMED.length())
+                : threadKey;
+        String[] parts = key.split("\\|", 3);
+        if (parts.length < 3) return CLAIM + key;
+        CausalContext context;
+        try {
+            context = CausalContext.parse(parts[1]);
+        } catch (IllegalArgumentException unparsed) {
+            return CLAIM + key;
+        }
+        if (context instanceof CausalContext.Anchor) {
+            context = ((CausalContext.Anchor) context).anyDelivery();
+        } else if (context instanceof CausalContext.Root) {
+            context = ((CausalContext.Root) context).anyTurn();
+        }
+        return CLAIM + parts[0] + "|" + context.render() + "|" + parts[2];
     }
 
     private static final int SUBMITTER_HOPS = 32;

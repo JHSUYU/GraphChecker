@@ -719,8 +719,11 @@ serving. Offline on NC5-22 `refuted/0000` with its session's step starts dropped
 drops them (`analysis/hbase-2026-10-20/reask/confirm/nc5-22-0000-{orig,sim}`): its 3 ORDER rows go from check:true
 (through the client continuation) to held where they run, the deletion's release at the DeleteTableProcedure step.
 Seeds with step starts in `servingTasks` before the fix: 22 (27), 10 (48), 14 (54), 04 (12), mat (12), nsrg (3-4), 35
-(4), 28 (3), 34 (3); 04 keeps its PASS (confirmed under the old rule; the change only adds holds). First runs on the
-fix: check `servingTasks` holds no step start, and that a held step does not wait on a lock its earlier end needs.
+(4), 28 (3), 34 (3); 04 keeps its PASS (confirmed under the old rule; the change only adds holds). A step so held is
+held at its claim's entry (`Confirmation#claim`, before `acquireLock` and `beforeExec`; PIPELINE §10 has the argument),
+since a TRSP step held at the last activation before its write would sit on its RegionStateNode lock, which the admin
+move/unassign's `preTransitCheck` (10/11/12's targets) and region state reports also take. First runs on the fix: check
+`servingTasks` holds no step start and that no ORDER on a step times out.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

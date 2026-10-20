@@ -939,7 +939,8 @@ order:
   its expected edges (`runtime/Confirmation`, PIPELINE.md §10): an activation held where it runs,
   a task its executor handed to a worker of its own included (`ActivationRow#claimKind`
   `HANDOFF_TASK`: a `ThreadPoolExecutor` on a `SynchronousQueue`, run on that worker, Solr's
-  Overseer command Runners), except a queued task, a queue item, a hand-off task that took work
+  Overseer command Runners, HBase's procedure steps; such a task is held at its claim's entry,
+  `Confirmation#claim`, before it takes any lock, PIPELINE §10), except a queued task, a queue item, a hand-off task that took work
   another thread started on its thread -- work whose start another thread filed, or whose starter
   is unknown or gone, any queue item no named start filed among it (`Identity#servingTasks`,
   `State#openStart`, stated in the session's manifest at

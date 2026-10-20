@@ -298,8 +298,9 @@ field=<f> <subject>`.
   session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
   `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`; a `mint` row is compared by its writer
   and location, not its reader), `ORDER {before, after}`
-  (activation keys; `after` the last activation entered before the event it orders -- a `HANDOFF_TASK`'s too, unless the
-  session's manifest names it in `servingTasks` -- or, for a queued task, a queue item, a serving hand-off task or claimed
+  (activation keys; `after` the last activation entered before the event it orders -- for a claimed `HANDOFF_TASK` the
+  session's manifest does not name in `servingTasks`, the claim's name, `Confirmation#claim` (`CLAIM <start key>`), entered
+  as the claim opens -- or, for a queued task, a queue item, a serving hand-off task or claimed
   work of no stated kind, the send that started it, `Confirmation#submitter`; `check: true` and
   the later end's own activation where no hold realizes the order: no such send, or the earlier
   end stands under its anchor chain), every endpoint
