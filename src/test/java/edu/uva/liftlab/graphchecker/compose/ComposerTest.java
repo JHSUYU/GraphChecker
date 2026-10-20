@@ -1737,6 +1737,46 @@ public class ComposerTest {
     }
 
     @Test
+    public void aWireLeafIsHeldToItsTextOnlyWhereTheClaimMovedWhatItCarries() {
+        Set<String> none = Collections.<String>emptySet();
+        Map<String, ComposedFamilies.BoundLeaf> leaves =
+                new LinkedHashMap<String, ComposedFamilies.BoundLeaf>();
+        leaves.put("c-moved", new ComposedFamilies.BoundLeaf("v_moved", "J",
+                ANCHOR.id(), false, none, Collections.singleton(MARKER_ROOT)));
+        leaves.put("c-recorded", new ComposedFamilies.BoundLeaf("v_recorded",
+                "J", ANCHOR.id(), false, none, none));
+        leaves.put("c-clocked", new ComposedFamilies.BoundLeaf("v_clocked",
+                "J", ANCHOR.id(), true, none,
+                Collections.singleton(MARKER_ROOT)));
+        leaves.put("c-nested", new ComposedFamilies.BoundLeaf("v_nested",
+                "J", ANCHOR.id(), false, Collections.singleton("v_moved"),
+                none));
+        ComposedFamilies.ArmChoice arm = ComposedFamilies.ArmChoice.of(
+                "message_family__0", "g", Collections.<String>emptyList(), "s0",
+                Collections.<edu.uva.liftlab.graphchecker.smt.Arms.Arm>
+                        emptyList(), leaves);
+        Map<String, String> model = new LinkedHashMap<String, String>();
+        model.put("v_moved", "5");
+        model.put("v_recorded", "6");
+        model.put("v_clocked", "7");
+        model.put("v_nested", "8");
+        Object[][] table = {
+            {"a fault moved", Collections.singleton(MARKER_ROOT),
+                    "{c-moved=5, c-nested=8}"},
+            {"nothing moved", none, "{}"},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            Set<String> moved = (Set<String>) row[1];
+            assertEquals(row[0] + ": a leaf the model does not state (a "
+                            + "recording's text, a clock's reading) is no "
+                            + "edge CONFIRM holds", row[2],
+                    ComposedFamilies.texts(Collections.singletonList(arm),
+                            model, ANCHOR.id(), moved).toString());
+        }
+    }
+
+    @Test
     public void theInitialIsTheWriterAtVersionZero() throws Exception {
         String map = "java/util/concurrent/ConcurrentHashMap";
         LocationId pools = LocationId.of(LocationKind.MAP, "21", "-3");

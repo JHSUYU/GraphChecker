@@ -2129,8 +2129,8 @@ public final class ClosurePlanner {
         }
     }
 
-    private static boolean unrecorded(Corpus corpus, String sessionId,
-                                      String locationKey, long version) {
+    static boolean unrecorded(Corpus corpus, String sessionId,
+                              String locationKey, long version) {
         if (version < 0L) return false;
         for (WriteRow write : corpus.writesOf(sessionId, locationKey)) {
             if (write.version() == version && !write.initial()) return false;
