@@ -1237,12 +1237,9 @@ public final class ScheduleLog {
         }
         int next = SLOTS.containsKey(event.slotKey)
                 ? nextOpenLocked(BY_CONTEXT.get(event.slotContext)) : -1;
-        if (next >= 0) {
-            if (!dueLocked(next)) return next;
-            if (movedSincePollLocked(event) || clockLoopLocked(event)
-                    || next == firstBlocking) {
-                return GO;
-            }
+        if (next >= 0 && dueLocked(next) && (movedSincePollLocked(event)
+                || clockLoopLocked(event) || next == firstBlocking)) {
+            return GO;
         }
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);

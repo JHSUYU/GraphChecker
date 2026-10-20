@@ -480,6 +480,66 @@ public class ScheduleLogTest {
         for (int at = 2; at < row.length; at++) progress(row[at]);
     }
 
+    /**
+     * A poll past its count whose context's next slot is not yet due waits
+     * held there: it bounds no give-up of the frontier before it, another
+     * context's event that comes late (hbase-adhoc-13 X191: the surplus poll
+     * waited unheld and gave up 763 slots before its context's next one).
+     */
+    @Test
+    @FreshStatics.Rows(2)
+    public void aPollPastItsCountBehindAnotherContextBoundsNoGiveUp()
+            throws Exception {
+        Object other = new Object();
+        RuntimeTraceContext.registerSource(other, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
+        String carried = "graphchecker.test.schedule.recorded";
+        if (FreshStatics.row() == 0) {
+            pollAroundTheirs(other, 0L, false);
+            StringBuilder rows = new StringBuilder();
+            for (ScheduleEvent event : events()) {
+                rows.append(RowCodec.toLine(RowCodec.writeScheduleEvent(
+                        event))).append('\n');
+            }
+            System.setProperty(carried, rows.toString());
+            return;
+        }
+        List<ScheduleEvent> recorded = new ArrayList<ScheduleEvent>();
+        for (String row : System.getProperty(carried).split("\n")) {
+            recorded.add(RowCodec.readScheduleEvent(RowCodec.fromLine(row)));
+        }
+        System.clearProperty(carried);
+        timeout(10000L);
+        enforce(recorded);
+        pollAroundTheirs(other, 3500L, true);
+        assertEquals(Arrays.asList("w", "w", "f", "n", "w"), sites());
+        progress(" 0 given up in 0 stall(s)");
+    }
+
+    private static void pollAroundTheirs(Object other, long late,
+                                         boolean pollsAgain)
+            throws Exception {
+        ScheduleLog.observe(WAKE, "w");
+        Thread theirs = started(() -> {
+            long own = RuntimeTraceContext.beginRequest(other, "theirs");
+            try {
+                Thread.sleep(late);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            send("f");
+            RuntimeTraceContext.endRequest(own);
+        });
+        if (pollsAgain) {
+            ScheduleLog.observe(WAKE, "w");
+        } else {
+            theirs.join();
+        }
+        send("n");
+        ScheduleLog.observe(WAKE, "w");
+        theirs.join();
+    }
+
     private static List<ScheduleEvent> order(ScheduleEvent first,
                                              List<ScheduleEvent> rest) {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();

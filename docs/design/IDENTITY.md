@@ -836,7 +836,9 @@ order:
   past the cut take none, and the model's `ORDER` rows place them (PIPELINE.md §5);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
-  recorded) waits until its context's next slot is due, then polls once per move of the order
+  recorded) waits, held, until its context's next slot is due, so it bounds no give-up of the slots
+  before that one (hbase-adhoc-13 X191: waiting unheld behind another context's frontier, the poll
+  gave up 763 slots after the idle grace), then polls once per move of the order
   (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
   the first poll past the count goes at once. A `WAKE` no occurrence names, of no timed-wait turn, is
   past its count also where its key has a later slot: when its context holds an open slot after the
