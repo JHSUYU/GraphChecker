@@ -1390,7 +1390,7 @@ parsed from (IDENTITY §7.2), so:
   holder's version standing for its contents, no log of its own: tracked, every state object a node
   parsed logged its maps, and solr-18413's seed replay spent 440-740 s at single region closes
   decoding them (round Z3);
-- a chosen read of one is a `PROVENANCE_SITE` (`StaticScopeMap#provenanceCells`), kept though
+- a chosen read of one is a `PROVENANCE_SITE` (`StaticScopeMap#provenanceSites`), kept though
   nothing in the slice stores it, observed by its receiver alone
   (`ConcolicRegionRuntime.observeProvenance`, no VM call): a receiver a decode registered
   (`runtime/Provenance`) makes a STORE read row of that version at the site, in the reading
@@ -1403,8 +1403,9 @@ parsed from (IDENTITY §7.2), so:
 - a `PROVENANCE` field feeds scope growth as a `PRE_WINDOW` one does (`RootDemand#frontier`: its
   writer, a decode's constructor, may lie outside the scope);
 - the concrete anchor's demand joins such a row at its site (`StaticScopeMap#demandedAt`), and
-  PLAN joins the objects the recording saw the target read the field on with the objects each
-  decode registered (`causynth/RecordedStore`).
+  PLAN joins the objects the recording saw the target read the field on -- or any declared read's
+  field (`StaticScopeMap#receiverCells`) -- with the objects each decode registered
+  (`causynth/RecordedStore`).
 
 A static slice could not do it: from `activeSlicesArr` back to the fetch it crosses the
 constructor, the map copies and the JSON parse (18 edges and more, past the bound), the parser

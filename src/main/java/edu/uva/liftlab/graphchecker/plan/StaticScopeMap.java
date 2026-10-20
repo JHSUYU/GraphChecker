@@ -1547,9 +1547,12 @@ public final class StaticScopeMap {
         return calls;
     }
 
-    public Set<String> provenanceCells() {
+    public Set<String> receiverCells() {
         Set<String> cells = new LinkedHashSet<String>();
         for (Site site : ofRole(PROVENANCE_SITE, read -> true)) {
+            cells.add(site.cell);
+        }
+        for (Site site : declaredSites()) {
             cells.add(site.cell);
         }
         return cells;
