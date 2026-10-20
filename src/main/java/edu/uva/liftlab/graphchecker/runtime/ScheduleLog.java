@@ -1162,8 +1162,39 @@ public final class ScheduleLog {
                 }
             }
         }
-        return slots.peekFirst();
+        int next = slots.peekFirst();
+        return pastItsLoopLocked(event, next) ? -1 : next;
     }
+
+    private static boolean pastItsLoopLocked(Pending event, int next) {
+        if (event.kind != ScheduleEvent.Kind.WAKE
+                || !event.occurrence.isEmpty()
+                || StableEventNames.timedWaitTurn(event.context)) {
+            return false;
+        }
+        Integer last = TAKEN_WAKES.get(event.key);
+        List<Integer> own = BY_CONTEXT.get(event.slotContext);
+        if (last == null || last >= next || own == null) return false;
+        int from = Collections.binarySearch(own, last);
+        for (int at = from < 0 ? -from - 1 : from + 1; at < own.size();
+             at++) {
+            int slot = own.get(at);
+            if (slot >= next) return false;
+            if (state[slot] != OPEN) continue;
+            if (PAST_LOOP.add(event.key + "\n" + next)) {
+                stateLocked("schedule-past-loop#" + next, event.render()
+                        + " came again after its key's slot " + last
+                        + " while its context's slot " + slot + " ("
+                        + order.get(slot).render() + ") is open before the"
+                        + " key's next slot " + next + ": it polls past its"
+                        + " loop's recorded count and takes no slot");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static final Set<String> PAST_LOOP = new HashSet<String>();
 
     private static String slotOccurrenceOf(int slot) {
         ScheduleEvent event = order.get(slot);
@@ -1892,6 +1923,7 @@ public final class ScheduleLog {
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
+        PAST_LOOP.clear();
         MADE.clear();
         moves = 0L;
         letGoAt = 0L;

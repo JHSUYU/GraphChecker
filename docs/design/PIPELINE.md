@@ -305,7 +305,10 @@ counts the loop's wakes, which the replay's timing moves) takes its slot by the 
 and no occurrence named (`ScheduleLog#turnFamily`), so the replay's loop takes the recorded turns' slots in order
 whatever turn it is at; one at a slot not yet due waits held, as a poll past its
 recorded count does, so it never bounds a give-up of the slots before it; let go, it takes that slot, a `WRITE` still
-behind an earlier held write to its location (IDENTITY.md §8).
+behind an earlier held write to its location (IDENTITY.md §8). A `WAKE` no occurrence names whose context holds an open
+slot between its key's last taken slot and the key's next one polls past its loop's recorded count: it takes no slot, so a
+wait that polls longer than recorded never waits at a later loop's slot of the same site, nor passes or gives up what
+lies between (`ScheduleLog#pastItsLoopLocked`; hbase-adhoc-13 NP18 gave up 918 slots so before it).
 Where the model re-pairs a store read with another version
 (a world's planted pairings, §7.5; CONFIRM's `ORDER` rows, §10; a reproduction's plant) the model's
 order supersedes the recorded placement: the prefix ends before the first event the pairings

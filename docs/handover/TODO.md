@@ -826,15 +826,18 @@ and the exceptional return), so phi was literal false. Worked around in the tree
 its enum"). The engine fix: BooleanReturns follows a helper whose return is another helper's return (nested deciders), and
 a `catch` arm's constant return is one more arm with its verdict.
 
-**19. A chore run under its trigger's context gives up its slots at the trigger's next event** (H1; hbase-adhoc-13
-NP15-13, `gc-out/hbase-platform/accept-NP15STOP-13-seedDiverged-choreContext`). `CatalogJanitor#triggerNow` ran the chore
-on the ChoreService thread under the test thread's context (the chore's lineage), and the seed replay's order gave up the
-collection procedure's push (`START CausynthStep#handOff#u18#1` @ `Root:CLIENT/test#1`) when the test thread's
-`Threads.sleep` WAKE, the next event of the same context, came first ("were passed by WAKE ... the next event of their
-context ... given up"): the second merge then ran before the collection and threw at :499 in the seed. The rule assumes a
-context is one thread's program order; a task run under its submitter's context is another thread. Worked around in the
-workload (the test runs `CatalogJanitor#scan` itself). The fix: a slot is passed by its context's next event only on the
-same thread (the row's `threadKey`).
+**19. A poll past its loop's count took a later loop's slot (fixed, E4 2026-10-20); a task under its submitter's
+context on another thread is still passed by the submitter's next event (open).** The seed drift of hbase-adhoc-13
+(NP15-13, NP18-13) was not the chore thread first suspected: in both, the test thread's `waitProcedure` loop
+(`Threads.sleepWithoutInterrupt#u9`, WAKEs only) polled once more than recorded for the first merge, and that WAKE took
+the first open slot of its key, the second merge's wait (NP18 slot 1725). There it passed the test thread's own STARTs in
+between (the janitor's push 1567, the second merge's 1651) and, waiting unheld while the frontier was its own next event
+(805), bounded a give-up of 918 slots, so the collection, the 3 s sleep and the second merge ran unordered (NP15: 2470
+passed, 1374 given up). Fixed in `ScheduleLog#pastItsLoopLocked` (IDENTITY §8). Left open: the passed rule matches the
+waiting thread's own sites, but a recorded slot names no thread, so a task run on another thread under its submitter's
+context (`CatalogJanitor#triggerNow`'s chore under the test thread's) could still be passed by the submitter's next event
+at a site it made itself; telling them apart needs the thread in the schedule's rows. No current case shows it (13's
+workload runs the janitor's scan on the test thread).
 
 **20. The formula pins a moved root to the one value its replay ran** (H2; hbase-bugs-master-active-time NZ10-mat,
 NZ11-mat). master0's T0 is the constant 1700000000000 and master1's T1 = 1700000002000 + `.later`, so the fatal holds for

@@ -438,6 +438,48 @@ public class ScheduleLogTest {
         assertTrue("a free run admits at once", since(before) < 200L);
     }
 
+    /**
+     * A poll that comes again while its context holds an open slot after
+     * its key's last slot is past its loop's recorded count: it takes no
+     * slot, so it neither passes that slot nor waits at the key's next
+     * slot, a later loop's (hbase-adhoc-13 NP18: waitProcedure polled once
+     * more than recorded and gave up 918 slots).  A loop left early still
+     * passes its rest (hdfs-adhoc-44), and a poll whose context holds no
+     * open slot in between takes the next slot.
+     */
+    @Test
+    @FreshStatics.Rows(3)
+    public void aPollPastItsLoopsCountTakesNoLaterLoopsSlot() {
+        timeout(5000L);
+        String[][] rows = {
+            {"SEND x,WAKE w,SEND y,SEND x,WAKE w", "SEND x,WAKE w,WAKE w,"
+                    + "SEND y,SEND x,WAKE w", " 0 given up in 0 stall(s)",
+                    " 0 passed by", "; 1 event(s) ran free"},
+            {"SEND p,WAKE w,SEND p,WAKE w,SEND a", "SEND p,WAKE w,SEND a",
+                    " 0 given up in 0 stall(s)", " 1 passed by",
+                    "; 0 event(s) ran free"},
+            {"WAKE w,SEND y,WAKE w", "WAKE w,SEND y,WAKE w", " 3 taken",
+                    " 0 passed by", "; 0 event(s) ran free"}};
+        String[] row = rows[FreshStatics.row()];
+        List<ScheduleEvent> recorded = new ArrayList<ScheduleEvent>();
+        for (String event : row[0].split(",")) {
+            String[] at = event.split(" ");
+            recorded.add(event(Kind.valueOf(at[0]), at[1]));
+        }
+        enforce(recorded);
+        List<String> made = new ArrayList<String>();
+        long before = System.nanoTime();
+        for (String event : row[1].split(",")) {
+            String[] at = event.split(" ");
+            ScheduleLog.observe(Kind.valueOf(at[0]), at[1]);
+            made.add(at[1]);
+        }
+        assertTrue("no stall: " + ScheduleLog.progress(),
+                since(before) < 1000L);
+        assertEquals(made, sites());
+        for (int at = 2; at < row.length; at++) progress(row[at]);
+    }
+
     private static List<ScheduleEvent> order(ScheduleEvent first,
                                              List<ScheduleEvent> rest) {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();

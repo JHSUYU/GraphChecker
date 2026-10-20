@@ -838,7 +838,16 @@ order:
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
   (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
-  the first poll past the count goes at once. A poll whose context's next slot is the frontier itself
+  the first poll past the count goes at once. A `WAKE` no occurrence names, of no timed-wait turn, is
+  past its count also where its key has a later slot: when its context holds an open slot after the
+  slot its key last took and before the key's next one, that next slot is a later loop's (the same
+  wait polled again later), so it takes no slot (`ScheduleLog#pastItsLoopLocked`, named once per key
+  and slot: `schedule-past-loop#<slot>`). Taking it, the extra poll waited at the later loop's slot,
+  unheld, while the frontier was its own thread's next event, passed its own slots in between and
+  bounded the stall's give-up of the rest (hbase-adhoc-13 NP18: `waitProcedure` polled once more than
+  its 7 recorded `WAKE`s, the janitor's push and the second merge's were passed and 918 slots given up,
+  so the collection ran unordered against the second merge; 18413's seed ps1p below, a MigrateCmd
+  sleep, had the same shape). A poll whose context's next slot is the frontier itself
   owes it and goes with no move: held, it held the frontier until the watchdog (solr-adhoc-19, round
   SG1: `ZkController#waitForCoreNodeName`, 66 stalls of 15 s). A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
@@ -880,7 +889,10 @@ order:
   occurrence names gives up the earlier slots of its own exact context, no occurrence naming them,
   at any kind and site it made since it last entered that context (`ScheduleLog.Made`), so the rest
   of a loop it left early is given up (hdfs-adhoc-44: a test's wall-clock poll made 8 of 171 recorded
-  RPCs); never an event or a slot an occurrence names. Threads an unwoven starter started share their
+  RPCs); never an event or a slot an occurrence names. A poll past its loop's count (above) waits at no
+  later loop's slot, so it passes nothing. The sites are the waiting thread's, but a recorded slot names
+  no thread: a task run under its submitter's context on another thread can be passed by the
+  submitter's next event (open, TODO HBase 19). Threads an unwoven starter started share their
   creator's context, so each such give-up is a named `SCHEDULE_DIVERGED` DIAGNOSTIC
   (`schedule-passed#<slot>`, with how often it fired in that context), counted in the progress line;
   a given-up slot is still taken if it comes, and that late take is named
