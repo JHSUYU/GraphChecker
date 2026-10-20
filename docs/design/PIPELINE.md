@@ -1764,7 +1764,12 @@ the obligation's. The replay's answer replaces the solver's row as a new inode
 (`campaign_write_whole`), never in place: written on another host than the row it replaces, an
 NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: the replay's row,
 then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
-first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
+first first -- a confirmation or GROW re-run queued at the front, a solve or a REPLAY ahead of every queued REPLAY,
+except the REPLAY of a fault flip (its solver's focus row states `faultFlip`: the flipped decision reaches a `FAULT`
+root, `Corpus#fault`), which waits behind every other entry, so a door fault at each of many client calls queues
+behind the flips of the target's own guards (`campaign_stream_enqueue`; hbase-adhoc-10's R17-10 queued 210 of its 233
+REPLAYs as client door faults ahead of them); nothing is dropped, and the wait bound still starts the entry waiting
+longest -- while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the host of `campaign_worker_hosts` (empty: this machine, no
 ssh) WITH THE MOST ROOM (`campaign_stream_admit_host`, `campaign_stream_by_room`: the ceiling less
 the room heads hold there and the larger of its live charges and its real use, as the head's view
