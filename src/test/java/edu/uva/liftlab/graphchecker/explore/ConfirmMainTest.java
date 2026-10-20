@@ -11,6 +11,7 @@ import static org.junit.Assert.fail;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -728,6 +729,75 @@ public class ConfirmMainTest {
             } catch (ConfirmMain.Refused refused) {
                 assertEquals(clock[0] + ": " + refused.getMessage(), null,
                         clock[2]);
+            }
+        }
+    }
+
+    @Test
+    public void aRootOnlyAnArmsBodyNamesIsPlantedWhereItsSessionMintedIt()
+            throws Exception {
+        Path iteration = iteration();
+        Object[][] sessions = {{"arm", mint},
+                {"arm2", OccurrenceAddress.parse(PRODUCER)}};
+        for (Object[] each : sessions) {
+            String id = (String) each[0];
+            SessionDir dir = SessionDir.of(iteration, id).create();
+            RowCodec.writeAll(dir.roots(), Collections.singletonList(
+                    RootMintRow.of(id, 1L, (OccurrenceAddress) each[1],
+                            "CLOCK.t0", "M_J_clock.t0", RootKind.CLOCK,
+                            RootCategory.CLOCK, "1500", null, null, true,
+                            Clock.of(1_000_000L, Clock.WALL), 0L)),
+                    RowCodec::writeRootMint);
+            RowCodec.writeAll(dir.attaches(), Collections.singletonList(
+                    AttachRow.of(id, 20L, consumer, "M_I_field_HOFF.1", "I",
+                            "119979", false, null, producer, "ipc-25",
+                            "HANDLE")), RowCodec::writeAttach);
+            manifest(dir, SessionManifest.Role.FOCUSED);
+        }
+        Object[][] table = {
+                {new String[]{"arm"}, "arm arm"},
+                {new String[]{}, "the claim moves M_J_clock.t0, which the "
+                        + "recording, the selected session and the arms"},
+                {new String[]{"arm", "arm2"}, "the claim moves M_J_clock.t0,"
+                        + " which the sessions mint at different occurrences"}};
+        for (Object[] row : table) {
+            Path claim = claim("M_J_clock.t0", "50000");
+            JsonObject document = ExploreCodec.readObject(claim);
+            JsonArray arms = document.getAsJsonArray("valuations").get(1)
+                    .getAsJsonObject().getAsJsonArray("selectedArms");
+            for (String namer : (String[]) row[0]) {
+                JsonObject arm = arms.get(0).getAsJsonObject().deepCopy();
+                arm.addProperty("selector", "message_arm__1__" + namer);
+                arm.addProperty("sessionId", namer);
+                JsonArray roots = new JsonArray();
+                roots.add("CLOCK.t0");
+                arm.add(ComposeMain.ROOTS, roots);
+                arms.add(arm);
+            }
+            Files.write(claim, document.toString().getBytes(
+                    StandardCharsets.UTF_8));
+            Path out = folder.newFolder().toPath();
+            String expected = (String) row[1];
+            try {
+                ConfirmMain.write(iteration, claim,
+                        manifestAnchoring("CLOCK.t0", "1000"), out);
+                JsonObject focus = RowCodec.readJsonl(out.resolve(
+                        ObligationDir.FOCUSED_TASK)).get(0);
+                assertEquals("49000", focus.getAsJsonObject("clockDeltas")
+                        .get("CLOCK.t0").getAsString());
+                assertEquals(MINT, focus.getAsJsonObject("rootMints")
+                        .get("CLOCK.t0").getAsString());
+                JsonObject result = new JsonObject();
+                result.addProperty("verdict", "NOT_ADMITTED");
+                RowCodec.writeJsonl(out.resolve(ObligationDir.RESULT),
+                        Collections.singletonList(result));
+                assertEquals(expected, ConfirmMain.decide(claim, out,
+                        folder.newFolder().toPath()).getAsJsonObject(
+                        "mintFrom").get("CLOCK.t0").getAsString());
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(),
+                        refused.getMessage().startsWith(expected));
+                assertFalse(refused.refutes);
             }
         }
     }

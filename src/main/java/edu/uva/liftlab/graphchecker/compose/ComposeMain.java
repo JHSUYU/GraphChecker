@@ -35,9 +35,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 public final class ComposeMain {
     public static final String TEXTS = "texts";
+    public static final String ROOTS = "roots";
 
     private ComposeMain() {
     }
@@ -460,6 +462,11 @@ public final class ComposeMain {
                     if (text != null) texts.addProperty(consumer, text);
                 }
                 if (texts.size() > 0) row.add(TEXTS, texts);
+                Set<String> roots = new TreeSet<String>();
+                for (ComposedFamilies.BoundLeaf leaf : arm.leaves().values()) {
+                    roots.addAll(leaf.roots);
+                }
+                if (!roots.isEmpty()) row.add(ROOTS, GSON.toJsonTree(roots));
                 arms.add(row);
             }
             answer.add("selectedArms", arms);

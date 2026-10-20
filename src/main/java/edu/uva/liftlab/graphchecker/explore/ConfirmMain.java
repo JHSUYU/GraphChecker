@@ -66,6 +66,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 public final class ConfirmMain {
     static final String OBLIGATION_ID = "CONFIRM";
     static final String REALIZED = "realized.json";
+    static final String MINT_FROM = "mint_from.json";
 
     private ConfirmMain() {
     }
@@ -153,15 +154,18 @@ public final class ConfirmMain {
                 witness.anchor, witness.sawChosen);
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
-                    Collections.singletonList(
+                    Collections.singletonList(mintFrom(
                             confirmation(true, false, realized,
-                                    witness.sessionId)));
+                                    witness.sessionId),
+                            witness.moved.mintFrom)));
             JsonObject summary = witness.summary();
             summary.addProperty("realizedBy", witness.sessionId);
             return summary;
         }
 
         World world = witness.planted();
+        RowCodec.writeJsonl(out.resolve(MINT_FROM), Collections.singletonList(
+                ExploreCodec.strings(witness.moved.mintFrom)));
 
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
                 witness.session.forced() ? witness.seedSessionId
@@ -206,6 +210,9 @@ public final class ConfirmMain {
         final List<JsonObject> arms;
         final SessionReader session;
         final SessionReader recording;
+        final Map<String, SessionReader> armSessions =
+                new LinkedHashMap<String, SessionReader>();
+        final List<Moved.Naming> namings = new ArrayList<Moved.Naming>();
         final StateClosure closure;
         final Map<String, WriteRow> chosen;
         final Set<String> restsOn;
@@ -274,6 +281,14 @@ public final class ConfirmMain {
             }
             session = SessionReader.read(iteration, sessionId);
             recording = SessionReader.read(iteration, seedSessionId);
+            armSessions.put(sessionId, session);
+            for (JsonObject arm : arms) {
+                List<String> named = strings(arm, ComposeMain.ROOTS);
+                String armSession = optionalString(arm, "sessionId");
+                if (named.isEmpty() || armSession.isEmpty()) continue;
+                namings.add(new Moved.Naming(armSession(iteration,
+                        armSession), named));
+            }
             closure = new StateClosure(session, anchor, cutoff);
             chosen = closure.chosen(arms);
             chosen.keySet().removeIf(reader -> !restsOn.contains(
@@ -291,13 +306,23 @@ public final class ConfirmMain {
                 }
             }
             world = obligationWorld(iteration, sessionId);
-            moved = moved(decided, manifest, session, recording);
+            moved = moved(decided, manifest, session, recording, namings);
             sawChosen = closure.ran(chosen);
         }
 
         static Witness of(Path iteration, JsonObject claim,
                           JsonObject manifest) throws IOException {
             return new Witness(claim, manifest, iteration);
+        }
+
+        private SessionReader armSession(Path iteration, String armSession)
+                throws IOException {
+            SessionReader read = armSessions.get(armSession);
+            if (read == null) {
+                read = SessionReader.read(iteration, armSession);
+                armSessions.put(armSession, read);
+            }
+            return read;
         }
 
         World planted() {
@@ -309,17 +334,9 @@ public final class ConfirmMain {
 
         List<JsonObject> edges(Path iteration, World planted)
                 throws IOException {
-            Map<String, SessionReader> armSessions =
-                    new LinkedHashMap<String, SessionReader>();
-            armSessions.put(sessionId, session);
             for (JsonObject arm : arms) {
                 String armSession = optionalString(arm, "sessionId");
-                if (armSession.isEmpty()
-                        || armSessions.containsKey(armSession)) {
-                    continue;
-                }
-                armSessions.put(armSession, SessionReader.read(iteration,
-                        armSession));
+                if (!armSession.isEmpty()) armSession(iteration, armSession);
             }
             List<JsonObject> edges = new ArrayList<JsonObject>();
             cone.add(anchor);
@@ -356,7 +373,10 @@ public final class ConfirmMain {
         Map<String, RootCategory> categories() {
             Map<String, RootCategory> categories =
                     new LinkedHashMap<String, RootCategory>();
-            for (SessionReader rows : Arrays.asList(recording, session)) {
+            List<SessionReader> sources = new ArrayList<SessionReader>(
+                    Arrays.asList(recording, session));
+            for (Moved.Naming naming : namings) sources.add(naming.session);
+            for (SessionReader rows : sources) {
                 for (RootMintRow row : rows.roots()) {
                     categories.putIfAbsent(row.rootId(), row.category());
                 }
@@ -700,7 +720,8 @@ public final class ConfirmMain {
 
     private static Moved moved(JsonObject decided, JsonObject manifest,
                                SessionReader session,
-                               SessionReader recording) {
+                               SessionReader recording,
+                               List<Moved.Naming> namings) {
         Map<String, String> readings = new LinkedHashMap<String, String>();
         for (JsonElement element : array(manifest, "roots")) {
             JsonObject root = element.getAsJsonObject();
@@ -710,11 +731,30 @@ public final class ConfirmMain {
             }
         }
         return Moved.of(ExploreCodec.map(object(decided, "movedRoots")),
-                readings, session, recording);
+                readings, session, recording, namings);
     }
 
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
+        Path planted = worker.resolve(MINT_FROM);
+        List<JsonObject> from = Files.isReadable(planted)
+                ? RowCodec.readJsonl(planted)
+                : Collections.<JsonObject>emptyList();
+        return mintFrom(withOrders(claimFile, worker, sessions), from.isEmpty()
+                ? Collections.<String, String>emptyMap()
+                : ExploreCodec.map(from.get(0)));
+    }
+
+    private static JsonObject mintFrom(JsonObject confirmation,
+                                       Map<String, String> from) {
+        if (!from.isEmpty()) {
+            confirmation.add("mintFrom", ExploreCodec.strings(from));
+        }
+        return confirmation;
+    }
+
+    private static JsonObject withOrders(Path claimFile, Path worker,
+                                         Path sessions) throws IOException {
         JsonObject decided = decision(claimFile, worker, sessions);
         Path edges = worker.resolve(Confirmation.FILE);
         int checked = Files.isReadable(edges)

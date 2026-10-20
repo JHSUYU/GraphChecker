@@ -5,19 +5,36 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public final class Moved {
+    static final String RECORDING = "recording";
+
     final Map<String, String> values = new LinkedHashMap<String, String>();
     final Map<String, String> skews = new LinkedHashMap<String, String>();
     final Map<String, String> mints = new LinkedHashMap<String, String>();
+    final Map<String, String> mintFrom = new LinkedHashMap<String, String>();
     final Set<String> anchored = new LinkedHashSet<String>();
     final Map<String, String> recorded = new LinkedHashMap<String, String>();
     String refusal = "";
+
+    public static final class Naming {
+        final SessionReader session;
+        final Set<String> roots;
+
+        public Naming(SessionReader session, Collection<String> roots) {
+            this.session = session;
+            this.roots = new LinkedHashSet<String>(roots);
+        }
+    }
 
     private Moved() {
     }
@@ -25,13 +42,24 @@ public final class Moved {
     public static Moved of(Map<String, String> movedRoots,
                            Map<String, String> readings,
                            SessionReader session, SessionReader recording) {
+        return of(movedRoots, readings, session, recording,
+                Collections.<Naming>emptyList());
+    }
+
+    public static Moved of(Map<String, String> movedRoots,
+                           Map<String, String> readings,
+                           SessionReader session, SessionReader recording,
+                           List<Naming> namings) {
         Moved moved = new Moved();
         moved.anchored.addAll(readings.keySet());
         Map<String, RootMintRow> named =
                 new LinkedHashMap<String, RootMintRow>();
         Map<String, RootMintRow> minted =
                 new LinkedHashMap<String, RootMintRow>();
-        for (SessionReader rows : Arrays.asList(recording, session)) {
+        List<SessionReader> sources = new ArrayList<SessionReader>(
+                Arrays.asList(recording, session));
+        for (Naming naming : namings) sources.add(naming.session);
+        for (SessionReader rows : sources) {
             for (RootMintRow row : rows.roots()) {
                 named.putIfAbsent(row.rootId(), row);
                 named.putIfAbsent(row.symbol(), row);
@@ -45,9 +73,54 @@ public final class Moved {
         for (Map.Entry<String, String> entry : movedRoots.entrySet()) {
             RootMintRow row = named.get(entry.getKey());
             RootMintRow mint = row == null ? null : minted.get(row.rootId());
+            String from = RECORDING;
+            if (row != null && mint == null) {
+                Map<String, RootMintRow> elsewhere =
+                        new LinkedHashMap<String, RootMintRow>();
+                RootMintRow own = mintIn(session, entry.getKey(),
+                        row.rootId());
+                if (own != null) {
+                    elsewhere.put("selected " + session.sessionId(), own);
+                }
+                for (Naming naming : namings) {
+                    if (!naming.roots.contains(row.rootId())) continue;
+                    RootMintRow armMint = mintIn(naming.session,
+                            entry.getKey(), row.rootId());
+                    if (armMint != null) {
+                        elsewhere.putIfAbsent("arm "
+                                + naming.session.sessionId(), armMint);
+                    }
+                }
+                Set<String> at = new LinkedHashSet<String>();
+                for (RootMintRow each : elsewhere.values()) {
+                    at.add(each.occurrence().id());
+                }
+                if (at.size() > 1) {
+                    StringBuilder where = new StringBuilder();
+                    for (Map.Entry<String, RootMintRow> each
+                            : elsewhere.entrySet()) {
+                        if (where.length() > 0) where.append(", ");
+                        where.append(each.getKey()).append(" at ").append(
+                                each.getValue().occurrence().id());
+                    }
+                    moved.refuse("the claim moves " + entry.getKey()
+                            + ", which the sessions mint at different "
+                            + "occurrences (" + where + "), so no one "
+                            + "occurrence of a replay can be focused to "
+                            + "plant it");
+                    continue;
+                }
+                if (!elsewhere.isEmpty()) {
+                    Map.Entry<String, RootMintRow> first =
+                            elsewhere.entrySet().iterator().next();
+                    from = first.getKey();
+                    mint = first.getValue();
+                }
+            }
             if (mint == null) {
                 moved.refuse("the claim moves " + entry.getKey()
-                        + ", which the recording mints nowhere, so no "
+                        + ", which the recording, the selected session and "
+                        + "the arms whose bodies name it mint nowhere, so no "
                         + "occurrence of a replay can be focused to plant it");
                 continue;
             }
@@ -67,8 +140,19 @@ public final class Moved {
                 moved.values.put(row.rootId(), model);
             }
             moved.mints.put(row.rootId(), mint.occurrence().render());
+            moved.mintFrom.put(row.rootId(), from);
         }
         return moved;
+    }
+
+    private static RootMintRow mintIn(SessionReader rows, String key,
+                                      String rootId) {
+        RootMintRow byRoot = null;
+        for (RootMintRow row : rows.roots()) {
+            if (row.symbol().equals(key)) return row;
+            if (byRoot == null && row.rootId().equals(rootId)) byRoot = row;
+        }
+        return byRoot;
     }
 
     private void refuse(String why) {

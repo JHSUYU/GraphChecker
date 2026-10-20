@@ -3585,12 +3585,20 @@ with it is a `RUN_DEFECT`.
   the composition anchors, the skews its world planted are exactly the claim's jumps; skews compare,
   each off its own run's host), the session is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
-  overlaid with the model (`ConfirmMain.Moved`): every moved root, by root id, at the recording's
-  mint occurrence -- any other root as its value, a clock as its skew off the reading the
+  overlaid with the model (`ConfirmMain.Moved`): every moved root, by root id, at its mint
+  occurrence -- the recording's; else, for a root whose occurrence only the grown plan runs, the
+  selected session's mint row, else the mint row of the session of a selected arm whose body names
+  it (the claim's arm row lists the root ids its delivered terms reach, `roots`;
+  hbase-bugs-master-active-time's T0, master0's activation clock, reaches the seed path through
+  such an arm) -- any other root as its value, a clock as its skew off the reading the
   composition anchored its cell to (the manifest's `roots`) -- and, on every clock cell the
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
-  the model runs those cells on from the jump before them. A moved root the recording mints
-  nowhere, or a moved clock the composition anchors nowhere, refuses the confirmation by name. The
+  the model runs those cells on from the jump before them. Where each moved root's mint came from
+  is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
+  plan as the worker's `mint_from.json`). A moved root none of them mints, one those sessions mint
+  at different occurrences, or a moved clock the composition anchors nowhere, refuses the
+  confirmation by name; a mint the replay never reaches confirms nothing (the fatal must still be
+  observed at the anchor). The
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
@@ -3886,7 +3894,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
 Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reason`):
 - by CONFIRM's own reading of the claim (`CONFIRM refused:`, §10): a valuation that selects no
   path, an unparseable anchor, a manifest stating no selector, `restsOn` or `cutoff` for the path,
-  a moved root the recording mints nowhere or a moved clock no reading anchors, and the edges'
+  a moved root no source mints (the recording, the selected session, an arm naming it) or mints at
+  two occurrences, a moved clock no reading anchors, and the edges'
   refusals (`STATE_CONFLICT`, `PAIRING_UNSTATED`, a selected arm whose consumer its session states
   no attach for);
 - `NATIVE_PLANT_UNSUPPORTED`: a root minted other than at a call's return (an argument, a field or
