@@ -23,8 +23,8 @@ occurrence (README "Run one case"). HDFS's 36 study checks are rows of `experime
 (id, test class, method, window, target occurrence, analysis scope); the named bugs have their own case directories
 (`experiments/hadoop/hdfs-*`). Solr's 12 are rows of `experiments/solr/solr-adhoc/checks.tsv`, its six bug-study checks
 cases of `experiments/solr/solr-bugs`. The HDFS trees mark all 49 study points, the Solr tree (`gc/solr-checks`) its 12
-checked points and 8 bug checks; the HBase and ZooKeeper trees mark only their bug targets so far (their study markers
-are their turn's first TODO).
+checked points and 8 bug checks, the HBase tree (the fork's `graphchecker/hbase-checks`) its 17 study points and its
+bug checks (22 cases, `experiments/hbase/hbase-cases.tsv`); the ZooKeeper tree marks only its bug targets so far.
 
 Counts: HDFS 38 points / 36 checked + 10 named bug checks = 46 cases; Solr 21 / 13 + 8 bug checks (solr-adhoc-22 is
 solr-18406) = 20; HBase 30 / 17 + 3 = 20; ZooKeeper 13 / 10 + 3 = 13.
@@ -99,8 +99,8 @@ Per-case workarounds: 21 (tree r7-21, its loop bounds), 07 (tree r8, world depth
 Solr's 12 are marked on `gc/solr-checks` (2026-10-08; solr-adhoc-22 is solr-18406's throw), each declared in
 `experiments/solr/solr-adhoc/checks.tsv` and its workload run natively there. Their live state (rounds, verdicts, what is
 left) is [../STATUS.md](../STATUS.md) "Solr checks" and [../handover/TODO.md](../handover/TODO.md) "Solr" (handover 2026-10-09); the
-"state" column below is the marking state only. No HBase
-or ZooKeeper study point is marked yet.
+"state" column below is the marking state only. HBase's state column below is its result class; every detail is
+[HBASE.md](HBASE.md) §E and [../STATUS.md](../STATUS.md) "HBase checks". No ZooKeeper study point is marked yet.
 
 ### solr
 | check | site (our tree) | guard | workload (test) | state |
@@ -122,23 +122,23 @@ or ZooKeeper study point is marked yet.
 ### hbase
 | check | site (our tree) | guard | workload (test) | state |
 | --- | --- | --- | --- | --- |
-| hbase-adhoc-04r | AbstractStateMachineTableProcedure.java:163 (re-sited to the server) | `!ts.isEnabledOrEnabling()` | `TestMobStoreScanner#testMobStoreScanner` (admin.flush -> FlushTabl... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-07r | SnapshotManager.java:1046 (re-sited to the server) | table state ENABLED at restore | `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot` (3 RS) | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-08 | `master/ClusterSchemaServiceImpl.java:111` | `TableNamespaceManager.cache.get(ns)==null` | `namespace/TestNamespaceAuditor#testTableOperations` (2 masters, qu... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-10 | `master/assignment/AssignmentManager.java:765` | `regionNode.getProcedure()!=null` | `regionserver/TestRegionMove#testDisableAndMove` (2 RS) | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-11 | `AssignmentManager.java:769` | `!regionNode.isInState(expected)` | same | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-12 | `AssignmentManager.java:772` | `isTableDisabled(table)` | same | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-13 | `master/assignment/MergeTableRegionsProcedure.java:499` | `regionStateStore.hasMergeRegions(ri)` (meta Get) | master/assignment/TestMergeTableRegionsProcedure#testMergeTwoRegio... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-14 | `MergeTableRegionsProcedure.java:503` | `regionStates.getRegionState(enc)==null` | same | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-15 | `MergeTableRegionsProcedure.java:507` | `!state.isOpened()` | same | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-19 | `master/procedure/ModifyTableProcedure.java:134` | unmodified CF count != modified (reopenRegions=false) | master/procedure/TestModifyTableProcedure#testModifyWillNotReopenR... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-20 | `ModifyTableProcedure.java:138` | `isCoprocModified()` | testModifyWillNotReopenRegions / testModifyTableWithCoprocessorA... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-21 | `namespace/NamespaceStateManager.java:130` | regions - tableRegions + incr > maxRegions | named testRestoreSnapshotQuotaExceed REACHES it by design; use T... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-22 | `NamespaceStateManager.java:168` | regionCount + numRegions > maxRegions | named testTableOperations REACHES :168 and :160 by design; use T... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-24 | `procedure/ZKProcedureMemberRpcs.java:210` (caught at :217) | `!isPBMagicPrefix(znode data)` | master/procedure/TestFlushTableProcedureWithDoNotSupportFlushTable... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-31 | `RSRpcServices.java:1880` | RS startcode != request's serverStartCode | `TestRegionMove#testDisableAndMove` | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-34 | `AuthenticationTokenSecretManager.java:160` | `allKeys.get(keyId)==null` after refreshKeys | `security/token/TestGenerateDelegationToken#testOnlyToken` (SecureT... | not marked yet (the system's turn: TODO) |
-| hbase-adhoc-37 | `MasterAddressTracker.java:206` | master znode data == null | `regionserver/http/TestRSStatusPage#testStatusPage` (direct LocalHB... | not marked yet (the system's turn: TODO) |
+| hbase-adhoc-04r | AbstractStateMachineTableProcedure.java:163 (re-sited to the server) | `!ts.isEnabledOrEnabling()` | `TestMobStoreScanner#testMobStoreScanner` (admin.flush -> FlushTabl... | **PASS** = HBASE-30484 (as hbase-adhoc-04, our workload TestCausynthQuotaEnableAfterAdvance) |
+| hbase-adhoc-07r | SnapshotManager.java:1046 (re-sited to the server) | table state ENABLED at restore | `TestRestoreFlushSnapshotFromClient#testRestoreSnapshot` (3 RS) | running at the 2026-10-20 handover (as hbase-adhoc-07) |
+| hbase-adhoc-08 | `master/ClusterSchemaServiceImpl.java:111` | `TableNamespaceManager.cache.get(ns)==null` | `namespace/TestNamespaceAuditor#testTableOperations` (2 masters, qu... | named bound (claims refuted by the client's program order) |
+| hbase-adhoc-10 | `master/assignment/AssignmentManager.java:765` | `regionNode.getProcedure()!=null` | `regionserver/TestRegionMove#testDisableAndMove` (2 RS) | running at the 2026-10-20 handover (unassign selector) |
+| hbase-adhoc-11 | `AssignmentManager.java:769` | `!regionNode.isInState(expected)` | same | running at the 2026-10-20 handover (unassign selector) |
+| hbase-adhoc-12 | `AssignmentManager.java:772` | `isTableDisabled(table)` | same | named bound (claims refuted by the client's program order) |
+| hbase-adhoc-13 | `master/assignment/MergeTableRegionsProcedure.java:499` | `regionStateStore.hasMergeRegions(ri)` (meta Get) | master/assignment/TestMergeTableRegionsProcedure#testMergeTwoRegio... | RUN_DEFECT (seed drift at the second merge; TODO HBase 19) |
+| hbase-adhoc-14 | `MergeTableRegionsProcedure.java:503` | `regionStates.getRegionState(enc)==null` | same | named bound (budget; client program order) |
+| hbase-adhoc-15 | `MergeTableRegionsProcedure.java:507` | `!state.isOpened()` | same | named bound (claim cap; client program order) |
+| hbase-adhoc-19 | `master/procedure/ModifyTableProcedure.java:134` | unmodified CF count != modified (reopenRegions=false) | master/procedure/TestModifyTableProcedure#testModifyWillNotReopenR... | UNSAT, vacuous by construction (class C) |
+| hbase-adhoc-20 | `ModifyTableProcedure.java:138` | `isCoprocModified()` | testModifyWillNotReopenRegions / testModifyTableWithCoprocessorA... | UNSAT, vacuous by construction (class C) |
+| hbase-adhoc-21 | `namespace/NamespaceStateManager.java:130` | regions - tableRegions + incr > maxRegions | named testRestoreSnapshotQuotaExceed REACHES it by design; use T... | UNSAT at the fixed point, substantive |
+| hbase-adhoc-22 | `NamespaceStateManager.java:168` | regionCount + numRegions > maxRegions | named testTableOperations REACHES :168 and :160 by design; use T... | **PASS** = HBASE-30483 (our workload TestCausynthTruncatedTableQuota) |
+| hbase-adhoc-24 | `procedure/ZKProcedureMemberRpcs.java:210` (caught at :217) | `!isPBMagicPrefix(znode data)` | master/procedure/TestFlushTableProcedureWithDoNotSupportFlushTable... | UNSAT, vacuous (a znode's absence; TODO HBase 10) |
+| hbase-adhoc-31 | `RSRpcServices.java:1880` | RS startcode != request's serverStartCode | `TestRegionMove#testDisableAndMove` | named bound (claim cap; new workload TestRetainAssignmentOnRestart) |
+| hbase-adhoc-34 | `AuthenticationTokenSecretManager.java:160` | `allKeys.get(keyId)==null` after refreshKeys | `security/token/TestGenerateDelegationToken#testOnlyToken` (SecureT... | **PASS** (our workload TestCausynthTokenKeys) |
+| hbase-adhoc-37 | `MasterAddressTracker.java:206` | master znode data == null | `regionserver/http/TestRSStatusPage#testStatusPage` (direct LocalHB... | UNSAT, vacuous (a znode's absence; TODO HBase 10) |
 
 ### zk
 | check | site (our tree) | guard | workload (test) | state |
@@ -166,9 +166,9 @@ or ZooKeeper study point is marked yet.
 | solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and reports success | stale Overseer view | marked at BackupCmd:207 (1 shard x 2 replicas, the leader replica deleted before the backup); `TestCausynthSnapshotBackup` passes natively (6.1 s); not run |
 | solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves slices in CONSTRUCTION | HTTP door fault | marked; `TestCausynthRestoreRetry` passes natively (4.6 s); selector from its first recording |
 | solr-bugs-tra-start-overwrite | owner #10 (#20): TimeRoutedAlias writes a stale aliases snapshot over a newer alias | STATE re-pairing | marked at the client's BaseCloudSolrClient:901; `TestCausynthTraStartAlias` passes natively (2.8 s); selector from its first recording |
-| hbase-bugs-master-active-time | #14: a non-monotonic activeTime makes the new master reject an old OPENED report | CLOCK | branch hbase-startup, blocked on two design questions (TODO HBase) |
-| hbase-bugs-backup-lock-reply-lost | HBase-2 #16: a lost CAS reply makes the retry fail on its own lock | HBase RPC RESPONSE door | admitted, no case (needs the door) |
-| hbase-bugs-ns-rsgroup-removal | HBase-2 #01: rsgroup removal cannot see an in-flight namespace creation | STATE re-pairing | admitted, no case |
+| hbase-bugs-master-active-time | #14: a non-monotonic activeTime makes the new master reject an old OPENED report | CLOCK | **PASS** (configured clock skew, owner-approved workaround) |
+| hbase-bugs-backup-lock-reply-lost | HBase-2 #16: a lost CAS reply makes the retry fail on its own lock | HBase RPC RESPONSE door | **PASS** (HBASE_RPC RESPONSE fault) |
+| hbase-bugs-ns-rsgroup-removal | HBase-2 #01: rsgroup removal cannot see an in-flight namespace creation | STATE re-pairing | **PASS** (HBASE_RPC REQUEST fault on the namespace meta Mutate) |
 | zk-bugs-quota-init | #01: the quota limit is committed before the stat node | ZK write door fault | PASS on main (V12+) |
 | zk-bugs-election-offer | #05: a competitor's offer vanishes before getData | STATE re-pairing | PASS on main (V18+) |
 | zk-bugs-container-reuse | #33: ContainerManager deletes a node recreated at the same path | STATE re-pairing | admitted, no case (self-written ClientBase test) |
