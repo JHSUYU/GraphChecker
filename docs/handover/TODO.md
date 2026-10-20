@@ -823,7 +823,7 @@ satisfiable (polarity undecided, so the CLOCK_SKEW claim was never named) and ev
 same pairing became its own FORMULA_SAT claim (claims 0 and 1: `writer_arm` INITIAL|INSTANCE/<obj>#664, refused in the
 replay by `ServerNotRunningYetException` and by ORDER `ad500b7c5e0bdd13`), ~25 min each (DECIDE 1191 s over a 187 MB
 formula, 424 paths), because the claim loop excludes only the selected path's arms. Worked around in the tree (STATUS
-"tree: master-active-time's served active time"). The engine fix: a read that follows, on its thread, a read of a
+"tree: master-active-time's not-yet-active time"). The engine fix: a read that follows, on its thread, a read of a
 volatile that saw write W excludes every version its location had before the last write that precedes W on W's thread
 (the JMM's synchronizes-with); or exclude a refuted pairing by its reader site and slot across paths. Also from NZ2-mat
 (H5's probe, `analysis/hbase-2026-10-20/reask/probe-mat/`): 301 message arms bound the hand-off leaf (the initiating
