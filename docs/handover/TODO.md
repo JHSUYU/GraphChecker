@@ -832,6 +832,25 @@ later in wall time -- worked around for #11 by a configured skew in place of the
 skew"); the general fix is a leaf a clock carries taking its producer session's clock value relative to that session's
 own timeline.
 
+**18. A guard on a multi-level helper's boolean return through a try/catch has no decider** (H1; hbase-adhoc-07
+NP14IMP-07, hbase-adhoc-12 NR12-12). `SnapshotManager:1046` and `AssignmentManager:772` branched on
+`TableStateManager#isTableState`, which returns `TableState#isInStates`' answer from inside a `try` (its `catch` returns
+`false`). With the enum compare stated in `isInStates` (`==`, a decision with a term), the target's own decision still had
+no term and the static scope map no `guardDeciders` for it (`causynth.BooleanReturns` found none across the two helpers
+and the exceptional return), so phi was literal false. Worked around in the tree (STATUS "tree: a table-state guard reads
+its enum"). The engine fix: BooleanReturns follows a helper whose return is another helper's return (nested deciders), and
+a `catch` arm's constant return is one more arm with its verdict.
+
+**19. A chore run under its trigger's context gives up its slots at the trigger's next event** (H1; hbase-adhoc-13
+NP15-13, `gc-out/hbase-platform/accept-NP15STOP-13-seedDiverged-choreContext`). `CatalogJanitor#triggerNow` ran the chore
+on the ChoreService thread under the test thread's context (the chore's lineage), and the seed replay's order gave up the
+collection procedure's push (`START CausynthStep#handOff#u18#1` @ `Root:CLIENT/test#1`) when the test thread's
+`Threads.sleep` WAKE, the next event of the same context, came first ("were passed by WAKE ... the next event of their
+context ... given up"): the second merge then ran before the collection and threw at :499 in the seed. The rule assumes a
+context is one thread's program order; a task run under its submitter's context is another thread. Worked around in the
+workload (the test runs `CatalogJanitor#scan` itself). The fix: a slot is passed by its context's next event only on the
+same thread (the row's `threadKey`).
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
