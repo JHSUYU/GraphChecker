@@ -60,9 +60,12 @@ branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone 
 checkouts) and runs the series. **Solr is finished for now** (2026-10-19): the engine's rewrite and the final round
 SGF9 are on `system/solr` (pushed; from `system/hdfs1`), the tree is the Solr fork's `graphchecker/solr-checks`, and
 [docs/REPRODUCE.md](docs/REPRODUCE.md) §6 runs the 20 cases from a fresh clone.
-[docs/handover/START-HERE.md](docs/handover/START-HERE.md) and [docs/handover/STATE.md](docs/handover/STATE.md) §S say
-where it stands, [docs/handover/TODO.md](docs/handover/TODO.md) "Solr: after SGF9" what is left; STATUS "Solr checks"
-each case's result.
+[docs/handover/STATE.md](docs/handover/STATE.md) §S says where it stands, [docs/handover/TODO.md](docs/handover/TODO.md)
+"Solr: after SGF9" what is left; STATUS "Solr checks" each case's result. **HBase is the current work** (this branch,
+`system/hbase`, built from `system/solr`; the tree is the HBase fork's `graphchecker/hbase-checks`), stopped by the
+owner on 2026-10-19 for a handover: [docs/handover/START-HERE.md](docs/handover/START-HERE.md) is where the next lead
+starts, STATE §H what `system/hbase` holds and each case's result, TODO "HBase" the next runs in order, LESSONS §9 what
+HBase taught us, [docs/REPRODUCE.md](docs/REPRODUCE.md) §7 how to run the HBase cases from a fresh clone.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
@@ -71,8 +74,8 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: where Solr stands after its final round SGF9, what to read in order, what is left, how to run a case, the rules, where everything is |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
+| 0 | [docs/handover/START-HERE.md](docs/handover/START-HERE.md) | A new lead starts here: where HBase stands at the 2026-10-19 handover, what to read in order, what is left, how to run a case, the rules, where everything is |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands: HBase at the 2026-10-19 handover (§H: what `system/hbase` and the HBase fork's tree hold, each case's result, where everything is); Solr after its final round SGF9 (2026-10-19, §S: what `system/solr` holds, the fork's tree, each study check's result and time); the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |

@@ -371,3 +371,55 @@ everything else, never writing under `<src>`.
 - **The final-round driver** is `analysis/solr-2026-10-16/final-seq5.sh <snapshot> <trees> <head> <case:budget>...`
   (start scripts `start-sgf8*.sh` beside it; round log `gc-out/solr/SGF8-seq.log`); rename a stopped case's dir to an
   evidence name (`accept-SGF8STOP-...`) before a rerun, since the driver skips a dir that has a summary.
+
+## 10. HBase runs (2026-10-19)
+
+The HBase cases run from `system/hbase` on the image `/bigtemp/vnr3ne/vm-force12/j2sdk-image` against a tree set of the
+fork's `graphchecker/hbase-checks` (local `gc/hbase-checks` in `/u/vnr3ne/hbase`). From a fresh clone: REPRODUCE §7.
+On this cluster:
+
+1. **Snapshot** the engine (never rebuild one a run reads):
+   `flock /localtmp/vnr3ne/worktree-add.lock bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/hb-<topic>-<n> <commit> --detach`
+   (the flock serializes worktree-adds, which race on `.git/config`), then
+   `env -u BASH_ENV tools/onlift.sh -h <host> -g 4 mvn -q -o package -DskipTests` in it.
+2. **Tree set**: a directory `/bigtemp/vnr3ne/wt/hb-<topic>-trees-<n>/` holding `hbase-checks` = a detached worktree of
+   `/u/vnr3ne/hbase` at the tree commit (`git -C /u/vnr3ne/hbase worktree add --detach <dir>/hbase-checks <commit>`, 5-10
+   min over NFS), built from the snapshot with
+   `env -u BASH_ENV tools/onlift.sh -h <host> -g 8 env GC_TREES=<dir> HBASE_MAVEN_REPO=/bigtemp/vnr3ne/m2/<yours> experiments/hbase/prepare-trees.sh`
+   (onlift passes no environment: give it inside the command). Its log has one PASSED/FAILED/MISSING line per workload;
+   a workload's classpath is read off its surefire report, so a FAILED native still runs. One workload after a tree
+   change: `SKIP_TREE_BUILD=1 experiments/hbase/build.sh <dir>/hbase-checks '<Class>#<method>[@startup]'`.
+3. **Launch** one case, detached, its head on a host of its own (never from a shell on lift11: a stop-run there ended
+   other rounds' ssh clients), with the launch helper of `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/checks/launch.sh`
+   (or `zk/`, `rpc/`, `platform/`; they differ only in `GC_OUT` and defaults):
+   ```
+   ssh -f lift12 "GC_TREES=/bigtemp/vnr3ne/wt/hb-checks-trees-20 setsid nohup env -u BASH_ENV bash \
+     /bigtemp/vnr3ne/analysis/hbase-2026-10-19/checks/launch.sh /u/vnr3ne/gc-run/<snapshot> <case> <TAG> 14400 \
+     > /dev/null 2>&1 < /dev/null &"
+   ```
+   It sets `GC_OUT`, `GC_TREES`, `CAUSYNTH_CUSTOM_JDK_HOME` (vm-force12), `CASE_TIMEOUT_SECONDS`, `LIFTS` and
+   `CAUSYNTH_CAMPAIGN_WORKER_HOSTS` and execs the snapshot's `tools/rounds/launch-run.sh`; `STOP_AFTER=SEED` stops after
+   the seed (a selector check: `DECLARED_TARGET_OCCURRENCE_UNOBSERVED` lists every observed occurrence), `OCCURRENCE=`
+   overrides the target selector. Check the run's `.job` file names vm-force12.
+4. **Workers and heads.** A planner head is charged its whole heap for life (~23 GB of a 30 GB host whose cap is 22.1
+   GB), so its host runs no replay: give replays every host (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = lift02-15) and put at
+   most 2-3 heads per agent on its own hosts. PREFLIGHT fails if the head cannot reach a worker host in batch ssh or the
+   host cannot see the snapshot (HP10-14: lift15 from lift03): check `ssh -o BatchMode=yes <host> ls <snapshot>/run_engine.sh`
+   from the head, or drop that host.
+5. **Watch and stop.** A waiter (`checks/wait-run.sh <head host> <TAG> <limit>`) with ~90 s of grace before the job is
+   visible; the watchdog `bash /bigtemp/vnr3ne/analysis/hbase-2026-10-19/watchdog.sh` under a Monitor (D-state, ssh,
+   memory > 85 %, orphan z3). Stop with `tools/rounds/stop-run.sh` passing in `LIFTS` every host where the run can live
+   (heads included), then rename the dir to an evidence name (`accept-<TAG>STOP-...`) before a rerun.
+6. **After a case:** `python3 tools/analysis/vacuity.py --latest --detail <run dir>` on every UNSAT;
+   `analysis/solr-2026-10-14/final-stats.py` for the stage times; a reading in `analysis/hbase-2026-10-19/readings.md`;
+   the case's HBASE.md §E state and STATUS "HBase checks" row.
+7. **Offline COMPOSE/PLAN** on a run's inputs (no cluster run): `analysis/hbase-2026-10-19/reask/compose-run.sh <tag>
+   <jar> <case out dir> [heapMB]` and `plan-run.sh <side> <absolute jar> <case out dir> <tag> <depth>` on lift11, from a
+   copied jar; direct z3 on a `candidate.smt2`: drop its `(check-sat)`, assert a `path_selector__N` and your pins, check.
+8. **Merge gate** (integration worktree `/bigtemp/vnr3ne/wt/gc-hbase-merge`, one mvn per worktree at a time):
+   `env -u BASH_ENV tools/onlift.sh -h lift11 -g 10 bash -c 'mvn -q -o package > <log> 2>&1; echo MVN=$?; bash src/test/shell/run_engine_campaign_helpers_test.sh > <log2> 2>&1; echo SHELL=$?'`;
+   then fast-forward `system/hbase`. Known flakes under load: `ExploreTest#aQueryTextIsAnsweredOnceWhateverAsksIt`
+   (1 ms z3 timeout), the shell test's PLANNER-LIVE fixture (10 s wait): rerun once.
+9. **Tree changes** go to an agent's `gc/hb-*` branch, then fast-forward/merge into `gc/hbase-checks` and push the fork:
+   `git push fork gc/hbase-checks:graphchecker/hbase-checks` (allowed; apache never). Name each workaround in STATUS
+   "Per-system surface".

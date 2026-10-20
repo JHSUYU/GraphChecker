@@ -1,11 +1,12 @@
-# TODO: HDFS finished; Solr after its final round SGF9 (2026-10-19)
+# TODO: HDFS finished; Solr ended; HBase in progress (handover 2026-10-19 night)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
    them or before a clean final acceptance run.
 2. Solr: the rewrite and its final round SGF9 are done (2026-10-19, section "Solr: after SGF9"); what is left there is
    optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
-3. HBase.
+3. HBase: the current work (section "HBase", item 1 is the next runs in order); stopped by the owner on 2026-10-19
+   23:10 for a handover to another agent.
 4. ZooKeeper.
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
@@ -179,11 +180,17 @@ largest replay cost seen in SGF9; confirm which roots produce the volume, then b
   composes 28 of 44 and still decides NO_SUPPORTED_WITNESS (`c19/FINDINGS.txt`). COMPOSE now places a cell by another
   node's reading of the same JVM clock (`Composer#nearestAnchor`; HZ17-mat 2 -> 112 of 114 paths composed); 19 not rerun on it.
 - A free leaf for an unmodeled operation (`SmtLowering#free`, UNSTATED_VALUE) in the seed's own fatal makes the seed
-  path satisfiable as recorded: HP8-15 (hbase-adhoc-15) path 3b16839a's phi rests on `OpStrExpression.equals`
-  ARGUMENT_DYNAMIC_TYPE_UNMODELED (`unsupported__703a92087c`), z3 set it true where the recording ran it false, and
-  `ClaimPolicy#closed` took the free formula's model -- the run as recorded -- as a FORMULA_SAT witness, which CONFIRM
-  refuted ("moves nothing"). Model the argument's dynamic type, or hold an unmodeled operation to its recorded result
-  wherever its operands are at theirs.
+  path satisfiable as recorded: HP8-15 (hbase-adhoc-15) seed path 3b16839a's phi (`not RegionState#isOpened()`, i.e.
+  `"OPEN".equals(state)`, `OpStrExpression.equals` ARGUMENT_DYNAMIC_TYPE_UNMODELED) lowers to the free leaf
+  `unsupported__0d3bc12011`; the anchor's own decision on that node (seq 6059, outcome false) is the fatal's, not in the
+  path condition, so nothing pins the leaf (`unsupported__703a92087c` is another node: `Procedure#isSuccess` seq 5993,
+  forced true by the path condition). `ClaimPolicy#closed` took the free formula's model -- the run as recorded -- as a
+  FORMULA_SAT witness, which CONFIRM refuted ("moves nothing"). Only 15 has such leaves (458; 245 of 246 path fatals;
+  none in 10, 11, 22, 34, mat, nsrg). WIP: `hbase-reask` 231264aad (`Composer#heldToRecording`: a healthy fatal on a
+  havoc leaf is held to its recording where every mover of the phi is at its recorded value; not gated, not measured on
+  HP8-15). A probe through `SmtLowering.forSession` says the phi's movers are two re-pairable reads (`INSTANCE/733#48`,
+  `INSTANCE/99#96`), which the WIP cannot state -- measure in the Composer's own lowering first. Alternatives: model the
+  argument's dynamic type, or take an unmodeled node's recorded value from a decision row on the same node.
 - A re-run that lands mid-round is seen one round late (~6.5 min a link; 50 of 1019's 160 min were waits).
 - Chains of doors-only growths: with the fixed point waiting for every re-run (b9ecc0ba2), the fresh-clone run of 38
   (`accept-FC6STOP-adhoc-38`, no witness that run) spent rounds 47-64 growing one doors-only occurrence "run whole" at a
@@ -546,29 +553,40 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   final8, `sg3f-trees` -> final7, `sg3e-trees` -> final5 (the fork's today). A case.sh `repo=` resolves under GC_TREES;
   the default `/bigtemp/vnr3ne/wt/lucene-solr-checks` is an old directory, never the one to run.
 
-## HBase (`system/hbase` = main today)
+## HBase (`system/hbase`; stopped by the owner 2026-10-19 23:10 for a handover -- the current plan)
 
-**Read first:** [OPTIMIZATIONS.md](OPTIMIZATIONS.md): the owner moves GraphChecker to HBase next, with a thorough
-refactor that carries every optimization done on Solr and completes the ones not done (its §5, §6).
+Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E,
+each agent's handover note [hbase-agents/H1-H5.md](hbase-agents/) (copies of `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/handover/H1-H5.md`) (exact run dirs, snapshots,
+tree sets, launch commands). Nothing runs on any lift.
 
-**0. The VM image.** Every HBase run is on `/bigtemp/vnr3ne/vm-force12/j2sdk-image` (`hbase-platform`'s VM sources:
-the held enum constant named of its class, no silent enum compare, `REF_OPERAND_UNSTATED`); `system/solr` is its
-own branch on its own image (owner 2026-10-19: HBase changes are judged by HBase's cases only). A procedure step stands on its
-procedure's previous step (tree `CausynthStep`, STATUS "tree: daemon ticks"); a step that only met a busy entity lock
-(`LOCK_EVENT_WAIT`) or yielded is a step too, so where two procedures contend, the later steps' occurrences can be
-renumbered between runs. If a case shows it (an occurrence only one replay ran, under a procedure that waited on a
-lock), hand the next step off again from the empty step's own hand-off context instead of from the empty step.
+**1. The next runs, in this order** (OPERATIONS §10: a snapshot of `system/hbase`'s head, a tree set of
+`gc/hbase-checks` 985a0dfe91 built with its own Maven repository, image vm-force12, workers every host the head reaches
+in batch ssh -- lift15 failed that from lift03 (HP10-14) --, heads on hosts of their own; `tools/analysis/vacuity.py` on
+every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readings.md`):
+- **hbase-adhoc-04 = HBASE-30484**: SAT MARKER_FLIPPED, confirmed in the VM (HC21-04, 631 s; the moved root is the
+  REQUEST fault of the observer's `RawAsyncHBaseAdmin#enableTable`). Read its `.smt` by hand; declare its expected
+  mechanism (an `HBASE_RPC` REQUEST fault, MARKER_FLIPPED) where `experiments/accept/report.py` reads it; fix REPRODUCE
+  (item 3) and rerun for the native 10/10.
+- **hbase-bugs-master-active-time (#11)**: rerun on `system/hbase` (>= 208ac1899: unplaced clocks placed). Offline
+  its claim 0 is CLOCK_SKEW, T0 = T1 + 60001 ms; CONFIRM must plant T0 on master0's clock at its activation reading
+  (`HMaster#finishActiveMasterInitialization`, `EnvironmentEdgeManager#currentTime`) and deliver it as the
+  OpenRegionRequest's `initiating_master_active_time`; master1's `throwOnOldMaster` then throws. Item 2 has the gaps.
+- **hbase-bugs-ns-rsgroup-removal (#13)**: run on tree 985a0dfe91 (tree set `/bigtemp/vnr3ne/wt/hb-checks-trees-20`,
+  built, its 6 workloads native-PASS; launch command in H4.md). Expected chain: an `HBASE_RPC` REQUEST fault on the
+  master's hbase:meta Mutate in `CREATE_NAMESPACE_INSERT_INTO_NS_TABLE` (one attempt in automatic mode) ->
+  `addOrUpdateNamespace` throws before `cached()` -> `removeRSGroup` reads `namespacesInGroup == 0` and removes the group
+  -> the held retry inserts the namespace -> CreateTableProcedure's `checkGroupExists` #3 reads null -> :227. Risk:
+  PLAN may not admit that Mutate door as a control producer; then check the count's writer is in the closure.
+- **hbase-adhoc-22 = HBASE-30483**: rerun with the full budget (COMPOSE alone > 10 min). The right claim exists (HC13);
+  if "run published no target row at anchor ..." recurs, read CONFIRM's replay at that anchor
+  (`accept-HC13-22/.../final/refuted/000*`).
+- Then 10, 11, 12 (on >= 8da6eb24d: CallQueueTooBigException cut, fault replays queued last), 31 (new workload,
+  selector `REGION.4a0683a9...#1`), 15 (tree set 9; read the NOT_ADMITTED first), 24 (seed replay once the chores are
+  off), 21 (workaround 23ff06c9ba), 34 (item 6), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
+  `STOP_AFTER=SEED`, to check the occurrence).
 
-**1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
-- An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not
-  inherit their racing creator's frames.
-- Message-bound exports for a value exported on one thread and sent by another after a queue: settled (agent H3
-  2026-10-19), nothing to build. A protobuf field's export binds to its builder and message (codec capture), and the
-  HBase RPC door walks the message and drains the envelope on the calling thread in `AbstractRpcClient#callMethod`;
-  the event loop that writes the call after the connection's queue only copies its header (IDENTITY §7.1). A declared
-  `WIRE_FLOW` row's export stays on its thread's envelope; HBase declares none.
+**2. master-active-time's CONFIRM: two engine challenges** (H2, HZ13-mat; both stand behind workarounds or partial fixes):
 
-**2. HBase #14 (master-active-time) to a confirmed CLOCK witness.** Two engine challenges found on the way (H2,
 HZ13-mat, 2026-10-19), each standing behind a workaround or open:
 - A clock planted in a retried occurrence is exported with no root mint row. `RootMint` planted
   `OpenRegionRequest.MasterSystemTime`'s reading (`DefaultEnvironmentEdge#currentTime`) as a symbolic `Long` box in
@@ -581,51 +599,33 @@ HZ13-mat, 2026-10-19), each standing behind a workaround or open:
   0002: `2efac300f9e6d4d6` model "1792454828365", run "1792455517516"), while the replay's clocks are not the
   recording's. Open: such a leaf should be held to the model's clock value (planted) or compared by its expression.
 
-**3. Mark the 17 checked study points** (`docs/checks/HBASE.md`):
+**3. REPRODUCE cannot hold a client call issued inside a reply callback** (04, HC21-04 `reproduce.json`: "no native
+run: ORDER_UNHELD" on client0's `FutureUtils#addListener` work item in `AsyncMasterRequestRpcRetryingCaller#doCall`,
+under which `RawAsyncHBaseAdmin#enableTable`'s request is sent). CONFIRM ran it (the witness session is itself the run);
+the native reproducer has no hold for a continuation's work item. Read how CONFIRM holds continuations
+(`runtime/Continuations`, IDENTITY §6) and give REPRODUCE the same; or, under the workaround rule, make the observer's
+enable a synchronous call in automatic mode (named in STATUS).
 
-```
-04r 07r 08 10 11 12 13 14 15 19 20 21 22 24 31 34 37
-```
+**4. A free `unsupported__` leaf in the seed's own fatal** (15): TODO "Solr: after SGF9" §5 has the mechanism and the
+WIP (`hbase-reask` 231264aad).
 
-04 and 07 are re-sited to the server: `AbstractStateMachineTableProcedure.java:163` and `SnapshotManager.java:1046`.
+**5. Unmerged work.** `hbase-reask` 231264aad (WIP, not gated: item 4). Everything else of H1-H5 is in `system/hbase`.
 
-**4. The two admitted bugs.** backup-lock-reply-lost: the `HBASE_RPC` RESPONSE door (catalog, `RpcConnection#finishCall`)
-fails the first `checkAndMutate` (NO_NONCE) after the server committed it. ns-rsgroup-removal: STATE re-pairing of `removeRSGroup`'s namespace read.
+**6. hbase-adhoc-34: a READ-door fault on refreshKeys.** Vacuous in HZ14/15/18: rs0 holds key 1 from
+`ZKSecretWatcher.start` before the test, so `retrievePassword`'s first `allKeys.get` hits and `refreshKeys` never runs
+in the target occurrence; PLAN offers no READ-door fault because the provenance site (`allKeys` in
+`retrievePassword`) reads the manager, whose decode is not registered (`UNSTATED_VALUE` "this provenance site read a
+AuthenticationTokenSecretManager no decode registered"). Workload option (cheap): the test calls `other.removeKey(keyId)`
+before `retrievePassword` (the key's watch event not yet processed), so refreshKeys and its doors run in the target
+occurrence and one READ fault reaches :160 at depth 0. Engine option: a provenance site on a container field takes the
+versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
 
-**5. Run the group of 20.**
+**7. hbase-adhoc-10's cost.** R17-10: 241 of 281 NOT_ADMITTED are one `FlipQuery#build` refusal ("this query declares no
+variable of its own, and its occurrence read values no row of the corpus wrote") at procedure-framework decisions --
+seconds each on the worker, no replay; PLAN could refuse them up front with the same predicate (saves ~240 short jobs).
+The cost was 210 REQUEST-fault replays (~10 min each), now 140 behind the guard's own flips (8da6eb24d). If 10 still
+does not converge, measure which client calls' faults reach the guard's cone at all before asking them.
 
-**6. A znode's absence as state: tombstone lives + a store-read pairing flip** (H2 design, lead 2026-10-19: not
-built until a case's chain needs a read in an absent window; it serves Solr and HBase alike). Today neither system
-states absence: a delete takes only its parent's WRITE turn, a NoNode `getData` throws before the read hook, an
-`exists` of no node is a trace row only (`MessageDoors#read` returns for version < 0), and a re-create starts a new
-location life (`path#k`). (a) One location per path with (life, version) states: a create opens life k, a delete
-(a multi's delete op too) and every ephemeral of a closed or expired session (the expirer and the client's close ask
-the in-process server for the session's ephemerals) file a TOMBSTONE write ending it, a NoNode read is a STORE_READ
-of that tombstone (before any create: INITIAL absent), and a read's eligible writers are the path's creates, sets,
-deletes and expiries across lives; table tests in `MessageDoors`/`RecordedStore`, a Solr regression check (~half a
-day). Alone it moves nothing: a store read is held at the version its session read (CONFIRM's STATE row), so it only
-makes deleters writers in the chain and an absent read a held row. (b) A store-read pairing flip, `PairingFlip`
-generalized from VIEW reads to plain store reads: the replay holds the reader's READ turn until the asked version's
-WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it as `PAIRING_UNTAKEN` as for views
-(`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
-(`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
-
-**7. COMPOSE frees what a stale run left concrete (StaleRuns; built, NOT merged: branch `hbase-reask` c2c0f0803,
-WIP).** A session that ran an occurrence paused (doors-only) or unplanned, which a later round's GROW now runs whole
-(the iteration's `execution_task_plan.jsonl` plans it with no `doorsOnly` mark), holds that occurrence's writes as
-constants: a read of a version no non-initial row states takes the value the run read. StaleRuns frees such a read
-(row or expression) in that session, named in the composition's `concrete` list, when its carrier (the read's own
-VM site, `StaticScopeMap#carriersAt`) has a static write site the stale occurrence's region holds
-(`StaticScopeMap#regionHolds`; `Corpus#staleRuns`, `compose/StaleRuns`, `SmtLowering#guardedReadTerm`,
-`Composer#statedReads`): over-approximate in COMPOSE, CONFIRM strict. Measured on HZ7-mat (master-active-time,
-`analysis/hbase-2026-10-19/reask/compose/`): 68 of 73 sessions ran master0's activation doors-only before the g4
-unpause, yet the composition is the same with and without it, because the constant CONFIRM refuted (T0 on
-`message_arm__19`) is not one of master0's: rs0's `RegionStateTransitionContext.initiatingMasterActiveTime` is
-written from a concrete value in every session, the minted ones too, though rs0's attach of
-`OpenRegionRequest.initiating_master_active_time` is a handoff symbol (a propagation gap on the regionserver, H2).
-Becomes needed when a claim's selected path takes a value through a read whose writer ran paused or unplanned in its
-session and runs whole now: then merge it with a ComposerTest (a doors-only writer in the session, the plan running it
-whole, its carrier read at INITIAL: freed; the same read in a session that ran it whole: held).
 
 **8. A continuation chain re-registered per poll stands under the poll count.** A continuation now stands at its
 registrant's address wherever it runs (IDENTITY §6, `runtime/Continuations`; hbase-adhoc-11 and 12's `Admin#move`).
@@ -641,6 +641,46 @@ listener); an unnamed registrant folds where it runs and files no gap (L3); a qu
 woven frame between can drop the continuation's start frames (L4); `LineageScan` selects registrations by the exact
 owner `CompletableFuture`/`CompletionStage`, the weave by hierarchy (L5a); Netty and Guava future listeners and static
 `supplyAsync`/`runAsync` are no continuations (L5b); a poll chain's index grows by one frame per poll (L6).
+
+
+**9. Data through a region's store and chores as race partners** (13). `hasMergeRegions` reads the hbase:meta row's
+cells, which reach the master through the meta region's memstore and a Get reply: no tracked cell carries them and
+`Result`'s map is sorted (`ordered_map_unmodeled`), so the guard is concrete (HP9-13: 14/14 fatal arms literal false).
+Its race partner, CatalogJanitor's GC of merged parents, is a chore that never comes due in automatic mode (tree
+f9340f2aab). Reaching 13 needs a model of a Put -> store -> Get (a STORE door keyed by row/family/qualifier, as
+ZooKeeper's store is keyed by path) and a workload that drives the janitor, as 04 drives the quota observer.
+
+
+**10. A znode's absence as state: tombstone lives + a store-read pairing flip** (H2 design, lead 2026-10-19: not
+built until a case's chain needs a read in an absent window; it serves Solr and HBase alike). Today neither system
+states absence: a delete takes only its parent's WRITE turn, a NoNode `getData` throws before the read hook, an
+`exists` of no node is a trace row only (`MessageDoors#read` returns for version < 0), and a re-create starts a new
+location life (`path#k`). (a) One location per path with (life, version) states: a create opens life k, a delete
+(a multi's delete op too) and every ephemeral of a closed or expired session (the expirer and the client's close ask
+the in-process server for the session's ephemerals) file a TOMBSTONE write ending it, a NoNode read is a STORE_READ
+of that tombstone (before any create: INITIAL absent), and a read's eligible writers are the path's creates, sets,
+deletes and expiries across lives; table tests in `MessageDoors`/`RecordedStore`, a Solr regression check (~half a
+day). Alone it moves nothing: a store read is held at the version its session read (CONFIRM's STATE row), so it only
+makes deleters writers in the chain and an absent read a held row. (b) A store-read pairing flip, `PairingFlip`
+generalized from VIEW reads to plain store reads: the replay holds the reader's READ turn until the asked version's
+WRITE turn (a tombstone) and before the next life's create, CONFIRM refutes it as `PAIRING_UNTAKEN` as for views
+(`ScheduleLog` turn holds, `Confirmation`, `FocusedReplay`: large). It would let a check like hbase-adhoc-37
+(`MasterAddressTracker:206`, `data == null`) be asked in a failover workload; 37's own workload has no absent window.
+
+**11. Smaller HBase items.**
+- A procedure step that only met a busy entity lock (`LOCK_EVENT_WAIT`) or yielded is a step too, so where two
+  procedures contend the later steps' occurrences can be renumbered between runs; if a case shows it, hand the next step
+  off from the empty step's own hand-off context.
+- StaleRuns (COMPOSE frees a value a stale run left concrete) was built and reverted (655b88023): on HZ7-mat it changed
+  nothing; rebuild only when a claim's path takes a value through a read whose writer ran paused and runs whole now.
+- Identity of threads libraries start (ZooKeeper's EventThread, Netty loops): per-node Netty groups and timer lineage
+  cover HBase today; a message exported on one thread and sent by another after a queue is settled (IDENTITY §7.1).
+- `hbase-reask`'s offline tools (`analysis/hbase-2026-10-19/reask/`: compose-run.sh, plan-run.sh, case-evidence.sh,
+  probes) re-run COMPOSE/PLAN on a run's inputs; `SmtLowering.forSession`'s repair predicate differs from the
+  Composer's, so a probe through it is not the Composer's answer.
+- Housekeeping: old snapshots (`/u/vnr3ne/gc-run/hb-*`) and tree sets (`/bigtemp/vnr3ne/wt/hb-*-trees-*`) listed in
+  H1-H4.md (e) can go once nothing reads them; `system/hbase` is not pushed to GitHub (owner's OK needed); the fork's
+  `graphchecker/hbase-checks` is pushed at 985a0dfe91.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

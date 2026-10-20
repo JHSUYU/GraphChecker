@@ -226,6 +226,34 @@ recommendation.
   and the master's local region ask for is HBase's own `DisabledWALProvider`'s (the tree's `CausynthHBaseCluster#configure`),
   so the log's coalescing consumer and sync runners, whose timing no two runs share, are gone from every case; no case keeps
   FSHLog, and a case whose workload needs WAL contents (a WAL split, an edits replay) takes another workload.
+- **HBase: the goal and its scope** (2026-10-19 /goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check"):
+  `system/hbase` is built from `system/solr`'s engine ("也就是你基于solr现在的graphchecker代码来改"); the HBase tree is the fork
+  JHSUYU/hbase's `graphchecker/hbase-checks`; the checks are `docs/checks/HBASE.md`, the owner's five bugs included once
+  ("如果这5个bug已经在adhoc check表里就不用补充了，不要搞重复了": HBASE-30483, HBASE-30484, master-active-time,
+  backup-lock-reply-lost, ns-rsgroup-removal); a workload is an existing cluster test where one fits, else ours in the
+  fork; no HDFS, local IO ("我们不用hdfs，把这个配置换成本地io"); ZooKeeper exactly as on Solr; a small symbolic scope
+  ("范围弄小点"; "合理的小一点，能让我们的replay快一点"); Solr's traps apply and HBase code workarounds are allowed.
+- **HBase changes are judged by HBase's cases only** (2026-10-19: "你不用再管solr的问题，solr和hbase是在不同分支上的"): no Solr
+  regression run for a change on `system/hbase`.
+- **Repeated questions are answered once, at any world depth** (2026-10-19: "那重复提问你能想办法解决吗。不管是什么depth").
+- **hbase-adhoc-34 without Kerberos** (2026-10-19: "那34直接不要kerberos，workaround。或者加hook"): the token secret managers
+  run on a simple-authentication cluster through the tree's `RpcServer#CAUSYNTH_TOKEN_SECRETS` hook.
+- **Several counterfactuals are fine** (2026-10-19, long-term: "我们不要求单个反事实。可以多个啊，如果触发bug要多个，你可以调整下。我们
+  本来也支持多个反事实"; "反事实这个东西要设为你的长期记忆，你可以对bug case调整反事实深度对吧。我们可以各种组合起来"): never call a bug
+  unreachable because no single counterfactual reaches it; the lead sets that case's world depth to k
+  (`CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH` on its own `case.sh` line; depth 0 stays the default), the counterfactuals
+  any combination of kinds (FAULT, CLOCK, STATE re-pairing, branch flip), optionally with a modest workload setting
+  (a few client retries) that keeps k small.
+- **Fill in lost context in the system's code** (2026-10-19, long-term: "这种丢上下文你也可以手动改hbase代码改，假如上下文传播。总之补齐上下文
+  传播即可。这也是一个重要的长期记忆"): where a hop loses causal context (a pool, a callback, a timer, a lazily made thread)
+  and the engine's lineage shapes (WorkStartSites, Continuations, CausynthStep) cannot cover it quickly, patch the
+  system's code to carry it, named in STATUS "Per-system surface". Applies to every system.
+- **Workaround over grinding** (2026-10-19: "这种问题，如果你觉得死磕是无解的，就是一些challenge。你可以直接上workaround"): an engine
+  challenge that grinding will not solve (realizing a model's exact interleaving, identity drift in async chains) is
+  time-boxed (~45 min without a clear mechanism, or a fix that is a redesign) and then worked around in the workload or
+  the system's code, named in STATUS "Per-system surface", the challenge recorded in TODO. A workaround may make an
+  order controllable or a value trackable; it must never switch the fatal outcome itself (the engine still chooses
+  the counterfactual).
 
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
