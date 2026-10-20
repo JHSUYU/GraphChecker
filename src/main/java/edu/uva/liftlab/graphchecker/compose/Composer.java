@@ -1529,7 +1529,7 @@ public final class Composer {
             }
         }
 
-        List<Valuation> valuations = valuations();
+        List<Valuation> valuations = valuations(disjuncts);
         reached(valuations.size() + " valuation(s) chosen");
         List<String> pins = new ArrayList<String>();
         for (Valuation valuation : valuations) {
@@ -3325,7 +3325,48 @@ public final class Composer {
                 : corpus.domainOf(row, row.recordedValue());
     }
 
-    private List<Valuation> valuations() {
+    static final int EXPLORED_WORLDS = 16;
+
+    private List<Map<String, String>> exploredWorlds(
+            List<Disjunct> disjuncts, List<String> declared,
+            Map<String, String> recorded) {
+        Set<String> sessions = new TreeSet<String>();
+        for (Disjunct disjunct : disjuncts) {
+            if (disjunct.fatalObserved() && !disjunct.path().sessionId
+                    .equals(corpus.seedSessionId())) {
+                sessions.add(disjunct.path().sessionId);
+            }
+        }
+        List<Map<String, String>> worlds =
+                new ArrayList<Map<String, String>>();
+        int left = 0;
+        for (String session : sessions) {
+            Map<String, String> planted = corpus.world(session)
+                    .rootAssignments;
+            Map<String, String> move = new LinkedHashMap<String, String>();
+            for (String rootId : declared) {
+                String value = planted.get(rootId);
+                String at = recorded.get(rootId);
+                if (value != null && !value.trim().equalsIgnoreCase(
+                        at == null ? "" : at.trim())) {
+                    move.put(rootId, value.trim());
+                }
+            }
+            if (move.isEmpty() || worlds.contains(move)) continue;
+            if (worlds.size() < EXPLORED_WORLDS) {
+                worlds.add(move);
+            } else {
+                left++;
+            }
+        }
+        reached(worlds.size() + " explored world(s) offered of "
+                + sessions.size() + " fatal-observing explored session(s)"
+                + (left == 0 ? "" : ", " + left + " more left out past "
+                + EXPLORED_WORLDS));
+        return worlds;
+    }
+
+    private List<Valuation> valuations(List<Disjunct> disjuncts) {
         List<String> declared = new ArrayList<String>();
         Map<String, List<String>> alternatives =
                 new LinkedHashMap<String, List<String>>();
@@ -3365,6 +3406,8 @@ public final class Composer {
         }
         valuations.add(valuation(0, recorded,
                 Collections.<String, String>emptyMap()));
+        List<Map<String, String>> worlds = exploredWorlds(disjuncts,
+                declared, recorded);
         List<Map<String, String>> moves = new ArrayList<Map<String, String>>();
         for (String rootId : declared) {
             for (String value : alternatives.get(rootId)) {
@@ -3393,6 +3436,8 @@ public final class Composer {
             }
         }
         moves.addAll(pairs);
+        moves.removeAll(worlds);
+        moves.addAll(0, worlds);
         int ordinal = 1;
         for (Map<String, String> move : moves) {
             if (valuations.size() >= maxValuations) break;

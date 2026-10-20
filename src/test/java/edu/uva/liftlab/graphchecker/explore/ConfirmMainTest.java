@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -40,6 +41,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
@@ -876,6 +878,74 @@ public class ConfirmMainTest {
             for (int index = 0; index < rows.size(); index++) {
                 assertEquals(index, rows.get(index).get("row").getAsInt());
             }
+        }
+    }
+
+    @Test
+    public void aConfigurationRootIsPlantedAtTheGetterItsActionNames()
+            throws Exception {
+        String getter = "<org.apache.hadoop.conf.Configuration: long "
+                + "getLong(java.lang.String,long)>";
+        String site = "<a.Master: void activate()>#u13";
+        Object[][] table = {
+                {"the getter's action names the root as its source",
+                        "CONFIG:skew", site + " " + getter},
+                {"no action names it", "", null},
+        };
+        Path iteration = iteration();
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        world.add("rootAssignments", new JsonObject());
+        world.add("rootMints", new JsonObject());
+        world.add("clockDeltas", new JsonObject());
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").roots(),
+                Arrays.asList(root("sel", "HDFS.SERIAL", "M_I_serial.sel",
+                        RootKind.INTEGRAL, "119978"),
+                        RootMintRow.of("sel", 2L, mint, "CONFIG:skew",
+                                "M_J_skew", RootKind.INTEGRAL,
+                                RootCategory.CONFIG, "0", null, null, true,
+                                null, 0L)), RowCodec::writeRootMint);
+        for (Object[] row : table) {
+            JsonObject action = new JsonObject();
+            action.addProperty("portId", "REGION.08ab84c9.in.p");
+            action.addProperty(InputActionCatalog.DECLARED_CONFIG_SOURCE,
+                    (String) row[1]);
+            action.addProperty("location", "CALL_RETURN");
+            action.addProperty("siteId", site);
+            action.addProperty("declaredCallee", getter);
+            action.addProperty("javaType", "long");
+            JsonObject task = new JsonObject();
+            task.addProperty("regionId", "REGION.08ab84c9");
+            task.addProperty("occurrenceId", MINT);
+            JsonArray actions = new JsonArray();
+            actions.add(action);
+            task.add(InputActionCatalog.FIELD, actions);
+            RowCodec.writeJsonl(iteration.resolve("execution_task_plan.jsonl"),
+                    Collections.singletonList(task));
+            Path plant = folder.newFile().toPath();
+            try {
+                ConfirmMain.writePlant(iteration, claim("CONFIG:skew",
+                        "-2001"), manifest(), targetScopeMap(),
+                        iteration.resolve("sessions").resolve("sel"), plant);
+                if (row[2] == null) fail((String) row[0]);
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED: root "
+                                + "CONFIG:skew"));
+                assertNull((String) row[0], row[2]);
+                continue;
+            }
+            JsonObject root = RowCodec.readJsonl(plant).get(0);
+            JsonObject call = root.getAsJsonArray("sites").get(0)
+                    .getAsJsonObject();
+            assertEquals((String) row[0], "CONFIG CONFIG:skew -2001 " + row[2],
+                    root.get("category").getAsString() + " "
+                            + root.get("rootId").getAsString() + " "
+                            + root.get("value").getAsString() + " "
+                            + call.get("siteId").getAsString() + " "
+                            + call.get("callee").getAsString());
         }
     }
 

@@ -102,6 +102,15 @@ final class PlantSites {
     private void action(JsonObject action, String region) {
         String port = optionalString(action, "portId");
         if (port.isEmpty()) return;
+        action(action, region, port);
+        String config = optionalString(action,
+                InputActionCatalog.DECLARED_CONFIG_SOURCE);
+        if (!config.isEmpty() && !config.equals(port)) {
+            action(action, region, config);
+        }
+    }
+
+    private void action(JsonObject action, String region, String port) {
         String site = optionalString(action, "siteId");
         if (!site.isEmpty()) {
             sites.computeIfAbsent(port, key -> new LinkedHashSet<String>())

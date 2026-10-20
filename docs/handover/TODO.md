@@ -560,10 +560,11 @@ in batch ssh -- lift15 failed that from lift03 (HP10-14) --, heads on hosts of t
 every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readings.md`):
 - **hbase-adhoc-04 = HBASE-30484**: DONE, PASS (NR3-04, 2026-10-20: SAT confirmed, reproduced 7/10, control 0/10;
   HBASE.md §E).
-- **hbase-bugs-master-active-time (#11)**: rerun on `system/hbase` (>= 208ac1899: unplaced clocks placed). Offline
-  its claim 0 is CLOCK_SKEW, T0 = T1 + 60001 ms; CONFIRM must plant T0 on master0's clock at its activation reading
-  (`HMaster#finishActiveMasterInitialization`, `EnvironmentEdgeManager#currentTime`) and deliver it as the
-  OpenRegionRequest's `initiating_master_active_time`; master1's `throwOnOldMaster` then throws. Item 2 has the gaps.
+- **hbase-bugs-master-active-time (#11)**: on the configured-skew workaround (owner 2026-10-20; tree 190d7eda00,
+  STATUS "tree: master-active-time's configured skew"). NZ11-mat (275e72578, trees-10 26bae096c3): CONFIRM confirmed
+  .later=-2001 (the selected session is itself the run), but the claim was FORMULA_SAT and REPRODUCE refused the CONFIG
+  plant; both fixed (explored worlds as valuations, PlantSites' configSource key). Next: NZ12-mat, CONFIRM and
+  REPRODUCE k/N with control 0/N, report.py PASS (expected MARKER_FLIPPED). Item 20 records the formula's over-pinned T1.
 - **hbase-bugs-ns-rsgroup-removal (#13)**: run on tree 985a0dfe91 (tree set `/bigtemp/vnr3ne/wt/hb-checks-trees-20`,
   built, its 6 workloads native-PASS; launch command in H4.md). Expected chain: an `HBASE_RPC` REQUEST fault on the
   master's hbase:meta Mutate in `CREATE_NAMESPACE_INSERT_INTO_NS_TABLE` (one attempt in automatic mode) ->
@@ -850,6 +851,14 @@ context ... given up"): the second merge then ran before the collection and thre
 context is one thread's program order; a task run under its submitter's context is another thread. Worked around in the
 workload (the test runs `CatalogJanitor#scan` itself). The fix: a slot is passed by its context's next event only on the
 same thread (the row's `threadKey`).
+
+**20. The formula pins a moved root to the one value its replay ran** (H2; hbase-bugs-master-active-time NZ10-mat,
+NZ11-mat). master0's T0 is the constant 1700000000000 and master1's T1 = 1700000002000 + `.later`, so the fatal holds for
+every `.later` < -2000. Yet the selected path is satisfiable at -2001 alone: binary search on NZ10's witness path makes
+-2002, -2000, -3000 and -600000 all unsat. The path holds constants its own session recorded with T1 at
+1700000000001 (its arms' and reads' held values), so the formula over-constrains the root to its replay's value.
+Harmless for the claim, since an explored world is now a valuation (`Composer#exploredWorlds`), but a root's range
+is not stated. Recorded only, not chased.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

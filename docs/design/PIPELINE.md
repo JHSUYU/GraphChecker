@@ -3200,7 +3200,14 @@ constant span) in that session's terms is lowered that much earlier (`SmtLowerin
 `#onTimeline`); the recording's own constants stay. hdfs-11741 L1: dn1's first expiry check compared
 each replay's startup keys, 9 to 11 minutes late on the recording's timeline, with the one dn1 clock.
 
-**Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
+**Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then the
+worlds explored replays ran to the fatal (`Composer#exploredWorlds`: each fatal-observing path's
+session but the seed's, in session-id order, its planted declared roots that differ from the
+recording, each distinct world once, at most `EXPLORED_WORLDS` = 16, the rest named in
+`compose.log`; an enumerated move equal to one is not asked again; ClaimPolicy ranks them as any
+valuation, its own-run rule first: hbase-bugs-master-active-time NZ11-mat's path was satisfiable only
+at the skew its own replay ran, -2001, which no anchor or nearby value names, so its claim was the
+free model's FORMULA_SAT); then single
 moves -- a marker's flip and an integral's domain-end anchors (`Composer#anchors`: each bound and its
 two inward neighbours, where the domain's outermost comparisons flip, however far from the
 recording) before its other values, each by distance, and at equal distance a configuration-only
@@ -3898,7 +3905,9 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   marker `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
   value: true|false}`; a tree hook's root `{category HOOK, rootId, occurrence, value}`; a
   configuration `{category CONFIG, rootId, occurrence, sites: [{siteId, callee}], javaType, value}`
-  (its getter calls); an unwoven accessor's read `{category READ, rootId, occurrence, siteId,
+  (its getter calls: the plan's call-return input actions whose `configSource` is the root, as
+  RootMint names it, beside those whose `portId` is, `PlantSites#action`; NZ11-mat's getter action
+  had the region's port id, and REPRODUCE found no call for the root); an unwoven accessor's read `{category READ, rootId, occurrence, siteId,
   callee, javaType, value}`; a clock the world skews `{category CLOCK, rootId, occurrence, siteId,
   callee, javaType, clock: {nanos, source}, skew}` (the model's jumps and the selected session's
   skews on cells the composition does not anchor, as CONFIRM plants them);

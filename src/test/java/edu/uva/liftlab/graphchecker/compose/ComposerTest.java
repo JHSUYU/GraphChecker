@@ -1050,6 +1050,43 @@ public class ComposerTest {
         }
     }
 
+    @Test
+    public void aWorldAnExploredReplayRanToTheFatalIsAValuation()
+            throws Exception {
+        Object[][] table = {
+            {"an explored replay ran the root at -2001 and observed the "
+                    + "fatal", true, ClaimKind.MARKER_FLIPPED},
+            {"no explored replay ran it: the formula's own model",
+                    false, ClaimKind.FORMULA_SAT},
+        };
+        for (Object[] row : table) {
+            boolean explored = (Boolean) row[1];
+            Path iteration = folder.newFolder().toPath();
+            for (String id : explored ? new String[] {"s0", "s1"}
+                    : new String[] {"s0"}) {
+                boolean ran = id.equals("s1");
+                Session session = new Session(iteration, id, ran);
+                session.serial(ran ? "-2001" : "0", "-600000", "600000");
+                session.target("(= " + SERIAL + " (- 2001))", ran, true);
+                session.write();
+            }
+            if (explored) {
+                obligation(iteration, "s1", Collections.singletonMap(
+                        SERIAL_ROOT, "-2001"));
+            }
+            Composer.Composition composition = compose(iteration, 8);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals((String) row[0] + ": " + decision.claim().gaps(),
+                    row[2], decision.claim().kind());
+            assertEquals((String) row[0], Collections.singletonMap(
+                    SERIAL_ROOT, "-2001"), decision.claim().movedRoots());
+            assertEquals((String) row[0] + ": offered right after the "
+                    + "recording", explored, "-2001".equals(composition
+                    .valuations().get(1).moved().get(SERIAL_ROOT)));
+        }
+    }
+
     private static long asked(Path log) throws IOException {
         return Files.readAllLines(log).size();
     }
