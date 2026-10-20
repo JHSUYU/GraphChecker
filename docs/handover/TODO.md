@@ -575,7 +575,7 @@ every UNSAT before its STATUS row; a reading in `analysis/hbase-2026-10-19/readi
   (`accept-HC13-22/.../final/refuted/000*`).
 - Then 10, 11, 12 (on >= 8da6eb24d: CallQueueTooBigException cut, fault replays queued last), 31 (new workload,
   selector `REGION.4a0683a9...#1`), 15 (tree set 9; read the NOT_ADMITTED first), 24 (seed replay once the chores are
-  off), 21 (workaround 23ff06c9ba), 34 (item 6), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
+  off), 21 (workaround 23ff06c9ba), 08, 14, 35, 28, 07, 19, 20 (19 and 20: a SEED-only run first,
   `STOP_AFTER=SEED`, to check the occurrence).
 
 **2. master-active-time's CONFIRM: two engine challenges** (H2, HZ13-mat; both stand behind workarounds or partial fixes):
@@ -610,14 +610,7 @@ to OPENING plus one FAULT marker) instead of FORMULA_SAT on the seed; H1 reruns 
 
 **5. Unmerged work.** `hbase-reask` 231264aad (WIP, not gated: item 4). Everything else of H1-H5 is in `system/hbase`.
 
-**6. hbase-adhoc-34: a READ-door fault on refreshKeys.** Vacuous in HZ14/15/18: rs0 holds key 1 from
-`ZKSecretWatcher.start` before the test, so `retrievePassword`'s first `allKeys.get` hits and `refreshKeys` never runs
-in the target occurrence; PLAN offers no READ-door fault because the provenance site (`allKeys` in
-`retrievePassword`) reads the manager, whose decode is not registered (`UNSTATED_VALUE` "this provenance site read a
-AuthenticationTokenSecretManager no decode registered"). Workload option (cheap): the test calls `other.removeKey(keyId)`
-before `retrievePassword` (the key's watch event not yet processed), so refreshKeys and its doors run in the target
-occurrence and one READ fault reaches :160 at depth 0. Engine option: a provenance site on a container field takes the
-versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
+**6. hbase-adhoc-34: done** (NZ3-34 PASS, 2026-10-20). Left open from it: a provenance site on a container field (`allKeys` in `retrievePassword`) still reads its receiver, the manager no decode registered; the fetch was asked through a declared read's receiver (f6e07b3c9). A guard that reads only a container's value, with no field read of the decoded value in its occurrence, would still cross to no fetch: then a container provenance site should take the versions of the values it returns (`Provenance#observe`, `RuntimeSelectedRegionFinalizer#askFetches`).
 
 **7. hbase-adhoc-10's cost.** R17-10: 244 of 281 NOT_ADMITTED are one `FlipQuery#build` refusal ("this query declares no
 variable of its own, and its occurrence read values no row of the corpus wrote") at 29 procedure-framework sites. Measured
