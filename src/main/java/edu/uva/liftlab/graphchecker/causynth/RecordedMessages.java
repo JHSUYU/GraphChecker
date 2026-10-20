@@ -83,10 +83,15 @@ final class RecordedMessages {
     }
 
     Set<String> replyLegsOf(OccurrenceAddress occurrence,
+                            Collection<String> recorded,
                             Map<String, List<String>> readers) {
         Set<String> legs = new LinkedHashSet<>();
         Deque<String> pending = new ArrayDeque<>();
         pending.add(occurrence.id());
+        for (String other : recorded) {
+            OccurrenceAddress at = OccurrenceAddress.parse(other);
+            if (at.standsUnder(occurrence)) pending.add(at.id());
+        }
         while (!pending.isEmpty()) {
             for (String request : sent.getOrDefault(pending.poll(),
                     Collections.<String>emptySet())) {

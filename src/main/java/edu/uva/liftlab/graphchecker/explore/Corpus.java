@@ -204,6 +204,8 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Map<String, RootMintRow>>();
     private final Map<String, OccurrenceAddress> occurrenceById =
             new LinkedHashMap<String, OccurrenceAddress>();
+    private final Map<String, Set<String>> occurrencesByStance =
+            new HashMap<String, Set<String>>();
     private final Map<String, Set<String>> namedBy =
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Seen> seen = new HashMap<String, Seen>();
@@ -1398,6 +1400,13 @@ public final class Corpus implements Arms.Rows {
         Set<String> legs = new LinkedHashSet<String>();
         Deque<String> pending = new ArrayDeque<String>();
         pending.add(occurrence.id());
+        for (String other : occurrencesByStance.getOrDefault(
+                ContextShape.Stance.of(occurrence).render(),
+                Collections.<String>emptySet())) {
+            if (occurrenceById.get(other).standsUnder(occurrence)) {
+                pending.add(other);
+            }
+        }
         while (!pending.isEmpty()) {
             for (String request : sentByOccurrence.getOrDefault(
                     pending.poll(), Collections.<String>emptySet())) {
@@ -1807,6 +1816,9 @@ public final class Corpus implements Arms.Rows {
     private void remember(String sessionId, OccurrenceAddress occurrence) {
         if (occurrence == null) return;
         occurrenceById.put(occurrence.id(), occurrence);
+        occurrencesByStance.computeIfAbsent(
+                ContextShape.Stance.of(occurrence).render(),
+                key -> new LinkedHashSet<String>()).add(occurrence.id());
         if (occurrence.context() instanceof CausalContext.Anchor) {
             readersByEndpoint.computeIfAbsent(((CausalContext.Anchor)
                     occurrence.context()).producerEndpointId(),

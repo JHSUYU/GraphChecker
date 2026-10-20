@@ -1264,8 +1264,11 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
                 served.add(occurrence);
                 Set<String> doors = doorsOf(messages, program, occurrence);
-                doors.addAll(messages.replyLegsOf(
-                        OccurrenceAddress.parse(occurrence), readers));
+                OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
+                doors.addAll(messages.replyLegsOf(address,
+                        program.activationsByStance().getOrDefault(
+                                ContextShape.Stance.of(address).render(),
+                                Collections.<String>emptyList()), readers));
                 for (String door : doors) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
