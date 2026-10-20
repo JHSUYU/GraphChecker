@@ -359,6 +359,9 @@ public class ConfirmMainTest {
                 {reader, Confirmation.id(writer), "STATE "
                         + Confirmation.id(writer) + "@0", Long.MAX_VALUE},
                 {after, Confirmation.storeWriter(0L), "PAIRING_UNHELD", 0L},
+                {after, Confirmation.id(producer), "STATE "
+                        + Confirmation.storeWriter(tombstone) + "@" + tombstone
+                        + " STORE_HOLD " + store.key() + "@" + tombstone, 45L},
         };
         for (Object[] row : rows) {
             Map<String, String> pairings = Collections.singletonMap(

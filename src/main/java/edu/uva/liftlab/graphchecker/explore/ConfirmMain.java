@@ -43,6 +43,7 @@ import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
@@ -1603,7 +1604,8 @@ public final class ConfirmMain {
             String location = SmtLowering.locationKey(held.location());
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             boolean storePaired = held.location().kind() == LocationKind.STORE
-                    && held.version() != read.observedVersion();
+                    && (held.version() != read.observedVersion()
+                    || held.version() == MessageDoors.TOMBSTONE);
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
@@ -1705,7 +1707,8 @@ public final class ConfirmMain {
     private static JsonObject storeHold(Holding holding, ReadRow read,
                                         WriteRow held) {
         String reader = Confirmation.id(read.endpoint());
-        if (!RowOrder.before(read, held)) {
+        if (held.version() != read.observedVersion()
+                && !RowOrder.before(read, held)) {
             throw new Refused("PAIRING_UNHELD: read " + reader + " of "
                     + held.location() + " is held to version "
                     + held.version() + ", which the session wrote before"

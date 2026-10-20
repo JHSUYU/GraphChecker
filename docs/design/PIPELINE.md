@@ -1605,7 +1605,9 @@ from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows t
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
 the flipped world may read it again, CONFIRM's for the read's activation; for a plain STORE read
-paired with a later tombstone of its location (§7.4), one `STORE_HOLD {reader, readerOccurrence,
+held at a tombstone -- paired with a later one of its location (§7.4), or a read of a world that
+took the pairing, which CONFIRM replays from the recording's schedule, where it reads the version
+before (X104-24: two claims refuted, the run read v0) --, one `STORE_HOLD {reader, readerOccurrence,
 location, version}` row: the reader's first `READ` turn of that location in that occurrence
 (`MessageDoors#reading`, before the store's call) waits until this run has written that version
 (`Confirmation#storeReading`), at most the order timeout (300 s), past which the read goes on, the
