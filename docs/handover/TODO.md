@@ -741,6 +741,21 @@ after those calls returned (program order of one thread). CONFIRM refutes each a
 minutes a claim; 4 witness attempts and the final claims of NC7). A model fix states the client thread's program order
 between its synchronous calls (an ORDER no world can reverse is no arm), so such re-pairings are never composed.
 
+**15. A large start starves on a busy pool (platform/ledger; H1, not built: no bug case blocked by it yet).** A stream start
+(`campaign_stream_admit_host`) that no host admits only logs "waiting for room" and retries; nothing reserves room for
+it, so while the shared pool is busy every smaller start of every run is admitted ahead of it, and a large one may never
+fit. Measured on hbase-adhoc-15 NP6-15 (`gc-out/hbase-platform/accept-NP6STOP-15-starved`, hb-int-2, five agents'
+runs on lift02-15): from about 02:28 to its stop at 03:00 (2026-10-20) it sat at EXPLORE round 175 (wave 10) with 133
+obligations and 0 in flight, each obligation solve charged 7917 MB after "its host's solver ended for memory before it
+answered; asked again of a host's solver" (the re-ask at twice its slot); every host refused it (e.g. lift10 26496 MB
+charged / 12156 MB in use, lift04 19584 MB charged + 15488 MB held for a head, against the 22109 MB limit, 70 % of
+31583 MB) while smaller replays of the other runs kept being admitted. The precedent is the head step's hold
+(`campaign_head_hold_room`: a waiting head step writes its need as a `heads/*.hold` on the host with the most room,
+which `campaign_host_head_room` subtracts from every other start there, so that host drains until the step fits; the
+hold goes when it is placed). Extend it to stream starts: a start that waited longer than a bound (minutes), or whose
+need exceeds what any host admits beside the charges standing, holds its need the same way on the host with the most
+room (one hold per run at a time, the largest waiting need), released when it is placed or the run ends.
+
 ## ZooKeeper (`system/zookeeper` = main today)
 
 **1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
