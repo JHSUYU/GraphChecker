@@ -2423,6 +2423,12 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
   declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
+- **TARGET_FATAL_IN_RECORDING.** The frozen region plan's header names the declared occurrence a BLOCKING
+  `TARGET_FATAL_IN_RECORDING` (§9: the recording took the fatal arm there, so no counterfactual is asked of it and
+  no claim can stand): the exploration starts no round and ends at once (`campaign_plan_blocker`), the stop a
+  DIAGNOSTIC row naming the occurrence; COMPOSE then composes the seed's corpus and names the blocker, and EMIT
+  publishes the `RUN_DEFECT` (hbase-adhoc-11 NR5-11: PLAN named it at 14 s, EXPLORE still ran 2 h 4 min before this
+  stop existed).
 - **FIXED_POINT.** Nothing queued, running or unlanded -- a GROW re-run included, whatever its
   world's depth (§7.8) --, no head step running, no round planning, untaken or owed, and the last
   round, over every answer, proposed and exposed nothing.

@@ -3684,6 +3684,13 @@ campaign_obligation_unanswered() {
 
 
 
+campaign_plan_blocker() {
+  [[ -s "$1/concolic_region_plan.jsonl" ]] || return 0
+  head -n 1 "$1/concolic_region_plan.jsonl" | jq -r '[.gaps[]?
+    | select(.cls == "BLOCKING" and .kind == "TARGET_FATAL_IN_RECORDING")
+    | .subject][0] // empty' 2>/dev/null || true
+}
+
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local sessions="${iteration_dir}/sessions"
@@ -3738,6 +3745,15 @@ campaign_explore() {
   trap 'campaign_stream_reap; campaign_planner_stop; campaign_stream_stop_solvers
     campaign_stream_unenroll; campaign_stream_unread_hosts
     campaign_head_unreserve' EXIT
+  local blocked
+  blocked=$(campaign_plan_blocker "${iteration_dir}")
+  if [[ -n "${blocked}" ]]; then
+    stream_stop=TARGET_FATAL_IN_RECORDING
+    stream_stop_detail="PLAN named the declared occurrence ${blocked} \
+TARGET_FATAL_IN_RECORDING (BLOCKING): it throws as recorded, so no \
+counterfactual is asked of it and no claim can stand on this corpus"
+    campaign_log "exploration skipped: ${stream_stop_detail}"
+  fi
 
   while true; do
     if [[ -z "${stream_step_pid}" && -n "${stream_grow_returned}" \
@@ -3762,7 +3778,8 @@ the stages after the exploration are owed $(campaign_reserve)s of it \
       (( stream_dirty == 0 && stream_hold == 0 )) || stream_round_due=true
     fi
     if [[ "${stream_stop}" == WITNESSED \
-        || "${stream_stop}" == CAMPAIGN_BUDGET_REACHED ]]; then
+        || "${stream_stop}" == CAMPAIGN_BUDGET_REACHED \
+        || "${stream_stop}" == TARGET_FATAL_IN_RECORDING ]]; then
       campaign_stream_end
       break
     fi

@@ -2627,6 +2627,24 @@ fq_said=$(
   || fail "FAULT-QUEUE: a fault flip's replay waits behind every other entry, \
 the others in their old order; the queue was '${fq_said}'"
 
+pb_iteration=${test_tmp}/plan-blocker
+mkdir -p "${pb_iteration}"
+pb_said=$(campaign_plan_blocker "${pb_iteration}")
+[[ -z "${pb_said}" ]] || fail "PLAN-BLOCKER: no region plan names no blocker, \
+said '${pb_said}'"
+for pb_cls in DIAGNOSTIC BLOCKING; do
+  printf '%s\n%s\n' "{\"kind\":\"PLAN\",\"gaps\":[{\"cls\":\"BLOCKING\",\
+\"kind\":\"AMBIGUOUS_FATAL_ARM\",\"subject\":\"x\"},{\"cls\":\"${pb_cls}\",\
+\"kind\":\"TARGET_FATAL_IN_RECORDING\",\"subject\":\"auto0/m#epoch0/region/R#1\"}]}" \
+    '{"regionId":"R"}' >"${pb_iteration}/concolic_region_plan.jsonl"
+  pb_said=$(campaign_plan_blocker "${pb_iteration}")
+  pb_want=""
+  [[ "${pb_cls}" == DIAGNOSTIC ]] || pb_want=auto0/m#epoch0/region/R#1
+  [[ "${pb_said}" == "${pb_want}" ]] || fail "PLAN-BLOCKER: a ${pb_cls} \
+TARGET_FATAL_IN_RECORDING in the region plan's header names '${pb_want}', \
+said '${pb_said}'"
+done
+
 dw_iteration=${test_tmp}/duplicate-world
 mkdir -p "${dw_iteration}/obligations-0003/OB.d" \
   "${dw_iteration}/obligations-0002/OB.a" "${dw_iteration}/obligations-0002/OB.b" \
