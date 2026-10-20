@@ -3804,7 +3804,18 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   solr-bugs-snapshot-no-active: 178 of its 179 rows were joins, most ordering
   `ZkStateReader.collectionWatches`' writers and readers; natively a `waitForState` took its fast path and registered no watcher, or
   another watch notification decoded the state, and the first row waiting for an activation that
-  never came released every hold, 0/10); CONFIRM still holds and compares them. A read the model
+  never came released every hold, 0/10); CONFIRM still holds and compares them. Nor is a row
+  either of whose ends stands in a turn-counted root (`RealizedOrder#turnCounted`: a `Root:` of any
+  role but CLIENT, as for the realized order below) other than the anchor's context or one a ROOT
+  row is minted in: that context is the confirmed run's timing, which a native run numbers on its
+  own (hbase-adhoc-04 repro-NR2-04: the VM's slow meta update suspended a CreateTableProcedure step,
+  which resumed under `Root:WAKE/AbstractProcedureScheduler.poll#5` and wrote the shared table-state
+  map; no native run ever ran a step under a poll WAKE, so that write's exit never came and 10 of 10
+  runs that took the fatal at the anchor with the root planted reproduced nothing); `plant.log` names
+  each such row and its context ("REPRODUCE leaves out ORDER"), the summary and `reproduce.json`
+  count them (`turnOrders`): a native reproduction did not enforce them, CONFIRM did. A checked row
+  (`check: true`, §10) is tested at its later end's activation entry, the frame a hold would use,
+  which comes no later than the event it orders, so a check can only under-count reproductions. A read the model
   chose at is one whose writer it chose, or one at a location it chose at
   (`ConfirmMain.Witness#chosenAt`): a writer arm binds every read of its location though its
   interactions name the first, and a selected observed arm (`observed_arm__`, group
@@ -3974,11 +3985,11 @@ timing, the evidence a reproduction's rate is read against (a plant whose rows h
 chain, a CLOCK root alone or a VIEW_HOLD alone, reproduces as often as the workload throws by
 itself), and never a gate. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
 planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, checked,
-checkedObserved, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
+checkedObserved, turnOrders, reason, control: {runs, fatal, atAnchor, reason}}` -- runs that applied the whole plant, took the fatal arm, took it at the
 anchor (planted or not), reproduced, could not hold an ORDER in time (of them, one whose
 before-event came late, one whose before-event never came; a checked ORDER not observed in order
 counts here), still held one when they ended, the plant's checked ORDER rows and the runs that
-observed every one in order, the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
+observed every one in order, the plant's rows left out as turn-counted (`turnOrders`), the runs that stated no answer as `reason`, and the control's runs, fatal, at the anchor and its runs
 that stated no answer; the log
 states "reproduced in k of N ...; control k' of N". REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
 and the realized order only makes a native run faithful to the world CONFIRM saw. The share of runs

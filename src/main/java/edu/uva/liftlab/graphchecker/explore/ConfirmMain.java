@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -214,6 +215,8 @@ public final class ConfirmMain {
         final Set<OccurrenceAddress> cone =
                 new LinkedHashSet<OccurrenceAddress>();
         final Set<String> history = new LinkedHashSet<String>();
+        final Map<String, OccurrenceAddress[]> orderEnds =
+                new HashMap<String, OccurrenceAddress[]>();
         final Set<String> chosenAt = new LinkedHashSet<String>();
         final List<String> repaired = new ArrayList<String>();
 
@@ -338,6 +341,8 @@ public final class ConfirmMain {
             cone.addAll(pairings.cone);
             history.addAll(state.history());
             history.removeAll(pairings.orders);
+            orderEnds.putAll(state.ends);
+            orderEnds.putAll(pairings.ends);
             heldOnce(edges);
             edges.addAll(markerEdges(manifest, planted.assignments));
             JsonObject anchorRow = new JsonObject();
@@ -409,6 +414,17 @@ public final class ConfirmMain {
         }
         Set<String> orders = new LinkedHashSet<String>();
         int placeholders = 0;
+        Set<String> stable = new HashSet<String>();
+        stable.add(RealizedOrder.scope(witness.anchor));
+        for (String rootId : world.assignments.keySet()) {
+            OccurrenceAddress at = mintOf(world, rootId);
+            if (at != null) stable.add(RealizedOrder.scope(at));
+        }
+        for (String rootId : world.clockDeltas.keySet()) {
+            OccurrenceAddress at = mintOf(world, rootId);
+            if (at != null) stable.add(RealizedOrder.scope(at));
+        }
+        int turnOrders = 0;
         for (JsonObject edge : witness.edges(iteration, world)) {
             String kind = optionalString(edge, "kind");
             if ("STATE".equals(kind) && edge.has("mint")
@@ -417,6 +433,19 @@ public final class ConfirmMain {
             }
             String order = optionalString(edge, "before") + "\n"
                     + optionalString(edge, "after");
+            String turned = RecordingPlant.ORDER.equals(kind)
+                    ? turnEnd(witness.orderEnds.get(order), stable) : "";
+            if (!turned.isEmpty()) {
+                if (!witness.history.contains(order)) {
+                    turnOrders++;
+                    System.err.println("REPRODUCE leaves out ORDER "
+                            + order.replace('\n', ' ') + ": its end stands"
+                            + " in " + turned + ", a turn-counted root"
+                            + " neither the anchor nor a root of the plant"
+                            + " is minted in");
+                }
+                continue;
+            }
             if (RecordingPlant.ORDER.equals(kind)
                     && !witness.history.contains(order) && orders.add(order)
                     || RecordingPlant.VIEW_HOLD.equals(kind)
@@ -486,11 +515,24 @@ public final class ConfirmMain {
         summary.addProperty("answers", world.answers.size());
         summary.addProperty("orders", orders.size());
         summary.addProperty("checkedOrders", checkedOrders(rows));
+        summary.addProperty("turnOrders", turnOrders);
         summary.addProperty("realizedOrders", realized.size());
         summary.addProperty("clockReadings", context - planted);
         summary.addProperty("fatalArms", rows.size() - context);
         summary.addProperty("placeholderPairings", placeholders);
         return summary;
+    }
+
+    private static String turnEnd(OccurrenceAddress[] ends,
+                                  Set<String> stable) {
+        for (OccurrenceAddress end : ends == null ? new OccurrenceAddress[0]
+                : ends) {
+            String scope = RealizedOrder.scope(end);
+            if (RealizedOrder.turnCounted(scope) && !stable.contains(scope)) {
+                return scope;
+            }
+        }
+        return "";
     }
 
     private static int checkedOrders(List<JsonObject> edges) {
@@ -1027,6 +1069,8 @@ public final class ConfirmMain {
             Hold hold = held(first, then, thenSeq);
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
+            holding.ends.put(order, new OccurrenceAddress[] {
+                    first.occurrence, hold.occurrence});
             if (hold.checked) holding.checked.add(order);
             holding.cone.add(first.occurrence);
             holding.cone.add(hold.occurrence);
@@ -1286,6 +1330,8 @@ public final class ConfirmMain {
                 new LinkedHashSet<OccurrenceAddress>();
         private final Set<String> orders = new LinkedHashSet<String>();
         private final Set<String> checked = new LinkedHashSet<String>();
+        private final Map<String, OccurrenceAddress[]> ends =
+                new HashMap<String, OccurrenceAddress[]>();
         private final Set<String> chosenOrders = new LinkedHashSet<String>();
 
         private void order(String order, boolean chosen) {

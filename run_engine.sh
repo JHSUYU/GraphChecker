@@ -6709,7 +6709,7 @@ campaign_reproduce() {
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
   local charge
   local confirmed
-  local control="" checked=0
+  local control="" checked=0 turn_orders=0
   local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
@@ -6739,7 +6739,7 @@ campaign_reproduce() {
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
       runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
       unheldLate: 0, unheldMissing: 0, holding: 0, checked: 0,
-      checkedObserved: 0, reason: $reason,
+      checkedObserved: 0, turnOrders: 0, reason: $reason,
       control: {runs: 0, fatal: 0, atAnchor: 0, reason: ""}}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
@@ -6784,10 +6784,12 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
           else "" end)}')
   checked=$(jq -s '[.[] | select(.kind == "ORDER" and .check == true)]
     | length' "${dir}/plant.jsonl")
+  turn_orders=$(grep -c '^REPRODUCE leaves out ORDER ' "${dir}/plant.log" \
+    || true)
   find "${dir}" -mindepth 2 -maxdepth 2 -name answer.json -print0 \
     | xargs -0 -r cat \
     | jq -s --argjson runs "${reproduce_runs}" --argjson control "${control}" \
-      --argjson checked "${checked}" '
+      --argjson checked "${checked}" --argjson turns "${turn_orders:-0}" '
       {schemaVersion: 1, kind: "REPRODUCTION", runs: $runs,
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
@@ -6802,11 +6804,12 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
        checked: $checked,
        checkedObserved: map(select($checked > 0
          and .ordersObserved == $checked)) | length,
+       turnOrders: $turns,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end),
        control: $control}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding; \(.checked) order(s) checked, not held, observed in order in \(.checkedObserved) run(s)); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.fatal) fatal)"' \
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding; \(.checked) order(s) checked, not held, observed in order in \(.checkedObserved) run(s); \(.turnOrders) order(s) of turn-counted roots not planted, plant.log names them); control \(.control.atAnchor) of \(.control.runs): the fatal at the anchor with nothing the model chose planted (\(.control.fatal) fatal)"' \
     "${campaign_final}/reproduce.json"
 }
 
