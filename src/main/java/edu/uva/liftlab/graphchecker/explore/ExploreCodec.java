@@ -157,7 +157,9 @@ public final class ExploreCodec {
     public static Corpus.World readWorld(JsonObject json) {
         List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
         JsonObject own = object(json, "flip");
-        if (own.has("siteId")) flips.add(readFlip(own, json));
+        if (own.has("siteId") && !optionalBool(json, RERUN, false)) {
+            flips.add(readFlip(own, json));
+        }
         for (JsonElement element : array(json, "inheritedFlips")) {
             if (!element.isJsonObject()) continue;
             JsonObject flip = element.getAsJsonObject();
