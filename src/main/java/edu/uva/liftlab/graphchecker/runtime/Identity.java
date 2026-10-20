@@ -108,7 +108,9 @@ public final class Identity {
         private void openStart(Start start, boolean own, boolean ranHere,
                                ClaimKind kind) {
             boolean consumed = !own && !ranHere;
-            if (consumed) serves();
+            if (consumed && start.thread.get() != Thread.currentThread()) {
+                serves();
+            }
             Claim held = starts.peek();
             if (held != null && held.scope == claimScope()
                     && onlyStartsFrom(held.depth)) {
@@ -464,13 +466,18 @@ public final class Identity {
             return;
         }
         boolean ranHere = !own && !continuation && start.ranHere(state);
-        state.openStart(start, own, ranHere, item ? ClaimKind.ITEM
+        ClaimKind kind = item ? ClaimKind.ITEM
                 : start.handoff && !ranHere ? ClaimKind.HANDOFF_TASK
-                : ClaimKind.QUEUED_TASK);
+                : ClaimKind.QUEUED_TASK;
+        state.openStart(start, own, ranHere, kind);
         if (continuation) state.standApart();
         state.starter = start.starter;
         state.adopted = true;
         RuntimeTraceContext.claimCarried(carrier);
+        if (!own && kind == ClaimKind.HANDOFF_TASK
+                && Confirmation.ordering()) {
+            Confirmation.entering(Confirmation.claim(start.key));
+        }
         ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
                 start.frame().callSite());
     }

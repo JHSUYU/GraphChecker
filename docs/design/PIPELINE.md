@@ -3652,9 +3652,50 @@ with it is a `RUN_DEFECT`.
   hold realizes is held as before; a task its executor handed to a worker of its own (`HANDOFF_TASK`, a `ThreadPoolExecutor`
   on a `SynchronousQueue`: Solr's Overseer command Runners) holds nothing of its executor's queue
   behind it and is held where it runs, unless the session's manifest names it in `servingTasks`
-  (it took work another thread started on its thread, any queue item no named start filed among
-  it: a ConcurrentUpdate client's Runner polling
-  its update queue). Held in place, such a task holds what it holds at the hold: an Overseer
+  (it took work another thread started on its thread, or work of an unknown or ended starter, any
+  queue item no named start filed among it: a ConcurrentUpdate client's Runner polling
+  its update queue; never for work it filed and claims itself, an inline continuation of its own:
+  `Identity.State#openStart`, so an HBase procedure step is held on its worker, hbase-adhoc-22's
+  deletion's release among them). Such a claimed hand-off is held at its claim's entry, not at
+  the last activation before the event, unless the order's earlier end runs inside the held claim
+  itself: its occurrence's `threadKey` is the claim's (another occurrence of the same step) or
+  extends it (a claim nested in it on that thread: a continuation or a hand-off the step filed and
+  ran inline), or names no activation row -- held at the entry it would wait on itself
+  (`StateClosure#inside`; H3's review); then it is held before its event as any other activation is.
+  Nor where the claim, in its program order, finishes the earlier end of another order before the
+  event (an activation of the claim whose last event comes before it, `ConfirmMain#prefixed`,
+  `StateClosure#untangle`): held at the entry, the claim would delay what another order waits on,
+  and any chain of waits back to it -- through its own earlier end's claim or a third claim -- is
+  a deadlock (NC9-22's final claim: the creation's step entry-held until the release exits while
+  the deletion's step is entry-held until the creation's read exits); such an order returns to the
+  hold before its event, the old hold point, so the demotion costs no soundness.
+  The rule is structural, never the recording's order: a CONFIRM order is often the recording
+  reversed (hbase-adhoc-22's release, recorded before the creation's read, held after it). Held at
+  the entry, the ORDER row's `after` is the claim's name
+  (`Confirmation#claim`: `CLAIM ` and the row's `threadKey` start key, its context named as
+  activations are, a WAKE turn or a delivery's count left out), which `Identity#adopt` enters as it
+  opens the claim, before the claimed work runs and before its `CLAIM` schedule event is observed,
+  so no realized order runs other events ahead of the held work (an HBase step: `CausynthStep.run` in
+  `ProcedureExecutor$WorkerThread#runProcedure`, before `executeProcedure` takes the procedure's
+  scheduler locks, `acquireLock`, and before `beforeExec`, where a TransitRegionStateProcedure takes
+  its RegionStateNode lock, which the admin move/unassign's `preTransitCheck` and every region
+  state report also take: held at the last activation before its write, a TRSP step would sit on
+  that lock while its earlier end waited for it, an order not held in time). The hold is stronger
+  than the order asks -- everything the claimed work does waits, not only its event -- and still
+  realizes it: the event cannot run before the claim's entry. It deadlocks only where the earlier
+  end needs something the held work does before its event; what a step does before its event is
+  its own: its scheduler locks (taken after the entry, so not held while held), its procedure's
+  execution lock (`IdLock` by procedure id, taken in `runProcedure` before the step and never by
+  another procedure's work), its own state reads and writes, and the RPCs and child procedures it
+  starts, which run only once the step runs; another procedure's step or an RPC handler waits on
+  none of these. Held at the last activation before its event instead, a step sits on whatever it
+  holds there: NC9-22 held the deletion's release inside `synchronized
+  NamespaceStateManager#removeTable`, the creation's `synchronized
+  checkAndUpdateNamespaceTableCount` blocked on that monitor, and the order timed out (300 s). The case where one would: an earlier end that is the effect of this step's own
+  prefix and that the step then waits for synchronously -- a step's hbase:meta write through the
+  client, awaited with `FutureUtils#get`, whose region server handler's write were the earlier end;
+  meta cells are no tracked location (TODO HBase 9), so no STATE pairing and no order names such a
+  write today. Held in place, such a task holds what it holds at the hold: an Overseer
   command its `LockTree` lock (a command of an overlapping lock ordered before it stays parked by
   the processor) and its pool's room (an `AbortPolicy` pool past its maximum rejects the next
   submission); both end at the order's timeout, an order not held in time; every other

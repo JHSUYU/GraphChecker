@@ -11,6 +11,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import org.junit.Before;
 import org.junit.Test;
@@ -221,6 +224,57 @@ public class IdentityTest {
             assertEquals(said, true, said.startsWith((String) row[1])
                     && said.endsWith("@0"));
         }
+    }
+
+    @Test
+    @FreshStatics.Rows(4)
+    public void aHandOffServesOnlyWorkAnotherThreadStarted() throws Exception {
+        String step = "<a.Step: void run()>#u23";
+        Object[][] table = {
+                {"its own inline continuation", false},
+                {"a task another thread filed", true},
+                {"a task a thread that ended filed", true},
+                {"an item no start filed", true},
+        };
+        int row = FreshStatics.row();
+        Object source = new Object();
+        RuntimeTraceContext.registerSource(source, DN);
+        long request = RuntimeTraceContext.beginRequest(source, "test");
+        Object handOff = new Object();
+        Identity.startWork(step, handOff, new ThreadPoolExecutor(0, 1, 1L,
+                TimeUnit.SECONDS, new SynchronousQueue<Runnable>()));
+        Object task = new Object();
+        if (row == 1) Identity.startWork("<a.Pool: void submit()>#u4", task,
+                null);
+        if (row == 2) {
+            on(() -> {
+                long ended = RuntimeTraceContext.beginRequest(source, "test");
+                Identity.startWork("<a.Pool: void submit()>#u4", task, null);
+                RuntimeTraceContext.endRequest(ended);
+            });
+        }
+        RuntimeTraceContext.endRequest(request);
+        on(() -> {
+            long claim = Identity.claimStart(handOff);
+            if (row == 0) {
+                BiConsumer<Object, Object> carried = Continuations.carry(
+                        (value, error) -> {
+                        });
+                Identity.startWork("<a.Step: void write()>#u3", carried,
+                        null);
+                carried.accept(null, null);
+            } else if (row == 3) {
+                Identity.claimItem(task);
+            } else {
+                Identity.endClaim(Identity.claimStart(task));
+            }
+            Identity.endClaim(claim);
+        });
+        boolean serving = false;
+        for (String start : Identity.servingTasks()) {
+            serving |= start.contains(step);
+        }
+        assertEquals((String) table[row][0], table[row][1], serving);
     }
 
     private static String opened(String region) {

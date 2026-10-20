@@ -92,6 +92,10 @@ EXPECTED_MECHANISM = {
         "kinds": ("MARKER_FLIPPED",),
         "fault": ("org.apache.hadoop.hbase.ipc.AbstractRpcClient",),
         "clocks": False},
+    "hbase-adhoc-34": {
+        "kinds": ("MARKER_FLIPPED",),
+        "fault": ("org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper",),
+        "clocks": False},
 }
 for _case, _rule in EXPECTED_MECHANISM.items():
     if not isinstance(_rule.get("fault", ()), tuple):
