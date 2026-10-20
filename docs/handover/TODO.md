@@ -828,8 +828,9 @@ volatile that saw write W excludes every version its location had before the las
 (the JMM's synchronizes-with); or exclude a refuted pairing by its reader site and slot across paths. Also from NZ2-mat
 (H5's probe, `analysis/hbase-2026-10-20/reask/probe-mat/`): 301 message arms bound the hand-off leaf (the initiating
 active time) to other sessions' recorded constants, 15 of 16 above the seed's T1 because those sessions ran up to an hour
-later in wall time -- worked around by a run-relative clock (STATUS "tree: run-relative clock"); the general fix is a
-leaf a clock carries taking its producer session's clock value relative to that session's own timeline.
+later in wall time -- worked around for #11 by a configured skew in place of the clock (STATUS "tree: master-active-time's configured
+skew"); the general fix is a leaf a clock carries taking its producer session's clock value relative to that session's
+own timeline.
 
 ## ZooKeeper (`system/zookeeper` = main today)
 

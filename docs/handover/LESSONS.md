@@ -221,7 +221,12 @@ guard had no term, nothing was demanded), and with `&&` the second comparison ne
 fails; keep a guard one comparison of tracked values. And INITIAL is an alternative only where every write between it and
 the observed version is concurrent with the reader (`Arms#eligible`): master1's check in an RPC handler could pair with
 INITIAL, master0's export on a procedure worker the activation itself started could not (its writer is an ancestor), so
-a workaround for an impossible INITIAL pairing has to change what INITIAL holds on the reading side only.
+a workaround for an impossible INITIAL pairing has to change what INITIAL holds on the reading side only. Last: a
+run-relative clock (`base + now - the JVM's start`) does not make sessions' times comparable in a composed formula: the
+clock cell stays one symbol shared by all sessions, but each session's origin enters as its own constant, so an arm of a
+session whose JVM started earlier delivers a time that passes for later (NZ6-mat: origins 347 s apart satisfied the
+check with nothing moved). The owner's ruling then: work the case around directly -- the active time a run constant plus
+a configured skew, one CONFIG root the engine moves (STATUS "tree: master-active-time's configured skew").
 
 **Read the chain of a SAT before trusting it.** HC14's ns-rsgroup claims rode a CreateTable retry fault and the
 startup worker, not the namespace check; the check itself compares an untracked `String` over a `TreeMap`, which no
