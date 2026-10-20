@@ -253,6 +253,13 @@ woven but never asked, and the seed's log line counts them (`data-flow doors: N 
 M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
 occurrence(s), K admitted only as such`).
 
+A control producer (`CONTROL_PRODUCER_V1`, run paused but for its doors) is admitted where it read
+a fault: a door of the message that started a demanded occurrence, and a reply leg of a request it
+sent (`RecordedMessages#replyLegsOf`), the reply's readers and, in turn, what they sent. A request
+sent by a recorded occurrence standing under the demanded one counts as its own: same node and
+context, the demanded occurrence's index a proper prefix of its index (`OccurrenceAddress#standsUnder`),
+such as a continuation it registered. EXPLORE applies the same rule (§7.2).
+
 ## 4. INSTRUMENT
 
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
@@ -911,7 +918,23 @@ are counted, never dropped silently: `concreteAnchors` states how many
   asynchronous one on its event loop, whose callbacks send the next request of the chain
   (HBase's `RpcConnection#finishCall`; Solr's `Http2SolrClient` listener;
   hbase-bugs-backup-lock-reply-lost: the lock's checkAndMutate goes out of the reply to its location
-  lookup, and its own reply's door is the bug's fault). Its own turn's earlier doors too: every
+  lookup, and its own reply's door is the bug's fault).
+  - A request counts as the demanded occurrence's own when it is sent by a recorded occurrence
+    standing under it (`OccurrenceAddress#standsUnder`): the same node and causal context, the
+    demanded occurrence's index a proper prefix of its index by frames. This is the work it
+    registered or started that stands apart from it, chiefly a `CompletableFuture` continuation
+    (IDENTITY §6), which never folds into the registrant's occurrence. PLAN takes these from the
+    recorded activations of the occurrence's stance (`RecordedMessages#replyLegsOf`), EXPLORE from
+    the corpus's occurrences of it (`Corpus#replyLegsOf`). A leg is still admitted only where it
+    decided a fault.
+  - Why: since continuations stood apart (0e146608a), the backup lock's checkAndMutate was sent by
+    `AsyncSingleRequestRpcRetryingCaller#doCall`'s `addListener` continuation from a callMethod
+    occurrence of its own at the registrant's address. PLAN planned the target alone, and the case
+    fell from PASS to UNSAT_CLOSED (X214/X216-bak; the bisect is TODO HBase 11).
+  - Measured on PLAN (planned tasks, before and after, IMPORT-only runs): backup-lock-reply-lost
+    1 to 3, ns-rsgroup-removal 15 to 26, hbase-adhoc-04 61 to 69, hbase-adhoc-10 299 to 340,
+    hbase-adhoc-22 123 to 115 (recording variance).
+  Its own turn's earlier doors too: every
   occurrence standing where it stands (its node and causal context: the turn the message that
   started it began) that ran before it -- PLAN by the recording's root calls (an occurrence's first
   before the demanded one's last), EXPLORE by the rows of the first session that ran both
