@@ -214,6 +214,61 @@ public class WeaveTest {
         }
     }
 
+    @Test
+    public void aDrawOnTheMethodsOwnSeededRandomStaysTheProgramsOwn() {
+        String random = "java.util.Random";
+        String seeded = " specialinvoke r2.<" + random + ": void <init>(long)>"
+                + "(l3);";
+        String xor = " l3 = l0 ^ 3007405056L;";
+        Object[][] rows = {
+            {"own", xor + seeded, "", true},
+            {"copied", xor + seeded + " r4 = r2;", "r4", true},
+            {"clock", " l3 = staticinvoke <java.lang.System: long nanoTime()>();"
+                    + seeded, "", false},
+            {"unseeded", " specialinvoke r2.<" + random + ": void <init>()>();",
+                    "", false},
+            {"stored", xor + seeded + " <a.Draws: " + random + " held> = r2;",
+                    "", false},
+            {"passed", xor + seeded + " staticinvoke <a.Draws: void use("
+                    + random + ")>(r2);", "", false},
+        };
+        StringBuilder methods = new StringBuilder();
+        for (Object[] row : rows) {
+            String drawer = ((String) row[2]).isEmpty() ? "r2" : (String) row[2];
+            methods.append(" public static void ").append(row[0])
+                    .append("(long, byte[]) { long l0, l3; byte[] r1; ")
+                    .append(random).append(" r2, r4; l0 := @parameter0: long;")
+                    .append(" r1 := @parameter1: byte[]; r2 = new ")
+                    .append(random).append(";").append(row[1])
+                    .append(" virtualinvoke ").append(drawer).append(".<")
+                    .append(random).append(": void nextBytes(byte[])>(r1);")
+                    .append(" return; }");
+        }
+        JimpleScene.load(JimpleScene.OBJECT, "public class " + random
+                + " extends java.lang.Object { }",
+                "application public class a.Draws { static " + random
+                + " held; public static void use(" + random + ") { " + random
+                + " r0; r0 := @parameter0: " + random + "; return; }"
+                + methods + " }");
+        for (Object[] row : rows) {
+            Body body = JimpleScene.method("<a.Draws: void " + row[0]
+                    + "(long,byte[])>").getActiveBody();
+            CausynthPipeline.tagOriginalUnits(
+                    CausynthPipeline.snapshotUnits(body));
+            Stmt draw = null;
+            for (Unit unit : body.getUnits()) {
+                if ("nextBytes".equals(callee(unit))) draw = (Stmt) unit;
+            }
+            Value drawer = ((soot.jimple.InstanceInvokeExpr)
+                    draw.getInvokeExpr()).getBase();
+            CausynthPipeline.replaceRandom(body, draw,
+                    "<a.Draws: void " + row[0] + "()>#u9");
+            assertEquals((String) row[0], row[3], drawer
+                    == ((soot.jimple.InstanceInvokeExpr) draw.getInvokeExpr())
+                    .getBase());
+        }
+    }
+
     private static InvokeExpr startWorkBefore(Body body, Stmt start) {
         List<Unit> units = new ArrayList<>(body.getUnits());
         for (int at = units.indexOf(start) - 1; at >= 0; at--) {
