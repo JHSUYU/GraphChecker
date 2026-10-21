@@ -238,7 +238,18 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-11: vacuous UNSAT by construction (ZC7-11, IO rule): the epoch files and the replayed log are file state no
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
-- zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+- zk-adhoc-01: target client1's `create` at the leader, the window's second `checkSession` (`auto0/peer2#epoch0`, Prep
+  `#2`). The first, client0's forwarded create, comes before any expirer turn in the window: client0's session was made
+  before the window, and the leader does not touch a follower's session. client1's create is touched in
+  `submitRequestNow` (a clock root); the expirer's turn comes next (`getWaitTime`, a clock root), then Prep's
+  `checkSession`. The expiry deadline enters the guard as follows: the interval is `NEVER_MS` and the session sits
+  in the bucket two intervals on. A jump of at least 12 h at that turn makes `waitTime <= 0`. `poll` takes the
+  empty first bucket, the loop's next turn takes client1's bucket, `setSessionClosing` runs, and `checkSession`
+  throws. A session that closes before the touch drops the request (`MissingSessionException`), so no check runs.
+  The clock domain is 30 days ahead of each reading (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h.
+- zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
+  chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
+  `poll`'s read and the extra turn's read are cells that only the arm reaches.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
