@@ -12,7 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * write and answers the compare -- `old == expected`, true where it
  * succeeded -- over the value it compared (an identity, for
  * AtomicReference), as the result of the call: a branch on it decides it,
- * and nothing is added to the path.  An AtomicReference set to a container states the
+ * and nothing is added to the path.  A concrete expected value is the word
+ * the caller passed, so a CAS that lost answers false at the values it ran
+ * under, never `old == old`.  An AtomicReference set to a container states the
  * container's state at the store (referentState), whichever path stored it;
  * updateAndGet runs its lambda interpreted and the CAS publishes the
  * result.</p>
@@ -54,8 +56,8 @@ public final class RegionAtomicCarrierSmoke {
         sink.second = closed.compareAndSet(true, false);
         boolean first = sink.first;
         boolean second = sink.second;
-        String answers = answer(sink, "first", first)
-                + answer(sink, "second", second);
+        String lost = answer(sink, "second", second);
+        String answers = answer(sink, "first", first) + lost;
         int after = conditions();
         sink.flag = closed.get();
         String flag = System.getSharedFieldVersions(closed,
@@ -94,6 +96,9 @@ public final class RegionAtomicCarrierSmoke {
                 "AtomicBoolean's set and CAS are not versions: " + flag);
         require(count(answers, "\"_op\":\"==\"") >= 2 && after == before,
                 "the CAS answers are not their results: " + answers);
+        require(lost.contains("\"_exp\":\"Y_I_1\""),
+                "the failed CAS compared another word than its expected"
+                        + " value (true; it read false): " + lost);
         require(identity.contains("\"_op\":\"==\"")
                         && identity.contains("\"_type\":\"ReadFromExpression\""),
                 "AtomicReference's CAS compared no read of its value: "

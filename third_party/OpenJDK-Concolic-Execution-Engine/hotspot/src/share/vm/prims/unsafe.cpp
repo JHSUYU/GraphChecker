@@ -1261,6 +1261,7 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapObject(JNIEnv *env, jobject unsafe, 
 #ifdef ENABLE_CONCOLIC
   UnsafeAccess::end_cas(&concolic_access, success,
                         SharedFieldVersions::boxed_word(res), res,
+                        SharedFieldVersions::boxed_word(e), e,
                         SharedFieldVersions::boxed_word(x), x);
 #endif
   return success;
@@ -1276,6 +1277,7 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapInt(JNIEnv *env, jobject unsafe, job
   // The word the compare read decides it, success or not: never a re-read.
   UnsafeAccess::end_cas(&concolic_access, witnessed == e,
                         UnsafeAccess::word(witnessed), NULL,
+                        UnsafeAccess::word(e), NULL,
                         UnsafeAccess::word(x), NULL);
   return witnessed == e;
 #else
@@ -1293,6 +1295,7 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapLong(JNIEnv *env, jobject unsafe, jo
   const jlong witnessed = (jlong) Atomic::cmpxchg(x, addr, e);
   UnsafeAccess::end_cas(&concolic_access, witnessed == e,
                         UnsafeAccess::word(witnessed), NULL,
+                        UnsafeAccess::word(e), NULL,
                         UnsafeAccess::word(x), NULL);
   return witnessed == e;
 #else
@@ -1305,6 +1308,7 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapLong(JNIEnv *env, jobject unsafe, jo
     const jlong witnessed = (jlong) Atomic::cmpxchg(x, addr, e);
     UnsafeAccess::end_cas(&concolic_access, witnessed == e,
                           UnsafeAccess::word(witnessed), NULL,
+                          UnsafeAccess::word(e), NULL,
                           UnsafeAccess::word(x), NULL);
     return witnessed == e;
 #else
@@ -1318,7 +1322,8 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapLong(JNIEnv *env, jobject unsafe, jo
     if (val == e) { Atomic::store(x, addr); success = true; }
 #ifdef ENABLE_CONCOLIC
     UnsafeAccess::end_cas(&concolic_access, success, UnsafeAccess::word(val),
-                          NULL, UnsafeAccess::word(x), NULL);
+                          NULL, UnsafeAccess::word(e), NULL,
+                          UnsafeAccess::word(x), NULL);
 #endif
     return success;
   }
