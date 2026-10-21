@@ -1,57 +1,119 @@
-<!-- Moved into the repo at the 2026-10-05 handover from /bigtemp/vnr3ne/analysis/study-2026-10-04/SELECTION.md (investigator tables of 2026-10-04, read against our trees). Ids never move. Live status per check: docs/checks/README.md and docs/handover/STATE.md. -->
-# Narrowed selection (owner ruling 2026-10-04 late morning)
+# The ad hoc check selection: the final table (owner 2026-10-21)
 
-Owner: per system a SUBSET of the earlier study.txt points -- HDFS 38 points / 36 checked, Solr 21 / 13, HBase 30 /
-17, ZooKeeper unchanged (13 / 10). Chosen for: GraphChecker adapts to and covers them, they interact with the control
-plane, and a checked point has a high-quality cluster unit test (self-written only for a high-quality bug without
-one). Every known bug (named cases, bug_study admissions) stays a check, and every study point a known bug sits on is
-kept. One point may carry several checks (several cluster tests or bug paths): more checks than points is good.
-Numbering stays the study numbering (hdfs-adhoc-NN, solr-adhoc-NN, ...): ids never move.
+This is the one table every branch shares (owner 2026-10-21: "删除所有的旧的文档里数据，全局分支通用的就是这个最终的表"). It
+replaces the narrowed selection of 2026-10-04 and its counts. Ids are study.txt's (hdfs-adhoc-NN, solr-adhoc-NN,
+hbase-adhoc-NN, zk-adhoc-NN), each marked at its throw by `@CausynthExceptionTarget("<id>")`.
 
-## HDFS: 38 points, 36 checked (+ 10 named bug checks)
+| system | heuristic YES points (study.txt) | selected ad hoc check points | with an integration test we run | causym executions |
+| --- | ---: | ---: | ---: | ---: |
+| HDFS | 53 | 38 | 36 | 46 |
+| Solr | 40 | 20 | 13 | 20 |
+| HBase | 38 | 24 | 19 | 22 |
+| ZooKeeper | 13 | 18 | 16 | 16 |
+| **total** | **144** | **100** | **84** | **104** |
 
-Checked (36): 05, 06, 07, 08, 09, 10, 11, 12, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-33, 34, 35, 37, 38, 39, 40, 45, 48, 49, 50, 52.
-Swapped (owner 2026-10-05, "32直接换成05吧"): 32 out, 05 in. 32's removal of the block pool from
-`bpByBlockPoolId` runs in the exiting actor thread, which started before the window (unnamed work), so no explored
-world can reach the throw; the startup window (rounds HG8W) diverged in cluster start-up. 05 (the QJM output stream's
-buffer flush, NN->JN, `TestQuorumJournalManager#testSingleWriter`) is the first alternate of the swap rule: UNSAT at
-its fixed point in round HG8W.
-Swapped (owner 2026-10-05, "可以把个别特别challenging的换成我们能处理的"): 01, 17, 43 out; 06, 38, 45 in. Their seed
-replays never reached the target, with or without the time model (01: client polling and IBR waits, 30-61 give-ups;
-17: every DataNode's first heartbeat not due after the NameNode restart, 18-122; 43: the truncate's recovery waits, 96).
-06 (the flushed buffer's backing array, QJM), 38 (append to a LAZY_PERSIST file) and 45 (endCurrentLogSegment with
-no open segment) are the swap rule's alternates; each reached its target and closed UNSAT at its fixed point (SW1).
-- QJM writer/journal epochs 07-10; block-token keys 11, 12, 14 (11 carries hdfs-17897, 17899-bug1/2/3, 17967-pathA/B/C,
-  11741); NN block state vs commit 15, 16; NN commands and HA txid at the DN 19, 20; NN/DN version handshake 21; DN
-  storage vs NN namespace at registration, upgrade and rollback 22-27, 34, 35, 37; block recovery vs block-pool
-  shutdown 28-31; hot swap 33; QJM output stream 05, 06; append vs IBR 39, 40; rename / snapshots 48-50,
-  52 (52 carries hdfs-17960); append policy 38; edit-log segment state 45.
-Points without a check (2): 13 (4-argument token password check: no cluster test), 18 (PROVIDED storage injection:
-no hadoop-hdfs cluster test reaches it inside the window).
-Dropped (15): 01, 17, 43 (swapped out: start-up/clock seeds), 02, 03, 04 (client-local DataStreamer state / ack
-timeout), 32 (swapped out), 36 (no test), 41, 42, 44 (request validation / file policy), 46, 47 (format, fsimage load),
-51, 53 (debug dumps).
-Named bug checks (10): hdfs-11741, hdfs-17897, hdfs-17899-bug1/2/3, hdfs-17960, hdfs-17967-pathA/B/C,
-hdfs-bugs-slowdisk-zero (its own point, RoundRobinVolumeChoosingPolicy:84).
+**The columns:**
+- **Heuristic YES points:** study.txt's binary rule over HDFS 3.4.3, Solr 8.11.4, HBase 2.6.6 and ZooKeeper 3.8.7.
+- **Selected points:** the heuristic points kept after the low-quality ones are removed (each removal and its reason is
+  below). For ZooKeeper the selection also counts the six bug points added for its checks (owner: "zookeeper选出来带上我们
+  新加的"). Every selected point is real ad hoc coordination.
+- **With an integration test we run:** a cluster integration test reaches the point's guard, and we run it: an
+  existing test, or our modified `Causynth*` version of one.
+- **Causym executions:** one per (point, integration test) we run, bug checks included. One point may carry several,
+  e.g. HDFS-11 carries 9.
 
-## Solr: 21 points, 13 checked (+ 8 bug checks)
+## HDFS: 38 selected, 36 with an integration test, 46 executions
 
-Checked (13): 05, 07, 09, 10, 13, 14, 19, 21, 22, 31, 38, 39, 40 (22 = solr-18406's throw).
-Points without a check (8): 01, 06, 15, 16, 18, 34, 36, 37.
-Dropped (19): 02, 03, 04, 08, 11, 12, 17, 20, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 35 (request validation,
-startup config, test hooks, local invariants, unreachable or untested).
-Bug checks (8): solr-18406, solr-18413, solr-bugs-reindex-cleanup, solr-bugs-{migrate-buffer-leak, overseer-lock-leak,
-snapshot-no-active, restore-construction, tra-start-overwrite}.
+**Selected and run (36):** 05 06 07 08 09 10 11 12 14 15 16 19 20 21 22 23 24 25 26 27 28 29 30 31 33 34 35 37 38 39
+40 45 48 49 50 52 (`experiments/hadoop/hdfs-adhoc/checks.tsv`).
 
-## HBase: 30 points, 17 checked (+ 3 bug checks)
+**Selected without a usable test (2):**
+- 13 (BlockTokenSecretManager:432, NO_PATH: no cluster test);
+- 18 (DatanodeDescriptor:537, WORKLOAD_UNCERTAIN: its test does not guarantee the second PROVIDED-storage update).
 
-Checked (17): 04r, 07r, 08, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 24, 31, 34, 37.
-Points without a check (13): 01, 02, 16, 17, 18, 23, 27, 28, 29, 30, 32, 33, 35.
-Dropped (8): 03, 05, 06, 09, 25, 26, 36, 38 (NO_PATH, no coordination).
-Bug checks (3): hbase-bugs-master-active-time (#14), hbase-bugs-backup-lock-reply-lost, hbase-bugs-ns-rsgroup-removal.
+**Executions (46):**
+- 36 study cases, one per run point;
+- 10 bug checks:
+  - on HDFS-11 (8): hdfs-11741, hdfs-17897, hdfs-17899-bug1/2/3, hdfs-17967-pathA/B/C;
+  - on HDFS-52 (1): hdfs-17960;
+  - on its own site (1): hdfs-bugs-slowdisk-zero (RoundRobinVolumeChoosingPolicy:84).
 
-## ZooKeeper: 13 points, 10 checked (+ 3 bug checks), unchanged
+**Removed (15):**
+- 01, 17, 43: the seed never reaches the target (client polling and IBR waits; every DataNode's first heartbeat after the
+  NameNode restart; truncate recovery waits);
+- 02, 03, 04: client-local stream state or an ack timeout;
+- 32: the block pool's removal runs in an actor thread started before the window, so no explored world reaches it;
+- 36: no test;
+- 41, 42, 44: request validation or file policy;
+- 46, 47: format, fsimage load;
+- 51, 53: debug dumps.
 
-Checked (10): 01, 02, 03, 04, 06, 07, 10, 11, 12, 13. Points without a check (3): 05 (dead throw), 08, 09 (NO_PATH).
-Bug checks (3): zk-bugs-quota-init, zk-bugs-election-offer, zk-bugs-container-reuse.
+## Solr: 20 selected, 13 with an integration test, 20 executions
+
+**Selected and run (13):** 05 07 09 10 13 14 19 21 22 31 38 39 40 (`experiments/solr/solr-adhoc/checks.tsv`; 22 is run as
+solr-18406, the same throw).
+
+**Selected without a run (7):**
+- 01, 15, 16, 36: no cluster test reaches the guard;
+- 06, 18, 34: a test evaluates the guard, but no counterfactual kind can flip it (no writer publishes a PULL leader; one
+  znode version feeds both alias copies; the local CREATE waits on the same reader).
+
+**Executions (20):**
+- 12 study cases;
+- 8 bug checks:
+  - solr-18406 (on SOLR-22);
+  - on their own sites (7): solr-18413, solr-bugs-reindex-cleanup, solr-bugs-migrate-buffer-leak,
+    solr-bugs-overseer-lock-leak, solr-bugs-snapshot-no-active, solr-bugs-restore-construction,
+    solr-bugs-tra-start-overwrite.
+
+**Removed (20):**
+- 02 03 04 08 11 12 17 20 23 24 25 26 27 28 29 30 32 33 35: request validation, start-up configuration, test hooks,
+  local invariants, or an unreachable failure branch;
+- 37 (DistributedZkUpdateProcessor:1003): weak coordination, nothing to flip (sub-shard ranges are fixed at split), no test.
+
+## HBase: 24 selected, 19 with an integration test, 22 executions
+
+**Selected and run (19):** 04 07 08 10 11 12 13 14 15 19 20 21 22 24 28 31 34 35 37 (`experiments/hbase/hbase-adhoc/checks.tsv`,
+on HBase master).
+- 04 = HBASE-30484 and 22 = HBASE-30483.
+- 04, 07, 22, 34 run our `TestCausynth*` versions of their tests.
+
+**Selected without a run (5):** 16 (TransitRegionStateProcedure "Failed to close region": its test returns at CLOSED
+before the guard), 17, 18 (TransitRegionStateProcedure abnormal close; repeated failed opens), 23 (ZKProcedureCoordinator
+reached-znode data), 33 (AuthenticationTokenSecretManager with an aborted ZKWatcher): no cluster test reaches the guard.
+
+**Executions (22):**
+- 19 study cases;
+- 3 bug checks on their own sites: hbase-bugs-master-active-time, hbase-bugs-backup-lock-reply-lost,
+  hbase-bugs-ns-rsgroup-removal (`results/hbase/`).
+
+**Removed (14):**
+- 03 05 06 09 25 26 36 38: no path, no coordination;
+- 01, 02: the site no longer exists on master;
+- 29, 30: request validation that no cluster test reaches on master;
+- 27: a stop while the ZooKeeper tracker is null (timing only);
+- 32: a catch path after the flush RPC (no coordination).
+
+## ZooKeeper: 18 selected, 16 with an integration test, 16 executions
+
+**Selected with an integration test (16):**
+- the study points 01 02 03 04 06 07 10 11 12 13;
+- the six bug points:
+  - zk-bugs-trunc-sync (ZOOKEEPER-5094, PR 2459);
+  - zk-bugs-observer-master (ZOOKEEPER-5088, PR 2454);
+  - zk-bugs-quota-init;
+  - zk-bugs-election-offer;
+  - zk-bugs-container-reuse;
+  - zk-bugs-retry-seq-quota.
+- The three NoNode bugs share one throw, and the two quorum bugs share ZKDatabase:341; each bug is its own point because
+  each is its own coordination path.
+- `docs/checks/ZOOKEEPER.md` §E has the rows.
+
+**Selected without a test (2):** 08, 09 (LearnerSessionTracker: no path).
+
+**Executions (16):** one per point with a test (`experiments/zookeeper/zookeeper-cases.tsv`).
+- 2 have run: quota-init and election-offer.
+- The other 14 wait for the work in TODO "ZooKeeper".
+
+**Removed (1):** 05 (Follower:103): the throw is dead on master. Learner:522 throws first, and no other thread writes the
+accepted epoch.

@@ -71,7 +71,7 @@ The remote keeps three branches (2026-10-08, by the lead):
 
 Every other remote branch was deleted, bundled first: `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`
 (`study`, `hdfs-compose-perf-wip`, `hdfs-container-writers`; `git fetch <bundle> 'refs/remotes/origin/*:refs/remotes/bundle/*'`
-gets them back). The study's data moved to `docs/checks/` (`study.txt`, `selection.txt`, `new-bugs.txt`). The local
+gets them back). The study's data moved to `docs/checks/` (`study.txt`, `SELECTION.md`, `new-bugs.txt`). The local
 branches still exist (`git branch`, their worktrees in `git worktree list`); those holding parked work for later:
 
 | local branch | head | state |
