@@ -402,6 +402,16 @@ public class IdentityTest {
             Identity.regionExit(null);
             said.add("a folded entry draining a queue closes at "
                     + Identity.depth() + " of " + folded);
+            long call = Identity.enterFrame("<a.Sender: void run()>#u3", null);
+            int framed = Identity.depth();
+            opened("REGION.send");
+            Identity.claimItem(items[5]);
+            Identity.regionExit(null);
+            said.add("an entry inside its method frame closes at "
+                    + Identity.depth() + " of " + framed);
+            Identity.exitFrame(call);
+            said.add("and its frame's exit agrees at "
+                    + Identity.depth() + " of " + folded);
             Identity.regionExit(null);
             RuntimeTraceContext.endRequest(hop);
             return said;
@@ -412,7 +422,7 @@ public class IdentityTest {
                     .split(" of ");
             assertEquals(row, depths[1], depths[0]);
         }
-        assertEquals(5, seen.size());
+        assertEquals(7, seen.size());
     }
 
     private static String opened(String region) {
