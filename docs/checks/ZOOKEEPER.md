@@ -227,6 +227,15 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-adhoc-12 | quorum/QuorumPeer.java:1256 IOException | testQuorum | disk only | T Q | C |
 | zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents` (check the seed observes the first client's renewal at the RO peer: timing) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
 
+State per case (runs and readings: STATUS "ZooKeeper checks"; target occurrences in `zk-adhoc/checks.tsv`, read off
+SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
+- zk-adhoc-12: UNSAT_CLOSED at the fixed point, substantive (ZC7-12): on a fresh ensemble both epochs are
+  `epochOf(lastProcessedZxid)`, so `acceptedEpoch < currentEpoch` cannot hold; disk only. Target: server 1's first
+  start (`auto0/peer1#epoch0`, `QuorumPeerMain#runFromConfig`, into which `start` and `loadDataBase` fold), window `startup`.
+- zk-adhoc-06: target the leader's `LearnerHandler#run` for its follower (`auto0/peer2#epoch0`), window `startup`.
+- zk-adhoc-11: target server 0's third start (`auto0/peer0#epoch2`, after the test rewrote its epoch files).
+- zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
 "every tested study item").
