@@ -972,6 +972,12 @@ must be SAT, confirmed in the VM and reproduced natively.
 - D7: repeatable runs (large limits, one commit worker, snapCount large, ports and sids in order, woven random delays).
 - D8: election-stream threads attributed to their peer.
 Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
+Built (agent C, tree `gc/zk-quorum`, STATUS "Per-system surface" ZooKeeper "tree: cluster and bounds"): the tree's
+`CausynthNodes` with hooks in `QuorumPeer` (start, run, shutdown), `ZooKeeperThread`, `ZooKeeper`'s constructor,
+`QuorumZooKeeperServer`, `FastLeaderElection`'s tally, `CausynthZk#request`, and the test bases (`PortAssignment`,
+`QuorumPeerTestBase`, `QuorumUtil`, `QuorumBase`, `ZKTestCase`, `ClientBase`); `testQuorum`,
+`CurrentEpochWriteFailureTest` and `CausynthTruncSyncTest` pass natively in automatic mode. Left: two faithful SEEDs
+of each canary, then 01 03 06 11 12.
 
 **4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
