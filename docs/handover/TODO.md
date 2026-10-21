@@ -1005,6 +1005,19 @@ is a state pairing, the first claim, a campaign budget), with the configuration 
 
 ## Cross-cutting (engine), when a system needs it
 
+**A logged event's rank depends on publication order (DIAGNOSTIC; agent E 2026-10-21).** `LoggedEventSites#siteIndex`
+ranks a VM-logged read or write (`k`) among its performer occurrence's events at one site when the first record carrying
+it is published; a location's log travels with whichever activation's read-out filed it (`SharedStateCapture#file`) and
+`RowRuntime#claimEvent` publishes each version once, so an earlier event that arrives after a later one of its group was
+published is re-ranked to a `k` that one already holds: the IMPORT gate's "invariant 4 site index missing" rows (ZD3-07:
+the second `sendNotifications`' `ToSend` came out with WorkerSender's poll activation before the first). Every such pair
+seen (145 in the ZooKeeper runs, 117 in six HBase final runs) is on two different locations, mostly fresh objects under
+construction, which `Arms` pairs per location and `Arms#eligible` never offers, so no arm moves; the latent cost is that
+such an event's `k` can differ between runs, which matters where a run finds an event by its endpoint (a flip's consumer
+read, CONFIRM: 1 read pair in the ZooKeeper runs, 5 in those HBase runs). Reopen if a CONFIRM refutes on a read that
+carries such a row; the fix then is an ordinal the VM states at the event (per activation and site), not one counted at
+publication.
+
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合
 symbolic propagation联立的。请你把它设为todo"; "这样绝对是doable的。我们完全可以做到强制反转，你可以通过soot,vm等结合实现。然后在那个
