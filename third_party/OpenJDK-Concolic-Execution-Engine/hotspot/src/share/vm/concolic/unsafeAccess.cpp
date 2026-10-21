@@ -201,6 +201,8 @@ void UnsafeAccess::end_put(Access *access,
 void UnsafeAccess::end_cas(Access *access, bool succeeded,
                            const SharedFieldVersions::ConcreteBits &given,
                            oop witnessed_reference,
+                           const SharedFieldVersions::ConcreteBits &expected,
+                           oop expected_reference,
                            const SharedFieldVersions::ConcreteBits &stored,
                            oop stored_reference) {
   if (!access->active) return;
@@ -264,14 +266,24 @@ void UnsafeAccess::end_cas(Access *access, bool succeeded,
       value = intent->operand;
       kind = SharedFieldVersions::VERSION_RMW;
       if (old_value != NULL || intent->expect != NULL) {
+        // A concrete expected value is the word the caller passed, never the
+        // word the compare read: they differ exactly where the CAS failed, and
+        // `old == witnessed` answered true for a CAS that lost (ZooKeeper's
+        // Learner.closeSocket).  A reference cell's is its referent's id.
+        Expression *compared = intent->expect;
+        if (compared == NULL) {
+          compared = access->cell.reference()
+              ? concrete(SharedFieldVersions::reference_word(
+                             expected_reference),
+                         expected_reference)
+              : concrete(expected, expected_reference);
+        }
         // The comparison that let the store happen is part of its guard: a
         // solver cannot select this writer while denying it.
         Expression *matched = new OpSymExpression(
             old_value != NULL ? old_value
                               : concrete(witnessed, witnessed_reference),
-            intent->expect != NULL
-                ? intent->expect : concrete(witnessed, witnessed_reference),
-            op_eq, true);
+            compared, op_eq, true);
         // Answered only when it compared something symbolic: a tracked
         // location's read, or a symbolic expected value.  Every concrete CAS
         // of an unmuted JDK body (a lambda's bootstrap interning its method
