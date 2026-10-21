@@ -1,15 +1,16 @@
 repo=${GC_TREES}/zookeeper-checks
 # The ZooKeeper bug checks (docs/checks/ZOOKEEPER.md §E). Target occurrences marked "placeholder" are not known yet: read each
 # off a STOP_AFTER=SEED run on the built tree (DECLARED_TARGET_OCCURRENCE_UNOBSERVED lists every observed occurrence;
-# TODO ZooKeeper D9) and write it here. The two REGION ids below are from the old branch-3.9 tree (gc/zk-unified
-# 8f18cf3a4): re-check them on a SEED too.
+# TODO ZooKeeper D9) and write it here. The getData target's region is FinalRequestProcessor#processServed (the adapter's
+# split of processRequest); each selector below names the request occurrence the 2026-10-03 PASS declared (V25: the same
+# request anchors, read off SEEDs ZA1-quota and ZA1-offer).
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
 case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-quota|trunc-sync|observer-master}" in
   quota-init)
     # the pasted bug 2: createQuota's two RPCs, a lost reply between them, the retry's getData(stat) NoNode
     test_class=org.apache.zookeeper.test.CausynthQuotaRetryTest
     test_method=raisesARetriedHardQuota
-    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#6"
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#6"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       server:org/apache/zookeeper/cli/SetQuotaCommand
@@ -22,7 +23,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     zk_module=zookeeper-recipes/zookeeper-recipes-election
     test_class=org.apache.zookeeper.recipes.leader.LeaderElectionSupportTest
     test_method=testNodes3
-    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#2"
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#2"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       election:org/apache/zookeeper/recipes/leader/LeaderElectionSupport
