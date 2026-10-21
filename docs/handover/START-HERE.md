@@ -96,7 +96,7 @@ Mechanics as HBase's (OPERATIONS.md §10):
 3. **Launch** from a head that reaches every worker. Never lift02/03 (they cannot reach lift15), never the lead's gate
    host.
 
-   `CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image GC_TREES=<dir> GC_OUT=<out>
+   `CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force13/j2sdk-image GC_TREES=<dir> GC_OUT=<out>
    tools/rounds/launch-run.sh <snapshot> <case> <tag>`
 
    HBase's wrapper `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/launch.sh` (and `wait-run.sh`, `watchdog.sh`) shows the
@@ -142,6 +142,6 @@ STATE §Z has the full list. In short:
 - **Tree:** `/u/vnr3ne/zookeeper` `gc/zk-checks` at `/bigtemp/vnr3ne/wt/zookeeper-checks`; the fork's refs are fetched as
   `refs/remotes/jhsuyu/*`.
 - **Maven repository:** `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`, filled online for master.
-- **VM image:** `/bigtemp/vnr3ne/vm-force12/j2sdk-image`.
+- **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (`vm-force12` plus the failed-CAS answer, OPERATIONS.md images row).
 - **Hosts:** lift02-15, 48 cores and 30 GB each.
 - **Preparation evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/`.

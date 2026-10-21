@@ -122,12 +122,15 @@ public:
 
   /**
    * After a compare-and-swap: `witnessed` is the word the compare read (the
-   * expected one on success, the one it lost to otherwise); `stored` what a
-   * success left.
+   * expected one on success, the one it lost to otherwise); `expected` the
+   * word the caller passed to compare with, which a concrete expected value
+   * states; `stored` what a success left.
    */
   static void end_cas(Access *access, bool succeeded,
                       const SharedFieldVersions::ConcreteBits &witnessed,
                       oop witnessed_reference,
+                      const SharedFieldVersions::ConcreteBits &expected,
+                      oop expected_reference,
                       const SharedFieldVersions::ConcreteBits &stored,
                       oop stored_reference);
 
