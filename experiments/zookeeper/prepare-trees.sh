@@ -24,7 +24,7 @@ for name in "${names[@]}"; do
   fi
   echo "== ${name}: ${branch} at $(git -C "${tree}" rev-parse --short HEAD), $(date +%T) on $(hostname)"
   installed=" "
-  while IFS=$'\t' read -r id _; do
+  while IFS=$'\t' read -r -u 3 id _; do
     [[ -n "${id}" && "${id}" != \#* ]] || continue
     read -r dir arg <<<"$(case_dir_of "${graphchecker}" "${id}")"
     [[ "${arg}" != - ]] || arg=""
@@ -43,7 +43,7 @@ for name in "${names[@]}"; do
       failed=$((failed + 1))
     fi
     installed+="${module} "
-  done <"${here}/zookeeper-cases.tsv"
+  done 3<"${here}/zookeeper-cases.tsv"
   echo "== ${name}: ready $(date +%T), ${failed} failed"
 done
 ((failed == 0))
