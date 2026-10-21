@@ -220,7 +220,7 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-adhoc-12 | quorum/QuorumPeer.java:1256 IOException | testQuorum | disk only | T Q | C |
 | zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents` (check the seed observes the first client's renewal at the RO peer: timing) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
 
-Dropped as in §D: 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
+Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
 "every tested study item").
 

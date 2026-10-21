@@ -16,7 +16,9 @@ target，需要囊括这几个bug。这几个bug也要选adhoc check，看合适
 都是类似的". So: ZooKeeper's ad hoc checks, run the way HBase's were, under the same rules. The adaptation is of the same
 kind as the other systems': an automatic cluster, a message door per wire, typed FAULT doors.
 
-**The 16 cases** (`docs/checks/ZOOKEEPER.md` §E has each one's marker, workload, counterfactual, needs and fit):
+**The 16 cases** (`docs/checks/ZOOKEEPER.md` §E has each one's marker, workload, counterfactual, needs and fit; the final
+selection table, `docs/checks/SELECTION.md`, counts ZooKeeper as 19 selected points, 16 with an integration test, 16 causym
+executions):
 
 | case | what | needs |
 | --- | --- | --- |
@@ -26,7 +28,7 @@ kind as the other systems': an automatic cluster, a message door per wire, typed
 | zk-bugs-election-offer | **the orphaned election offer**: LeaderElectionSupport fails on a vanished competitor and keeps its own offer | tree |
 | zk-bugs-container-reuse | **the container cleanup** deletes a replacement node at the same path | tree |
 | zk-bugs-retry-seq-quota | bug_study #32: ZooInspector's retry re-creates a sequential node, the hard quota refuses the next create | tree |
-| zk-adhoc-01 02 03 04 06 07 10 11 12 13 | the study.txt items of §D (05, 08, 09 dropped) | tree; all but the 01/03 stand-in need the quorum adapter |
+| zk-adhoc-01 02 03 04 06 07 10 11 12 13 | the study.txt items of §D (05, 08, 09 are selected but not run: a dead throw, no path; `docs/checks/SELECTION.md`) | tree; all but the 01/03 stand-in need the quorum adapter |
 
 The first five are the owner's bugs. A bug check is done when it is SAT, confirmed in the VM and reproduced natively, with
 the bug's causal chain.
