@@ -450,6 +450,7 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `HBASE_RPC` | `REQUEST` / `RESPONSE` | `AbstractRpcClient#callMethod` / `RpcConnection#finishCall` | before `RpcConnection#sendRequest` (the call fails with the fault, never sent) / before `Call#setResponse` (the server ran the call; the call fails with the fault in place of its reply) |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
 | `ZOOKEEPER` | `READ` | `ZooKeeper#{getData, exists, getChildren (two)}`, `sites` `DATA_FLOW` (below) | before `ClientCnxn#submitRequest`: the read never reaches the server, so it registers no watch on the client |
+| `ZK_QUORUM` | `READ` | `Learner#syncWithLeader` (a follower's or observer's sync with its leader or observer master) | before `Learner#readPacket`: a `SocketTimeoutException`, the packet not consumed; the sync throws, the learner closes its socket and its peer re-elects. The broadcast loop's reads (a PING every tick) are no door |
 | `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
 | `TIMED_WAIT` | `AWAIT`, `POLL`, `GET`, `ACQUIRE` | a demanded call only (below) | before the call: the wait returns its timeout at once |
 
@@ -624,7 +625,9 @@ tombstones too, so its door follows all of its writes, a delete-only multi's too
 `ZooKeeper#getData` in the private `getData(String,Watcher,Boolean,Stat)` before `causynthReplied`
 (a lost reply, as Solr's), `#exists` and `#getChildren(String,Watcher)` in the private
 `exists`/`getChildren(String,Watcher,Boolean)`, which both public overloads call, before
-`causynthReading`. HDFS's: the trunk line's `HADOOP_IPC` response in
+`causynthReading`. ZooKeeper's: the `ZK_QUORUM` read in `Learner#readSyncPacket`, a one-line
+`readPacket` both reads of `syncWithLeader` call, since a door stands at the first call of its anchor
+in its method and the sync reads twice (its first packet, then its loop). HDFS's: the trunk line's `HADOOP_IPC` response in
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
 catalog anchor already follows it). HBase's: the `HBASE_RPC` request in `AbstractRpcClient#callMethod`
 after `CausynthRpc#sent` (the send, on the calling thread, inside the `try` whose `catch` fails the

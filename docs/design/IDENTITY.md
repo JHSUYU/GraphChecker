@@ -549,7 +549,14 @@ extra status polls renumber no other request. The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
-they carry, served by the server's `PrepRequestProcessor` and `FinalRequestProcessor` stages).
+they carry, served by the server's `PrepRequestProcessor` and `FinalRequestProcessor` stages; and
+`CausynthQuorum`: transport `ZK_QUORUM`, one `REQUEST` message per `QuorumPacket` of a learner
+stream, its verb the packet's type, owned by each end's `QuorumPeer`, sent where its producer hands it
+to the stream -- `LearnerHandler#queuePacket` on the proposing, committing, pinging or syncing thread,
+`Learner#writePacket` on the learner's -- and put on the wire where its bytes are written, under the
+learner end's local port, the direction and its place in that direction, which each end counts at
+every packet write and read of its socket; the reading end serves it from its read to its next read, or until the
+thread leaves the stream: a learner role's end, a handler's end).
 The HBase tree calls it from `CausynthRpc` (transport `HBASE_RPC`, one exchange per RPC call,
 correlation `hbase-rpc-<client>-<call id>`, the context in three `RequestHeader` and two
 `ResponseHeader` fields of `RPC.proto`). A call's request starts and ends in

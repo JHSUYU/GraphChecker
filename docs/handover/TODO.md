@@ -948,17 +948,11 @@ workload, counterfactual and what each needs, are `docs/checks/ZOOKEEPER.md` §E
 `docs/handover/zookeeper-agents/Z1.md` (every site and workload on master; the adapter port) and `Z2.md` (the two quorum
 bugs; the design list D1-D9). Items in order:
 
-**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`, worktree `/bigtemp/vnr3ne/wt/zookeeper-checks`)
-is the fork's master eab165995 with the three adapter commits cherry-picked (a8c4afcb0 = gc/zk-unified 8f18cf3a4,
-3c9bdc966 = gc/zk-unified-hb f334025ee, d616b13c2 = 47ddc8b36). It is not built and not pushed. Its HEAD does not
-compile against the engine: the RESPONSE door calls `MessageDoors.received`, `restore` and a public `setAside`, which
-GraphChecker b68e720f0 removed. Rewrite that door the way HBase's `CausynthRpc` answers (server `MessageDoors.outbound(..,
-RESPONSE, ..)` at the reply, client `MessageDoors.inbound(.., RESPONSE, ..)` where `readResponse` reads it, plus
-`parsed`); no engine change (Z1.md §3). Then:
-- add the markers of §E (FinalRequestProcessor:674 with three ids, ZKDatabase:341 with two, ZooKeeperServer:2201 and the
-  ten study sites);
-- write the four workloads (Z1.md §2 ii/iii, Z2.md §1/§2 outlines; each must PASS natively under JDK 8, the two quorum
-  ones 10/10);
+**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`) is the fork's master eab165995 with the
+three adapter commits cherry-picked; agent A's `gc/zk-tree` on it holds the RESPONSE door rewritten the way HBase's
+`CausynthRpc` answers (no engine change), the markers of §E and the container-reuse and retry-seq-quota workloads (each
+native 5/5). Left:
+- the two quorum workloads (Z2.md §1/§2 outlines; each must PASS natively under JDK 8, 10/10);
 - build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
@@ -982,13 +976,24 @@ Built (agent C, tree `gc/zk-quorum`, STATUS "Per-system surface" ZooKeeper "tree
 `QuorumPeerTestBase`, `ZKTestCase`, `ClientBase`); `testQuorum` and `CurrentEpochWriteFailureTest` pass natively in
 automatic mode. Left: two faithful SEEDs of each canary, then 01 03 06 11 12.
 
-**4. The learner-stream door** (D4): QuorumPacket as a message (transport ZK_QUORUM, WIRE keyed by link, direction and
-sequence) and a FAULT door on `Learner.readPacket` within `syncWithLeader` only, faults `SocketTimeoutException`
-(`experiments/zookeeper/doors.jsonl`). Closest: HBASE_RPC / CausynthRpc. This makes zk-bugs-trunc-sync runnable, and
-02 04 06 07 10 13.
+**4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
+row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
+(a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
+DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
+Left: its first SEEDs, once the quorum cluster (3) registers the peers; the hand-offs inside a peer (Prep, Sync, Commit,
+Final, SendAck queues) carry no packet's context -- carried per stage only where a case's chain needs it (lead
+2026-10-21: read the SEEDs' LINEAGE_LOST rows first).
 
-**5. zxid carriage on that door** (D5, zk-bugs-observer-master's right .smt). Optional after it: D6, the txn log as a
-store across a restart (zk-bugs-trunc-sync's chain through the log).
+**5. zxid carriage on that door** (D5): deferred (lead 2026-10-21, owner "keep ZooKeeper lean"); revisit only when a
+SEED's `.smt` shows a guard term constant for want of an envelope or txn field. What it would take: the door already
+hands the packet to `MessageDoors#outboundRequest` and `#parsed`, but the codec walk knows only protobuf messages
+(`EnginePlumbing#generatedMessage`, `SeedBackwardStaticAnalyzer#deriveWirePort`): a jute `Record` a door carries would
+join it (port `auto:<Record>.<F>` from a demanded getter, its setter calls and constructor arguments the producers, a
+constructor's export bound after `<init>`), ~100-150 engine lines. zk-bugs-observer-master's guard (ZKDatabase:341) reads
+`TxnHeader.zxid` from the packet's `data` bytes (`SerializeUtils.deserializeTxn` in `Observer.processPacket`), which the
+envelope does not hold: carrying it costs a tree registry from a packet to its `TxnHeader` (`Leader.propose`, the
+observer master's INFORM) and a `parsed(header)` after each `deserializeTxn` of a received packet (~4 sites). Optional
+after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's chain through the log).
 
 **6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
 concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism

@@ -10,12 +10,13 @@ Tree read: `/bigtemp/vnr3ne/wt/zookeeper-unified` (`gc/zk-unified` 8f18cf3a4, br
   replay. Not wired: QuorumPeers, `QuorumBase`/`QuorumUtil`/`QuorumPeerTestBase.MainThread` ensembles, and clients made
   outside `createClient`.
 - Messages: a client request is one message (`CausynthZk`), from `ClientCnxn.queuePacket` to Prep and then
-  FinalRequestProcessor. Not wired: responses, watches, the ConnectRequest handshake, Learner<->Leader `QuorumPacket`s and
-  election (`QuorumCnxManager`) messages. The `zookeeper-hb` tree adds a RESPONSE door.
+  FinalRequestProcessor. Not wired: responses, watches, the ConnectRequest handshake and election (`QuorumCnxManager`)
+  messages. The `zookeeper-hb` tree adds a RESPONSE door. On `gc/zk-learner` (2026-10-21) every Learner<->Leader
+  `QuorumPacket` is a `ZK_QUORUM` message (`CausynthQuorum`, below).
 - FAULT doors: `ZOOKEEPER WRITE` on `ZooKeeper#create` (both overloads), `#setData`, `#delete` and `#multiInternal`, placed
   after `submitRequest`. The write commits and the caller sees ConnectionLoss or SessionExpired (no OperationTimeout:
   no client code raises it, only `KeeperException`'s own classes name it). Reads,
-  `setACL` and the quorum socket have no door.
+  `setACL` and the election socket have no door; the learner stream's sync reads have one (`ZK_QUORUM READ`, below).
 - CLOCK: `Time.currentElapsedTime` and `nanoTime`, with a forward window of up to 30 days. CONFIG: JVM getters such as
   `Integer.getInteger`, `Boolean.getBoolean` and `System.getProperty`+parse. ZooKeeper's `ZKConfig`/`QuorumPeerConfig`
   getters are not catalog rows.
@@ -47,9 +48,15 @@ would need `throw new SessionExpiredException()`, but 09 is dropped anyway (NO_P
 
 ### The Learner<->Leader socket stream, per quorum-path site
 
-Today there is no door on `QuorumPacket` traffic: `Learner.writePacket`/`readPacket` over `leaderOs`/`leaderIs`, and
-`LearnerHandler`'s `queuePacket`/`sendPackets` with `ia.readRecord`, all via BinaryOutputArchive. The election stream
-(`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has none either.
+Since `gc/zk-learner` (2026-10-21) every `QuorumPacket` of a learner stream (a leader or observer master and its
+learner) is a `ZK_QUORUM` `REQUEST` message (tree `CausynthQuorum`; STATUS "Per-system surface", "tree: transport"): sent
+where its producer hands it to the stream (`LearnerHandler.queuePacket`, `Learner.writePacket`), put on the wire where its
+bytes are written, under the learner end's local port, the direction and its place in it, and served by the reading end
+(`Learner.readPacket`, `LearnerHandler.run`'s reads) until its next read or the end of the learner's role or handler. Its FAULT door: `ZK_QUORUM READ`, a
+`SocketTimeoutException` before each read of a sync (`Learner.readSyncPacket`, every read of `syncWithLeader`); the
+broadcast loop's reads are no door. The envelope's fields (`QuorumPacket.zxid`, `type`) and the txn record in its `data`
+bytes are not carried (TODO "ZooKeeper" 5): a receiver's zxid is its own constant. The election stream
+(`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has no door.
 
 | site | crosses the learner stream? | door it would need |
 |---|---|---|
@@ -207,8 +214,8 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-bugs-observer-master (ZOOKEEPER-5088) | ZKDatabase.java:341 (the same annotation) | to write: `quorum.CausynthObserverMasterSyncTest#aProposalPendingAtTheObserverMastersStart` (3 participants + 1 observer; ACK hold only; `-Dzookeeper.leaderConnectDelayDuringRetryMs=1000`; 10/10 native passes required) | one STATE re-pairing, depth 0 (maybe 1): the follower OM handler's read of `DataTree.lastProcessedZxid` (LearnerHandler.java:804, branch :849) paired with its version before the follower applied the pending txn | T Q L Z | B-/C |
 | zk-bugs-quota-init | FinalRequestProcessor.java:674 NoNodeException (694 with the adapter; one annotation, three ids) | `test.CausynthQuotaRetryTest#raisesARetriedHardQuota` (self-written on gc/zk-unified; ports unchanged) | WRITE-door ConnectionLoss on createQuota's limit-node create (committed, reply lost); the retry's update branch reads the absent stat node (SetQuotaCommand.java:270) | T | A |
 | zk-bugs-election-offer | FinalRequestProcessor.java:674 (same annotation) | `recipes.leader.LeaderElectionSupportTest#testNodes3` (recipes-election) | STATE re-pairing: toLeaderOffers' getData (LeaderElectionSupport.java:310) of a listed offer to its owner's delete | T | A- |
-| zk-bugs-container-reuse (#33) | FinalRequestProcessor.java:674 (same annotation) | to write: `server.CausynthContainerReuseTest` (ClientBase, as CreateContainerTest; the test starts its own ContainerManager; register its timer thread with the server node) | STATE re-pairing of the test's getData lookup to the cleanup's delete, CONFIRM ordering the cleanup's Prep (PrepRequestProcessor.java:326-344) after the recreate | T | B |
-| zk-bugs-retry-seq-quota (#32) | ZooKeeperServer.java:2201 QuotaExceededException (count hard limit) | to write: `org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest` in zooinspector (ClientBase; `-Dzookeeper.enforceQuota=true`; hard count limit **3** = the node + two children; register the ZooKeeperRetry client; pom deps as the recipes'; `-Pfull-build`) | WRITE-door ConnectionLoss on the first sequential create (ZooKeeperRetry.java:81, the `exists(path)` check :85 never sees the sequential name) | T | A- |
+| zk-bugs-container-reuse (#33) | FinalRequestProcessor.java:674 (same annotation) | `server.CausynthContainerReuseTest#keepsTheReplacementOfACleanedContainer` (self-written, ClientBase, as CreateContainerTest: the test's own ContainerManager checks once, 100 ms after it starts, its Timer's thread on the server's node; the client deletes, recreates persistent and reads the path 2 s later, so the cleanup comes first in the recording; native 5/5) | STATE re-pairing of the test's getData lookup to the cleanup's delete, CONFIRM ordering the cleanup's Prep (PrepRequestProcessor.java:326-344) after the recreate | T | B |
+| zk-bugs-retry-seq-quota (#32) | ZooKeeperServer.java:2201 QuotaExceededException (count hard limit) | `org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest#createsTwoSequentialChildrenUnderAHardQuota` in zooinspector (self-written, ClientBase; `-Dzookeeper.enforceQuota=true`; hard count limit **3** = the node + two children; the ZooKeeperRetry client registered by the ZooKeeper constructor in automatic mode; pom deps as the recipes'; `zk_maven_profiles=(full-build)`; native 5/5) | WRITE-door ConnectionLoss on the first sequential create (ZooKeeperRetry.java:81, the `exists(path)` check :85 never sees the sequential name) | T | A- |
 | zk-adhoc-01 | SessionTrackerImpl.java:317 SessionExpiredException | `server.quorum.QuorumPeerMainTest#testQuorum`; ClientBase stand-in `CausynthQuotaRetryTest#raisesARetriedHardQuota` | CLOCK on the tracker's ExpiryQueue (skew >= the granted timeout) | T (stand-in), Q | B |
 | zk-adhoc-02 | SessionTrackerImpl.java:323 SessionMovedException | `test.QuorumTest#testSessionMovedWithSynchronousSync` (declare the new connection's request) | STATE re-pairing of `session.owner` (REVALIDATE's setOwner, Leader.java:1789) | T Q L | B |
 | zk-adhoc-03 | SessionTrackerImpl.java:330 SessionExpiredException | testQuorum; the same stand-in | CLOCK as 01, inside the createSession-to-Prep gap | T, Q | C |
