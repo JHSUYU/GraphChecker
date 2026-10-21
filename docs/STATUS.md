@@ -194,6 +194,16 @@ SAT, confirmed, native; the study checks end SAT, UNSAT or at a named bound. Eve
 At the second session's handover (2026-10-20) 07, 10 and 11 were still running (docs/checks/HBASE.md §E says what each
 reached); every case's final verdict comes from the owner's exclusive series (TODO HBase 1).
 
+## ZooKeeper checks: each case's `.smt`, read by hand (2026-10-21 on; branch, round, verdict, reading)
+
+The 16 cases of the ZooKeeper group (`experiments/zookeeper/zookeeper-cases.tsv`, `docs/checks/ZOOKEEPER.md` §E): the bug
+checks must be SAT, confirmed, native; the study checks end SAT, UNSAT or at a named bound. Run outputs
+`/bigtemp/vnr3ne/gc-out/zookeeper-<topic>/accept-<tag>`; readings `analysis/zookeeper-2026-10-21/lead/readings.md`.
+
+| case | branch, round | verdict | reading |
+| --- | --- | --- | --- |
+| zk-adhoc-12 | zk-quorum 44821dddd / ZC7-12 (snapshot zk-quorum-5, tree gc/zk-quorum 47f818393, vm-force13), window `startup` | UNSAT_CLOSED at FIXED_POINT (14 rounds, 97 verdicts), NO_SUPPORTED_WITNESS, substantive by vacuity.py (1 of 2 paths free, 3 reads offered another writer), 983 s (seed 90, instrument 29, seed replay 109, explore 707, compose 16) | Class C, disk only. `QuorumPeer#loadDataBase`'s guard `acceptedEpoch < currentEpoch` reads two fields a fresh ensemble sets alike, both `epochOf(DataTree.lastProcessedZxid)` in their `FileNotFoundException` branches: the formula offers seven writers of `lastProcessedZxid` (0, 0x100000001-0x100000006) and gives both epochs the same expression of each, so the strict `<` cannot hold; the epoch files a restart would read are no symbol (testQuorum never restarts a peer). Seed replay 390/466 slots taken (82 given up: `Leader#waitForStartup`'s 20 ms polls, fixed in tree 82b5a1ff0; the leader's self-ACK race) |
+
 ## R1. Symbols come automatically from the fatal slice
 
 | capability | status | where | missing |
