@@ -3494,7 +3494,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: the selected session's own run
    as defined below, a replay that planted those roots, pairings and orders and observed the fatal
    at the anchor, which CONFIRM confirms as "itself the run"; if CONFIRM refutes it, the claim loop
-   excludes its arms and the next composition takes the order below): a world a replay already ran
+   excludes its arms and the next composition takes the order below). Each fatal-observing disjunct
+   is asked itself, at each valuation whose moved roots it ran (`Composition#ranRoots`): its path's
+   scope of the formula, fatal arm included, with its selector and its own run pinned
+   (`Composition#worldRun`, `#worldClocks`) -- not filtered out of the valuation's free model, whose
+   arms are any the solver picked (zk-bugs-quota-init ZA5-quota: valuation 1's free model took the
+   own path with two writer arms its session did not observe, so the own run went unclaimed behind 15
+   pairing claims; asked itself, it is the first claim): a world a replay already ran
    to the fatal is ahead of every world only the model holds (hbase-bugs-ns-rsgroup-removal NC7:
    EXPLORE's replay of the namespace Mutate's fault observed the fatal, while every claim composed
    moved no fault -- STATE re-pairings holding the client's synchronous calls past their own
