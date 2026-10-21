@@ -29,12 +29,12 @@ for name in "${names[@]}"; do
     read -r dir arg <<<"$(case_dir_of "${graphchecker}" "${id}")"
     [[ "${arg}" != - ]] || arg=""
     spec=$(bash -c 'source "$1" "$2" "$3" >/dev/null && [[ "$(basename "${repo}")" == "$4" ]] && \
-        echo "$(zk_test_module)|${test_class}|${test_method}|${zk_jvm_properties[*]-}"' \
+        echo "$(zk_test_module)|${test_class}|${test_method}|${zk_jvm_properties[*]-}|${zk_maven_profiles[*]-}"' \
       _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}" "${name}") || continue
-    IFS='|' read -r module test_class test_method properties <<<"${spec}"
+    IFS='|' read -r module test_class test_method properties profiles <<<"${spec}"
     started=${SECONDS} skip=0
     [[ "${installed}" != *" ${module} "* ]] || skip=1
-    if SKIP_GRAPHCHECKER_INSTALL=1 SKIP_TREE_INSTALL=${skip} ZK_TEST_PROPERTIES="${properties}" \
+    if SKIP_GRAPHCHECKER_INSTALL=1 SKIP_TREE_INSTALL=${skip} ZK_TEST_PROPERTIES="${properties}" ZK_MAVEN_PROFILES="${profiles}" \
         MAVEN_REPO_LOCAL=${ZOOKEEPER_MAVEN_REPO:-${GC_M2}/zookeeper${tree//\//_}} \
         bash "${here}/build.sh" "${tree}" "${module}" "${test_class}" "${test_method}" >/dev/null 2>&1; then
       echo "PASSED   ${id} ${test_class}#${test_method} $((SECONDS - started)) s"

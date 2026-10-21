@@ -9,6 +9,11 @@ is:
     throw new @CausynthExceptionTarget("hdfs-17899-bug1,hdfs-17899-bug2")
         InvalidEncryptionKeyException(...);
 
+A nested type takes it on its own name, after its qualifier, as Java has it:
+
+    throw new KeeperException.@CausynthExceptionTarget("zk-adhoc-02")
+        SessionMovedException();
+
 With no <case>: one TSV row per (case, site), sorted:
 
     <case> <binary class name> <throw line> <tree-relative file> <thrown type>
@@ -36,8 +41,9 @@ import sys
 MARKER_NAME = "CausynthExceptionTarget"
 _LITERAL = r'"(?:[^"\\]|\\.)*"'
 _CONSTANT = r'%s(?:\s*\+\s*%s)*' % (_LITERAL, _LITERAL)
-THROW = re.compile(r'throw\s+new\s+(?:@[\w.$]+\s*(?:\(\s*%s\s*\))?\s*)?'
-                   r'([\w.$]+)\s*[(<]' % _CONSTANT)
+QUALIFIER = r'(?:[\w$]+\s*\.\s*)*'
+THROW = re.compile(r'throw\s+new\s+(%s)(?:@[\w.$]+\s*(?:\(\s*%s\s*\))?\s*)?'
+                   r'([\w.$]+)\s*[(<]' % (QUALIFIER, _CONSTANT))
 MARKER = re.compile(r'@(?:[\w$]+\.)*%s\s*\(\s*(%s)\s*\)' % (MARKER_NAME, _CONSTANT))
 CONTINUATION = 3
 
@@ -51,9 +57,14 @@ def throw_matches(lines, index):
     return [match for match in found if match]
 
 
+def thrown(match):
+    """The type a THROW match creates, its qualifier included."""
+    return re.sub(r'\s', '', match.group(1)) + match.group(2)
+
+
 def throws_at(lines, index):
     """The thrown types of the `throw new`s that start on lines[index]."""
-    return [match.group(1) for match in throw_matches(lines, index)]
+    return [thrown(match) for match in throw_matches(lines, index)]
 
 
 def sources(system_dir):
@@ -88,7 +99,8 @@ def sites(system_dir, tree):
             for marker in MARKER.finditer(text):
                 where = "%s:%d" % (os.path.relpath(path, tree),
                                    text.count("\n", 0, marker.start()) + 1)
-                throw = re.search(r'throw\s+(new)\s*$', text[:marker.start()])
+                throw = re.search(r'throw\s+(new)(?:\s+%s|\s*)$' % QUALIFIER,
+                                  text[:marker.start()])
                 match = throw and THROW.match(text, throw.start())
                 if not match:
                     raise SystemExit("%s: @%s marks no `throw new`"
@@ -104,7 +116,7 @@ def sites(system_dir, tree):
                 for case in cases:
                     rows.append({"case": case, "cls": cls, "line": line + 1,
                                  "file": os.path.relpath(path, tree),
-                                 "type": match.group(1),
+                                 "type": thrown(match),
                                  "several": len(throws_at(lines, line)) > 1})
     return sorted(rows, key=lambda row: (row["case"], row["cls"], row["line"]))
 

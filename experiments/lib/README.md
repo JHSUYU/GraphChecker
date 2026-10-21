@@ -10,7 +10,9 @@ A case directory under `experiments/<system>/` holds DECLARATIONS only:
 
 A case directory with no `target.yaml` (and no `target_spec`) is a known
 bug's: its tree marks the bug's target throw with
-`@CausynthExceptionTarget("<case id>[,<case id>...]")`, and `run.sh` derives
+`@CausynthExceptionTarget("<case id>[,<case id>...]")` (on a nested type's own
+name, after its qualifier, as Java has it: `throw new KeeperException.@...
+SessionMovedException()`), and `run.sh` derives
 the spec from that marker (`tools/lib/annotated.py <system dir> <tree> <case
 id>`, the case id being `<case dir name>-<case arg>`, e.g. `hdfs-17899-bug1`)
 into `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`, so no line is kept by hand.

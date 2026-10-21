@@ -15,11 +15,14 @@ jar=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 [[ "${SKIP_GRAPHCHECKER_INSTALL:-0}" == 1 ]] \
   || (cd "${graphchecker}" && mvn -q -o -DskipTests package)
 common=(-q -B "-Dmaven.repo.local=${m2}")
+# ZK_MAVEN_PROFILES: the profiles that put the workload's module in the reactor (system.sh's zk_maven_profiles)
+read -r -a profiles <<<"${ZK_MAVEN_PROFILES:-}"
 mvn "${common[@]}" install:install-file "-Dfile=${jar}" \
   -DgroupId=org.example -DartifactId=GraphChecker -Dversion=1.0-SNAPSHOT \
   -Dpackaging=jar
 cd "${repo}"
 common+=(-Dcheckstyle.skip -Dspotbugs.skip -Dmaven.javadoc.skip=true)
+((${#profiles[@]} == 0)) || common+=("-P$(IFS=,; echo "${profiles[*]}")")
 [[ "${SKIP_TREE_INSTALL:-0}" == 1 ]] || mvn "${common[@]}" -DskipTests install -pl "${module}" -am
 # ZK_TEST_PROPERTIES: extra -D properties a case's workload needs at JVM start (a static final read at class load)
 read -r -a extra <<<"${ZK_TEST_PROPERTIES:-}"
