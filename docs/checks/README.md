@@ -25,7 +25,7 @@ cases of `experiments/solr/solr-bugs`. The HDFS trees mark all 49 study points, 
 checked points and 8 bug checks, the HBase tree (the fork's `graphchecker/hbase-checks`) its 19 study points and its
 bug checks (22 cases, `experiments/hbase/hbase-cases.tsv`); the ZooKeeper cases (16, `experiments/zookeeper/zookeeper-cases.tsv`) are declared, their tree being prepared (TODO "ZooKeeper").
 
-Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 20 / 13 / 20, HBase 24 / 19 / 22, ZooKeeper 18 / 16 / 16 (points selected / with an integration test we run / causym executions).
+Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 21 / 13 / 20, HBase 25 / 19 / 22, ZooKeeper 19 / 16 / 16 (points selected / with an integration test we run / causym executions).
 
 ## HDFS (the current system): 36 study checks
 

@@ -7,10 +7,10 @@ hbase-adhoc-NN, zk-adhoc-NN), each marked at its throw by `@CausynthExceptionTar
 | system | heuristic YES points (study.txt) | selected ad hoc check points | with an integration test we run | causym executions |
 | --- | ---: | ---: | ---: | ---: |
 | HDFS | 53 | 38 | 36 | 46 |
-| Solr | 40 | 20 | 13 | 20 |
-| HBase | 38 | 24 | 19 | 22 |
-| ZooKeeper | 13 | 18 | 16 | 16 |
-| **total** | **144** | **100** | **84** | **104** |
+| Solr | 40 | 21 | 13 | 20 |
+| HBase | 38 | 25 | 19 | 22 |
+| ZooKeeper | 13 | 19 | 16 | 16 |
+| **total** | **144** | **103** | **84** | **104** |
 
 **The columns:**
 - **Heuristic YES points:** study.txt's binary rule over HDFS 3.4.3, Solr 8.11.4, HBase 2.6.6 and ZooKeeper 3.8.7.
@@ -48,13 +48,14 @@ hbase-adhoc-NN, zk-adhoc-NN), each marked at its throw by `@CausynthExceptionTar
 - 46, 47: format, fsimage load;
 - 51, 53: debug dumps.
 
-## Solr: 20 selected, 13 with an integration test, 20 executions
+## Solr: 21 selected, 13 with an integration test, 20 executions
 
 **Selected and run (13):** 05 07 09 10 13 14 19 21 22 31 38 39 40 (`experiments/solr/solr-adhoc/checks.tsv`; 22 is run as
 solr-18406, the same throw).
 
-**Selected without a run (7):**
-- 01, 15, 16, 36: no cluster test reaches the guard;
+**Selected without a run (8):**
+- 01, 15, 16, 36, 37: no cluster test reaches the guard (37, DistributedZkUpdateProcessor:1003: the sub-shard range
+  inside the parent's, weak coordination, added 2026-10-21);
 - 06, 18, 34: a test evaluates the guard, but no counterfactual kind can flip it (no writer publishes a PULL leader; one
   znode version feeds both alias copies; the local CREATE waits on the same reader).
 
@@ -66,35 +67,33 @@ solr-18406, the same throw).
     solr-bugs-overseer-lock-leak, solr-bugs-snapshot-no-active, solr-bugs-restore-construction,
     solr-bugs-tra-start-overwrite.
 
-**Removed (20):**
-- 02 03 04 08 11 12 17 20 23 24 25 26 27 28 29 30 32 33 35: request validation, start-up configuration, test hooks,
-  local invariants, or an unreachable failure branch;
-- 37 (DistributedZkUpdateProcessor:1003): weak coordination, nothing to flip (sub-shard ranges are fixed at split), no test.
+**Removed (19):** 02 03 04 08 11 12 17 20 23 24 25 26 27 28 29 30 32 33 35: no coordination (request validation, start-up
+configuration, test hooks, local invariants, operator input) or an unreachable failure branch.
 
-## HBase: 24 selected, 19 with an integration test, 22 executions
+## HBase: 25 selected, 19 with an integration test, 22 executions
 
 **Selected and run (19):** 04 07 08 10 11 12 13 14 15 19 20 21 22 24 28 31 34 35 37 (`experiments/hbase/hbase-adhoc/checks.tsv`,
 on HBase master).
 - 04 = HBASE-30484 and 22 = HBASE-30483.
 - 04, 07, 22, 34 run our `TestCausynth*` versions of their tests.
 
-**Selected without a run (5):** 16 (TransitRegionStateProcedure "Failed to close region": its test returns at CLOSED
+**Selected without a run (6):** 16 (TransitRegionStateProcedure "Failed to close region": its test returns at CLOSED
 before the guard), 17, 18 (TransitRegionStateProcedure abnormal close; repeated failed opens), 23 (ZKProcedureCoordinator
-reached-znode data), 33 (AuthenticationTokenSecretManager with an aborted ZKWatcher): no cluster test reaches the guard.
+reached-znode data), 32 (RegionReplicaFlushHandler: a secondary replica's flush after the primary's flush RPC, added
+2026-10-21), 33 (AuthenticationTokenSecretManager with an aborted ZKWatcher): no cluster test reaches the guard.
 
 **Executions (22):**
 - 19 study cases;
 - 3 bug checks on their own sites: hbase-bugs-master-active-time, hbase-bugs-backup-lock-reply-lost,
   hbase-bugs-ns-rsgroup-removal (`results/hbase/`).
 
-**Removed (14):**
+**Removed (13):**
 - 03 05 06 09 25 26 36 38: no path, no coordination;
 - 01, 02: the site no longer exists on master;
 - 29, 30: request validation that no cluster test reaches on master;
-- 27: a stop while the ZooKeeper tracker is null (timing only);
-- 32: a catch path after the flush RPC (no coordination).
+- 27: a stop while the ZooKeeper tracker is null (timing only).
 
-## ZooKeeper: 18 selected, 16 with an integration test, 16 executions
+## ZooKeeper: 19 selected, 16 with an integration test, 16 executions
 
 **Selected with an integration test (16):**
 - the study points 01 02 03 04 06 07 10 11 12 13;
@@ -109,11 +108,13 @@ reached-znode data), 33 (AuthenticationTokenSecretManager with an aborted ZKWatc
   each is its own coordination path.
 - `docs/checks/ZOOKEEPER.md` §E has the rows.
 
-**Selected without a test (2):** 08, 09 (LearnerSessionTracker: no path).
+**Selected without a run (3):**
+- 08, 09 (LearnerSessionTracker): no path;
+- 05 (Follower:103, the leader's epoch below the accepted one, added 2026-10-21): its throw is dead on master. Learner:522
+  throws first, and no other thread writes the accepted epoch.
 
 **Executions (16):** one per point with a test (`experiments/zookeeper/zookeeper-cases.tsv`).
 - 2 have run: quota-init and election-offer.
 - The other 14 wait for the work in TODO "ZooKeeper".
 
-**Removed (1):** 05 (Follower:103): the throw is dead on master. Learner:522 throws first, and no other thread writes the
-accepted epoch.
+**Removed:** none.
