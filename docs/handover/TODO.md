@@ -971,13 +971,24 @@ must be SAT, confirmed in the VM and reproduced natively.
 - D8: election-stream threads attributed to their peer.
 Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
 
-**4. The learner-stream door** (D4): QuorumPacket as a message (transport ZK_QUORUM, WIRE keyed by link, direction and
-sequence) and a FAULT door on `Learner.readPacket` within `syncWithLeader` only, faults `SocketTimeoutException`
-(`experiments/zookeeper/doors.jsonl`). Closest: HBASE_RPC / CausynthRpc. This makes zk-bugs-trunc-sync runnable, and
-02 04 06 07 10 13.
+**4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
+row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
+(a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
+DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
+Left: its first SEEDs, once the quorum cluster (3) registers the peers; the hand-offs inside a peer (Prep, Sync, Commit,
+Final, SendAck queues) carry no packet's context -- carried per stage only where a case's chain needs it (lead
+2026-10-21: read the SEEDs' LINEAGE_LOST rows first).
 
-**5. zxid carriage on that door** (D5, zk-bugs-observer-master's right .smt). Optional after it: D6, the txn log as a
-store across a restart (zk-bugs-trunc-sync's chain through the log).
+**5. zxid carriage on that door** (D5): deferred (lead 2026-10-21, owner "keep ZooKeeper lean"); revisit only when a
+SEED's `.smt` shows a guard term constant for want of an envelope or txn field. What it would take: the door already
+hands the packet to `MessageDoors#outboundRequest` and `#parsed`, but the codec walk knows only protobuf messages
+(`EnginePlumbing#generatedMessage`, `SeedBackwardStaticAnalyzer#deriveWirePort`): a jute `Record` a door carries would
+join it (port `auto:<Record>.<F>` from a demanded getter, its setter calls and constructor arguments the producers, a
+constructor's export bound after `<init>`), ~100-150 engine lines. zk-bugs-observer-master's guard (ZKDatabase:341) reads
+`TxnHeader.zxid` from the packet's `data` bytes (`SerializeUtils.deserializeTxn` in `Observer.processPacket`), which the
+envelope does not hold: carrying it costs a tree registry from a packet to its `TxnHeader` (`Leader.propose`, the
+observer master's INFORM) and a `parsed(header)` after each `deserializeTxn` of a received packet (~4 sites). Optional
+after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's chain through the log).
 
 **6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
 concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism
