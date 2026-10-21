@@ -17,5 +17,16 @@ case "$1" in
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
     client_fault_transports=(ZOOKEEPER)
     ;;
+  21)
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+    export CAUSYNTH_REGION_PATH_MAX_TASKS=128
+    ;;
+  11|12|14|15)
+    # scope cut (owner 2026-10-21): the heavy TestRegionMove / TestMergeTableRegionsProcedure workloads -- no client
+    # HBASE_RPC faults (their claims are state pairings), the first claim only, a 60 min campaign, a 16 GB engine heap
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+    client_fault_transports=(ZOOKEEPER)
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=1 CAUSYNTH_CAMPAIGN_BUDGET_S=3600 GRAPH_CHECKER_ENGINE_MEMORY_MB=16384
+    ;;
   *) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
 esac
