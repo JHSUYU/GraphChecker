@@ -23,8 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedTransferQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -361,8 +364,33 @@ public final class Identity {
     private static final WeakIdentityMap<Start> STARTS =
             new WeakIdentityMap<Start>();
 
-    private static final WeakIdentityMap<WeakIdentityMap<Start>> QUEUED =
-            new WeakIdentityMap<WeakIdentityMap<Start>>();
+    private static final WeakIdentityMap<WeakIdentityMap<Filed>> QUEUED =
+            new WeakIdentityMap<WeakIdentityMap<Filed>>();
+
+    private static final int FILED_PER_ITEM = 256;
+
+    private static final class Filed {
+        private final boolean fifo;
+        private final ArrayDeque<Start> starts = new ArrayDeque<Start>();
+
+        private Filed(boolean fifo) {
+            this.fifo = fifo;
+        }
+
+        private synchronized void file(Start start) {
+            if (!fifo) {
+                if (start == Start.UNNAMED && !starts.isEmpty()) return;
+                starts.clear();
+            } else if (starts.size() >= FILED_PER_ITEM) {
+                starts.pollFirst();
+            }
+            starts.addLast(start);
+        }
+
+        private synchronized Start take() {
+            return starts.pollFirst();
+        }
+    }
 
     private static final class Start {
         private static final Start UNNAMED = new Start(
@@ -467,23 +495,44 @@ public final class Identity {
 
     private static Start taken(Object carrier, Object queue) {
         if (carrier == null) return null;
-        WeakIdentityMap<Start> filed = queue == null || QUEUED.isEmpty()
+        WeakIdentityMap<Filed> byItem = queue == null || QUEUED.isEmpty()
                 ? null : QUEUED.get(queue);
-        Start start = filed == null ? null : filed.remove(carrier);
+        Filed filed = byItem == null ? null : byItem.get(carrier);
+        Start start = null;
+        if (filed != null) {
+            do {
+                start = filed.take();
+            } while (start != null && !start.adopt());
+        }
         if (start != null) {
             STARTS.remove(carrier, start);
-        } else if (!STARTS.isEmpty()) {
-            start = STARTS.remove(carrier);
+            return start;
         }
+        start = STARTS.isEmpty() ? null : STARTS.remove(carrier);
         return start == null || start.adopt() ? start : null;
     }
 
-    private static WeakIdentityMap<Start> queued(Object queue) {
-        WeakIdentityMap<Start> filed = QUEUED.get(queue);
-        if (filed != null) return filed;
-        WeakIdentityMap<Start> fresh = new WeakIdentityMap<Start>();
-        filed = QUEUED.putIfAbsent(queue, fresh);
-        return filed == null ? fresh : filed;
+    private static Filed filed(Object queue, Object item) {
+        WeakIdentityMap<Filed> byItem = QUEUED.get(queue);
+        if (byItem == null) {
+            WeakIdentityMap<Filed> fresh = new WeakIdentityMap<Filed>();
+            byItem = QUEUED.putIfAbsent(queue, fresh);
+            if (byItem == null) byItem = fresh;
+        }
+        Filed filed = byItem.get(item);
+        if (filed == null) {
+            Filed fresh = new Filed(fifo(queue));
+            filed = byItem.putIfAbsent(item, fresh);
+            if (filed == null) filed = fresh;
+        }
+        return filed;
+    }
+
+    private static boolean fifo(Object queue) {
+        return queue instanceof LinkedBlockingQueue
+                || queue instanceof ArrayBlockingQueue
+                || queue instanceof LinkedTransferQueue
+                || queue instanceof SynchronousQueue;
     }
 
     private static void adopt(State state, Object carrier, Object queue,
@@ -526,7 +575,7 @@ public final class Identity {
                 ? submittedTo : null;
         if (!Lineage.named()) {
             STARTS.putIfAbsent(carrier, Start.UNNAMED);
-            if (queue != null) queued(queue).putIfAbsent(carrier, Start.UNNAMED);
+            if (queue != null) filed(queue, carrier).file(Start.UNNAMED);
             return;
         }
         State state = state();
@@ -547,7 +596,7 @@ public final class Identity {
                 Thread.currentThread(), state.top(), state.depth(),
                 window, handsOff(submittedTo));
         STARTS.put(carrier, start);
-        if (queue != null) queued(queue).put(carrier, start);
+        if (queue != null) filed(queue, carrier).file(start);
         if (!continuation) {
             ScheduleLog.observe(ScheduleEvent.Kind.START, site);
         }

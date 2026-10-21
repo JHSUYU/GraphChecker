@@ -195,8 +195,14 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   A hand-off into a `BlockingQueue` is filed under the item and under that queue; a take or poll
   (the woven claim passes the queue it took from) claims the start filed for that queue, else the
   item's latest start (an item that entered the queue by an unhooked path), and a start is claimed
-  once. So an object pending in two queues at once is claimed under the hand-off of the queue it
-  came out of: ZooKeeper's observer hands one `Request` to its SyncRequestProcessor's queue and
+  once. In a FIFO queue (`LinkedBlockingQueue`, `ArrayBlockingQueue`, `LinkedTransferQueue`,
+  `SynchronousQueue`, by the queue's class, `Identity#fifo`) the starts of one object put several
+  times are filed in put order and each take claims the oldest (at most 256 kept per object); any
+  other queue (a priority or delay queue, a deque, an application's own) keeps the latest only.
+  ZooKeeper's client puts one sentinel, `ClientCnxn.eventOfDeath`, into its EventThread's queue
+  twice per close (the SendThread's exit, then `disconnect()` after joining it), and the event
+  thread's take was named by whichever put it followed (ZE3-10: 3 stalls). So an object pending in
+  two queues at once is claimed under the hand-off of the queue it came out of: ZooKeeper's observer hands one `Request` to its SyncRequestProcessor's queue and
   then its CommitProcessor's, and keyed by the item alone the commit's start replaced the sync's,
   so the sync thread's claim was named by whichever add its take followed (ZD5-10: the commit's
   334 of 409 times recorded, 0 replayed; 276 stalls of about 4 s).
