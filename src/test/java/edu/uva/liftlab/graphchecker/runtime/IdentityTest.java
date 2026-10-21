@@ -170,16 +170,19 @@ public class IdentityTest {
             List<String> said = new ArrayList<String>();
             said.add(opened("REGION.loop"));
             said.add(opened("REGION.step"));
+            said.add("standing " + Identity.standingOccurrences());
             said.add("ordinal " + Identity.nextBranchOrdinal("loop#u3"));
             for (String turn : new String[] {"turn", "turn"}) {
                 long hop = RuntimeTraceContext.beginRequest(DN, turn);
                 said.add(Identity.currentOccurrence(DN.key()).render());
                 said.add(opened("REGION.inner"));
+                said.add("standing " + Identity.standingOccurrences());
                 said.add("ordinals " + Identity.nextBranchOrdinal("loop#u3")
                         + "," + Identity.nextBranchOrdinal("loop#u3"));
                 Identity.regionExit(null);
                 RuntimeTraceContext.endRequest(hop);
                 said.add(Identity.currentOccurrence(DN.key()).regionId());
+                said.add("standing " + Identity.standingOccurrences());
             }
             Identity.regionExit(null);
             long hop = RuntimeTraceContext.beginRequest(DN, "last");
@@ -189,9 +192,12 @@ public class IdentityTest {
             return said;
         });
         String turn = DN.key() + "/region/REGION.loop/ctx:Root:CLIENT/turn#";
-        assertEquals(Arrays.asList("none", "none", "ordinal 0",
-                turn + "1/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
-                turn + "2/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
+        assertEquals(Arrays.asList("none", "none", "standing []",
+                "ordinal 0",
+                turn + "1/idx:", "none", "standing [" + turn + "1/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
+                turn + "2/idx:", "none", "standing [" + turn + "2/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
                 "ROLE.CLIENT"), seen);
 
         long request = RuntimeTraceContext.beginRequest(DN, "accept");
