@@ -31,7 +31,8 @@ public class LibraryCatalogTest {
         List<String> transports = new ArrayList<>(LibraryCatalog.transports());
         assertEquals(Arrays.asList("HADOOP_IPC", "HDFS_SASL",
                 "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "HBASE_RPC",
-                "ZOOKEEPER", "LOCAL_IO", "TIMED_WAIT"), transports);
+                "ZOOKEEPER", "ZK_QUORUM", "LOCAL_IO", "TIMED_WAIT"),
+                transports);
         LibraryCatalog.Door open = LibraryCatalog.demandedDoor(
                 "<java.io.FileOutputStream: void <init>(java.io.File)>");
         LibraryCatalog.Door rename = LibraryCatalog.demandedDoor(
@@ -95,7 +96,12 @@ public class LibraryCatalogTest {
         }
         LinkedHashSet<String> response = new LinkedHashSet<>();
         List<String> dataTransfer = new ArrayList<>();
+        List<String> learnerStream = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            if (door.transport.equals("ZK_QUORUM")) {
+                learnerStream.add(door.doorMethod() + " " + door.anchor + " "
+                        + door.after + " " + door.faults);
+            }
             if (!door.atCalls() && door.method.startsWith(IPC)) {
                 response.add(door.doorMethod());
                 assertEquals("org.apache.hadoop.ipc.Client", door.family());
@@ -107,6 +113,11 @@ public class LibraryCatalogTest {
         assertEquals(Arrays.asList("FAULT:HADOOP_IPC:RESPONSE at "
                         + "org.apache.hadoop.ipc.Client#getRpcResponse"),
                 new ArrayList<>(response));
+        String quorum = "org.apache.zookeeper.server.quorum.";
+        assertEquals(Arrays.asList("FAULT:ZK_QUORUM:READ at " + quorum
+                        + "Learner#syncWithLeader <" + quorum + "Learner: void "
+                        + "readPacket(" + quorum + "QuorumPacket)> false "
+                        + "[java.net.SocketTimeoutException]"), learnerStream);
         String proto = "org.apache.hadoop.hdfs.protocol.proto."
                 + "DataTransferProtos$";
         assertEquals(Arrays.asList("REQUEST <org.apache.hadoop.hdfs.protocol."

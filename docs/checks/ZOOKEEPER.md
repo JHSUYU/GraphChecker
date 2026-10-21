@@ -10,12 +10,13 @@ Tree read: `/bigtemp/vnr3ne/wt/zookeeper-unified` (`gc/zk-unified` 8f18cf3a4, br
   replay. Not wired: QuorumPeers, `QuorumBase`/`QuorumUtil`/`QuorumPeerTestBase.MainThread` ensembles, and clients made
   outside `createClient`.
 - Messages: a client request is one message (`CausynthZk`), from `ClientCnxn.queuePacket` to Prep and then
-  FinalRequestProcessor. Not wired: responses, watches, the ConnectRequest handshake, Learner<->Leader `QuorumPacket`s and
-  election (`QuorumCnxManager`) messages. The `zookeeper-hb` tree adds a RESPONSE door.
+  FinalRequestProcessor. Not wired: responses, watches, the ConnectRequest handshake and election (`QuorumCnxManager`)
+  messages. The `zookeeper-hb` tree adds a RESPONSE door. On `gc/zk-learner` (2026-10-21) every Learner<->Leader
+  `QuorumPacket` is a `ZK_QUORUM` message (`CausynthQuorum`, below).
 - FAULT doors: `ZOOKEEPER WRITE` on `ZooKeeper#create` (both overloads), `#setData`, `#delete` and `#multiInternal`, placed
   after `submitRequest`. The write commits and the caller sees ConnectionLoss or SessionExpired (no OperationTimeout:
   no client code raises it, only `KeeperException`'s own classes name it). Reads,
-  `setACL` and the quorum socket have no door.
+  `setACL` and the election socket have no door; the learner stream's sync reads have one (`ZK_QUORUM READ`, below).
 - CLOCK: `Time.currentElapsedTime` and `nanoTime`, with a forward window of up to 30 days. CONFIG: JVM getters such as
   `Integer.getInteger`, `Boolean.getBoolean` and `System.getProperty`+parse. ZooKeeper's `ZKConfig`/`QuorumPeerConfig`
   getters are not catalog rows.
@@ -47,9 +48,15 @@ would need `throw new SessionExpiredException()`, but 09 is dropped anyway (NO_P
 
 ### The Learner<->Leader socket stream, per quorum-path site
 
-Today there is no door on `QuorumPacket` traffic: `Learner.writePacket`/`readPacket` over `leaderOs`/`leaderIs`, and
-`LearnerHandler`'s `queuePacket`/`sendPackets` with `ia.readRecord`, all via BinaryOutputArchive. The election stream
-(`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has none either.
+Since `gc/zk-learner` (2026-10-21) every `QuorumPacket` of a learner stream (a leader or observer master and its
+learner) is a `ZK_QUORUM` `REQUEST` message (tree `CausynthQuorum`; STATUS "Per-system surface", "tree: transport"): sent
+where its producer hands it to the stream (`LearnerHandler.queuePacket`, `Learner.writePacket`), put on the wire where its
+bytes are written, under the learner end's local port, the direction and its place in it, and served by the reading end
+(`Learner.readPacket`, `LearnerHandler.run`'s reads) until its next read or the end of the learner's role or handler. Its FAULT door: `ZK_QUORUM READ`, a
+`SocketTimeoutException` before each read of a sync (`Learner.readSyncPacket`, every read of `syncWithLeader`); the
+broadcast loop's reads are no door. The envelope's fields (`QuorumPacket.zxid`, `type`) and the txn record in its `data`
+bytes are not carried (TODO "ZooKeeper" 5): a receiver's zxid is its own constant. The election stream
+(`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has no door.
 
 | site | crosses the learner stream? | door it would need |
 |---|---|---|
