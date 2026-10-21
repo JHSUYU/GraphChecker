@@ -29,7 +29,7 @@ for name in "${names[@]}"; do
     read -r dir arg <<<"$(case_dir_of "${graphchecker}" "${id}")"
     [[ "${arg}" != - ]] || arg=""
     spec=$(bash -c 'source "$1" "$2" "$3" >/dev/null && [[ "$(basename "${repo}")" == "$4" ]] && \
-        echo "$(zk_test_module)|${test_class}|${test_method}|${zk_jvm_properties[*]-}"' \
+        echo "$(zk_test_module)|${test_class}|${test_method}|${zk_run_properties[*]} ${zk_jvm_properties[*]-}"' \
       _ "${graphchecker}/experiments/lib/case-env.sh" "${dir}" "${arg}" "${name}") || continue
     IFS='|' read -r module test_class test_method properties <<<"${spec}"
     started=${SECONDS} skip=0

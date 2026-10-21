@@ -1,5 +1,8 @@
 
 zk_module=
+# Every workload JVM, recorded, replayed or native (build.sh): one commit worker, so a quorum's commits apply in one
+# order; no snapshot within a case (a background snapshot's timing differs run to run).
+zk_run_properties=(-Dzookeeper.commitProcessor.numWorkerThreads=1 -Dzookeeper.snapCount=1000000)
 system_jar_first=false
 system_scope=()
 system_sources=(
@@ -64,7 +67,7 @@ zookeeper_spec() {
 }
 
 system_build() {
-  ZK_TEST_PROPERTIES="${zk_jvm_properties[*]-}" MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${ZOOKEEPER_MAVEN_REPO:-${GC_M2}/zookeeper${repo//\//_}}} \
+  ZK_TEST_PROPERTIES="${zk_run_properties[*]} ${zk_jvm_properties[*]-}" MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${ZOOKEEPER_MAVEN_REPO:-${GC_M2}/zookeeper${repo//\//_}}} \
     bash "${system_dir}/build.sh" "${repo}" "$(zk_test_module)" "${test_class}" \
     "${test_method}"
 }
@@ -75,6 +78,7 @@ system_jvm_properties() {
     "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU="
     "-Dlogback.configurationFile=${system_dir}/logback.xml"
     "-Dcausynth.cluster.automatic=true"
+    "${zk_run_properties[@]}"
     "${zk_jvm_properties[@]+"${zk_jvm_properties[@]}"}"
   )
 }
