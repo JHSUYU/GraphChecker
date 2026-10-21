@@ -181,7 +181,12 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   ran on its last task's frames and each send nested under the one before (HBA1: 3777 frames). Work
   its starter runs itself (an executor that runs a task on the calling thread) stands on the
   starter's frames already and opens the start frame alone (`Start#ranHere`). A queue item's claim
-  lasts until the consumer takes its next item in the same work (`#claimItem`), and carries whoever
+  lasts until the consumer takes its next item in the same work (`#claimItem`) or until the region
+  entry it was taken inside exits, whatever that entry opened -- an occurrence, a fold's marker or
+  unnamed work's (`#regionExit`: the claims at or below the depth the entry was made at close with
+  their scope; a claim taken before the entry, as a queue loop's condition calling a folded
+  accessor, outlives it; ZooKeeper's `LearnerHandler#sendPackets`, folded into its sender thread's
+  run, left its last packet's start frames standing, FRAME_UNBALANCED), and carries whoever
   put the item there, whichever node the consumer serves otherwise: Hadoop IPC's one
   `RpcRequestSender` per connection sends every in-JVM DataNode's calls (V22: refusing items of
   another node dropped their CLAIMs, the order stalled, and a daemon heartbeat took the key update).
