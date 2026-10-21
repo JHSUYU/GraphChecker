@@ -958,7 +958,8 @@ RESPONSE, ..)` at the reply, client `MessageDoors.inbound(.., RESPONSE, ..)` whe
 - add the markers of §E (FinalRequestProcessor:674 with three ids, ZKDatabase:341 with two, ZooKeeperServer:2201 and the
   ten study sites);
 - write the four workloads (Z1.md §2 ii/iii, Z2.md §1/§2 outlines; each must PASS natively under JDK 8, the two quorum
-  ones 10/10);
+  ones 10/10). The two quorum ones are on tree branch `gc/zk-quorum-bugs` (`CausynthQuorumHarness`,
+  `CausynthTruncSyncTest`, `CausynthObserverMasterSyncTest`; native 10/10 each, `docs/checks/ZOOKEEPER.md` §E);
 - build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
