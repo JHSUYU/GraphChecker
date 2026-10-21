@@ -783,7 +783,7 @@ to no open case's benefit): NC7's corpus composes the fault claim first (MARKER_
 NC12's confirmed root) in 114 s with 798 z3 runs. The sound F4 needs new records (design below). PARKED (lead,
 2026-10-20): 2-3 days of identity/schedule work for two study cases whose results already stand as named bounds (hbase-adhoc-08
 NC14-08 and hbase-adhoc-14: every claim up to `campaign_max_claims` refuted by the client's program order) fails the owner's
-workaround-over-grinding rule. Build it when a case's verdict depends on it. Cases it bounds now (each a named bound, `campaign_max_claims` or the campaign budget, every claim refuted by CONFIRM after a full replay, about 8-11 min a claim for CONFIRM plus 2-21 min for its COMPOSE): hbase-adhoc-08 NC14-08 (9 claims, 6507 s), hbase-adhoc-14 NP10-14 (2 claims before the budget, 11129 s: COMPOSE 874 and 1265 s, CONFIRM 664 and 510 s; the merge's `encodedRegionsMap` read made to miss the parent: a GC's `deleteRegion` before the merge, CreateTable's step after the read), hbase-adhoc-15 NP9-15 (9 claims, CONFIRM 475-531 s each, COMPOSE 154-730 s each, 11381 s: the merge before CreateTable's steps and the OPENED reports), hbase-bugs-ns-rsgroup-removal NC7 (its program-order claims; NC12's fault claim confirmed).
+workaround-over-grinding rule. Build it when a case's verdict depends on it. ZooKeeper's tree records F4 itself: a synchronous caller takes its reply as a RECV where it wakes (`CausynthZk#taken`, STATUS "tree: transport"), which HBase's tree could do at `FutureUtils#get`'s return. Cases it bounds now (each a named bound, `campaign_max_claims` or the campaign budget, every claim refuted by CONFIRM after a full replay, about 8-11 min a claim for CONFIRM plus 2-21 min for its COMPOSE): hbase-adhoc-08 NC14-08 (9 claims, 6507 s), hbase-adhoc-14 NP10-14 (2 claims before the budget, 11129 s: COMPOSE 874 and 1265 s, CONFIRM 664 and 510 s; the merge's `encodedRegionsMap` read made to miss the parent: a GC's `deleteRegion` before the merge, CreateTable's step after the read), hbase-adhoc-15 NP9-15 (9 claims, CONFIRM 475-531 s each, COMPOSE 154-730 s each, 11381 s: the merge before CreateTable's steps and the OPENED reports), hbase-bugs-ns-rsgroup-removal NC7 (its program-order claims; NC12's fault claim confirmed).
 - The chains it must state. nsrg runs: R1's handler turn, then its RESPONSE, then the reply reader (`Anchor:r1`, netty),
   where `RawAsyncHBaseAdmin`'s `RpcCallback` completes the RPC future G. Then `AsyncMasterRequestRpcRetryingCaller`'s
   `whenComplete` continuation C, registered on G, completes the caller's future F, and the test thread's
@@ -959,6 +959,8 @@ native 5/5). Left:
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
 - push the result as the fork's `graphchecker/zookeeper-checks` (`experiments/zookeeper/trees.tsv` already names it).
+
+The tree's RESPONSE door has the caller take its reply where it wakes (a RECV, `CausynthZk#taken`): with the reply received only on the send thread (HBase's shape), COMPOSE ordered a synchronous caller's earlier calls past the server's later work (TODO HBase 15's F4), and quota-init's claims were pure pairings refuted after 300 s each (ZA2-quota).
 
 **2. The client-level cases** (need only `T`): zk-bugs-quota-init, zk-bugs-election-offer, zk-bugs-container-reuse,
 zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read each target occurrence off a SEED (D9;
