@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/client0#epoch0/region/REGION.a475fdb9-eddc-38d7-879f-60c47a45ec39/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.hadoop.hbase.master.ActiveMasterManager: int getActiveMasterInfoPort()\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": []
+  },
+  "solverRuns": 4,
+  "seedSessionId": "seed-result-e110d6b5",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {},
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": []
+}

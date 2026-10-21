@@ -11,7 +11,7 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## H. HBase (second session handover, 2026-10-20) -- read this first if you take over HBase
+## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 
 The owner's goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check" (RULES "HBase: the goal and its scope").
 The first session (2026-10-19, a lead and five coding agents) built the HBase platform on `system/solr`'s engine; the owner
@@ -49,35 +49,26 @@ the adapter and the named workarounds (STATUS "Per-system surface", HBase column
 encoded-region map as a ConcurrentHashMap (14), 34's workload, the light loads of 24 and 07, nsrg's tracked group map,
 #11's automatic-mode active time (start code + a configured skew, per-master constant keys), the state guards of 07, 11, 12
 comparing the enum they read, 13's merge-qualifier map and synchronous janitor scan, and one region-server load report per
-active master.
+active master. Its final head is b5d5cc6a20 (2026-10-21): plus the ZooKeeper tombstone hooks and the procedure member's
+narrow anchor (24), a finished procedure's last hand-off after its locks are released (13), and 07's focused workload
+`TestCausynthRestoreSnapshot`.
 
-**Results** (each row: `docs/checks/HBASE.md` §E and STATUS "HBase checks"; run dirs `/bigtemp/vnr3ne/gc-out/hbase-<agent>/accept-<run>`):
+**Results:** the final series (2026-10-20/21) is `results/hbase/README.md` on `system/hbase`: every case's final `.smt`,
+claim, verdict, time breakdown and closure size, from the run dirs `/bigtemp/vnr3ne/gc-out/hbase-final/accept-<run>`
+(F1* concurrent, kept under 30 min; F2* alone; F3S alone and scoped; `*STOP*` dirs are stopped runs, evidence only). The five
+bugs PASS: #12 10/10, 04 = HBASE-30484 10/10, 22 = HBASE-30483 10/10, #13 10/10, #11 8/10; 34 and 24 SAT confirmed (not new
+bugs); 21 UNSAT substantive; 19 20 28 35 37 31 UNSAT vacuous; 07 08 10 11 12 14 15 named bounds (client program order,
+TODO HBase 15); 13 RUN_DEFECT, vacuous (TODO HBase 19). Earlier runs per case: `docs/checks/HBASE.md` §E and STATUS "HBase
+checks".
 
-| case | result | run |
-| --- | --- | --- |
-| hbase-bugs-backup-lock-reply-lost (#12) | **PASS**: SAT MARKER_FLIPPED (the lock CAS's reply lost), reproduced 10/10, control 0/10 | rpc R5-bak |
-| hbase-adhoc-04 = HBASE-30484 | **PASS**: SAT MARKER_FLIPPED (a REQUEST fault on the observer's GetActiveMaster), reproduced 7/10, control 0/10 | rpc NR3-04 |
-| hbase-adhoc-22 = HBASE-30483 | **PASS**: STATE_PAIRING_FLIPPED, no fault, reproduced 10/10, control 0/10 | checks NC15-22 |
-| hbase-bugs-ns-rsgroup-removal (#13) | **PASS**: SAT MARKER_FLIPPED (the master's namespace hbase:meta Mutate REQUEST fault), reproduced 10/10, control 0/10 | checks NC12-nsrg, repro-NC12-nsrg-1 |
-| hbase-bugs-master-active-time (#11) | **PASS**: SAT MARKER_FLIPPED (master1's configured skew -2001 ms), reproduced 3/10, control 0/10 | zk NZ12-mat, repro-NZ13-mat |
-| hbase-adhoc-34 | **PASS**: SAT MARKER_FLIPPED (a ZooKeeper READ fault on refreshKeys), reproduced 10/10, control 0/10 | zk NZ3-34 |
-| hbase-adhoc-21 | UNSAT_CLOSED at FIXED_POINT, substantive | checks NC16-21 |
-| hbase-adhoc-19, 20, 28, 35 | UNSAT, vacuous by construction (class C) | checks NC18-19, NC19-20; platform NP4-28, NP2-35 |
-| hbase-adhoc-08, 10, 11, 12, 14, 15 | named bound: SAT_UNCONFIRMED at the claim cap or budget, every claim refuted by CONFIRM (mostly the client thread's program order, TODO HBase 15; 10: a later writer outside every activation, TODO HBase 21) | checks NC14-08; rpc NR19-10, NR18-11, NR16-12, NR8-31; platform NP10-14, NP9-15 |
-| hbase-adhoc-24 | **SAT, CONFIRMED in the VM**: STATE_PAIRING_FLIPPED, no moved root -- the member's barrier read held past the coordinator's timeout cleanup reads no node (TODO HBase 10); not reproduced natively (no native STORE_HOLD) | e10 X105-24 |
-| hbase-adhoc-37 | UNSAT, vacuous: its workload has no absent window (TODO HBase 10) | zk HZ2-37 |
-| hbase-adhoc-31 | UNSAT_CLOSED, vacuous: the start-code compare reads run constants (TODO HBase 11); its RUN_DEFECT was 3 stale EXPLORE gaps, superseded by the ledger since hbase-e19b | final F1H-adhoc-31 |
-| hbase-adhoc-13 | UNSAT, vacuous: the seed's order holds now (TODO HBase 19 fixed, tree finished-step hand-off); the .smt's check read states no version (the VM's map writer set incomplete) | e19 X193-13 |
-| hbase-adhoc-07 | no verdict: stopped at EXPLORE round 25 (1811 verdicts, 469 in flight; replays ~22 min, 3.7 GB); the exclusive run decides | platform NP20STOP-07-exclusiveDecides |
-
-**Where things are:** the second session's briefs, helpers and evidence `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/`
-(COMMON.txt, H*.txt briefs, `launch.sh`, `wait-run.sh`, `watchdog.sh`, `readings.md`, the gate logs, H5's `reask/`); the
-first session's `/bigtemp/vnr3ne/analysis/hbase-2026-10-19/`; run outputs `/bigtemp/vnr3ne/gc-out/hbase-{platform,zk,rpc,
-checks,reask}`; shared snapshots `/u/vnr3ne/gc-run/hb-int-1..13` (the newest: `hb-int-13`), the agents' `hb2-*`; shared tree
-sets `/bigtemp/vnr3ne/wt/hb-int-trees-1..4` (Maven repositories `/bigtemp/vnr3ne/m2/hbase-int*`; the newest, `-4` =
-fb3ca18bb6, predates the last tree commits: rebuild for the exclusive series), the agents' `hb2-*-trees-*`; the image
-`/bigtemp/vnr3ne/vm-force12`. Old snapshots and tree sets can go once nothing reads them (`tools/rounds/snapshot-gc.sh`;
-`git -C /u/vnr3ne/hbase worktree remove`), keeping the PASS runs' (second-session-H*.md name them).
+**Where things are:** the final series' drivers and tables `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/lead/` (`series.sh`,
+`excl.sh`, `excl2.sh`, `final-stats.py`, `collect-results.sh`, the series logs) beside the second session's briefs, helpers
+and evidence in `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/` (`readings.md`, the agents' E1-E4 and H1-H5 reports); run outputs
+`/bigtemp/vnr3ne/gc-out/hbase-final` (and the development runs in `hbase-{platform,zk,rpc,checks,reask,e07,e10,e15,e19,e21,lead}`);
+the final snapshots `/u/vnr3ne/gc-run/hb-int-16` (319428f7d) and `hb-int-17` (e53c3c882); the final tree set
+`/bigtemp/vnr3ne/wt/hb-int-trees-6` (b5d5cc6a20, Maven repository `/bigtemp/vnr3ne/m2/hbase-int6`); the image
+`/bigtemp/vnr3ne/vm-force12`. The parked happens-before work (TODO HBase 15) is branch `hbase-e15` (7940b6d09, not merged) and
+tree branch `gc/hb-e15` (231d8c7246).
 
 ## S. Solr after the final round SGF9 (2026-10-19) -- read this first if you take over Solr
 

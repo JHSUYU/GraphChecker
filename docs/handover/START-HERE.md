@@ -8,37 +8,41 @@ GraphChecker needs the owner's OK). Its integration worktree is `/bigtemp/vnr3ne
 `graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`, pushed; local `/u/vnr3ne/hbase` branch
 `gc/hbase-checks`). Solr and HDFS are finished: STATE §S and §0, on their own branches.
 
-## 1. Where HBase stands
+## 1. Where HBase stands (final series, 2026-10-20/21)
 
 The owner's goal (2026-10-19): "基于我们solr现在这么好的代码基础，完成对hbase的adhod check". The checks are
 `docs/checks/HBASE.md`: 17 study checks plus the owner's five bugs, 22 cases in `experiments/hbase/hbase-cases.tsv`.
-Two sessions (2026-10-19 and the night to 2026-10-20) of a lead and five coding agents built the platform on Solr's engine
-and ran every case. **All five of the owner's bugs PASS** (SAT, confirmed in the VM, reproduced natively, control 0/N):
+**HBase is finished**: every case ran once more on the final engine (the final series, owner 2026-10-20/21: runs under 30
+min kept from a concurrent round, every longer case alone on all 14 hosts, 11 12 14 15 again alone with a scope cut).
+**Every case's final `.smt`, claim, time breakdown and region count are in [`results/hbase/`](../../results/hbase/README.md)**;
+every case's run configuration is in `experiments/hbase/*/case.sh` and `workflow.properties`.
+
+**All five of the owner's bugs PASS** on the final engine (SAT, confirmed in the VM, reproduced natively, control 0/N):
 
 | bug | case | mechanism | native |
 | --- | --- | --- | --- |
 | #12 lost backup-lock reply | hbase-bugs-backup-lock-reply-lost | HBASE_RPC RESPONSE fault on the lock CAS's reply | 10/10 |
-| HBASE-30484 | hbase-adhoc-04 | REQUEST fault on the quota observer's GetActiveMaster: the enable after the snapshot advanced is lost | 7/10 |
-| HBASE-30483 | hbase-adhoc-22 | STATE re-pairing, no fault: the creation's read of the namespace total joined to the truncated table's original count before the asynchronous deletion's release | 10/10 |
-| #13 namespace create vs removeRSGroup | hbase-bugs-ns-rsgroup-removal | REQUEST fault on the master's hbase:meta Mutate: the held insertion retry lets removeRSGroup read 0 namespaces | 10/10 |
-| #11 non-monotonic master active time | hbase-bugs-master-active-time | the new master's configured clock skew -2001 ms (owner-approved direct workaround: active time = start code + a configured skew) | 3/10 |
+| HBASE-30484 | hbase-adhoc-04 | REQUEST fault on the quota observer's GetActiveMaster: the enable after the snapshot advanced is lost | 10/10 |
+| HBASE-30483 | hbase-adhoc-22 | STATE re-pairing, no fault: the creation's read of the namespace total joined to the truncated table's original count | 10/10 |
+| #13 namespace create vs removeRSGroup | hbase-bugs-ns-rsgroup-removal | REQUEST fault on the master's hbase:meta Mutate: removeRSGroup reads 0 namespaces | 10/10 |
+| #11 non-monotonic master active time | hbase-bugs-master-active-time | the new master's configured clock skew -2001 ms (owner-approved workaround: active time = start code + a configured skew) | 8/10 |
 
-The study checks (each row: HBASE.md §E, STATUS "HBase checks"):
-- **PASS:** 34 (a ZooKeeper READ fault on refreshKeys: the key stays missing).
-- **UNSAT, substantive:** 21.
-- **Class C, vacuous by construction:** 19, 20 (the test builds both descriptors it compares), 28 (a configuration constant the JDK
-  decides), 35 (needs a corrupt hbase:meta).
-- **Named bound** (every claim refuted by CONFIRM, mostly because it orders a step against the test thread's synchronous program
-  order, TODO HBase 15; for 10 a hold CONFIRM cannot place, TODO HBase 21): 08, 10, 11, 12, 14, 15.
-- **Vacuous, a run constant:** 31 (the start-code compare has one writer; TODO HBase 11).
-- **SAT, confirmed in the VM:** 24 (the store pairing of the procedure member's barrier read with the barrier's tombstone, TODO HBase 10;
-  not reproduced natively: no native STORE_HOLD).
-- **Vacuous, needs a workload:** 37 (no absent window in its workload: a failover with an unordered reader, TODO HBase 10).
-- **Vacuous, the check's read states no version:** 13 (the seed's order holds since TODO HBase 19's fix and the tree's
-  finished-step hand-off; the second merge's `hasMergeRegions` read is unjoinable, the VM's map writer set incomplete:
-  HBASE.md §E).
-- **No verdict yet:** 07: its replays (~22 min, 3.7 GB each) cannot converge on a shared pool; the exclusive run decides
-  (NP20-07 stopped at EXPLORE round 25 with 1811 verdicts and 469 in flight).
+The study checks (`results/hbase/README.md` has each one's reading):
+- **SAT, confirmed:** 34 (a ZooKeeper READ fault on refreshKeys, 9/10: reachable fault handling, not a new bug); 24 (in the VM:
+  a member's barrier read past the coordinator's timeout reads no node and throws at ZKProcedureMemberRpcs:210, caught there:
+  a misleading log, not a functional bug; no native STORE_HOLD).
+- **UNSAT:** 21 (substantive); 19, 20, 28, 35 (vacuous by construction, class C); 37 (vacuous: no absent window in its
+  workload); 31 (vacuous: start codes are run constants; its row's RUN_DEFECT was stale generation gaps, fixed after the run).
+- **Named bound** (SAT, every claim refuted by CONFIRM as the client thread's synchronous program order, TODO HBase 15):
+  07, 08, 10, 11, 12, 14, 15.
+- **RUN_DEFECT, the formula vacuous:** 13 (the second merge's `hasMergeRegions` read states no version, TODO HBase 19).
+
+**Run a case:** a snapshot of `system/hbase` (`git worktree add --detach`, `mvn -q -o package -DskipTests`), a tree set of the
+fork's `graphchecker/hbase-checks` (`GC_TREES=<dir> HBASE_MAVEN_REPO=<repo> experiments/hbase/prepare-trees.sh hbase-checks`;
+pass the variables inside the command when you use `tools/onlift.sh`, which forwards no environment), then
+`CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force12/j2sdk-image GC_TREES=<tree set> tools/rounds/launch-run.sh <snapshot> <case> <tag>`
+on a head that reaches every worker (never lift02/03, which cannot reach lift15), or every case with
+`tools/rounds/run-series.sh`. OPERATIONS.md §10 has the details.
 
 ## 2. Read, in this order
 

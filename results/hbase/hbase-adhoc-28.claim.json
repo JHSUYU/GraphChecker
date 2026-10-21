@@ -1,0 +1,2261 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/master0#epoch0/region/REGION.891edeb1-f54f-3234-807b-ccd687294675/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.hadoop.hbase.HBaseServerBase: void \u003cinit\u003e(org.apache.hadoop.conf.Configuration,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hbase.HBaseServerBase: void putUpWebUI()\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "2ecffb39cea28923 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "555f985c76297bc7 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "2c12fc0a5f83cf0c of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "dfe36f85d0634f27 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "8e3e657d373387a5 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7f0a00346c2aa0a0 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "897baf4ef266e00f of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "178ac29abc392cfe of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "5a00eaad2af55335 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "8a1931ff18c1b610 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "d7ce0c226b2cfd57 of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "88b76fe25ec5519e of seed-result-23d9878d",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "CONFIG:hbase.regionserver.info.port",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "CONFIG:hbase.regionserver.info.port.auto",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 4,
+  "seedSessionId": "seed-result-23d9878d",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "0"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "-1"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "-1"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "1"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "1"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "16008"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "16008"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "16009"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "16009"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "16010"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "16010"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "2"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "2"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "3"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "3"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "4"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "4"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "5"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "5"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "6"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "6"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 11,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "7"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "7"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "8"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "8"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "9"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "9"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "10"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "10"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "11"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "11"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 16,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "12"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "12"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 17,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "13"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "13"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 18,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "14"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "14"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 19,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "15"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "15"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 20,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "16"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "16"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 21,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "17"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "17"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 22,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "18"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "18"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 23,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "19"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "19"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 24,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "20"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "20"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 25,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "21"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "21"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 26,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "22"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "22"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 27,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "23"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "23"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 28,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "24"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "24"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 29,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "25"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "25"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 30,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "26"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "26"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 31,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "27"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "27"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 32,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "28"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "28"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 33,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "29"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "29"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 34,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "30"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "30"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 35,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "31"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "31"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 36,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "32"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "32"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 37,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "33"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "33"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 38,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "34"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "34"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 39,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "35"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "35"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 40,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "36"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "36"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 41,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "37"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "37"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 42,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "38"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "38"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 43,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "39"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "39"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 44,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "40"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "40"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 45,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "41"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "41"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 46,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "42"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "42"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 47,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "43"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "43"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 48,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "44"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "44"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 49,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "45"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "45"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 50,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "46"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "46"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 51,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "47"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "47"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 52,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "48"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "48"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 53,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "49"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "49"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 54,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "50"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "50"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 55,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "51"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "51"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 56,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "52"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "52"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 57,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "53"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "53"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 58,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "54"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "54"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 59,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "55"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "55"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 60,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "56"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "56"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 61,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "57"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "57"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 62,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "58"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "58"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 63,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "59"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "59"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 64,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "60"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "60"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 65,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "61"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "61"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 66,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "62"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "62"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 67,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "63"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "63"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 68,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "64"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "64"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 69,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "65"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "65"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 70,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "66"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "66"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 71,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "67"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "67"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 72,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "68"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "68"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 73,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "69"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "69"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 74,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "70"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "70"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 75,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "71"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "71"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 76,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "72"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "72"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 77,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "73"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "73"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 78,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "74"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "74"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 79,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "75"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "75"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 80,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "76"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "76"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 81,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "77"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "77"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 82,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "78"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "78"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 83,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "79"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "79"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 84,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "80"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "80"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 85,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "81"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "81"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 86,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "82"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "82"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 87,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "83"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "83"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 88,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "84"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "84"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 89,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "85"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "85"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 90,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "86"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "86"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 91,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "87"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "87"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 92,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "88"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "88"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 93,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "89"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "89"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 94,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "90"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "90"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 95,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "91"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "91"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 96,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "92"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "92"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 97,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "93"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "93"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 98,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "94"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "94"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 99,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "95"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "95"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 100,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "96"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "96"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 101,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "97"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "97"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 102,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "98"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "98"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 103,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "99"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "99"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 104,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "100"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "100"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 105,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "101"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "101"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 106,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "102"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "102"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 107,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "103"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "103"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 108,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "104"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "104"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 109,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "105"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "105"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 110,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "106"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "106"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 111,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "107"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "107"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 112,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "108"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "108"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 113,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "109"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "109"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 114,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "110"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "110"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 115,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "111"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "111"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 116,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "112"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "112"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 117,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "113"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "113"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 118,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "114"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "114"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 119,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "115"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "115"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 120,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "116"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "116"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 121,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "117"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "117"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 122,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "118"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "118"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 123,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "119"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "119"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 124,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "120"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "120"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 125,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "121"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "121"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 126,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "122"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "122"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 127,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:hbase.master.info.port": "123"
+      },
+      "moved": {
+        "CONFIG:hbase.master.info.port": "123"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "2ecffb39cea28923 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "555f985c76297bc7 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "2c12fc0a5f83cf0c of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "dfe36f85d0634f27 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "8e3e657d373387a5 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7f0a00346c2aa0a0 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "897baf4ef266e00f of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "178ac29abc392cfe of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "5a00eaad2af55335 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "8a1931ff18c1b610 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "d7ce0c226b2cfd57 of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "88b76fe25ec5519e of seed-result-23d9878d",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 10), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "CONFIG:hbase.regionserver.info.port",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "CONFIG:hbase.regionserver.info.port.auto",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

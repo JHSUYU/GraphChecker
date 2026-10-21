@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/client0#epoch0/region/REGION.8ecfb1e5-24e5-323e-afe9-a1e1eb581198/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.hadoop.hbase.backup.impl.BackupManager: void startBackupSession()\u003e@0/\u003corg.apache.hadoop.hbase.backup.impl.BackupSystemTable: void startBackupExclusiveOperation()\u003e@0",
+  "claim": {
+    "kind": "MARKER_FLIPPED",
+    "valuationOrdinal": 1,
+    "movedRoots": {
+      "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.9fa8e2db-6f36-32e4-8d70-e0a3aeb30973": "true"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "seed-result-d509acde",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.53d431fc-f073-3510-9caf-574665265248",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.bc0bc2d4-8e94-3d3b-aef4-8b37c211219e",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.744f2a40-a946-328e-8a5f-a5a173cf59bc",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.0da73a36-af37-33ff-963c-682d7791b2f9",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.df9b2c16-1857-3c54-bf73-4c8a7c4f39db",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 5,
+  "seedSessionId": "seed-result-d509acde",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.9fa8e2db-6f36-32e4-8d70-e0a3aeb30973": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": [
+        "path_fatal__0",
+        "target_path_partition",
+        "valuation__M_Z_field_REGION_678dfe9c_beca_356b_8093_22d00e179f4e_in_9fa8e2db_6f36_32e4_8d70_e0a3aeb30973_occ_36696a39c499369cff6fb5d64191e46f3d94891f82bc422f530012f1b0d84059_java_lang_Boolean"
+      ]
+    },
+    {
+      "ordinal": 1,
+      "status": "sat",
+      "assignment": {
+        "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.9fa8e2db-6f36-32e4-8d70-e0a3aeb30973": "true"
+      },
+      "moved": {
+        "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.9fa8e2db-6f36-32e4-8d70-e0a3aeb30973": "true"
+      },
+      "selectedPathId": "701ff673bc7b52bb",
+      "selectedSessionId": "785f28a94b52262f-0283ad4d",
+      "fatalObserved": true,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "seed-result-d509acde",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.53d431fc-f073-3510-9caf-574665265248",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.bc0bc2d4-8e94-3d3b-aef4-8b37c211219e",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.744f2a40-a946-328e-8a5f-a5a173cf59bc",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.0da73a36-af37-33ff-963c-682d7791b2f9",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.678dfe9c-beca-356b-8093-22d00e179f4e.in.df9b2c16-1857-3c54-bf73-4c8a7c4f39db",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

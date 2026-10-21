@@ -1,4 +1,4 @@
-# TODO: HDFS finished; Solr ended; HBase: all five owner bugs PASS, the exclusive series next (handover 2026-10-20)
+# TODO: HDFS finished; Solr ended; HBase finished (final series 2026-10-21: all five owner bugs PASS, results/hbase/)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -552,17 +552,17 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 
 Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
 the agents' handover notes are [hbase-agents/](hbase-agents/) (`H1-H5.md` first session, `second-session-H*.md` second
-session: exact run dirs, snapshots, tree sets, commits). All five of the owner's bugs PASS; every study check has a result
-class except 07 (no verdict yet: the exclusive run decides; its §E row says what NP20-07 reached).
+session: exact run dirs, snapshots, tree sets, commits). All five of the owner's bugs PASS; every case has its final .smt and
+result in `results/hbase/` (the final series, item 1).
 
-**1. The owner's exclusive series** (owner 2026-10-20: "最终我们会让每个case独占集群跑一遍，这种极致并行往往可以优化性能"):
-every case once alone on all 14 hosts (workers lift02-15; the head on a host that reaches every worker, never lift02/03 or
-lift11), on one snapshot of `system/hbase` and one shared tree set of `gc/hbase-checks`'s head built with all workloads
-(the last shared sets, `hb-int-trees-3`/`-4`, predate H1's region-server report change and H2's last #11 commits: rebuild),
-image vm-force12, recording each case's verdict and its stage times (`analysis/solr-2026-10-14/final-stats.py`) as HDFS's
-EX1 (PERFORMANCE.md §6). Budgets: 14400 s, and 43200 s for 07 (measured on NP20-07: ~50 concurrent replays at 3.7 GB each
-when alone, 500-800 replays of 25-30 min, then a serial claim loop of up to 8 CONFIRMs of ~30 min). Order: the five bugs
-first, then the study checks. The heavy cases are not to be narrowed for it (owner: heavy replays are fine).
+**1. The owner's final series: done** (2026-10-20 17:40 to 2026-10-21 12:32, `results/hbase/README.md`). Every case ran on
+the final engine (`system/hbase` snapshots `hb-int-16`/`-17`, tree `graphchecker/hbase-checks` b5d5cc6a20): the five bugs
+PASS (10/10, 10/10, 10/10, 10/10, 8/10). Owner rulings on the way: runs under 30 min kept from the concurrent round ("没超过30min
+的就不用了"); every longer case alone on all 14 hosts ("用时超过30min的，都重跑一下。集群整个占满", as Solr's SGF9); 11 12 14 15
+again alone with a scope cut ("11，12，14，15为什么这么慢？？？没办法限制scope吗": no client faults, the first claim, a 3600 s
+campaign, a 16384 MB engine heap), the configuration in the tree ("代码最终都是要在system/hbase上的。只是我们跑每个case可以说配置
+有所不同"). What the heavy cases cost (10 alone: 12638 s, of it EXPLORE 86 min over 1145 obligations and four claims' COMPOSE
++ CONFIRM ~105 min): item 15 (the client program order) would remove the refuted claims at their source.
 
 **2. master-active-time (#11): done** (NZ12-mat PASS, 2026-10-20) through the owner's direct workaround: in automatic mode a
 master's active time is its start code plus a configured skew (`causynth.hbase.master.clock.skew.ms.first|.later`, constant
