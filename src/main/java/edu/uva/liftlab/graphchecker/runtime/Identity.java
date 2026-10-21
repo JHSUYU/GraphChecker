@@ -980,6 +980,16 @@ public final class Identity {
         return state().activeRegion() != null;
     }
 
+    public static List<String> standingOccurrences() {
+        List<Region> regions = state().regions;
+        List<String> standing = new ArrayList<String>();
+        for (int index = regions.size() - 1; index >= 0; index--) {
+            OccurrenceAddress occurrence = regions.get(index).occurrence;
+            if (occurrence != null) standing.add(occurrence.render());
+        }
+        return standing;
+    }
+
     public static boolean openedNone() {
         State state = state();
         Region innermost = state.region();

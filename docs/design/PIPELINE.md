@@ -4130,7 +4130,11 @@ is, the recording weave's own call-site context states at run time (`CausynthTra
 #currentCallSiteContext`, pushed with that `siteId` and callee before the invoke), so no unit index is
 mapped to a bytecode offset; an invoke no context wraps matches no row. Inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
-  occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
+  occurrence (`CausynthTraceRecorder#enclosingOccurrences`: the thread's regions' current
+  occurrences, `Identity#standingOccurrences`, innermost first -- a region a hop opened inside it
+  names, as ZooKeeper's `PrepRequestProcessor.run()` is named by `CausynthZk.serve` per request,
+  stands under that name while the hop stands; read off the entry instead, ZA9-rseq's fatal in Prep
+  stood in no occurrence and 10 of 10 native runs missed the anchor) has the row's own id
   (`RecordingPlant#marker`);
 - the tree's `CausynthSymbolicSource.symbolize` of a HOOK row's root writes its value into the field
   the hook names (`RootMint#configuredSource` -> `RecordingPlant#hook`, the replay's own
