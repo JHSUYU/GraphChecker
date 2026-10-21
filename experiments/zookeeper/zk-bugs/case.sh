@@ -8,6 +8,11 @@ export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
 case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-quota|trunc-sync|observer-master}" in
   quota-init)
     # the pasted bug 2: createQuota's two RPCs, a lost reply between them, the retry's getData(stat) NoNode
+    # Claims: COMPOSE's recorded valuation pairs the target read with writes the synchronous caller made before it
+    # (TODO HBase 15's F4), CONFIRM refutes each by the client's program order at the order timeout, and the fault world
+    # comes after them: 20 claims, and an order timeout of 2x the slowest replay (56 s, ZA3-quota) for CONFIRM's holds.
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=120000)
     test_class=org.apache.zookeeper.test.CausynthQuotaRetryTest
     test_method=raisesARetriedHardQuota
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#6"
@@ -21,6 +26,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   election-offer)
     # the pasted bug 3: LeaderElectionSupport.start's getData NoNode on a vanished competitor -> FAILED, offer orphaned
     zk_module=zookeeper-recipes/zookeeper-recipes-election
+    # Claims as quota-init's (ZA3/ZA4-offer: pairings refuted by the client's program order before the real one)
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=120000)
     test_class=org.apache.zookeeper.recipes.leader.LeaderElectionSupportTest
     test_method=testNodes3
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#2"
