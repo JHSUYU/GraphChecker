@@ -424,13 +424,45 @@ public final class ClaimPolicy {
         }
 
         Decision ownWitness(boolean configuration) {
-            return recordingDecides ? movedAsHappened(configuration, true)
-                    : movedFree(configuration, true);
+            if (!recordingDecides && !polarityDecides) return null;
+            for (int index = 0; index < outcomes.size(); index++) {
+                Composer.Valuation valuation =
+                        outcomes.get(index).valuation();
+                if (valuation.ordinal() == 0
+                        || faultsOf(outcomes.get(index)) != faults
+                        || !ranked(composition, outcomes.get(index),
+                        configuration)
+                        || !composition.unplanted(valuation.moved().keySet())
+                        .isEmpty()) {
+                    continue;
+                }
+                for (Composer.Disjunct own : composition.disjuncts()) {
+                    if (!own.fatalObserved() || !composition.ranRoots(own,
+                            valuation.moved())) {
+                        continue;
+                    }
+                    List<String> held = composition.worldRun(own);
+                    held.addAll(composition.worldClocks(own));
+                    Outcome asked = outcomeOn(composition, asks, valuation,
+                            held, false, own.selector(), 0L);
+                    List<GapRow> named = new ArrayList<GapRow>();
+                    if (!asked.witness() || !ownRun(asked)
+                            || unattested(composition, asked, named)) {
+                        continue;
+                    }
+                    gaps.addAll(named);
+                    outcomes.set(index, asked);
+                    if (recordingDecides) outcomes.set(0, asRecorded);
+                    return claimed(mechanism(composition, asks, asked,
+                            clockDriven), asked);
+                }
+            }
+            return null;
         }
 
         Decision movedRoot(boolean configuration) {
-            return recordingDecides ? movedAsHappened(configuration, false)
-                    : movedFree(configuration, false);
+            return recordingDecides ? movedAsHappened(configuration)
+                    : movedFree(configuration);
         }
 
         private final Map<Integer, Outcome> settled =
@@ -453,21 +485,15 @@ public final class ClaimPolicy {
             return done;
         }
 
-        private Decision movedAsHappened(boolean configuration,
-                                         boolean own) {
+        private Decision movedAsHappened(boolean configuration) {
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome free = outcomes.get(index);
-                if (own ? !ownCandidate(free, configuration)
-                        : !movedWitness(free, configuration)) {
-                    continue;
-                }
+                if (!movedWitness(free, configuration)) continue;
                 Outcome asked = settle(index, free);
-                List<GapRow> named = own ? new ArrayList<GapRow>() : gaps;
-                if (!asked.witness() || (own && !ownRun(asked))
-                        || unattested(composition, asked, named)) {
+                if (!asked.witness()
+                        || unattested(composition, asked, gaps)) {
                     continue;
                 }
-                if (own) gaps.addAll(named);
                 outcomes.set(index, asked);
                 outcomes.set(0, asRecorded);
                 return claimed(mechanism(composition, asks, asked,
@@ -476,30 +502,19 @@ public final class ClaimPolicy {
             return null;
         }
 
-        private Decision movedFree(boolean configuration, boolean own) {
-            if (own && !polarityDecides) return null;
+        private Decision movedFree(boolean configuration) {
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome found = outcomes.get(index);
-                if (own ? !ownCandidate(found, configuration)
-                        : !movedWitness(found, configuration)) {
-                    continue;
-                }
+                if (!movedWitness(found, configuration)) continue;
                 if (!polarityDecides) {
                     undecidedPolarity(gaps, recorded, "a witness moving "
                             + found.valuation().moved().keySet());
                     return null;
                 }
                 Outcome outcome = settle(index, found);
-                List<GapRow> named = own ? new ArrayList<GapRow>(
-                        settledGaps.get(index)) : gaps;
-                if (own && (!ownRun(outcome)
-                        || unattested(composition, outcome, named))) {
-                    continue;
-                }
-                if (!own) gaps.addAll(settledGaps.get(index));
+                gaps.addAll(settledGaps.get(index));
                 outcomes.set(index, outcome);
-                if (!own && unattested(composition, outcome, gaps)) continue;
-                if (own) gaps.addAll(named);
+                if (unattested(composition, outcome, gaps)) continue;
                 return claimed(mechanism(composition, asks, outcome,
                         clockDriven), outcome);
             }
@@ -517,17 +532,6 @@ public final class ClaimPolicy {
         private int faultsOf(Outcome outcome) {
             return composition.faultsMoved(
                     outcome.valuation().moved().keySet());
-        }
-
-        private boolean ownCandidate(Outcome outcome, boolean configuration) {
-            return outcome.valuation().ordinal() != 0 && outcome.witness()
-                    && faultsOf(outcome) == faults
-                    && ranked(composition, outcome, configuration)
-                    && composition.unplanted(outcome.valuation().moved()
-                    .keySet()).isEmpty()
-                    && ownPairings(outcome)
-                    && composition.ranRoots(outcome.selected(),
-                    outcome.valuation().moved());
         }
 
         private boolean ownRun(Outcome outcome) {
