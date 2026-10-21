@@ -1,4 +1,4 @@
-# TODO: HDFS finished; Solr ended; HBase finished (final series 2026-10-21: all five owner bugs PASS, results/hbase/)
+# TODO: HDFS finished; Solr ended; HBase finished (results/hbase/); ZooKeeper prepared, next (2026-10-21)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -7,7 +7,7 @@ Order:
    optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
 3. HBase: the current work (section "HBase", item 1 is the next runs in order); stopped by the owner on 2026-10-19
    23:10 for a handover to another agent.
-4. ZooKeeper.
+4. ZooKeeper: prepared 2026-10-21 (section "ZooKeeper", items in order; START-HERE.md).
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
@@ -940,27 +940,55 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
   exclusive series does). Not built: checking the read's observed writer instead of holding; it cannot confirm a
   read that saw the wrong version, and with stable steps nothing needs it.
 
-## ZooKeeper (`system/zookeeper` = main today)
+## ZooKeeper (`system/zookeeper`; prepared 2026-10-21 -- the current plan)
 
-**1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
-election-offer and 11741, comparing arm counts and refutations with V25. The ZooKeeper tree with the RESPONSE door is
-`gc/zk-unified-hb` `47ddc8b36`.
+The owner (2026-10-21): ZooKeeper ad hoc checks as HBase, the same rules, the five bugs included, and the adaptation of
+the same kind as HBase's, HDFS's and Solr's ("zookeeper上要做的适配跟hbase,hdfs,solr都是类似的"). The 16 cases, with marker,
+workload, counterfactual and what each needs, are `docs/checks/ZOOKEEPER.md` §E. The agents' notes are
+`docs/handover/zookeeper-agents/Z1.md` (every site and workload on master; the adapter port) and `Z2.md` (the two quorum
+bugs; the design list D1-D9). Items in order:
 
-**2. A quorum adapter.** Every selected ZooKeeper study test is a quorum test. Register each quorum peer as a node;
-open the window once the quorum is up.
+**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`, worktree `/bigtemp/vnr3ne/wt/zookeeper-checks`)
+is the fork's master eab165995 with the three adapter commits cherry-picked (a8c4afcb0 = gc/zk-unified 8f18cf3a4,
+3c9bdc966 = gc/zk-unified-hb f334025ee, d616b13c2 = 47ddc8b36). It is not built and not pushed. Its HEAD does not
+compile against the engine: the RESPONSE door calls `MessageDoors.received`, `restore` and a public `setAside`, which
+GraphChecker b68e720f0 removed. Rewrite that door the way HBase's `CausynthRpc` answers (server `MessageDoors.outbound(..,
+RESPONSE, ..)` at the reply, client `MessageDoors.inbound(.., RESPONSE, ..)` where `readResponse` reads it, plus
+`parsed`); no engine change (Z1.md §3). Then:
+- add the markers of §E (FinalRequestProcessor:674 with three ids, ZKDatabase:341 with two, ZooKeeperServer:2201 and the
+  ten study sites);
+- write the four workloads (Z1.md §2 ii/iii, Z2.md §1/§2 outlines; each must PASS natively under JDK 8, the two quorum
+  ones 10/10);
+- build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
+  (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
+  is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
+- push the result as the fork's `graphchecker/zookeeper-checks` (`experiments/zookeeper/trees.tsv` already names it).
 
-**3. Mark the 10 checked points** (`docs/checks/ZOOKEEPER.md`):
+**2. The client-level cases** (need only `T`): zk-bugs-quota-init, zk-bugs-election-offer, zk-bugs-container-reuse,
+zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read each target occurrence off a SEED (D9;
+`zk-bugs/case.sh` marks the placeholders), then run each case to its verdict as HBase's cases were. The bug checks
+must be SAT, confirmed in the VM and reproduced natively.
 
-```
-01 02 03 04 06 07 10 11 12 13
-```
+**3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
+- D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
+  node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum
+  serves. Clients made outside `createClient` are registered. Closest: CausynthHBaseCluster + CausynthNodes.
+- D7: repeatable runs (large limits, one commit worker, snapCount large, ports and sids in order, woven random delays).
+- D8: election-stream threads attributed to their peer.
+Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
 
-05 is a dead throw; 08 and 09 have no path.
+**4. The learner-stream door** (D4): QuorumPacket as a message (transport ZK_QUORUM, WIRE keyed by link, direction and
+sequence) and a FAULT door on `Learner.readPacket` within `syncWithLeader` only, faults `SocketTimeoutException`
+(`experiments/zookeeper/doors.jsonl`). Closest: HBASE_RPC / CausynthRpc. This makes zk-bugs-trunc-sync runnable, and
+02 04 06 07 10 13.
 
-**4. zk-bugs-container-reuse (#33).** A self-written ClientBase test; STATE re-pairing of the client's node-map lookup
-to the cleanup's delete, the election-offer mechanism.
+**5. zxid carriage on that door** (D5, zk-bugs-observer-master's right .smt). Optional after it: D6, the txn log as a
+store across a restart (zk-bugs-trunc-sync's chain through the log).
 
-**5. Run the group of 13.**
+**6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
+concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism
+is a state pairing, the first claim, a campaign budget), with the configuration in `case.sh`. Then
+`results/zookeeper/` as `results/hbase/`: every case's `.smt`, claim and the time/region table.
 
 ## Cross-cutting (engine), when a system needs it
 

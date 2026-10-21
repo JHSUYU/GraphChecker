@@ -1,0 +1,6 @@
+# The ZooKeeper trees the cases run (each case.sh's repo=, under GC_TREES): the directory name and the branch of the
+# ZooKeeper fork (ZOOKEEPER_FORK, prepare-trees.sh) it is checked out at.  It stands on the fork's master eab165995 (Apache
+# ZooKeeper master, Java 8: maven.compiler.release 8; both ZOOKEEPER-5094 and ZOOKEEPER-5088 present), with the adapter,
+# the cases' target markers and workloads.
+# name	fork branch	what it is
+zookeeper-checks	graphchecker/zookeeper-checks	every ZooKeeper case: the automatic ClientBase cluster (CausynthZkCluster), client requests and replies as messages (CausynthZk), the cases' target markers and workloads

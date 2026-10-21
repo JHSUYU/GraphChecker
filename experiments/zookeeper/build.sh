@@ -20,9 +20,11 @@ mvn "${common[@]}" install:install-file "-Dfile=${jar}" \
   -Dpackaging=jar
 cd "${repo}"
 common+=(-Dcheckstyle.skip -Dspotbugs.skip -Dmaven.javadoc.skip=true)
-mvn "${common[@]}" -DskipTests install -pl "${module}" -am
+[[ "${SKIP_TREE_INSTALL:-0}" == 1 ]] || mvn "${common[@]}" -DskipTests install -pl "${module}" -am
+# ZK_TEST_PROPERTIES: extra -D properties a case's workload needs at JVM start (a static final read at class load)
+read -r -a extra <<<"${ZK_TEST_PROPERTIES:-}"
 mvn "${common[@]}" test -pl "${module}" \
-  -Dtest="${test_class##*.}#${test_method%%\[*}" -Dcausynth.cluster.automatic=true
+  -Dtest="${test_class##*.}#${test_method%%\[*}" -Dcausynth.cluster.automatic=true "${extra[@]+"${extra[@]}"}"
 
 python3 - "${repo}/${module}/target/surefire-reports/TEST-${test_class}.xml" <<'PY'
 import sys

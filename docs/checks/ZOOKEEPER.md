@@ -180,3 +180,54 @@ and #47 each need several flips):
 
 Already cases: `zk-bugs-quota-init` (#01, CausynthQuotaRetryTest#raisesARetriedHardQuota) and `zk-bugs-election-offer` (#05; case.sh
 runs LeaderElectionSupportTest#testNodes3).
+
+## E. The ZooKeeper case list (2026-10-21, on the fork's master eab165995)
+
+The owner (2026-10-21) chose ZooKeeper next, as HBase: the study checks of §D plus five bugs. The bugs are:
+- apache/zookeeper PR 2459 (ZOOKEEPER-5094) and PR 2454 (ZOOKEEPER-5088), whose fixes are fork branches
+  `fix-trunc-sync-shutdown-state` and `fix/observer-master-pending-proposals`;
+- the partially initialized quota (`zk-bugs-quota-init`);
+- the orphaned election offer (`zk-bugs-election-offer`);
+- the container cleanup that deletes a replacement node (`zk-bugs-container-reuse`, #33).
+
+The tree is the fork's master eab165995 (Apache ZooKeeper master, Java 8: `maven.compiler.source/target 1.8`), where both
+PR bugs are present. Every row below was read on it (Z1, Z2: `docs/handover/zookeeper-agents/`); the line numbers of §A-§D
+are branch-3.9's. The case declarations are `experiments/zookeeper/zk-adhoc/checks.tsv` and `zk-bugs/case.sh`; the case
+table with budgets is `experiments/zookeeper/zookeeper-cases.tsv`.
+
+The "needs" column names the work in TODO "ZooKeeper": **T** = the tree (the adapter ported, markers, workloads); **Q** = the
+quorum adapter (D3 automatic quorum cluster, D7 repeatability, D8 election-thread attribution); **L** = the learner-stream
+message and FAULT door (D4); **Z** = zxid carriage on that door (D5); **S** = the txn log as a store (D6, optional).
+
+Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` unless named.
+
+| case | marker (throw, master) | workload | counterfactual | needs | fit |
+| --- | --- | --- | --- | --- | --- |
+| zk-bugs-trunc-sync (ZOOKEEPER-5094) | ZKDatabase.java:341 IllegalStateException "Committed proposal cached out of order" (one annotation, two ids) | to write: `quorum.CausynthTruncSyncTest#aTruncSyncedFollowerRestarts` (3 participants; the PR's harness: hold ACKs, pause startForwarding so a committed txn is sent before NEWLEADER; restart F twice) | one FAULT, depth 0: SocketTimeoutException at the follower's read of NEWLEADER in its TRUNC sync (Learner.readPacket from syncWithLeader); kind as DIFFSyncConsistencyTest's | T Q L (S for the symbolic chain through the log) | B- |
+| zk-bugs-observer-master (ZOOKEEPER-5088) | ZKDatabase.java:341 (the same annotation) | to write: `quorum.CausynthObserverMasterSyncTest#aProposalPendingAtTheObserverMastersStart` (3 participants + 1 observer; ACK hold only; `-Dzookeeper.leaderConnectDelayDuringRetryMs=1000`; 10/10 native passes required) | one STATE re-pairing, depth 0 (maybe 1): the follower OM handler's read of `DataTree.lastProcessedZxid` (LearnerHandler.java:804, branch :849) paired with its version before the follower applied the pending txn | T Q L Z | B-/C |
+| zk-bugs-quota-init | FinalRequestProcessor.java:674 NoNodeException (694 with the adapter; one annotation, three ids) | `test.CausynthQuotaRetryTest#raisesARetriedHardQuota` (self-written on gc/zk-unified; ports unchanged) | WRITE-door ConnectionLoss on createQuota's limit-node create (committed, reply lost); the retry's update branch reads the absent stat node (SetQuotaCommand.java:270) | T | A |
+| zk-bugs-election-offer | FinalRequestProcessor.java:674 (same annotation) | `recipes.leader.LeaderElectionSupportTest#testNodes3` (recipes-election) | STATE re-pairing: toLeaderOffers' getData (LeaderElectionSupport.java:310) of a listed offer to its owner's delete | T | A- |
+| zk-bugs-container-reuse (#33) | FinalRequestProcessor.java:674 (same annotation) | to write: `server.CausynthContainerReuseTest` (ClientBase, as CreateContainerTest; the test starts its own ContainerManager; register its timer thread with the server node) | STATE re-pairing of the test's getData lookup to the cleanup's delete, CONFIRM ordering the cleanup's Prep (PrepRequestProcessor.java:326-344) after the recreate | T | B |
+| zk-bugs-retry-seq-quota (#32) | ZooKeeperServer.java:2201 QuotaExceededException (count hard limit) | to write: `org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest` in zooinspector (ClientBase; `-Dzookeeper.enforceQuota=true`; hard count limit **3** = the node + two children; register the ZooKeeperRetry client; pom deps as the recipes'; `-Pfull-build`) | WRITE-door ConnectionLoss on the first sequential create (ZooKeeperRetry.java:81, the `exists(path)` check :85 never sees the sequential name) | T | A- |
+| zk-adhoc-01 | SessionTrackerImpl.java:317 SessionExpiredException | `server.quorum.QuorumPeerMainTest#testQuorum`; ClientBase stand-in `CausynthQuotaRetryTest#raisesARetriedHardQuota` | CLOCK on the tracker's ExpiryQueue (skew >= the granted timeout) | T (stand-in), Q | B |
+| zk-adhoc-02 | SessionTrackerImpl.java:323 SessionMovedException | `test.QuorumTest#testSessionMovedWithSynchronousSync` (declare the new connection's request) | STATE re-pairing of `session.owner` (REVALIDATE's setOwner, Leader.java:1789) | T Q L | B |
+| zk-adhoc-03 | SessionTrackerImpl.java:330 SessionExpiredException | testQuorum; the same stand-in | CLOCK as 01, inside the createSession-to-Prep gap | T, Q | C |
+| zk-adhoc-04 | ZooKeeperServer.java:1516 CloseRequestException CLIENT_ZXID_AHEAD | `test.ReadOnlyModeTest#testSeekForRwServer` | STATE re-pairing of the follower's lastProcessedZxid with an older apply | T Q L | C |
+| zk-adhoc-06 | quorum/Leader.java:1522 IOException | testQuorum | none of our kinds (disk values, ACKEPOCH, election stream) | T Q L | C |
+| zk-adhoc-07 | quorum/Learner.java:522 IOException | `test.QuorumRestartTest#testRollingRestart` | none (acceptedEpoch from a file; epoch over LEADERINFO) | T Q L | C |
+| zk-adhoc-10 | quorum/ObserverMaster.java:371 RuntimeException | `test.ObserverMasterTest#testInOrderCommits[1]` (the `true` row; surefire runs both natively) | none: writer and reader on one thread | T Q L | C |
+| zk-adhoc-11 | quorum/QuorumPeer.java:1236 IOException | `server.quorum.CurrentEpochWriteFailureTest#testReadCurrentEpochFromAcceptedEpochTmpFile` | disk only (IO rule) | T Q | C |
+| zk-adhoc-12 | quorum/QuorumPeer.java:1256 IOException | testQuorum | disk only | T Q | C |
+| zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents` (check the seed observes the first client's renewal at the RO peer: timing) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
+
+Dropped as in §D: 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
+counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
+"every tested study item").
+
+Corrections to §A-§D found on master (Z1):
+- **Line numbers.** ZooKeeperServer 1537→1516, 1523→1502, 1809→1754, 2256→2201; Leader 1515→1522, 1476→1483, 1782→1789;
+  LeaderZooKeeperServer 303→296; QuorumPeer 1177→1236, 1197→1256; PrepRequestProcessor 583→568, 698→682, 332-342→326-344;
+  FinalRequestProcessor 709→674 (694 with the adapter).
+- **#32's arithmetic.** A quota's count includes the node itself, so "two children" is a hard limit of 3, and the throw is
+  count 4 > 3.
+- **Substance.** The guards and throws are unchanged.

@@ -235,6 +235,17 @@ recommendation.
   ("范围弄小点"; "合理的小一点，能让我们的replay快一点"); Solr's traps apply and HBase code workarounds are allowed.
 - **HBase changes are judged by HBase's cases only** (2026-10-19: "你不用再管solr的问题，solr和hbase是在不同分支上的"): no Solr
   regression run for a change on `system/hbase`.
+- **ZooKeeper: the goal and its scope** (2026-10-21: "接下来的下一步，我要做zookeeper上的adhoc check。类似hbase。然后zookeeper上呢，
+  我们本来已经有了些adhoc check的target，需要囊括这几个bug。这几个bug也要选adhoc check，看合适的workload。用一样的hbase规则"): the study
+  checks of ZOOKEEPER.md §D plus five bugs (apache/zookeeper PR 2459 = ZOOKEEPER-5094, PR 2454 = ZOOKEEPER-5088, the partial
+  quota, the orphaned election offer, the container cleanup that deletes a replacement), each with a workload; HBase's
+  rules apply. The tree is the fork https://github.com/JHSUYU/zookeeper ("对应的也在这个分支上": the two PRs' fixes are its
+  branches; its master is the buggy base). The adaptation is of the same kind as the others ("zookeeper上要做的适配跟hbase,
+  hdfs,solr都是类似的"): an automatic cluster, a message door per wire, typed FAULT doors. The 2026-10-21 session only
+  prepared it ("你不用做太多代码啥的，你就把要做的check整理好，然后写一个文档能让别的coding agent接手即可").
+- **Per-case configuration lives in the tree** (2026-10-21: "代码最终都是要在system/hbase上的。只是我们跑每个case可以说配置有所不同"):
+  every case's run settings (scope cuts, claim caps, budgets, heaps) are in its `case.sh` / `workflow.properties`, never
+  only on a launch command line.
 - **Repeated questions are answered once, at any world depth** (2026-10-19: "那重复提问你能想办法解决吗。不管是什么depth").
 - **hbase-adhoc-34 without Kerberos** (2026-10-19: "那34直接不要kerberos，workaround。或者加hook"): the token secret managers
   run on a simple-authentication cluster through the tree's `RpcServer#CAUSYNTH_TOKEN_SECRETS` hook.

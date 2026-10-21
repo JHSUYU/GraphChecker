@@ -1,0 +1,19 @@
+# The ZooKeeper cases (docs/checks/ZOOKEEPER.md): the GraphChecker branch that runs each and its case budget
+# (CASE_TIMEOUT_SECONDS), for tools/rounds/run-series.sh.  Its tree is its case.sh's repo= (experiments/zookeeper/trees.tsv).
+# case	branch	budget_s
+zk-adhoc-01	system/zookeeper	14400
+zk-adhoc-02	system/zookeeper	14400
+zk-adhoc-03	system/zookeeper	14400
+zk-adhoc-04	system/zookeeper	14400
+zk-adhoc-06	system/zookeeper	14400
+zk-adhoc-07	system/zookeeper	14400
+zk-adhoc-10	system/zookeeper	14400
+zk-adhoc-11	system/zookeeper	14400
+zk-adhoc-12	system/zookeeper	14400
+zk-adhoc-13	system/zookeeper	14400
+zk-bugs-quota-init	system/zookeeper	14400
+zk-bugs-election-offer	system/zookeeper	14400
+zk-bugs-container-reuse	system/zookeeper	14400
+zk-bugs-retry-seq-quota	system/zookeeper	14400
+zk-bugs-trunc-sync	system/zookeeper	14400
+zk-bugs-observer-master	system/zookeeper	14400

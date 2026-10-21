@@ -83,6 +83,13 @@ EXPECTED_MECHANISM = {
                            "fault": ("org.apache.zookeeper.ZooKeeper",),
                            "clocks": False},
     "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    "zk-bugs-container-reuse": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    "zk-bugs-retry-seq-quota": {"kinds": ("MARKER_FLIPPED",),
+                                "fault": ("org.apache.zookeeper.ZooKeeper",),
+                                "clocks": False},
+    # ZOOKEEPER-5094's root is a FAULT on the learner stream (TODO ZooKeeper D4): name its door class here once built
+    "zk-bugs-trunc-sync": {"kinds": ("MARKER_FLIPPED",), "clocks": False},
+    "zk-bugs-observer-master": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     "hbase-bugs-backup-lock-reply-lost": {
         "kinds": ("MARKER_FLIPPED",),

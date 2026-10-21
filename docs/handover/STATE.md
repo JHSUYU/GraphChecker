@@ -11,6 +11,30 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
+## Z. ZooKeeper (prepared 2026-10-21) -- read this first if you take over ZooKeeper
+
+Nothing has run yet. The 2026-10-21 session (a lead and two read-only agents, Z1 and Z2) prepared the checks; START-HERE.md
+is the takeover document.
+- **`system/zookeeper`** (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) is `system/hbase`'s final engine
+  (5b4b6bae9) plus the ZooKeeper preparation:
+  - `experiments/zookeeper/` in HBase's layout: `system.sh`, `build.sh`, `classpath.py`, `prepare-trees.sh`, `trees.tsv`,
+    `zookeeper-cases.tsv`, `zk-adhoc/` (checks.tsv + case.sh) and `zk-bugs/case.sh` (six bug checks);
+  - `docs/checks/ZOOKEEPER.md` §E, the 16 cases;
+  - the agents' notes `docs/handover/zookeeper-agents/`;
+  - TODO "ZooKeeper", RULES (the 2026-10-21 rulings).
+- **The tree:** the fork https://github.com/JHSUYU/zookeeper.
+  - Its master eab165995 is the buggy base; the fixes of PR 2459 and PR 2454 are its branches `fix-trunc-sync-shutdown-state`
+    (46c8b43a1) and `fix/observer-master-pending-proposals` (e70951a21).
+  - Local repo `/u/vnr3ne/zookeeper` (origin = apache; the fork's refs fetched as `refs/remotes/jhsuyu/*`). Branches:
+    - `gc/zk-checks` (worktree `/bigtemp/vnr3ne/wt/zookeeper-checks`) = eab165995 + the three adapter commits, cherry-picked
+      and resolved, not built (TODO ZooKeeper 1);
+    - `gc/zk-unified` 8f18cf3a4 and `gc/zk-unified-hb` 47ddc8b36: the old branch-3.9 adapter trees
+      (`/bigtemp/vnr3ne/wt/zookeeper-unified`, `-hb`);
+    - `gc/zk-quorum-bugs`: empty, at eab165995 (Z2's; may be deleted).
+  - Maven repositories: `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs` (filled online for master: use or copy it; the old
+    `m2/zookeeper` lacks master's artifacts), `m2/zookeeper-checks` (unused).
+- **Evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/` (briefs, the two reports, Z2's native logs `z2-native/`).
+
 ## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 
 The owner's goal: "基于我们solr现在这么好的代码基础，完成对hbase的adhod check" (RULES "HBase: the goal and its scope").
