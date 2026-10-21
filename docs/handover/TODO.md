@@ -1018,6 +1018,13 @@ read, CONFIRM: 1 read pair in the ZooKeeper runs, 5 in those HBase runs). Reopen
 carries such a row; the fix then is an ordinal the VM states at the event (per activation and site), not one counted at
 publication.
 
+**An application `BlockingQueue`'s internal timed wait as part of its caller's claim (idea, lead 2026-10-21).** ZooKeeper's
+`CircularBlockingQueue.poll(long, TimeUnit)` is woven (`CausynthPipeline#replaceTimedWait`), so each return is a WAKE root
+although the caller's poll is already a queue claim (`WorkStartSites#claimsFromQueue`), and the WAKE count drifts with a slow
+replay's message count (ZB5-om: 72 of 762 slots given up). Worked around in the tree (gc/zk-quorum 830abe42c: untimed
+`take()` in automatic mode); the general rule -- a timed wait inside an application `BlockingQueue`'s
+poll/take/offer/put is its caller's claim, as a JDK queue's internals are -- waits for a second system that needs it.
+
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合
 symbolic propagation联立的。请你把它设为todo"; "这样绝对是doable的。我们完全可以做到强制反转，你可以通过soot,vm等结合实现。然后在那个
