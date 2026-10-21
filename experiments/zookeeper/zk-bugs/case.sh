@@ -35,7 +35,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA1-cont)
     scope=(
       server:org/apache/zookeeper/server/ContainerManager
       server:org/apache/zookeeper/server/PrepRequestProcessor
