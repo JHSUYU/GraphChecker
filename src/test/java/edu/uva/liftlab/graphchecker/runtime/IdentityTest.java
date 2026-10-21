@@ -7,10 +7,14 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -66,11 +70,54 @@ public class IdentityTest {
         Object[] seen = new Object[1];
         on(() -> {
             long work = Identity.enterFrame("<a.Sender: void run()>", sender);
-            Identity.claimItem(call);
+            Identity.claimItem(call, null);
             seen[0] = RuntimeTraceContext.explicitSource();
             Identity.exitFrame(work);
         });
         assertEquals(NODE, seen[0]);
+    }
+
+    @Test
+    public void anItemPendingInTwoQueuesIsClaimedUnderTheQueueItCameOutOf()
+            throws Exception {
+        String sync = "<a.Server: void commitRequest(a.Request)>#u3";
+        String commit = "<a.Server: void commitRequest(a.Request)>#u7";
+        Object[][] table = {
+            {"sync, commit", "sync", sync, commit},
+            {"commit, sync", "sync", sync, commit},
+            {"sync, commit", "commit", commit, sync},
+            {"commit, sync", "commit", commit, sync},
+            {"sync, commit", "other", commit, sync},
+            {"commit, sync", "other", sync, commit}};
+        for (Object[] row : table) {
+            reset();
+            Object source = new Object();
+            RuntimeTraceContext.registerSource(source, DN);
+            Map<String, BlockingQueue<Object>> queues =
+                    new HashMap<String, BlockingQueue<Object>>();
+            for (String name : new String[] {"sync", "commit", "other"}) {
+                queues.put(name, new LinkedBlockingQueue<Object>());
+            }
+            Object item = new Object();
+            long request = RuntimeTraceContext.beginRequest(source, "test");
+            for (String put : ((String) row[0]).split(", ")) {
+                Identity.startWork("sync".equals(put) ? sync : commit, item,
+                        queues.get(put));
+            }
+            RuntimeTraceContext.endRequest(request);
+            List<String> stood = new ArrayList<String>();
+            on(() -> {
+                long run = Identity.enterFrame("<a.Sync: void run()>", null);
+                Identity.claimItem(item, queues.get((String) row[1]));
+                stood.add(Identity.occurrence(DN.key(), "REGION.sync", true)
+                        .render());
+                Identity.regionExit(null);
+                Identity.exitFrame(run);
+            });
+            String said = row[0] + " taken from " + row[1] + ": " + stood;
+            assertEquals(said, true, stood.get(0).contains((String) row[2])
+                    && !stood.get(0).contains((String) row[3]));
+        }
     }
 
     @Test
@@ -344,7 +391,7 @@ public class IdentityTest {
                         null);
                 carried.accept(null, null);
             } else if (row == 3) {
-                Identity.claimItem(task);
+                Identity.claimItem(task, null);
             } else {
                 Identity.endClaim(Identity.claimStart(task));
             }

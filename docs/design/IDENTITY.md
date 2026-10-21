@@ -185,6 +185,14 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   put the item there, whichever node the consumer serves otherwise: Hadoop IPC's one
   `RpcRequestSender` per connection sends every in-JVM DataNode's calls (V22: refusing items of
   another node dropped their CLAIMs, the order stalled, and a daemon heartbeat took the key update).
+  A hand-off into a `BlockingQueue` is filed under the item and under that queue; a take or poll
+  (the woven claim passes the queue it took from) claims the start filed for that queue, else the
+  item's latest start (an item that entered the queue by an unhooked path), and a start is claimed
+  once. So an object pending in two queues at once is claimed under the hand-off of the queue it
+  came out of: ZooKeeper's observer hands one `Request` to its SyncRequestProcessor's queue and
+  then its CommitProcessor's, and keyed by the item alone the commit's start replaced the sync's,
+  so the sync thread's claim was named by whichever add its take followed (ZD5-10: the commit's
+  334 of 409 times recorded, 0 replayed; 276 stalls of about 4 s).
   A start made where no hop names the starter (its lineage is
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
