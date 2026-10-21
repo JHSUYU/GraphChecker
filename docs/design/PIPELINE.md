@@ -1494,8 +1494,11 @@ refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no vari
 none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
 variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a
 constant) its other arm is UNSAT on that path, named `NOT_FLIPPABLE` (`FlipQuery#NOT_FLIPPABLE`,
-`ObligationFactory#solve`), unless its occurrence read a version no row of the corpus wrote (held at
-what it read, its producer unstated, `FlipQuery#heldReads`): that refusal stays (`ADMISSION_GAP`,
+`ObligationFactory#solve`), unless its occurrence read a version no row of the corpus wrote and no
+placeholder read of its session mints (held at what it read, its producer unstated,
+`FlipQuery#heldReads`; a version a mint states is its root's, as invariant 7 and the lowering's read
+binding take it -- ZA8-cont's six Prep flips were refused only for the program's own
+`Long.longValue()` read of a clock mint's box): that refusal stays (`ADMISSION_GAP`,
 DIAGNOSTIC), the scope hole being real; one that reaches only leaves a frame's
 write was freed to (`SmtLowering#framedLeaves`: the writer computed on an arrival it refused, so no
 plant reaches them) is refused before it is solved (`UNPRODUCIBLE_ANSWER`, DIAGNOSTIC, named). A construct the
