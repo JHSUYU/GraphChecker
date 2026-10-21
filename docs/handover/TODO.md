@@ -1027,6 +1027,13 @@ replay's message count (ZB5-om: 72 of 762 slots given up). Worked around in the 
 `take()` in automatic mode); the general rule -- a timed wait inside an application `BlockingQueue`'s
 poll/take/offer/put is its caller's claim, as a JDK queue's internals are -- waits for a second system that needs it.
 
+**A ZooKeeper CommitProcessor applies a commit under no claim of it (lineage, agent E 2026-10-21).** It takes a committed
+request with `committedRequests.peek()` then `remove()`, neither a queue claim (`WorkStartSites` QUEUE_CLAIMS), so an
+observer's INFORM (or a follower's COMMIT) is applied -- `processWrite`, FinalRequestProcessor -- under the CommitProcessor
+thread's last `queuedRequests.poll()` claim, a local client request's context, not the INFORM's. Matters only if a case's
+chain needs the apply under the packet that carried it (zk-adhoc-10, 5088): then a tree hook claims the committed request
+where `processWrite` takes it (the observer's commit start stays filed under `committedRequests`).
+
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合
 symbolic propagation联立的。请你把它设为todo"; "这样绝对是doable的。我们完全可以做到强制反转，你可以通过soot,vm等结合实现。然后在那个

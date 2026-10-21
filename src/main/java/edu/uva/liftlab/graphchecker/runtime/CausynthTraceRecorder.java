@@ -303,8 +303,8 @@ public final class CausynthTraceRecorder {
         RowRuntime.endClaim(claim);
     }
 
-    public static void claimItem(Object item) {
-        RowRuntime.claimItem(item);
+    public static void claimItem(Object item, Object queue) {
+        RowRuntime.claimItem(item, queue);
     }
 
     public static void startWork(String startSiteId, Object carrier,
