@@ -1,9 +1,17 @@
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Symbolic arithmetic summaries for AtomicInteger and AtomicLong RMW calls. */
+/**
+ * Symbolic arithmetic summaries for AtomicInteger and AtomicLong RMW calls; a
+ * compareAndSet that lost answers `old == expected` over the expected value
+ * its caller passed.
+ */
 public final class RegionAtomicApiSmoke {
     private RegionAtomicApiSmoke() {
+    }
+
+    private static final class Sink {
+        boolean lost;
     }
 
     public static void main(String[] args) {
@@ -16,6 +24,8 @@ public final class RegionAtomicApiSmoke {
                 intValue, AtomicInteger.class.getName(), "value", "I");
         int oldInt = intValue.getAndDecrement();
         int newInt = intValue.get();
+        Sink sink = new Sink();
+        sink.lost = intValue.compareAndSet(7, 9);
 
         AtomicLong longValue = new AtomicLong(5L);
         System.observeField(
@@ -23,7 +33,7 @@ public final class RegionAtomicApiSmoke {
         long oldLong = longValue.getAndDecrement();
         long newLong = longValue.get();
 
-        require(oldInt == 2 && newInt == 1
+        require(oldInt == 2 && newInt == 1 && !sink.lost
                         && oldLong == 5L && newLong == 4L,
                 "unexpected concrete atomic results");
 
@@ -42,6 +52,9 @@ public final class RegionAtomicApiSmoke {
         String longFieldExpression = System.getSymbolicFieldExpression(
                 longValue, AtomicLong.class.getName(), "value", "J",
                 Long.valueOf(newLong));
+        String lostExpression = System.getSymbolicFieldExpression(
+                sink, Sink.class.getName(), "lost", "Z",
+                Boolean.valueOf(sink.lost));
         System.resumeConcolicPathCondition();
         String summary = System.finishConcolicRegion();
 
@@ -51,6 +64,10 @@ public final class RegionAtomicApiSmoke {
         requireDecrement(newLongExpression, "Y_J_5");
         requireCapturedMutationValue(intFieldExpression, "Y_I_2");
         requireCapturedMutationValue(longFieldExpression, "Y_J_5");
+        require(lostExpression.contains("\"_op\":\"==\"")
+                        && lostExpression.contains("Y_I_7"),
+                "a failed compareAndSet compared another word than its"
+                        + " expected value: " + lostExpression);
         require(summary.contains("\"complete\":true"), summary);
         System.out.println("CAUSYNTH_REGION_ATOMIC_API_SMOKE_OK");
     }

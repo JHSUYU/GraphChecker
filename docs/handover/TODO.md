@@ -974,6 +974,12 @@ must be SAT, confirmed in the VM and reproduced natively.
 - D7: repeatable runs (large limits, one commit worker, snapCount large, ports and sids in order, woven random delays).
 - D8: election-stream threads attributed to their peer.
 Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
+Built (agent C, tree `gc/zk-quorum`, STATUS "Per-system surface" ZooKeeper "tree: cluster and bounds"): the tree's
+`CausynthNodes` with hooks in `QuorumPeer` (start, run, shutdown), `ZooKeeperThread`, `ZooKeeper`'s constructor,
+`QuorumZooKeeperServer`, `FastLeaderElection`'s tally, `CausynthZk#request`, and the test bases (`PortAssignment`,
+`QuorumPeerTestBase`, `QuorumUtil`, `QuorumBase`, `ZKTestCase`, `ClientBase`); `testQuorum`,
+`CurrentEpochWriteFailureTest` and `CausynthTruncSyncTest` pass natively in automatic mode. Left: two faithful SEEDs
+of each canary, then 01 03 06 11 12.
 
 **4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
@@ -1000,6 +1006,26 @@ is a state pairing, the first claim, a campaign budget), with the configuration 
 `results/zookeeper/` as `results/hbase/`: every case's `.smt`, claim and the time/region table.
 
 ## Cross-cutting (engine), when a system needs it
+
+**A logged event's rank depends on publication order (DIAGNOSTIC; agent E 2026-10-21).** `LoggedEventSites#siteIndex`
+ranks a VM-logged read or write (`k`) among its performer occurrence's events at one site when the first record carrying
+it is published; a location's log travels with whichever activation's read-out filed it (`SharedStateCapture#file`) and
+`RowRuntime#claimEvent` publishes each version once, so an earlier event that arrives after a later one of its group was
+published is re-ranked to a `k` that one already holds: the IMPORT gate's "invariant 4 site index missing" rows (ZD3-07:
+the second `sendNotifications`' `ToSend` came out with WorkerSender's poll activation before the first). Every such pair
+seen (145 in the ZooKeeper runs, 117 in six HBase final runs) is on two different locations, mostly fresh objects under
+construction, which `Arms` pairs per location and `Arms#eligible` never offers, so no arm moves; the latent cost is that
+such an event's `k` can differ between runs, which matters where a run finds an event by its endpoint (a flip's consumer
+read, CONFIRM: 1 read pair in the ZooKeeper runs, 5 in those HBase runs). Reopen if a CONFIRM refutes on a read that
+carries such a row; the fix then is an ordinal the VM states at the event (per activation and site), not one counted at
+publication.
+
+**An application `BlockingQueue`'s internal timed wait as part of its caller's claim (idea, lead 2026-10-21).** ZooKeeper's
+`CircularBlockingQueue.poll(long, TimeUnit)` is woven (`CausynthPipeline#replaceTimedWait`), so each return is a WAKE root
+although the caller's poll is already a queue claim (`WorkStartSites#claimsFromQueue`), and the WAKE count drifts with a slow
+replay's message count (ZB5-om: 72 of 762 slots given up). Worked around in the tree (gc/zk-quorum 830abe42c: untimed
+`take()` in automatic mode); the general rule -- a timed wait inside an application `BlockingQueue`'s
+poll/take/offer/put is its caller's claim, as a JDK queue's internals are -- waits for a second system that needs it.
 
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合

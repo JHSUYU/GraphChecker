@@ -63,11 +63,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   trunc-sync)
     # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
-    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding
-    # (docs/checks/ZOOKEEPER.md §E).
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
+    # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthTruncSyncTest
     test_method=aTruncSyncedFollowerRestarts
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # F's third life's construction (runFromConfig; its replay's addCommittedProposal folds into it), SEED ZB4-trunc
+    target_occurrence="auto0/peer1#epoch2/region/REGION.98b8e38a-d414-366b-972d-5bccb78d80a7#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/quorum/Learner
@@ -82,7 +83,8 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     # pending create's reply (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthObserverMasterSyncTest
     test_method=aProposalPendingAtTheObserverMastersStart
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # the observer's second life's CommitProcessor.run (its applies, the follow-up INFORM's), SEED ZB4-om
+    target_occurrence="auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/DataTree
