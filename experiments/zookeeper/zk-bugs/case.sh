@@ -62,7 +62,8 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   trunc-sync)
     # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
-    # Workload to write (docs/handover/zookeeper-agents/Z2.md §1).
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding
+    # (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthTruncSyncTest
     test_method=aTruncSyncedFollowerRestarts
     target_occurrence=first  # placeholder: read the real one off a SEED (D9)
@@ -76,8 +77,8 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   observer-master)
     # ZOOKEEPER-5088 (apache/zookeeper PR 2454): a proposal pending at an ObserverMaster follower's sync never reaches the
     # OM's queue, no INFORM is sent, the observer throws at ZKDatabase.addCommittedProposal. Needs D3, D4, D5.
-    # Workload to write (Z2.md §2).
-    zk_jvm_properties=(-Dzookeeper.leaderConnectDelayDuringRetryMs=1000)
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs; the test restarts the observer after the
+    # pending create's reply (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthObserverMasterSyncTest
     test_method=aProposalPendingAtTheObserverMastersStart
     target_occurrence=first  # placeholder: read the real one off a SEED (D9)
