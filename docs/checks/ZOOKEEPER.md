@@ -232,7 +232,7 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-12: UNSAT_CLOSED at the fixed point, substantive (ZC7-12): on a fresh ensemble both epochs are
   `epochOf(lastProcessedZxid)`, so `acceptedEpoch < currentEpoch` cannot hold; disk only. Target: server 1's first
   start (`auto0/peer1#epoch0`, `QuorumPeerMain#runFromConfig`, into which `start` and `loadDataBase` fold), window `startup`.
-- zk-adhoc-06: vacuous UNSAT by construction (ZC7-06, a RUN_DEFECT FRAME_UNBALANCED to rerun away): the ACKEPOCH
+- zk-adhoc-06: vacuous UNSAT by construction (ZC8-06, UNSAT_CLOSED at the fixed point, 0 BLOCKING): the ACKEPOCH
   summary and the leader's are both fresh disks' values, no root. Target the leader's `LearnerHandler#run` for its
   follower (`auto0/peer2#epoch0`), window `startup`.
 - zk-adhoc-11: vacuous UNSAT by construction (ZC7-11, IO rule): the epoch files and the replayed log are file state no
