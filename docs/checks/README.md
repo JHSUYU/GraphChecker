@@ -19,7 +19,7 @@ occurrence (README "Run one case"). HDFS's 36 study checks are rows of `experime
 (`experiments/hadoop/hdfs-*`). The HDFS trees mark all 49 study points; the Solr, HBase and ZooKeeper trees mark only
 their bug targets so far (their study markers are their turn's first TODO).
 
-Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 20 / 13 / 20, HBase 24 / 19 / 22, ZooKeeper 18 / 16 / 16 (points selected / with an integration test we run / causym executions).
+Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 21 / 13 / 20, HBase 25 / 19 / 22, ZooKeeper 19 / 16 / 16 (points selected / with an integration test we run / causym executions).
 
 ## HDFS (the current system): 36 study checks
 

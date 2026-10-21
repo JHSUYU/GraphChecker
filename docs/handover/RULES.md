@@ -60,7 +60,7 @@ recommendation.
   high-quality bug without a cluster test may get a self-written one. One GraphChecker branch per system
   (`system/<sys>`, the same body, small per-system adaptations). Order: HDFS, Solr, HBase, ZooKeeper.
 - **The narrowed selection** ("这些地方优先选择和control plane有交互的", "可能check的case多于我们的点位…这是好事"):
-  the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 20 / 13 / 20, HBase 24 / 19 / 22, ZooKeeper 18 / 16 / 16; points that interact with the control
+  the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 21 / 13 / 20, HBase 25 / 19 / 22, ZooKeeper 19 / 16 / 16; points that interact with the control
   plane, that GraphChecker covers, with a high-quality cluster test; every known bug stays a check; one point may
   carry several checks. The list is `docs/checks/SELECTION.md` (the final table); HDFS's are `experiments/hadoop/hdfs-adhoc/
   checks.tsv` (46 HDFS cases with the 10 named ones).
