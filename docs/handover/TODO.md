@@ -952,7 +952,9 @@ bugs; the design list D1-D9). Items in order:
 three adapter commits cherry-picked; agent A's `gc/zk-tree` on it holds the RESPONSE door rewritten the way HBase's
 `CausynthRpc` answers (no engine change), the markers of §E and the container-reuse and retry-seq-quota workloads (each
 native 5/5). Left:
-- the two quorum workloads (Z2.md §1/§2 outlines; each must PASS natively under JDK 8, 10/10);
+- the two quorum workloads are written (agent B, tree branch `gc/zk-quorum-bugs` b663d44ea: `CausynthQuorumHarness`,
+  `CausynthTruncSyncTest`, `CausynthObserverMasterSyncTest`; native 10/10 each, `docs/checks/ZOOKEEPER.md` §E), merged
+  into `gc/zk-checks`;
 - build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
