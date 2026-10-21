@@ -809,9 +809,9 @@ public final class Identity {
         Region closed = state.regions.remove(innermost);
         int claimed = -1;
         for (Claim start : state.starts) {
-            if (start.depth >= closed.base) claimed = start.depth;
+            if (start.depth >= closed.entered) claimed = start.depth;
         }
-        if (closed.occurrence != null && claimed >= 0) {
+        if (claimed >= 0) {
             while (state.depth() > claimed) {
                 state.levels.remove(state.levels.size() - 1);
             }
@@ -921,6 +921,7 @@ public final class Identity {
             State state = state();
             if (state.unnamed()) {
                 Region marker = new Region(state.regionBase());
+                marker.entered = state.depth();
                 marker.unnamed = true;
                 marker.of(region, state.top().receiver);
                 state.regions.add(marker);
@@ -969,7 +970,9 @@ public final class Identity {
         State state = state();
         Region running = state.activeRegion();
         if (running == null) return null;
-        state.regions.add(new Region(running.base));
+        Region marker = new Region(running.base);
+        marker.entered = state.depth();
+        state.regions.add(marker);
         return running.occurrence;
     }
 
@@ -1157,6 +1160,7 @@ public final class Identity {
 
     private static final class Region {
         private final int base;
+        private int entered;
         private FrameJournal journal;
         private OccurrenceAddress occurrence;
         private boolean unnamed;
@@ -1172,6 +1176,7 @@ public final class Identity {
 
         private Region(int base) {
             this.base = base;
+            this.entered = base;
         }
 
         private void of(String regionId, Object receiver) {

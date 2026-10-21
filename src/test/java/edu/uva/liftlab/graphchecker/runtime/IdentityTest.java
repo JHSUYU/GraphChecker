@@ -404,6 +404,74 @@ public class IdentityTest {
         assertEquals((String) table[row][0], table[row][1], serving);
     }
 
+    @Test
+    public void everyRegionEntryClosesTheWorkItClaimedInsideIt()
+            throws Exception {
+        long request = RuntimeTraceContext.beginRequest(DN, "propose");
+        long producing = Identity.enterFrame("<a.Leader: void propose()>#u2",
+                null);
+        Object[] items = new Object[6];
+        for (int k = 0; k < items.length; k++) {
+            items[k] = new Object();
+            Identity.startWork("<a.Handler: void queuePacket(a.Packet)>#u5",
+                    items[k], null);
+        }
+        Identity.exitFrame(producing);
+        RuntimeTraceContext.endRequest(request);
+        Object daemon = new Object();
+        Identity.startWork(ACCEPT, daemon, null);
+        List<String> seen = claimed(daemon, carrier -> {
+            List<String> said = new ArrayList<String>();
+            int before = Identity.depth();
+            said.add(opened("REGION.drain"));
+            Identity.claimItem(items[0], null);
+            Identity.regionExit(null);
+            said.add("an unnamed entry draining a queue closes at "
+                    + Identity.depth() + " of " + before);
+            long hop = RuntimeTraceContext.beginRequest(DN, "turn");
+            int outer = Identity.depth();
+            opened("REGION.run");
+            Identity.claimItem(items[1], null);
+            Identity.claimItem(items[2], null);
+            int claimed = Identity.depth();
+            opened("REGION.accessor");
+            Identity.regionExit(null);
+            said.add("a folded entry inside a claimed item keeps it at "
+                    + Identity.depth() + " of " + claimed);
+            Identity.regionExit(null);
+            said.add("an occurrence draining a queue closes at "
+                    + Identity.depth() + " of " + outer);
+            opened("REGION.run");
+            int folded = Identity.depth();
+            opened("REGION.drain");
+            Identity.claimItem(items[3], null);
+            Identity.claimItem(items[4], null);
+            Identity.regionExit(null);
+            said.add("a folded entry draining a queue closes at "
+                    + Identity.depth() + " of " + folded);
+            long call = Identity.enterFrame("<a.Sender: void run()>#u3", null);
+            int framed = Identity.depth();
+            opened("REGION.send");
+            Identity.claimItem(items[5], null);
+            Identity.regionExit(null);
+            said.add("an entry inside its method frame closes at "
+                    + Identity.depth() + " of " + framed);
+            Identity.exitFrame(call);
+            said.add("and its frame's exit agrees at "
+                    + Identity.depth() + " of " + folded);
+            Identity.regionExit(null);
+            RuntimeTraceContext.endRequest(hop);
+            return said;
+        });
+        assertEquals("none", seen.get(0));
+        for (String row : seen.subList(1, seen.size())) {
+            String[] depths = row.substring(row.lastIndexOf(" at ") + 4)
+                    .split(" of ");
+            assertEquals(row, depths[1], depths[0]);
+        }
+        assertEquals(7, seen.size());
+    }
+
     private static String opened(String region) {
         OccurrenceAddress address = Identity.occurrence(DN.key(), region,
                 true);

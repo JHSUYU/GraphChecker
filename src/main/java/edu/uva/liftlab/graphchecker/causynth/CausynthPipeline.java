@@ -60,6 +60,7 @@ import soot.jimple.InstanceFieldRef;
 import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
+import soot.jimple.NewExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NullConstant;
@@ -1646,7 +1647,7 @@ public final class CausynthPipeline {
     private static final String RANDOMS_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.Randoms";
 
-    private static void replaceRandom(Body body, Stmt stmt, String site) {
+    static void replaceRandom(Body body, Stmt stmt, String site) {
         InvokeExpr invoke = stmt.getInvokeExpr();
         SootMethodRef callee = invoke.getMethodRef();
         String owner = callee.declaringClass().getName();
@@ -1657,6 +1658,10 @@ public final class CausynthPipeline {
                 || invoke instanceof InterfaceInvokeExpr)
                 && WorkStartSites.RANDOM_RECEIVERS.contains(owner)
                 && WorkStartSites.drawn(draw)) {
+            if (ownSeededStream(body,
+                    ((InstanceInvokeExpr) invoke).getBase())) {
+                return;
+            }
             Local drawn = randomAt(body, stmt, site, randoms);
             if (WorkStartSites.RANDOM_DRAWS.contains(draw)) {
                 stmt.getInvokeExprBox().setValue(Jimple.v()
@@ -1731,6 +1736,104 @@ public final class CausynthPipeline {
                         callee.getName(), parameters, callee.getReturnType(),
                         true),
                 arguments));
+    }
+
+    static boolean ownSeededStream(Body body, Value receiver) {
+        Set<Local> stream = new LinkedHashSet<>();
+        Value origin = receiver;
+        while (origin instanceof Local && stream.add((Local) origin)) {
+            AssignStmt definition = onlyDefinition(body, (Local) origin);
+            if (definition == null) return false;
+            origin = definition.getRightOp();
+        }
+        if (!(origin instanceof NewExpr) || !RANDOM.equals(((NewExpr) origin)
+                .getBaseType().getClassName())) {
+            return false;
+        }
+        for (boolean grown = true; grown; ) {
+            grown = false;
+            for (Unit unit : body.getUnits()) {
+                if (originalUnitIndex(unit) >= 0 && unit instanceof AssignStmt
+                        && ((AssignStmt) unit).getLeftOp() instanceof Local
+                        && stream.contains(((AssignStmt) unit).getRightOp())
+                        && !stream.contains(((AssignStmt) unit).getLeftOp())) {
+                    Local copy = (Local) ((AssignStmt) unit).getLeftOp();
+                    if (onlyDefinition(body, copy) != unit) return false;
+                    grown = stream.add(copy);
+                }
+            }
+        }
+        Value seed = null;
+        for (Unit unit : body.getUnits()) {
+            if (originalUnitIndex(unit) < 0) continue;
+            Stmt stmt = (Stmt) unit;
+            InvokeExpr call = stmt.containsInvokeExpr()
+                    ? stmt.getInvokeExpr() : null;
+            for (ValueBox box : unit.getUseBoxes()) {
+                Value used = box.getValue();
+                if (!(used instanceof Local) || !stream.contains(used)) {
+                    continue;
+                }
+                if (unit instanceof AssignStmt
+                        && ((AssignStmt) unit).getRightOp() == used
+                        && stream.contains(((AssignStmt) unit).getLeftOp())) {
+                    continue;
+                }
+                if (!(call instanceof InstanceInvokeExpr)
+                        || ((InstanceInvokeExpr) call).getBaseBox() != box
+                        || !RANDOM.equals(call.getMethodRef()
+                        .getDeclaringClass().getName())) {
+                    return false;
+                }
+                if (!"<init>".equals(call.getMethodRef().getName())) continue;
+                if (seed != null || call.getArgCount() != 1
+                        || !(call.getMethodRef().getParameterType(0)
+                        instanceof LongType)) {
+                    return false;
+                }
+                seed = call.getArg(0);
+            }
+        }
+        return seed != null && !clockRead(body, seed, new RootCatalog(),
+                new java.util.HashSet<Value>());
+    }
+
+    private static AssignStmt onlyDefinition(Body body, Local local) {
+        AssignStmt only = null;
+        for (Unit unit : body.getUnits()) {
+            if (originalUnitIndex(unit) < 0) continue;
+            for (ValueBox box : unit.getDefBoxes()) {
+                if (box.getValue() != local) continue;
+                if (only != null || !(unit instanceof AssignStmt)) return null;
+                only = (AssignStmt) unit;
+            }
+        }
+        return only;
+    }
+
+    private static boolean clockRead(Body body, Value value,
+                                     RootCatalog clocks, Set<Value> seen) {
+        if (!seen.add(value)) return false;
+        if (value instanceof InvokeExpr && clocks.clock(((InvokeExpr) value)
+                .getMethodRef().getSignature())) {
+            return true;
+        }
+        if (value instanceof Local) {
+            for (Unit unit : body.getUnits()) {
+                if (originalUnitIndex(unit) >= 0
+                        && unit instanceof AssignStmt
+                        && ((AssignStmt) unit).getLeftOp() == value
+                        && clockRead(body, ((AssignStmt) unit).getRightOp(),
+                        clocks, seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        for (ValueBox box : value.getUseBoxes()) {
+            if (clockRead(body, box.getValue(), clocks, seen)) return true;
+        }
+        return false;
     }
 
     private static Local randomAt(Body body, Stmt stmt, String site,

@@ -1062,7 +1062,13 @@ Every draw is keyed by its site, in both passes (`CausynthPipeline#replaceRandom
 `runtime/Randoms`), so a replay draws what the recording drew whatever was drawn before it. A draw on
 any Random receiver (`plan/WorkStartSites#RANDOM_RECEIVERS`: `Random`, `ThreadLocalRandom`,
 `SecureRandom`; `#RANDOM_DRAWS`) draws from `Randoms#at(site)`, a `Random` seeded by the draw's key,
-never from the receiver's stream; a bounded draw only `ThreadLocalRandom` declares (`#BOUNDED_DRAWS`:
+never from the receiver's stream -- except a stream the program owns: a `java.util.Random` the drawing
+method made itself with a seed (`new Random(long)`), that the method never stores, passes on or returns
+(copies into its own locals aside), and whose seed no clock read computes (`RootCatalog#clock`): its draws
+are a function of that seed, the method's own, and stay as written (`CausynthPipeline#ownSeededStream`;
+ZooKeeper derives a session's password as `new Random(sessionId ^ superSecret).nextBytes(p)` on the server
+that creates the session and on every server it moves to, which keyed draws made differ, so a moved
+session was refused: ZD2-02); a bounded draw only `ThreadLocalRandom` declares (`#BOUNDED_DRAWS`:
 `nextInt(int,int)`, `nextLong(long[,long])`, `nextDouble(double[,double])`) is the `Randoms` helper
 of its name over that `Random`. A `Random` handed to a method outside the weave (the JDK's
 `Collections.shuffle(list, random)`) is `Randoms#at(site)` at that call, and `Math.random()`,

@@ -8,6 +8,11 @@ export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
 case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-quota|trunc-sync|observer-master}" in
   quota-init)
     # the pasted bug 2: createQuota's two RPCs, a lost reply between them, the retry's getData(stat) NoNode
+    # Claims: COMPOSE's recorded valuation pairs the target read with writes the synchronous caller made before it
+    # (TODO HBase 15's F4), CONFIRM refutes each by the client's program order at the order timeout, and the fault world
+    # comes after them: 20 claims, and an order timeout of 2x the slowest replay (56 s, ZA3-quota) for CONFIRM's holds.
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=120000)
     test_class=org.apache.zookeeper.test.CausynthQuotaRetryTest
     test_method=raisesARetriedHardQuota
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#6"
@@ -21,6 +26,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   election-offer)
     # the pasted bug 3: LeaderElectionSupport.start's getData NoNode on a vanished competitor -> FAILED, offer orphaned
     zk_module=zookeeper-recipes/zookeeper-recipes-election
+    # Claims as quota-init's (ZA3/ZA4-offer: pairings refuted by the client's program order before the real one)
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=120000)
     test_class=org.apache.zookeeper.recipes.leader.LeaderElectionSupportTest
     test_method=testNodes3
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#2"
@@ -33,6 +41,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   container-reuse)
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
+    # World depth 1 (lead 2026-10-21): in the recording the client's delete of the old container finds nothing (the
+    # cleanup came first); the bug's world needs that delete to succeed -- a write no depth-0 session holds -- before
+    # the client's create and the cleanup's Prep (ZA5-cont: every depth-0 claim paired across the client's own order).
+    # 20 claims; a CONFIRM order timeout of 2x its seed replay (71 s, ZA5-cont).
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=150000)
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA1-cont)
@@ -52,7 +66,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     zk_jvm_properties=(-Dzookeeper.enforceQuota=true)
     test_class=org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest
     test_method=createsTwoSequentialChildrenUnderAHardQuota
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # The second sequential create's checkQuota (the two observed occurrences of the count guard, ZA6-rseq; both stand
+    # on the retrying client's CONNECT anchor in Prep, numbered by the throttler's items: reported to the quorum cluster)
+    target_occurrence="auto0/server0#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0#2"
     scope=(
       inspector:org/apache/zookeeper/retry/ZooKeeperRetry
       server:org/apache/zookeeper/server/PrepRequestProcessor
@@ -63,11 +79,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   trunc-sync)
     # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
-    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding
-    # (docs/checks/ZOOKEEPER.md §E).
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
+    # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthTruncSyncTest
     test_method=aTruncSyncedFollowerRestarts
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # F's third life's construction (runFromConfig; its replay's addCommittedProposal folds into it), SEED ZB4-trunc
+    target_occurrence="auto0/peer1#epoch2/region/REGION.98b8e38a-d414-366b-972d-5bccb78d80a7#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/quorum/Learner
@@ -82,7 +99,8 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     # pending create's reply (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthObserverMasterSyncTest
     test_method=aProposalPendingAtTheObserverMastersStart
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # the observer's second life's CommitProcessor.run (its applies, the follow-up INFORM's), SEED ZB4-om
+    target_occurrence="auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/DataTree
