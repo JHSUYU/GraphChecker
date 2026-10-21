@@ -952,7 +952,9 @@ bugs; the design list D1-D9). Items in order:
 three adapter commits cherry-picked; agent A's `gc/zk-tree` on it holds the RESPONSE door rewritten the way HBase's
 `CausynthRpc` answers (no engine change), the markers of §E and the container-reuse and retry-seq-quota workloads (each
 native 5/5). Left:
-- the two quorum workloads (Z2.md §1/§2 outlines; each must PASS natively under JDK 8, 10/10);
+- the two quorum workloads are written (agent B, tree branch `gc/zk-quorum-bugs` b663d44ea: `CausynthQuorumHarness`,
+  `CausynthTruncSyncTest`, `CausynthObserverMasterSyncTest`; native 10/10 each, `docs/checks/ZOOKEEPER.md` §E), merged
+  into `gc/zk-checks`;
 - build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
@@ -970,6 +972,12 @@ must be SAT, confirmed in the VM and reproduced natively.
 - D7: repeatable runs (large limits, one commit worker, snapCount large, ports and sids in order, woven random delays).
 - D8: election-stream threads attributed to their peer.
 Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
+Built (agent C, tree `gc/zk-quorum`, STATUS "Per-system surface" ZooKeeper "tree: cluster and bounds"): the tree's
+`CausynthNodes` with hooks in `QuorumPeer` (start, run, shutdown), `ZooKeeperThread`, `ZooKeeper`'s constructor,
+`QuorumZooKeeperServer`, `FastLeaderElection`'s tally, `CausynthZk#request`, and the test bases (`PortAssignment`,
+`QuorumPeerTestBase`, `QuorumUtil`, `QuorumBase`, `ZKTestCase`, `ClientBase`); `testQuorum`,
+`CurrentEpochWriteFailureTest` and `CausynthTruncSyncTest` pass natively in automatic mode. Left: two faithful SEEDs
+of each canary, then 01 03 06 11 12.
 
 **4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike

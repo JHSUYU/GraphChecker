@@ -1,15 +1,16 @@
 repo=${GC_TREES}/zookeeper-checks
 # The ZooKeeper bug checks (docs/checks/ZOOKEEPER.md §E). Target occurrences marked "placeholder" are not known yet: read each
 # off a STOP_AFTER=SEED run on the built tree (DECLARED_TARGET_OCCURRENCE_UNOBSERVED lists every observed occurrence;
-# TODO ZooKeeper D9) and write it here. The two REGION ids below are from the old branch-3.9 tree (gc/zk-unified
-# 8f18cf3a4): re-check them on a SEED too.
+# TODO ZooKeeper D9) and write it here. The getData target's region is FinalRequestProcessor#processServed (the adapter's
+# split of processRequest); each selector below names the request occurrence the 2026-10-03 PASS declared (V25: the same
+# request anchors, read off SEEDs ZA1-quota and ZA1-offer).
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
 case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-quota|trunc-sync|observer-master}" in
   quota-init)
     # the pasted bug 2: createQuota's two RPCs, a lost reply between them, the retry's getData(stat) NoNode
     test_class=org.apache.zookeeper.test.CausynthQuotaRetryTest
     test_method=raisesARetriedHardQuota
-    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#6"
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#6"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       server:org/apache/zookeeper/cli/SetQuotaCommand
@@ -22,7 +23,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     zk_module=zookeeper-recipes/zookeeper-recipes-election
     test_class=org.apache.zookeeper.recipes.leader.LeaderElectionSupportTest
     test_method=testNodes3
-    target_occurrence="auto0/server0#epoch0/region/REGION.860d3eb6-a432-3c9e-87a7-161a28678252#2"
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#2"
     scope=(
       server:org/apache/zookeeper/server/FinalRequestProcessor
       election:org/apache/zookeeper/recipes/leader/LeaderElectionSupport
@@ -34,7 +35,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA1-cont)
     scope=(
       server:org/apache/zookeeper/server/ContainerManager
       server:org/apache/zookeeper/server/PrepRequestProcessor
@@ -62,10 +63,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   trunc-sync)
     # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
-    # Workload to write (docs/handover/zookeeper-agents/Z2.md §1).
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
+    # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthTruncSyncTest
     test_method=aTruncSyncedFollowerRestarts
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # F's third life's construction (runFromConfig; its replay's addCommittedProposal folds into it), SEED ZB4-trunc
+    target_occurrence="auto0/peer1#epoch2/region/REGION.98b8e38a-d414-366b-972d-5bccb78d80a7#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/quorum/Learner
@@ -76,11 +79,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
   observer-master)
     # ZOOKEEPER-5088 (apache/zookeeper PR 2454): a proposal pending at an ObserverMaster follower's sync never reaches the
     # OM's queue, no INFORM is sent, the observer throws at ZKDatabase.addCommittedProposal. Needs D3, D4, D5.
-    # Workload to write (Z2.md §2).
-    zk_jvm_properties=(-Dzookeeper.leaderConnectDelayDuringRetryMs=1000)
+    # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs; the test restarts the observer after the
+    # pending create's reply (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthObserverMasterSyncTest
     test_method=aProposalPendingAtTheObserverMastersStart
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # the observer's second life's CommitProcessor.run (its applies, the follow-up INFORM's), SEED ZB4-om
+    target_occurrence="auto0/peer4#epoch1/region/REGION.140fb26c-dd61-31ad-a4df-3417de43228b#1"
     scope=(
       server=:org/apache/zookeeper/server/ZKDatabase
       server=:org/apache/zookeeper/server/DataTree
