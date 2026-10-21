@@ -2434,6 +2434,30 @@ public class ExploreTest {
         return null;
     }
 
+    @Test
+    public void aClientFaultCutStopsTheCatalogsOwnDoorsAsWellAsAHooksDoors()
+            throws Exception {
+        OccurrenceAddress client = occurrence("auto0/client0", "REGION.c",
+                CausalContext.of(Role.CLIENT, "test", 1), "<a.T: void t()>#u1");
+        String create = "<org.apache.zookeeper.ZooKeeper: java.lang.String "
+                + "create(java.lang.String,byte[],java.util.List,org.apache."
+                + "zookeeper.CreateMode)>#u9";
+        String sync = "<org.apache.zookeeper.server.quorum.Learner: void "
+                + "readSyncPacket(org.apache.zookeeper.server.quorum."
+                + "QuorumPacket)>#u3";
+        Path doors = Paths.get("experiments", "zookeeper", "doors.jsonl");
+        Object[][] rows = {
+            {"ZK_QUORUM", false, true},
+            {"ZOOKEEPER", true, false},
+        };
+        for (Object[] row : rows) {
+            ClientFaults cut = ClientFaults.read(doors,
+                    Collections.singleton((String) row[0]));
+            assertEquals(row[0] + " create", row[1], cut.fails(client, create));
+            assertEquals(row[0] + " sync", row[2], cut.fails(client, sync));
+        }
+    }
+
     private static OccurrenceAddress occurrence(String node, String region,
                                                 CausalContext context,
                                                 String callSite) {

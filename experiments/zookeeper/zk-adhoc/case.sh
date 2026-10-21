@@ -9,3 +9,10 @@ case "${window}" in
 esac
 read -r -a scope <<<"${classes}"
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
+case "$1" in
+  02)
+    # scope cut (lead 2026-10-21): the mechanism is the session.owner re-pairing, so the workload client's ZOOKEEPER
+    # doors do not fail -- a transport this client never calls, as HBase 07 (an empty list fails every client door)
+    client_fault_transports=(ZK_QUORUM)
+    ;;
+esac

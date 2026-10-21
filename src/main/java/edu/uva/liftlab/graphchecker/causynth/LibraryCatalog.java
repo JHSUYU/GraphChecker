@@ -172,6 +172,14 @@ public final class LibraryCatalog {
         return known;
     }
 
+    public static List<Door> placedDoors(Path system) throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(system,
+                StandardCharsets.UTF_8)) {
+            return placed(shipped().doors, hooks(rows(reader,
+                    system.getFileName().toString())));
+        }
+    }
+
     private static volatile Object[] publishedViews;
 
     public static boolean publishedView(String transport, String path) {
