@@ -222,7 +222,7 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-adhoc-04 | ZooKeeperServer.java:1516 CloseRequestException CLIENT_ZXID_AHEAD | `test.ReadOnlyModeTest#testSeekForRwServer` | STATE re-pairing of the follower's lastProcessedZxid with an older apply | T Q L | C |
 | zk-adhoc-06 | quorum/Leader.java:1522 IOException | testQuorum | none of our kinds (disk values, ACKEPOCH, election stream) | T Q L | C |
 | zk-adhoc-07 | quorum/Learner.java:522 IOException | `test.QuorumRestartTest#testRollingRestart` | none (acceptedEpoch from a file; epoch over LEADERINFO) | T Q L | C |
-| zk-adhoc-10 | quorum/ObserverMaster.java:371 RuntimeException | `test.ObserverMasterTest#testInOrderCommits[1]` (the `true` row; surefire runs both natively) | none: writer and reader on one thread | T Q L | C |
+| zk-adhoc-10 | quorum/ObserverMaster.java:371 RuntimeException | `test.ObserverMasterTest#testInOrderCommits[1]` (the `true` row; surefire runs both natively; automatic mode writes 201 per client, not 10001: STATUS "tree: zk-adhoc-10's focused workload") | none: writer and reader on one thread | T Q L | C |
 | zk-adhoc-11 | quorum/QuorumPeer.java:1236 IOException | `server.quorum.CurrentEpochWriteFailureTest#testReadCurrentEpochFromAcceptedEpochTmpFile` | disk only (IO rule) | T Q | C |
 | zk-adhoc-12 | quorum/QuorumPeer.java:1256 IOException | testQuorum | disk only | T Q | C |
 | zk-adhoc-13 | quorum/ReadOnlyZooKeeperServer.java:126 CloseRequestException | `test.ReadOnlyModeTest#testConnectionEvents` (check the seed observes the first client's renewal at the RO peer: timing) | none in memory today (the global-session map over Zab; no ConnectRequest door) | T Q L | C |
