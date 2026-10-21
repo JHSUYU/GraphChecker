@@ -220,7 +220,7 @@ final class MessageCodec {
     private static Plan plan(Class<?> type) {
         Plan plan = PLANS.get(type);
         if (plan == null) {
-            plan = EnginePlumbing.generatedMessage(type) ? planOf(type) : NONE;
+            plan = EnginePlumbing.wireMessage(type) ? planOf(type) : NONE;
             PLANS.put(type, plan);
         }
         return plan == NONE ? null : plan;
@@ -257,7 +257,7 @@ final class MessageCodec {
 
     private static boolean mayHoldMessage(Field field) {
         Class<?> held = field.getType();
-        if (held == Object.class || EnginePlumbing.generatedMessage(held)) {
+        if (held == Object.class || EnginePlumbing.wireMessage(held)) {
             return true;
         }
         if (!Collection.class.isAssignableFrom(held)
@@ -267,7 +267,7 @@ final class MessageCodec {
         Type[] elements = ((ParameterizedType) field.getGenericType())
                 .getActualTypeArguments();
         return elements.length == 1 && elements[0] instanceof Class
-                && EnginePlumbing.generatedMessage((Class<?>) elements[0]);
+                && EnginePlumbing.wireMessage((Class<?>) elements[0]);
     }
 
     private static Object defaultInstance(Class<?> type) {

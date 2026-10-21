@@ -137,6 +137,25 @@ public class LibraryCatalogTest {
     }
 
     @Test
+    public void aListedMessageCrossesAsAGeneratedOneAndItsSettersExportIt() {
+        String header = "org.apache.zookeeper.txn.TxnHeader";
+        assertEquals(Arrays.asList(header),
+                new ArrayList<>(LibraryCatalog.messageClasses()));
+        String proto = "a.Protos$Ack";
+        String[][] table = {
+            {header, "Zxid", "long", "true",
+                    "<" + header + ": void setZxid(long)>"},
+            {proto, "Seq", "int", "false", "<" + proto + "$Builder: " + proto
+                    + "$Builder setSeq(int)>"},
+        };
+        for (String[] row : table) {
+            assertEquals(row[0], row[4], SeedBackwardStaticAnalyzer
+                    .producerSetter(row[0], row[1], row[2],
+                            Boolean.parseBoolean(row[3])));
+        }
+    }
+
+    @Test
     public void theHBaseClientsDoorsAreItsCallsRequestAndCompletion() {
         List<String> hbase = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {

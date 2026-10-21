@@ -487,7 +487,8 @@ final class SeedBackwardStaticAnalyzer {
                 || getter.name.length() == "get".length()
                 || !WIRE_LEAF_TYPES.contains(getter.returnType)
                 || !exactIntersects(relevant, defs)
-                || !rpcMessages().contains(getter.owner)) {
+                || !rpcMessages().contains(getter.owner)
+                && !LibraryCatalog.messageClasses().contains(getter.owner)) {
             return;
         }
         WireFlowCatalog.CaptureSite consumer =
@@ -517,9 +518,8 @@ final class SeedBackwardStaticAnalyzer {
                     getter.raw);
             return port;
         }
-        String builder = message + "$Builder";
-        String setter = "<" + builder + ": " + builder + " set" + field + "("
-                + getter.returnType + ")>";
+        String setter = producerSetter(message, field, getter.returnType,
+                LibraryCatalog.messageClasses().contains(message));
         buildGlobalStaticIndex();
         for (Callsite call : methodCallersByCallee.getOrDefault(setter,
                 Collections.<Callsite>emptyList())) {
@@ -530,6 +530,16 @@ final class SeedBackwardStaticAnalyzer {
             if (!wireFlows.captures(producer)) port.producers.add(producer);
         }
         return port;
+    }
+
+    static String producerSetter(String message, String field, String type,
+                                 boolean listed) {
+        if (listed) {
+            return "<" + message + ": void set" + field + "(" + type + ")>";
+        }
+        String builder = message + "$Builder";
+        return "<" + builder + ": " + builder + " set" + field + "(" + type
+                + ")>";
     }
 
     private static String messageField(MethodSig getter) {

@@ -164,3 +164,4 @@
 {"schemaVersion": 1, "kind": "CONFIG_FIELD_OWNER", "class": "org.apache.solr.core.CloudConfig"}
 {"schemaVersion": 1, "kind": "CODEC", "codec": "PROTOBUF", "classes": ["*.protobuf.*"]}
 {"schemaVersion": 1, "kind": "CODEC", "codec": "JAVABIN", "classes": ["org.apache.solr.common.util.JavaBinCodec", "org.apache.solr.common.util.JavaBinCodec$*"]}
+{"schemaVersion": 1, "kind": "MESSAGE", "classes": ["org.apache.zookeeper.txn.TxnHeader"], "why": "A ZooKeeper txn's header crosses the learner stream inside a PROPOSAL's, INFORM's or a DIFF's data bytes (ZK_QUORUM, tree CausynthQuorum hands the door the header as the packet's message): a door walks it as a generated message, so the zxid an observer applies is the sending learner's (zk-bugs-observer-master). A jute record listed here stays program state."}
