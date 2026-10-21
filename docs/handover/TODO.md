@@ -101,7 +101,7 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate.
   Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 (client ack timeout, CLOCK) is left; never
-  42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
+  42, 44, 46, 47. Update `checks.tsv` and `docs/checks/SELECTION.md` with the reason.
 
 ### 4. Speed (PERFORMANCE.md §5)
 - 11741's replays under the time model (258 s median vs 165-207 s); the ledger's ~1.6x over real use (step charges at

@@ -2,13 +2,13 @@
 
 The owner's goal is a set of ad hoc coordination checks per system, each run as one campaign whose exported `.smt` is
 right (SAT confirmed, or UNSAT at the fixed point; RULES.md "Only SAT or UNSAT"). The points come from the owner's
-static study (`study.txt`, branch `study`, 144 YES points with cluster tests), narrowed by the owner on 2026-10-04
-(`SELECTION.md`: control plane first, a good cluster test, GraphChecker covers it). Real bug_study bugs that
+static study (`study.txt`, branch `study`, 144 YES points with cluster tests), narrowed by the owner to the final selection
+(`SELECTION.md`, 2026-10-21: the one table all branches share). Real bug_study bugs that
 GraphChecker can check are added (`VERIFIED-BUGS.md`). Ids never move: `<sys>-adhoc-NN` is study point NN.
 
 | file | holds |
 | --- | --- |
-| [SELECTION.md](SELECTION.md) | the owner's narrowed selection per system: checked points, points without a check, dropped points with the reason |
+| [SELECTION.md](SELECTION.md) | the final selection table (owner 2026-10-21): per system the heuristic points, the selected points, those with an integration test we run, the causym executions, every removal with its reason |
 | [HDFS.md](HDFS.md), [SOLR.md](SOLR.md), [HBASE.md](HBASE.md), [ZOOKEEPER.md](ZOOKEEPER.md) | per system every study point read against OUR tree: site (file:line), guard, coordination, the counterfactual that could flip it, IO rule, the cluster test, fit; then the bug_study bugs and the pick list |
 | [VERIFIED-BUGS.md](VERIFIED-BUGS.md) | the lead's code reads of each admitted bug_study bug |
 
@@ -19,8 +19,7 @@ occurrence (README "Run one case"). HDFS's 36 study checks are rows of `experime
 (`experiments/hadoop/hdfs-*`). The HDFS trees mark all 49 study points; the Solr, HBase and ZooKeeper trees mark only
 their bug targets so far (their study markers are their turn's first TODO).
 
-Counts: HDFS 38 points / 36 checked + 10 named bug checks = 46 cases; Solr 21 / 13 + 8 bug checks (solr-adhoc-22 is
-solr-18406) = 20; HBase 30 / 17 + 3 = 20; ZooKeeper 13 / 10 + 3 = 13.
+Counts: the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 20 / 13 / 20, HBase 24 / 19 / 22, ZooKeeper 18 / 16 / 16 (points selected / with an integration test we run / causym executions).
 
 ## HDFS (the current system): 36 study checks
 

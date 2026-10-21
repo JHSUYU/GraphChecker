@@ -60,13 +60,13 @@ recommendation.
   high-quality bug without a cluster test may get a self-written one. One GraphChecker branch per system
   (`system/<sys>`, the same body, small per-system adaptations). Order: HDFS, Solr, HBase, ZooKeeper.
 - **The narrowed selection** ("这些地方优先选择和control plane有交互的", "可能check的case多于我们的点位…这是好事"):
-  HDFS 38 points / 36 checked, Solr 21 / 13, HBase 30 / 17, ZooKeeper 13 / 10; points that interact with the control
+  the final selection (owner 2026-10-21, `docs/checks/SELECTION.md`): HDFS 38 selected / 36 with an integration test / 46 executions, Solr 20 / 13 / 20, HBase 24 / 19 / 22, ZooKeeper 18 / 16 / 16; points that interact with the control
   plane, that GraphChecker covers, with a high-quality cluster test; every known bug stays a check; one point may
-  carry several checks. The lists are `selection.txt` on branch `study`; HDFS's are `experiments/hadoop/hdfs-adhoc/
+  carry several checks. The list is `docs/checks/SELECTION.md` (the final table); HDFS's are `experiments/hadoop/hdfs-adhoc/
   checks.tsv` (46 HDFS cases with the 10 named ones).
 - **Swap the too-challenging** ("要是哪几个case实在是过于challenging。就从备选里挑一个质量也不错的。容易搞定的换上来"): a
   check still a RUN_DEFECT after a reasonable fix round is replaced by a good, easier alternate, counts kept (HDFS:
-  05, 06, then 04, then 38/45); each swap updates `checks.tsv` and `selection.txt` with the reason.
+  05, 06, then 04, then 38/45); each swap updates `checks.tsv` and `SELECTION.md` with the reason.
 - **System by system** ("hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统", "下一个系统跑的时候就不要再管别的系统的事了"):
   one system's whole group runs until it has no regression; nothing of another system is touched meanwhile.
 - **Symbolic scope is the top priority** ("你必须要合理扩大符号范围。让更多的都可翻转"): the selection stays automatic and
