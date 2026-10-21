@@ -1,5 +1,7 @@
 
 zk_module=
+# The Maven profiles a case's workload module needs in the reactor (zooinspector: full-build), for every build of it.
+zk_maven_profiles=()
 system_jar_first=false
 system_scope=()
 system_sources=(
@@ -64,7 +66,7 @@ zookeeper_spec() {
 }
 
 system_build() {
-  ZK_TEST_PROPERTIES="${zk_jvm_properties[*]-}" MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${ZOOKEEPER_MAVEN_REPO:-${GC_M2}/zookeeper${repo//\//_}}} \
+  ZK_TEST_PROPERTIES="${zk_jvm_properties[*]-}" ZK_MAVEN_PROFILES="${zk_maven_profiles[*]-}" MAVEN_REPO_LOCAL=${MAVEN_REPO_LOCAL:-${ZOOKEEPER_MAVEN_REPO:-${GC_M2}/zookeeper${repo//\//_}}} \
     bash "${system_dir}/build.sh" "${repo}" "$(zk_test_module)" "${test_class}" \
     "${test_method}"
 }

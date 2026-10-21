@@ -948,17 +948,11 @@ workload, counterfactual and what each needs, are `docs/checks/ZOOKEEPER.md` §E
 `docs/handover/zookeeper-agents/Z1.md` (every site and workload on master; the adapter port) and `Z2.md` (the two quorum
 bugs; the design list D1-D9). Items in order:
 
-**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`, worktree `/bigtemp/vnr3ne/wt/zookeeper-checks`)
-is the fork's master eab165995 with the three adapter commits cherry-picked (a8c4afcb0 = gc/zk-unified 8f18cf3a4,
-3c9bdc966 = gc/zk-unified-hb f334025ee, d616b13c2 = 47ddc8b36). It is not built and not pushed. Its HEAD does not
-compile against the engine: the RESPONSE door calls `MessageDoors.received`, `restore` and a public `setAside`, which
-GraphChecker b68e720f0 removed. Rewrite that door the way HBase's `CausynthRpc` answers (server `MessageDoors.outbound(..,
-RESPONSE, ..)` at the reply, client `MessageDoors.inbound(.., RESPONSE, ..)` where `readResponse` reads it, plus
-`parsed`); no engine change (Z1.md §3). Then:
-- add the markers of §E (FinalRequestProcessor:674 with three ids, ZKDatabase:341 with two, ZooKeeperServer:2201 and the
-  ten study sites);
-- write the four workloads (Z1.md §2 ii/iii, Z2.md §1/§2 outlines; each must PASS natively under JDK 8, the two quorum
-  ones 10/10);
+**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`) is the fork's master eab165995 with the
+three adapter commits cherry-picked; agent A's `gc/zk-tree` on it holds the RESPONSE door rewritten the way HBase's
+`CausynthRpc` answers (no engine change), the markers of §E and the container-reuse and retry-seq-quota workloads (each
+native 5/5). Left:
+- the two quorum workloads (Z2.md §1/§2 outlines; each must PASS natively under JDK 8, 10/10);
 - build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
   (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
   is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);

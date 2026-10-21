@@ -32,7 +32,6 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   container-reuse)
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
-    # Workload to write (TODO ZooKeeper 3; docs/handover/zookeeper-agents/Z1.md §2 iii).
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
     target_occurrence=first  # placeholder: read the real one off a SEED (D9)
@@ -46,8 +45,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   retry-seq-quota)
     # catalogue #32 (bug_study): ZooInspector's ZooKeeperRetry re-creates a sequential node after a lost reply; the hard
-    # count quota then refuses the caller's next create. Workload to write (Z1.md §2 ii; module needs -Pfull-build).
+    # count quota then refuses the caller's next create (the module is in the reactor under -Pfull-build).
     zk_module=zookeeper-contrib/zookeeper-contrib-zooinspector
+    zk_maven_profiles=(full-build)
     zk_jvm_properties=(-Dzookeeper.enforceQuota=true)
     test_class=org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest
     test_method=createsTwoSequentialChildrenUnderAHardQuota
