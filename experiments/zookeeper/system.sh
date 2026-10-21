@@ -1,8 +1,11 @@
 
 zk_module=
 # Every workload JVM, recorded, replayed or native (build.sh): one commit worker, so a quorum's commits apply in one
-# order; no snapshot within a case (a background snapshot's timing differs run to run).
-zk_run_properties=(-Dzookeeper.commitProcessor.numWorkerThreads=1 -Dzookeeper.snapCount=1000000)
+# order; no snapshot within a case (a background snapshot's timing differs run to run); no NIO worker pool, so a
+# connection's reads run on its selector thread (how many reads a request takes is the network's timing, and each
+# hand-off to a worker was an event of the schedule).
+zk_run_properties=(-Dzookeeper.commitProcessor.numWorkerThreads=1 -Dzookeeper.snapCount=1000000
+  -Dzookeeper.nio.numWorkerThreads=0)
 # The Maven profiles a case's workload module needs in the reactor (zooinspector: full-build), for every build of it.
 zk_maven_profiles=()
 system_jar_first=false

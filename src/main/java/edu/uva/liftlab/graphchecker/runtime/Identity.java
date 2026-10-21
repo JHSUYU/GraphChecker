@@ -23,9 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
@@ -359,6 +361,9 @@ public final class Identity {
     private static final WeakIdentityMap<Start> STARTS =
             new WeakIdentityMap<Start>();
 
+    private static final WeakIdentityMap<WeakIdentityMap<Start>> QUEUED =
+            new WeakIdentityMap<WeakIdentityMap<Start>>();
+
     private static final class Start {
         private static final Start UNNAMED = new Start(
                 Collections.<Frame>emptyList(), null, "", null, null, 0, 0,
@@ -371,6 +376,7 @@ public final class Identity {
         private final WeakReference<Level> level;
         private final int depth;
         private final boolean handoff;
+        private final AtomicBoolean adopted = new AtomicBoolean();
 
         private Start(List<Frame> frames, Attribution.Reference starter,
                       String key, Thread thread, Level level, int depth,
@@ -387,6 +393,10 @@ public final class Identity {
 
         private Frame frame() {
             return frames.get(frames.size() - 1);
+        }
+
+        private boolean adopt() {
+            return this == UNNAMED || adopted.compareAndSet(false, true);
         }
 
         private boolean ranHere(State state) {
@@ -450,15 +460,35 @@ public final class Identity {
         State state = CURRENT.get();
         if (!state.claimed) {
             state.claimed = true;
-            adopt(state, Thread.currentThread(), false, false);
+            adopt(state, Thread.currentThread(), null, false, false);
         }
         return state;
     }
 
-    private static void adopt(State state, Object carrier, boolean item,
-                              boolean continuation) {
-        Start start = carrier == null || STARTS.isEmpty() ? null
-                : STARTS.remove(carrier);
+    private static Start taken(Object carrier, Object queue) {
+        if (carrier == null) return null;
+        WeakIdentityMap<Start> filed = queue == null || QUEUED.isEmpty()
+                ? null : QUEUED.get(queue);
+        Start start = filed == null ? null : filed.remove(carrier);
+        if (start != null) {
+            STARTS.remove(carrier, start);
+        } else if (!STARTS.isEmpty()) {
+            start = STARTS.remove(carrier);
+        }
+        return start == null || start.adopt() ? start : null;
+    }
+
+    private static WeakIdentityMap<Start> queued(Object queue) {
+        WeakIdentityMap<Start> filed = QUEUED.get(queue);
+        if (filed != null) return filed;
+        WeakIdentityMap<Start> fresh = new WeakIdentityMap<Start>();
+        filed = QUEUED.putIfAbsent(queue, fresh);
+        return filed == null ? fresh : filed;
+    }
+
+    private static void adopt(State state, Object carrier, Object queue,
+                              boolean item, boolean continuation) {
+        Start start = taken(carrier, queue);
         if (item && (start == null || start == Start.UNNAMED)) state.serves();
         if (start == null) return;
         boolean own = carrier == Thread.currentThread();
@@ -492,8 +522,11 @@ public final class Identity {
                                  Object submittedTo) {
         String stable = JvmNames.stable(trimmed(startSiteId));
         if (stable.isEmpty() || carrier == null) return;
+        Object queue = submittedTo instanceof BlockingQueue
+                ? submittedTo : null;
         if (!Lineage.named()) {
             STARTS.putIfAbsent(carrier, Start.UNNAMED);
+            if (queue != null) queued(queue).putIfAbsent(carrier, Start.UNNAMED);
             return;
         }
         State state = state();
@@ -507,12 +540,14 @@ public final class Identity {
                 Arrays.asList(state.snapshot(state.scopeBase)));
         frames.add(Frame.of(site, iteration));
         RuntimeTraceContext.captureAsync(carrier);
-        STARTS.put(carrier, new Start(frames, Attribution.capture(),
-                        RuntimeTraceContext.nodeHere() + "|"
-                                + contextHere().render() + "|"
-                                + ExecutionIndex.of(frames).render(),
-                        Thread.currentThread(), state.top(), state.depth(),
-                        window, handsOff(submittedTo)));
+        Start start = new Start(frames, Attribution.capture(),
+                RuntimeTraceContext.nodeHere() + "|"
+                        + contextHere().render() + "|"
+                        + ExecutionIndex.of(frames).render(),
+                Thread.currentThread(), state.top(), state.depth(),
+                window, handsOff(submittedTo));
+        STARTS.put(carrier, start);
+        if (queue != null) queued(queue).put(carrier, start);
         if (!continuation) {
             ScheduleLog.observe(ScheduleEvent.Kind.START, site);
         }
@@ -599,7 +634,7 @@ public final class Identity {
         ClaimScope scope = new ClaimScope(state, continuation);
         state.claimScopes.push(scope);
         try {
-            claim(state, carrier, false, continuation);
+            claim(state, carrier, null, false, continuation);
             if (continuation) {
                 scope.inbound = MessageDoors.setAside();
                 scope.aside = true;
@@ -655,16 +690,16 @@ public final class Identity {
         state.journal();
     }
 
-    static void claimItem(Object item) {
+    static void claimItem(Object item, Object queue) {
         if (item == null) return;
-        claim(state(), item, true, false);
+        claim(state(), item, queue, true, false);
     }
 
-    private static void claim(State state, Object carrier, boolean item,
-                              boolean continuation) {
+    private static void claim(State state, Object carrier, Object queue,
+                              boolean item, boolean continuation) {
         state.work = carrier;
         state.endUnnamedWork();
-        adopt(state, carrier, item, continuation);
+        adopt(state, carrier, queue, item, continuation);
     }
 
     public static long enterFrame(String callSiteId, Object receiver) {

@@ -476,8 +476,8 @@ public final class ConcolicRegionRuntime {
         RowRuntime.endClaim(claim);
     }
 
-    public static void claimItem(Object item) {
-        RowRuntime.claimItem(item);
+    public static void claimItem(Object item, Object queue) {
+        RowRuntime.claimItem(item, queue);
     }
 
     public static long enterMethodFrame(String callSiteId, Object receiver) {

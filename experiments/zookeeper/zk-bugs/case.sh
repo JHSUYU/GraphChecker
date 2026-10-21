@@ -41,6 +41,12 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   container-reuse)
     # the pasted bug 4 (catalogue #33): the cleanup's DeleteContainerRequest(path) deletes the replacement at the path.
+    # World depth 1 (lead 2026-10-21): in the recording the client's delete of the old container finds nothing (the
+    # cleanup came first); the bug's world needs that delete to succeed -- a write no depth-0 session holds -- before
+    # the client's create and the cleanup's Prep (ZA5-cont: every depth-0 claim paired across the client's own order).
+    # 20 claims; a CONFIRM order timeout of 2x its seed replay (71 s, ZA5-cont).
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 CAUSYNTH_CAMPAIGN_MAX_CLAIMS=20
+    zk_jvm_properties=(-Dcausynth.confirm.order.timeout.ms=150000)
     test_class=org.apache.zookeeper.server.CausynthContainerReuseTest
     test_method=keepsTheReplacementOfACleanedContainer
     target_occurrence="auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2#1"  # its one getData (ZA1-cont)
@@ -60,7 +66,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     zk_jvm_properties=(-Dzookeeper.enforceQuota=true)
     test_class=org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest
     test_method=createsTwoSequentialChildrenUnderAHardQuota
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # The second sequential create's checkQuota (the two observed occurrences of the count guard, ZA6-rseq; both stand
+    # on the retrying client's CONNECT anchor in Prep, numbered by the throttler's items: reported to the quorum cluster)
+    target_occurrence="auto0/server0#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0#2"
     scope=(
       inspector:org/apache/zookeeper/retry/ZooKeeperRetry
       server:org/apache/zookeeper/server/PrepRequestProcessor
