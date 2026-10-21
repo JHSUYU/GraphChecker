@@ -66,7 +66,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     zk_jvm_properties=(-Dzookeeper.enforceQuota=true)
     test_class=org.apache.zookeeper.retry.CausynthZooKeeperRetryQuotaTest
     test_method=createsTwoSequentialChildrenUnderAHardQuota
-    target_occurrence=first  # placeholder: read the real one off a SEED (D9)
+    # The second sequential create's checkQuota (the two observed occurrences of the count guard, ZA6-rseq; both stand
+    # on the retrying client's CONNECT anchor in Prep, numbered by the throttler's items: reported to the quorum cluster)
+    target_occurrence="auto0/server0#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0#2"
     scope=(
       inspector:org/apache/zookeeper/retry/ZooKeeperRetry
       server:org/apache/zookeeper/server/PrepRequestProcessor
