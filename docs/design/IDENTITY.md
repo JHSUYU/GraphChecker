@@ -186,7 +186,9 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   unnamed work's (`#regionExit`: the claims at or below the depth the entry was made at close with
   their scope; a claim taken before the entry, as a queue loop's condition calling a folded
   accessor, outlives it; ZooKeeper's `LearnerHandler#sendPackets`, folded into its sender thread's
-  run, left its last packet's start frames standing, FRAME_UNBALANCED), and carries whoever
+  run, left its last packet's start frames standing, FRAME_UNBALANCED; an entry runs inside its own
+  method frame, which the weave brackets around it, so its exit agrees with that frame's exit, which
+  closes the same claims one hook later), and carries whoever
   put the item there, whichever node the consumer serves otherwise: Hadoop IPC's one
   `RpcRequestSender` per connection sends every in-JVM DataNode's calls (V22: refusing items of
   another node dropped their CLAIMs, the order stalled, and a daemon heartbeat took the key update).
