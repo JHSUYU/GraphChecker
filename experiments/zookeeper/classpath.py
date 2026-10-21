@@ -6,9 +6,13 @@ The tree's compiled classes come first -- the workload module's, then the
 server's and jute's -- so no class of the tree is loaded from a jar of its
 Maven repository (the server's test jar a recipe's tests use, say).
 GraphChecker's jar is not the tree's: the launcher supplies the frozen one
-explicitly, so the entry the build added is dropped.  An entry this host
+explicitly, so the entry the build added is dropped, and so is the tree's Gson
+(2.8): GraphChecker's jar follows the tree's classpath, and the runtime's
+publication calls Gson 2.10's JsonObject#asMap, so the workload JVM loads the
+jar's Gson (as HBase's classpath.py).  An entry this host
 does not have contributes nothing and, handed on, is a path Soot refuses."""
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -32,9 +36,10 @@ for required in (repo / module / "target/test-classes",
                  repo / "zookeeper-server/target/classes"):
     if str(required) not in entries:
         raise SystemExit(f"missing compiled classes: {required}; run build first")
+GSON = re.compile(r"/com/google/code/gson/gson/[^/]+/gson-[^/]+\.jar$")
 for entry in value.split(os.pathsep):
     name = os.path.basename(entry)
-    if not entry or name.startswith("GraphChecker-"):
+    if not entry or name.startswith("GraphChecker-") or GSON.search(entry):
         continue
     if "/org/apache/zookeeper/zookeeper" in entry:
         continue
