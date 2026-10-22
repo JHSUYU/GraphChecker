@@ -1000,6 +1000,12 @@ a static-pass A/B pins it). Its row is DIAGNOSTIC now (`ClosurePlanner#uncapture
 offering only occurrences the seed or an admitted session names -- every case's closure changes, so A/B 01, 02,
 06 and cont first.
 
+CONFIRM over an unproducible planted answer (parked, lead 2026-10-22; STATUS open defect 72). An explored session whose
+world answered a handoff no producer could send confirms as "itself the run" (F1B-om's FORMULA_SAT witness 8f4d73b3,
+F's `TxnHeader.Zxid` port); only REPRODUCE's native step refuses it (`NATIVE_PLANT_UNSUPPORTED`). The fix would refuse
+such a session as its own run in `ConfirmMain`, or keep its answers out of the witness selection; A/B the bug checks
+first.
+
 **3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
 - D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
   node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum

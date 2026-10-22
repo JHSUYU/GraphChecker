@@ -662,6 +662,14 @@ Correctness:
     re-keys 4 tasks' arms, 72ff1904's among them): a re-ask, never a fold. Fix: the runtime states the
     concrete clock readings a run's program got, as it states `runSpellings`, and
     `Corpus#programNames` names them by their clock.
+72. CONFIRM accepts a world that rests on an unproducible planted answer as "itself the run": an
+    explored session whose world answered a handoff no producer of the corpus could send
+    (`focused_task.jsonl` `unproducible`) and that observed the fatal confirms the claim the model
+    selected it for (`gc/explore/ConfirmMain`, "the selected session ... is itself the run").
+    zk-bugs-observer-master F1B-om: its FORMULA_SAT witness 8f4d73b3 planted the zxid 0 on F's
+    `TxnHeader.Zxid` port (`XCH...wire.auto:TxnHeader.Zxid`, attach 169c4e4d011dd8bc), a value no
+    leader message carries (its obligation marks it unproducible). A false positive risk; REPRODUCE's native step filters it end to end
+    (`NATIVE_PLANT_UNSUPPORTED`, no native run), as om showed. Parked (lead 2026-10-22).
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is
