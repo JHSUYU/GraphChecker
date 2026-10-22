@@ -903,13 +903,16 @@ public final class ClaimPolicy {
         return ClaimKind.NO_SUPPORTED_WITNESS;
     }
 
-    private static Map<String, String> movedRoots(
+    static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
         Map<String, String> moved = new LinkedHashMap<String, String>();
         if (outcome == null) return moved;
         moved.putAll(outcome.valuation().moved());
+        if (outcome.selected() == null) return moved;
+        Set<String> cone = composition.cone(outcome.selected().selector());
         Map<String, String> model = outcome.answer().values();
         for (String cell : composition.clockCells()) {
+            if (!cone.contains(cell)) continue;
             Long jumped = jump(composition, model, cell);
             if (jumped == null || jumped == 0L) continue;
             moved.put(cell, model.get(cell).trim());
