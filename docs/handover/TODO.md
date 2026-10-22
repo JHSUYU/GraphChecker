@@ -943,7 +943,7 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 ## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
 The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.
-Open from the series: 02 (F2S) and 04 (B's F1E-04) pending; the fork's `graphchecker/zookeeper-checks` still to push
+Open from the series: 02 (F2S) pending; the fork's `graphchecker/zookeeper-checks` still to push
 (2b6e17bf8, `gc/zk-hostseed` 51b213562). Everything below is parked engine or adapter work with its
 evidence; none of it blocks a verdict. The cross-cutting items this session found (a logged event's publication-order
 rank, an application BlockingQueue's timed wait, CommitProcessor's apply under no claim) are in "Cross-cutting" below.

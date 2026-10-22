@@ -43,7 +43,7 @@ A run tag marked PENDING is a case of the alone round F2, rerun because its conc
 | zk-adhoc-01 | study §D: the leader's checkSession (session expiry) | SAT_UNCONFIRMED: every claim refused in its confirmation replay, the normal FP filter (F1S-01 2536 s; F2S-01 PENDING) |
 | zk-adhoc-02 | study: SessionMovedException (session.owner re-pairing) | PENDING (F2S-02; ZE8-02: SAT_UNCONFIRMED, every claim refuted by CONFIRM, the FP filter) |
 | zk-adhoc-03 | study: the expirer's SessionExpired at setOwner | SAT CLOCK_SKEW (the expirer turn's clock), confirmed, native 4/10 (F1C-03, 423 s) |
-| zk-adhoc-04 | study: ReadOnlyModeTest#testSeekForRwServer | PENDING (B: F1E-04 on trees-12, the RO client's constant host seed) |
+| zk-adhoc-04 | study: ReadOnlyModeTest#testSeekForRwServer | UNSAT_CLOSED, substantive (F1E-04 on int-13 + trees-12, 1212 s) |
 | zk-adhoc-06 | study: Leader#waitForEpochAck | UNSAT_CLOSED, substantive (F1S-06, 964 s) |
 | zk-adhoc-07 | study: Learner#registerWithLeader's epoch check | UNSAT_CLOSED, substantive (F1S-07, 829 s) |
 | zk-adhoc-10 | study: ObserverMaster#proposalCommitted's head check | UNSAT_CLOSED, vacuous by construction, class C (F1S-10, 1016 s) |
@@ -81,7 +81,7 @@ TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
 - the learner stream's racing ACK hand-overs.
 
 Open from the final series:
-- 02 and 04 are pending (F2S-02 alone; B's F1E-04).
+- 02 is pending (F2S-02 alone).
 - om reproduces 4/10 natively, and 03 does too.
 - The fork's `graphchecker/zookeeper-checks` is still at integration 10 (442c88199). Push the final tree `gc/zk-checks`
   2b6e17bf8 and `gc/zk-hostseed` 51b213562; the fork may be pushed, apache never.
