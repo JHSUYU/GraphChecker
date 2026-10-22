@@ -16,10 +16,11 @@ case "$1" in
     # that outgrew a 4-6 h budget (05 14400 s in DECIDE, 07 309 paths, 14 out of heap, 31 killed at round 26) -- no
     # client faults (their counterfactuals are state re-pairings, clocks and session loss; NONE names no transport of
     # doors.jsonl, so no door fails in the workload client's root contexts -- an empty list would fail every door
-    # there, ClientFaults#read), the first claim only, a 60 min campaign
+    # there, ClientFaults#read) and the first claim only; their exploration is capped as every case's
+    # (workflow.properties explore_budget_s)
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
     client_fault_transports=(NONE)
-    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=1 CAUSYNTH_CAMPAIGN_BUDGET_S=3600
+    export CAUSYNTH_CAMPAIGN_MAX_CLAIMS=1
     ;;
   09|10|13|19|21|39|40)
     export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
