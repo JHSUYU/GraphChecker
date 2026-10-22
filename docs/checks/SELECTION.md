@@ -113,8 +113,8 @@ reached-znode data), 32 (RegionReplicaFlushHandler: a secondary replica's flush 
 - 05 (Follower:103, the leader's epoch below the accepted one, added 2026-10-21): its throw is dead on master. Learner:522
   throws first, and no other thread writes the accepted epoch.
 
-**Executions (16):** one per point with a test (`experiments/zookeeper/zookeeper-cases.tsv`).
-- 2 have run: quota-init and election-offer.
-- The other 14 wait for the work in TODO "ZooKeeper".
+**Executions (16):** one per point with a test (`experiments/zookeeper/zookeeper-cases.tsv`). All 16 have run on the
+final engine (`results/zookeeper/`): 5 of the 6 bug checks PASS (trunc-sync not detected); the study checks are 01 02
+SAT_UNCONFIRMED (the FP filter), 03 SAT CLOCK_SKEW, 04 06 07 12 13 substantive UNSAT, 10 11 vacuous UNSAT (class C).
 
 **Removed:** none.
