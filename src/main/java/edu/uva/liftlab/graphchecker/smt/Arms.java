@@ -398,8 +398,9 @@ public final class Arms {
                 rows.forcedFrom(session))) {
             return false;
         }
-        if (!state.initial() && (constructs(state) || !concurrent(reader,
-                state.endpoint().occurrence(), session))) {
+        if (!state.initial() && (constructs(state)
+                || state.version() > observedVersion && !concurrent(reader,
+                        state.endpoint().occurrence(), session))) {
             return false;
         }
         long low = Math.min(state.version(), observedVersion);

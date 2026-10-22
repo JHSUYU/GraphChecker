@@ -363,8 +363,12 @@ the flip solver:
   constructor's or initializer's store from before the log began, the JVM default, a container's
   members), an arm of its own under no prefix. Every writer but the observed one -- the
   INITIAL included -- is an alternative only where the read could have run right after it, ONE
-  rule (`Arms#eligible`, asked by the arms and by EXPLORE's closure and flip query alike): its
-  writer HB-concurrent, every write between the two an HB-concurrent occurrence's, none of
+  rule (`Arms#eligible`, asked by the arms and by EXPLORE's closure and flip query alike): a
+  writer of a later version HB-concurrent (one of an earlier version needs no relation of its
+  own: the read ran after it, as after the INITIAL -- a stale read, the reader run before a
+  concurrent write; zk-bugs-observer-master: the observer master's `syncFollower` reading
+  `lastProcessedZxid` before its own concurrent apply), every write between the two an
+  HB-concurrent occurrence's, none of
   them made under construction (a constructor or a class initializer anywhere on the writer's
   frame chain, which every reader of what it built follows), and no version between the two
   that a read observed without a write row stating it (a writer no row names, which no order

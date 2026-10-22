@@ -71,6 +71,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 
 import static org.junit.Assert.assertEquals;
@@ -1995,6 +1996,54 @@ public class ComposerTest {
                 vmNull()));
         session.target("EXPR.00000000000000d1", expired, true);
         session.write();
+    }
+
+    @Test
+    public void aReadMayRunBeforeAConcurrentWriteAndSeeTheValueBeforeIt()
+            throws Exception {
+        OccurrenceAddress reader = occurrence("case/f1", "REGION.sync",
+                CausalContext.of(Role.of("OM_HANDLER"), "", 1),
+                frame("LearnerHandler#run#1", 0));
+        OccurrenceAddress startup = occurrence("case/f1", "REGION.start",
+                CausalContext.of(Role.of("PEER_START"), "", 1),
+                frame("QuorumPeer#start#1", 0));
+        OccurrenceAddress apply = occurrence("case/f1", "REGION.apply",
+                CausalContext.of(Role.of("COMMIT"), "", 1),
+                frame("CommitProcessor#run#1", 0));
+        LocationId zxid = LocationId.of(LocationKind.INSTANCE, "30", "24");
+        Object[][] table = {
+            {"the predecessor's writer runs before the reader, the write"
+                    + " between them beside it", apply, true},
+            {"the write between them runs before the reader too", startup,
+                    false},
+        };
+        for (int row = 0; row < table.length; row++) {
+            Path at = folder.newFolder("eligible" + row).toPath();
+            Session session = new Session(at, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader, "thread#sync", false);
+            session.activation(startup, "thread#sync", false);
+            session.activation(apply, "thread#apply", false);
+            session.expression("EXPR.z", constant("1"));
+            session.write(Endpoint.of(startup, "DataTree#load#1:WRITE",
+                    at("w#1", 0), 0), zxid, 1L, "EXPR.z");
+            session.write(Endpoint.of((OccurrenceAddress) table[row][1],
+                    "DataTree#processTxn#2:WRITE", at("w#2", 0), 0), zxid,
+                    2L, "EXPR.z");
+            session.write(Endpoint.of(apply, "DataTree#processTxn#3:WRITE",
+                    at("w#3", 0), 0), zxid, 3L, "EXPR.z");
+            session.read(Endpoint.of(reader, "LearnerHandler#sync#4:READ",
+                    at("r#1", 0), 0), zxid, 3L, "read_z", "1");
+            session.target("read_z", false, true);
+            session.write();
+            Set<Long> versions = new TreeSet<Long>();
+            for (WriteRow write : Corpus.read(at, null).eligibleWrites("s0",
+                    SmtLowering.locationKey(zxid), 3L, reader)) {
+                versions.add(write.version());
+            }
+            assertEquals((String) table[row][0], table[row][2],
+                    versions.contains(1L));
+        }
     }
 
     private static JsonObject putCommit(JsonObject state, long generation) {
