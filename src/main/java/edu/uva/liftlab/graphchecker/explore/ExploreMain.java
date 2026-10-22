@@ -266,10 +266,11 @@ public final class ExploreMain {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> runWhole =
                 new LinkedHashSet<OccurrenceAddress>();
+        ZkChain chain = ZkChain.read(iteration.resolve(ZkChain.FILE));
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches, doorsOnly, heldDoorsOnly,
-                    faults, view, gaps);
+                    faults, view, chain, gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
                 truncated += plan.truncated.size();
@@ -331,7 +332,6 @@ public final class ExploreMain {
             frontier.inFlight(RowCodec.readAll(inFlight,
                     ExploreCodec::readObligation));
         }
-        ZkChain chain = ZkChain.read(iteration.resolve(ZkChain.FILE));
         ZkKeys keys = ZkKeys.of(chain);
         List<GapRow> offering = new ArrayList<GapRow>();
         List<ObligationFactory.Candidate> candidates =

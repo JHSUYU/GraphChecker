@@ -33,7 +33,9 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.SystemView;
@@ -137,8 +139,19 @@ public final class ClosurePlanner {
                             Branches branches, Set<String> doorsOnly,
                             Set<String> heldDoorsOnly, ClientFaults faults,
                             SystemView view, Consumer<GapRow> gaps) {
+        return plan(corpus, anchor, maxTasks, scope, branches, doorsOnly,
+                heldDoorsOnly, faults, view, NO_CHAIN, gaps);
+    }
+
+    public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
+                            int maxTasks, StaticScopeMap scope,
+                            Branches branches, Set<String> doorsOnly,
+                            Set<String> heldDoorsOnly, ClientFaults faults,
+                            SystemView view, ZkChain chain,
+                            Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly, heldDoorsOnly, faults, view, gaps);
+                branches, doorsOnly, heldDoorsOnly, faults, view, CORES,
+                chain, gaps);
     }
 
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
@@ -147,14 +160,18 @@ public final class ClosurePlanner {
                      ClientFaults faults, SystemView view,
                      Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, ceiling, scope, branches,
-                doorsOnly, heldDoorsOnly, faults, view, CORES, gaps);
+                doorsOnly, heldDoorsOnly, faults, view, CORES, NO_CHAIN,
+                gaps);
     }
+
+    private static final ZkChain NO_CHAIN =
+            ZkChain.of(Collections.<JsonObject>emptyList());
 
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
                      ClientFaults faults, SystemView view, ForkJoinPool cores,
-                     Consumer<GapRow> gaps) {
+                     ZkChain chain, Consumer<GapRow> gaps) {
         Walk walk = new Walk(corpus, scope, anchor, view, cores, gaps);
         Map<String, Demand> demands = walk.demands;
         Deque<String> pending = walk.pending;
@@ -174,7 +191,7 @@ public final class ClosurePlanner {
             }
         }
         start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
-                scope));
+                scope, chain));
         walk.admit(start);
         Set<String> truncated = new LinkedHashSet<String>();
         Set<String> ceilingCut = new LinkedHashSet<String>();
@@ -476,7 +493,8 @@ public final class ClosurePlanner {
     private static Set<String> storeReads(Corpus corpus,
                                           OccurrenceAddress anchor,
                                           Set<String> flipSites,
-                                          StaticScopeMap scope) {
+                                          StaticScopeMap scope,
+                                          ZkChain chain) {
         Set<String> symbols = new LinkedHashSet<String>();
         for (TargetRow row : corpus.targetsOn(anchor)) {
             SessionReader session = corpus.session(row.sessionId());
@@ -493,14 +511,23 @@ public final class ClosurePlanner {
             for (ReadRow read : corpus.readsOn(row.sessionId(), anchor)) {
                 if (read.location().kind() == LocationKind.STORE
                         && RowOrder.beforeEvent(read.seq(), read.tie(), at)
-                        && scope.demandedAt(
-                        read.endpoint().site(), read.javaType(),
-                        LocationKind.STORE)) {
+                        && (scope.demandedAt(read.endpoint().site(),
+                        read.javaType(), LocationKind.STORE)
+                        || chainWrote(corpus, chain, read))) {
                     symbols.add(read.symbol());
                 }
             }
         }
         return symbols;
+    }
+
+    private static boolean chainWrote(Corpus corpus, ZkChain chain,
+                                      ReadRow read) {
+        if (chain.empty()) return false;
+        WriteRow write = corpus.writeOf(read.sessionId(), read.location(),
+                read.observedVersion());
+        return write != null && !write.initial()
+                && chain.holds(write.endpoint().occurrence().render());
     }
 
     static Map<UnplannedInput, String> unplanned(Corpus corpus,
