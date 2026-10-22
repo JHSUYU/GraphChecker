@@ -276,6 +276,10 @@ seed-replay stall at a time, then read each claim's chain. Every run and decisio
   fails without the fix.
 - **`worktree-add.sh <path> HEAD` resolves HEAD in the main repo,** not the branch you meant (zk-engine-5 was built from
   main): always give the commit hash.
+- **Never edit a driver script while a series that runs it is alive.** bash reads a running script by byte offset; an edit
+  to `lead/final/series.sh` at 08:36 (2026-10-22) shifted it under the live F1B and F1S loops, and F1B died once its
+  for-loop ended ("line 64: F1B: unbound variable"). Its detached runs kept going, but their END bookkeeping was lost
+  (recovered with track.sh). Copy the driver to a new file (series-e.sh) and edit the copy.
 
 **Tree workarounds that bit back.**
 - **A notify under a system lock deadlocks.** C's `Leader.causynthTick` notified under the Leader monitor while
