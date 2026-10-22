@@ -321,7 +321,16 @@ location that hands it on, a store of its own (solr-bugs-reindex-cleanup SG1: `w
 `instanceof ProcessWatchWithExecutor` guarded `new ProcessWatchWithExecutor(watcher)`, whose
 constructor stores `this.watcher`: 5,964 proposals, all refused). A constructor's store into
 another object's field, a static field, a mutation through a field and a store in a method the
-constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enum constant --
+constructor calls keep them all. A `WRITE_SITE` that lies in a trap's handler block, or whose
+method a call in one reaches (the calls of `callsInto`), also carries the branches deciding each
+checked throw the trap catches in its try block's callees, at most two calls below the try, on their
+arm toward the throw (`Guards#caughtInto`, `SiteControlDependence#throwDeciders`, `CAUGHT_DEPTH`):
+the write runs because that throw happened (zk-bugs-container-reuse: `PrepRequestProcessor#pRequest`'s
+catch builds `new TxnHeader(.., OpCode.error)`, so `TxnHeader.<init>`'s store of `type` carries
+`getRecordForPath#u13`, whose node-map read decides the client delete's NoNode; before, EXPLORE never
+offered that flip, ZA9-cont). These guards are flip sites and deciders only: the backward slice and
+root demand do not follow them (demanding the throws' guards in the slice pushed 19 chosen roots of
+zk-adhoc-01 out at the width cut). A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,

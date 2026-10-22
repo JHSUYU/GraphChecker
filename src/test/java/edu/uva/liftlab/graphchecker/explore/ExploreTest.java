@@ -1691,7 +1691,9 @@ public class ExploreTest {
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet(),
                 Collections.<String>emptySet(), ClientFaults.NONE,
-                SystemView.of(""), cores, said::add), said);
+                SystemView.of(""), cores,
+                ZkChain.of(Collections.<JsonObject>emptyList()), said::add),
+                said);
     }
 
     private static String rendered(ClosurePlanner.Plan plan) {
@@ -2539,6 +2541,85 @@ public class ExploreTest {
             return process.waitFor() == 0;
         } catch (IOException | InterruptedException unavailable) {
             return false;
+        }
+    }
+
+    @Test
+    public void anAnchorStoreReadOfAChainWritersVersionIsDemandedWithoutAScopeSite()
+            throws Exception {
+        LocationId snapshot = LocationId.of(LocationKind.STORE,
+                "ZK_SNAPSHOT", "snapshot/peer1");
+        OccurrenceAddress restart = occurrence("zk-case/peer1",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Main#runFromConfig#1");
+        OccurrenceAddress sync = occurrence("zk-case/peer1",
+                "REGION.sync", CausalContext.of(Role.of("TEST"), "", 1),
+                "Peer#run#1");
+        Object[][] cases = {{true, true}, {false, false}};
+        for (int at = 0; at < cases.length; at++) {
+            Path iteration = tree.newFolder("chain-store-" + at).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(restart, false);
+            seed.activation(sync, false, true, "peer");
+            seed.write(at(sync, "ZK_SNAPSHOT#WRITE:snapshot.peer1",
+                    "Peer#syncWithLeader#4"), snapshot, 7L, "", "[B");
+            seed.read(at(restart, "ZK_SNAPSHOT#READ:snapshot.peer1",
+                    "Main#loadDataBase#2"), snapshot, 7L, "S_snap7", null);
+            seed.target(restart, "Guard#u8#1", "false");
+            seed.flush();
+            List<JsonObject> chain = new ArrayList<JsonObject>();
+            if ((Boolean) cases[at][0]) {
+                JsonObject held = new JsonObject();
+                held.addProperty("kind", ZkChain.OCCURRENCE);
+                held.addProperty("occurrenceId", sync.render());
+                chain.add(held);
+            }
+            JsonObject path = new JsonObject();
+            path.addProperty("kind", ZkChain.PATH);
+            path.addProperty("transport", "ZK_SNAPSHOT");
+            path.addProperty("location", "snapshot/peer1");
+            path.addProperty("slot", "snapshot/peer1");
+            chain.add(path);
+            RowCodec.writeJsonl(iteration.resolve(ZkChain.FILE), chain);
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"));
+            Path out = tree.newFolder("chain-store-" + at + "-out").toPath();
+            JsonObject manifest = plan(iteration,
+                    "zk-case/peer1#epoch0/region/REGION.target#1", null,
+                    results(out), out.resolve("obligations-0000"), 0);
+            Set<String> focused = new LinkedHashSet<String>();
+            for (JsonElement task : manifest.getAsJsonArray("taskRows")) {
+                focused.add(task.getAsJsonObject().get("focused")
+                        .getAsString());
+            }
+            assertEquals("case " + at + ": " + focused, cases[at][1],
+                    focused.contains(sync.render()));
+        }
+    }
+
+    @Test
+    public void aWriterWhoseRecordedArmLeftTheWriteHoldsNoOwnerEvidence() {
+        String guard = "<o.a.z.s.SessionTrackerImpl: void run()>#u14";
+        String other = "<o.a.z.s.SessionTrackerImpl: void run()>#u2";
+        List<String> guards = Arrays.asList(other, guard);
+        Object[][] table = {
+            {"no decision at a guard", Arrays.asList(false, false),
+                    other + "@nothing", false, false},
+            {"decided toward the write", Arrays.asList(false, false),
+                    guard, false, false},
+            {"decided away from the write", Arrays.asList(false, false),
+                    guard, true, true},
+            {"direction unknown", Arrays.asList(false, null),
+                    guard, true, true},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<Boolean> outcomes = (List<Boolean>) row[1];
+            DecisionRow decision = DecisionRow.of("s", 1, PRODUCER,
+                    (String) row[2], 1, (Boolean) row[3], "EXPR.t",
+                    Collections.<String, Long>emptyMap());
+            assertEquals((String) row[0], row[4], ClosurePlanner.decidedAway(
+                    Collections.singletonList(decision), guards, outcomes));
         }
     }
 

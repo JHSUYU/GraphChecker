@@ -33,7 +33,9 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.ZkChain;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.SystemView;
@@ -137,8 +139,19 @@ public final class ClosurePlanner {
                             Branches branches, Set<String> doorsOnly,
                             Set<String> heldDoorsOnly, ClientFaults faults,
                             SystemView view, Consumer<GapRow> gaps) {
+        return plan(corpus, anchor, maxTasks, scope, branches, doorsOnly,
+                heldDoorsOnly, faults, view, NO_CHAIN, gaps);
+    }
+
+    public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
+                            int maxTasks, StaticScopeMap scope,
+                            Branches branches, Set<String> doorsOnly,
+                            Set<String> heldDoorsOnly, ClientFaults faults,
+                            SystemView view, ZkChain chain,
+                            Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
-                branches, doorsOnly, heldDoorsOnly, faults, view, gaps);
+                branches, doorsOnly, heldDoorsOnly, faults, view, CORES,
+                chain, gaps);
     }
 
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
@@ -147,14 +160,18 @@ public final class ClosurePlanner {
                      ClientFaults faults, SystemView view,
                      Consumer<GapRow> gaps) {
         return plan(corpus, anchor, maxTasks, ceiling, scope, branches,
-                doorsOnly, heldDoorsOnly, faults, view, CORES, gaps);
+                doorsOnly, heldDoorsOnly, faults, view, CORES, NO_CHAIN,
+                gaps);
     }
+
+    private static final ZkChain NO_CHAIN =
+            ZkChain.of(Collections.<JsonObject>emptyList());
 
     static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
                      int ceiling, StaticScopeMap scope, Branches branches,
                      Set<String> doorsOnly, Set<String> heldDoorsOnly,
                      ClientFaults faults, SystemView view, ForkJoinPool cores,
-                     Consumer<GapRow> gaps) {
+                     ZkChain chain, Consumer<GapRow> gaps) {
         Walk walk = new Walk(corpus, scope, anchor, view, cores, gaps);
         Map<String, Demand> demands = walk.demands;
         Deque<String> pending = walk.pending;
@@ -174,7 +191,7 @@ public final class ClosurePlanner {
             }
         }
         start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
-                scope));
+                scope, chain));
         walk.admit(start);
         Set<String> truncated = new LinkedHashSet<String>();
         Set<String> ceilingCut = new LinkedHashSet<String>();
@@ -476,7 +493,8 @@ public final class ClosurePlanner {
     private static Set<String> storeReads(Corpus corpus,
                                           OccurrenceAddress anchor,
                                           Set<String> flipSites,
-                                          StaticScopeMap scope) {
+                                          StaticScopeMap scope,
+                                          ZkChain chain) {
         Set<String> symbols = new LinkedHashSet<String>();
         for (TargetRow row : corpus.targetsOn(anchor)) {
             SessionReader session = corpus.session(row.sessionId());
@@ -493,14 +511,23 @@ public final class ClosurePlanner {
             for (ReadRow read : corpus.readsOn(row.sessionId(), anchor)) {
                 if (read.location().kind() == LocationKind.STORE
                         && RowOrder.beforeEvent(read.seq(), read.tie(), at)
-                        && scope.demandedAt(
-                        read.endpoint().site(), read.javaType(),
-                        LocationKind.STORE)) {
+                        && (scope.demandedAt(read.endpoint().site(),
+                        read.javaType(), LocationKind.STORE)
+                        || chainWrote(corpus, chain, read))) {
                     symbols.add(read.symbol());
                 }
             }
         }
         return symbols;
+    }
+
+    private static boolean chainWrote(Corpus corpus, ZkChain chain,
+                                      ReadRow read) {
+        if (chain.empty()) return false;
+        WriteRow write = corpus.writeOf(read.sessionId(), read.location(),
+                read.observedVersion());
+        return write != null && !write.initial()
+                && chain.holds(write.endpoint().occurrence().render());
     }
 
     static Map<UnplannedInput, String> unplanned(Corpus corpus,
@@ -924,7 +951,8 @@ public final class ClosurePlanner {
         }
 
         void offer(List<Object> key, List<OccurrenceAddress> holders,
-                   String why, Collection<String> guards, String sessionId,
+                   String why, StaticScopeMap.Site site,
+                   Collection<String> guards, String sessionId,
                    LocationId location) {
             Set<String> offered = walk.offered.get(key);
             List<OccurrenceAddress> asked = new ArrayList<OccurrenceAddress>();
@@ -935,7 +963,7 @@ public final class ClosurePlanner {
             }
             List<Boolean> others = location == null ? null
                     : walk.each(asked, occurrence -> walk.holdsOthersOnly(
-                    occurrence, sessionId, location));
+                    occurrence, sessionId, location, site));
             List<OccurrenceAddress> offering =
                     new ArrayList<OccurrenceAddress>();
             for (int at = 0; at < asked.size(); at++) {
@@ -1496,9 +1524,12 @@ public final class ClosurePlanner {
 
         private boolean holdsOthersOnly(OccurrenceAddress occurrence,
                                         String sessionId,
-                                        LocationId location) {
+                                        LocationId location,
+                                        StaticScopeMap.Site site) {
             if (location.kind() == LocationKind.STATIC
-                    || !Arms.namedOwner(location)) {
+                    || !Arms.namedOwner(location)
+                    || decidedAway(corpus.decisionsOf(sessionId, occurrence),
+                            site.guards, site.guardOutcomes)) {
                 return false;
             }
             SessionReader session = corpus.session(sessionId);
@@ -2149,6 +2180,21 @@ public final class ClosurePlanner {
         }
     }
 
+    static boolean decidedAway(List<DecisionRow> decisions,
+                               List<String> guards, List<Boolean> outcomes) {
+        for (DecisionRow decision : decisions) {
+            for (int at = 0; at < guards.size(); at++) {
+                if (!guards.get(at).equals(decision.siteId())) continue;
+                Boolean toward = at < outcomes.size() ? outcomes.get(at) : null;
+                if (toward == null || toward.booleanValue()
+                        != decision.outcome()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     static boolean unrecorded(Corpus corpus, String sessionId,
                               String locationKey, long version) {
         if (version < 0L) return false;
@@ -2235,11 +2281,11 @@ public final class ClosurePlanner {
                                    LocationId location, boolean unrecorded) {
         List<OccurrenceAddress> holders = walk.holders(site, node, false);
         step.offer(Arrays.<Object>asList(why, site, guards, node),
-                holders, why, guards, sessionId, location);
+                holders, why, site, guards, sessionId, location);
         if (unrecorded) {
             List<OccurrenceAddress> ran = walk.holders(site, node, true);
             step.offer(Arrays.<Object>asList(UNRECORDED_WRITER, site, guards,
-                    node), ran, UNRECORDED_WRITER, guards, sessionId,
+                    node), ran, UNRECORDED_WRITER, site, guards, sessionId,
                     location);
             Set<OccurrenceAddress> lacked = walk.unrecorded.computeIfAbsent(
                     sessionId, key -> ConcurrentHashMap.newKeySet());

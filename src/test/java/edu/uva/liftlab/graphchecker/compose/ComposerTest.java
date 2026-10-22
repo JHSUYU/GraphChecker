@@ -1324,6 +1324,49 @@ public class ComposerTest {
     }
 
     @Test
+    public void aJumpedClockCellNoPathNamesIsNoMovedRoot() throws Exception {
+        Path idle = folder.newFolder("clock-idle").toPath();
+        for (String id : new String[] {"s0", "s1"}) {
+            Session session = new Session(idle, id, "s1".equals(id));
+            session.clock("700");
+            session.roots.add(RootMintRow.of(id, ++session.seq, ANCHOR,
+                    "ROOT.IDLE", "clock_idle", RootKind.CLOCK,
+                    RootCategory.CLOCK, "705", null, null, true,
+                    Clock.of(1_000_000L, Clock.WALL), 0L));
+            session.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK
+                    + " 1000) (not (> " + CLOCK + " 1000)))", CLOCK_ROOT,
+                    700L);
+            if ("s1".equals(id)) {
+                session.decision(ANCHOR, "anchor#u2", "(or (> clock_idle 0) "
+                        + "(not (> clock_idle 0)))", "ROOT.IDLE", 705L);
+            }
+            session.target("(> " + CLOCK + " 1000)", false, true);
+            session.write();
+        }
+        Composer.Composition composition = compose(idle, 4);
+        Composer.Disjunct own = null;
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            if ("s0".equals(disjunct.path().sessionId)) own = disjunct;
+        }
+        assertTrue("both readings are cells of the clock: "
+                        + composition.clockCells(),
+                composition.clockCells().containsAll(
+                        Arrays.asList(CLOCK, "clock_idle")));
+        Map<String, String> model = new LinkedHashMap<String, String>();
+        model.put(CLOCK, "5000");
+        model.put("clock_idle", "9000");
+        ClaimPolicy.Outcome jumped = new ClaimPolicy.Outcome(
+                composition.free(0), Collections.<String>emptyList(),
+                Z3.Answer.decided("sat", model),
+                own,
+                Collections.<String, ComposedFamilies.ArmChoice>emptyMap());
+        assertEquals("the cell the path rests on is moved; the one only the "
+                        + "clock's order moved is no plant of the witness",
+                Collections.singleton(CLOCK),
+                ClaimPolicy.movedRoots(composition, jumped).keySet());
+    }
+
+    @Test
     public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
         Path iteration = folder.newFolder("polarity").toPath();
         Session session = new Session(iteration, "s0", false);

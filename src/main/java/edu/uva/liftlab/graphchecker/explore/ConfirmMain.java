@@ -47,6 +47,7 @@ import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -117,6 +118,24 @@ public final class ConfirmMain {
         System.out.println(ExploreMain.pretty(summary));
     }
 
+    private static void leaveOutside(Path claimFile, JsonObject document,
+                                     Witness witness) throws IOException {
+        if (witness.moved.outside.isEmpty()) return;
+        JsonObject moved = object(witness.decided, "movedRoots");
+        JsonObject outside = new JsonObject();
+        for (Map.Entry<String, String> root
+                : witness.moved.outside.entrySet()) {
+            moved.remove(root.getKey());
+            outside.addProperty(root.getKey(), root.getValue());
+        }
+        JsonObject left = new JsonObject();
+        left.add("roots", outside);
+        left.addProperty("reason", Moved.OUTSIDE_REASON);
+        witness.decided.add(Moved.OUTSIDE, left);
+        Files.write(claimFile, ExploreMain.pretty(document).getBytes(
+                StandardCharsets.UTF_8));
+    }
+
     static final class Refused extends RuntimeException {
         final boolean refutes;
 
@@ -137,9 +156,10 @@ public final class ConfirmMain {
     static JsonObject write(Path iteration, Path claimFile,
                             Path manifestFile, Path out) throws IOException {
         Files.createDirectories(out);
-        Witness witness = Witness.of(iteration,
-                ExploreCodec.readObject(claimFile),
+        JsonObject document = ExploreCodec.readObject(claimFile);
+        Witness witness = Witness.of(iteration, document,
                 ExploreCodec.readObject(manifestFile));
+        leaveOutside(claimFile, document, witness);
         if ((witness.sessionId.equals(witness.seedSessionId)
                 || witness.session.forced())
                 && object(witness.decided, "movedRoots").size() == 0
@@ -782,7 +802,7 @@ public final class ConfirmMain {
                         optionalString(root, "recordedValue"));
             }
         }
-        return Moved.of(ExploreCodec.map(object(decided, "movedRoots")),
+        return Moved.witness(ExploreCodec.map(object(decided, "movedRoots")),
                 readings, session, recording, namings);
     }
 

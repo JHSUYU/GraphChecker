@@ -234,13 +234,30 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-12: UNSAT_CLOSED at the fixed point, substantive (ZC7-12): on a fresh ensemble both epochs are
   `epochOf(lastProcessedZxid)`, so `acceptedEpoch < currentEpoch` cannot hold; disk only. Target: server 1's first
   start (`auto0/peer1#epoch0`, `QuorumPeerMain#runFromConfig`, into which `start` and `loadDataBase` fold), window `startup`.
-- zk-adhoc-06: vacuous UNSAT by construction (ZC8-06, UNSAT_CLOSED at the fixed point, 0 BLOCKING): the ACKEPOCH
-  summary and the leader's are both fresh disks' values, no root. Target the leader's `LearnerHandler#run` for its
-  follower (`auto0/peer2#epoch0`), window `startup`.
+- zk-adhoc-06: UNSAT with no root (ZC10-06 on integration 9, UNSAT_CLOSED at the fixed point, 0 BLOCKING; ZC8-06 the
+  same, vacuous): the ACKEPOCH summary and the leader's are both fresh disks' values. vacuity.py now calls it
+  substantive, but only because one read of `waitForEpochAck` is offered another writer, and every writer holds a
+  fresh summary. Target the leader's `LearnerHandler#run` for its follower (`auto0/peer2#epoch0`), window `startup`.
 - zk-adhoc-11: vacuous UNSAT by construction (ZC7-11, IO rule): the epoch files and the replayed log are file state no
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
-- zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+- zk-adhoc-01: target client1's `create` at the leader, the window's second `checkSession` (`auto0/peer2#epoch0`, Prep
+  `#2`). The first, client0's forwarded create, comes before any expirer turn in the window: client0's session was made
+  before the window, and the leader does not touch a follower's session. client1's create is touched in
+  `submitRequestNow` (a clock root); the expirer's turn comes next (`getWaitTime`, a clock root), then Prep's
+  `checkSession`. The expiry deadline enters the guard as follows (STATUS "tree: the session expirer's grid"):
+  the leader's tracker counts its buckets from its start, 12 h each, so client1's session stands in the first
+  bucket, base + 12 h = `nextExpirationTime`. The turn reads the clock once; its guard is `nextExpirationTime - clk
+  <= 0`, plus the 60 s margin. One jump of the leader's clock past base + 12 h at that turn makes `poll(clk)` take
+  client1's bucket; `setSessionClosing` runs, and `checkSession` throws. A session that closes before the touch
+  drops the request (`MissingSessionException`), so no check runs. The clock domain is 30 days ahead of each reading
+  (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. Before: ZC10-01/-03 ran on the old grid, where the flip was UNSAT,
+  because it kept `getWaitTime`'s inner ternary arm, and the session stood two buckets on. ZC11 flipped only the turns
+  after the target (`ClosurePlanner#decidedAway`, PIPELINE §7.2). In ZC12, `poll` read the host's clock.
+- zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
+  chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
+  `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
+  reading was unplanned and read the host's clock).
 - zk-bugs-observer-master: the observer's zxid reads pair with F's sync resend (D5, ZD11-om: UNSAT substantive, phi
   symbolic); F's decider (`syncFollower`'s `lastProcessedZxid`) has its writer, F's own apply, in no planned occurrence,
   so `case.sh` declares `export_guard_writers=true` (STATUS "case: zk-bugs-observer-master's export-guard writers").

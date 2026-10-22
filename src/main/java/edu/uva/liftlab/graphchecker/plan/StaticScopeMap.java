@@ -94,6 +94,10 @@ public final class StaticScopeMap {
             return Collections.<Guard>emptyList();
         }
 
+        default List<Guard> caughtInto(String siteId) {
+            return Collections.<Guard>emptyList();
+        }
+
         default Set<String> passable(String siteId,
                                      Predicate<String> entry) {
             return Collections.<String>emptySet();
@@ -753,6 +757,8 @@ public final class StaticScopeMap {
     public static List<JsonObject> rows(List<Site> sites, Guards guards,
                                         Predicate<String> entry) {
         List<JsonObject> rows = new ArrayList<JsonObject>();
+        int writes = 0;
+        int caught = 0;
         for (Site site : sites) {
             List<Guard> found = guards == null
                     ? Collections.<Guard>emptyList()
@@ -770,6 +776,15 @@ public final class StaticScopeMap {
                         : guards.callsInto(method, callee -> true)) {
                     if (named.add(guard.siteId())) all.add(guard);
                 }
+                writes++;
+                boolean gained = false;
+                for (Guard guard : guards.caughtInto(site.siteId)) {
+                    if (named.add(guard.siteId())) {
+                        all.add(guard);
+                        gained = true;
+                    }
+                }
+                if (gained) caught++;
             }
             Site guarded = site.withGuards(all);
             if (called && guards != null) {
@@ -789,8 +804,16 @@ public final class StaticScopeMap {
             }
             rows.add(row);
         }
+        if (caught > 0) {
+            LOG.info("static scope map: {} of {} write site(s) gain the"
+                    + " branches deciding a checked throw a handler they are"
+                    + " called from catches", caught, writes);
+        }
         return rows;
     }
+
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(StaticScopeMap.class);
 
     static final String FORCE = "force";
 
