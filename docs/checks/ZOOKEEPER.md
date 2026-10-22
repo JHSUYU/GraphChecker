@@ -252,7 +252,12 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. Before: ZC10-01/-03 ran on the old grid, where the flip was UNSAT,
   because it kept `getWaitTime`'s inner ternary arm, and the session stood two buckets on. ZC11 flipped only the turns
   after the target (`ClosurePlanner#decidedAway`, PIPELINE §7.2). In ZC12, `poll` read the host's clock.
-- zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
+- zk-adhoc-03: done, SAT, confirmed in the VM, native 7/10 (ZC14-03; REPRODUCE rerun on integration 10). The leader's
+  clock jumps at the expirer's first turn after client1's connect was tracked. The turn polls client1's bucket while
+  `submitRequestNow` touches the session, and `setSessionClosing` lands after the touch. Prep's `createSession` ->
+  `setOwner` then throws SessionExpired. This is reachable expiry handling (a session expired by a clock jump while
+  its connect is being prepped), not a new bug. Target client1's `createSession` at the leader (Prep `#1`, the
+  window's only `setOwner`). The
   chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
   `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
   reading was unplanned and read the host's clock).
