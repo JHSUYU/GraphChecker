@@ -1216,7 +1216,10 @@ all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's
 alone differ, at an address the recording did not open, answers the declared occurrence at its address,
 IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
-named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
+named only by stopped branches is DIAGNOSTIC, and so is one named only by replays that were not
+admitted -- its address is that replay's timing, ZC15-06: a NOT_ADMITTED replay elected the leader on
+WorkerReceiver's 4th turn, so its PrepRequestProcessor.run stood at `#u292@4`, the seed's at `@2`;
+BLOCKING stays for one no session names); it stays in the corpus as evidence (its rows still
 attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
 PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
 role and api, without the per-site invocation counts; a sender no row names is unknown, never a
