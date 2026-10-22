@@ -221,7 +221,7 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 | zk-adhoc-01 | SessionTrackerImpl.java:317 SessionExpiredException | `server.quorum.QuorumPeerMainTest#testQuorum`; ClientBase stand-in `CausynthQuotaRetryTest#raisesARetriedHardQuota` | CLOCK on the tracker's ExpiryQueue (skew >= the granted timeout) | T (stand-in), Q | B |
 | zk-adhoc-02 | SessionTrackerImpl.java:323 SessionMovedException | `test.QuorumTest#testSessionMovedWithSynchronousSync` (declare the new connection's request) | STATE re-pairing of `session.owner` (REVALIDATE's setOwner, Leader.java:1789) | T Q L | B |
 | zk-adhoc-03 | SessionTrackerImpl.java:330 SessionExpiredException | testQuorum; the same stand-in | CLOCK as 01, inside the createSession-to-Prep gap | T, Q | C |
-| zk-adhoc-04 | ZooKeeperServer.java:1516 CloseRequestException CLIENT_ZXID_AHEAD | `test.ReadOnlyModeTest#testSeekForRwServer` | STATE re-pairing of the follower's lastProcessedZxid with an older apply | T Q L | C |
+| zk-adhoc-04 | ZooKeeperServer.java:1516 CloseRequestException CLIENT_ZXID_AHEAD | `test.ReadOnlyModeTest#testSeekForRwServer`; the client's host order is constant and its search for a writable server is held until servers 2 and 3 both serve (tree `gc/zk-hostseed`: STATUS "tree: a client's host order and testSeekForRwServer's held search") | STATE re-pairing of the follower's lastProcessedZxid with an older apply | T Q L | C |
 | zk-adhoc-06 | quorum/Leader.java:1522 IOException | testQuorum | none of our kinds (disk values, ACKEPOCH, election stream) | T Q L | C |
 | zk-adhoc-07 | quorum/Learner.java:522 IOException | `test.QuorumRestartTest#testRollingRestart` | none (acceptedEpoch from a file; epoch over LEADERINFO) | T Q L | C |
 | zk-adhoc-10 | quorum/ObserverMaster.java:371 RuntimeException | `test.ObserverMasterTest#testInOrderCommits[1]` (the `true` row; surefire runs both natively; automatic mode writes 21 per client, not 10001: STATUS "tree: zk-adhoc-10's focused workload") | none: writer and reader on one thread | T Q L | C |
@@ -291,14 +291,15 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   LearnerHandler's `Request.setOwner` after Prep's `validateCreateRequest` `getOwner`, and that event does not exit
   within the 300 s order timeout while the setOwner is held. Accepted as 02's verdict (lead 2026-10-21). Before it, ZD9-02
   moved 8 CLOCK roots outside the selected path's cone and CONFIRM was NOT_ADMITTED.
-- zk-adhoc-04: UNSAT_CLOSED, substantive, correct for the workload (ZB18-04, depth 0, 722 s): the guard's client side,
-  the ConnectRequest's `lastZxidSeen`, has no writer (no door on the client handshake) and is 0 at this connect
-  (the client has seen no zxid; its only write, `/test`, comes after); the peer's `lastProcessedZxid` is re-paired,
-  every writer >= 0. Target peer2's second life's first connect (`auto0/peer2#epoch1`).
-- zk-adhoc-13: UNSAT_CLOSED, substantive, correct for the workload (ZB18-13, 217 s, client faults cut as 02): the client's
-  session is local (ReadOnlyModeTest enables local sessions; only a persistent create), so the RO peer's global-session
-  map never holds it. Target the RO peer1's connect (`auto0/peer1#epoch0`). ZB17-13, before the cut, was a RUN_DEFECT
-  over the same UNSAT: a planted client SessionExpired on that local session had no server to expire it.
+- zk-adhoc-04: UNSAT_CLOSED, substantive, correct for the workload (final F1E-04 on zk-int-13 + zk-int-trees-12, depth 0,
+  1212 s): the guard's client side, the ConnectRequest's `lastZxidSeen`, is 0 at this connect (the client has seen no
+  zxid; its only write, `/test`, comes after); the peer's `lastProcessedZxid` is re-paired, every writer >= 0. Target the
+  read-write peer's connect, peer2's second life (`auto0/peer2#epoch1`), which the held search makes repeatable: F1S-04
+  and F1D-04 missed it while the client's host order and probe count followed the clock.
+- zk-adhoc-13: UNSAT_CLOSED, substantive, correct for the workload (final F1E-13, 229 s, client faults cut as 02): the
+  client's session is local (ReadOnlyModeTest enables local sessions; only a persistent create), so the RO peer's
+  global-session map never holds it. Target the RO peer1's connect (`auto0/peer1#epoch0`). ZB17-13, before the cut, was a
+  RUN_DEFECT over the same UNSAT: a planted client SessionExpired on that local session had no server to expire it.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
