@@ -2135,8 +2135,11 @@ unanswered when the exploration ended). One GROW is one GENERATION of the plan
 and the class tree, under `generations/g<k>/`, BUILT BESIDE THE LOOP (`campaign_stream_grow_build`,
 GROW's lane, §7.9; one at a time, from the plan and the tree current when it started):
 `plan.ExposedRegionPlanMain` writes the generation's plan, the one before it plus one task row per
-exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`) and
-each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
+exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`;
+its methods, and so its declared doors, the region skeleton's and every one PLAN folded into an
+occurrence of that region, `ExposedRegionPlanMain#methods` -- ZB12-trunc: life 2's exposed
+`QuorumPeer.run` held the skeleton's alone and lacked `Learner.readSyncPacket`'s FAULT door, which
+life 3's planned run of the region holds) and each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
 (`campaign_instrument`'s plan argument) into the generation's own tree where its weave key (§4) is
 not the key of the tree it stands on; the head meanwhile goes on starting, collecting, landing and
 planning (SGF8-adhoc-07 minutes 2-11: a GROW in the head's hands, its planner and weave 386 s with no
