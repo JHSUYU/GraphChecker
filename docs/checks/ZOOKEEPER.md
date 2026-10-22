@@ -241,7 +241,11 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-11: vacuous UNSAT by construction (ZC7-11, IO rule): the epoch files and the replayed log are file state no
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
-- zk-adhoc-01: target client1's `create` at the leader, the window's second `checkSession` (`auto0/peer2#epoch0`, Prep
+- zk-adhoc-01: SAT_UNCONFIRMED. EXPLORE's flip of the expirer's turn #4 reaches the throw, and COMPOSE claims
+  CLOCK_SKEW on it. CONFIRM cannot realize the claim's order: the replay ends before turn #4 at the leader's COMMIT of
+  client0's earlier forwarded create, whose quorum-completing ACK differs from the recorded one. This is the normal
+  FP filter (lead's box, 2026-10-21; ZC15-01..ZC18-01).
+  Target client1's `create` at the leader, the window's second `checkSession` (`auto0/peer2#epoch0`, Prep
   `#2`). The first, client0's forwarded create, comes before any expirer turn in the window: client0's session was made
   before the window, and the leader does not touch a follower's session. client1's create is touched in
   `submitRequestNow` (a clock root); the expirer's turn comes next (`getWaitTime`, a clock root), then Prep's
@@ -254,7 +258,12 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. Before: ZC10-01/-03 ran on the old grid, where the flip was UNSAT,
   because it kept `getWaitTime`'s inner ternary arm, and the session stood two buckets on. ZC11 flipped only the turns
   after the target (`ClosurePlanner#decidedAway`, PIPELINE §7.2). In ZC12, `poll` read the host's clock.
-- zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
+- zk-adhoc-03: done, SAT, confirmed in the VM, native 7/10 (ZC14-03; REPRODUCE rerun on integration 10). The leader's
+  clock jumps at the expirer's first turn after client1's connect was tracked. The turn polls client1's bucket while
+  `submitRequestNow` touches the session, and `setSessionClosing` lands after the touch. Prep's `createSession` ->
+  `setOwner` then throws SessionExpired. This is reachable expiry handling (a session expired by a clock jump while
+  its connect is being prepped), not a new bug. Target client1's `createSession` at the leader (Prep `#1`, the
+  window's only `setOwner`). The
   chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
   `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
   reading was unplanned and read the host's clock).
