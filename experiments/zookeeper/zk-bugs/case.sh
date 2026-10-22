@@ -106,10 +106,6 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
       server=:org/apache/zookeeper/server/DataTree
       server=:org/apache/zookeeper/server/quorum/LearnerHandler
       server=:org/apache/zookeeper/server/quorum/ObserverMaster
-      # F's apply path (lead 2026-10-21, ZD12-om): the writer of the lastProcessedZxid its sync reads, CommitProcessor.run >
-      # processWrite > FinalRequestProcessor/ZooKeeperServer.processTxn > DataTree.processTxn on F (ZD11-om: UNATTRIBUTED_STORE)
-      server=:org/apache/zookeeper/server/quorum/CommitProcessor
-      server=:org/apache/zookeeper/server/FinalRequestProcessor
     )
     ;;
   *)
