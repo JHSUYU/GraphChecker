@@ -2812,6 +2812,11 @@ public final class Corpus implements Arms.Rows {
         return bySession == null ? null : bySession.get(sessionId);
     }
 
+    public RootMintRow mintOf(String pathSessionId, String rootId) {
+        RootMintRow seed = rootOf(seedSessionId(), rootId);
+        return seed != null ? seed : rootOf(pathSessionId, rootId);
+    }
+
     public RootMintRow anyRoot(String rootId) {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         return bySession == null || bySession.isEmpty() ? null

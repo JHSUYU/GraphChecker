@@ -1616,8 +1616,10 @@ DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their r
 names the polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the
 symbols it sets that no replay plants (container states `st__*`, refused terms `unsupported__*`).
 The parent world is overlaid (model wins: roots, skews, answers, pairings) and its flips inherited.
-Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
-`NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
+Every assigned root must have a mint in the seed session, else in the session the flipped path was
+cut from, the world the obligation replays (`Corpus#mintOf`; an exposed task's door roots are minted
+only in its GROW re-runs -- ZB14-trunc: life 2's `Learner.readSyncPacket#u3` FAULT); a root neither
+mints is `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`. The world's pairings are held by CONFIRM's rows over the session the path was cut
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
