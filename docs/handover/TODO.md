@@ -1033,6 +1033,12 @@ replay's message count (ZB5-om: 72 of 762 slots given up). Worked around in the 
 `take()` in automatic mode); the general rule -- a timed wait inside an application `BlockingQueue`'s
 poll/take/offer/put is its caller's claim, as a JDK queue's internals are -- waits for a second system that needs it.
 
+**COMPOSE's moved clock cells: only the selected path's (agent E 2026-10-21).** `ClaimPolicy#movedRoots` adds every
+jumped clock cell of the whole composition (`Composition#clockCells`), so a claim lists cells of paths it did not select
+(the shared JVM-clock order moves them); CONFIRM now leaves them outside the witness (`claim.movedOutsideWitness`,
+PIPELINE CONFIRM). The producer-side cleanup: take only the cells the selected disjunct's session, the seed or a taken
+arm's session mint.
+
 **A ZooKeeper CommitProcessor applies a commit under no claim of it (lineage, agent E 2026-10-21).** It takes a committed
 request with `committedRequests.peek()` then `remove()`, neither a queue claim (`WorkStartSites` QUEUE_CLAIMS), so an
 observer's INFORM (or a follower's COMMIT) is applied -- `processWrite`, FinalRequestProcessor -- under the CommitProcessor

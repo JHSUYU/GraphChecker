@@ -3698,10 +3698,19 @@ with it is a `RUN_DEFECT`.
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
   the model runs those cells on from the jump before them. Where each moved root's mint came from
   is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
-  plan as the worker's `mint_from.json`). A moved root none of them mints, one those sessions mint
-  at different occurrences, or a moved clock the composition anchors nowhere, refuses the
-  confirmation by name; a mint the replay never reaches confirms nothing (the fatal must still be
-  observed at the anchor). The
+  plan as the worker's `mint_from.json`). A moved root none of them mints or names is outside the
+  witness: a cell of another path of the disjunction that the shared clock order moved
+  (`ClaimPolicy#movedRoots` takes every jumped cell of the composition; ZD7-02: peer5's Prep wall
+  time for a learner-forwarded request that only 15 other paths' sessions read). It is left out of
+  the plant and moved out of the claim's `movedRoots` into `claim.movedOutsideWitness`
+  (`roots`, `reason`; `ConfirmMain#leaveOutside` rewrites `claim.json` before the replay is
+  planned), so acceptance and REPRODUCE see only what is planted. That removes a refusal of
+  bookkeeping only: the claim is still replayed with the remaining plants, must observe the fatal
+  at the anchor and reproduce natively, and a replay that misses it refutes the claim as any
+  false positive (owner on 02: "02这种如果是正常的false positive过滤你要保留"). A root one of
+  them names but none mints, one those sessions mint at different occurrences, or a moved clock
+  the composition anchors nowhere, refuses the confirmation by name; a mint the replay never
+  reaches confirms nothing (the fatal must still be observed at the anchor). The
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
