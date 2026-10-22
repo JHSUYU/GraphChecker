@@ -321,7 +321,16 @@ location that hands it on, a store of its own (solr-bugs-reindex-cleanup SG1: `w
 `instanceof ProcessWatchWithExecutor` guarded `new ProcessWatchWithExecutor(watcher)`, whose
 constructor stores `this.watcher`: 5,964 proposals, all refused). A constructor's store into
 another object's field, a static field, a mutation through a field and a store in a method the
-constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enum constant --
+constructor calls keep them all. A `WRITE_SITE` that lies in a trap's handler block, or whose
+method a call in one reaches (the calls of `callsInto`), also carries the branches deciding each
+checked throw the trap catches in its try block's callees, at most two calls below the try, on their
+arm toward the throw (`Guards#caughtInto`, `SiteControlDependence#throwDeciders`, `CAUGHT_DEPTH`):
+the write runs because that throw happened (zk-bugs-container-reuse: `PrepRequestProcessor#pRequest`'s
+catch builds `new TxnHeader(.., OpCode.error)`, so `TxnHeader.<init>`'s store of `type` carries
+`getRecordForPath#u13`, whose node-map read decides the client delete's NoNode; before, EXPLORE never
+offered that flip, ZA9-cont). These guards are flip sites and deciders only: the backward slice and
+root demand do not follow them (demanding the throws' guards in the slice pushed 19 chosen roots of
+zk-adhoc-01 out at the width cut). A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
@@ -692,7 +701,9 @@ rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) 
 getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`);
 `CONFIG_FIELD_OWNER` rows (`class`) name a configuration object built from a file no getter of the
 catalog reads, whose every field is configuration (Solr's `NodeConfig`, `CloudConfig`). Both are
-`causynth/ConfigRoots`' (§4.3).
+`causynth/ConfigRoots`' (§4.3). One `MESSAGE` row (`classes`, `why`) lists the records that cross a
+door as messages though no `CODEC` row covers them (`LibraryCatalog#messageClasses`: ZooKeeper's
+`TxnHeader`, which jute generates while jute's runtime stays program state, §6.2).
 
 A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
 (`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
@@ -1498,6 +1509,23 @@ leaves of such a type in its header and fields cross with it, so the block a Dat
 an op is paired by handle with the export of the client or the upstream DataNode that sent it, and
 the recording binds both captures to the op's leg, which the walk crosses (§4.4); the DataNode's
 turn keeps its own address. The op's own messages (`Op*Proto`) still derive no port.
+
+A class the library catalog's `MESSAGE` row lists is a message for this rule and for the door's
+walk (`EnginePlumbing#wireMessage`), with no service behind it: a jute record has no builder, so its
+producers are argument 0 of every call of `<M: void setF(T)>`, exported bound to the record itself
+(`#producerSetter`; `#messageSetter` indexes those calls even when the record is a library class);
+a record built by its all-fields constructor exports at the door, a constant. A record is mutable
+where a builder is not: a setter called on a decoded record rebinds that one field to its own
+export, so a getter of it attaches nothing (the value is the setter's argument, program state),
+and the record's other fields stay decoded (`MessageCodec#bound`).
+ZooKeeper's `TxnHeader` crosses the learner stream inside a PROPOSAL's or an INFORM's data bytes:
+the tree hands ZK_QUORUM the header as the packet's message (`CausynthQuorum#carrying`) and the
+learner's decode to `MessageDoors#parsed` (`#parsedTxn`), so the zxid a learner applies is
+paired with the export that sent it: a live PROPOSAL's or INFORM's with the leader's (an observer
+master relays the header its follower decoded: the relay rule, §6.3), a sync's resend with the
+syncing learner's own (zk-bugs-observer-master: an ObserverMaster's sync resends its committed log
+with a header copy it sets field by field, `CausynthQuorum#copyOf`, so the follower's `syncFollower`
+occurrence is the export the observer's zxid read pairs with).
 
 ### 6.3 At run time
 

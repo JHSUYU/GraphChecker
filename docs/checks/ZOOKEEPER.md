@@ -54,8 +54,10 @@ where its producer hands it to the stream (`LearnerHandler.queuePacket`, `Learne
 bytes are written, under the learner end's local port, the direction and its place in it, and served by the reading end
 (`Learner.readPacket`, `LearnerHandler.run`'s reads) until its next read or the end of the learner's role or handler. Its FAULT door: `ZK_QUORUM READ`, a
 `SocketTimeoutException` before each read of a sync (`Learner.readSyncPacket`, every read of `syncWithLeader`); the
-broadcast loop's reads are no door. The envelope's fields (`QuorumPacket.zxid`, `type`) and the txn record in its `data`
-bytes are not carried (TODO "ZooKeeper" 5): a receiver's zxid is its own constant. The election stream
+broadcast loop's reads are no door. A PROPOSAL's or INFORM's txn header crosses as the packet's message (D5,
+`CausynthQuorum#carrying`, the catalog's `MESSAGE` row; STATUS "tree: a txn's header crosses the learner stream"), so a
+learner's `TxnHeader` getters attach the sender's export; the envelope's own fields (`QuorumPacket.zxid`, `type`: a
+LEADERINFO's epoch, an ACK's or COMMIT's zxid) are not carried, a receiver's own constant. The election stream
 (`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has no door.
 
 | site | crosses the learner stream? | door it would need |
@@ -210,7 +212,7 @@ Paths are under `zookeeper-server/src/main/java/org/apache/zookeeper/server/` un
 
 | case | marker (throw, master) | workload | counterfactual | needs | fit |
 | --- | --- | --- | --- | --- | --- |
-| zk-bugs-trunc-sync (ZOOKEEPER-5094) | ZKDatabase.java:341 IllegalStateException "Committed proposal cached out of order" (one annotation, two ids; the guard tests `request.zxid != maxCommittedLog + 1` last, its immediate guard: STATUS "tree: ZKDatabase:333's guard order") | `quorum.CausynthTruncSyncTest#aTruncSyncedFollowerRestarts` (tree `gc/zk-quorum-bugs`; 3 participants, `snapCount=100000`). `CausynthQuorumHarness` (the shape of the 5088 PR's test) holds the leader's ACKs of `/ahead` (Z1) until F has logged it and restarted, pauses F's handler once before `Leader.startForwarding` (TRUNC queued, the log's read lock held), and releases it once Z1 committed; Z1 is then in `toBeApplied`, so PROPOSAL+COMMIT(Z1) go before NEWLEADER and F applies Z1 in memory. `/after` and `/after2` (Z2, Z3), then F's second restart, whose replay applies Z2 then Z3 (Z3 runs the guard); the test stops that life after its last check, so the target occurrence ends inside the window. The test waits on what the leader sees (F's ACK of a create, its ACK of UPTODATE), never a poll; the held ACKs go in server id order. Target: F's third life's construction, `auto0/peer1#epoch2/region/REGION.98b8e38a#1` (runFromConfig; the replay's addCommittedProposal folds into it). Native (JDK 8) 10/10, 1.2-1.7 s. By hand (scratch, not committed): a SocketTimeoutException at that NEWLEADER read throws at ZKDatabase.java:341 in F's restart replay on master (`0x100000004 is not the next proposal of 0x100000002`), not on `fix-trunc-sync-shutdown-state` | one FAULT, depth 0: SocketTimeoutException at the follower's read of NEWLEADER in its TRUNC sync (Learner.readPacket from syncWithLeader); kind as DIFFSyncConsistencyTest's | T Q L (S for the symbolic chain through the log) | B- |
+| zk-bugs-trunc-sync (ZOOKEEPER-5094) | ZKDatabase.java:341 IllegalStateException "Committed proposal cached out of order" (one annotation, two ids; the guard tests `request.zxid != maxCommittedLog + 1` last, its immediate guard: STATUS "tree: ZKDatabase:333's guard order") | `quorum.CausynthTruncSyncTest#aTruncSyncedFollowerRestarts` (tree `gc/zk-quorum-bugs`; 3 participants, `snapCount=100000`). `CausynthQuorumHarness` (the shape of the 5088 PR's test) holds the leader's ACKs of `/ahead` (Z1) until F has logged it and restarted, pauses F's handler once before `Leader.startForwarding` (TRUNC queued, the log's read lock held), and releases it once Z1 committed; Z1 is then in `toBeApplied`, so PROPOSAL+COMMIT(Z1) go before NEWLEADER and F applies Z1 in memory. `/after` and `/after2` (Z2, Z3), then F's second restart, whose replay applies Z2 then Z3 (Z3 runs the guard); the test stops that life after its last check, so the target occurrence ends inside the window. The test waits on what the leader sees (F's ACK of a create, its ACK of UPTODATE), never a poll; the held ACKs go in server id order. Target: F's third life's construction, `auto0/peer1#epoch2/region/REGION.98b8e38a#1` (runFromConfig; the replay's addCommittedProposal folds into it). Native (JDK 8) 10/10, 1.2-1.7 s. By hand (scratch, not committed): a SocketTimeoutException at that NEWLEADER read throws at ZKDatabase.java:341 in F's restart replay on master (`0x100000004 is not the next proposal of 0x100000002`), not on `fix-trunc-sync-shutdown-state` | one FAULT, depth 0: SocketTimeoutException at the follower's read of NEWLEADER in its TRUNC sync (Learner.readPacket from syncWithLeader); kind as DIFFSyncConsistencyTest's | T Q L S (S = the snapshot as a store, STATUS "tree: the snapshot as a store") | B- |
 | zk-bugs-observer-master (ZOOKEEPER-5088) | ZKDatabase.java:341 (the same annotation and guard order) | `quorum.CausynthObserverMasterSyncTest#aProposalPendingAtTheObserverMastersStart` (tree `gc/zk-quorum-bugs`; 3 participants, observer O on follower F's ObserverMaster). O and F stop; the harness holds the ACKs of `/pending` (Z2) while F restarts, so F gets PROPOSAL(Z2) in its sync, logs it after UPTODATE and starts its OM with Z2 pending; the ACKs are released, Z2 commits, and the test restarts O after the create's reply (workaround: O's own ~1 s reconnect timer raced F's apply of Z2, and no wait on F's apply, which CONFIRM must be free to hold); O syncs through F's OM, then `/after` (Z3). The test waits on the leader's view (ACKs, F's ACK of UPTODATE) except for the observer's own state, which it polls. Target: O's second life's `CommitProcessor.run`, `auto0/peer4#epoch1/region/REGION.140fb26c#1`. Native (JDK 8) 10/10, 3.0-3.6 s. By hand (scratch): F's apply of Z2 held until O resynced throws at O's ZKDatabase.java:341 on master (`0x100000004 is not the next proposal of 0x100000002`), not with e70951a21's fix on eab165995 | one STATE re-pairing, depth 0 (maybe 1): the follower OM handler's read of `DataTree.lastProcessedZxid` (LearnerHandler.java:804, branch :849) paired with its version before the follower applied the pending txn | T Q L Z | B-/C |
 | zk-bugs-quota-init | FinalRequestProcessor.java:674 NoNodeException (694 with the adapter; one annotation, three ids); target REGION.ce9149ce#6 (processServed, the second call's stat getData) | `test.CausynthQuotaRetryTest#raisesARetriedHardQuota` (self-written on gc/zk-unified; ports unchanged) | WRITE-door ConnectionLoss on createQuota's limit-node create (committed, reply lost); the retry's update branch reads the absent stat node (SetQuotaCommand.java:270). **PASS** ZA5-quota: MARKER_FLIPPED on that root, confirmed, native 10/10, control 0/10 (20 claims, 120 s order timeout: the pairings first, TODO HBase 15) | T | A |
 | zk-bugs-election-offer | FinalRequestProcessor.java:674 (same annotation) | `recipes.leader.LeaderElectionSupportTest#testNodes3` (recipes-election) | STATE re-pairing: toLeaderOffers' getData (LeaderElectionSupport.java:310) of a listed offer to its owner's delete. **PASS** ZA9-offer: that pairing, confirmed, native 10/10, control 0/10 at the anchor (target REGION.ce9149ce#2; 20 claims, 120 s order timeout) | T | A- |
@@ -232,13 +234,43 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-12: UNSAT_CLOSED at the fixed point, substantive (ZC7-12): on a fresh ensemble both epochs are
   `epochOf(lastProcessedZxid)`, so `acceptedEpoch < currentEpoch` cannot hold; disk only. Target: server 1's first
   start (`auto0/peer1#epoch0`, `QuorumPeerMain#runFromConfig`, into which `start` and `loadDataBase` fold), window `startup`.
-- zk-adhoc-06: vacuous UNSAT by construction (ZC8-06, UNSAT_CLOSED at the fixed point, 0 BLOCKING): the ACKEPOCH
-  summary and the leader's are both fresh disks' values, no root. Target the leader's `LearnerHandler#run` for its
-  follower (`auto0/peer2#epoch0`), window `startup`.
+- zk-adhoc-06: UNSAT with no root (ZC10-06 on integration 9, UNSAT_CLOSED at the fixed point, 0 BLOCKING; ZC8-06 the
+  same, vacuous): the ACKEPOCH summary and the leader's are both fresh disks' values. vacuity.py now calls it
+  substantive, but only because one read of `waitForEpochAck` is offered another writer, and every writer holds a
+  fresh summary. Target the leader's `LearnerHandler#run` for its follower (`auto0/peer2#epoch0`), window `startup`.
 - zk-adhoc-11: vacuous UNSAT by construction (ZC7-11, IO rule): the epoch files and the replayed log are file state no
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
-- zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+- zk-adhoc-01: target client1's `create` at the leader, the window's second `checkSession` (`auto0/peer2#epoch0`, Prep
+  `#2`). The first, client0's forwarded create, comes before any expirer turn in the window: client0's session was made
+  before the window, and the leader does not touch a follower's session. client1's create is touched in
+  `submitRequestNow` (a clock root); the expirer's turn comes next (`getWaitTime`, a clock root), then Prep's
+  `checkSession`. The expiry deadline enters the guard as follows (STATUS "tree: the session expirer's grid"):
+  the leader's tracker counts its buckets from its start, 12 h each, so client1's session stands in the first
+  bucket, base + 12 h = `nextExpirationTime`. The turn reads the clock once; its guard is `nextExpirationTime - clk
+  <= 0`, plus the 60 s margin. One jump of the leader's clock past base + 12 h at that turn makes `poll(clk)` take
+  client1's bucket; `setSessionClosing` runs, and `checkSession` throws. A session that closes before the touch
+  drops the request (`MissingSessionException`), so no check runs. The clock domain is 30 days ahead of each reading
+  (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. Before: ZC10-01/-03 ran on the old grid, where the flip was UNSAT,
+  because it kept `getWaitTime`'s inner ternary arm, and the session stood two buckets on. ZC11 flipped only the turns
+  after the target (`ClosurePlanner#decidedAway`, PIPELINE §7.2). In ZC12, `poll` read the host's clock.
+- zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
+  chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
+  `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
+  reading was unplanned and read the host's clock).
+- zk-adhoc-07: UNSAT_CLOSED at the fixed point, substantive (ZD11-07, integration 9): the guard compares the epoch of
+  LEADERINFO's envelope zxid (no door carries it, a constant at the learner) with a re-pairable `acceptedEpoch` (36 of 48
+  paths offered another writer), and no explored writer exceeds the leader's proposed epoch. Class C, accepted. Target
+  `first`, window `up`.
+- zk-adhoc-10: vacuous UNSAT by construction (ZD11-10, integration 9, 21 writes per client): the guard reads
+  `QuorumPacket.getZxid` (the envelope), writer and reader on F's QuorumPeer thread, no root. Target `first` (F's
+  `QuorumPeer.run`, `auto0/peer1#epoch0`). Seed replay 3426 of 3477 slots taken.
+- zk-adhoc-02: SAT_UNCONFIRMED (ZD9-02, int-9 + the client-fault cut + D5): each of 3 claims moves 8 CLOCK roots (Prep's
+  `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) and CONFIRM is NOT_ADMITTED for want of their root mint rows
+  (E's producer-side movedRoots cut); client faults cut (`case.sh` 02). Rerun on integration 10.
+- zk-adhoc-04, zk-adhoc-13: blocked by an attribution gap (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target
+  on `workload/unregistered`): ReadOnlyModeTest builds its peers with QuorumUtil, whose NIOServerCxnFactory threads belong
+  to no node, so `processConnectRequest` opens no occurrence. Rerun after C's fix.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule

@@ -290,7 +290,8 @@ of the program -- each OUT port of every region skeleton, its method woven as a 
 region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
 `runtime.RuntimeRegionPlanner#exportSites`). A protobuf message's field is captured with its message (codec capture,
 SYMBOL-SCOPE §6.3): exported at the builder's setter and bound to the builder, handed to the message by its `build()`;
-the IPC, HBase RPC and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
+a record a library catalog `MESSAGE` row lists (ZooKeeper's `TxnHeader`) is exported at its own setter and bound to itself;
+the IPC, HBase RPC, ZK_QUORUM and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
 for the receiver, whose getter attaches it after the parse; the engine's plumbing and generated messages are never
 state (`EnginePlumbing`, `RowRuntime#ownCode`). Its known limits are STATUS open defects 52-56.
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
@@ -874,7 +875,12 @@ are counted, never dropped silently: `concreteAnchors` states how many
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
   location's, is no candidate; a static field, an owner that names no one object, an occurrence
   with no recorded access, or one that ran for its doors alone in that session (its rows state its
-  doors, never what it touched) is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  doors, never what it touched) is, and so is one that decided a guard of the write site away from
+  it -- a recorded `BRANCH` at one of the site's `guards` against its `guardOutcomes`, or at one
+  whose outcome the map leaves unknown: the owners it recorded are the other arm's, and a store on
+  the arm it did not take says nothing (STATUS R1's rule; zk-adhoc-01/-03's session expirer turns
+  took `waitTime > 0` and touched only the clock and the queue's counter, so `setSessionClosing`'s
+  store of the session's `isClosing` was no candidate of any turn before), `ClosurePlanner.Walk#holdsOthersOnly`, `#decidedAway`; PLAN's reachability and
   confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its

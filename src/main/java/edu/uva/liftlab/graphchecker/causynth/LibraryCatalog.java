@@ -33,6 +33,7 @@ public final class LibraryCatalog {
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
     static final String CONFIG_FIELD_OWNER = "CONFIG_FIELD_OWNER";
     static final String CODEC = "CODEC";
+    static final String MESSAGE = "MESSAGE";
     static final String HOOK = "HOOK";
     static final String PUBLISHED_VIEW = "PUBLISHED_VIEW";
     static final String DEMANDED = "DEMANDED";
@@ -50,6 +51,7 @@ public final class LibraryCatalog {
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
         MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
         MEMBERS.put(CODEC, names("codec", "classes"));
+        MEMBERS.put(MESSAGE, names("classes", "why"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
                 "before", "after"));
         MEMBERS.put(PUBLISHED_VIEW, names("transport", "path"));
@@ -72,15 +74,18 @@ public final class LibraryCatalog {
         final List<ConfigSource> configSources;
         final Set<String> configFieldOwners;
         final List<Pattern> codecClasses;
+        final Set<String> messageClasses;
 
         private Contents(List<Door> doors, List<ConfigSource> configSources,
                          Set<String> configFieldOwners,
-                         List<Pattern> codecClasses) {
+                         List<Pattern> codecClasses,
+                         Set<String> messageClasses) {
             this.doors = Collections.unmodifiableList(doors);
             this.configSources = Collections.unmodifiableList(configSources);
             this.configFieldOwners =
                     Collections.unmodifiableSet(configFieldOwners);
             this.codecClasses = Collections.unmodifiableList(codecClasses);
+            this.messageClasses = Collections.unmodifiableSet(messageClasses);
         }
     }
 
@@ -233,6 +238,10 @@ public final class LibraryCatalog {
 
     public static List<Pattern> codecClasses() {
         return shipped().codecClasses;
+    }
+
+    public static Set<String> messageClasses() {
+        return shipped().messageClasses;
     }
 
     private static Contents shipped() {
@@ -407,6 +416,7 @@ public final class LibraryCatalog {
         List<ConfigSource> configSources = new ArrayList<>();
         Set<String> owners = new LinkedHashSet<>();
         List<Pattern> codecs = new ArrayList<>();
+        Set<String> messages = new LinkedHashSet<>();
         Map<String, String> declaredAt = new LinkedHashMap<>();
         for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
             try {
@@ -439,6 +449,20 @@ public final class LibraryCatalog {
                                 string(glob, "classes"))
                                 .replace("*", "\\E.*\\Q")));
                     }
+                } else if (MESSAGE.equals(kind)) {
+                    JsonElement listed = row.get("classes");
+                    if (listed == null || !listed.isJsonArray()
+                            || listed.getAsJsonArray().size() == 0) {
+                        throw new IllegalArgumentException(
+                                "classes lists the message classes");
+                    }
+                    List<String> named = new ArrayList<>();
+                    for (JsonElement type : listed.getAsJsonArray()) {
+                        named.add(matching(CLASS, string(type, "classes"),
+                                "classes").group());
+                    }
+                    messages.addAll(named);
+                    identity = MESSAGE + " " + named;
                 } else {
                     String owner = matching(CLASS, text(row, "class"),
                             "class").group();
@@ -456,7 +480,7 @@ public final class LibraryCatalog {
                         malformed);
             }
         }
-        return new Contents(doors, configSources, owners, codecs);
+        return new Contents(doors, configSources, owners, codecs, messages);
     }
 
     private static String kind(JsonObject row) {
