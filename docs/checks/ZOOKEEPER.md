@@ -54,8 +54,10 @@ where its producer hands it to the stream (`LearnerHandler.queuePacket`, `Learne
 bytes are written, under the learner end's local port, the direction and its place in it, and served by the reading end
 (`Learner.readPacket`, `LearnerHandler.run`'s reads) until its next read or the end of the learner's role or handler. Its FAULT door: `ZK_QUORUM READ`, a
 `SocketTimeoutException` before each read of a sync (`Learner.readSyncPacket`, every read of `syncWithLeader`); the
-broadcast loop's reads are no door. The envelope's fields (`QuorumPacket.zxid`, `type`) and the txn record in its `data`
-bytes are not carried (TODO "ZooKeeper" 5): a receiver's zxid is its own constant. The election stream
+broadcast loop's reads are no door. A PROPOSAL's or INFORM's txn header crosses as the packet's message (D5,
+`CausynthQuorum#carrying`, the catalog's `MESSAGE` row; STATUS "tree: a txn's header crosses the learner stream"), so a
+learner's `TxnHeader` getters attach the sender's export; the envelope's own fields (`QuorumPacket.zxid`, `type`: a
+LEADERINFO's epoch, an ACK's or COMMIT's zxid) are not carried, a receiver's own constant. The election stream
 (`QuorumCnxManager` SendWorker/RecvWorker, FastLeaderElection notifications as a ByteBuffer) has no door.
 
 | site | crosses the learner stream? | door it would need |
@@ -239,6 +241,19 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
 - zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+- zk-adhoc-07: UNSAT_CLOSED at the fixed point, substantive (ZD11-07, integration 9): the guard compares the epoch of
+  LEADERINFO's envelope zxid (no door carries it, a constant at the learner) with a re-pairable `acceptedEpoch` (36 of 48
+  paths offered another writer), and no explored writer exceeds the leader's proposed epoch. Class C, accepted. Target
+  `first`, window `up`.
+- zk-adhoc-10: vacuous UNSAT by construction (ZD11-10, integration 9, 21 writes per client): the guard reads
+  `QuorumPacket.getZxid` (the envelope), writer and reader on F's QuorumPeer thread, no root. Target `first` (F's
+  `QuorumPeer.run`, `auto0/peer1#epoch0`). Seed replay 3426 of 3477 slots taken.
+- zk-adhoc-02: SAT_UNCONFIRMED (ZD9-02, int-9 + the client-fault cut + D5): each of 3 claims moves 8 CLOCK roots (Prep's
+  `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) and CONFIRM is NOT_ADMITTED for want of their root mint rows
+  (E's producer-side movedRoots cut); client faults cut (`case.sh` 02). Rerun on integration 10.
+- zk-adhoc-04, zk-adhoc-13: blocked by an attribution gap (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target
+  on `workload/unregistered`): ReadOnlyModeTest builds its peers with QuorumUtil, whose NIOServerCxnFactory threads belong
+  to no node, so `processConnectRequest` opens no occurrence. Rerun after C's fix.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
