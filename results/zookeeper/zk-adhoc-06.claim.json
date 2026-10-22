@@ -1,0 +1,683 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/peer2#epoch0/region/REGION.42ddd4bc-c8ac-3379-9d7f-d502dc2fd63c/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e#u39@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger: void start()\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e#u292@2/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e#u48@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$lambda_run_0__540754153: void accept(java.lang.Object)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e#u6@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e#u30@0/\u003corg.apache.zookeeper.server.quorum.LearnerHandler: void run()\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "a5134beea4c6a8a4 of 5aa6acb6890bd825-626ba0fe",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 2802), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "e1811987ab66e8ab",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "eaec09259fd2023f",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "cfdb41aa53cbd721",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "05dcc2a8d65f9856",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "49810c7d38461c10",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "d7495dde45661b32",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "8ddc61d6d86f50ce",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "976518c83f09cd4f",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "1abfd781f41aac9f",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "df62a97d50b1b830",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "fdcbc04d88696b81",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "91686e5ba65a1245",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "3cceb6ea00ef4c25",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "19aea64916fc5824",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "7079802c15029123",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "495fee3497349e08",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "d3ba5b4f586bee3d",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "TOPOLOGY_DIVERGENCE",
+        "cls": "DIAGNOSTIC",
+        "subject": "23da901aa4aa1328",
+        "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:ASSOCIATIVE:NEXT@5aa6acb6890bd825-626ba0fe",
+        "detail": "a ASSOCIATIVE:NEXT over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "CONFIG:zookeeper.test.allowDiscontinuousProposals",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "5aa6acb6890bd825-626ba0fe",
+        "kind": "PATH_SELF_CONTRADICTORY",
+        "cls": "DIAGNOSTIC",
+        "subject": "321e9bbd745a01d8",
+        "detail": "z3 answered timeout for this path\u0027s conjunction without its fatal arm within 60000ms, so nothing shows it states its own run"
+      },
+      {
+        "sessionId": "seed-result-8aad5c9b",
+        "kind": "PATH_SELF_CONTRADICTORY",
+        "cls": "DIAGNOSTIC",
+        "subject": "6dd3b89e4d6929ff",
+        "detail": "z3 answered timeout for this path\u0027s conjunction without its fatal arm within 60000ms, so nothing shows it states its own run"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "PATH_SELF_CONTRADICTORY",
+        "cls": "DIAGNOSTIC",
+        "subject": "auto0/peer2#epoch0/region/REGION.42ddd4bc-c8ac-3379-9d7f-d502dc2fd63c/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e#u39@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger: void start()\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e#u292@2/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e#u48@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$lambda_run_0__540754153: void accept(java.lang.Object)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e#u6@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e#u30@0/\u003corg.apache.zookeeper.server.quorum.LearnerHandler: void run()\u003e@0",
+        "detail": "the composed formula is unsat, and 2 of its 2 paths contradict their own run, so the verdict is about the formula it built, not about the recording"
+      }
+    ]
+  },
+  "solverRuns": 4,
+  "seedSessionId": "seed-result-8aad5c9b",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "moved": {
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 11,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.f7dde5cf-b03b-3c09-b23a-0b88dd730ce7": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.b20ca0b5-a98e-3116-b12a-1054db8057e2": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.4f8038c9-904b-3c4a-9513-f08817ef8361": "false",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "moved": {
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.forceSnapshotSync": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "a5134beea4c6a8a4 of 5aa6acb6890bd825-626ba0fe",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 2802), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "e1811987ab66e8ab",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "eaec09259fd2023f",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "cfdb41aa53cbd721",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "05dcc2a8d65f9856",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "49810c7d38461c10",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "d7495dde45661b32",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "8ddc61d6d86f50ce",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "976518c83f09cd4f",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "1abfd781f41aac9f",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "df62a97d50b1b830",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "fdcbc04d88696b81",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "91686e5ba65a1245",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "3cceb6ea00ef4c25",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "19aea64916fc5824",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "7079802c15029123",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "495fee3497349e08",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "d3ba5b4f586bee3d",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "TOPOLOGY_DIVERGENCE",
+      "cls": "DIAGNOSTIC",
+      "subject": "23da901aa4aa1328",
+      "detail": "no path admitted at this anchor reaches this interaction, so the composition records it and uses nothing from it"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:ASSOCIATIVE:NEXT@5aa6acb6890bd825-626ba0fe",
+      "detail": "a ASSOCIATIVE:NEXT over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "CONFIG:zookeeper.test.allowDiscontinuousProposals",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "5aa6acb6890bd825-626ba0fe",
+      "kind": "PATH_SELF_CONTRADICTORY",
+      "cls": "DIAGNOSTIC",
+      "subject": "321e9bbd745a01d8",
+      "detail": "z3 answered timeout for this path\u0027s conjunction without its fatal arm within 60000ms, so nothing shows it states its own run"
+    },
+    {
+      "sessionId": "seed-result-8aad5c9b",
+      "kind": "PATH_SELF_CONTRADICTORY",
+      "cls": "DIAGNOSTIC",
+      "subject": "6dd3b89e4d6929ff",
+      "detail": "z3 answered timeout for this path\u0027s conjunction without its fatal arm within 60000ms, so nothing shows it states its own run"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "PATH_SELF_CONTRADICTORY",
+      "cls": "DIAGNOSTIC",
+      "subject": "auto0/peer2#epoch0/region/REGION.42ddd4bc-c8ac-3379-9d7f-d502dc2fd63c/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e#u39@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeerTestBase$MainThread: void start()\u003e#u8@1/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger: void start()\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e#u292@2/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e#u48@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$lambda_run_0__540754153: void accept(java.lang.Object)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor: void lambda$run$0(java.util.concurrent.ExecutorService,java.util.concurrent.CountDownLatch,java.net.ServerSocket)\u003e#u6@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader$LearnerCnxAcceptor$LearnerCnxAcceptorHandler: void acceptConnections()\u003e#u30@0/\u003corg.apache.zookeeper.server.quorum.LearnerHandler: void run()\u003e@0",
+      "detail": "the composed formula is unsat, and 2 of its 2 paths contradict their own run, so the verdict is about the formula it built, not about the recording"
+    }
+  ]
+}

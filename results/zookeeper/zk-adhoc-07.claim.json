@@ -1,0 +1,655 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/peer1#epoch1/region/REGION.77ac7573-6fd5-35c3-b2e6-edccead64143/ctx:Root:CLIENT/test#1/idx:\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e#u39@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void run()\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "1392d71316aceaf6-ea238134",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "26432b6f5891f357-0c4cfa33",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "6d4ad262111641ab-3b86dd3d",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7be9f3c439c17a2f-4dff83c9",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7be9f3c439c17a2f-4dff83c9",
+        "detail": "this replay states NOT_ADMITTED for the obligation it ran (7be9f3c439c17a2f): PAIRING_UNTAKEN: the world this replay ran plants pairings it did not take: ORDER c4cfba3932366362|\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger: void start()\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.QuorumCnxManager createCnxnManager()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e#u20@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager$Listener$submit__1605832677: void accept(java.lang.Object)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager$Listener$submit__1605832677: void accept(java.lang.Object)\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager: void handleConnection(java.net.Socket,java.io.DataInputStream)\u003e#u100@1/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager: void addToRecvQueue(org.apache.zookeeper.server.quorum.QuorumCnxManager$Message)\u003e#u3@1/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e#u292@0/\u003corg.apache.zookeeper.server.quorum.Follower: void followLeader()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Learner: void syncWithLeader(long)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: boolean isRunning()\u003e@0: the model orders it after [05c01d7fd82aa7b0|], which did not exit within 300000 ms, so this program cannot realize the model\u0027s order; STATE 6a38f4133b4b1bb4: the model joined this read to writer eb080ff99c9f373e (version 13454), the run observed INSTANCE/8#560@3978 written by 23069e54955b2fd2"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7be9f3c439c17a2f-4dff83c9",
+        "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "b6f96fcc97fba26a-7e6fa078",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "seed-result-f360069a",
+        "detail": "this session ran the occurrence and did not reach the anchor"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "ADMISSION_GAP",
+        "cls": "DIAGNOSTIC",
+        "subject": "2187ed061a2dbe86 of seed-result-f360069a",
+        "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 12881), where the path throws: no producer for this path"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:INDEXED:READ@1392d71316aceaf6-ea238134",
+        "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:INDEXED:READ@26432b6f5891f357-0c4cfa33",
+        "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:INDEXED:READ@6d4ad262111641ab-3b86dd3d",
+        "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:INDEXED:READ@b6f96fcc97fba26a-7e6fa078",
+        "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "ContainerAnswerPinned:INDEXED:READ@seed-result-f360069a",
+        "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+      }
+    ]
+  },
+  "solverRuns": 28,
+  "seedSessionId": "seed-result-f360069a",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "moved": {
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 11,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "true"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:readonlymode.enabled": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "moved": {
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "unsat",
+      "assignment": {
+        "CONFIG:readonlymode.enabled": "true",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.335e2463-198b-387a-86b9-5d867f4edd64": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.0eb50eda-97c3-3df9-9919-ed67eab00393": "false",
+        "REGION.77ac7573-6fd5-35c3-b2e6-edccead64143.in.412bf5ef-800b-31aa-a315-85f01d229129": "false",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "moved": {
+        "CONFIG:readonlymode.enabled": "true",
+        "CONFIG:zookeeper.db.autocreate": "false"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "1392d71316aceaf6-ea238134",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "26432b6f5891f357-0c4cfa33",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "6d4ad262111641ab-3b86dd3d",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7be9f3c439c17a2f-4dff83c9",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7be9f3c439c17a2f-4dff83c9",
+      "detail": "this replay states NOT_ADMITTED for the obligation it ran (7be9f3c439c17a2f): PAIRING_UNTAKEN: the world this replay ran plants pairings it did not take: ORDER c4cfba3932366362|\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger: void start()\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void start()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: void startLeaderElection()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.QuorumCnxManager createCnxnManager()\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: org.apache.zookeeper.server.quorum.Election createElectionAlgorithm(int)\u003e#u20@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager$Listener$submit__1605832677: void accept(java.lang.Object)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager$Listener$submit__1605832677: void accept(java.lang.Object)\u003e#u4@0/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager: void handleConnection(java.net.Socket,java.io.DataInputStream)\u003e#u100@1/\u003corg.apache.zookeeper.server.quorum.QuorumCnxManager: void addToRecvQueue(org.apache.zookeeper.server.quorum.QuorumCnxManager$Message)\u003e#u3@1/\u003corg.apache.zookeeper.server.quorum.FastLeaderElection$Messenger$WorkerReceiver: void run()\u003e#u292@0/\u003corg.apache.zookeeper.server.quorum.Follower: void followLeader()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Learner: void syncWithLeader(long)\u003e@0/\u003corg.apache.zookeeper.server.quorum.QuorumPeer: boolean isRunning()\u003e@0: the model orders it after [05c01d7fd82aa7b0|], which did not exit within 300000 ms, so this program cannot realize the model\u0027s order; STATE 6a38f4133b4b1bb4: the model joined this read to writer eb080ff99c9f373e (version 13454), the run observed INSTANCE/8#560@3978 written by 23069e54955b2fd2"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7be9f3c439c17a2f-4dff83c9",
+      "detail": "this session reached the anchor in a replay its own rows do not admit: no disjunct, and it drops no path (solr-adhoc-19 F2V4: such a replay made COMPOSE drop 63)"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "b6f96fcc97fba26a-7e6fa078",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "seed-result-f360069a",
+      "detail": "this session ran the occurrence and did not reach the anchor"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "f3e8a7bf936611fd of 26432b6f5891f357-0c4cfa33",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 7480), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "7a3ff3ad02df5e10 of b6f96fcc97fba26a-7e6fa078",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 5973), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "ADMISSION_GAP",
+      "cls": "DIAGNOSTIC",
+      "subject": "2187ed061a2dbe86 of seed-result-f360069a",
+      "detail": "delivered by the anchor occurrence after the path\u0027s fatal decision (seq 12881), where the path throws: no producer for this path"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:INDEXED:READ@1392d71316aceaf6-ea238134",
+      "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:INDEXED:READ@26432b6f5891f357-0c4cfa33",
+      "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:INDEXED:READ@6d4ad262111641ab-3b86dd3d",
+      "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:INDEXED:READ@b6f96fcc97fba26a-7e6fa078",
+      "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "ContainerAnswerPinned:INDEXED:READ@seed-result-f360069a",
+      "detail": "a INDEXED:READ over a chain with no stated base answers what its call returned, pinned by a named assertion where nothing it rests on moves"
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/peer2#epoch0/region/REGION.3cfb4ed2-6604-303b-82a1-6cb936dd8da0/ctx:Anchor:c7551c4bdd6f9c6b@ZOOKEEPER/test/idx:\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void startZkServer()\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void setupRequestProcessors()\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void run()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void lead()\u003e@0/\u003corg.apache.zookeeper.server.quorum.Leader: void startZkServer()\u003e@0/\u003corg.apache.zookeeper.server.quorum.LeaderZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void startup()\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void startRequestThrottler()\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: org.apache.zookeeper.server.RequestThrottler createRequestThrottler()\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void processConnectRequest(org.apache.zookeeper.server.ServerCnxn,org.apache.zookeeper.proto.ConnectRequest)\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: long createSession(org.apache.zookeeper.server.ServerCnxn,byte[],int)\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void submitRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void enqueueRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.RequestThrottler: void submitRequest(org.apache.zookeeper.server.Request)\u003e#u11@0/\u003corg.apache.zookeeper.server.ZooKeeperServer: void submitRequestNow(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void processRequest(org.apache.zookeeper.server.Request)\u003e@0/\u003corg.apache.zookeeper.server.PrepRequestProcessor: void processRequest(org.apache.zookeeper.server.Request)\u003e#u5@0",
+  "claim": {
+    "kind": "CLOCK_SKEW",
+    "valuationOrdinal": 0,
+    "movedRoots": {
+      "M_J_field_REGION.a45a7fec-aa28-3ad7-aaf4-382594068a0f.in.25a22341-7aef-3f7c-bddb-66e6f1fb5679.occ.fcf4b028b5b7b5631bab1d247beeb37542a1bf73d4337a57ccca486cfa1dfea8_java/lang/Long": "2125452314"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "UNSTATED_VALUE",
+        "cls": "DIAGNOSTIC",
+        "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/87#-3@ef2ec29311786f2a-6240ca38",
+        "detail": "a field or a query of this path is asked through a query\u0027s read of this container, which names no object, so its family is held to the arm the run took"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.dfc87c94-8a60-3710-ab83-5847813595db",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 18,
+  "seedSessionId": "seed-result-f72fe96f",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "sat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.92a1d6ce-a2a3-3619-89e3-0dc4c6d18bb9": "false"
+      },
+      "moved": {},
+      "selectedPathId": "7e7d7c8b3c88752b",
+      "selectedSessionId": "cb961f86d5682524-2571bc12",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__3__62b77de9947d",
+          "family": "writer_family__3__62b77de9947d",
+          "groupId": "6fc8e0e66edde667",
+          "attachEndpointIds": [],
+          "sessionId": "cb961f86d5682524-2571bc12",
+          "sessionIds": [
+            "cb961f86d5682524-2571bc12"
+          ],
+          "producerPathId": "2186d5419e69983e",
+          "interactionIds": [
+            "6704871d20e3d2c1"
+          ],
+          "expressionRefs": [
+            "EXPR.859bb3b84f66ed77"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.92a1d6ce-a2a3-3619-89e3-0dc4c6d18bb9": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.92a1d6ce-a2a3-3619-89e3-0dc4c6d18bb9": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "UNSTATED_VALUE",
+      "cls": "DIAGNOSTIC",
+      "subject": "OWNER_PINNED_BY_CONTAINER_READ:MAP/87#-3@ef2ec29311786f2a-6240ca38",
+      "detail": "a field or a query of this path is asked through a query\u0027s read of this container, which names no object, so its family is held to the arm the run took"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.dfc87c94-8a60-3710-ab83-5847813595db",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

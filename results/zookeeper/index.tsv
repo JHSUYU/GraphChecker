@@ -1,0 +1,17 @@
+case	run	claim	smt	claim_json
+zk-adhoc-01	accept-F2S-01	SAT_UNCONFIRMED	zk-adhoc-01.smt2.gz	zk-adhoc-01.claim.json
+zk-adhoc-02	accept-F2S-02	SAT_UNCONFIRMED	zk-adhoc-02.smt2.gz	zk-adhoc-02.claim.json
+zk-adhoc-03	accept-F1C-03	SAT_CANDIDATE	zk-adhoc-03.smt2.gz	zk-adhoc-03.claim.json
+zk-adhoc-04	accept-F1E-04	UNSAT_CLOSED	zk-adhoc-04.smt2.gz	zk-adhoc-04.claim.json
+zk-adhoc-06	accept-F1S-06	UNSAT_CLOSED	zk-adhoc-06.smt2.gz	zk-adhoc-06.claim.json
+zk-adhoc-07	accept-F1S-07	UNSAT_CLOSED	zk-adhoc-07.smt2.gz	zk-adhoc-07.claim.json
+zk-adhoc-10	accept-F1S-10	UNSAT_CLOSED	zk-adhoc-10.smt2.gz	zk-adhoc-10.claim.json
+zk-adhoc-11	accept-F2S-11	UNSAT_CLOSED	zk-adhoc-11.smt2.gz	zk-adhoc-11.claim.json
+zk-adhoc-12	accept-F1C-12	UNSAT_CLOSED	zk-adhoc-12.smt2.gz	zk-adhoc-12.claim.json
+zk-adhoc-13	accept-F1E-13	UNSAT_CLOSED	zk-adhoc-13.smt2.gz	zk-adhoc-13.claim.json
+zk-bugs-quota-init	accept-F1C-quota	SAT_CANDIDATE	zk-bugs-quota-init.smt2.gz	zk-bugs-quota-init.claim.json
+zk-bugs-election-offer	accept-F2B-offer	SAT_CANDIDATE	zk-bugs-election-offer.smt2.gz	zk-bugs-election-offer.claim.json
+zk-bugs-container-reuse	accept-F1B-cont	SAT_CANDIDATE	zk-bugs-container-reuse.smt2.gz	zk-bugs-container-reuse.claim.json
+zk-bugs-retry-seq-quota	accept-F1C-rseq	SAT_CANDIDATE	zk-bugs-retry-seq-quota.smt2.gz	zk-bugs-retry-seq-quota.claim.json
+zk-bugs-trunc-sync	accept-F2B-trunc	UNSAT_CLOSED	zk-bugs-trunc-sync.smt2.gz	zk-bugs-trunc-sync.claim.json
+zk-bugs-observer-master	accept-F1F-om	SAT_CANDIDATE	zk-bugs-observer-master.smt2.gz	zk-bugs-observer-master.claim.json

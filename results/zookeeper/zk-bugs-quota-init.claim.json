@@ -1,0 +1,580 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/server0#epoch0/region/REGION.ce9149ce-ad44-3ad7-b99b-58659d47dae2/ctx:Anchor:a744ab044f91dd14@ZOOKEEPER/test/idx:\u003corg.apache.zookeeper.server.FinalRequestProcessor: void processServed(org.apache.zookeeper.server.Request,java.lang.Object)\u003e@0",
+  "claim": {
+    "kind": "MARKER_FLIPPED",
+    "valuationOrdinal": 1,
+    "movedRoots": {
+      "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.64d8d1b4-9da5-3d0c-9c24-7f18856610a1",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.25337432-14bf-371f-b66e-58d014ddef76",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.d03eb0af-74d3-3695-94af-0d1686c5ecd3",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.b9a6bc0d-7053-3b45-9a5b-47d23b74d1da.in.5cf8303b-10d8-3f27-9100-db9b0c51b39f",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.b9a6bc0d-7053-3b45-9a5b-47d23b74d1da.in.a862775b-186a-363a-88a9-5076c3431edf",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0375d5af-d6df-3a5f-a521-589b31ba808f",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.27181737-69d1-3549-ae49-e838254c7bbe",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.f794ebb9-df49-3680-b885-5a2a03602099",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.2c4f57a8-3671-3bbd-a811-f7dce50bbb7b",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.6788373f-2902-34a0-9c23-182e2d0fe2c3",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.4911ad4b-c130-3191-83fd-e84f12a6bb50",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 27,
+  "seedSessionId": "seed-result-327e2f85",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 1,
+      "status": "sat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true"
+      },
+      "selectedPathId": "988aa4d9a88b6141",
+      "selectedSessionId": "7397094115ea167f-11d9b5cb",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__0__824450c8df71",
+          "family": "writer_family__0__824450c8df71",
+          "groupId": "af4ca6276b35c71d",
+          "attachEndpointIds": [],
+          "sessionId": "7397094115ea167f-11d9b5cb",
+          "sessionIds": [
+            "7397094115ea167f-11d9b5cb"
+          ],
+          "producerPathId": "f977a1edf8c73980",
+          "interactionIds": [
+            "1cb6ef0a30745cd5"
+          ],
+          "expressionRefs": [
+            "EXPR.53ae78fd591738bb"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__0__867b6545b17b",
+          "family": "writer_family__0__867b6545b17b",
+          "groupId": "bdc1bd08e20c03bb",
+          "attachEndpointIds": [],
+          "sessionId": "7397094115ea167f-11d9b5cb",
+          "sessionIds": [
+            "7397094115ea167f-11d9b5cb"
+          ],
+          "producerPathId": "6eb04dec1081a2e9",
+          "interactionIds": [
+            "cfcc8e3591087a29"
+          ],
+          "expressionRefs": [
+            "EXPR.6f25d8cee5ea144d"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 2,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 3,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 4,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 5,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 6,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 7,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 8,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 9,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 10,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 11,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 12,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 13,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "false"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 14,
+      "status": "unsat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    },
+    {
+      "ordinal": 15,
+      "status": "sat",
+      "assignment": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.a8f9cc44-0e1c-3270-8fea-bc92ca7c969f": "false",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "moved": {
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.cec0f2d1-df88-39d1-a0c0-26f82f38a5fb": "true",
+        "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0f87365b-c2be-3866-a68b-9005fb2f2f1e": "true"
+      },
+      "selectedPathId": "988aa4d9a88b6141",
+      "selectedSessionId": "7397094115ea167f-11d9b5cb",
+      "fatalObserved": true,
+      "selectedArms": [
+        {
+          "selector": "writer_arm__0__3df87d47144b",
+          "family": "writer_family__0__3df87d47144b",
+          "groupId": "INITIAL|INSTANCE/130#128",
+          "attachEndpointIds": [],
+          "sessionId": "7397094115ea167f-11d9b5cb",
+          "sessionIds": [
+            "7397094115ea167f-11d9b5cb"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "5390323593d73fe4"
+          ],
+          "expressionRefs": [
+            "EXPR.53ae78fd591738bb"
+          ],
+          "attested": true
+        },
+        {
+          "selector": "writer_arm__0__47794d33b5c1",
+          "family": "writer_family__0__47794d33b5c1",
+          "groupId": "INITIAL|MAP/6#-3",
+          "attachEndpointIds": [],
+          "sessionId": "7397094115ea167f-11d9b5cb",
+          "sessionIds": [
+            "7397094115ea167f-11d9b5cb"
+          ],
+          "producerPathId": "",
+          "interactionIds": [
+            "8f51abbb150ae579"
+          ],
+          "expressionRefs": [
+            "EXPR.43d2c2926c8a724e"
+          ],
+          "attested": true
+        }
+      ],
+      "repairedArms": [
+        "writer_arm__0__3df87d47144b",
+        "writer_arm__0__47794d33b5c1"
+      ],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.64d8d1b4-9da5-3d0c-9c24-7f18856610a1",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.25337432-14bf-371f-b66e-58d014ddef76",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.d03eb0af-74d3-3695-94af-0d1686c5ecd3",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.b9a6bc0d-7053-3b45-9a5b-47d23b74d1da.in.5cf8303b-10d8-3f27-9100-db9b0c51b39f",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.b9a6bc0d-7053-3b45-9a5b-47d23b74d1da.in.a862775b-186a-363a-88a9-5076c3431edf",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.0375d5af-d6df-3a5f-a521-589b31ba808f",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.27181737-69d1-3549-ae49-e838254c7bbe",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.f794ebb9-df49-3680-b885-5a2a03602099",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.2c4f57a8-3671-3bbd-a811-f7dce50bbb7b",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.6788373f-2902-34a0-9c23-182e2d0fe2c3",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.4911ad4b-c130-3191-83fd-e84f12a6bb50",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "CLAIM",
+  "anchor": "auto0/peer1#epoch0/region/REGION.f417047d-eaa7-3c1d-95dd-017307f23a30/ctx:Anchor:11bf50e46efd9218@ZOOKEEPER/test/idx:\u003corg.apache.zookeeper.server.ZooKeeperServer: void processConnectRequest(org.apache.zookeeper.server.ServerCnxn,org.apache.zookeeper.proto.ConnectRequest)\u003e@0",
+  "claim": {
+    "kind": "NO_SUPPORTED_WITNESS",
+    "valuationOrdinal": 0,
+    "movedRoots": {},
+    "polarityDecides": false,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff",
+        "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+      }
+    ]
+  },
+  "solverRuns": 4,
+  "seedSessionId": "seed-result-326ee35e",
+  "valuations": [
+    {
+      "ordinal": 0,
+      "status": "unsat",
+      "assignment": {},
+      "moved": {},
+      "selectedPathId": "",
+      "selectedSessionId": "",
+      "fatalObserved": false,
+      "selectedArms": [],
+      "repairedArms": [],
+      "unsatCore": []
+    }
+  ],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.59b3aaba-c737-3c79-9e96-1fb0224f6a53",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "REGION.acedb7d4-c10b-31fb-aec8-9be9e86e15f5.in.03d65006-92cd-34f7-bbc2-14016b676fff",
+      "detail": "the case declares this root and no admitted path\u0027s formula names it, so no valuation of it was asked"
+    }
+  ]
+}
