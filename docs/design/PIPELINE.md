@@ -284,7 +284,12 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 (`CfgLoopControl#retainedLoops`): an `if`, or a switch with a case that leaves (a `default` that
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
-(`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+(`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`), and as a THROW at the entry of each of
+the method's own handlers outside the loop whose trap covers the body (`#closeAtOuterHandlers`):
+such a handler takes the exception before the woven catch-all would, as `CommitProcessor.run`'s
+`catch (Throwable)` does around its loop; a frame closes only where it is the open one
+(`runtime.ConcolicRegionRuntime#popRootInvocationFrame`), so that handler reached from outside the
+body closes nothing.
 The wire's captures (SYMBOL-SCOPE §6.3): each attach a planned occurrence declares, and every export
 of the program -- each OUT port of every region skeleton, its method woven as a planned
 region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,

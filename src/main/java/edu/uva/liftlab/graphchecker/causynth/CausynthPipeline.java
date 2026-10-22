@@ -41,6 +41,7 @@ import soot.SootClass;
 import soot.SootFieldRef;
 import soot.SootMethod;
 import soot.SootMethodRef;
+import soot.Trap;
 import soot.Type;
 import soot.Unit;
 import soot.UnitBox;
@@ -1047,6 +1048,38 @@ public final class CausynthPipeline {
             throw new IllegalStateException("LOOP_BODY_ROOT_EXIT_UNAVAILABLE: "
                     + loopId);
         }
+        closeAtOuterHandlers(body, loop.members(), refs,
+                StringConstant.v(plan.rootHookGroup()),
+                StringConstant.v(rootMethod));
+    }
+
+    static int closeAtOuterHandlers(Body body, Set<Unit> members,
+                                    HookCatalog refs, Value... identity) {
+        List<Unit> handlers = new ArrayList<>();
+        for (Trap trap : body.getTraps()) {
+            Unit handler = trap.getHandlerUnit();
+            if (members.contains(handler) || handlers.contains(handler)
+                    || originalUnitIndex(handler) < 0
+                    || !(handler instanceof IdentityStmt)) {
+                continue;
+            }
+            for (Unit unit = trap.getBeginUnit();
+                    unit != null && unit != trap.getEndUnit();
+                    unit = body.getUnits().getSuccOf(unit)) {
+                if (members.contains(unit)) {
+                    handlers.add(handler);
+                    break;
+                }
+            }
+        }
+        for (Unit handler : handlers) {
+            Value[] args = Arrays.copyOf(identity, identity.length + 1);
+            args[identity.length] = ((IdentityStmt) handler).getLeftOp();
+            List<Unit> close = new ArrayList<>();
+            refs.bracket(close, Hook.THROW_REGION_FRAME, args);
+            insertAfterSequence(body, handler, close);
+        }
+        return handlers.size();
     }
 
     private static Local rootArguments(Body body, SootMethod method,
