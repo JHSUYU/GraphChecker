@@ -107,7 +107,9 @@ export GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2
 CASE_TIMEOUT_SECONDS=21600 tools/rounds/launch-run.sh ~/GraphChecker-hdfs1 hdfs-adhoc-29 R1-adhoc-29
 ```
 
-The run detaches; it writes `$GC_OUT/accept-R1-adhoc-29/` and ends with the second line of its `summary.tsv`. Its
+The run is a session of its own (`setsid`) and holds the shell until the case ends (start it as `(setsid nohup ... >
+<log> 2>&1 < /dev/null &)` to leave it running); it writes `$GC_OUT/accept-R1-adhoc-29/` and ends with the second
+line of its `summary.tsv`. Its
 obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh R1-adhoc-29` (with the same `GC_OUT`) stops it.
 
 All 46, each alone on the cluster, as series EX1 ran them:
@@ -270,7 +272,14 @@ cluster and bounds").
    `causynth.cluster.automatic` and the case's window: a case's classpath is read off its workload's surefire report.
    The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or `MISSING`
    (the script fails). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/hbase/build.sh
-   $GC_TREES/hbase-checks '<Class>#<method>[@startup]'` runs one workload; never build a tree a run reads.
+   $GC_TREES/hbase-checks '<Class>#<method>[@startup]'` runs one workload; never build a tree a run reads. Checked from
+   a fresh clone on 2026-10-22 (`system/hbase` 789fcd66d from GitHub, the fork's branch into an empty `GC_TREES` and an
+   empty Maven repository; `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/fresh/fresh-check.sh`, run through
+   `tools/onlift.sh` -- a bare ssh shell has no `mvn` on its PATH): the build, 18 of 18 workloads PASSED (the 22 cases
+   share them; 17 minutes with the downloads), 22 of 22 cases valid (`bash experiments/lib/run.sh <case dir> <case>
+   validate`), and hbase-bugs-backup-lock-reply-lost ran from that clone to its final verdict: SAT, 10/10 natively,
+   control 0/10, 575 s (`/bigtemp/vnr3ne/gc-out/hbase-fresh`; the image was vm-force12, built from the same VM
+   sources).
 
 4. **The cases**, each alone on the cluster with its budget:
 
