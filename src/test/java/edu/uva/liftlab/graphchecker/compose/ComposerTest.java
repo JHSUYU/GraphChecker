@@ -78,6 +78,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ComposerTest {
@@ -496,14 +497,12 @@ public class ComposerTest {
                                    Map<String, String> roots, String site,
                                    List<String> inherited)
             throws IOException {
-        obligation(iteration, sessionId, roots, site, inherited,
-                Collections.<String, String>emptyMap());
+        obligation(iteration, sessionId, roots, site, inherited, "");
     }
 
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots, String site,
-                                   List<String> inherited,
-                                   Map<String, String> pairings)
+                                   List<String> inherited, String focused)
             throws IOException {
         Path worker = iteration.resolve("obligations-0000")
                 .resolve("ob-" + sessionId);
@@ -520,6 +519,7 @@ public class ComposerTest {
         focus.addProperty("obligationId", "ob-" + sessionId);
         focus.addProperty("taskId", "task-flip");
         focus.addProperty("pathId", "path-flip");
+        focus.addProperty("focusedOccurrenceId", focused);
         com.google.gson.JsonObject flip = new com.google.gson.JsonObject();
         flip.addProperty("siteId", site);
         flip.addProperty("ordinal", 1);
@@ -542,11 +542,7 @@ public class ComposerTest {
         focus.add("rootAssignments", assigned);
         focus.add("clockDeltas", new com.google.gson.JsonObject());
         focus.add("answers", new com.google.gson.JsonObject());
-        com.google.gson.JsonObject paired = new com.google.gson.JsonObject();
-        for (Map.Entry<String, String> pairing : pairings.entrySet()) {
-            paired.addProperty(pairing.getKey(), pairing.getValue());
-        }
-        focus.add("pairings", paired);
+        focus.add("pairings", new com.google.gson.JsonObject());
         focus.add("rootMints", new com.google.gson.JsonObject());
         focus.add("inheritedFlips", held);
         focus.add("unproducible", new com.google.gson.JsonArray());
@@ -2086,6 +2082,92 @@ public class ComposerTest {
             assertEquals((String) row[0], row[2], arms.concurrent(reader,
                     (OccurrenceAddress) row[1], "s0"));
         }
+    }
+
+    @Test
+    public void aMessageNoCompatibleRunAttestsIsHeldAtItsOwnRunsArrival()
+            throws Exception {
+        Endpoint sent = Endpoint.of(PRODUCER, "PORT.held", at("export#1", 0),
+                0);
+        Endpoint got = Endpoint.of(ANCHOR, "PORT.held", at("attach#1", 0), 0);
+        for (boolean own : new boolean[] {false, true}) {
+            Path iteration = folder.newFolder("held-" + own).toPath();
+            session(iteration, "s0", false, "false", sent, got, "vh", "false",
+                    null, false, false, "EXPR.v1.vh", null);
+            session(iteration, "s1", true, "false", sent, got, "vh", "false",
+                    null, own, false, "EXPR.v1.vh", own ? symbol(MARKER, "Z")
+                            : null);
+            session(iteration, "s2", true, "true", sent, got, "vh", "true",
+                    null, true, true, "EXPR.v1.vh");
+            obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                    "a#u1", Collections.<String>emptyList());
+            obligation(iteration, "s2", Collections.<String, String>emptyMap(),
+                    "b#u1", Collections.<String>emptyList());
+            Composer.Composition composition = compose(iteration, ANCHOR, 4,
+                    StaticScopeMap.empty());
+            Composer.Disjunct path = null;
+            for (Composer.Disjunct each : composition.disjuncts()) {
+                if (each.path().sessionId.equals("s1")) path = each;
+            }
+            assertNotNull(own + ": the path is composed, not refused: "
+                    + composition.gaps(), path);
+            String pairing = composition.recordedPairing(path.selector());
+            assertEquals(own + ": its own arm, else its own arrival: "
+                    + composition.body(), !own, composition.body().contains(
+                    "(=> " + path.selector() + " (= vh false))"));
+            assertEquals(own + ": " + pairing, own, pairing != null
+                    && pairing.contains("message_arm__"));
+        }
+    }
+
+    @Test
+    public void aReadInTheOccurrenceItsWorldFlippedIsOnTheFatalPath()
+            throws Exception {
+        OccurrenceAddress flipped = occurrence("case/dn0", "REGION.sync",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Handler#sync#2", 0));
+        OccurrenceAddress other = occurrence("case/dn0", "REGION.other",
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
+                frame("Heartbeat#run#9", 0));
+        LocationId zxid = LocationId.of(LocationKind.INSTANCE, "30", "zxid");
+        Path iteration = folder.newFolder("flip-path").toPath();
+        Map<OccurrenceAddress, ReadRow> reads =
+                new LinkedHashMap<OccurrenceAddress, ReadRow>();
+        for (String id : new String[] {"s0", "s1"}) {
+            Session session = new Session(iteration, id, id.equals("s1"));
+            session.activation(flipped);
+            session.activation(other);
+            session.expression("EXPR.v1.z", integer("J", 1L));
+            session.write(Endpoint.of(other, "Heartbeat#set#3:WRITE",
+                    at("w#1", 0), 0), zxid, 1L, "EXPR.v1.z");
+            int at = 1;
+            for (OccurrenceAddress reader : new OccurrenceAddress[] {flipped,
+                    other}) {
+                session.read(Endpoint.of(reader, "Read#zxid#" + at + ":READ",
+                        at("r#" + at, 0), 0), zxid, 1L, "zxid_" + at++, "J",
+                        "1");
+            }
+            session.target(id.equals("s1") ? "true" : "false",
+                    id.equals("s1"), true);
+            session.write();
+        }
+        obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                "Handler#sync#u50", Collections.<String>emptyList(),
+                flipped.id());
+        Corpus corpus = Corpus.read(iteration, null);
+        for (ReadRow read : corpus.session("s1").reads()) {
+            reads.put(read.endpoint().occurrence(), read);
+        }
+        Composer.Composition composition = compose(iteration, ANCHOR, 4,
+                StaticScopeMap.empty());
+        Composer.Disjunct path = null;
+        for (Composer.Disjunct each : composition.disjuncts()) {
+            if (each.path().sessionId.equals("s1")) path = each;
+        }
+        assertNotNull(composition.gaps().toString(), path);
+        assertEquals(Composer.Composition.FatalPath.FLIP,
+                composition.onFatalPath(path, reads.get(flipped)));
+        assertNull(composition.onFatalPath(path, reads.get(other)));
     }
 
     private static JsonObject putCommit(JsonObject state, long generation) {

@@ -28,6 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -954,7 +955,8 @@ public final class Composer {
         public enum FatalPath {
             CONE,
             ANCHOR,
-            WROTE
+            WROTE,
+            FLIP
         }
 
         public FatalPath onFatalPath(Disjunct selected, ReadRow read) {
@@ -986,6 +988,14 @@ public final class Composer {
                             .equals(seen.endpoint().occurrence())) {
                         return FatalPath.WROTE;
                     }
+                }
+            }
+            for (Corpus.Flip flip : corpus.world(session).flips) {
+                if (!flip.focusedOccurrenceId.equals(reader.id())) continue;
+                ObligationResult ran = corpus.waveVerdict(session,
+                        flip.obligationId);
+                if (ran != null && ran.verdict() == Verdict.ADMITTED) {
+                    return FatalPath.FLIP;
                 }
             }
             return null;
@@ -2372,6 +2382,18 @@ public final class Composer {
     private Term arrived(AttachRow attach) {
         return lowering.statedValue(VmTermLowering.received(attach),
                 attach.javaType());
+    }
+
+    String arrivalEquation(AttachRow attach) {
+        Term value = arrived(attach);
+        return value == null ? null : lowering.leafEquals(attach.symbol(),
+                JavaSmtSorts.sortOfJava(attach.javaType()), attach.javaType(),
+                value, attach.javaType());
+    }
+
+    void heldArrival(AttachRow attach, String why) {
+        lowering.held(attach.symbol(), JsonFields.firstNonBlank(
+                attach.answeredValue(), attach.arrival()), why);
     }
 
     void frames(String session, Set<String> reached) {

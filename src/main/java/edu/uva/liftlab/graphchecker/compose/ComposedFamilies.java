@@ -523,15 +523,47 @@ final class ComposedFamilies {
                 }
                 fileRefusals();
             }
+            int before = refusals.size();
             List<String> eligible = eligibleSessions(message.getKey(),
                     slotOf.keySet(), attestedAt, producerOf, refusals);
             if (eligible == null || !messageFamily(ordinal, family,
                     message.getKey(), leaves, slotOf, symbolOf, eligible,
                     attestedAt, bySession, reached, stated, refusals,
                     depth)) {
-                return false;
+                if (!heldOwn(family, message.getKey(), leaves, bySession,
+                        stated)) {
+                    return false;
+                }
+                refusals.subList(before, refusals.size()).clear();
             }
         }
+        return true;
+    }
+
+    private boolean heldOwn(Closed family, String message,
+                            List<AttachRow> leaves,
+                            Map<String, List<Arms.Arm>> bySession,
+                            List<String> stated) {
+        if (!family.atPath || bySession.containsKey(pathSession)) {
+            return false;
+        }
+        List<String> holds = new ArrayList<String>();
+        for (AttachRow leaf : leaves) {
+            String hold = leaf.sessionId().equals(pathSession)
+                    ? composer.arrivalEquation(leaf) : null;
+            if (hold == null) return false;
+            holds.add(hold);
+        }
+        for (AttachRow leaf : leaves) {
+            composer.heldArrival(leaf, "message " + message + " is attested"
+                    + " by no run whose world is compatible with this path's,"
+                    + " and this path's own run delivered it from a producer"
+                    + " it ran uninstrumented");
+        }
+        family.formula = VmTermLowering.and(holds);
+        family.selectors = Collections.<String>emptyList();
+        stated.add(family.formula);
+        assertFamily(family.name, "(=> " + path + " " + family.formula + ")");
         return true;
     }
 

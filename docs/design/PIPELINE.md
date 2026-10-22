@@ -1704,7 +1704,8 @@ from the session that took it as that session's whole world (§11 rule 3): its o
 in place of the recording's pairing at each planted location (`Composition#worldRun`; the own run
 alone holds there "any arm but the plant"), only where the paired read lies on the fatal path at the
 occurrence level (`Composition#onFatalPath`: its symbol in the cone, or its occurrence the anchor's or
-the writer of a version a read in the cone, or a read of the anchor's own occurrence, observed -- a role
+the writer of a version a read in the cone, or a read of the anchor's own occurrence, observed, or the
+occurrence its world flipped where its replay took the flip -- a role
 read counting as the read of each occurrence it is the role prefix of, the rule the pairing flip was
 offered by, `Corpus#rolePrefix`).
 The worker writes `obligation_result.jsonl`
@@ -2907,7 +2908,12 @@ than the path's own session ran it at -- both judged against the PATH's session 
 so an arm pinning another is never chosen, and, the one arm left, it made the path unsat with its
 own run (solr-adhoc-39 SP6-39: the seed's delivery, admitted because its flips, none, are a subset
 of the faulted session's, pinned that session's fault at the seed's reading); pins alone admit
-incomparable worlds, whose deliveries contradicted 51 of SP6-39's 56 paths;
+incomparable worlds, whose deliveries contradicted 51 of SP6-39's 56 paths; a message of the path
+no compatible run attests, which the path's own run delivered from a producer it ran uninstrumented
+(no attested arm of its own), is held at the values its own leaves received, named "producer
+unstated" in `concrete[]`, and the path composed, not refused (`ComposedFamilies#heldOwn`:
+zk-bugs-observer-master F1B-om, 3 of 19 paths composed, the pairing world and the seed among the 16
+refused, each over the leader's PrepRequestProcessor a later generation planned);
 one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm guarded by its replay's value of every root it holds under (`Arms#arm`:
 those its expression names, every varied root, every root its replay read and minted none -- the
@@ -3599,15 +3605,18 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, `CONE`, or -- a read
      no term names -- its occurrence is the anchor's, `ANCHOR`, or wrote a version a read in the cone,
      or a read the anchor's own occurrence made (the occurrence-level reading `ANCHOR` takes), observed,
-     `WROTE`, a role read counting as the read of each occurrence it is the role prefix of
+     `WROTE`, or the occurrence its world flipped, the flip its replay took, `FLIP` (zk-bugs-observer-master:
+     the observer master's stale `lastProcessedZxid` read decides a packet never queued, which no term names,
+     and the replay's `AT_WITNESS` stop leaves that handler's rows unpublished), a role read counting as the
+     read of each occurrence it is the role prefix of
      (`Corpus#rolePrefix`: its node's work under its causal context before that occurrence's first row,
      the one rule `PairingFlip` offers it by; round SG3B tra: node1's `getAliases()` view read in the
      request's role work at VIEW@1, whose alias update wrote `/aliases.json` v3 from it, which the
      client's `.select` occurrence read while it waited for a collection v3 no longer routed to, until
      its retry timer -- the fatal term, which names no read -- fired). An occurrence-level clause is
      acceptable because CONFIRM stays the strict filter: it plants the pairing and must reach the
-     fatal, and the recording, without the pairing, did not; the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or
-     `WROTE` pairing stands only in a world that moved no root or clock, since nothing else shows the
+     fatal, and the recording, without the pairing, did not; the clause of each pairing is named in the claim's gaps, and an `ANCHOR`,
+     `WROTE` or `FLIP` pairing stands only in a world that moved no root or clock, since nothing else shows the
      pairing decides), the path's ask is decided (an undecided one is named so), and the session is
      that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the witness's,
      its pairings exactly those its replay realized, `Composition#realizedPairings`, inherited ones and
