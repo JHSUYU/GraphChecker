@@ -191,7 +191,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `ENGINE_FAULT` | an engine fault in a door or hook the system's code calls, named instead of thrown into the system (`runtime.MessageDoors#doorFault`); the rows that door states are missing (BLOCKING) |
 | `UNPLANNED_INPUT` | a demanded door's planned marker called at an invocation its task plans no input for (a call only a flipped world made), run concretely; subject `<taskId> <symbol>#<k>` (`UnplannedInput`); an admitted session that may parent exposes it and GROW plans it (DIAGNOSTIC; past `unplanned-input-max` a counted bound), [PIPELINE.md §7.8](PIPELINE.md) |
 | `ASSIGNMENT_UNPLANTED` | an assigned root whose mint ran without planting the value |
-| `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |
+| `ASSIGNMENT_UNMINTABLE` | an assigned root neither the recording nor the flipped path's session mints (the obligation is not run) |
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 | `ORDER_OBSERVED` | a checked `ORDER` (`check: true`: one no hold realizes) whose activation entered after what it is ordered after had exited: observed in order, not held (DIAGNOSTIC; `final/confirm.json` `ordersObserved`), [PIPELINE.md §10](PIPELINE.md) |

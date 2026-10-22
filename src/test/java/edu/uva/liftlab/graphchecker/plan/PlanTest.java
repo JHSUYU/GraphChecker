@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -166,6 +168,51 @@ public class PlanTest {
                         .startsWith("UNPLANNED_INPUT_UNKNOWN"));
             }
         }
+    }
+
+    @Test
+    public void anExposedOccurrenceHoldsTheMethodsPlanFoldedIntoItsRegion() {
+        Map<String, Object> row = new HashMap<String, Object>();
+        row.put("schemaVersion",
+                RuntimeSelectedRegionFinalizer.REGION_SCHEMA_VERSION);
+        row.put("kind", RuntimeSelectedRegionFinalizer.SKELETON_KIND);
+        row.put("regionId", "REGION.run");
+        row.put("rootMethod", "run");
+        row.put("methods", Arrays.asList("run", "followLeader"));
+        StaticProgram.RegionRow skeleton = StaticProgram.regionRows(
+                Collections.singletonList(row),
+                RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test").get(0);
+        List<RegionInstancePlan> planned = Arrays.asList(
+                planned("REGION.run", "run", "readSyncPacket"),
+                planned("REGION.other", "commit"));
+        assertEquals("the skeleton's methods and every one PLAN folded into"
+                        + " an occurrence of the region",
+                Arrays.asList("run", "followLeader", "readSyncPacket"),
+                new ArrayList<String>(
+                        ExposedRegionPlanMain.methods(skeleton, planned)));
+        assertEquals("a region PLAN never planned keeps its skeleton's",
+                Arrays.asList("run", "followLeader"),
+                new ArrayList<String>(ExposedRegionPlanMain.methods(skeleton,
+                        planned.subList(1, 2))));
+    }
+
+    private static RegionInstancePlan planned(String regionId,
+                                              String... methods) {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("goalId", "GOAL." + regionId);
+        goal.addProperty("kind", ClosureGoalKind.REGION_PATH_CLOSURE.name());
+        JsonArray definitions = new JsonArray();
+        for (String method : methods) definitions.add(method);
+        goal.add("runtimeDefinitionMethods", definitions);
+        JsonObject plan = new JsonObject();
+        plan.addProperty("sourceKey", "auto0/peer1#epoch2");
+        plan.addProperty("occurrenceId", "auto0/peer1#epoch2/" + regionId);
+        plan.addProperty("relationKey", "auto0/peer1/relation/" + regionId);
+        plan.addProperty("regionId", regionId);
+        JsonArray goals = new JsonArray();
+        goals.add(goal);
+        plan.add("closureGoals", goals);
+        return RegionInstancePlan.decode(plan);
     }
 
     private static JsonObject task(String taskId, String... actions) {

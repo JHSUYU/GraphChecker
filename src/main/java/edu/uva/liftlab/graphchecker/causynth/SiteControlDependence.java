@@ -140,6 +140,24 @@ public final class SiteControlDependence {
             }
 
             @Override
+            public List<StaticScopeMap.Guard> caughtInto(String siteId) {
+                List<String> sites = new ArrayList<String>();
+                sites.add(siteId);
+                sites.addAll(callSitesInto(SiteId.methodOf(siteId),
+                        callee -> true));
+                List<StaticScopeMap.Guard> found =
+                        new ArrayList<StaticScopeMap.Guard>();
+                Set<String> named = new LinkedHashSet<String>();
+                for (String site : sites) {
+                    for (StaticScopeMap.Guard guard : throwDeciders(site,
+                            this::guardsOf)) {
+                        if (named.add(guard.siteId())) found.add(guard);
+                    }
+                }
+                return found;
+            }
+
+            @Override
             public List<String> callersOf(String method) {
                 Set<String> found = new LinkedHashSet<String>();
                 for (String call : callSitesInto(method, caller -> true)) {
@@ -182,6 +200,112 @@ public final class SiteControlDependence {
     }
 
     private static final int CALL_DEPTH = 3;
+
+    static final int CAUGHT_DEPTH = 2;
+
+    static List<StaticScopeMap.Guard> throwDeciders(String siteId,
+            java.util.function.Function<String, MethodGuards> guardsOf) {
+        String method = SiteId.methodOf(siteId);
+        Body body = CausynthStaticFacts.activeBody(
+                CausynthStaticFacts.method(method));
+        List<StaticScopeMap.Guard> found =
+                new ArrayList<StaticScopeMap.Guard>();
+        if (body == null) return found;
+        Unit site = guardsOf.apply(method).unit(SiteId.unitIndexOf(siteId));
+        if (site == null) return found;
+        UnitGraph cfg = new BriefUnitGraph(body);
+        Set<Unit> entered = reachedFrom(cfg, body.getUnits().getFirst());
+        if (entered.contains(site)) return found;
+        for (soot.Trap trap : body.getTraps()) {
+            if (!reachedFrom(cfg, trap.getHandlerUnit()).contains(site)) {
+                continue;
+            }
+            for (Iterator<Unit> tried = body.getUnits().iterator(
+                    trap.getBeginUnit(), body.getUnits().getPredOf(
+                    trap.getEndUnit())); tried.hasNext(); ) {
+                Unit unit = tried.next();
+                if (!((soot.jimple.Stmt) unit).containsInvokeExpr()) {
+                    continue;
+                }
+                for (soot.SootMethod callee : targets(((soot.jimple.Stmt)
+                        unit).getInvokeExpr())) {
+                    thrownIn(callee, trap.getException().getType(), 1,
+                            new LinkedHashSet<String>(), guardsOf, found);
+                }
+            }
+        }
+        return found;
+    }
+
+    private static void thrownIn(soot.SootMethod method, soot.RefType caught,
+            int depth, Set<String> visited,
+            java.util.function.Function<String, MethodGuards> guardsOf,
+            List<StaticScopeMap.Guard> found) {
+        Body body = CausynthStaticFacts.activeBody(method);
+        if (body == null || !visited.add(method.getSignature())) return;
+        soot.FastHierarchy hierarchy =
+                soot.Scene.v().getOrMakeFastHierarchy();
+        MethodGuards guards = guardsOf.apply(method.getSignature());
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof soot.jimple.ThrowStmt) {
+                soot.Type thrown = ((soot.jimple.ThrowStmt) unit).getOp()
+                        .getType();
+                if (thrown instanceof soot.RefType
+                        && FaultPropagation.checked((soot.RefType) thrown)
+                        && hierarchy.canStoreType(thrown, caught)) {
+                    int thrownAt = originalIndex(body, unit);
+                    found.addAll(guards.at(thrownAt));
+                    found.addAll(guards.choosing(thrownAt));
+                }
+            } else if (depth < CAUGHT_DEPTH
+                    && ((soot.jimple.Stmt) unit).containsInvokeExpr()) {
+                for (soot.SootMethod callee : targets(((soot.jimple.Stmt)
+                        unit).getInvokeExpr())) {
+                    thrownIn(callee, caught, depth + 1, visited, guardsOf,
+                            found);
+                }
+            }
+        }
+    }
+
+    private static List<soot.SootMethod> targets(
+            soot.jimple.InvokeExpr call) {
+        List<soot.SootMethod> found = new ArrayList<soot.SootMethod>();
+        soot.SootMethod declared;
+        try {
+            declared = call.getMethod();
+        } catch (RuntimeException unresolved) {
+            return found;
+        }
+        if (declared.getDeclaringClass().isApplicationClass()
+                && declared.isConcrete()) {
+            found.add(declared);
+            return found;
+        }
+        try {
+            for (soot.SootMethod resolved : soot.Scene.v()
+                    .getOrMakeFastHierarchy().resolveAbstractDispatch(
+                            declared.getDeclaringClass(), declared)) {
+                if (resolved.getDeclaringClass().isApplicationClass()) {
+                    found.add(resolved);
+                }
+            }
+        } catch (RuntimeException unresolved) {
+            return found;
+        }
+        return found;
+    }
+
+    private static Set<Unit> reachedFrom(UnitGraph cfg, Unit start) {
+        Set<Unit> seen = new LinkedHashSet<Unit>();
+        Deque<Unit> work = new ArrayDeque<Unit>();
+        if (start != null) work.add(start);
+        while (!work.isEmpty()) {
+            Unit unit = work.removeFirst();
+            if (seen.add(unit)) work.addAll(cfg.getSuccsOf(unit));
+        }
+        return seen;
+    }
 
     private static final class CallSites {
         private final Map<String, List<String>> byCallee;
@@ -444,6 +568,7 @@ public final class SiteControlDependence {
                 new LinkedHashMap<Integer, List<StaticScopeMap.Guard>>();
         private final Map<String, List<Integer>> reachingCache =
                 new LinkedHashMap<String, List<Integer>>();
+        private soot.toolkits.scalar.LocalDefs defs;
 
         private MethodGuards(String method, Relation plain, Relation faults,
                              Map<Unit, Integer> original,
@@ -503,6 +628,29 @@ public final class SiteControlDependence {
 
         Unit unit(int unitIndex) {
             return byIndex.get(Integer.valueOf(unitIndex));
+        }
+
+        List<StaticScopeMap.Guard> choosing(int unitIndex) {
+            List<StaticScopeMap.Guard> found =
+                    new ArrayList<StaticScopeMap.Guard>();
+            if (plain == null) return found;
+            if (defs == null) {
+                defs = new soot.toolkits.scalar.SimpleLocalDefs(plain.cfg);
+            }
+            for (StaticScopeMap.Guard guard : at(unitIndex)) {
+                if (!method.equals(SiteId.methodOf(guard.siteId()))) continue;
+                Unit branch = unit(SiteId.unitIndexOf(guard.siteId()));
+                if (branch == null) continue;
+                for (soot.ValueBox used : branch.getUseBoxes()) {
+                    if (!(used.getValue() instanceof soot.Local)) continue;
+                    for (Unit def : defs.getDefsOfAt(
+                            (soot.Local) used.getValue(), branch)) {
+                        int index = original.get(def).intValue();
+                        if (index >= 0) found.addAll(at(index));
+                    }
+                }
+            }
+            return found;
         }
 
         boolean caughtLeadsTo(Collection<Unit> handlers, int unitIndex) {

@@ -1,11 +1,9 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
-import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -36,11 +34,9 @@ final class ClientFaults {
                     + "door catalog: pass --system-doors");
         }
         Set<String> unfailed = new LinkedHashSet<String>();
-        for (JsonObject row : RowCodec.readJsonl(doors)) {
-            String method = JsonFields.optionalString(row, "method");
-            if (!method.isEmpty() && !transports.contains(
-                    JsonFields.optionalString(row, "transport"))) {
-                unfailed.add(method);
+        for (LibraryCatalog.Door door : LibraryCatalog.placedDoors(doors)) {
+            if (!door.atCalls() && !transports.contains(door.transport)) {
+                unfailed.add(door.method);
             }
         }
         return new ClientFaults(unfailed, new TreeSet<String>(transports));

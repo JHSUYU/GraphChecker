@@ -24,7 +24,14 @@ public final class Moved {
     final Map<String, String> mintFrom = new LinkedHashMap<String, String>();
     final Set<String> anchored = new LinkedHashSet<String>();
     final Map<String, String> recorded = new LinkedHashMap<String, String>();
+    final Map<String, String> outside = new LinkedHashMap<String, String>();
     String refusal = "";
+
+    static final String OUTSIDE = "movedOutsideWitness";
+    static final String OUTSIDE_REASON = "moved only in paths this claim did"
+            + " not select: neither the recording, the selected session nor"
+            + " a session of an arm it takes mints or names it, so the"
+            + " witness's world has no occurrence of it to plant";
 
     public static final class Naming {
         final SessionReader session;
@@ -43,13 +50,21 @@ public final class Moved {
                            Map<String, String> readings,
                            SessionReader session, SessionReader recording) {
         return of(movedRoots, readings, session, recording,
-                Collections.<Naming>emptyList());
+                Collections.<Naming>emptyList(), false);
     }
 
-    public static Moved of(Map<String, String> movedRoots,
-                           Map<String, String> readings,
-                           SessionReader session, SessionReader recording,
-                           List<Naming> namings) {
+    public static Moved witness(Map<String, String> movedRoots,
+                                Map<String, String> readings,
+                                SessionReader session,
+                                SessionReader recording,
+                                List<Naming> namings) {
+        return of(movedRoots, readings, session, recording, namings, true);
+    }
+
+    private static Moved of(Map<String, String> movedRoots,
+                            Map<String, String> readings,
+                            SessionReader session, SessionReader recording,
+                            List<Naming> namings, boolean witness) {
         Moved moved = new Moved();
         moved.anchored.addAll(readings.keySet());
         Map<String, RootMintRow> named =
@@ -72,6 +87,10 @@ public final class Moved {
         }
         for (Map.Entry<String, String> entry : movedRoots.entrySet()) {
             RootMintRow row = named.get(entry.getKey());
+            if (row == null && witness) {
+                moved.outside.put(entry.getKey(), entry.getValue().trim());
+                continue;
+            }
             RootMintRow mint = row == null ? null : minted.get(row.rootId());
             String from = RECORDING;
             if (row != null && mint == null) {

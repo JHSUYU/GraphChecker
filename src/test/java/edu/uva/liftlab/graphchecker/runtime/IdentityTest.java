@@ -121,6 +121,77 @@ public class IdentityTest {
     }
 
     @Test
+    public void anObjectPutTwiceIsTakenInPutOrderFromAFifoQueue()
+            throws Exception {
+        String first = "<a.Cnxn: void closed()>#u4";
+        String second = "<a.Cnxn: void disconnect()>#u9";
+        Object[][] table = {
+            {new LinkedBlockingQueue<Object>(), first, second},
+            {new java.util.concurrent.ArrayBlockingQueue<Object>(4), first,
+                second},
+            {new java.util.concurrent.PriorityBlockingQueue<Object>(), second,
+                null}};
+        for (Object[] row : table) {
+            reset();
+            Object source = new Object();
+            RuntimeTraceContext.registerSource(source, DN);
+            Object queue = row[0];
+            Object death = new Object();
+            long request = RuntimeTraceContext.beginRequest(source, "test");
+            Identity.startWork(first, death, queue);
+            Identity.startWork(second, death, queue);
+            RuntimeTraceContext.endRequest(request);
+            List<String> stood = new ArrayList<String>();
+            on(() -> {
+                long run = Identity.enterFrame("<a.Events: void run()>", null);
+                for (int take = 0; take < 2; take++) {
+                    Identity.claimItem(death, queue);
+                    stood.add(Identity.occurrence(DN.key(), "REGION.event",
+                            true).render());
+                    Identity.regionExit(null);
+                }
+                Identity.exitFrame(run);
+            });
+            String said = queue.getClass().getSimpleName() + ": " + stood;
+            assertEquals(said, true, stood.get(0).contains((String) row[1]));
+            if (row[2] != null) {
+                assertEquals(said, true,
+                        stood.get(1).contains((String) row[2])
+                                && !stood.get(1).contains((String) row[1]));
+            }
+        }
+    }
+
+    @Test
+    public void anUnnamedItemEndsTheClaimOfTheItemBeforeIt() throws Exception {
+        Object putter = new Object();
+        RuntimeTraceContext.registerSource(putter, DN);
+        Object queue = new LinkedBlockingQueue<Object>();
+        Object cleanup = new Object();
+        long request = RuntimeTraceContext.beginRequest(putter, "cleanup");
+        Identity.startWork("<a.Manager: void check()>#u5", cleanup, queue);
+        RuntimeTraceContext.endRequest(request);
+        Object client = new Object();
+        Identity.startWork("<a.Worker: void submit()>#u8", client, queue);
+        Object daemon = new Object();
+        Identity.startWork(ACCEPT, daemon, null);
+        List<String> seen = claimed(daemon, carrier -> {
+            List<String> said = new ArrayList<String>();
+            said.add(opened("REGION.prep"));
+            Identity.claimItem(cleanup, queue);
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            Identity.claimItem(client, queue);
+            long hop = RuntimeTraceContext.beginRequest(DN, "served");
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            RuntimeTraceContext.endRequest(hop);
+            Identity.regionExit(null);
+            return said;
+        });
+        assertEquals(Arrays.asList("none", "Root:CLIENT/cleanup#1",
+                "Root:CLIENT/served#1"), seen);
+    }
+
+    @Test
     public void aTurnInsideAnOccurrenceRestartsNoCount() {
         String loop = "<a.Actor: void offerService()>#u3";
         String send = "<a.Actor: void sendHeartBeat()>#u5";
@@ -170,16 +241,19 @@ public class IdentityTest {
             List<String> said = new ArrayList<String>();
             said.add(opened("REGION.loop"));
             said.add(opened("REGION.step"));
+            said.add("standing " + Identity.standingOccurrences());
             said.add("ordinal " + Identity.nextBranchOrdinal("loop#u3"));
             for (String turn : new String[] {"turn", "turn"}) {
                 long hop = RuntimeTraceContext.beginRequest(DN, turn);
                 said.add(Identity.currentOccurrence(DN.key()).render());
                 said.add(opened("REGION.inner"));
+                said.add("standing " + Identity.standingOccurrences());
                 said.add("ordinals " + Identity.nextBranchOrdinal("loop#u3")
                         + "," + Identity.nextBranchOrdinal("loop#u3"));
                 Identity.regionExit(null);
                 RuntimeTraceContext.endRequest(hop);
                 said.add(Identity.currentOccurrence(DN.key()).regionId());
+                said.add("standing " + Identity.standingOccurrences());
             }
             Identity.regionExit(null);
             long hop = RuntimeTraceContext.beginRequest(DN, "last");
@@ -189,9 +263,12 @@ public class IdentityTest {
             return said;
         });
         String turn = DN.key() + "/region/REGION.loop/ctx:Root:CLIENT/turn#";
-        assertEquals(Arrays.asList("none", "none", "ordinal 0",
-                turn + "1/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
-                turn + "2/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
+        assertEquals(Arrays.asList("none", "none", "standing []",
+                "ordinal 0",
+                turn + "1/idx:", "none", "standing [" + turn + "1/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
+                turn + "2/idx:", "none", "standing [" + turn + "2/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
                 "ROLE.CLIENT"), seen);
 
         long request = RuntimeTraceContext.beginRequest(DN, "accept");

@@ -21,6 +21,7 @@ import java.util.TreeSet;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class LibraryCatalogTest {
     private static final String IPC = "<org.apache.hadoop.ipc.Client: "
@@ -134,6 +135,67 @@ public class LibraryCatalogTest {
                 "RESPONSE every call of <org.apache.hadoop.hdfs.protocol."
                         + "datatransfer.PipelineAck: void readFields(java.io."
                         + "InputStream)>"), dataTransfer);
+    }
+
+    @Test
+    public void aListedMessageCrossesAsAGeneratedOneAndItsSettersExportIt()
+            throws IOException {
+        String header = "org.apache.zookeeper.txn.TxnHeader";
+        assertEquals(Arrays.asList(header),
+                new ArrayList<>(LibraryCatalog.messageClasses()));
+        String proto = "a.Protos$Ack";
+        String[][] table = {
+            {header, "Zxid", "long", "true",
+                    "<" + header + ": void setZxid(long)>"},
+            {proto, "Seq", "int", "false", "<" + proto + "$Builder: " + proto
+                    + "$Builder setSeq(int)>"},
+        };
+        for (String[] row : table) {
+            assertEquals(row[0], row[4], SeedBackwardStaticAnalyzer
+                    .producerSetter(row[0], row[1], row[2],
+                            Boolean.parseBoolean(row[3])));
+        }
+        String packet = "org.apache.zookeeper.server.quorum.QuorumPacket";
+        Set<String> rpc = new TreeSet<>(Arrays.asList(proto));
+        Object[][] gates = {
+            {header, "setZxid", 1, "void", true, true},
+            {packet, "setZxid", 1, "void", false, false},
+            {proto + "$Builder", "setSeq", 1, proto + "$Builder", true,
+                    false},
+            {proto, "setSeq", 1, "void", false, true},
+            {header, "getZxid", 0, "long", false, true},
+            {header, "setZxid", 2, "void", false, true},
+        };
+        for (Object[] gate : gates) {
+            String owner = (String) gate[0];
+            assertEquals(owner + " " + gate[1], gate[4],
+                    SeedBackwardStaticAnalyzer.messageSetter(owner,
+                            (String) gate[1], (Integer) gate[2],
+                            (String) gate[3]));
+            assertEquals(owner, gate[5],
+                    SeedBackwardStaticAnalyzer.portMessage(owner, rpc));
+        }
+        String[][] refusals = {
+            {"", "classes lists the message classes"},
+            {", \"classes\": []", "classes lists the message classes"},
+            {", \"classes\": \"" + header + "\"",
+                    "classes lists the message classes"},
+            {", \"classes\": [\"TxnHeader\"]", "classes is no "},
+            {", \"classes\": [7]", "classes is not a string: 7"},
+            {", \"classes\": [\"" + header + "\"], \"codec\": \"JUTE\"",
+                    "MESSAGE has no member codec"},
+        };
+        for (String[] refusal : refusals) {
+            try {
+                LibraryCatalog.read(rows("{\"schemaVersion\": 1, \"kind\": "
+                        + "\"MESSAGE\"" + refusal[0] + "}"));
+                fail("refused: " + refusal[0]);
+            } catch (IllegalArgumentException refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith("library catalog at test.jsonl:1: ")
+                        && refused.getMessage().contains(refusal[1]));
+            }
+        }
     }
 
     @Test

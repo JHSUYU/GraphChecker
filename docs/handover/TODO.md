@@ -967,6 +967,33 @@ zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read eac
 `zk-bugs/case.sh` marks the placeholders), then run each case to its verdict as HBase's cases were. The bug checks
 must be SAT, confirmed in the VM and reproduced natively.
 
+EXPLORE re-pairing a container read (not built, lead 2026-10-21: zk-bugs-container-reuse takes A's workload fallback;
+about 3 h). ZA15-cont's decisive flip `PrepRequestProcessor#getRecordForPath#u13#2` (`n == null`, the node-map read of
+`MAP 12#-3` at v2532, the cleanup's remove; the bug world re-pairs it to v1948) is NOT_FLIPPABLE "no movable read":
+`FlipQuery#movableReads` skips every MAP location since 8ac0e2576. What that commit cut: a map read row's symbol is
+the map's STATE (`MAP_STATE/12#-3@v2532`, javaType `L`, shared by every read of that version), and movableReads
+declared it at the javaType's sort (Ref) and `bind` equated it with each writer's delivered map state (AssocState),
+z3 "Sorts Ref and AssocState" (V17 G2); the lookup itself stayed inlined over the recorded chain. The reuse, three
+steps, no second mechanism: (1) movableReads states a MAP read (not a VIEW) with >= 2 eligible arms as its container
+state (`lowering.state(symbol, Sort.MAP)`) and marks it `lowering.movable(row)`; (2) `SmtLowering#movedQuery` fires for
+a read EXPLORE marked movable as for one COMPOSE re-paired (`join.repaired || movable`), so the lookup is the relation
+asOf the state symbol (`inSessionObservedChain`, election-offer's PASS path); (3) `FlipQuery#variable` (READ) declares a
+symbol its lowering states as a container state at that sort, so the wchoice bindings equate states (delivered()'s
+ARM_SORT_MISMATCH stays). Cost first: every map read with >= 2 eligible writers becomes flippable in every case
+(DataTree.nodes has one writer per create or delete) -- measure obligations and query size offline on 01, 02 and cont
+(`tools/regress/offline-ab.sh`) before merging; test: an ExploreTest row (a map lookup flip answered by another
+writer's state, well-sorted), then ZA15-cont round 1 offline (195a1781 NOT_FLIPPABLE -> SAT, the v1948 choice).
+
+Static candidates over replays that were not admitted (not built, lead 2026-10-21). `Walk#holders` offers every
+occurrence of `Corpus#occurrences` that holds a static candidate write or export site on the node, including the
+variants only NOT_ADMITTED replays name (activated = any instrumented activation). ZC15-06 (int-10, round 8 on):
+the leader's PrepRequestProcessor.run at `WorkerReceiver.run#u292@4`, named only by c7b6e1c2 (NOT_ADMITTED,
+WORLD_RAN; its election took 4 turns, the seed's 2), was demanded -- int-9's ZC10-06 demanded no variant of it, so
+int-10 widened the static candidates reaching Prep.run's sites (A's caughtInto guards with decidedAway, likely;
+a static-pass A/B pins it). Its row is DIAGNOSTIC now (`ClosurePlanner#uncaptured`); the root fix would be holders
+offering only occurrences the seed or an admitted session names -- every case's closure changes, so A/B 01, 02,
+06 and cont first.
+
 **3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
 - D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
   node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum
@@ -985,20 +1012,28 @@ of each canary, then 01 03 06 11 12.
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
 (a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
 DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
-Left: its first SEEDs, once the quorum cluster (3) registers the peers; the hand-offs inside a peer (Prep, Sync, Commit,
-Final, SendAck queues) carry no packet's context -- carried per stage only where a case's chain needs it (lead
-2026-10-21: read the SEEDs' LINEAGE_LOST rows first).
+Since then (tree `gc/zk-learner`): the leader's own ACK is a message to itself (f174d986f), ACKs are processed in a turn
+(0393746c0), and an ACK leaves under the message its txn was logged under (acae2a16d). Left: a turn orders an EVENT, not
+the critical section after it -- the schedule releases the next turn at a location as soon as the previous one is
+observed, so the ACKs a turn ordered still race for `Leader#processAck`'s monitor and the COMMIT may leave under another
+ACK than recorded (ZD8-02: the acks/5 turns replayed in the recorded order 2008.., 0d7e.., 2d4b.., cee0.., 0ee0.., the
+recording's COMMIT left under the 3rd, the replay's under the 5th; 16 of 28 seed-replay stalls, 197/1536 slots given up;
+ZD7-02 without acae2a16d 849/1460). Idea (engine, general): a SECTION turn -- the next turn at a location is released only
+once the previous holder's `storeEnded` ran. Accepted for now (lead 2026-10-21, workaround over grinding); revisit if a
+verdict or CONFIRM depends on which ACK completes a quorum (a refutation on a COMMIT ORDER row).
 
-**5. zxid carriage on that door** (D5): deferred (lead 2026-10-21, owner "keep ZooKeeper lean"); revisit only when a
-SEED's `.smt` shows a guard term constant for want of an envelope or txn field. What it would take: the door already
-hands the packet to `MessageDoors#outboundRequest` and `#parsed`, but the codec walk knows only protobuf messages
-(`EnginePlumbing#generatedMessage`, `SeedBackwardStaticAnalyzer#deriveWirePort`): a jute `Record` a door carries would
-join it (port `auto:<Record>.<F>` from a demanded getter, its setter calls and constructor arguments the producers, a
-constructor's export bound after `<init>`), ~100-150 engine lines. zk-bugs-observer-master's guard (ZKDatabase:341) reads
-`TxnHeader.zxid` from the packet's `data` bytes (`SerializeUtils.deserializeTxn` in `Observer.processPacket`), which the
-envelope does not hold: carrying it costs a tree registry from a packet to its `TxnHeader` (`Leader.propose`, the
-observer master's INFORM) and a `parsed(header)` after each `deserializeTxn` of a received packet (~4 sites). Optional
-after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's chain through the log).
+**5. zxid carriage on that door** (D5): built in its txn form (lead-approved 2026-10-21 for zk-bugs-observer-master, whose
+guard ZKDatabase:341 reads `TxnHeader.zxid` from a packet's `data` bytes): the catalog's `MESSAGE` row lists jute's
+`TxnHeader` (`LibraryCatalog#messageClasses`), which the door's walk takes as a message (`EnginePlumbing#wireMessage`) and
+`SeedBackwardStaticAnalyzer#deriveWirePort` derives ports of, its own `setF` the producers (SYMBOL-SCOPE §6.2); the tree
+hands the door the header a packet carries and each learner's decode to `#parsed`, and a committed-log resend carries a
+copy set field by field (`CausynthQuorum#copyOf`; STATUS "tree: a txn's header crosses the learner stream"). Left: the
+proof -- the om SEED/PLAN shows the follower's `syncFollower` occurrence demanded, its `lastProcessedZxid` read a
+re-pairable decider; if PLAN does not reach it, no third mechanism (lead). Not carried: the envelope's own fields
+(`QuorumPacket.zxid`, a jute record no row lists), a header built by its all-fields constructor (the leader's original
+export is the door's, a constant). Follow-up (review 2026-10-21): one catalog concept for message-ness -- a `messages`
+member on CODEC rows in place of the MESSAGE kind. Optional after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's
+chain through the log).
 
 **6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
 concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism

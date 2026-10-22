@@ -290,7 +290,8 @@ of the program -- each OUT port of every region skeleton, its method woven as a 
 region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
 `runtime.RuntimeRegionPlanner#exportSites`). A protobuf message's field is captured with its message (codec capture,
 SYMBOL-SCOPE §6.3): exported at the builder's setter and bound to the builder, handed to the message by its `build()`;
-the IPC, HBase RPC and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
+a record a library catalog `MESSAGE` row lists (ZooKeeper's `TxnHeader`) is exported at its own setter and bound to itself;
+the IPC, HBase RPC, ZK_QUORUM and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
 for the receiver, whose getter attaches it after the parse; the engine's plumbing and generated messages are never
 state (`EnginePlumbing`, `RowRuntime#ownCode`). Its known limits are STATUS open defects 52-56.
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
@@ -837,7 +838,15 @@ before that path's deciding event, of the reads the root demand found on the thr
 STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7). Every anchor, concrete or not,
 also demands the STORE reads it made at its provenance sites before it decided
 (`ClosurePlanner#storeReads`): a store version's content is no value a term names, so a symbolic
-predicate's demand never reaches it.
+predicate's demand never reaches it. It demands too, with no site of the static scope, a STORE
+read before it decided whose observed version an occurrence of PLAN's ZooKeeper chain wrote
+(`ClosurePlanner#chainWrote`, the chain `zk_chain.jsonl` handed into the walk): the chain hand-off
+decides which version the read sees, as the message that started an occurrence decides it for a
+control producer, so the writer enters as a store writer and its FAULT doors through the faulted-door
+rule. ZB10-trunc: the restarted peer's runFromConfig read the snapshot its previous life's
+`QuorumPeer.run` wrote at NEWLEADER, but no scope site named the read (the guard's slice reaches the
+replayed log, the snapshot only decides where the replay starts) and ZKKEYS found no content key,
+so that life's sync -- and its `readSyncPacket` FAULT door -- never entered the closure.
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
@@ -1207,7 +1216,10 @@ all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's
 alone differ, at an address the recording did not open, answers the declared occurrence at its address,
 IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
-named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
+named only by stopped branches is DIAGNOSTIC, and so is one named only by replays that were not
+admitted -- its address is that replay's timing, ZC15-06: a NOT_ADMITTED replay elected the leader on
+WorkerReceiver's 4th turn, so its PrepRequestProcessor.run stood at `#u292@4`, the seed's at `@2`;
+BLOCKING stays for one no session names); it stays in the corpus as evidence (its rows still
 attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
 PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
 role and api, without the per-site invocation counts; a sender no row names is unknown, never a
@@ -1607,8 +1619,10 @@ DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their r
 names the polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the
 symbols it sets that no replay plants (container states `st__*`, refused terms `unsupported__*`).
 The parent world is overlaid (model wins: roots, skews, answers, pairings) and its flips inherited.
-Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
-`NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
+Every assigned root must have a mint in the seed session, else in the session the flipped path was
+cut from, the world the obligation replays (`Corpus#mintOf`; an exposed task's door roots are minted
+only in its GROW re-runs -- ZB14-trunc: life 2's `Learner.readSyncPacket#u3` FAULT); a root neither
+mints is `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`. The world's pairings are held by CONFIRM's rows over the session the path was cut
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
@@ -2126,8 +2140,11 @@ unanswered when the exploration ended). One GROW is one GENERATION of the plan
 and the class tree, under `generations/g<k>/`, BUILT BESIDE THE LOOP (`campaign_stream_grow_build`,
 GROW's lane, §7.9; one at a time, from the plan and the tree current when it started):
 `plan.ExposedRegionPlanMain` writes the generation's plan, the one before it plus one task row per
-exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`) and
-each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
+exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's `replayGroupId`;
+its methods, and so its declared doors, the region skeleton's and every one PLAN folded into an
+occurrence of that region, `ExposedRegionPlanMain#methods` -- ZB12-trunc: life 2's exposed
+`QuorumPeer.run` held the skeleton's alone and lacked `Learner.readSyncPacket`'s FAULT door, which
+life 3's planned run of the region holds) and each grown invocation (below), as a new file, and INSTRUMENT weaves that plan
 (`campaign_instrument`'s plan argument) into the generation's own tree where its weave key (§4) is
 not the key of the tree it stands on; the head meanwhile goes on starting, collecting, landing and
 planning (SGF8-adhoc-07 minutes 2-11: a GROW in the head's hands, its planner and weave 386 s with no
@@ -3611,8 +3628,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    reading runs on from an earlier jump, so a minute added to the earlier instant moved the cell a later
    jump runs on from and used up that jump's own (PRE4-18406: the second delete() kept 1 ns over the
    reservation its clock ran on from, natively 0/10). `movedRoots` = the valuation's moved
-   roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
-   differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
+   roots (by root id) plus every clock cell (by cell symbol) of the selected path's cone where the
+   model's clock jumped (its skew differs from the cell's before it), at the model's instant. The
+   cone is `Composition#cone` of the selected selector (its `path_fatal__` command's symbols and the
+   message families guarded by it that meet them), as `#inCone` takes for a modelled valuation: the
+   cells of one JVM clock are ordered across every path's sessions, so the model jumps cells no path
+   the claim selects names, and planted they made the confirmation replay unjudgeable (ZE7-02: 8
+   cells named only by `clock_order__`/`clock_domain__`/`refuted_claim__`, 6 of them minted at
+   recording occurrences the replay never reached, "published no root mint row", three claims
+   refuted before their pairing was tested). No selected path, no cell. A jump back is a jump: a cell the
    witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it
    is named at its model instant, which can be its own reading.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
@@ -3703,10 +3727,22 @@ with it is a `RUN_DEFECT`.
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
   the model runs those cells on from the jump before them. Where each moved root's mint came from
   is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
-  plan as the worker's `mint_from.json`). A moved root none of them mints, one those sessions mint
-  at different occurrences, or a moved clock the composition anchors nowhere, refuses the
-  confirmation by name; a mint the replay never reaches confirms nothing (the fatal must still be
-  observed at the anchor). The
+  plan as the worker's `mint_from.json`). A moved root none of them mints or names is outside the
+  witness (ZD7-02, before `ClaimPolicy#movedRoots` kept only the selected cone's cells: peer5's Prep
+  wall time for a learner-forwarded request that only 15 other paths' sessions read). Since then it
+  guards two cases: a root or cell named only in an arm of a family the cone meets but the model
+  did not take (the cone takes whole families, CONFIRM consults the taken arms' sessions), and an
+  enumerated valuation's moved root (valuations are not cut to the cone) minted only in another
+  path's session. It is left out of
+  the plant and moved out of the claim's `movedRoots` into `claim.movedOutsideWitness`
+  (`roots`, `reason`; `ConfirmMain#leaveOutside` rewrites `claim.json` before the replay is
+  planned), so acceptance and REPRODUCE see only what is planted. That removes a refusal of
+  bookkeeping only: the claim is still replayed with the remaining plants, must observe the fatal
+  at the anchor and reproduce natively, and a replay that misses it refutes the claim as any
+  false positive (owner on 02: "02这种如果是正常的false positive过滤你要保留"). A root one of
+  them names but none mints, one those sessions mint at different occurrences, or a moved clock
+  the composition anchors nowhere, refuses the confirmation by name; a mint the replay never
+  reaches confirms nothing (the fatal must still be observed at the anchor). The
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
@@ -4135,7 +4171,11 @@ is, the recording weave's own call-site context states at run time (`CausynthTra
 #currentCallSiteContext`, pushed with that `siteId` and callee before the invoke), so no unit index is
 mapped to a bytecode offset; an invoke no context wraps matches no row. Inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
-  occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
+  occurrence (`CausynthTraceRecorder#enclosingOccurrences`: the thread's regions' current
+  occurrences, `Identity#standingOccurrences`, innermost first -- a region a hop opened inside it
+  names, as ZooKeeper's `PrepRequestProcessor.run()` is named by `CausynthZk.serve` per request,
+  stands under that name while the hop stands; read off the entry instead, ZA9-rseq's fatal in Prep
+  stood in no occurrence and 10 of 10 native runs missed the anchor) has the row's own id
   (`RecordingPlant#marker`);
 - the tree's `CausynthSymbolicSource.symbolize` of a HOOK row's root writes its value into the field
   the hook names (`RootMint#configuredSource` -> `RecordingPlant#hook`, the replay's own

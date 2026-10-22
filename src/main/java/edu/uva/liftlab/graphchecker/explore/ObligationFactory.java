@@ -1049,7 +1049,8 @@ public final class ObligationFactory {
         assigned.addAll(clockDeltas.keySet());
         List<String> unmintable = new ArrayList<String>();
         for (String rootId : assigned) {
-            RootMintRow mint = corpus.rootOf(corpus.seedSessionId(), rootId);
+            RootMintRow mint = corpus.mintOf(candidate.path.sessionId,
+                    rootId);
             if (mint == null) {
                 unmintable.add(rootId);
                 gaps.add(GapRow.of(candidate.path.sessionId,
@@ -1063,9 +1064,10 @@ public final class ObligationFactory {
             return refused(candidate, Verdict.NOT_ADMITTED,
                     "ASSIGNMENT_UNMINTABLE: the model assigns "
                             + String.join(", ", unmintable)
-                            + ", which the recording "
-                            + corpus.seedSessionId()
-                            + " mints nowhere, so no occurrence of a "
+                            + ", which neither the recording "
+                            + corpus.seedSessionId() + " nor the path's "
+                            + "session " + candidate.path.sessionId
+                            + " mints, so no occurrence of a "
                             + "replay can be focused to plant it", query,
                     gaps, question);
         }
