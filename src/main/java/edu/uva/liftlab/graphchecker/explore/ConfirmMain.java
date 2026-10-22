@@ -1202,8 +1202,7 @@ public final class ConfirmMain {
             String order = first.activation + "\n" + hold.activation;
             holding.orders.add(order);
             holding.pairs.add(new Pair(first, then, thenSeq, order,
-                    hold.activation != null
-                            && hold.activation.startsWith(Confirmation.CLAIM)));
+                    hold.claim));
             holding.ends.put(order, new OccurrenceAddress[] {
                     first.occurrence, hold.occurrence});
             if (hold.checked) holding.checked.add(order);
@@ -1264,18 +1263,22 @@ public final class ConfirmMain {
             private final OccurrenceAddress occurrence;
             private final String activation;
             private final boolean checked;
+            private final String claim;
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames,
                          boolean checked) {
-                this(occurrence, Confirmation.activation(occurrence,
-                        ExecutionIndex.of(frames)), checked);
+                this.occurrence = occurrence;
+                this.activation = Confirmation.activation(occurrence,
+                        ExecutionIndex.of(frames));
+                this.checked = checked;
+                this.claim = null;
             }
 
-            private Hold(OccurrenceAddress occurrence, String activation,
-                         boolean checked) {
+            private Hold(OccurrenceAddress occurrence, String threadKey) {
                 this.occurrence = occurrence;
-                this.activation = activation;
-                this.checked = checked;
+                this.activation = Confirmation.claim(threadKey);
+                this.checked = false;
+                this.claim = threadKey;
             }
         }
 
@@ -1292,16 +1295,53 @@ public final class ConfirmMain {
                 return row != null && row.claimed()
                         && row.claimKind() == ActivationRow.ClaimKind.HANDOFF_TASK
                         && !inside(first.occurrence, row.threadKey())
-                        ? new Hold(event.occurrence(),
-                        Confirmation.claim(row.threadKey()), false)
+                        ? new Hold(event.occurrence(), row.threadKey())
                         : holdBefore(event, seq, false);
             }
             if (Confirmation.standsUnder(first.occurrence, send,
                     activations::get)) {
                 return holdBefore(event, seq, true);
             }
+            ActivationRow sender = activations.get(send.occurrence().id());
+            if (sender != null && !sender.instrumented()) {
+                Hold claimed = firstClaim(first, send);
+                if (claimed != null) return claimed;
+            }
             return new Hold(send.occurrence(), send.activationFrames(),
                     false);
+        }
+
+        private Hold firstClaim(Exit first, Endpoint send) {
+            String sent = Confirmation.id(send);
+            for (ActivationRow row : activations.values()) {
+                Endpoint producer = row.anchorProducer();
+                if (!row.claimed() || !row.instrumented() || producer == null
+                        || !Confirmation.id(producer).equals(sent)) {
+                    continue;
+                }
+                String site = claimSite(row.threadKey());
+                for (ActivationRow other : activations.values()) {
+                    if (other.claimed()
+                            && sameRequest(other.occurrence(), first.occurrence)
+                            && site.equals(claimSite(other.threadKey()))) {
+                        return null;
+                    }
+                }
+                return new Hold(row.occurrence(), row.threadKey());
+            }
+            return null;
+        }
+
+        private static boolean sameRequest(OccurrenceAddress one,
+                                           OccurrenceAddress other) {
+            return one.node().render().equals(other.node().render())
+                    && one.context().render().equals(
+                    other.context().render());
+        }
+
+        private static String claimSite(String threadKey) {
+            return threadKey.substring(threadKey.lastIndexOf('|') + 1)
+                    .replaceFirst("@\\d+$", "");
         }
 
         private void untangle(Holding holding) {
@@ -1313,11 +1353,9 @@ public final class ConfirmMain {
             List<Long> firstSeqs = new ArrayList<Long>();
             List<Long> thenSeqs = new ArrayList<Long>();
             for (Pair pair : holding.pairs) {
-                ActivationRow then = activations.get(
-                        pair.then.occurrence().id());
                 ActivationRow first = activations.get(
                         pair.first.occurrence.id());
-                claims.add(pair.entry ? then.threadKey() : null);
+                claims.add(pair.claim);
                 firsts.add(first == null ? null : first.threadKey());
                 firstSeqs.add(exited(pair.first));
                 thenSeqs.add(pair.seq);
@@ -1568,15 +1606,15 @@ public final class ConfirmMain {
         private final Endpoint then;
         private final long seq;
         private final String order;
-        private final boolean entry;
+        private final String claim;
 
         private Pair(StateClosure.Exit first, Endpoint then, long seq,
-                     String order, boolean entry) {
+                     String order, String claim) {
             this.first = first;
             this.then = then;
             this.seq = seq;
             this.order = order;
-            this.entry = entry;
+            this.claim = claim;
         }
     }
 
