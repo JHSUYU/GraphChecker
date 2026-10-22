@@ -253,7 +253,9 @@ public final class SiteControlDependence {
                 if (thrown instanceof soot.RefType
                         && FaultPropagation.checked((soot.RefType) thrown)
                         && hierarchy.canStoreType(thrown, caught)) {
-                    found.addAll(guards.at(originalIndex(body, unit)));
+                    int thrownAt = originalIndex(body, unit);
+                    found.addAll(guards.at(thrownAt));
+                    found.addAll(guards.choosing(thrownAt));
                 }
             } else if (depth < CAUGHT_DEPTH
                     && ((soot.jimple.Stmt) unit).containsInvokeExpr()) {
@@ -566,6 +568,7 @@ public final class SiteControlDependence {
                 new LinkedHashMap<Integer, List<StaticScopeMap.Guard>>();
         private final Map<String, List<Integer>> reachingCache =
                 new LinkedHashMap<String, List<Integer>>();
+        private soot.toolkits.scalar.LocalDefs defs;
 
         private MethodGuards(String method, Relation plain, Relation faults,
                              Map<Unit, Integer> original,
@@ -625,6 +628,29 @@ public final class SiteControlDependence {
 
         Unit unit(int unitIndex) {
             return byIndex.get(Integer.valueOf(unitIndex));
+        }
+
+        List<StaticScopeMap.Guard> choosing(int unitIndex) {
+            List<StaticScopeMap.Guard> found =
+                    new ArrayList<StaticScopeMap.Guard>();
+            if (plain == null) return found;
+            if (defs == null) {
+                defs = new soot.toolkits.scalar.SimpleLocalDefs(plain.cfg);
+            }
+            for (StaticScopeMap.Guard guard : at(unitIndex)) {
+                if (!method.equals(SiteId.methodOf(guard.siteId()))) continue;
+                Unit branch = unit(SiteId.unitIndexOf(guard.siteId()));
+                if (branch == null) continue;
+                for (soot.ValueBox used : branch.getUseBoxes()) {
+                    if (!(used.getValue() instanceof soot.Local)) continue;
+                    for (Unit def : defs.getDefsOfAt(
+                            (soot.Local) used.getValue(), branch)) {
+                        int index = original.get(def).intValue();
+                        if (index >= 0) found.addAll(at(index));
+                    }
+                }
+            }
+            return found;
         }
 
         boolean caughtLeadsTo(Collection<Unit> handlers, int unitIndex) {

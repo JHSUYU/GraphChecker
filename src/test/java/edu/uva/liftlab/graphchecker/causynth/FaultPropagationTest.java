@@ -83,6 +83,7 @@ public class FaultPropagationTest {
                         + " r3; f.Missing $r2; r0 := @this: f.Lookup;"
                         + " r1 := @parameter0: java.lang.Object;"
                         + " r3 = r0.<f.Lookup: java.lang.Object held>;"
+                        + " if r1 == null goto label0; r3 = r1; label0:"
                         + " if r3 != null goto label1; $r2 = new f.Missing;"
                         + " specialinvoke $r2.<f.Missing: void <init>("
                         + "java.lang.String)>(\"none\"); throw $r2;"
@@ -109,11 +110,14 @@ public class FaultPropagationTest {
         StaticScopeMap.Guards guards = SiteControlDependence.over(
                 java.util.Arrays.asList(write, handled));
         Object[][] rows = {
-            {"the constructor a handler calls: the throw's deciding arm",
-                "[<f.Lookup: void find(java.lang.Object)>#u3=false]",
+            {"the constructor a handler calls: the throw's deciding arm,"
+                    + " and the branch choosing the value that arm tests",
+                "[<f.Lookup: void find(java.lang.Object)>#u5=false,"
+                        + " <f.Lookup: void find(java.lang.Object)>#u3=false]",
                 guards.caughtInto(write).toString()},
             {"a store in the handler itself, the same",
-                "[<f.Lookup: void find(java.lang.Object)>#u3=false]",
+                "[<f.Lookup: void find(java.lang.Object)>#u5=false,"
+                        + " <f.Lookup: void find(java.lang.Object)>#u3=false]",
                 guards.caughtInto(handled).toString()},
             {"the try's own call is no handler's: nothing",
                 "[]", guards.caughtInto(
