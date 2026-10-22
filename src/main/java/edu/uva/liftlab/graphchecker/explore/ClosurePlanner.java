@@ -924,7 +924,8 @@ public final class ClosurePlanner {
         }
 
         void offer(List<Object> key, List<OccurrenceAddress> holders,
-                   String why, Collection<String> guards, String sessionId,
+                   String why, StaticScopeMap.Site site,
+                   Collection<String> guards, String sessionId,
                    LocationId location) {
             Set<String> offered = walk.offered.get(key);
             List<OccurrenceAddress> asked = new ArrayList<OccurrenceAddress>();
@@ -935,7 +936,7 @@ public final class ClosurePlanner {
             }
             List<Boolean> others = location == null ? null
                     : walk.each(asked, occurrence -> walk.holdsOthersOnly(
-                    occurrence, sessionId, location));
+                    occurrence, sessionId, location, site));
             List<OccurrenceAddress> offering =
                     new ArrayList<OccurrenceAddress>();
             for (int at = 0; at < asked.size(); at++) {
@@ -1496,9 +1497,12 @@ public final class ClosurePlanner {
 
         private boolean holdsOthersOnly(OccurrenceAddress occurrence,
                                         String sessionId,
-                                        LocationId location) {
+                                        LocationId location,
+                                        StaticScopeMap.Site site) {
             if (location.kind() == LocationKind.STATIC
-                    || !Arms.namedOwner(location)) {
+                    || !Arms.namedOwner(location)
+                    || decidedAway(corpus.decisionsOf(sessionId, occurrence),
+                            site.guards, site.guardOutcomes)) {
                 return false;
             }
             SessionReader session = corpus.session(sessionId);
@@ -2149,6 +2153,21 @@ public final class ClosurePlanner {
         }
     }
 
+    static boolean decidedAway(List<DecisionRow> decisions,
+                               List<String> guards, List<Boolean> outcomes) {
+        for (DecisionRow decision : decisions) {
+            for (int at = 0; at < guards.size(); at++) {
+                if (!guards.get(at).equals(decision.siteId())) continue;
+                Boolean toward = at < outcomes.size() ? outcomes.get(at) : null;
+                if (toward == null || toward.booleanValue()
+                        != decision.outcome()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     static boolean unrecorded(Corpus corpus, String sessionId,
                               String locationKey, long version) {
         if (version < 0L) return false;
@@ -2235,11 +2254,11 @@ public final class ClosurePlanner {
                                    LocationId location, boolean unrecorded) {
         List<OccurrenceAddress> holders = walk.holders(site, node, false);
         step.offer(Arrays.<Object>asList(why, site, guards, node),
-                holders, why, guards, sessionId, location);
+                holders, why, site, guards, sessionId, location);
         if (unrecorded) {
             List<OccurrenceAddress> ran = walk.holders(site, node, true);
             step.offer(Arrays.<Object>asList(UNRECORDED_WRITER, site, guards,
-                    node), ran, UNRECORDED_WRITER, guards, sessionId,
+                    node), ran, UNRECORDED_WRITER, site, guards, sessionId,
                     location);
             Set<OccurrenceAddress> lacked = walk.unrecorded.computeIfAbsent(
                     sessionId, key -> ConcurrentHashMap.newKeySet());
