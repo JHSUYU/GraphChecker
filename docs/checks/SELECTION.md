@@ -98,7 +98,7 @@ reached-znode data), 32 (RegionReplicaFlushHandler: a secondary replica's flush 
 **Selected with an integration test (16):**
 - the study points 01 02 03 04 06 07 10 11 12 13;
 - the six bug points:
-  - zk-bugs-trunc-sync (ZOOKEEPER-5094, PR 2459);
+  - zk-bugs-trunc-sync (ZOOKEEPER-5094, PR 2459; owner 2026-10-21: kept as an ad hoc coordination check, not detected);
   - zk-bugs-observer-master (ZOOKEEPER-5088, PR 2454);
   - zk-bugs-quota-init;
   - zk-bugs-election-offer;

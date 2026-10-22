@@ -77,7 +77,8 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     )
     ;;
   trunc-sync)
-    # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
+    # ZOOKEEPER-5094 (apache/zookeeper PR 2459; owner 2026-10-21: kept as an ad hoc coordination check, not detected): a
+    # follower whose TRUNC sync ends before NEWLEADER keeps its database;
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
     # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
     # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
