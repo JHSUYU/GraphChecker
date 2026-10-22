@@ -15,4 +15,10 @@ case "$1" in
     # doors do not fail -- a transport this client never calls, as HBase 07 (an empty list fails every client door)
     client_fault_transports=(ZK_QUORUM)
     ;;
+  13)
+    # scope cut, as 02: the mechanism is the RO peer's global-session map, and the client's session is a local one
+    # (ReadOnlyModeTest enables local sessions), which no server's expirer holds -- ZB17-13's planted client
+    # SessionExpired was BLOCKING ASSIGNMENT_UNPLANTED
+    client_fault_transports=(ZK_QUORUM)
+    ;;
 esac
