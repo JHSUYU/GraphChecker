@@ -2598,6 +2598,32 @@ public class ExploreTest {
     }
 
     @Test
+    public void aWriterWhoseRecordedArmLeftTheWriteHoldsNoOwnerEvidence() {
+        String guard = "<o.a.z.s.SessionTrackerImpl: void run()>#u14";
+        String other = "<o.a.z.s.SessionTrackerImpl: void run()>#u2";
+        List<String> guards = Arrays.asList(other, guard);
+        Object[][] table = {
+            {"no decision at a guard", Arrays.asList(false, false),
+                    other + "@nothing", false, false},
+            {"decided toward the write", Arrays.asList(false, false),
+                    guard, false, false},
+            {"decided away from the write", Arrays.asList(false, false),
+                    guard, true, true},
+            {"direction unknown", Arrays.asList(false, null),
+                    guard, true, true},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<Boolean> outcomes = (List<Boolean>) row[1];
+            DecisionRow decision = DecisionRow.of("s", 1, PRODUCER,
+                    (String) row[2], 1, (Boolean) row[3], "EXPR.t",
+                    Collections.<String, Long>emptyMap());
+            assertEquals((String) row[0], row[4], ClosurePlanner.decidedAway(
+                    Collections.singletonList(decision), guards, outcomes));
+        }
+    }
+
+    @Test
     public void aStoreVersionRestsOnEveryWriteOfItsLocationAndTheirItems()
             throws Exception {
         LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",

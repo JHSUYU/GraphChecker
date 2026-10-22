@@ -874,7 +874,12 @@ are counted, never dropped silently: `concreteAnchors` states how many
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
   location's, is no candidate; a static field, an owner that names no one object, an occurrence
   with no recorded access, or one that ran for its doors alone in that session (its rows state its
-  doors, never what it touched) is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  doors, never what it touched) is, and so is one that decided a guard of the write site away from
+  it -- a recorded `BRANCH` at one of the site's `guards` against its `guardOutcomes`, or at one
+  whose outcome the map leaves unknown: the owners it recorded are the other arm's, and a store on
+  the arm it did not take says nothing (STATUS R1's rule; zk-adhoc-01/-03's session expirer turns
+  took `waitTime > 0` and touched only the clock and the queue's counter, so `setSessionClosing`'s
+  store of the session's `isClosing` was no candidate of any turn before), `ClosurePlanner.Walk#holdsOthersOnly`, `#decidedAway`; PLAN's reachability and
   confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its
