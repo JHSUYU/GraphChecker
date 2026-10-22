@@ -52,7 +52,7 @@ A run tag marked PENDING is a case of the alone round F2, rerun because its conc
 | zk-adhoc-13 | study: ReadOnlyModeTest#testConnectionEvents | UNSAT_CLOSED, substantive (F1E-13 on trees-12, 229 s) |
 | (05, 08, 09) | selected, not run: a dead throw, no path (`docs/checks/SELECTION.md`) | - |
 
-The first five are the owner's bugs. A bug check is done when it is SAT, confirmed in the VM and reproduced natively, with
+The owner named five bugs: quota-init, election-offer, container-reuse, trunc-sync (5094) and observer-master (5088); retry-seq-quota (bug_study #32) is the sixth bug check. A bug check is done when it is SAT, confirmed in the VM and reproduced natively, with
 the bug's causal chain. A study check is done at SAT, UNSAT (read with `vacuity.py`) or a named bound.
 
 ## 2. Read, in this order
