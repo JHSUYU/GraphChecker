@@ -90,6 +90,9 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
       server=:org/apache/zookeeper/server/quorum/Learner
       server:org/apache/zookeeper/server/quorum/QuorumPeer
       server=:org/apache/zookeeper/server/quorum/LearnerHandler
+      # the restart replay's start after the snapshot (fastForwardFromEdits) and the log iterator it reads (FileTxnIterator)
+      server=:org/apache/zookeeper/server/persistence/FileTxnSnapLog
+      server:org/apache/zookeeper/server/persistence/FileTxnLog
     )
     ;;
   observer-master)
