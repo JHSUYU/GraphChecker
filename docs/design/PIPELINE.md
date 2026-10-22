@@ -837,7 +837,15 @@ before that path's deciding event, of the reads the root demand found on the thr
 STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7). Every anchor, concrete or not,
 also demands the STORE reads it made at its provenance sites before it decided
 (`ClosurePlanner#storeReads`): a store version's content is no value a term names, so a symbolic
-predicate's demand never reaches it.
+predicate's demand never reaches it. It demands too, with no site of the static scope, a STORE
+read before it decided whose observed version an occurrence of PLAN's ZooKeeper chain wrote
+(`ClosurePlanner#chainWrote`, the chain `zk_chain.jsonl` handed into the walk): the chain hand-off
+decides which version the read sees, as the message that started an occurrence decides it for a
+control producer, so the writer enters as a store writer and its FAULT doors through the faulted-door
+rule. ZB10-trunc: the restarted peer's runFromConfig read the snapshot its previous life's
+`QuorumPeer.run` wrote at NEWLEADER, but no scope site named the read (the guard's slice reaches the
+replayed log, the snapshot only decides where the replay starts) and ZKKEYS found no content key,
+so that life's sync -- and its `readSyncPacket` FAULT door -- never entered the closure.
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
