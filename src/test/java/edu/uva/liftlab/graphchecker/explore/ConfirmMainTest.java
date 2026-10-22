@@ -780,12 +780,21 @@ public class ConfirmMainTest {
             Path composed = clock[2] == null ? manifest() : manifestAnchoring(
                     clock[1], "1000");
             try {
-                ConfirmMain.write(iteration, claim(clock[0], "50000"),
-                        composed, moved);
-                assertEquals(clock[0], clock[2], RowCodec.readJsonl(
-                        moved.resolve("focused_task.jsonl")).get(0)
-                        .getAsJsonObject("clockDeltas").get(clock[1])
-                        .getAsString());
+                Path claimed = claim(clock[0], "50000");
+                ConfirmMain.write(iteration, claimed, composed, moved);
+                JsonObject deltas = RowCodec.readJsonl(moved.resolve(
+                        "focused_task.jsonl")).get(0)
+                        .getAsJsonObject("clockDeltas");
+                if (clock[2] == null) {
+                    assertFalse(clock[0], deltas.has(clock[1]));
+                    assertTrue(clock[0], ExploreCodec.readObject(claimed)
+                            .getAsJsonObject("claim").getAsJsonObject(
+                                    Moved.OUTSIDE).getAsJsonObject("roots")
+                            .has(clock[0]));
+                } else {
+                    assertEquals(clock[0], clock[2],
+                            deltas.get(clock[1]).getAsString());
+                }
             } catch (ConfirmMain.Refused refused) {
                 assertEquals(clock[0] + ": " + refused.getMessage(), null,
                         clock[2]);
@@ -816,8 +825,7 @@ public class ConfirmMainTest {
         }
         Object[][] table = {
                 {new String[]{"arm"}, "arm arm"},
-                {new String[]{}, "the claim moves M_J_clock.t0, which the "
-                        + "recording, the selected session and the arms"},
+                {new String[]{}, OUTSIDE},
                 {new String[]{"arm", "arm2"}, "the claim moves M_J_clock.t0,"
                         + " which the sessions mint at different occurrences"}};
         for (Object[] row : table) {
@@ -838,6 +846,10 @@ public class ConfirmMainTest {
                     StandardCharsets.UTF_8));
             Path out = folder.newFolder().toPath();
             String expected = (String) row[1];
+            if (expected == OUTSIDE) {
+                outsideTheWitness(iteration, claim, out);
+                continue;
+            }
             try {
                 ConfirmMain.write(iteration, claim,
                         manifestAnchoring("CLOCK.t0", "1000"), out);
@@ -860,6 +872,38 @@ public class ConfirmMainTest {
                 assertFalse(refused.refutes);
             }
         }
+    }
+
+    private static final String OUTSIDE = "outside the witness";
+
+    private void outsideTheWitness(Path iteration, Path claim, Path out)
+            throws Exception {
+        boolean refuted;
+        try {
+            ConfirmMain.write(iteration, claim,
+                    manifestAnchoring("CLOCK.t0", "1000"), out);
+            JsonObject focus = RowCodec.readJsonl(out.resolve(
+                    ObligationDir.FOCUSED_TASK)).get(0);
+            assertFalse(focus.getAsJsonObject("clockDeltas")
+                    .has("CLOCK.t0"));
+            JsonObject result = new JsonObject();
+            result.addProperty("verdict", "NOT_ADMITTED");
+            RowCodec.writeJsonl(out.resolve(ObligationDir.RESULT),
+                    Collections.singletonList(result));
+            refuted = !ConfirmMain.decide(claim, out,
+                    folder.newFolder().toPath()).get("confirmed")
+                    .getAsBoolean();
+        } catch (ConfirmMain.Refused refused) {
+            refuted = refused.refutes;
+        }
+        assertTrue("a claim whose witness root no consulted session mints is"
+                + " replayed without it and ends refuted, never confirmed",
+                refuted);
+        JsonObject left = ExploreCodec.readObject(claim)
+                .getAsJsonObject("claim");
+        assertFalse(left.getAsJsonObject("movedRoots").has("M_J_clock.t0"));
+        assertEquals("50000", left.getAsJsonObject(Moved.OUTSIDE)
+                .getAsJsonObject("roots").get("M_J_clock.t0").getAsString());
     }
 
     @Test
