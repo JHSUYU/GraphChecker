@@ -169,8 +169,8 @@ public final class ExposedRegionPlanMain {
                 iteration.resolve("execution_task_plan.jsonl"));
 
         List<JsonObject> regionCatalog = frozen.regions();
-        List<RegionInstancePlan> regionPlans = new ArrayList<>(
-                frozen.regionPlans());
+        List<RegionInstancePlan> folded = frozen.regionPlans();
+        List<RegionInstancePlan> regionPlans = new ArrayList<>(folded);
         List<RegionInstancePlan> exposed = new ArrayList<>();
         List<String> exposedBy = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -200,7 +200,8 @@ public final class ExposedRegionPlanMain {
                         + ")");
             }
             RegionInstancePlan plan = RegionInstancePlan.decode(
-                    GSON.toJsonTree(planRow(skeleton, address, sessionId))
+                    GSON.toJsonTree(planRow(skeleton, address, sessionId,
+                            methods(skeleton, folded)))
                             .getAsJsonObject());
             regionCatalog.add(GSON.toJsonTree(skeleton.json)
                     .getAsJsonObject());
@@ -244,9 +245,20 @@ public final class ExposedRegionPlanMain {
         return rows;
     }
 
+    static Set<String> methods(StaticProgram.RegionRow skeleton,
+                               List<RegionInstancePlan> planned) {
+        Set<String> methods = new LinkedHashSet<>(skeleton.methods);
+        for (RegionInstancePlan region : planned) {
+            if (region.regionId().equals(skeleton.regionId)) {
+                methods.addAll(region.goal().runtimeDefinitionMethods());
+            }
+        }
+        return methods;
+    }
+
     private static Map<String, Object> planRow(
             StaticProgram.RegionRow skeleton, OccurrenceAddress address,
-            String sessionId) {
+            String sessionId, Set<String> methods) {
         String occurrenceId = address.render();
         String sourceKey = address.node().render();
         Map<String, List<Map<String, Object>>> cutPorts =
@@ -272,7 +284,7 @@ public final class ExposedRegionPlanMain {
         goal.put("goalId", "GOAL.REGION_PATH." + UUID.nameUUIDFromBytes(
                 occurrenceId.getBytes(StandardCharsets.UTF_8)));
         goal.put("kind", ClosureGoalKind.REGION_PATH_CLOSURE.name());
-        goal.put("runtimeDefinitionMethods", new ArrayList<>(skeleton.methods));
+        goal.put("runtimeDefinitionMethods", new ArrayList<>(methods));
         Map<String, Object> admission = new LinkedHashMap<>();
         admission.put("state", "READY");
         admission.put("mode", EXPOSED_REGION);
