@@ -125,7 +125,7 @@ final class MessageCodec {
     static Element bound(Object message, String portId) {
         if (message == null || !BINDINGS.decoded(message)) return null;
         Element element = BINDINGS.get(message, portId);
-        return element == null ? Element.NONE : element;
+        return element == null ? Element.NONE : element.built ? null : element;
     }
 
     static final class Element {
@@ -302,8 +302,11 @@ final class MessageCodec {
         synchronized boolean decoded(Object message) {
             Map<String, Element> elements =
                     held.get(new Identity(message, null));
-            return elements != null && !elements.isEmpty()
-                    && !elements.values().iterator().next().built;
+            if (elements == null) return false;
+            for (Element element : elements.values()) {
+                if (!element.built) return true;
+            }
+            return false;
         }
 
         synchronized void copy(Object from, Object to) {

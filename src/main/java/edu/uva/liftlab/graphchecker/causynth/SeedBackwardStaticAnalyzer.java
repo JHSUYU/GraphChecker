@@ -487,8 +487,7 @@ final class SeedBackwardStaticAnalyzer {
                 || getter.name.length() == "get".length()
                 || !WIRE_LEAF_TYPES.contains(getter.returnType)
                 || !exactIntersects(relevant, defs)
-                || !rpcMessages().contains(getter.owner)
-                && !LibraryCatalog.messageClasses().contains(getter.owner)) {
+                || !portMessage(getter.owner, rpcMessages())) {
             return;
         }
         WireFlowCatalog.CaptureSite consumer =
@@ -528,6 +527,10 @@ final class SeedBackwardStaticAnalyzer {
                             WireFlowCatalog.CaptureSite.CALL_ARGUMENT, 0,
                             setter, call.unitIndex, getter.returnType);
             if (!wireFlows.captures(producer)) port.producers.add(producer);
+        }
+        if (port.producers.isEmpty()) {
+            LOG.info("{}: no call of {} in the analysed program: no port",
+                    getter.raw, setter);
         }
         return port;
     }
@@ -615,10 +618,17 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    private static boolean builderSetter(MethodSig sig) {
-        return sig.name.startsWith("set") && sig.params.size() == 1
-                && sig.owner.endsWith("$Builder")
-                && sig.owner.equals(sig.returnType);
+    static boolean messageSetter(String owner, String name, int arity,
+                                 String returns) {
+        if (!name.startsWith("set") || arity != 1) return false;
+        return owner.endsWith("$Builder") && owner.equals(returns)
+                || "void".equals(returns)
+                && LibraryCatalog.messageClasses().contains(owner);
+    }
+
+    static boolean portMessage(String owner, Set<String> rpcMessages) {
+        return rpcMessages.contains(owner)
+                || LibraryCatalog.messageClasses().contains(owner);
     }
 
     private String seedCapture(WireFlowCatalog.WireFlow flow,
@@ -1428,7 +1438,8 @@ final class SeedBackwardStaticAnalyzer {
                 boolean constructor = sig != null && "<init>".equals(sig.name);
                 if (sig != null && (isApplicationClassName(sig.owner)
                         || !constructor && dispatchOwners.contains(sig.owner)
-                        || builderSetter(sig))) {
+                        || messageSetter(sig.owner, sig.name,
+                                sig.params.size(), sig.returnType))) {
                     String unitText = unit.toString();
                     String receiver = canonical(methodSignature,
                             invokeBaseLocal(unitText));

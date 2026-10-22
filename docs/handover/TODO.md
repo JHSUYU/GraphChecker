@@ -1004,7 +1004,8 @@ copy set field by field (`CausynthQuorum#copyOf`; STATUS "tree: a txn's header c
 proof -- the om SEED/PLAN shows the follower's `syncFollower` occurrence demanded, its `lastProcessedZxid` read a
 re-pairable decider; if PLAN does not reach it, no third mechanism (lead). Not carried: the envelope's own fields
 (`QuorumPacket.zxid`, a jute record no row lists), a header built by its all-fields constructor (the leader's original
-export is the door's, a constant). Optional after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's
+export is the door's, a constant). Follow-up (review 2026-10-21): one catalog concept for message-ness -- a `messages`
+member on CODEC rows in place of the MESSAGE kind. Optional after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's
 chain through the log).
 
 **6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
