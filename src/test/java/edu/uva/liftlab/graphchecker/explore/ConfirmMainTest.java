@@ -392,6 +392,64 @@ public class ConfirmMainTest {
     }
 
     @Test
+    public void anObligationsWriterWaitsForTheTopLevelCallItsPairedReadStoodIn()
+            throws Exception {
+        OccurrenceAddress handler = OccurrenceAddress.parse(
+                "zk/peer1#epoch1/region/REGION.42ddd4bc/ctx:Root:OM#1/idx:");
+        OccurrenceAddress startup = OccurrenceAddress.parse(
+                "zk/peer1#epoch1/region/REGION.5f610724/ctx:Root:START#1/idx:");
+        OccurrenceAddress apply = OccurrenceAddress.parse(
+                "zk/peer1#epoch1/region/REGION.140fb26c/ctx:Root:COMMIT#1/idx:");
+        Frame sync = Frame.of("<a.Handler: boolean syncFollower(long)>", 0);
+        Frame last = Frame.of("<a.Db: long lastProcessed()>", 0);
+        Endpoint loaded = Endpoint.of(startup, "a.Db#load()#3:WRITE",
+                ExecutionIndex.empty(), 0);
+        Endpoint applied = Endpoint.of(apply, "a.Tree#processTxn()#9:WRITE",
+                ExecutionIndex.empty(), 0);
+        Object[][] table = {
+            {"a read inside the occurrence's call to syncFollower",
+                    Arrays.asList(sync, last), Arrays.asList(sync)},
+            {"a read in the occurrence's root activation",
+                    Collections.<Frame>emptyList(),
+                    Collections.<Frame>emptyList()},
+        };
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            List<Frame> frames = (List<Frame>) row[1];
+            Endpoint read = Endpoint.of(handler, "a.Db#lastProcessed()#68:READ",
+                    ExecutionIndex.of(frames), 0);
+            Path iteration = folder.newFolder().toPath();
+            SessionDir.of(iteration, "sel").create();
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                    Arrays.asList(WriteRow.of("sel", 10L, loaded, CELL, 1L,
+                            "EXPR.w", "J"), WriteRow.of("sel", 20L, applied,
+                            CELL, 2L, "EXPR.w", "J")), RowCodec::writeWrite);
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                    Collections.singletonList(ReadRow.of("sel", 30L, read,
+                            CELL, 2L, "M_J_last", "J", "2")),
+                    RowCodec::writeRead);
+            ConfirmMain.Holding holding = ConfirmMain.holding(
+                    SessionReader.read(iteration, "sel"),
+                    Collections.singletonMap(Confirmation.id(read),
+                            Confirmation.id(loaded)));
+            List<String> before = new ArrayList<String>();
+            for (JsonObject edge : holding.edges) {
+                if ("ORDER".equals(edge.get("kind").getAsString())
+                        && edge.get("after").getAsString().startsWith(
+                        Confirmation.activation(apply,
+                                ExecutionIndex.empty()))) {
+                    before.add(edge.get("before").getAsString());
+                }
+            }
+            @SuppressWarnings("unchecked")
+            List<Frame> held = (List<Frame>) row[2];
+            assertEquals((String) row[0], Collections.singletonList(
+                    Confirmation.activation(handler, ExecutionIndex.of(held))),
+                    before);
+        }
+    }
+
+    @Test
     public void aForcedPathIsConfirmedUnforcedOnTheRecordingsSchedule()
             throws Exception {
         Path iteration = iteration();

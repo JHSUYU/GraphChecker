@@ -1193,6 +1193,14 @@ public final class ConfirmMain {
                     last.get(occurrence.id()));
         }
 
+        private Exit call(Endpoint event) {
+            List<Frame> frames = event.activationFrames();
+            if (frames.isEmpty()) return closing(event.occurrence());
+            Exit top = new Exit(event.occurrence(), frames.subList(0, 1),
+                    Long.MIN_VALUE);
+            return new Exit(event.occurrence(), top.frames, exited(top));
+        }
+
         private String order(Holding holding, Exit first, Endpoint then,
                              long thenSeq) {
             if (first.occurrence.id().equals(then.occurrence().id())) {
@@ -1612,7 +1620,7 @@ public final class ConfirmMain {
         Holding holding = new Holding();
         for (ReadRow read : reads) {
             StateClosure.Exit reading = block
-                    ? closure.closing(read.endpoint().occurrence())
+                    ? closure.call(read.endpoint())
                     : closure.exit(read.endpoint(), read.seq());
             String reader = read.endpoint().id();
             WriteRow held = chosen.containsKey(reader) ? chosen.get(reader)

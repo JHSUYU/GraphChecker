@@ -1622,8 +1622,12 @@ Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMIN
 `NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
-the reader's occurrence to close, since the choice binds every read it makes of the location and
-the flipped world may read it again, CONFIRM's for the read's activation; for a plain STORE read
+the read's top-level call in its occurrence to exit (`StateClosure#call`), since the choice binds
+every read it makes of the location and the flipped world may read it again inside that call -- a
+read standing in its occurrence's root activation (a loop turn's body: SD5) waits for the
+occurrence to close, and a read in a long-lived occurrence's call does not hold the writer for the
+occurrence's life (zk-bugs-observer-master: the observer master's `syncFollower`, inside a learner
+handler serving its observer until the test's end); CONFIRM's for the read's activation; for a plain STORE read
 held at a tombstone -- paired with a later one of its location (§7.4), or a read of a world that
 took the pairing, which CONFIRM replays from the recording's schedule, where it reads the version
 before (X104-24: two claims refuted, the run read v0) --, one `STORE_HOLD {reader, readerOccurrence,
