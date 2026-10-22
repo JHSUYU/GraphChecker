@@ -265,9 +265,12 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-10: vacuous UNSAT by construction (ZD11-10, integration 9, 21 writes per client): the guard reads
   `QuorumPacket.getZxid` (the envelope), writer and reader on F's QuorumPeer thread, no root. Target `first` (F's
   `QuorumPeer.run`, `auto0/peer1#epoch0`). Seed replay 3426 of 3477 slots taken.
-- zk-adhoc-02: SAT_UNCONFIRMED (ZD9-02, int-9 + the client-fault cut + D5): each of 3 claims moves 8 CLOCK roots (Prep's
-  `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) and CONFIRM is NOT_ADMITTED for want of their root mint rows
-  (E's producer-side movedRoots cut); client faults cut (`case.sh` 02). Rerun on integration 10.
+- zk-adhoc-02: SAT_UNCONFIRMED, every claim judged and refuted: the normal FP filter, no bug found (ZE8-02, zk-engine
+  5abb349f2 = int-9 + the movedRoots cone cut, tree set zk-int-trees-9; client faults cut, `case.sh` 02). 3 claims (the
+  bound), each STATE_PAIRING_FLIPPED at valuation 0 with no root moved. CONFIRM refutes each by ORDER: the model puts a
+  LearnerHandler's `Request.setOwner` after Prep's `validateCreateRequest` `getOwner`, and that event does not exit
+  within the 300 s order timeout while the setOwner is held. Accepted as 02's verdict (lead 2026-10-21). Before it, ZD9-02
+  moved 8 CLOCK roots outside the selected path's cone and CONFIRM was NOT_ADMITTED.
 - zk-adhoc-04, zk-adhoc-13: blocked by an attribution gap (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target
   on `workload/unregistered`): ReadOnlyModeTest builds its peers with QuorumUtil, whose NIOServerCxnFactory threads belong
   to no node, so `processConnectRequest` opens no occurrence. Rerun after C's fix.
