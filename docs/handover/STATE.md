@@ -27,7 +27,7 @@ The work was merged in integrations 6-13, each a snapshot of `system/zookeeper` 
 document; lead/RUNS.txt is the full log of runs and decisions.
 
 **GraphChecker.**
-- `system/zookeeper` (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at the merge of the handover docs (on 6bf79ac74). It is
+- `system/zookeeper` (local; pushing it to GitHub needs the owner's OK; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at the merge of the handover docs (on 6bf79ac74). It is
   `system/hbase` 5b4b6bae9 plus:
   - `experiments/zookeeper/` (HBase's layout; per-case settings in `zk-bugs/case.sh`, `zk-adhoc/checks.tsv` + `case.sh`,
     `workflow.properties`; `doors.jsonl` with the ZK_QUORUM and ZK_SNAPSHOT rows);
@@ -40,8 +40,8 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 - Its master eab165995 is the buggy base; PR 2459's and PR 2454's fixes are its branches `fix-trunc-sync-shutdown-state`
   and `fix/observer-master-pending-proposals`.
 - `graphchecker/zookeeper-checks` = local `gc/zk-checks` (`/u/vnr3ne/zookeeper`), pushed after each integration
-  (the fork is at integration 10, 442c88199; the final tree is `gc/zk-checks` 2b6e17bf8 plus `gc/zk-hostseed` 51b213562 for
-  04 and 13, both still to push). It holds the adapter, the markers, the workloads and
+  (the fork is at 51b213562: `gc/zk-hostseed`, the RO client's constant host seed for 04 and 13, on the final `gc/zk-checks`
+  2b6e17bf8). It holds the adapter, the markers, the workloads and
   the tree workarounds (STATUS "Per-system surface").
 - The agents' tree branches are merged into it: `gc/zk-tree` (A), `gc/zk-tree-contfb` (A, container-reuse's fallback),
   `gc/zk-quorum-bugs` (B), `gc/zk-quorum` (C) and `gc/zk-learner` (D). `gc/zk-unified` and `gc/zk-unified-hb` are the

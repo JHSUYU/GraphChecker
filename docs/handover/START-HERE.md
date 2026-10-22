@@ -82,8 +82,9 @@ TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
 
 Open from the final series:
 - om reproduces 4/10 natively, and 03 does too.
-- The fork's `graphchecker/zookeeper-checks` is still at integration 10 (442c88199). Push the final tree `gc/zk-checks`
-  2b6e17bf8 and `gc/zk-hostseed` 51b213562; the fork may be pushed, apache never.
+- The tree is pushed: the fork's `graphchecker/zookeeper-checks` is at 51b213562 (`gc/zk-hostseed`, which contains the
+  final `gc/zk-checks` 2b6e17bf8).
+- One item is open: pushing GraphChecker's `system/zookeeper` to GitHub. It needs the owner's OK.
 
 ## 4. Running a case and the series
 
