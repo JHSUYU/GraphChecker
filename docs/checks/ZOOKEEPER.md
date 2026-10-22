@@ -245,15 +245,17 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   `submitRequestNow` (a clock root); the expirer's turn comes next (`getWaitTime`, a clock root), then Prep's
   `checkSession`. The expiry deadline enters the guard as follows (STATUS "tree: the session expirer's grid"):
   the leader's tracker counts its buckets from its start, 12 h each, so client1's session stands in the first
-  bucket, base + 12 h = `nextExpirationTime`. The turn's guard is `nextExpirationTime - clk <= 0`, plus the 60 s
-  margin. One jump of the leader's clock past base + 12 h at that turn makes `poll` take client1's bucket;
-  `setSessionClosing` runs, and `checkSession` throws. A session that closes before the touch drops the request
-  (`MissingSessionException`), so no check runs. The clock domain is 30 days ahead of each reading
-  (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. ZC10-01/-03 ran on the old grid: the flip was UNSAT, because it kept
-  `getWaitTime`'s inner ternary arm, and the session stood two buckets on.
+  bucket, base + 12 h = `nextExpirationTime`. The turn reads the clock once; its guard is `nextExpirationTime - clk
+  <= 0`, plus the 60 s margin. One jump of the leader's clock past base + 12 h at that turn makes `poll(clk)` take
+  client1's bucket; `setSessionClosing` runs, and `checkSession` throws. A session that closes before the touch
+  drops the request (`MissingSessionException`), so no check runs. The clock domain is 30 days ahead of each reading
+  (`CLOCK_SKEW_WINDOW_NANOS`), so it holds 12 h. Before: ZC10-01/-03 ran on the old grid, where the flip was UNSAT,
+  because it kept `getWaitTime`'s inner ternary arm, and the session stood two buckets on. ZC11 flipped only the turns
+  after the target (`ClosurePlanner#decidedAway`, PIPELINE §7.2). In ZC12, `poll` read the host's clock.
 - zk-adhoc-03: target client1's `createSession` at the leader (Prep `#1`, the window's only `setOwner`). The
   chain is 01's, at the expirer turn between `submitRequestNow`'s touch and Prep's `trackSession`/`setOwner`.
-  `poll`'s clock read is a cell that only the arm reaches.
+  `poll` decides on the turn's own reading, so no clock cell is reached only by the arm (ZC12-03: `poll`'s second
+  reading was unplanned and read the host's clock).
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule
