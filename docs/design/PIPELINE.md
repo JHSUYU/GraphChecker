@@ -3620,8 +3620,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    reading runs on from an earlier jump, so a minute added to the earlier instant moved the cell a later
    jump runs on from and used up that jump's own (PRE4-18406: the second delete() kept 1 ns over the
    reservation its clock ran on from, natively 0/10). `movedRoots` = the valuation's moved
-   roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
-   differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
+   roots (by root id) plus every clock cell (by cell symbol) of the selected path's cone where the
+   model's clock jumped (its skew differs from the cell's before it), at the model's instant. The
+   cone is `Composition#cone` of the selected selector (its `path_fatal__` command's symbols and the
+   message families guarded by it that meet them), as `#inCone` takes for a modelled valuation: the
+   cells of one JVM clock are ordered across every path's sessions, so the model jumps cells no path
+   the claim selects names, and planted they made the confirmation replay unjudgeable (ZE7-02: 8
+   cells named only by `clock_order__`/`clock_domain__`/`refuted_claim__`, 6 of them minted at
+   recording occurrences the replay never reached, "published no root mint row", three claims
+   refuted before their pairing was tested). No selected path, no cell. A jump back is a jump: a cell the
    witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it
    is named at its model instant, which can be its own reading.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
@@ -3713,9 +3720,12 @@ with it is a `RUN_DEFECT`.
   the model runs those cells on from the jump before them. Where each moved root's mint came from
   is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
   plan as the worker's `mint_from.json`). A moved root none of them mints or names is outside the
-  witness: a cell of another path of the disjunction that the shared clock order moved
-  (`ClaimPolicy#movedRoots` takes every jumped cell of the composition; ZD7-02: peer5's Prep wall
-  time for a learner-forwarded request that only 15 other paths' sessions read). It is left out of
+  witness (ZD7-02, before `ClaimPolicy#movedRoots` kept only the selected cone's cells: peer5's Prep
+  wall time for a learner-forwarded request that only 15 other paths' sessions read). Since then it
+  guards two cases: a root or cell named only in an arm of a family the cone meets but the model
+  did not take (the cone takes whole families, CONFIRM consults the taken arms' sessions), and an
+  enumerated valuation's moved root (valuations are not cut to the cone) minted only in another
+  path's session. It is left out of
   the plant and moved out of the claim's `movedRoots` into `claim.movedOutsideWitness`
   (`roots`, `reason`; `ConfirmMain#leaveOutside` rewrites `claim.json` before the replay is
   planned), so acceptance and REPRODUCE see only what is planted. That removes a refusal of
