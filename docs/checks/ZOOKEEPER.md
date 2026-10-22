@@ -241,6 +241,9 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
   symbol carries, no LOCAL_IO door at `currentTmp.exists()`. Target server 0's third start (`auto0/peer0#epoch2`, after
   the test rewrote its epoch files).
 - zk-adhoc-01: target the leader's first `checkSession` (`auto0/peer2#epoch0`).
+- zk-bugs-observer-master: the observer's zxid reads pair with F's sync resend (D5, ZD11-om: UNSAT substantive, phi
+  symbolic); F's decider (`syncFollower`'s `lastProcessedZxid`) has its writer, F's own apply, in no planned occurrence,
+  so `case.sh` declares `export_guard_writers=true` (STATUS "case: zk-bugs-observer-master's export-guard writers").
 - zk-adhoc-07: UNSAT_CLOSED at the fixed point, substantive (ZD11-07, integration 9): the guard compares the epoch of
   LEADERINFO's envelope zxid (no door carries it, a constant at the learner) with a re-pairable `acceptedEpoch` (36 of 48
   paths offered another writer), and no explored writer exceeds the leader's proposed epoch. Class C, accepted. Target

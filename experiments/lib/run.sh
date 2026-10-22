@@ -20,6 +20,7 @@ CAUSYNTH_CLIENT_FAULT_TRANSPORTS=$(IFS=,; echo "${client_fault_transports[*]-}")
 export CAUSYNTH_CLIENT_FAULT_TRANSPORTS
 CAUSYNTH_DOORS_ONLY_ROOTS=$(IFS='|'; echo "${doors_only_roots[*]-}")
 export CAUSYNTH_DOORS_ONLY_ROOTS
+export CAUSYNTH_EXPORT_GUARD_WRITERS=${export_guard_writers:-false}
 CAUSYNTH_SYSTEM_VIEW=
 for entry in "${system_scope[@]}"; do
   view=${entry#*:}
