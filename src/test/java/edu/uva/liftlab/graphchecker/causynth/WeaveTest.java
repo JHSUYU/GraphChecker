@@ -156,6 +156,56 @@ public class WeaveTest {
         }
     }
 
+    @Test
+    public void aThrowLeavingTheLoopBodyClosesItAtTheMethodsOwnHandler() {
+        JimpleScene.load("public class java.lang.Throwable { }",
+                "public class a.Loops { public static void work() { }"
+                + " public static void serve(int, int) { int i0, i1;"
+                + " java.lang.Throwable $r0, $r1, $r2;"
+                + " i0 := @parameter0: int; i1 := @parameter1: int;"
+                + " label1: if i0 <= 0 goto label4; label2:" + WORK
+                + " label3: i0 = i0 - 1; goto label1;"
+                + " label5: $r1 := @caughtexception; i0 = i0 - 1;"
+                + " goto label1; label4:" + WORK + " label7: return;"
+                + " label6: $r0 := @caughtexception; return;"
+                + " label8: $r2 := @caughtexception; return;"
+                + " catch java.lang.Throwable from label2 to label3"
+                + " with label5;"
+                + " catch java.lang.Throwable from label1 to label4"
+                + " with label6;"
+                + " catch java.lang.Throwable from label4 to label7"
+                + " with label8; } }");
+        Body body = JimpleScene.method("<a.Loops: void serve(int,int)>")
+                .getActiveBody();
+        CausynthPipeline.tagOriginalUnits(
+                CausynthPipeline.snapshotUnits(body));
+        List<CfgLoopControl.RetainedLoop> loops = CfgLoopControl
+                .retainedLoops(CfgLoopControl.loopCfg(body));
+        assertEquals(1, loops.size());
+        List<Unit> handlers = new ArrayList<>();
+        for (Trap trap : body.getTraps()) handlers.add(trap.getHandlerUnit());
+        assertEquals(1, CausynthPipeline.closeAtOuterHandlers(body,
+                loops.get(0).natural.members(),
+                CausynthPipeline.HookCatalog.concolic(),
+                NullConstant.v(), NullConstant.v()));
+        String[] closes = {"an inner catch that continues the loop", "",
+                "the method's catch the throw leaves the body for",
+                "throwRegionFrame",
+                "a catch of code past the loop", ""};
+        for (int k = 0; k < handlers.size(); k++) {
+            List<Unit> units = new ArrayList<>(body.getUnits());
+            String after = "";
+            for (Unit unit : units.subList(units.indexOf(handlers.get(k)) + 1,
+                    Math.min(units.size(),
+                            units.indexOf(handlers.get(k)) + 4))) {
+                if ("throwRegionFrame".equals(callee(unit))) {
+                    after = callee(unit);
+                }
+            }
+            assertEquals(closes[2 * k], closes[2 * k + 1], after);
+        }
+    }
+
     private static Body callerOf(String api) {
         String owner = "a.Caller" + Math.abs(api.hashCode());
         if (!Scene.v().containsClass(api)) {

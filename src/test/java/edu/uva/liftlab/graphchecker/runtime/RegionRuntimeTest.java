@@ -164,6 +164,12 @@ public class RegionRuntimeTest {
             assertNull(ConcolicRegionRuntime.activeRegion());
             assertNull("admission was never asked: the fold never reached "
                     + "the engine", get(ConcolicVmBroker.class, "engineApi"));
+            ConcolicRegionRuntime.throwRegionFrame("loop",
+                    "<a.B: void serve()>", new IllegalStateException());
+            assertEquals("a loop's handler reached outside its body pops no"
+                    + " frame", 1, ((ThreadLocal<Deque<?>>) get(
+                    ConcolicRegionRuntime.class, "ROOT_INVOCATION_FRAMES"))
+                    .get().size());
         } finally {
             ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
         }
