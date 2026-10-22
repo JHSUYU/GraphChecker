@@ -229,7 +229,8 @@ final class PairingFlip {
                 inherited.rootAssignments.keySet());
         assigned.addAll(inherited.clockDeltas.keySet());
         for (String rootId : assigned) {
-            RootMintRow mint = corpus.rootOf(corpus.seedSessionId(), rootId);
+            RootMintRow mint = corpus.mintOf(candidate.path.sessionId,
+                    rootId);
             if (mint != null) mints.put(rootId, mint.occurrence().render());
         }
         Obligation solved = Obligation.of(id, candidate.task.taskId(),
