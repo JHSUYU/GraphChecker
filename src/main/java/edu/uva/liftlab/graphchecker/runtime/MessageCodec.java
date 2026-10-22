@@ -125,7 +125,7 @@ final class MessageCodec {
     static Element bound(Object message, String portId) {
         if (message == null || !BINDINGS.decoded(message)) return null;
         Element element = BINDINGS.get(message, portId);
-        return element == null ? Element.NONE : element;
+        return element == null ? Element.NONE : element.built ? null : element;
     }
 
     static final class Element {
@@ -220,7 +220,7 @@ final class MessageCodec {
     private static Plan plan(Class<?> type) {
         Plan plan = PLANS.get(type);
         if (plan == null) {
-            plan = EnginePlumbing.generatedMessage(type) ? planOf(type) : NONE;
+            plan = EnginePlumbing.wireMessage(type) ? planOf(type) : NONE;
             PLANS.put(type, plan);
         }
         return plan == NONE ? null : plan;
@@ -257,7 +257,7 @@ final class MessageCodec {
 
     private static boolean mayHoldMessage(Field field) {
         Class<?> held = field.getType();
-        if (held == Object.class || EnginePlumbing.generatedMessage(held)) {
+        if (held == Object.class || EnginePlumbing.wireMessage(held)) {
             return true;
         }
         if (!Collection.class.isAssignableFrom(held)
@@ -267,7 +267,7 @@ final class MessageCodec {
         Type[] elements = ((ParameterizedType) field.getGenericType())
                 .getActualTypeArguments();
         return elements.length == 1 && elements[0] instanceof Class
-                && EnginePlumbing.generatedMessage((Class<?>) elements[0]);
+                && EnginePlumbing.wireMessage((Class<?>) elements[0]);
     }
 
     private static Object defaultInstance(Class<?> type) {
@@ -302,8 +302,11 @@ final class MessageCodec {
         synchronized boolean decoded(Object message) {
             Map<String, Element> elements =
                     held.get(new Identity(message, null));
-            return elements != null && !elements.isEmpty()
-                    && !elements.values().iterator().next().built;
+            if (elements == null) return false;
+            for (Element element : elements.values()) {
+                if (!element.built) return true;
+            }
+            return false;
         }
 
         synchronized void copy(Object from, Object to) {

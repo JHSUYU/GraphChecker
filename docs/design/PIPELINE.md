@@ -290,7 +290,8 @@ of the program -- each OUT port of every region skeleton, its method woven as a 
 region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
 `runtime.RuntimeRegionPlanner#exportSites`). A protobuf message's field is captured with its message (codec capture,
 SYMBOL-SCOPE §6.3): exported at the builder's setter and bound to the builder, handed to the message by its `build()`;
-the IPC, HBase RPC and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
+a record a library catalog `MESSAGE` row lists (ZooKeeper's `TxnHeader`) is exported at its own setter and bound to itself;
+the IPC, HBase RPC, ZK_QUORUM and DataTransfer doors walk the message they carry (`MessageCodec`, `WireExport`), staging each bound element
 for the receiver, whose getter attaches it after the parse; the engine's plumbing and generated messages are never
 state (`EnginePlumbing`, `RowRuntime#ownCode`). Its known limits are STATUS open defects 52-56.
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
@@ -837,7 +838,15 @@ before that path's deciding event, of the reads the root demand found on the thr
 STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7). Every anchor, concrete or not,
 also demands the STORE reads it made at its provenance sites before it decided
 (`ClosurePlanner#storeReads`): a store version's content is no value a term names, so a symbolic
-predicate's demand never reaches it.
+predicate's demand never reaches it. It demands too, with no site of the static scope, a STORE
+read before it decided whose observed version an occurrence of PLAN's ZooKeeper chain wrote
+(`ClosurePlanner#chainWrote`, the chain `zk_chain.jsonl` handed into the walk): the chain hand-off
+decides which version the read sees, as the message that started an occurrence decides it for a
+control producer, so the writer enters as a store writer and its FAULT doors through the faulted-door
+rule. ZB10-trunc: the restarted peer's runFromConfig read the snapshot its previous life's
+`QuorumPeer.run` wrote at NEWLEADER, but no scope site named the read (the guard's slice reaches the
+replayed log, the snapshot only decides where the replay starts) and ZKKEYS found no content key,
+so that life's sync -- and its `readSyncPacket` FAULT door -- never entered the closure.
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
@@ -866,7 +875,12 @@ are counted, never dropped silently: `concreteAnchors` states how many
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
   location's, is no candidate; a static field, an owner that names no one object, an occurrence
   with no recorded access, or one that ran for its doors alone in that session (its rows state its
-  doors, never what it touched) is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  doors, never what it touched) is, and so is one that decided a guard of the write site away from
+  it -- a recorded `BRANCH` at one of the site's `guards` against its `guardOutcomes`, or at one
+  whose outcome the map leaves unknown: the owners it recorded are the other arm's, and a store on
+  the arm it did not take says nothing (STATUS R1's rule; zk-adhoc-01/-03's session expirer turns
+  took `waitTime > 0` and touched only the clock and the queue's counter, so `setSessionClosing`'s
+  store of the session's `isClosing` was no candidate of any turn before), `ClosurePlanner.Walk#holdsOthersOnly`, `#decidedAway`; PLAN's reachability and
   confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its
@@ -3606,8 +3620,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    reading runs on from an earlier jump, so a minute added to the earlier instant moved the cell a later
    jump runs on from and used up that jump's own (PRE4-18406: the second delete() kept 1 ns over the
    reservation its clock ran on from, natively 0/10). `movedRoots` = the valuation's moved
-   roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
-   differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
+   roots (by root id) plus every clock cell (by cell symbol) of the selected path's cone where the
+   model's clock jumped (its skew differs from the cell's before it), at the model's instant. The
+   cone is `Composition#cone` of the selected selector (its `path_fatal__` command's symbols and the
+   message families guarded by it that meet them), as `#inCone` takes for a modelled valuation: the
+   cells of one JVM clock are ordered across every path's sessions, so the model jumps cells no path
+   the claim selects names, and planted they made the confirmation replay unjudgeable (ZE7-02: 8
+   cells named only by `clock_order__`/`clock_domain__`/`refuted_claim__`, 6 of them minted at
+   recording occurrences the replay never reached, "published no root mint row", three claims
+   refuted before their pairing was tested). No selected path, no cell. A jump back is a jump: a cell the
    witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it
    is named at its model instant, which can be its own reading.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
@@ -3699,9 +3720,12 @@ with it is a `RUN_DEFECT`.
   the model runs those cells on from the jump before them. Where each moved root's mint came from
   is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
   plan as the worker's `mint_from.json`). A moved root none of them mints or names is outside the
-  witness: a cell of another path of the disjunction that the shared clock order moved
-  (`ClaimPolicy#movedRoots` takes every jumped cell of the composition; ZD7-02: peer5's Prep wall
-  time for a learner-forwarded request that only 15 other paths' sessions read). It is left out of
+  witness (ZD7-02, before `ClaimPolicy#movedRoots` kept only the selected cone's cells: peer5's Prep
+  wall time for a learner-forwarded request that only 15 other paths' sessions read). Since then it
+  guards two cases: a root or cell named only in an arm of a family the cone meets but the model
+  did not take (the cone takes whole families, CONFIRM consults the taken arms' sessions), and an
+  enumerated valuation's moved root (valuations are not cut to the cone) minted only in another
+  path's session. It is left out of
   the plant and moved out of the claim's `movedRoots` into `claim.movedOutsideWitness`
   (`roots`, `reason`; `ConfirmMain#leaveOutside` rewrites `claim.json` before the replay is
   planned), so acceptance and REPRODUCE see only what is planted. That removes a refusal of

@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
@@ -34,8 +36,9 @@ final class EnginePlumbing {
         return known;
     }
 
-    static boolean generatedMessage(Class<?> type) {
-        return generated(type, false);
+    static boolean wireMessage(Class<?> type) {
+        return generated(type, false) || type != null
+                && LibraryCatalog.messageClasses().contains(type.getName());
     }
 
     private static boolean generated(Class<?> type, boolean builders) {
