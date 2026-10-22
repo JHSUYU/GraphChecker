@@ -11,7 +11,7 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## Z. ZooKeeper (finished 2026-10-21; DRAFT, final verdicts PLACEHOLDER) -- read this first if you take over ZooKeeper
+## Z. ZooKeeper (finished 2026-10-22: the final series on integrations 12-13) -- read this first if you take over ZooKeeper
 
 The 2026-10-21 session had two parts. The day session (a lead and the read-only agents Z1, Z2) prepared the checks. The
 evening session (a lead and five coding agents) built and ran them:
@@ -22,12 +22,12 @@ evening session (a lead and five coding agents) built and ran them:
 - **E:** the VM's failed-CAS comparand, queue item identity, native standing occurrences, CONFIRM/COMPOSE moved roots,
   GROW's exposed tasks, the mint lookup.
 
-The work was merged in integrations 6-11, each a snapshot of `system/zookeeper` paired with a tree set of
+The work was merged in integrations 6-13, each a snapshot of `system/zookeeper` paired with a tree set of
 `gc/zk-checks` (16/16 natives each), then the final series ran (`results/zookeeper/`). START-HERE.md is the takeover
 document; lead/RUNS.txt is the full log of runs and decisions.
 
 **GraphChecker.**
-- `system/zookeeper` (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at <PLACEHOLDER final commit>. It is
+- `system/zookeeper` (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at the merge of the handover docs (on 6bf79ac74). It is
   `system/hbase` 5b4b6bae9 plus:
   - `experiments/zookeeper/` (HBase's layout; per-case settings in `zk-bugs/case.sh`, `zk-adhoc/checks.tsv` + `case.sh`,
     `workflow.properties`; `doors.jsonl` with the ZK_QUORUM and ZK_SNAPSHOT rows);
@@ -40,7 +40,8 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 - Its master eab165995 is the buggy base; PR 2459's and PR 2454's fixes are its branches `fix-trunc-sync-shutdown-state`
   and `fix/observer-master-pending-proposals`.
 - `graphchecker/zookeeper-checks` = local `gc/zk-checks` (`/u/vnr3ne/zookeeper`), pushed after each integration
-  (<PLACEHOLDER final tree commit>; integration 10 was 442c88199). It holds the adapter, the markers, the workloads and
+  (the fork is at integration 10, 442c88199; the final tree is `gc/zk-checks` 2b6e17bf8 plus `gc/zk-hostseed` 51b213562 for
+  04 and 13, both still to push). It holds the adapter, the markers, the workloads and
   the tree workarounds (STATUS "Per-system surface").
 - The agents' tree branches are merged into it: `gc/zk-tree` (A), `gc/zk-tree-contfb` (A, container-reuse's fallback),
   `gc/zk-quorum-bugs` (B), `gc/zk-quorum` (C) and `gc/zk-learner` (D). `gc/zk-unified` and `gc/zk-unified-hb` are the
@@ -50,14 +51,15 @@ document; lead/RUNS.txt is the full log of runs and decisions.
 
 **Snapshots, images, tree sets.**
 - Snapshots: `/u/vnr3ne/gc-run/zk-int-<N>` (integration N: 6 797c9d5ad, 7 b18c7a484, 8 494d2a9af, 9 c01b741ac,
-  10 ac69ab4b1, <11 PLACEHOLDER>). Agents' snapshots: `zk-<topic>-<n>` (tree, qwork, quorum, learner, engine).
-- Tree sets: `/bigtemp/vnr3ne/wt/zk-int-trees-<N>` (the pair of zk-int-<N>), plus the agents' `zk-<topic>-trees-<n>`.
+  10 ac69ab4b1, 11 8524ead2f, 12 d4fbcd97c, 13 d73c28302 = the final engine, D's COMPOSE fix on 12). Agents' snapshots: `zk-<topic>-<n>` (tree, qwork, quorum, learner, engine).
+- Tree sets: `/bigtemp/vnr3ne/wt/zk-int-trees-<N>` (the pair of zk-int-<N>; the final series ran on trees-11, 2b6e17bf8,
+  and trees-12, 51b213562, for 04 and 13), plus the agents' `zk-<topic>-trees-<n>`.
   Never rebuild one a run reads.
 - Image: `/bigtemp/vnr3ne/vm-force13/j2sdk-image` = vm-force12 plus the failed-CAS comparand (OPERATIONS.md images row).
   Every run from integration 9 on uses it.
 
 **Runs.**
-- `/bigtemp/vnr3ne/gc-out/zookeeper-final`: the series, rounds F0/F1B/F1S/F2*/F3*.
+- `/bigtemp/vnr3ne/gc-out/zookeeper-final`: the series. F0/F0B are the selector seeds. F1B/F1S/F1C/F1D/F1E/F1F ran concurrently. F2B/F2S ran alone. lead/final/PLAN.md §5 lists them.
 - `/bigtemp/vnr3ne/gc-out/zookeeper-{tree,qwork,quorum,learner,engine}`: the agents' runs, tags ZA*/ZB*/ZC*/ZD*/ZE*. A
   stopped run's dir is renamed `accept-<TAG>STOP-<why>`.
 

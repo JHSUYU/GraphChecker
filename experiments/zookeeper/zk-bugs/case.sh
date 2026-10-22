@@ -1,7 +1,8 @@
 repo=${GC_TREES}/zookeeper-checks
-# The ZooKeeper bug checks (docs/checks/ZOOKEEPER.md §E). Target occurrences marked "placeholder" are not known yet: read each
-# off a STOP_AFTER=SEED run on the built tree (DECLARED_TARGET_OCCURRENCE_UNOBSERVED lists every observed occurrence;
-# TODO ZooKeeper D9) and write it here. The getData target's region is FinalRequestProcessor#processServed (the adapter's
+# The ZooKeeper bug checks (docs/checks/ZOOKEEPER.md §E). A target occurrence is read off a STOP_AFTER=SEED run on the
+# built tree (DECLARED_TARGET_OCCURRENCE_UNOBSERVED lists every observed occurrence; the seed's
+# runtime/concolic_region_plan.jsonl marks the resolved one `declaredOccurrence`) and written here; the final series'
+# F0 seeds checked each on the final pair (lead/final/PLAN.md). The getData target's region is FinalRequestProcessor#processServed (the adapter's
 # split of processRequest); each selector below names the request occurrence the 2026-10-03 PASS declared (V25: the same
 # request anchors, read off SEEDs ZA1-quota and ZA1-offer).
 export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
@@ -81,7 +82,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   trunc-sync)
     # ZOOKEEPER-5094 (apache/zookeeper PR 2459): a follower whose TRUNC sync ends before NEWLEADER keeps its database;
-    # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
+    # its restart's replay throws at ZKDatabase.addCommittedProposal. It runs on the quorum adapter and the learner-stream door (STATUS "Per-system surface").
     # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
     # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
     # World depth 1 (lead 2026-10-21, owner: several counterfactuals are fine): the follower's second life, whose TRUNC sync's
@@ -104,7 +105,7 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     ;;
   observer-master)
     # ZOOKEEPER-5088 (apache/zookeeper PR 2454): a proposal pending at an ObserverMaster follower's sync never reaches the
-    # OM's queue, no INFORM is sent, the observer throws at ZKDatabase.addCommittedProposal. Needs D3, D4, D5.
+    # OM's queue, no INFORM is sent, the observer throws at ZKDatabase.addCommittedProposal. It runs on the quorum adapter, the learner door and its txn headers.
     # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs; the test restarts the observer after the
     # pending create's reply (docs/checks/ZOOKEEPER.md §E).
     test_class=org.apache.zookeeper.server.quorum.CausynthObserverMasterSyncTest

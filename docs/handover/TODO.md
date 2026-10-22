@@ -943,7 +943,8 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
 ## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
 The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.
-<PLACEHOLDER: a case the series left open, if any.> Everything below is parked engine or adapter work with its
+Open from the series: 02 (F2S) and 04 (B's F1E-04) pending; the fork's `graphchecker/zookeeper-checks` still to push
+(2b6e17bf8, `gc/zk-hostseed` 51b213562). Everything below is parked engine or adapter work with its
 evidence; none of it blocks a verdict. The cross-cutting items this session found (a logged event's publication-order
 rank, an application BlockingQueue's timed wait, CommitProcessor's apply under no claim) are in "Cross-cutting" below.
 
@@ -1005,7 +1006,7 @@ CLOCK roots (Prep's `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) w
 NOT_ADMITTED. CONFIRM's consumer side, which leaves a root moved outside the witness and records `movedOutsideWitness`
 (`Moved#witness`, ef5a6b7e3), stays as a net for the cases PIPELINE §CONFIRM names. Delete it, and its PIPELINE
 paragraph, once a full series writes no `movedOutsideWitness` (`grep -l movedOutsideWitness
-<run>/out/*/schedule/final/claim.json` over the final runs: <PLACEHOLDER count>).
+<run>/out/*/schedule/final/claim.json` over the final runs: 0 of the 18 F1 claims, so it can go once F2 shows the same).
 
 **5. The learner envelope's own fields (D5's remainder).** D5 carries a packet's `TxnHeader` (catalog MESSAGE row;
 STATUS "tree: a txn's header crosses the learner stream"). Two things are not carried:

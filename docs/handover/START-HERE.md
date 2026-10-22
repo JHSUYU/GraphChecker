@@ -1,4 +1,4 @@
-# START HERE: GraphChecker's ZooKeeper ad hoc checks (finished 2026-10-21; DRAFT, verdicts PLACEHOLDER)
+# START HERE: GraphChecker's ZooKeeper ad hoc checks (finished 2026-10-22)
 
 You take over a finished system. This file is self-contained: what was done, where every piece is, how to run a case
 and the whole series, what is left, and the rules.
@@ -25,21 +25,32 @@ The session (a lead and five coding agents) did the following:
 - **D:** the learner-stream door and zxid carriage.
 - **E:** the engine and VM defects.
 
-Every piece was merged into `system/zookeeper` and `gc/zk-checks` in integrations 6-11, then the final series ran
+Every piece was merged into `system/zookeeper` and `gc/zk-checks` in integrations 6-13, then the final series ran
 (`results/zookeeper/`).
 
 **The 16 cases.** `docs/checks/ZOOKEEPER.md` §E has each one's marker, workload, counterfactual and fit. Each is one
-STATUS row ("ZooKeeper checks") and one `results/zookeeper/` file. Verdicts are PLACEHOLDERS until the final series ends.
+STATUS row ("ZooKeeper checks") and one `results/zookeeper/` file (`results/zookeeper/README.md` has the time/region table).
+A run tag marked PENDING is a case of the alone round F2, rerun because its concurrent run took over 30 min.
 
-| case | what | final verdict (PLACEHOLDER) |
+| case | what | final verdict (run) |
 | --- | --- | --- |
-| zk-bugs-quota-init | **the partial quota**: createQuota's limit node without its stat node | <PASS? ZA5: SAT MARKER_FLIPPED, ZOOKEEPER WRITE fault, native 10/10> |
-| zk-bugs-election-offer | **the orphaned election offer** | <PASS? ZA9: SAT STATE_PAIRING_FLIPPED, native 10/10> |
-| zk-bugs-container-reuse | **the container cleanup** deletes a replacement at the same path (A's fallback workload) | <verdict> |
-| zk-bugs-retry-seq-quota | bug_study #32: ZooInspector's retry re-creates a sequential node | <PASS? ZA9-rseq> |
-| zk-bugs-trunc-sync | **ZOOKEEPER-5094 (PR 2459)** | **not detected** (owner): ZB15 reached life 2's FAULT world, but that world also fails life 3's log open (TODO ZooKeeper 1) |
-| zk-bugs-observer-master | **ZOOKEEPER-5088 (PR 2454)** | <verdict> |
-| zk-adhoc-01 02 03 04 06 07 10 11 12 13 | the study.txt items of §D (05, 08, 09 selected, not run: `docs/checks/SELECTION.md`) | <one line each: results/zookeeper/README.md> |
+| zk-bugs-quota-init | **the partial quota**: createQuota's limit node without its stat node | **PASS**: SAT MARKER_FLIPPED (valuation 1, the ZOOKEEPER WRITE fault), native 10/10 (F1C-quota, 270 s) |
+| zk-bugs-election-offer | **the orphaned election offer** | **PASS**: SAT STATE_PAIRING_FLIPPED (valuation 0), native 10/10 (F1C-offer 2326 s; F2B-offer PENDING) |
+| zk-bugs-container-reuse | **the container cleanup** deletes a replacement at the same path (A's widened-window workload) | **PASS**: SAT STATE_PAIRING_FLIPPED (valuation 0), native 10/10 (F1B-cont, 572 s) |
+| zk-bugs-retry-seq-quota | bug_study #32: ZooInspector's retry re-creates a sequential node | **PASS**: SAT MARKER_FLIPPED (valuation 1), native 10/10 (F1C-rseq, 350 s) |
+| zk-bugs-trunc-sync | **ZOOKEEPER-5094 (PR 2459)** | **not detected** (owner): UNSAT_CLOSED at depth 1 (F1B-trunc 1916 s; F2B-trunc PENDING). ZB15 reached life 2's FAULT world, but that world also fails life 3's log open (TODO ZooKeeper 1) |
+| zk-bugs-observer-master | **ZOOKEEPER-5088 (PR 2454)** | **PASS**: SAT STATE_PAIRING_FLIPPED (valuation 0), native 4/10 (F1F-om on int-13, 494 s, concurrent) |
+| zk-adhoc-01 | study §D: the leader's checkSession (session expiry) | SAT_UNCONFIRMED: every claim refused in its confirmation replay, the normal FP filter (F1S-01 2536 s; F2S-01 PENDING) |
+| zk-adhoc-02 | study: SessionMovedException (session.owner re-pairing) | PENDING (F2S-02; ZE8-02: SAT_UNCONFIRMED, every claim refuted by CONFIRM, the FP filter) |
+| zk-adhoc-03 | study: the expirer's SessionExpired at setOwner | SAT CLOCK_SKEW (the expirer turn's clock), confirmed, native 4/10 (F1C-03, 423 s) |
+| zk-adhoc-04 | study: ReadOnlyModeTest#testSeekForRwServer | PENDING (B: F1E-04 on trees-12, the RO client's constant host seed) |
+| zk-adhoc-06 | study: Leader#waitForEpochAck | UNSAT_CLOSED, substantive (F1S-06, 964 s) |
+| zk-adhoc-07 | study: Learner#registerWithLeader's epoch check | UNSAT_CLOSED, substantive (F1S-07, 829 s) |
+| zk-adhoc-10 | study: ObserverMaster#proposalCommitted's head check | UNSAT_CLOSED, vacuous by construction, class C (F1S-10, 1016 s) |
+| zk-adhoc-11 | study: QuorumPeer#loadDataBase's epoch files | UNSAT_CLOSED, vacuous by construction, class C, IO rule (F1C-11 2968 s; F2S-11 PENDING) |
+| zk-adhoc-12 | study: QuorumPeer#loadDataBase's acceptedEpoch < currentEpoch | UNSAT_CLOSED, substantive (F1C-12, 996 s) |
+| zk-adhoc-13 | study: ReadOnlyModeTest#testConnectionEvents | UNSAT_CLOSED, substantive (F1E-13 on trees-12, 229 s) |
+| (05, 08, 09) | selected, not run: a dead throw, no path (`docs/checks/SELECTION.md`) | - |
 
 The first five are the owner's bugs. A bug check is done when it is SAT, confirmed in the VM and reproduced natively, with
 the bug's causal chain. A study check is done at SAT, UNSAT (read with `vacuity.py`) or a named bound.
@@ -65,9 +76,15 @@ TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
 - static candidates over NOT_ADMITTED replays;
 - the consumer-side moved-roots filter;
 - the learner envelope's own fields;
-- the reply -> synchronous-caller edge (TODO HBase 15).
+- the reply -> synchronous-caller edge (TODO HBase 15);
+- CONFIRM over an unproducible planted answer (STATUS open defect 72);
+- the learner stream's racing ACK hand-overs.
 
-<PLACEHOLDER: anything the final series leaves open (a case to rerun, a bound to name).>
+Open from the final series:
+- 02 and 04 are pending (F2S-02 alone; B's F1E-04).
+- om reproduces 4/10 natively, and 03 does too.
+- The fork's `graphchecker/zookeeper-checks` is still at integration 10 (442c88199). Push the final tree `gc/zk-checks`
+  2b6e17bf8 and `gc/zk-hostseed` 51b213562; the fork may be pushed, apache never.
 
 ## 4. Running a case and the series
 
@@ -137,9 +154,11 @@ PLAN.md §2 tabulates them.
 
 STATE §Z has the full list. In short:
 - **GraphChecker:** `system/zookeeper` at `/bigtemp/vnr3ne/wt/gc-zookeeper`.
-- **Final snapshot:** `/u/vnr3ne/gc-run/<PLACEHOLDER: final pair snapshot>`.
+- **Final snapshot:** `/u/vnr3ne/gc-run/zk-int-13` (system/zookeeper d73c28302). The int-12 runs (d4fbcd97c) stand: int-13
+  adds only D's COMPOSE fix, and an offline A/B is identical except om.
 - **Tree:** `/u/vnr3ne/zookeeper`, `gc/zk-checks` = the fork's `graphchecker/zookeeper-checks`. Final tree set:
-  `/bigtemp/vnr3ne/wt/<PLACEHOLDER: final tree set>`.
+  `/bigtemp/vnr3ne/wt/zk-int-trees-11` (2b6e17bf8) for every single-host case, and `zk-int-trees-12` (`gc/zk-hostseed`
+  51b213562, the RO client's constant host seed) for 04 and 13.
 - **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (vm-force12 plus the failed-CAS answer).
 - **Runs:** `/bigtemp/vnr3ne/gc-out/zookeeper-final` (the series) and `zookeeper-{tree,qwork,quorum,learner,engine}` (the
   agents' runs).
