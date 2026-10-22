@@ -81,6 +81,10 @@ case "${1:?usage: case.sh quota-init|election-offer|container-reuse|retry-seq-qu
     # its restart's replay throws at ZKDatabase.addCommittedProposal. Needs the quorum adapter (TODO ZooKeeper D3, D4).
     # Workload: tree gc/zk-quorum-bugs, CausynthQuorumHarness's held ACKs and one paused startForwarding; the test waits
     # on what the leader sees (docs/checks/ZOOKEEPER.md §E).
+    # World depth 1 (lead 2026-10-21, owner: several counterfactuals are fine): the follower's second life, whose TRUNC sync's
+    # NEWLEADER read is the FAULT, enters the closure only as an exposure, recorded in the re-run of a flipped world, so its
+    # FAULT is a second counterfactual on top of that flip (ZB13-trunc: depth 0 cut every such path).
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1
     test_class=org.apache.zookeeper.server.quorum.CausynthTruncSyncTest
     test_method=aTruncSyncedFollowerRestarts
     # F's third life's construction (runFromConfig; its replay's addCommittedProposal folds into it), SEED ZB4-trunc
