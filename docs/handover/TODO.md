@@ -984,6 +984,16 @@ ARM_SORT_MISMATCH stays). Cost first: every map read with >= 2 eligible writers 
 (`tools/regress/offline-ab.sh`) before merging; test: an ExploreTest row (a map lookup flip answered by another
 writer's state, well-sorted), then ZA15-cont round 1 offline (195a1781 NOT_FLIPPABLE -> SAT, the v1948 choice).
 
+Static candidates over replays that were not admitted (not built, lead 2026-10-21). `Walk#holders` offers every
+occurrence of `Corpus#occurrences` that holds a static candidate write or export site on the node, including the
+variants only NOT_ADMITTED replays name (activated = any instrumented activation). ZC15-06 (int-10, round 8 on):
+the leader's PrepRequestProcessor.run at `WorkerReceiver.run#u292@4`, named only by c7b6e1c2 (NOT_ADMITTED,
+WORLD_RAN; its election took 4 turns, the seed's 2), was demanded -- int-9's ZC10-06 demanded no variant of it, so
+int-10 widened the static candidates reaching Prep.run's sites (A's caughtInto guards with decidedAway, likely;
+a static-pass A/B pins it). Its row is DIAGNOSTIC now (`ClosurePlanner#uncaptured`); the root fix would be holders
+offering only occurrences the seed or an admitted session names -- every case's closure changes, so A/B 01, 02,
+06 and cont first.
+
 **3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
 - D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
   node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum
