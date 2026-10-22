@@ -581,6 +581,7 @@ public final class ClosurePlanner {
                 exposed.values());
         String exposing = chosen[0];
         String stopped = chosen[1];
+        String refused = chosen[2];
         if (!exposing.isEmpty()) {
             exposed.put(occurrence, exposing);
             return;
@@ -599,6 +600,15 @@ public final class ClosurePlanner {
                     occurrence.render(), "only sessions whose branch "
                             + "stopped ran this occurrence (" + stopped
                             + " among them), so it is not grown"));
+            return;
+        }
+        if (!refused.isEmpty()) {
+            gaps.accept(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    occurrence.render(), "only replays that were not "
+                            + "admitted ran this occurrence (" + refused
+                            + " among them): its address is that replay's "
+                            + "timing, so it is not grown"));
             return;
         }
         gaps.accept(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
@@ -634,10 +644,12 @@ public final class ClosurePlanner {
         String seed = corpus.seedSessionId();
         String exposing = "";
         String stopped = "";
+        String refused = "";
         for (String sessionId : corpus.namedBy(occurrence)) {
             SessionReader session = corpus.session(sessionId);
-            if (sessionId.equals(seed) || !session.admitted()
-                    || session.obligations().isEmpty()) {
+            if (sessionId.equals(seed)) continue;
+            if (!session.admitted() || session.obligations().isEmpty()) {
+                if (refused.isEmpty()) refused = sessionId;
                 continue;
             }
             if (!branches.parents(sessionId)) {
@@ -650,7 +662,7 @@ public final class ClosurePlanner {
                 break;
             }
         }
-        return new String[] {exposing, stopped};
+        return new String[] {exposing, stopped, refused};
     }
 
     private static String unrecorded(Demand demand, StaticScopeMap scope) {

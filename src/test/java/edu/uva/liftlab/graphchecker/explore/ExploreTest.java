@@ -1225,6 +1225,58 @@ public class ExploreTest {
     }
 
     @Test
+    public void aRootTheSeedDoesNotMintIsPlantedAtThePathSessionsMint()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Object[][] rows = {
+            {false, TARGET},
+            {true, WRITER},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "path-mint-" + at++;
+            Path iteration = tree.newFolder(name).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activations(false, TARGET, WRITER);
+            if ((Boolean) row[0]) {
+                seed.marker(WRITER, "REGION.target.in.door", "M_DOOR",
+                        "false");
+            }
+            seed.decision(TARGET, "Door#u4", 1, true, "");
+            seed.flush();
+            Session rerun = new Session(iteration, "s-rerun");
+            rerun.activation(TARGET, true);
+            rerun.marker(TARGET, "REGION.target.in.door", "M_DOOR", "false");
+            rerun.decision(TARGET, "Door#u4", 1, true, "(not M_DOOR)");
+            rerun.answered(ObligationResult.of("OBL.s-rerun",
+                    Verdict.ADMITTED, "s-rerun", "the exposing re-run"));
+            rerun.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Door#u4"));
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation door = named(obligations(wave0), "Door#u4");
+            assertNotNull(name, door);
+            Corpus corpus = Corpus.read(iteration, null);
+            ObligationFactory.Candidate candidate =
+                    ObligationFactory.locate(corpus, door);
+            ObligationFactory.Outcome asked = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("z3"), 10_000L, 1152),
+                            Solved.in(iteration), "plan", Collections
+                                    .<String, ObligationDir.Answer>emptyMap(),
+                            null));
+            String said = name + ": " + asked.result.detail();
+            assertEquals(said, Verdict.SAT_MODEL_READY,
+                    asked.result.verdict());
+            assertEquals(said, ((OccurrenceAddress) row[1]).render(),
+                    asked.rootMints.get("REGION.target.in.door"));
+        }
+    }
+
+    @Test
     public void aConstantGuardBesideAMintedBoxIsNotFlippable()
             throws Exception {
         LocationId header = LocationId.of(LocationKind.INSTANCE, "31", "20");
@@ -1833,6 +1885,59 @@ public class ExploreTest {
                 siblingB.render(), sibling.render(), siblingC.render(),
                 refresher.render())), new LinkedHashSet<String>(
                 capped.truncated));
+    }
+
+    @Test
+    public void aCandidateOnlyAReplayNotAdmittedRanIsNoBlockingGap()
+            throws Exception {
+        Path iteration = tree.newFolder("refused-only").toPath();
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        OccurrenceAddress shifted = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activations(false, TARGET, WRITER);
+        seed.symbolic("e.stored", "M_STORED");
+        seed.write(STORED, allKeys, 5L, "e.stored");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        seed.anchored(TARGET);
+        seed.flush();
+        Session diverged = new Session(iteration, "s-diverged");
+        diverged.activation(TARGET, true);
+        diverged.activation(shifted, false);
+        diverged.answered(ObligationResult.of("OBL.s-diverged",
+                Verdict.NOT_ADMITTED, "s-diverged", ObligationResult.WORLD_RAN
+                        + ": the flip's occurrence never reached its site"));
+        diverged.flush();
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""))));
+        Corpus corpus = Corpus.read(iteration, null);
+        List<GapRow> gaps = new ArrayList<GapRow>();
+        ClosurePlanner.plan(corpus, TARGET, 16, map, Branches.of(corpus,
+                        Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+                Collections.<String>emptySet(),
+                Collections.<String>emptySet(), ClientFaults.NONE,
+                SystemView.of(""), gaps::add);
+        List<String> named = new ArrayList<String>();
+        for (GapRow gap : gaps) {
+            if (gap.subject().equals(shifted.render())) {
+                named.add(gap.cls() + " " + gap.detail());
+            }
+        }
+        assertEquals(Collections.singletonList(GapClass.DIAGNOSTIC
+                        + " only replays that were not admitted ran this"
+                        + " occurrence (s-diverged among them): its address"
+                        + " is that replay's timing, so it is not grown"),
+                named);
     }
 
     @Test

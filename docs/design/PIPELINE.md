@@ -1216,7 +1216,10 @@ all (`TASK_UNANSWERED`, `OCCURRENCE_ANCHOR_UNMATCHED`; a chain of the question's
 alone differ, at an address the recording did not open, answers the declared occurrence at its address,
 IDENTITY.md §9): its BRANCH STOPS. Its world is never
 inherited, its paths are never flipped, and nothing it exposes is grown (§7.2's `uncaptured`: one
-named only by stopped branches is DIAGNOSTIC); it stays in the corpus as evidence (its rows still
+named only by stopped branches is DIAGNOSTIC, and so is one named only by replays that were not
+admitted -- its address is that replay's timing, ZC15-06: a NOT_ADMITTED replay elected the leader on
+WorkerReceiver's 4th turn, so its PrepRequestProcessor.run stood at `#u292@4`, the seed's at `@2`;
+BLOCKING stays for one no session names); it stays in the corpus as evidence (its rows still
 attest arms, §7.3). Contexts compare by `contract/ContextShape` (`Corpus#contextShape`, the rule
 PLAN picks its walk origins by): per anchor hop the RPC site and the sending node, then the root's
 role and api, without the per-site invocation counts; a sender no row names is unknown, never a
@@ -1616,8 +1619,10 @@ DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their r
 names the polarity or binding fault that implies; assigning none (`EMPTY_WORLD`), it names the
 symbols it sets that no replay plants (container states `st__*`, refused terms `unsupported__*`).
 The parent world is overlaid (model wins: roots, skews, answers, pairings) and its flips inherited.
-Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMINTABLE`,
-`NOT_ADMITTED`). The world's pairings are held by CONFIRM's rows over the session the path was cut
+Every assigned root must have a mint in the seed session, else in the session the flipped path was
+cut from, the world the obligation replays (`Corpus#mintOf`; an exposed task's door roots are minted
+only in its GROW re-runs -- ZB14-trunc: life 2's `Learner.readSyncPacket#u3` FAULT); a root neither
+mints is `ASSIGNMENT_UNMINTABLE`, `NOT_ADMITTED`. The world's pairings are held by CONFIRM's rows over the session the path was cut
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and

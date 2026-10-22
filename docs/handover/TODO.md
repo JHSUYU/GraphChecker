@@ -967,6 +967,33 @@ zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read eac
 `zk-bugs/case.sh` marks the placeholders), then run each case to its verdict as HBase's cases were. The bug checks
 must be SAT, confirmed in the VM and reproduced natively.
 
+EXPLORE re-pairing a container read (not built, lead 2026-10-21: zk-bugs-container-reuse takes A's workload fallback;
+about 3 h). ZA15-cont's decisive flip `PrepRequestProcessor#getRecordForPath#u13#2` (`n == null`, the node-map read of
+`MAP 12#-3` at v2532, the cleanup's remove; the bug world re-pairs it to v1948) is NOT_FLIPPABLE "no movable read":
+`FlipQuery#movableReads` skips every MAP location since 8ac0e2576. What that commit cut: a map read row's symbol is
+the map's STATE (`MAP_STATE/12#-3@v2532`, javaType `L`, shared by every read of that version), and movableReads
+declared it at the javaType's sort (Ref) and `bind` equated it with each writer's delivered map state (AssocState),
+z3 "Sorts Ref and AssocState" (V17 G2); the lookup itself stayed inlined over the recorded chain. The reuse, three
+steps, no second mechanism: (1) movableReads states a MAP read (not a VIEW) with >= 2 eligible arms as its container
+state (`lowering.state(symbol, Sort.MAP)`) and marks it `lowering.movable(row)`; (2) `SmtLowering#movedQuery` fires for
+a read EXPLORE marked movable as for one COMPOSE re-paired (`join.repaired || movable`), so the lookup is the relation
+asOf the state symbol (`inSessionObservedChain`, election-offer's PASS path); (3) `FlipQuery#variable` (READ) declares a
+symbol its lowering states as a container state at that sort, so the wchoice bindings equate states (delivered()'s
+ARM_SORT_MISMATCH stays). Cost first: every map read with >= 2 eligible writers becomes flippable in every case
+(DataTree.nodes has one writer per create or delete) -- measure obligations and query size offline on 01, 02 and cont
+(`tools/regress/offline-ab.sh`) before merging; test: an ExploreTest row (a map lookup flip answered by another
+writer's state, well-sorted), then ZA15-cont round 1 offline (195a1781 NOT_FLIPPABLE -> SAT, the v1948 choice).
+
+Static candidates over replays that were not admitted (not built, lead 2026-10-21). `Walk#holders` offers every
+occurrence of `Corpus#occurrences` that holds a static candidate write or export site on the node, including the
+variants only NOT_ADMITTED replays name (activated = any instrumented activation). ZC15-06 (int-10, round 8 on):
+the leader's PrepRequestProcessor.run at `WorkerReceiver.run#u292@4`, named only by c7b6e1c2 (NOT_ADMITTED,
+WORLD_RAN; its election took 4 turns, the seed's 2), was demanded -- int-9's ZC10-06 demanded no variant of it, so
+int-10 widened the static candidates reaching Prep.run's sites (A's caughtInto guards with decidedAway, likely;
+a static-pass A/B pins it). Its row is DIAGNOSTIC now (`ClosurePlanner#uncaptured`); the root fix would be holders
+offering only occurrences the seed or an admitted session names -- every case's closure changes, so A/B 01, 02,
+06 and cont first.
+
 **3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
 - D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
   node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum
