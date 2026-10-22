@@ -324,11 +324,14 @@ another object's field, a static field, a mutation through a field and a store i
 constructor calls keep them all. A `WRITE_SITE` that lies in a trap's handler block, or whose
 method a call in one reaches (the calls of `callsInto`), also carries the branches deciding each
 checked throw the trap catches in its try block's callees, at most two calls below the try, on their
-arm toward the throw (`Guards#caughtInto`, `SiteControlDependence#throwDeciders`, `CAUGHT_DEPTH`):
-the write runs because that throw happened (zk-bugs-container-reuse: `PrepRequestProcessor#pRequest`'s
-catch builds `new TxnHeader(.., OpCode.error)`, so `TxnHeader.<init>`'s store of `type` carries
-`getRecordForPath#u13`, whose node-map read decides the client delete's NoNode; before, EXPLORE never
-offered that flip, ZA9-cont). These guards are flip sites and deciders only: the backward slice and
+arm toward the throw, and, one level, the branches each reaching definition of a local those guards
+test runs under (`Guards#caughtInto`, `SiteControlDependence#throwDeciders`, `MethodGuards#choosing`,
+`CAUGHT_DEPTH`): the write runs because that throw happened (zk-bugs-container-reuse:
+`PrepRequestProcessor#pRequest`'s catch builds `new TxnHeader(.., OpCode.error)`, so `TxnHeader.<init>`'s
+store of `type` carries `getRecordForPath#u43`/`#u45`, the throw's own guards, and `#u13`, under which
+`lastChange` is redefined: `#u43` tests the outstanding-changes read, and only `#u13` (`n == null`)
+reads the node map, whose re-pairing decides the client delete's NoNode; before, EXPLORE never offered
+that flip, ZA9-cont, and `#u43` alone was not flippable, ZA14-cont). These guards are flip sites and deciders only: the backward slice and
 root demand do not follow them (demanding the throws' guards in the slice pushed 19 chosen roots of
 zk-adhoc-01 out at the width cut). A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
