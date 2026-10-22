@@ -1012,15 +1012,15 @@ of each canary, then 01 03 06 11 12.
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
 (a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
 DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
-Since then (tree `gc/zk-learner`): the leader's own ACK is a message to itself (f174d986f), ACKs are processed in a turn
-(0393746c0), and an ACK leaves under the message its txn was logged under (acae2a16d). Left: a turn orders an EVENT, not
-the critical section after it -- the schedule releases the next turn at a location as soon as the previous one is
-observed, so the ACKs a turn ordered still race for `Leader#processAck`'s monitor and the COMMIT may leave under another
-ACK than recorded (ZD8-02: the acks/5 turns replayed in the recorded order 2008.., 0d7e.., 2d4b.., cee0.., 0ee0.., the
-recording's COMMIT left under the 3rd, the replay's under the 5th; 16 of 28 seed-replay stalls, 197/1536 slots given up;
-ZD7-02 without acae2a16d 849/1460). Idea (engine, general): a SECTION turn -- the next turn at a location is released only
-once the previous holder's `storeEnded` ran. Accepted for now (lead 2026-10-21, workaround over grinding); revisit if a
-verdict or CONFIRM depends on which ACK completes a quorum (a refutation on a COMMIT ORDER row).
+Since then (tree `gc/zk-learner`, `gc/zk-quorum`): the leader's own ACK is a message to itself (f174d986f), an ACK
+leaves under the message its txn was logged under (acae2a16d), and the leader processes its ACKs on one thread of its
+own in FIFO order (0c8ff5469, replacing 0393746c0's ACK turn, which ordered the event but not the critical section
+after it: ZD8-02's COMMIT left under another ACK than recorded; ZC14-01/ZC15-01's CONFIRM replays stalled at CLAIM
+`LearnerHandler#queuePacket` COMMIT and ended AT_MISMATCH). Left: the two producers' hand-overs still race. Inside
+the monitor, a thread held at its slot keeps the monitor (ZC17-01's seed: 10 slots given up). Outside it (388c78ef0,
+dropped), om and trunc time out natively. zk-adhoc-01's CONFIRM still ends at that COMMIT (ZC15-01..ZC18-01: its
+claim is refused). Revisit only if a verdict depends on it: an engine SECTION turn, or the hand-over as the RECV's
+own slot.
 
 **5. zxid carriage on that door** (D5): built in its txn form (lead-approved 2026-10-21 for zk-bugs-observer-master, whose
 guard ZKDatabase:341 reads `TxnHeader.zxid` from a packet's `data` bytes): the catalog's `MESSAGE` row lists jute's
