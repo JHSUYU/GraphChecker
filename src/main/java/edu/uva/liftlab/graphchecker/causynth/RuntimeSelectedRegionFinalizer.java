@@ -1939,6 +1939,14 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptySet())) {
                     work.accept(new Demand(producer, handed));
                 }
+                for (StaticScopeMap.Site export
+                        : scopeMap.exportsOf(attach.port)) {
+                    for (String guard : export.guards) {
+                        for (String operand : demands.operandsOf(guard)) {
+                            work.accept(new Demand(producer, operand));
+                        }
+                    }
+                }
             }
             return paired;
         }

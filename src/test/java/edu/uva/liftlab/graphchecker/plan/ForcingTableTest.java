@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.JimpleScene;
 import edu.uva.liftlab.graphchecker.causynth.SiteControlDependence;
 import org.junit.Rule;
@@ -14,7 +15,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import static org.junit.Assert.assertEquals;
 
@@ -134,6 +137,48 @@ public class ForcingTableTest {
                             + "\"force\":" + force + "}").forcedSites());
         } finally {
             G.reset();
+        }
+    }
+
+    @Test
+    public void anExportOrAWriteTakesTheGuardsOfTheCallsIntoItsMethod()
+            throws IOException {
+        String own = M + "#u3";
+        String call = CALLER + "#u4";
+        StaticScopeMap.Guards guards = new StaticScopeMap.Guards() {
+            @Override
+            public List<StaticScopeMap.Guard> of(String siteId) {
+                return Collections.singletonList(
+                        new StaticScopeMap.Guard(own, true));
+            }
+
+            @Override
+            public List<StaticScopeMap.Guard> callsInto(
+                    String method, Predicate<String> walked) {
+                return Collections.singletonList(
+                        new StaticScopeMap.Guard(call, false));
+            }
+
+            @Override
+            public List<String> callersOf(String method) {
+                return Collections.singletonList(CALLER);
+            }
+        };
+        for (String role : new String[] {"EXPORT_SITE", "WRITE_SITE"}) {
+            StaticScopeMap map = read("{\"schemaVersion\":1,"
+                    + "\"kind\":\"STATIC_SCOPE_SITE\",\"role\":\"" + role
+                    + "\",\"regionId\":\"R\",\"siteId\":\"" + M
+                    + "#u9\",\"vmSite\":\"a.T#check(I)V\",\"cell\":"
+                    + "\"<a.T: int age>\",\"carrier\":\"\",\"portId\":"
+                    + "\"P\"}");
+            List<StaticScopeMap.Site> sites = "EXPORT_SITE".equals(role)
+                    ? map.exportsOf("P")
+                    : map.writeSitesByCell().get("<a.T: int age>");
+            JsonObject row = StaticScopeMap.rows(sites, guards,
+                    method -> false).get(0);
+            assertEquals(role, "[\"" + own + "\",\"" + call + "\"] [\""
+                    + CALLER + "\"]", row.get("guards") + " "
+                    + row.get("callers"));
         }
     }
 

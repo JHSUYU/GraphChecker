@@ -251,9 +251,10 @@ SEEDs on the automatic quorum cluster of tree `gc/zk-quorum`):
 - zk-adhoc-02: SAT_UNCONFIRMED (ZD9-02, int-9 + the client-fault cut + D5): each of 3 claims moves 8 CLOCK roots (Prep's
   `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) and CONFIRM is NOT_ADMITTED for want of their root mint rows
   (E's producer-side movedRoots cut); client faults cut (`case.sh` 02). Rerun on integration 10.
-- zk-adhoc-04, zk-adhoc-13: blocked by an attribution gap (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target
-  on `workload/unregistered`): ReadOnlyModeTest builds its peers with QuorumUtil, whose NIOServerCxnFactory threads belong
-  to no node, so `processConnectRequest` opens no occurrence. Rerun after C's fix.
+- zk-adhoc-04, zk-adhoc-13: the window opened late (ZD11-04 FATAL_TARGET_NOT_IN_WINDOW; ZD11-13 vacuous, its target on
+  `workload/unregistered`): ReadOnlyModeTest's `QuorumUtil#startQuorum` opened no window, so the RO connect and the
+  reconnect ran before it. C's tree f054baf26 (integration 10) opens it at `startQuorum`; 04's seed replay is then
+  unfaithful (153 of 416 slots given up, the RO client's seek for an RW server): next.
 
 Selected but not run (`docs/checks/SELECTION.md`): 05 (dead throw), 08, 09 (no path). Fit: A = one counterfactual, workload ready or trivial; B = one
 counterfactual, more adapter or a written workload; C = a named bound or vacuous expected (still run: the owner's rule

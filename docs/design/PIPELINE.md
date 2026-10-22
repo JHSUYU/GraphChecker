@@ -849,7 +849,8 @@ are counted, never dropped silently: `concreteAnchors` states how many
 (`ClosurePlanner.Concrete#offCone`). A non-concrete anchor plans as before. Each demanded boundary input grows the closure:
 
 - an attach whose symbol is demanded: its paired producer occurrence (reason `CLOSURE_MEMBER`, flip
-  sites = the guards of the port's static export sites, contributed = its exports), and every activated
+  sites = the guards of the port's static export sites -- with the guards of the calls into the
+  export's method, as a write site's -- contributed = its exports), and every activated
   occurrence holding a static export site of the port on the paired producer's node
   (`STATIC_CANDIDATE_PRODUCER`); an unpaired attach is `LINEAGE_LOST` (DIAGNOSTIC) and its static
   candidates are taken on every node;
