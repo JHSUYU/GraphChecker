@@ -30,6 +30,12 @@ final class WeakIdentityMap<V> {
         return key == null ? null : entries.remove(new Probe(key));
     }
 
+    boolean remove(Object key, V value) {
+        sweep();
+        return key != null && value != null
+                && entries.remove(new Probe(key), value);
+    }
+
     boolean isEmpty() {
         return entries.isEmpty();
     }

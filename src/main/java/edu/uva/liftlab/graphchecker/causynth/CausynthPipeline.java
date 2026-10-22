@@ -1531,6 +1531,8 @@ public final class CausynthPipeline {
                     String site = SiteId.of(method.getSignature(), unitIndex);
                     filed += fileStarts(body, stmt, site, refs);
                     boolean claims = claimsFromQueue(stmt.getInvokeExpr());
+                    Value queue = claims ? ((InstanceInvokeExpr)
+                            stmt.getInvokeExpr()).getBase() : null;
                     Unit last = replaceTimedWait(body, stmt, site);
                     if (last != null) waited++;
                     else last = stmt;
@@ -1547,7 +1549,7 @@ public final class CausynthPipeline {
                                     instanceof RefType) {
                         List<Unit> claim = new ArrayList<>();
                         refs.bracket(claim, Hook.CLAIM_ITEM,
-                                ((AssignStmt) last).getLeftOp());
+                                ((AssignStmt) last).getLeftOp(), queue);
                         insertAfterSequence(body, last, claim);
                         claimed++;
                     }
@@ -3611,7 +3613,7 @@ public final class CausynthPipeline {
                     .add(Hook.END_CLAIM, owner, "endClaim", VoidType.v(),
                             LongType.v())
                     .add(Hook.CLAIM_ITEM, owner, "claimItem", VoidType.v(),
-                            object)
+                            object, object)
                     .add(Hook.ENTER_METHOD_FRAME, owner, "enterMethodFrame",
                             LongType.v(), string, object)
                     .add(Hook.EXIT_METHOD_FRAME, owner, "exitMethodFrame",

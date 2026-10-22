@@ -7,10 +7,14 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -66,11 +70,125 @@ public class IdentityTest {
         Object[] seen = new Object[1];
         on(() -> {
             long work = Identity.enterFrame("<a.Sender: void run()>", sender);
-            Identity.claimItem(call);
+            Identity.claimItem(call, null);
             seen[0] = RuntimeTraceContext.explicitSource();
             Identity.exitFrame(work);
         });
         assertEquals(NODE, seen[0]);
+    }
+
+    @Test
+    public void anItemPendingInTwoQueuesIsClaimedUnderTheQueueItCameOutOf()
+            throws Exception {
+        String sync = "<a.Server: void commitRequest(a.Request)>#u3";
+        String commit = "<a.Server: void commitRequest(a.Request)>#u7";
+        Object[][] table = {
+            {"sync, commit", "sync", sync, commit},
+            {"commit, sync", "sync", sync, commit},
+            {"sync, commit", "commit", commit, sync},
+            {"commit, sync", "commit", commit, sync},
+            {"sync, commit", "other", commit, sync},
+            {"commit, sync", "other", sync, commit}};
+        for (Object[] row : table) {
+            reset();
+            Object source = new Object();
+            RuntimeTraceContext.registerSource(source, DN);
+            Map<String, BlockingQueue<Object>> queues =
+                    new HashMap<String, BlockingQueue<Object>>();
+            for (String name : new String[] {"sync", "commit", "other"}) {
+                queues.put(name, new LinkedBlockingQueue<Object>());
+            }
+            Object item = new Object();
+            long request = RuntimeTraceContext.beginRequest(source, "test");
+            for (String put : ((String) row[0]).split(", ")) {
+                Identity.startWork("sync".equals(put) ? sync : commit, item,
+                        queues.get(put));
+            }
+            RuntimeTraceContext.endRequest(request);
+            List<String> stood = new ArrayList<String>();
+            on(() -> {
+                long run = Identity.enterFrame("<a.Sync: void run()>", null);
+                Identity.claimItem(item, queues.get((String) row[1]));
+                stood.add(Identity.occurrence(DN.key(), "REGION.sync", true)
+                        .render());
+                Identity.regionExit(null);
+                Identity.exitFrame(run);
+            });
+            String said = row[0] + " taken from " + row[1] + ": " + stood;
+            assertEquals(said, true, stood.get(0).contains((String) row[2])
+                    && !stood.get(0).contains((String) row[3]));
+        }
+    }
+
+    @Test
+    public void anObjectPutTwiceIsTakenInPutOrderFromAFifoQueue()
+            throws Exception {
+        String first = "<a.Cnxn: void closed()>#u4";
+        String second = "<a.Cnxn: void disconnect()>#u9";
+        Object[][] table = {
+            {new LinkedBlockingQueue<Object>(), first, second},
+            {new java.util.concurrent.ArrayBlockingQueue<Object>(4), first,
+                second},
+            {new java.util.concurrent.PriorityBlockingQueue<Object>(), second,
+                null}};
+        for (Object[] row : table) {
+            reset();
+            Object source = new Object();
+            RuntimeTraceContext.registerSource(source, DN);
+            Object queue = row[0];
+            Object death = new Object();
+            long request = RuntimeTraceContext.beginRequest(source, "test");
+            Identity.startWork(first, death, queue);
+            Identity.startWork(second, death, queue);
+            RuntimeTraceContext.endRequest(request);
+            List<String> stood = new ArrayList<String>();
+            on(() -> {
+                long run = Identity.enterFrame("<a.Events: void run()>", null);
+                for (int take = 0; take < 2; take++) {
+                    Identity.claimItem(death, queue);
+                    stood.add(Identity.occurrence(DN.key(), "REGION.event",
+                            true).render());
+                    Identity.regionExit(null);
+                }
+                Identity.exitFrame(run);
+            });
+            String said = queue.getClass().getSimpleName() + ": " + stood;
+            assertEquals(said, true, stood.get(0).contains((String) row[1]));
+            if (row[2] != null) {
+                assertEquals(said, true,
+                        stood.get(1).contains((String) row[2])
+                                && !stood.get(1).contains((String) row[1]));
+            }
+        }
+    }
+
+    @Test
+    public void anUnnamedItemEndsTheClaimOfTheItemBeforeIt() throws Exception {
+        Object putter = new Object();
+        RuntimeTraceContext.registerSource(putter, DN);
+        Object queue = new LinkedBlockingQueue<Object>();
+        Object cleanup = new Object();
+        long request = RuntimeTraceContext.beginRequest(putter, "cleanup");
+        Identity.startWork("<a.Manager: void check()>#u5", cleanup, queue);
+        RuntimeTraceContext.endRequest(request);
+        Object client = new Object();
+        Identity.startWork("<a.Worker: void submit()>#u8", client, queue);
+        Object daemon = new Object();
+        Identity.startWork(ACCEPT, daemon, null);
+        List<String> seen = claimed(daemon, carrier -> {
+            List<String> said = new ArrayList<String>();
+            said.add(opened("REGION.prep"));
+            Identity.claimItem(cleanup, queue);
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            Identity.claimItem(client, queue);
+            long hop = RuntimeTraceContext.beginRequest(DN, "served");
+            said.add(Identity.currentOccurrence(DN.key()).context().render());
+            RuntimeTraceContext.endRequest(hop);
+            Identity.regionExit(null);
+            return said;
+        });
+        assertEquals(Arrays.asList("none", "Root:CLIENT/cleanup#1",
+                "Root:CLIENT/served#1"), seen);
     }
 
     @Test
@@ -123,16 +241,19 @@ public class IdentityTest {
             List<String> said = new ArrayList<String>();
             said.add(opened("REGION.loop"));
             said.add(opened("REGION.step"));
+            said.add("standing " + Identity.standingOccurrences());
             said.add("ordinal " + Identity.nextBranchOrdinal("loop#u3"));
             for (String turn : new String[] {"turn", "turn"}) {
                 long hop = RuntimeTraceContext.beginRequest(DN, turn);
                 said.add(Identity.currentOccurrence(DN.key()).render());
                 said.add(opened("REGION.inner"));
+                said.add("standing " + Identity.standingOccurrences());
                 said.add("ordinals " + Identity.nextBranchOrdinal("loop#u3")
                         + "," + Identity.nextBranchOrdinal("loop#u3"));
                 Identity.regionExit(null);
                 RuntimeTraceContext.endRequest(hop);
                 said.add(Identity.currentOccurrence(DN.key()).regionId());
+                said.add("standing " + Identity.standingOccurrences());
             }
             Identity.regionExit(null);
             long hop = RuntimeTraceContext.beginRequest(DN, "last");
@@ -142,9 +263,12 @@ public class IdentityTest {
             return said;
         });
         String turn = DN.key() + "/region/REGION.loop/ctx:Root:CLIENT/turn#";
-        assertEquals(Arrays.asList("none", "none", "ordinal 0",
-                turn + "1/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
-                turn + "2/idx:", "none", "ordinals 1,2", "ROLE.UNKNOWN",
+        assertEquals(Arrays.asList("none", "none", "standing []",
+                "ordinal 0",
+                turn + "1/idx:", "none", "standing [" + turn + "1/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
+                turn + "2/idx:", "none", "standing [" + turn + "2/idx:]",
+                "ordinals 1,2", "ROLE.UNKNOWN", "standing []",
                 "ROLE.CLIENT"), seen);
 
         long request = RuntimeTraceContext.beginRequest(DN, "accept");
@@ -344,7 +468,7 @@ public class IdentityTest {
                         null);
                 carried.accept(null, null);
             } else if (row == 3) {
-                Identity.claimItem(task);
+                Identity.claimItem(task, null);
             } else {
                 Identity.endClaim(Identity.claimStart(task));
             }
@@ -377,15 +501,15 @@ public class IdentityTest {
             List<String> said = new ArrayList<String>();
             int before = Identity.depth();
             said.add(opened("REGION.drain"));
-            Identity.claimItem(items[0]);
+            Identity.claimItem(items[0], null);
             Identity.regionExit(null);
             said.add("an unnamed entry draining a queue closes at "
                     + Identity.depth() + " of " + before);
             long hop = RuntimeTraceContext.beginRequest(DN, "turn");
             int outer = Identity.depth();
             opened("REGION.run");
-            Identity.claimItem(items[1]);
-            Identity.claimItem(items[2]);
+            Identity.claimItem(items[1], null);
+            Identity.claimItem(items[2], null);
             int claimed = Identity.depth();
             opened("REGION.accessor");
             Identity.regionExit(null);
@@ -397,10 +521,20 @@ public class IdentityTest {
             opened("REGION.run");
             int folded = Identity.depth();
             opened("REGION.drain");
-            Identity.claimItem(items[3]);
-            Identity.claimItem(items[4]);
+            Identity.claimItem(items[3], null);
+            Identity.claimItem(items[4], null);
             Identity.regionExit(null);
             said.add("a folded entry draining a queue closes at "
+                    + Identity.depth() + " of " + folded);
+            long call = Identity.enterFrame("<a.Sender: void run()>#u3", null);
+            int framed = Identity.depth();
+            opened("REGION.send");
+            Identity.claimItem(items[5], null);
+            Identity.regionExit(null);
+            said.add("an entry inside its method frame closes at "
+                    + Identity.depth() + " of " + framed);
+            Identity.exitFrame(call);
+            said.add("and its frame's exit agrees at "
                     + Identity.depth() + " of " + folded);
             Identity.regionExit(null);
             RuntimeTraceContext.endRequest(hop);
@@ -412,7 +546,7 @@ public class IdentityTest {
                     .split(" of ");
             assertEquals(row, depths[1], depths[0]);
         }
-        assertEquals(5, seen.size());
+        assertEquals(7, seen.size());
     }
 
     private static String opened(String region) {

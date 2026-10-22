@@ -1494,8 +1494,11 @@ refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no vari
 none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
 variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a
 constant) its other arm is UNSAT on that path, named `NOT_FLIPPABLE` (`FlipQuery#NOT_FLIPPABLE`,
-`ObligationFactory#solve`), unless its occurrence read a version no row of the corpus wrote (held at
-what it read, its producer unstated, `FlipQuery#heldReads`): that refusal stays (`ADMISSION_GAP`,
+`ObligationFactory#solve`), unless its occurrence read a version no row of the corpus wrote and no
+placeholder read of its session mints (held at what it read, its producer unstated,
+`FlipQuery#heldReads`; a version a mint states is its root's, as invariant 7 and the lowering's read
+binding take it -- ZA8-cont's six Prep flips were refused only for the program's own
+`Long.longValue()` read of a clock mint's box): that refusal stays (`ADMISSION_GAP`,
 DIAGNOSTIC), the scope hole being real; one that reaches only leaves a frame's
 write was freed to (`SmtLowering#framedLeaves`: the writer computed on an arrival it refused, so no
 plant reaches them) is refused before it is solved (`UNPRODUCIBLE_ANSWER`, DIAGNOSTIC, named). A construct the
@@ -3494,7 +3497,13 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    fault markers, fewest first (`ClaimPolicy.Reading#ownWitness`: the selected session's own run
    as defined below, a replay that planted those roots, pairings and orders and observed the fatal
    at the anchor, which CONFIRM confirms as "itself the run"; if CONFIRM refutes it, the claim loop
-   excludes its arms and the next composition takes the order below): a world a replay already ran
+   excludes its arms and the next composition takes the order below). Each fatal-observing disjunct
+   is asked itself, at each valuation whose moved roots it ran (`Composition#ranRoots`): its path's
+   scope of the formula, fatal arm included, with its selector and its own run pinned
+   (`Composition#worldRun`, `#worldClocks`) -- not filtered out of the valuation's free model, whose
+   arms are any the solver picked (zk-bugs-quota-init ZA5-quota: valuation 1's free model took the
+   own path with two writer arms its session did not observe, so the own run went unclaimed behind 15
+   pairing claims; asked itself, it is the first claim): a world a replay already ran
    to the fatal is ahead of every world only the model holds (hbase-bugs-ns-rsgroup-removal NC7:
    EXPLORE's replay of the namespace Mutate's fault observed the fatal, while every claim composed
    moved no fault -- STATE re-pairings holding the client's synchronous calls past their own
@@ -3689,10 +3698,19 @@ with it is a `RUN_DEFECT`.
   composition anchors, the model's jumps alone: the session's own skews there are dropped, since
   the model runs those cells on from the jump before them. Where each moved root's mint came from
   is `confirm.json`'s `mintFrom` (`recording`, `selected <session>`, `arm <session>`, written by the
-  plan as the worker's `mint_from.json`). A moved root none of them mints, one those sessions mint
-  at different occurrences, or a moved clock the composition anchors nowhere, refuses the
-  confirmation by name; a mint the replay never reaches confirms nothing (the fatal must still be
-  observed at the anchor). The
+  plan as the worker's `mint_from.json`). A moved root none of them mints or names is outside the
+  witness: a cell of another path of the disjunction that the shared clock order moved
+  (`ClaimPolicy#movedRoots` takes every jumped cell of the composition; ZD7-02: peer5's Prep wall
+  time for a learner-forwarded request that only 15 other paths' sessions read). It is left out of
+  the plant and moved out of the claim's `movedRoots` into `claim.movedOutsideWitness`
+  (`roots`, `reason`; `ConfirmMain#leaveOutside` rewrites `claim.json` before the replay is
+  planned), so acceptance and REPRODUCE see only what is planted. That removes a refusal of
+  bookkeeping only: the claim is still replayed with the remaining plants, must observe the fatal
+  at the anchor and reproduce natively, and a replay that misses it refutes the claim as any
+  false positive (owner on 02: "02这种如果是正常的false positive过滤你要保留"). A root one of
+  them names but none mints, one those sessions mint at different occurrences, or a moved clock
+  the composition anchors nowhere, refuses the confirmation by name; a mint the replay never
+  reaches confirms nothing (the fatal must still be observed at the anchor). The
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
@@ -4121,7 +4139,11 @@ is, the recording weave's own call-site context states at run time (`CausynthTra
 #currentCallSiteContext`, pushed with that `siteId` and callee before the invoke), so no unit index is
 mapped to a bytecode offset; an invoke no context wraps matches no row. Inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
-  occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
+  occurrence (`CausynthTraceRecorder#enclosingOccurrences`: the thread's regions' current
+  occurrences, `Identity#standingOccurrences`, innermost first -- a region a hop opened inside it
+  names, as ZooKeeper's `PrepRequestProcessor.run()` is named by `CausynthZk.serve` per request,
+  stands under that name while the hop stands; read off the entry instead, ZA9-rseq's fatal in Prep
+  stood in no occurrence and 10 of 10 native runs missed the anchor) has the row's own id
   (`RecordingPlant#marker`);
 - the tree's `CausynthSymbolicSource.symbolize` of a HOOK row's root writes its value into the field
   the hook names (`RootMint#configuredSource` -> `RecordingPlant#hook`, the replay's own

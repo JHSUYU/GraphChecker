@@ -822,10 +822,10 @@ public final class RowRuntime {
         }
     }
 
-    public static void claimItem(Object item) {
+    public static void claimItem(Object item, Object queue) {
         if (item == null) return;
         try {
-            Identity.claimItem(item);
+            Identity.claimItem(item, queue);
         } catch (Throwable unnamed) {
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     item.getClass().getName(),

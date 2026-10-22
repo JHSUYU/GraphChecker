@@ -23,9 +23,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedTransferQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
@@ -111,18 +116,22 @@ public final class Identity {
             if (consumed && start.thread.get() != Thread.currentThread()) {
                 serves();
             }
-            Claim held = starts.peek();
-            if (held != null && held.scope == claimScope()
-                    && onlyStartsFrom(held.depth)) {
-                while (depth() > held.depth) levels.remove(depth());
-                closeStartsFrom(held.depth);
-            }
+            endHeldClaim();
             starts.push(new Claim(depth(), start.key, own, consumed,
                     own ? ClaimKind.NONE : kind, claimScope(), claimSerial++));
             for (Frame frame : own || ranHere
                     ? Collections.singletonList(start.frame())
                     : start.frames) {
                 levels.add(new Level(frame, 0L, null, start.window));
+            }
+        }
+
+        private void endHeldClaim() {
+            Claim held = starts.peek();
+            if (held != null && held.scope == claimScope()
+                    && onlyStartsFrom(held.depth)) {
+                while (depth() > held.depth) levels.remove(depth());
+                closeStartsFrom(held.depth);
             }
         }
 
@@ -359,6 +368,34 @@ public final class Identity {
     private static final WeakIdentityMap<Start> STARTS =
             new WeakIdentityMap<Start>();
 
+    private static final WeakIdentityMap<WeakIdentityMap<Filed>> QUEUED =
+            new WeakIdentityMap<WeakIdentityMap<Filed>>();
+
+    private static final int FILED_PER_ITEM = 256;
+
+    private static final class Filed {
+        private final boolean fifo;
+        private final ArrayDeque<Start> starts = new ArrayDeque<Start>();
+
+        private Filed(boolean fifo) {
+            this.fifo = fifo;
+        }
+
+        private synchronized void file(Start start) {
+            if (!fifo) {
+                if (start == Start.UNNAMED && !starts.isEmpty()) return;
+                starts.clear();
+            } else if (starts.size() >= FILED_PER_ITEM) {
+                starts.pollFirst();
+            }
+            starts.addLast(start);
+        }
+
+        private synchronized Start take() {
+            return starts.pollFirst();
+        }
+    }
+
     private static final class Start {
         private static final Start UNNAMED = new Start(
                 Collections.<Frame>emptyList(), null, "", null, null, 0, 0,
@@ -371,6 +408,7 @@ public final class Identity {
         private final WeakReference<Level> level;
         private final int depth;
         private final boolean handoff;
+        private final AtomicBoolean adopted = new AtomicBoolean();
 
         private Start(List<Frame> frames, Attribution.Reference starter,
                       String key, Thread thread, Level level, int depth,
@@ -387,6 +425,10 @@ public final class Identity {
 
         private Frame frame() {
             return frames.get(frames.size() - 1);
+        }
+
+        private boolean adopt() {
+            return this == UNNAMED || adopted.compareAndSet(false, true);
         }
 
         private boolean ranHere(State state) {
@@ -450,16 +492,60 @@ public final class Identity {
         State state = CURRENT.get();
         if (!state.claimed) {
             state.claimed = true;
-            adopt(state, Thread.currentThread(), false, false);
+            adopt(state, Thread.currentThread(), null, false, false);
         }
         return state;
     }
 
-    private static void adopt(State state, Object carrier, boolean item,
-                              boolean continuation) {
-        Start start = carrier == null || STARTS.isEmpty() ? null
-                : STARTS.remove(carrier);
-        if (item && (start == null || start == Start.UNNAMED)) state.serves();
+    private static Start taken(Object carrier, Object queue) {
+        if (carrier == null) return null;
+        WeakIdentityMap<Filed> byItem = queue == null || QUEUED.isEmpty()
+                ? null : QUEUED.get(queue);
+        Filed filed = byItem == null ? null : byItem.get(carrier);
+        Start start = null;
+        if (filed != null) {
+            do {
+                start = filed.take();
+            } while (start != null && !start.adopt());
+        }
+        if (start != null) {
+            STARTS.remove(carrier, start);
+            return start;
+        }
+        start = STARTS.isEmpty() ? null : STARTS.remove(carrier);
+        return start == null || start.adopt() ? start : null;
+    }
+
+    private static Filed filed(Object queue, Object item) {
+        WeakIdentityMap<Filed> byItem = QUEUED.get(queue);
+        if (byItem == null) {
+            WeakIdentityMap<Filed> fresh = new WeakIdentityMap<Filed>();
+            byItem = QUEUED.putIfAbsent(queue, fresh);
+            if (byItem == null) byItem = fresh;
+        }
+        Filed filed = byItem.get(item);
+        if (filed == null) {
+            Filed fresh = new Filed(fifo(queue));
+            filed = byItem.putIfAbsent(item, fresh);
+            if (filed == null) filed = fresh;
+        }
+        return filed;
+    }
+
+    private static boolean fifo(Object queue) {
+        return queue instanceof LinkedBlockingQueue
+                || queue instanceof ArrayBlockingQueue
+                || queue instanceof LinkedTransferQueue
+                || queue instanceof SynchronousQueue;
+    }
+
+    private static void adopt(State state, Object carrier, Object queue,
+                              boolean item, boolean continuation) {
+        Start start = taken(carrier, queue);
+        if (item && (start == null || start == Start.UNNAMED)) {
+            state.serves();
+            state.endHeldClaim();
+        }
         if (start == null) return;
         boolean own = carrier == Thread.currentThread();
         if (start == Start.UNNAMED) {
@@ -492,8 +578,11 @@ public final class Identity {
                                  Object submittedTo) {
         String stable = JvmNames.stable(trimmed(startSiteId));
         if (stable.isEmpty() || carrier == null) return;
+        Object queue = submittedTo instanceof BlockingQueue
+                ? submittedTo : null;
         if (!Lineage.named()) {
             STARTS.putIfAbsent(carrier, Start.UNNAMED);
+            if (queue != null) filed(queue, carrier).file(Start.UNNAMED);
             return;
         }
         State state = state();
@@ -507,12 +596,14 @@ public final class Identity {
                 Arrays.asList(state.snapshot(state.scopeBase)));
         frames.add(Frame.of(site, iteration));
         RuntimeTraceContext.captureAsync(carrier);
-        STARTS.put(carrier, new Start(frames, Attribution.capture(),
-                        RuntimeTraceContext.nodeHere() + "|"
-                                + contextHere().render() + "|"
-                                + ExecutionIndex.of(frames).render(),
-                        Thread.currentThread(), state.top(), state.depth(),
-                        window, handsOff(submittedTo)));
+        Start start = new Start(frames, Attribution.capture(),
+                RuntimeTraceContext.nodeHere() + "|"
+                        + contextHere().render() + "|"
+                        + ExecutionIndex.of(frames).render(),
+                Thread.currentThread(), state.top(), state.depth(),
+                window, handsOff(submittedTo));
+        STARTS.put(carrier, start);
+        if (queue != null) filed(queue, carrier).file(start);
         if (!continuation) {
             ScheduleLog.observe(ScheduleEvent.Kind.START, site);
         }
@@ -599,7 +690,7 @@ public final class Identity {
         ClaimScope scope = new ClaimScope(state, continuation);
         state.claimScopes.push(scope);
         try {
-            claim(state, carrier, false, continuation);
+            claim(state, carrier, null, false, continuation);
             if (continuation) {
                 scope.inbound = MessageDoors.setAside();
                 scope.aside = true;
@@ -655,16 +746,16 @@ public final class Identity {
         state.journal();
     }
 
-    static void claimItem(Object item) {
+    static void claimItem(Object item, Object queue) {
         if (item == null) return;
-        claim(state(), item, true, false);
+        claim(state(), item, queue, true, false);
     }
 
-    private static void claim(State state, Object carrier, boolean item,
-                              boolean continuation) {
+    private static void claim(State state, Object carrier, Object queue,
+                              boolean item, boolean continuation) {
         state.work = carrier;
         state.endUnnamedWork();
-        adopt(state, carrier, item, continuation);
+        adopt(state, carrier, queue, item, continuation);
     }
 
     public static long enterFrame(String callSiteId, Object receiver) {
@@ -943,6 +1034,16 @@ public final class Identity {
 
     public static boolean inOccurrence() {
         return state().activeRegion() != null;
+    }
+
+    public static List<String> standingOccurrences() {
+        List<Region> regions = state().regions;
+        List<String> standing = new ArrayList<String>();
+        for (int index = regions.size() - 1; index >= 0; index--) {
+            OccurrenceAddress occurrence = regions.get(index).occurrence;
+            if (occurrence != null) standing.add(occurrence.render());
+        }
+        return standing;
     }
 
     public static boolean openedNone() {

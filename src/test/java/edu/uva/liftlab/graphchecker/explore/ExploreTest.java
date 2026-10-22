@@ -1225,6 +1225,60 @@ public class ExploreTest {
     }
 
     @Test
+    public void aConstantGuardBesideAMintedBoxIsNotFlippable()
+            throws Exception {
+        LocationId header = LocationId.of(LocationKind.INSTANCE, "31", "20");
+        LocationId box = LocationId.of(LocationKind.INSTANCE, "32", "24");
+        Object[][] rows = {
+            {7L, Verdict.UNSAT, FlipQuery.NOT_FLIPPABLE + ":Lookup#u8#1"},
+            {8L, Verdict.NOT_ADMITTED, "ADMISSION_GAP:Lookup#u8#1"}};
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "minted-box-" + at++;
+            Path iteration = tree.newFolder(name).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activations(false, TARGET);
+            seed.constant("e.0", "0");
+            seed.initial(at(TARGET, Endpoint.initialSite(Endpoint.stateSite(
+                    "Request", "<init>", 3, true)), "Request#init#3"),
+                    header, 5L, "e.0");
+            long throttled = seed.read(at(TARGET, Endpoint.stateSite(
+                    "Request", "isThrottled", 4, false),
+                    "Request#isThrottled#4"), header, 5L, "M_THROTTLED", "0");
+            seed.expression("EXPR.00000000000000a1", binary("==", guardedRead(header,
+                    5L, "I", literal(0), throttled), literal(1)));
+            seed.mint(at(TARGET, "INSTANCE_FIELD/32#24#PLACEHOLDER#0:READ",
+                    "Prep#pRequest2Txn#10"), box, 7L, "M_CLOCK", "123");
+            seed.root(TARGET, "REGION.target.in.clock", "M_CLOCK",
+                    RootKind.CLOCK, "123", null, null, true);
+            seed.read(at(TARGET, Endpoint.stateSite("java.lang.Long",
+                    "longValue", 1, false), "Long#longValue#1"), box,
+                    (Long) row[0], "M_UNBOXED", "123");
+            seed.decision(TARGET, "Lookup#u8", 1, false, "EXPR.00000000000000a1");
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Lookup#u8"));
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation lookup = named(obligations(wave0), "Lookup#u8");
+            Corpus corpus = Corpus.read(iteration, null);
+            ObligationFactory.Candidate candidate =
+                    ObligationFactory.locate(corpus, lookup);
+            ObligationFactory.Outcome asked = corpus.asking(() ->
+                    ObligationFactory.solve(corpus, candidate, new Z3(
+                            Paths.get("no-z3-here"), 10_000L, 1152),
+                            Solved.in(iteration), "plan", Collections
+                                    .<String, ObligationDir.Answer>emptyMap(),
+                            null));
+            String said = name + ": " + asked.result.detail();
+            assertEquals(said, row[1], asked.result.verdict());
+            assertTrue(said, asked.result.detail().contains((String) row[2]));
+        }
+    }
+
+    @Test
     public void onlyAFaithfulNotAdmittedSettlesTheArm() throws Exception {
         String ran = ObligationResult.WORLD_RAN + ": occurrence o never"
                 + " reached Lookup#u8#1 in this replay, and the world it ran"
@@ -2434,6 +2488,30 @@ public class ExploreTest {
         return null;
     }
 
+    @Test
+    public void aClientFaultCutStopsTheCatalogsOwnDoorsAsWellAsAHooksDoors()
+            throws Exception {
+        OccurrenceAddress client = occurrence("auto0/client0", "REGION.c",
+                CausalContext.of(Role.CLIENT, "test", 1), "<a.T: void t()>#u1");
+        String create = "<org.apache.zookeeper.ZooKeeper: java.lang.String "
+                + "create(java.lang.String,byte[],java.util.List,org.apache."
+                + "zookeeper.CreateMode)>#u9";
+        String sync = "<org.apache.zookeeper.server.quorum.Learner: void "
+                + "readSyncPacket(org.apache.zookeeper.server.quorum."
+                + "QuorumPacket)>#u3";
+        Path doors = Paths.get("experiments", "zookeeper", "doors.jsonl");
+        Object[][] rows = {
+            {"ZK_QUORUM", false, true},
+            {"ZOOKEEPER", true, false},
+        };
+        for (Object[] row : rows) {
+            ClientFaults cut = ClientFaults.read(doors,
+                    Collections.singleton((String) row[0]));
+            assertEquals(row[0] + " create", row[1], cut.fails(client, create));
+            assertEquals(row[0] + " sync", row[2], cut.fails(client, sync));
+        }
+    }
+
     private static OccurrenceAddress occurrence(String node, String region,
                                                 CausalContext context,
                                                 String callSite) {
@@ -2684,10 +2762,23 @@ public class ExploreTest {
                     version, ref, javaType));
         }
 
-        private void read(Endpoint endpoint, LocationId location,
+        private long read(Endpoint endpoint, LocationId location,
                           long version, String symbol, String concrete) {
             reads.add(ReadRow.of(sessionId, ++seq, endpoint, location, version,
                     symbol, "I", concrete));
+            return seq;
+        }
+
+        private void initial(Endpoint endpoint, LocationId location,
+                             long version, String ref) {
+            writes.add(WriteRow.initial(sessionId, ++seq, endpoint, location,
+                    version, ref, "Z"));
+        }
+
+        private void mint(Endpoint endpoint, LocationId location,
+                          long version, String symbol, String concrete) {
+            reads.add(ReadRow.of(sessionId, ++seq, endpoint, location, version,
+                    symbol, "J", concrete, version));
         }
 
         private void keyChain() {

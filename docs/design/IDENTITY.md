@@ -181,15 +181,35 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   ran on its last task's frames and each send nested under the one before (HBA1: 3777 frames). Work
   its starter runs itself (an executor that runs a task on the calling thread) stands on the
   starter's frames already and opens the start frame alone (`Start#ranHere`). A queue item's claim
-  lasts until the consumer takes its next item in the same work (`#claimItem`) or until the region
+  lasts until the consumer takes its next item in the same work (`#claimItem`, `State#endHeldClaim`,
+  whether that item's start is named, unnamed or absent -- ended only by a named one, a named
+  item's carried scope kept naming a long-running consumer's region: once ZooKeeper's Prep `run()`
+  took the container manager's delete, filed under the test's root, every later client request,
+  whose start is unnamed, ran inside that occurrence and opened none of its own, ZA8-cont) or until the region
   entry it was taken inside exits, whatever that entry opened -- an occurrence, a fold's marker or
   unnamed work's (`#regionExit`: the claims at or below the depth the entry was made at close with
   their scope; a claim taken before the entry, as a queue loop's condition calling a folded
   accessor, outlives it; ZooKeeper's `LearnerHandler#sendPackets`, folded into its sender thread's
-  run, left its last packet's start frames standing, FRAME_UNBALANCED), and carries whoever
+  run, left its last packet's start frames standing, FRAME_UNBALANCED; an entry runs inside its own
+  method frame, which the weave brackets around it, so its exit agrees with that frame's exit, which
+  closes the same claims one hook later), and carries whoever
   put the item there, whichever node the consumer serves otherwise: Hadoop IPC's one
   `RpcRequestSender` per connection sends every in-JVM DataNode's calls (V22: refusing items of
   another node dropped their CLAIMs, the order stalled, and a daemon heartbeat took the key update).
+  A hand-off into a `BlockingQueue` is filed under the item and under that queue; a take or poll
+  (the woven claim passes the queue it took from) claims the start filed for that queue, else the
+  item's latest start (an item that entered the queue by an unhooked path), and a start is claimed
+  once. In a FIFO queue (`LinkedBlockingQueue`, `ArrayBlockingQueue`, `LinkedTransferQueue`,
+  `SynchronousQueue`, by the queue's class, `Identity#fifo`) the starts of one object put several
+  times are filed in put order and each take claims the oldest (at most 256 kept per object); any
+  other queue (a priority or delay queue, a deque, an application's own) keeps the latest only.
+  ZooKeeper's client puts one sentinel, `ClientCnxn.eventOfDeath`, into its EventThread's queue
+  twice per close (the SendThread's exit, then `disconnect()` after joining it), and the event
+  thread's take was named by whichever put it followed (ZE3-10: 3 stalls). So an object pending in
+  two queues at once is claimed under the hand-off of the queue it came out of: ZooKeeper's observer hands one `Request` to its SyncRequestProcessor's queue and
+  then its CommitProcessor's, and keyed by the item alone the commit's start replaced the sync's,
+  so the sync thread's claim was named by whichever add its take followed (ZD5-10: the commit's
+  334 of 409 times recorded, 0 replayed; 276 stalls of about 4 s).
   A start made where no hop names the starter (its lineage is
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a

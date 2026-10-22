@@ -1552,7 +1552,9 @@ final class FlipQuery {
             List<String> held = new ArrayList<String>();
             for (ReadRow row : ownReads.values()) {
                 if (corpus.writeOf(row.sessionId(), row.location(),
-                        row.observedVersion()) == null) {
+                        row.observedVersion()) == null
+                        && corpus.join(row.sessionId()).mintedReadSymbols(
+                                row.observedVersion()).isEmpty()) {
                     held.add(row.location() + "@" + row.observedVersion());
                 }
             }

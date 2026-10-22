@@ -985,9 +985,15 @@ of each canary, then 01 03 06 11 12.
 row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
 (a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
 DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
-Left: its first SEEDs, once the quorum cluster (3) registers the peers; the hand-offs inside a peer (Prep, Sync, Commit,
-Final, SendAck queues) carry no packet's context -- carried per stage only where a case's chain needs it (lead
-2026-10-21: read the SEEDs' LINEAGE_LOST rows first).
+Since then (tree `gc/zk-learner`): the leader's own ACK is a message to itself (f174d986f), ACKs are processed in a turn
+(0393746c0), and an ACK leaves under the message its txn was logged under (acae2a16d). Left: a turn orders an EVENT, not
+the critical section after it -- the schedule releases the next turn at a location as soon as the previous one is
+observed, so the ACKs a turn ordered still race for `Leader#processAck`'s monitor and the COMMIT may leave under another
+ACK than recorded (ZD8-02: the acks/5 turns replayed in the recorded order 2008.., 0d7e.., 2d4b.., cee0.., 0ee0.., the
+recording's COMMIT left under the 3rd, the replay's under the 5th; 16 of 28 seed-replay stalls, 197/1536 slots given up;
+ZD7-02 without acae2a16d 849/1460). Idea (engine, general): a SECTION turn -- the next turn at a location is released only
+once the previous holder's `storeEnded` ran. Accepted for now (lead 2026-10-21, workaround over grinding); revisit if a
+verdict or CONFIRM depends on which ACK completes a quorum (a refutation on a COMMIT ORDER row).
 
 **5. zxid carriage on that door** (D5): deferred (lead 2026-10-21, owner "keep ZooKeeper lean"); revisit only when a
 SEED's `.smt` shows a guard term constant for want of an envelope or txn field. What it would take: the door already
@@ -1026,6 +1032,19 @@ although the caller's poll is already a queue claim (`WorkStartSites#claimsFromQ
 replay's message count (ZB5-om: 72 of 762 slots given up). Worked around in the tree (gc/zk-quorum 830abe42c: untimed
 `take()` in automatic mode); the general rule -- a timed wait inside an application `BlockingQueue`'s
 poll/take/offer/put is its caller's claim, as a JDK queue's internals are -- waits for a second system that needs it.
+
+**COMPOSE's moved clock cells: only the selected path's (agent E 2026-10-21).** `ClaimPolicy#movedRoots` adds every
+jumped clock cell of the whole composition (`Composition#clockCells`), so a claim lists cells of paths it did not select
+(the shared JVM-clock order moves them); CONFIRM now leaves them outside the witness (`claim.movedOutsideWitness`,
+PIPELINE CONFIRM). The producer-side cleanup: take only the cells the selected disjunct's session, the seed or a taken
+arm's session mint.
+
+**A ZooKeeper CommitProcessor applies a commit under no claim of it (lineage, agent E 2026-10-21).** It takes a committed
+request with `committedRequests.peek()` then `remove()`, neither a queue claim (`WorkStartSites` QUEUE_CLAIMS), so an
+observer's INFORM (or a follower's COMMIT) is applied -- `processWrite`, FinalRequestProcessor -- under the CommitProcessor
+thread's last `queuedRequests.poll()` claim, a local client request's context, not the INFORM's. Matters only if a case's
+chain needs the apply under the packet that carried it (zk-adhoc-10, 5088): then a tree hook claims the committed request
+where `processWrite` takes it (the observer's commit start stays filed under `committedRequests`).
 
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合

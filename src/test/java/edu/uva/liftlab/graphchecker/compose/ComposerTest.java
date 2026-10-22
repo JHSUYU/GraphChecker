@@ -1051,6 +1051,75 @@ public class ComposerTest {
     }
 
     @Test
+    public void anExploredSessionsOwnRunIsAskedWithItsObservedArms()
+            throws Exception {
+        OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
+                frame("Reader#run#4", 0));
+        OccurrenceAddress first = occurrence("case/dn0", "REGION.first",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Handler#run#2", 0));
+        OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
+                frame("Heartbeat#run#9", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        String taut = "(or " + MARKER + " (not " + MARKER + "))";
+        Object[][] table = {
+            {"the other writer declared first", true},
+            {"the observed writer declared first", false},
+        };
+        for (Object[] row : table) {
+            boolean otherFirst = (Boolean) row[1];
+            Path iteration = folder.newFolder().toPath();
+            for (String[] each : new String[][]{{"s0", "false"},
+                    {"s1", "true"}}) {
+                boolean explored = "true".equals(each[1]);
+                Session session = new Session(iteration, each[0], explored);
+                session.occurrence = reader;
+                session.activation(reader);
+                session.activation(first);
+                session.activation(second);
+                session.marker(each[1]);
+                session.expression("EXPR.v1.observed", constant("false"));
+                session.expression("EXPR.v1.other", constant("true"));
+                session.decision(first, "first#u1", taut);
+                session.decision(second, "second#u1", taut);
+                Endpoint observed = Endpoint.of(first, "Handler#put#3:WRITE",
+                        at("w#1", 0), 0);
+                Endpoint other = Endpoint.of(second, "Heartbeat#put#7:WRITE",
+                        at("w#1", 0), 0);
+                if (otherFirst) {
+                    session.write(other, keys, 2L, "EXPR.v1.other");
+                    session.write(observed, keys, 1L, "EXPR.v1.observed");
+                } else {
+                    session.write(observed, keys, 1L, "EXPR.v1.observed");
+                    session.write(other, keys, 2L, "EXPR.v1.other");
+                }
+                session.read(Endpoint.of(reader, "Reader#get#5:READ",
+                        at("r#1", 0), 0), keys, 1L, "read_k", "false");
+                session.target("(or " + MARKER + " read_k)", explored, true);
+                session.write();
+            }
+            Composer.Composition composition = compose(iteration, reader, 4,
+                    StaticScopeMap.empty());
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String shape = (String) row[0];
+            assertEquals(shape + ": " + decision.claim().gaps(),
+                    ClaimKind.MARKER_FLIPPED, decision.claim().kind());
+            assertEquals(shape, "true",
+                    decision.claim().movedRoots().get(MARKER_ROOT));
+            ClaimPolicy.Outcome claimed = decision.outcomes().get(
+                    decision.claim().valuationOrdinal());
+            assertEquals(shape + ": the explored session's own run",
+                    "s1", claimed.selected().path().sessionId);
+            assertTrue(shape + ": on its observed arm", composition.repaired(
+                    claimed.selected().selector(),
+                    claimed.selectedArms().keySet()).isEmpty());
+        }
+    }
+
+    @Test
     public void aWorldAnExploredReplayRanToTheFatalIsAValuation()
             throws Exception {
         Object[][] table = {

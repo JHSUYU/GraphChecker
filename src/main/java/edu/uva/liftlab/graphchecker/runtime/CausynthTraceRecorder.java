@@ -212,8 +212,7 @@ public final class CausynthTraceRecorder {
         }
         calls.push(new ActiveCall(id, parentCallId, parentSiteId, method,
                 receiver, context.spanId, parent == null,
-                region.isEmpty() ? -1 : Identity.regionDepth() - 1,
-                address));
+                region.isEmpty() ? -1 : Identity.regionDepth() - 1));
         if (!written()) return id;
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
@@ -303,8 +302,8 @@ public final class CausynthTraceRecorder {
         RowRuntime.endClaim(claim);
     }
 
-    public static void claimItem(Object item) {
-        RowRuntime.claimItem(item);
+    public static void claimItem(Object item, Object queue) {
+        RowRuntime.claimItem(item, queue);
     }
 
     public static void startWork(String startSiteId, Object carrier,
@@ -1054,11 +1053,7 @@ public final class CausynthTraceRecorder {
     }
 
     static List<String> enclosingOccurrences() {
-        List<String> occurrences = new ArrayList<>();
-        for (ActiveCall call : ACTIVE_CALLS.get()) {
-            if (!call.occurrence.isEmpty()) occurrences.add(call.occurrence);
-        }
-        return occurrences;
+        return Identity.standingOccurrences();
     }
 
     static void plantRoot(String event, int row, String planted,
@@ -2287,7 +2282,6 @@ public final class CausynthTraceRecorder {
         private final boolean rootContext;
         private final boolean regionFrame;
         private final int region;
-        private final String occurrence;
         private Map<String, Integer> decisions;
 
         private int decided(String decision) {
@@ -2297,8 +2291,7 @@ public final class CausynthTraceRecorder {
 
         private ActiveCall(long callId, long parentCallId, long parentSiteId,
                            String method, Object receiver, long spanId,
-                           boolean rootContext, int region,
-                           String occurrence) {
+                           boolean rootContext, int region) {
             this.callId = callId;
             this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
@@ -2308,7 +2301,6 @@ public final class CausynthTraceRecorder {
             this.rootContext = rootContext;
             this.regionFrame = region >= 0;
             this.region = region;
-            this.occurrence = occurrence;
         }
     }
 
