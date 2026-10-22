@@ -1,6 +1,6 @@
-# State: HDFS finished; Solr ended; HBase: all five owner bugs PASS (second session handover, 2026-10-20)
+# State: HDFS finished; Solr ended; HBase finished; ZooKeeper finished (2026-10-21)
 
-HBase: section H below (the current work). Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
+ZooKeeper: section Z below (the latest work). HBase: section H. Solr: section S. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
 8c446418b). Every case then ran alone on the ten lifts for its time breakdown (series EX1,
 `/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6). The owner
@@ -11,29 +11,62 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## Z. ZooKeeper (prepared 2026-10-21) -- read this first if you take over ZooKeeper
+## Z. ZooKeeper (finished 2026-10-21; DRAFT, final verdicts PLACEHOLDER) -- read this first if you take over ZooKeeper
 
-Nothing has run yet. The 2026-10-21 session (a lead and two read-only agents, Z1 and Z2) prepared the checks; START-HERE.md
-is the takeover document.
-- **`system/zookeeper`** (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) is `system/hbase`'s final engine
-  (5b4b6bae9) plus the ZooKeeper preparation:
-  - `experiments/zookeeper/` in HBase's layout: `system.sh`, `build.sh`, `classpath.py`, `prepare-trees.sh`, `trees.tsv`,
-    `zookeeper-cases.tsv`, `zk-adhoc/` (checks.tsv + case.sh) and `zk-bugs/case.sh` (six bug checks);
-  - `docs/checks/ZOOKEEPER.md` §E, the 16 cases;
-  - the agents' notes `docs/handover/zookeeper-agents/`;
-  - TODO "ZooKeeper", RULES (the 2026-10-21 rulings).
-- **The tree:** the fork https://github.com/JHSUYU/zookeeper.
-  - Its master eab165995 is the buggy base; the fixes of PR 2459 and PR 2454 are its branches `fix-trunc-sync-shutdown-state`
-    (46c8b43a1) and `fix/observer-master-pending-proposals` (e70951a21).
-  - Local repo `/u/vnr3ne/zookeeper` (origin = apache; the fork's refs fetched as `refs/remotes/jhsuyu/*`). Branches:
-    - `gc/zk-checks` (worktree `/bigtemp/vnr3ne/wt/zookeeper-checks`) = eab165995 + the three adapter commits, cherry-picked
-      and resolved, not built (TODO ZooKeeper 1);
-    - `gc/zk-unified` 8f18cf3a4 and `gc/zk-unified-hb` 47ddc8b36: the old branch-3.9 adapter trees
-      (`/bigtemp/vnr3ne/wt/zookeeper-unified`, `-hb`);
-    - `gc/zk-quorum-bugs`: empty, at eab165995 (Z2's; may be deleted).
-  - Maven repositories: `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs` (filled online for master: use or copy it; the old
-    `m2/zookeeper` lacks master's artifacts), `m2/zookeeper-checks` (unused).
-- **Evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/` (briefs, the two reports, Z2's native logs `z2-native/`).
+The 2026-10-21 session had two parts. The day session (a lead and the read-only agents Z1, Z2) prepared the checks. The
+evening session (a lead and five coding agents) built and ran them:
+- **A:** the tree, the client-level cases, ClaimPolicy own-run-first, the CONFIRM hold at the first instrumented serve.
+- **B:** the quorum-bug workloads, 5094 and 5088.
+- **C:** the automatic quorum cluster, the session expirer, election idle polls, the leader's ACK queue.
+- **D:** the learner-stream door, self-ACK, the seeded-Random rule, region-exit claim closing, D5 txn headers.
+- **E:** the VM's failed-CAS comparand, queue item identity, native standing occurrences, CONFIRM/COMPOSE moved roots,
+  GROW's exposed tasks, the mint lookup.
+
+The work was merged in integrations 6-11, each a snapshot of `system/zookeeper` paired with a tree set of
+`gc/zk-checks` (16/16 natives each), then the final series ran (`results/zookeeper/`). START-HERE.md is the takeover
+document; lead/RUNS.txt is the full log of runs and decisions.
+
+**GraphChecker.**
+- `system/zookeeper` (local, not pushed; worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`) at <PLACEHOLDER final commit>. It is
+  `system/hbase` 5b4b6bae9 plus:
+  - `experiments/zookeeper/` (HBase's layout; per-case settings in `zk-bugs/case.sh`, `zk-adhoc/checks.tsv` + `case.sh`,
+    `workflow.properties`; `doors.jsonl` with the ZK_QUORUM and ZK_SNAPSHOT rows);
+  - the engine and VM changes each STATUS row and PIPELINE/IDENTITY section names;
+  - `docs/checks/ZOOKEEPER.md` §E, and STATUS "ZooKeeper checks" and "Per-system surface" (ZooKeeper column).
+- The agents' branches are all merged; keep or delete them at handover: `zk-tree` (A), `zk-qwork` (B; c19d30112 is 5094's
+  world depth 1), `zk-quorum` (C), `zk-learner` (D) and `zk-engine` (E). Their worktrees are `/bigtemp/vnr3ne/wt/gc-zk-<topic>`.
+
+**The tree.** The fork https://github.com/JHSUYU/zookeeper.
+- Its master eab165995 is the buggy base; PR 2459's and PR 2454's fixes are its branches `fix-trunc-sync-shutdown-state`
+  and `fix/observer-master-pending-proposals`.
+- `graphchecker/zookeeper-checks` = local `gc/zk-checks` (`/u/vnr3ne/zookeeper`), pushed after each integration
+  (<PLACEHOLDER final tree commit>; integration 10 was 442c88199). It holds the adapter, the markers, the workloads and
+  the tree workarounds (STATUS "Per-system surface").
+- The agents' tree branches are merged into it: `gc/zk-tree` (A), `gc/zk-tree-contfb` (A, container-reuse's fallback),
+  `gc/zk-quorum-bugs` (B), `gc/zk-quorum` (C) and `gc/zk-learner` (D). `gc/zk-unified` and `gc/zk-unified-hb` are the
+  old branch-3.9 trees.
+- Maven repositories: `/bigtemp/vnr3ne/m2/zookeeper-int<N>` per integration, `m2/zookeeper-quorum-bugs` (filled online
+  for master), and one per agent (`m2/zookeeper-<topic>`).
+
+**Snapshots, images, tree sets.**
+- Snapshots: `/u/vnr3ne/gc-run/zk-int-<N>` (integration N: 6 797c9d5ad, 7 b18c7a484, 8 494d2a9af, 9 c01b741ac,
+  10 ac69ab4b1, <11 PLACEHOLDER>). Agents' snapshots: `zk-<topic>-<n>` (tree, qwork, quorum, learner, engine).
+- Tree sets: `/bigtemp/vnr3ne/wt/zk-int-trees-<N>` (the pair of zk-int-<N>), plus the agents' `zk-<topic>-trees-<n>`.
+  Never rebuild one a run reads.
+- Image: `/bigtemp/vnr3ne/vm-force13/j2sdk-image` = vm-force12 plus the failed-CAS comparand (OPERATIONS.md images row).
+  Every run from integration 9 on uses it.
+
+**Runs.**
+- `/bigtemp/vnr3ne/gc-out/zookeeper-final`: the series, rounds F0/F1B/F1S/F2*/F3*.
+- `/bigtemp/vnr3ne/gc-out/zookeeper-{tree,qwork,quorum,learner,engine}`: the agents' runs, tags ZA*/ZB*/ZC*/ZD*/ZE*. A
+  stopped run's dir is renamed `accept-<TAG>STOP-<why>`.
+
+**Evidence.** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/`:
+- `lead/RUNS.txt`: every run, decision and owner ruling;
+- `lead/readings.md`;
+- `lead/final/` (PLAN.md, the series drivers, README-draft.md);
+- the agents' briefs (`lead/*.txt`), the gate and integration-build logs;
+- Z1/Z2's reports and native logs.
 
 ## H. HBase (finished: final series 2026-10-21) -- read this first if you take over HBase
 

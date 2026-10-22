@@ -1,4 +1,4 @@
-# TODO: HDFS finished; Solr ended; HBase finished (results/hbase/); ZooKeeper prepared, next (2026-10-21)
+# TODO: HDFS finished; Solr ended; HBase finished (results/hbase/); ZooKeeper finished (results/zookeeper/, 2026-10-21)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -7,7 +7,7 @@ Order:
    optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
 3. HBase: the current work (section "HBase", item 1 is the next runs in order); stopped by the owner on 2026-10-19
    23:10 for a handover to another agent.
-4. ZooKeeper: prepared 2026-10-21 (section "ZooKeeper", items in order; START-HERE.md).
+4. ZooKeeper: finished 2026-10-21 (START-HERE.md, results/zookeeper/); section "ZooKeeper" lists the parked items.
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
@@ -940,41 +940,40 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
   exclusive series does). Not built: checking the read's observed writer instead of holding; it cannot confirm a
   read that saw the wrong version, and with stable steps nothing needs it.
 
-## ZooKeeper (`system/zookeeper`; prepared 2026-10-21 -- the current plan)
+## ZooKeeper (`system/zookeeper`; finished 2026-10-21 -- what is left; DRAFT)
 
-The owner (2026-10-21): ZooKeeper ad hoc checks as HBase, the same rules, the five bugs included, and the adaptation of
-the same kind as HBase's, HDFS's and Solr's ("zookeeper上要做的适配跟hbase,hdfs,solr都是类似的"). The 16 cases, with marker,
-workload, counterfactual and what each needs, are `docs/checks/ZOOKEEPER.md` §E. The agents' notes are
-`docs/handover/zookeeper-agents/Z1.md` (every site and workload on master; the adapter port) and `Z2.md` (the two quorum
-bugs; the design list D1-D9). Items in order:
+The 16 cases ran in the final series; `results/zookeeper/README.md` has each verdict and START-HERE.md the takeover.
+<PLACEHOLDER: a case the series left open, if any.> Everything below is parked engine or adapter work with its
+evidence; none of it blocks a verdict. The cross-cutting items this session found (a logged event's publication-order
+rank, an application BlockingQueue's timed wait, CommitProcessor's apply under no claim) are in "Cross-cutting" below.
 
-**1. The tree** (`T` in §E). Tree branch `gc/zk-checks` (`/u/vnr3ne/zookeeper`) is the fork's master eab165995 with the
-three adapter commits cherry-picked; agent A's `gc/zk-tree` on it holds the RESPONSE door rewritten the way HBase's
-`CausynthRpc` answers (no engine change), the markers of §E and the container-reuse and retry-seq-quota workloads (each
-native 5/5). Left:
-- the two quorum workloads are written (agent B, tree branch `gc/zk-quorum-bugs` b663d44ea: `CausynthQuorumHarness`,
-  `CausynthTruncSyncTest`, `CausynthObserverMasterSyncTest`; native 10/10 each, `docs/checks/ZOOKEEPER.md` §E), merged
-  into `gc/zk-checks`;
-- build every workload with `experiments/zookeeper/prepare-trees.sh` from a snapshot of `system/zookeeper`
-  (`GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo>`; master needs artifacts the old `m2/zookeeper` lacks, so the first build
-  is online or uses Z2's `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`);
-- push the result as the fork's `graphchecker/zookeeper-checks` (`experiments/zookeeper/trees.tsv` already names it).
+**1. 5094: re-run the seed for an exposure only the seed ran (designed, not built; ~4 h; owner 2026-10-21: 5094 is "not
+detected", "我觉得你搞简单点吧，没必要为5094花这么多时间").**
+- **Evidence.**
+  - ZB12-ZB15-trunc: life 2's QuorumPeer.run (peer1#epoch1 REGION.77ac7573) ran in the seed under no planned task, so
+    EXPLORE demanded it (67bc1e811's ZooKeeper-chain store reads) and waited ("the first admitted focused replay that runs
+    it exposes it").
+  - A focused replay of a createInputArchive#u9 flip exposed it. GROW planned it with its region's folded methods
+    (f5590b40f), so it carries Learner.readSyncPacket#u3's FAULT door. Its root is planted at the flipped path's
+    session's mint (21ed7b6c8).
+  - ZB15 then reached and admitted life 2's NEWLEADER FAULT world (obligation 80b25e89). That world also holds the
+    exposing IO fault on life 3's log open, so life 3's restore dies with FileNotFoundException before the replay that
+    would throw at ZKDatabase:341: reached, not fatal.
+- **Design.**
+  - WaveGraph#writeGrowth marks an EXPOSED_REGION row whose occurrence was in ClosurePlanner's `waiting` with
+    `"seedRan": <seed>`.
+  - `campaign_stream_grow_take` queues, once per generation, a re-run of the seed replay under the generation's plan
+    and classes (campaign_seed_replay's inputs).
+  - The landed re-run replaces the seed through the swap a focused re-run uses (withdrawn.txt). If it fails to land,
+    the old seed stays and a DIAGNOSTIC row names the exposure.
+  - The exposed occurrence's doors are then recorded at depth 0, so 5094's world needs no other flip.
+- **Cost.** One seed replay (~100 s on trunc) plus an IMPORT gate per such generation.
+- **Risk.** The old seed's answered flips must carry over; the flip key holds the pathId, which is stable only if the
+  re-run takes the recorded path.
+- **Tests.** A shell helper row (one seed re-run per generation with seedRan rows, none without) and an ExploreTest row.
 
-The reply -> synchronous caller edge (TODO HBase 15's F4) needs the engine's happens-before over message edges (TODO HBase 15, parked branch `hbase-e15`). Not built now (lead 2026-10-21, as the owner ruled for HBase: this precision work waits, the FP filter covers it): COMPOSE pairs the client-level bugs' target reads with writes the caller made before them, CONFIRM refutes each by the client's program order, and the per-case claim cap and CONFIRM order timeout (`zk-bugs/case.sh`) let the claim loop reach the fault worlds past them (ZA2/ZA3-quota, ZA3/ZA4-offer).
-
-**2. The client-level cases** (need only `T`): zk-bugs-quota-init, zk-bugs-election-offer, zk-bugs-container-reuse,
-zk-bugs-retry-seq-quota, and zk-adhoc-01/03 on the ClientBase stand-in. Read each target occurrence off a SEED (D9;
-`zk-bugs/case.sh` marks the placeholders), then run each case to its verdict as HBase's cases were. The bug checks
-must be SAT, confirmed in the VM and reproduced natively.
-- Open (engine, general): EXPLORE cannot re-pair a container read. `FlipQuery#movableReads` skips every MAP location
-  (8ac0e2576: a container read bound as a writer's value gave ill-sorted Ref/AssocState queries), so a flip resting on
-  a node-map lookup is NOT_FLIPPABLE (ZA15-cont: `PrepRequestProcessor#getRecordForPath#u13#2` on the client's delete).
-  The general route re-pairs the read the way COMPOSE's moved query does (election-offer), about 3 h (E's estimate);
-  zk-bugs-container-reuse runs on a widened-window workload instead (STATUS "tree: zk-bugs-container-reuse's widened
-  window").
-
-EXPLORE re-pairing a container read (not built, lead 2026-10-21: zk-bugs-container-reuse takes A's workload fallback;
-about 3 h). ZA15-cont's decisive flip `PrepRequestProcessor#getRecordForPath#u13#2` (`n == null`, the node-map read of
+**2. EXPLORE re-pairing a container read** (not built, about 3 h; zk-bugs-container-reuse took A's fallback workload
+instead). ZA15-cont's decisive flip `PrepRequestProcessor#getRecordForPath#u13#2` (`n == null`, the node-map read of
 `MAP 12#-3` at v2532, the cleanup's remove; the bug world re-pairs it to v1948) is NOT_FLIPPABLE "no movable read":
 `FlipQuery#movableReads` skips every MAP location since 8ac0e2576. What that commit cut: a map read row's symbol is
 the map's STATE (`MAP_STATE/12#-3@v2532`, javaType `L`, shared by every read of that version), and movableReads
@@ -990,7 +989,7 @@ ARM_SORT_MISMATCH stays). Cost first: every map read with >= 2 eligible writers 
 (`tools/regress/offline-ab.sh`) before merging; test: an ExploreTest row (a map lookup flip answered by another
 writer's state, well-sorted), then ZA15-cont round 1 offline (195a1781 NOT_FLIPPABLE -> SAT, the v1948 choice).
 
-Static candidates over replays that were not admitted (not built, lead 2026-10-21). `Walk#holders` offers every
+**3. Static candidates over replays that were not admitted** (not built). `Walk#holders` offers every
 occurrence of `Corpus#occurrences` that holds a static candidate write or export site on the node, including the
 variants only NOT_ADMITTED replays name (activated = any instrumented activation). ZC15-06 (int-10, round 8 on):
 the leader's PrepRequestProcessor.run at `WorkerReceiver.run#u292@4`, named only by c7b6e1c2 (NOT_ADMITTED,
@@ -1000,57 +999,49 @@ a static-pass A/B pins it). Its row is DIAGNOSTIC now (`ClosurePlanner#uncapture
 offering only occurrences the seed or an admitted session names -- every case's closure changes, so A/B 01, 02,
 06 and cont first.
 
-CONFIRM over an unproducible planted answer (parked, lead 2026-10-22; STATUS open defect 72). An explored session whose
-world answered a handoff no producer could send confirms as "itself the run" (F1B-om's FORMULA_SAT witness 8f4d73b3,
-F's `TxnHeader.Zxid` port); only REPRODUCE's native step refuses it (`NATIVE_PLANT_UNSUPPORTED`). The fix would refuse
-such a session as its own run in `ConfirmMain`, or keep its answers out of the witness selection; A/B the bug checks
-first.
+**4. The consumer-side moved-roots filter (kept; delete when nothing writes it).** COMPOSE moves only the clock cells of
+the selected path's cone (`ClaimPolicy#movedRoots`, 5abb349f2). Before it, ZD7-02/ZD9-02's three claims each moved 8
+CLOCK roots (Prep's `currentTimeMillis`, `processConnectRequest`'s `nanoTime`) with no mint row, and CONFIRM was
+NOT_ADMITTED. CONFIRM's consumer side, which leaves a root moved outside the witness and records `movedOutsideWitness`
+(`Moved#witness`, ef5a6b7e3), stays as a net for the cases PIPELINE §CONFIRM names. Delete it, and its PIPELINE
+paragraph, once a full series writes no `movedOutsideWitness` (`grep -l movedOutsideWitness
+<run>/out/*/schedule/final/claim.json` over the final runs: <PLACEHOLDER count>).
 
-**3. The quorum adapter** (Z2.md §3; each item names its closest HBase/HDFS/Solr piece):
-- D3: the automatic quorum cluster. QuorumPeerTestBase.MainThread, QuorumUtil and QuorumBase ensembles; every peer is a
-  node with its threads; a restart is a new life of the same node; the no-expiry rule; the window opens once a quorum
-  serves. Clients made outside `createClient` are registered. Closest: CausynthHBaseCluster + CausynthNodes.
-- D7: repeatable runs (large limits, one commit worker, snapCount large, ports and sids in order, woven random delays).
-- D8: election-stream threads attributed to their peer.
-Its canary is `QuorumPeerMainTest#testQuorum` (zk-adhoc-01/03/06/12).
-Built (agent C, tree `gc/zk-quorum`, STATUS "Per-system surface" ZooKeeper "tree: cluster and bounds"): the tree's
-`CausynthNodes` with hooks in `QuorumPeer` (start, run, shutdown), `ZooKeeperThread`, `ZooKeeper`'s constructor,
-`QuorumZooKeeperServer`, `FastLeaderElection`'s tally, `CausynthZk#request`, and the test bases (`PortAssignment`,
-`QuorumPeerTestBase`, `QuorumUtil`, `QuorumBase`, `ZKTestCase`, `ClientBase`); `testQuorum`,
-`CurrentEpochWriteFailureTest` and `CausynthTruncSyncTest` pass natively in automatic mode. Left: two faithful SEEDs
-of each canary, then 01 03 06 11 12.
+**5. The learner envelope's own fields (D5's remainder).** D5 carries a packet's `TxnHeader` (catalog MESSAGE row;
+STATUS "tree: a txn's header crosses the learner stream"). Two things are not carried:
+- The envelope's own fields: `QuorumPacket.zxid`, a jute record no catalog row lists. zk-adhoc-10 is vacuous by
+  construction on it (ObserverMaster#proposalCommitted's head check reads `QuorumPacket.getZxid`), and zk-adhoc-07's
+  LEADERINFO epoch is a constant at the learner.
+- A header built by its all-fields constructor (the leader's original export stays the door's constant).
 
-**4. The learner-stream door** (D4): built (tree `gc/zk-learner` 74b3d24cf, `CausynthQuorum`; the catalog's `ZK_QUORUM READ`
-row, `experiments/zookeeper/doors.jsonl`; STATUS "Per-system surface"). Natively the two ends name every packet alike
-(a probe, not kept, counted 0 unmatched reads over QuorumTest, QuorumRestartTest, ReadOnlyModeTest x2, ObserverMasterTest,
-DIFFSyncConsistencyTest, testQuorum and a by-hand sync-read timeout, also under `zookeeper.learner.asyncSending`).
-Since then (tree `gc/zk-learner`, `gc/zk-quorum`): the leader's own ACK is a message to itself (f174d986f), an ACK
-leaves under the message its txn was logged under (acae2a16d), and the leader processes its ACKs on one thread of its
-own in FIFO order (0c8ff5469, replacing 0393746c0's ACK turn, which ordered the event but not the critical section
-after it: ZD8-02's COMMIT left under another ACK than recorded; ZC14-01/ZC15-01's CONFIRM replays stalled at CLAIM
-`LearnerHandler#queuePacket` COMMIT and ended AT_MISMATCH). Left: the two producers' hand-overs still race. Inside
-the monitor, a thread held at its slot keeps the monitor (ZC17-01's seed: 10 slots given up). Outside it (388c78ef0,
-dropped), om and trunc time out natively. zk-adhoc-01's CONFIRM still ends at that COMMIT (ZC15-01..ZC18-01: its
-claim is refused). Revisit only if a verdict depends on it: an engine SECTION turn, or the hand-over as the RECV's
-own slot.
+Also from the review: make message-ness one catalog concept, a `messages` member on CODEC rows in place of the MESSAGE
+kind. Build when a case needs an envelope field.
 
-**5. zxid carriage on that door** (D5): built in its txn form (lead-approved 2026-10-21 for zk-bugs-observer-master, whose
-guard ZKDatabase:341 reads `TxnHeader.zxid` from a packet's `data` bytes): the catalog's `MESSAGE` row lists jute's
-`TxnHeader` (`LibraryCatalog#messageClasses`), which the door's walk takes as a message (`EnginePlumbing#wireMessage`) and
-`SeedBackwardStaticAnalyzer#deriveWirePort` derives ports of, its own `setF` the producers (SYMBOL-SCOPE §6.2); the tree
-hands the door the header a packet carries and each learner's decode to `#parsed`, and a committed-log resend carries a
-copy set field by field (`CausynthQuorum#copyOf`; STATUS "tree: a txn's header crosses the learner stream"). Left: the
-proof -- the om SEED/PLAN shows the follower's `syncFollower` occurrence demanded, its `lastProcessedZxid` read a
-re-pairable decider; if PLAN does not reach it, no third mechanism (lead). Not carried: the envelope's own fields
-(`QuorumPacket.zxid`, a jute record no row lists), a header built by its all-fields constructor (the leader's original
-export is the door's, a constant). Follow-up (review 2026-10-21): one catalog concept for message-ness -- a `messages`
-member on CODEC rows in place of the MESSAGE kind. Optional after it: D6, the txn log as a store across a restart (zk-bugs-trunc-sync's
-chain through the log).
+**6. The reply -> synchronous-caller edge (TODO HBase 15's F4; parked branch `hbase-e15`).** It needs the engine's
+happens-before over message edges.
+- **Evidence.** COMPOSE pairs a client-level bug's target read with writes the caller made BEFORE it. CONFIRM refutes
+  each by the client's program order at the order timeout (ZA2/ZA3-quota: 3 pure pairings, each refuted after 300 s;
+  ZA5-quota: 15 such refutations before the fault world).
+- **Worked around** by the per-case claim cap and order timeout (`zk-bugs/case.sh`: quota-init and election-offer 20
+  claims and 120 s; container-reuse 20 and 150 s). The tree's caller-side RECV of the reply was tried and reverted
+  (integration 7).
+- Build it when a case's real world sits past its claim cap.
 
-**6. The final series** as HBase's (owner 2026-10-20/21): every case on the final engine. Runs under 30 min may run
-concurrently; every longer case runs alone on all 14 hosts; scope a too-slow case (no client faults where the mechanism
-is a state pairing, the first claim, a campaign budget), with the configuration in `case.sh`. Then
-`results/zookeeper/` as `results/hbase/`: every case's `.smt`, claim and the time/region table.
+**7. CONFIRM over an unproducible planted answer (parked, lead 2026-10-22; STATUS open defect 72).** An explored session
+whose world answered a handoff no producer could send confirms as "itself the run" (F1B-om's FORMULA_SAT witness
+8f4d73b3, F's `TxnHeader.Zxid` port); only REPRODUCE's native step refuses it (`NATIVE_PLANT_UNSUPPORTED`). The fix would
+refuse such a session as its own run in `ConfirmMain`, or keep its answers out of the witness selection; A/B the bug
+checks first. (om's record, F1F-om on int-13, is a STATE_PAIRING_FLIPPED PASS that does not rest on it.)
+
+**8. The learner stream's ACK hand-overs still race (accepted; revisit only if a verdict depends on it).** Built (tree
+`gc/zk-learner`, `gc/zk-quorum`): the leader's own ACK is a message to itself (f174d986f), an ACK leaves under the message
+its txn was logged under (acae2a16d), and the leader processes its ACKs on one thread of its own in FIFO order
+(0c8ff5469, replacing 0393746c0's ACK turn, which ordered the event but not the critical section after it: ZD8-02's
+COMMIT left under another ACK than recorded; ZC14-01/ZC15-01's CONFIRM replays stalled at CLAIM
+`LearnerHandler#queuePacket` COMMIT and ended AT_MISMATCH). Left: the two producers' hand-overs still race. Inside the
+monitor, a thread held at its slot keeps the monitor (ZC17-01's seed: 10 slots given up); outside it (388c78ef0,
+dropped), om and trunc time out natively. zk-adhoc-01's CONFIRM still ends at that COMMIT (ZC15-01..ZC18-01, F1S-01: its
+claim is refused, the FP filter). The fix: an engine SECTION turn, or the hand-over as the RECV's own slot.
 
 ## Cross-cutting (engine), when a system needs it
 

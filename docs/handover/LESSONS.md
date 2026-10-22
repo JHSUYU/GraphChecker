@@ -1,4 +1,4 @@
-# Lessons: the traps we fell into, how we measure, how we debug (2026-10-18)
+# Lessons: the traps we fell into, how we measure, how we debug (2026-10-18; §10 ZooKeeper 2026-10-21)
 
 Read after RULES.md, AGENTS.md, OPERATIONS.md, PARALLEL.md, CHECKING.md and REFACTOR-PLAN.md. Every item below
 cost us time at least once; the date or the case it came from is named so it can be checked.
@@ -260,3 +260,88 @@ starved for an hour. Replays use all 14 hosts (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`)
 hosts (at most 2-3), detached in their own session: heads run from one shell on lift11 were all TERMed when another
 round's stop ended that shell's ssh clients (HZ14: 24 exit-255 kills; killed replays are now re-queued, at most twice).
 Concurrent `git worktree add` races on `.git/config`: take `/localtmp/vnr3ne/worktree-add.lock` (flock).
+
+## 10. ZooKeeper (2026-10-21: a quorum system on the HBase engine)
+
+Order that paid off: make the ensemble run the same way twice (cluster, windows, waits), then fix identity defects one
+seed-replay stall at a time, then read each claim's chain. Every run and decision is in
+`/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/lead/RUNS.txt`.
+
+**Build and environment.**
+- **A tree's copy of a library the runtime uses beats the engine's.** Every seed replay before 22ee5e11d died on the
+  tree's gson-2.8.9 (`NoSuchMethodError JsonObject.asMap` in the runtime's publication). `classpath.py` now drops the
+  tree's Gson, as HBase's does. For a new system, diff its classpath against the engine's libraries first.
+- **NFS clock skew hides a stale build.** mvn on lift15 did not recompile a file edited from lift11, and the tests passed
+  on the old classes. Touch the edited files on the build host or use `mvn clean`. A fix's test is only proven once it
+  fails without the fix.
+- **`worktree-add.sh <path> HEAD` resolves HEAD in the main repo,** not the branch you meant (zk-engine-5 was built from
+  main): always give the commit hash.
+
+**Tree workarounds that bit back.**
+- **A notify under a system lock deadlocks.** C's `Leader.causynthTick` notified under the Leader monitor while
+  `Leader.shutdown` held `learners` (ZD7-07 RECORDING_STALLED; integrations 7-8 carried it). The fix (343efa661) is a
+  leaf lock object for the tick and the session expirer, with no notify while a learner lock is held. After any tree
+  change that adds a lock or a notify, run the stress natives (testRollingRestart, ReadOnlyModeTest x10) before
+  integrating.
+- **Every timed poll in the window is a schedule slot, and a slow replay polls more often.** Each of these turned WAKEs
+  into given-up slots:
+  - the election's idle polls (QCM SendWorker 1 s, FLE workers 3 s): ZC3-11 gave up 6416 of 6967 slots, 5487 of them
+    WAKEs;
+  - the harness's 20 ms await polls and `Leader#waitForStartup`'s 20 ms polls;
+  - the leader's ping ticks;
+  - `CircularBlockingQueue`'s internal timed waits (ZB5-om: 72 of 762 slots).
+
+  In automatic mode each became event-driven: NEVER_MS with the stop paths waking it, leader-side latches, a tick
+  notified on learner add/remove, an untimed `take()`. When a seed replay stalls, count its WAKE turns by site first.
+- **The window must open, and the target must run inside it.**
+  - ZD1-07: NO_REGION_ACTIVATION, because QuorumUtil never marks peers live and the test makes no client request. The
+    fix: liveness in `QuorumPeer` start/shutdown, and the `up` window at the end of the ensemble's start-all.
+  - ZB6/7-trunc: no TARGET_REACH, because runFromConfig never returned in the window. The node-startup bracket now ends
+    at `QuorumPeer#start`'s return (3f2a65916), and trunc's test ends F's last life in the window (8f4e23953).
+  - ZD11-04: FATAL_TARGET_NOT_IN_WINDOW, because ReadOnlyModeTest's QuorumUtil peers build their connection factory on
+    the test's thread, which belongs to no node.
+
+  Check a new workload's SEED for NO_REGION_ACTIVATION, TARGET_REACH and LINEAGE_LOST at the window before anything else.
+- **A guard joined with `&&` hides its deciding term.** Both quorum bugs' guard (`ZKDatabase:333 && chain`) never
+  evaluated its third term in a recording, because the zxid compare short-circuits. B reordered the terms, a pure change
+  with the same semantics. (LESSONS §9 has the `&` form.)
+
+**Identity defects (engine; each was one seed-replay stall pattern).**
+- **A seeded `Random` used as a hash.** ZooKeeperServer derives a session's password with
+  `new Random(sessionId ^ superSecret)`. `replaceRandom` keyed every draw by site and context, so a session that moved to
+  another server was refused (SessionExpired; blocked 02, 04, 13). The fix (D, 105fb49f0): a draw on a method-local seeded
+  Random that is never stored or passed keeps the program's draw. Clock-read seeds are excluded.
+- **One item in two queues.** An observer's commit puts the same Request into two queues. STARTS keyed by item alone let
+  a take from one queue claim the other's start (ZD5-10: 834 of 22133 slots given up, 276 stalls at
+  `CommitProcessor.commit#u14`). Hand-offs are now named by (queue, item), with fallback to the item's latest start
+  (52e1b46c6). Starts of one (queue, item) are FIFO (2a9c36fae): a sentinel put twice, such as the client close's
+  `eventOfDeath`.
+- **A held item claim must end on every take.** A consumer's claim on a named item (the container cleanup's) ended only
+  when the NEXT item's start was named, so the clients' unnamed items ran under the cleanup's region and cont's Prep
+  occurrences vanished. Fixed in a6ea3c80f (`State#endHeldClaim` on any take).
+- **A queue drain folded into another occurrence must close what it claimed.** `LearnerHandler#sendPackets`' last packet
+  left frames standing (FRAME_UNBALANCED BLOCKING; D's dab806ca2).
+- **The native recorder must name occurrences as the VM does.** A native plant inside a region that a hop names (a
+  daemon tick, `MessageDoors#beginTick`) read the entry's own occurrence. rseq went 0/10 natively until 8184203c5
+  (`Identity#standingOccurrences`); ZC14-03 hit it again on an older snapshot.
+
+**VM.**
+- **A failed CAS compared the read word with itself.** `UnsafeAccess::end_cas` never got the expected value, so the
+  IMPORT gate's invariant 6 fired on every failed concrete CAS. The fix is 3d1c9a7b0 with image vm-force13. After a VM
+  change, build a new image and move every run to it.
+
+**EXPLORE / GROW / COMPOSE.**
+- **An exposed task must carry its region's doors.** GROW planned an exposed occurrence from the raw skeleton's methods,
+  not the set PLAN folded for its region, so life 2's QuorumPeer.run lost Learner.readSyncPacket's FAULT door (ZB12).
+  Fixed in f5590b40f; the cost was one door.
+- **A root an exposed task mints exists only outside the seed.** The mint lookup took the seed only, so every root
+  assignment on an exposed task was ASSIGNMENT_UNMINTABLE (ZB14, 80b25e89). It now falls back to the flipped path's
+  session (21ed7b6c8).
+- **A world inherits its exposing flip.** An occurrence first exposed by a flipped replay is recorded only in that world,
+  so its flips nest on the exposing flip. At world depth 0 they are never offered (ZB13), and at depth 1 the exposing
+  fault can kill the chain (ZB15: life 3's log open failed before its replay). That is TODO ZooKeeper 1.
+- **A claim must move only what its path rests on.** ZD7/ZD9-02's claims moved 8 clock cells outside the selected path's
+  cone, which CONFIRM could not mint (NOT_ADMITTED). COMPOSE now keeps the cone's cells only (5abb349f2), and CONFIRM's
+  outside-witness net stays (TODO ZooKeeper 4).
+- **A diverged replay names a different occurrence.** A NOT_ADMITTED replay whose election took 4 turns named the
+  leader's Prep.run `#u292@4`. A demand on it is DIAGNOSTIC, not BLOCKING (d90d21e18; TODO ZooKeeper 3).

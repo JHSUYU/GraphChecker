@@ -1,114 +1,111 @@
-# START HERE: GraphChecker's ZooKeeper ad hoc checks (prepared 2026-10-21)
+# START HERE: GraphChecker's ZooKeeper ad hoc checks (finished 2026-10-21; DRAFT, verdicts PLACEHOLDER)
 
-You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: the goal, the
-cases, what to read, the work in order, how to run a case, the rules, and where everything is.
+You take over a finished system. This file is self-contained: what was done, where every piece is, how to run a case
+and the whole series, what is left, and the rules.
 - **Repo:** `/u/vnr3ne/GraphChecker`, GitHub `git@github.com:JHSUYU/GraphChecker.git`.
-- **Branch:** `system/zookeeper` (local; pushing GraphChecker needs the owner's OK), worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`.
-- **Engine:** HBase's final engine (`system/hbase` 5b4b6bae9), plus the ZooKeeper preparation.
-- **Tree:** the fork https://github.com/JHSUYU/zookeeper (local repo `/u/vnr3ne/zookeeper`).
-- **Finished systems:** HDFS, Solr and HBase. STATE §0, §S and §H describe them, on their own branches; HBase's takeover
-  file is [hbase-START-HERE.md](hbase-START-HERE.md).
+- **Branch:** `system/zookeeper`, worktree `/bigtemp/vnr3ne/wt/gc-zookeeper`. It is local; pushing GraphChecker needs the
+  owner's OK.
+- **Engine:** HBase's final engine (`system/hbase` 5b4b6bae9) plus this session's ZooKeeper work (STATE §Z).
+- **Tree:** the fork https://github.com/JHSUYU/zookeeper, branch `graphchecker/zookeeper-checks` (local repo
+  `/u/vnr3ne/zookeeper`, branch `gc/zk-checks`).
+- **Finished systems:** HDFS, Solr, HBase and ZooKeeper. STATE §0, §S, §H and §Z describe them, each on its own branch.
+  HBase's takeover file is [hbase-START-HERE.md](hbase-START-HERE.md).
 
-## 1. The goal and where it stands
+## 1. The goal and the result
 
 The owner (2026-10-21): "接下来的下一步，我要做zookeeper上的adhoc check。类似hbase。然后zookeeper上呢，我们本来已经有了些adhoc check的
-target，需要囊括这几个bug。这几个bug也要选adhoc check，看合适的workload。用一样的hbase规则" and "zookeeper上要做的适配跟hbase,hdfs,solr
-都是类似的". So: ZooKeeper's ad hoc checks, run the way HBase's were, under the same rules. The adaptation is of the same
-kind as the other systems': an automatic cluster, a message door per wire, typed FAULT doors.
+target，需要囊括这几个bug。这几个bug也要选adhoc check，看合适的workload。用一样的hbase规则". So ZooKeeper's ad hoc checks ran the
+way HBase's did, under the same rules, with the same kind of adaptation: an automatic cluster, a message door per wire,
+and typed FAULT doors.
 
-**The 16 cases** (`docs/checks/ZOOKEEPER.md` §E has each one's marker, workload, counterfactual, needs and fit; the final
-selection table, `docs/checks/SELECTION.md`, counts ZooKeeper as 19 selected points, 16 with an integration test, 16 causym
-executions):
+The session (a lead and five coding agents) did the following:
+- **A:** the tree and the client-level cases.
+- **B:** the two quorum-bug workloads.
+- **C:** the automatic quorum cluster.
+- **D:** the learner-stream door and zxid carriage.
+- **E:** the engine and VM defects.
 
-| case | what | needs |
+Every piece was merged into `system/zookeeper` and `gc/zk-checks` in integrations 6-11, then the final series ran
+(`results/zookeeper/`).
+
+**The 16 cases.** `docs/checks/ZOOKEEPER.md` §E has each one's marker, workload, counterfactual and fit. Each is one
+STATUS row ("ZooKeeper checks") and one `results/zookeeper/` file. Verdicts are PLACEHOLDERS until the final series ends.
+
+| case | what | final verdict (PLACEHOLDER) |
 | --- | --- | --- |
-| zk-bugs-trunc-sync | **ZOOKEEPER-5094 (PR 2459)**: a follower whose TRUNC sync ends before NEWLEADER keeps a database ahead of its log; its restart throws at ZKDatabase:341 | tree, quorum adapter, learner door |
-| zk-bugs-observer-master | **ZOOKEEPER-5088 (PR 2454)**: a proposal pending at an ObserverMaster follower's sync gets no INFORM; the observer throws at ZKDatabase:341 | tree, quorum adapter, learner door + zxids |
-| zk-bugs-quota-init | **the partial quota**: createQuota's limit node without its stat node; the retry's getData NoNode; enforcement fails open | tree |
-| zk-bugs-election-offer | **the orphaned election offer**: LeaderElectionSupport fails on a vanished competitor and keeps its own offer | tree |
-| zk-bugs-container-reuse | **the container cleanup** deletes a replacement node at the same path | tree |
-| zk-bugs-retry-seq-quota | bug_study #32: ZooInspector's retry re-creates a sequential node, the hard quota refuses the next create | tree |
-| zk-adhoc-01 02 03 04 06 07 10 11 12 13 | the study.txt items of §D (05, 08, 09 are selected but not run: a dead throw, no path; `docs/checks/SELECTION.md`) | tree; all but the 01/03 stand-in need the quorum adapter |
+| zk-bugs-quota-init | **the partial quota**: createQuota's limit node without its stat node | <PASS? ZA5: SAT MARKER_FLIPPED, ZOOKEEPER WRITE fault, native 10/10> |
+| zk-bugs-election-offer | **the orphaned election offer** | <PASS? ZA9: SAT STATE_PAIRING_FLIPPED, native 10/10> |
+| zk-bugs-container-reuse | **the container cleanup** deletes a replacement at the same path (A's fallback workload) | <verdict> |
+| zk-bugs-retry-seq-quota | bug_study #32: ZooInspector's retry re-creates a sequential node | <PASS? ZA9-rseq> |
+| zk-bugs-trunc-sync | **ZOOKEEPER-5094 (PR 2459)** | **not detected** (owner): ZB15 reached life 2's FAULT world, but that world also fails life 3's log open (TODO ZooKeeper 1) |
+| zk-bugs-observer-master | **ZOOKEEPER-5088 (PR 2454)** | <verdict> |
+| zk-adhoc-01 02 03 04 06 07 10 11 12 13 | the study.txt items of §D (05, 08, 09 selected, not run: `docs/checks/SELECTION.md`) | <one line each: results/zookeeper/README.md> |
 
 The first five are the owner's bugs. A bug check is done when it is SAT, confirmed in the VM and reproduced natively, with
-the bug's causal chain.
-
-**State:** prepared, nothing run.
-- The case declarations are in `experiments/zookeeper/`. The tree has the adapter cherry-picked, but it is not built
-  and its RESPONSE door must be rewritten (§4 item 1).
-- Four workloads are still to be written; each has an outline.
-- The quorum adapter is designed (Z2's D1-D9) but not built.
+the bug's causal chain. A study check is done at SAT, UNSAT (read with `vacuity.py`) or a named bound.
 
 ## 2. Read, in this order
 
-1. This file, then [STATE.md](STATE.md) §Z (branches, tree, Maven repositories, evidence).
-2. [TODO.md](TODO.md) "ZooKeeper": items 1-6 are the work in order.
-3. `docs/checks/ZOOKEEPER.md` §E (the cases), then §A-§D (the study analysis; §E corrects its line numbers).
-4. The agents' notes: [zookeeper-agents/Z1.md](zookeeper-agents/Z1.md) (every site and workload read on master; what the
-   self-written tests must do; the adapter port and its conflicts) and [zookeeper-agents/Z2.md](zookeeper-agents/Z2.md)
-   (the two quorum bugs: check rows, workload outlines, the design list D1-D9 with sizes and files).
-5. How HBase was done, the template: [hbase-START-HERE.md](hbase-START-HERE.md), STATE §H, `docs/checks/HBASE.md` §D/§E, and
-   `results/hbase/README.md` (what the end product looks like: every case's `.smt`, claim and time/region table).
-6. [LESSONS.md](LESSONS.md), all of it (§9 HBase applies almost word for word); [RULES.md](RULES.md) (the owner's rulings,
-   with the 2026-10-21 ZooKeeper ones); [CHECKING.md](CHECKING.md) (trap 24: vacuous UNSAT); [OPERATIONS.md](OPERATIONS.md)
-   §10 (HBase runs: the same mechanics); [AGENTS.md](AGENTS.md); [PARALLEL.md](PARALLEL.md).
-7. `docs/design/PIPELINE.md` for the stage you touch; `docs/design/IDENTITY.md` for nodes, contexts and hand-offs.
+1. This file, then [STATE.md](STATE.md) §Z: branches, tree, snapshots, images, tree sets, run dirs, evidence.
+2. `results/zookeeper/README.md`: the final table and one reading per case.
+3. [TODO.md](TODO.md) "ZooKeeper": what is left, each item parked with its evidence.
+4. [LESSONS.md](LESSONS.md) §10 (ZooKeeper's traps), §9 (HBase's, which still apply), and the rest.
+5. `docs/checks/ZOOKEEPER.md` §E (the cases) and STATUS "ZooKeeper checks" and "Per-system surface" (every tree
+   workaround, ZooKeeper column).
+6. [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [OPERATIONS.md](OPERATIONS.md) §10, [AGENTS.md](AGENTS.md),
+   [PARALLEL.md](PARALLEL.md).
+7. `docs/design/PIPELINE.md` for the stage you touch; `docs/design/IDENTITY.md` for nodes, contexts, hand-offs and queue
+   items.
 
-## 3. The work, in order (TODO "ZooKeeper")
+## 3. What is left
 
-1. **The tree.** Finish `gc/zk-checks` (`/bigtemp/vnr3ne/wt/zookeeper-checks`; the fork's master eab165995 + the adapter).
-   - Rewrite the RESPONSE door the way HBase's `CausynthRpc` answers. Its old code calls engine entry points that no
-     longer exist (Z1.md §3).
-   - Add the markers.
-   - Write the four workloads: `CausynthContainerReuseTest`, `CausynthZooKeeperRetryQuotaTest`, `CausynthTruncSyncTest`,
-     `CausynthObserverMasterSyncTest`. Each must pass natively under JDK 8; the two quorum ones must pass 10/10.
-   - Build all workloads with `experiments/zookeeper/prepare-trees.sh`.
-   - Push the result as the fork's `graphchecker/zookeeper-checks`.
-2. **The client-level cases** (quota-init, election-offer, container-reuse, retry-seq-quota, zk-adhoc-01/03 on the
-   ClientBase stand-in).
-   - Read each target occurrence off a SEED (`zk-bugs/case.sh` marks the placeholders).
-   - Run each case to its verdict.
-3. **The quorum adapter** (D3, D7, D8): QuorumPeer ensembles as an automatic cluster. Its canary is
-   `QuorumPeerMainTest#testQuorum`.
-4. **The learner-stream door** (D4): QuorumPacket as a message, plus a FAULT door on the sync's reads. This makes 5094
-   runnable, and the quorum study checks.
-5. **zxid carriage** (D5) for 5088's right `.smt`; optionally D6, the txn log as a store, for 5094's full chain.
-6. **The final series**, as HBase's, then `results/zookeeper/`.
+TODO "ZooKeeper" lists each item with its evidence; none blocks a verdict:
+- 5094's seed re-run for seed-only exposures (designed, not built);
+- EXPLORE re-pairing a container read;
+- static candidates over NOT_ADMITTED replays;
+- the consumer-side moved-roots filter;
+- the learner envelope's own fields;
+- the reply -> synchronous-caller edge (TODO HBase 15).
 
-**A split for agents** (one branch and worktree each; the lead merges after a gate):
-- **A:** item 1's adapter fix, markers and the two client-level workloads, then item 2.
-- **B:** the two quorum workloads (needs A's port first, or writes them on the fork's master and A merges them).
-- **C:** D3, D7 and D8.
-- **D:** D4 and D5, after C.
+<PLACEHOLDER: anything the final series leaves open (a case to rerun, a bound to name).>
 
-## 4. Running a case
+## 4. Running a case and the series
 
-Mechanics as HBase's (OPERATIONS.md §10):
-1. **Snapshot** `system/zookeeper`: `git worktree add --detach`, then `mvn -q -o package -DskipTests` on a lift. Never
-   rebuild a snapshot a run reads.
-2. **Tree set:** `env -u BASH_ENV tools/onlift.sh -h <host> -g 8 env GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo> bash
-   experiments/zookeeper/prepare-trees.sh`.
-   - It clones `trees.tsv`'s fork branch into `<dir>/zookeeper-checks` if absent, installs each workload module, runs each
-     workload natively, and prints PASSED/FAILED per case.
-   - `onlift.sh` forwards no environment: put the variables inside the command.
-   - For a tree branch not yet pushed: `git -C /u/vnr3ne/zookeeper worktree add --detach <dir>/zookeeper-checks <commit>`
-     first.
-3. **Launch** from a head that reaches every worker. Never lift02/03 (they cannot reach lift15), never the lead's gate
-   host.
-
-   `CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force13/j2sdk-image GC_TREES=<dir> GC_OUT=<out>
-   tools/rounds/launch-run.sh <snapshot> <case> <tag>`
-
-   HBase's wrapper `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/launch.sh` (and `wait-run.sh`, `watchdog.sh`) shows the
-   detached form; copy it with `GC_OUT=/bigtemp/vnr3ne/gc-out/zookeeper-<topic>`.
-4. **A series:** `tools/rounds/run-series.sh <round> experiments/zookeeper/zookeeper-cases.tsv system/zookeeper=<snapshot>`,
-   or HBase's `/bigtemp/vnr3ne/analysis/hbase-2026-10-20/lead/series.sh` (pass `SNAP`, `HEADS`; per-case settings belong
-   in `case.sh`).
+Mechanics as HBase's (OPERATIONS.md §10).
+1. **Snapshot** `system/zookeeper`:
+   ```
+   flock /localtmp/vnr3ne/worktree-add.lock bash tools/lib/worktree-add.sh /u/vnr3ne/gc-run/<name> <commit> --detach
+   ```
+   Always give an explicit commit: `HEAD` resolves in the main repo. Then run `mvn -q -o package -DskipTests` on a lift.
+   Never rebuild a snapshot a run reads.
+2. **Tree set:** `git -C /u/vnr3ne/zookeeper worktree add --detach <dir>/zookeeper-checks <tree commit>`, then
+   ```
+   env -u BASH_ENV tools/onlift.sh -h <host> -g 8 env GC_TREES=<dir> ZOOKEEPER_MAVEN_REPO=<repo> bash experiments/zookeeper/prepare-trees.sh
+   ```
+   It installs each workload module and runs each workload natively (PASSED/FAILED per case). `onlift.sh` forwards no
+   environment: put the variables inside the command. Never rebuild a tree set a run reads, and never run natives on it.
+3. **One case**, from a head that reaches every worker (never lift02/03 or the lead's gate host):
+   ```
+   CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force13/j2sdk-image GC_TREES=<dir> GC_OUT=<out> tools/rounds/launch-run.sh <snapshot> <case> <tag>
+   ```
+   The detached form is `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/lead/launch.sh <topic> <snapshot> <case> <TAG>
+   <budget>`, with `wait-run.sh` to wait. `STOP_AFTER=SEED` lists the observed occurrences when a target selector is
+   unobserved: read a selector that way, then write it into `case.sh` / `checks.tsv`.
+4. **The series:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/lead/final/` (PLAN.md):
+   - `SNAP=... TREES=... series.sh <round> <concurrency> <case>...`: F1* concurrent (runs under 30 min), F2*/F3* alone on
+     all 14 hosts.
+   - `final-stats.py --order ... --cases <SNAP>/experiments/zookeeper/zookeeper-cases.tsv` prints the table.
+   - `SNAP=... ORDER=... collect-results.sh <repo>` fills `results/zookeeper/`.
+   - Or the generic `tools/rounds/run-series.sh <round> experiments/zookeeper/zookeeper-cases.tsv
+     system/zookeeper=<snapshot>`.
 5. **After a case:**
    - run `tools/analysis/vacuity.py --latest --detail <run>` on every UNSAT;
-   - read the `.smt` against the code with `tools/analysis/smt-legend.py`;
-   - update the §E row and the STATUS row;
-   - get the time/region table from `results/hbase/final-stats.py` (adjust its paths).
+   - read the `.smt` with `tools/analysis/smt-legend.py`;
+   - update the §E row and the STATUS row.
+
+Per-case settings live in `experiments/zookeeper/zk-bugs/case.sh`, `zk-adhoc/checks.tsv` and `case.sh`, and
+`workflow.properties`: target selectors, world depth, claim cap, CONFIRM order timeout, client-fault cut and scope.
+PLAN.md §2 tabulates them.
 
 ## 5. Rules you must keep (RULES.md and LESSONS.md have each)
 
@@ -117,14 +114,15 @@ Mechanics as HBase's (OPERATIONS.md §10):
 - Reuse the existing adapter shapes: HBase's CausynthHBaseCluster/CausynthRpc, HDFS's IPC door, Solr's ZooKeeper store hooks.
   Name the closest one for each new piece.
 - Read the existing mechanism before building one. Time-box an engine challenge to about 45 min, then work around it
-  (owner). The time model is handled by workarounds only.
+  (owner). The time model is handled by workarounds only. The owner's ruling on 5094 (2026-10-21): "我觉得你搞简单点吧，
+  没必要为5094花这么多时间" -- an engine change for one case stops when it grows.
 - Measure first, prove the mechanism, then fix. Completeness > precision: over-approximate in COMPOSE, confirm strictly.
-- A roughly right `.smt` per case is the bar (owner 2026-10-20). The false-positive filter (CONFIRM/REPRODUCE) handles
-  refuted claims; precision work waits.
+  The false-positive filter (CONFIRM/REPRODUCE) is kept ("02这种如果是正常的false positive过滤你要保留").
+- A roughly right `.smt` per case is the bar (owner 2026-10-20).
 - ZooKeeper changes are judged by ZooKeeper's cases only.
 - Java 8 for every workload. Workloads are existing unit tests where one exercises the bug; a self-written
   `Causynth*Test` only where none does, and it must pass natively on the buggy tree.
-- Per-case run settings (scope cuts, claim caps, budgets, heaps) live in `case.sh` / `workflow.properties`.
+- Per-case run settings live in `case.sh` / `workflow.properties`.
 - The final series: runs under 30 min may run concurrently; every longer case runs alone on all 14 hosts; scope a
   too-slow case.
 - Heaps: replays and solvers use at most 70 % of a host; a head is charged its heap for life.
@@ -139,9 +137,12 @@ Mechanics as HBase's (OPERATIONS.md §10):
 
 STATE §Z has the full list. In short:
 - **GraphChecker:** `system/zookeeper` at `/bigtemp/vnr3ne/wt/gc-zookeeper`.
-- **Tree:** `/u/vnr3ne/zookeeper` `gc/zk-checks` at `/bigtemp/vnr3ne/wt/zookeeper-checks`; the fork's refs are fetched as
-  `refs/remotes/jhsuyu/*`.
-- **Maven repository:** `/bigtemp/vnr3ne/m2/zookeeper-quorum-bugs`, filled online for master.
-- **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (`vm-force12` plus the failed-CAS answer, OPERATIONS.md images row).
+- **Final snapshot:** `/u/vnr3ne/gc-run/<PLACEHOLDER: final pair snapshot>`.
+- **Tree:** `/u/vnr3ne/zookeeper`, `gc/zk-checks` = the fork's `graphchecker/zookeeper-checks`. Final tree set:
+  `/bigtemp/vnr3ne/wt/<PLACEHOLDER: final tree set>`.
+- **VM image:** `/bigtemp/vnr3ne/vm-force13/j2sdk-image` (vm-force12 plus the failed-CAS answer).
+- **Runs:** `/bigtemp/vnr3ne/gc-out/zookeeper-final` (the series) and `zookeeper-{tree,qwork,quorum,learner,engine}` (the
+  agents' runs).
+- **Evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/` (lead/RUNS.txt: every run and decision;
+  lead/readings.md; lead/final/).
 - **Hosts:** lift02-15, 48 cores and 30 GB each.
-- **Preparation evidence:** `/bigtemp/vnr3ne/analysis/zookeeper-2026-10-21/`.
