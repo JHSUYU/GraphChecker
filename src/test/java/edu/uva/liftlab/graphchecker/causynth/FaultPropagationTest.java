@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.After;
 import org.junit.Test;
 import soot.G;
@@ -63,6 +64,61 @@ public class FaultPropagationTest {
                 "[<f.Caller: void call(f.Door)>#u2=null]",
                 SiteControlDependence.MethodGuards.of(call.getSignature())
                         .at(3).toString()}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    @Test
+    public void aWriteAHandlerCallsIsGuardedByTheBranchDecidingTheCaughtThrow() {
+        JimpleScene.load(JimpleScene.OBJECT, THROWABLE, EXCEPTION,
+                ioe("f.Missing", "java.lang.Exception"),
+                "application public class f.Header extends java.lang.Object {"
+                        + " int type; public void <init>(int) { f.Header r0;"
+                        + " int i0; r0 := @this: f.Header; i0 := @parameter0:"
+                        + " int; r0.<f.Header: int type> = i0; return; } }",
+                "application public class f.Lookup extends java.lang.Object {"
+                        + " java.lang.Object held; public void find("
+                        + "java.lang.Object) { f.Lookup r0; java.lang.Object r1,"
+                        + " r3; f.Missing $r2; r0 := @this: f.Lookup;"
+                        + " r1 := @parameter0: java.lang.Object;"
+                        + " r3 = r0.<f.Lookup: java.lang.Object held>;"
+                        + " if r3 != null goto label1; $r2 = new f.Missing;"
+                        + " specialinvoke $r2.<f.Missing: void <init>("
+                        + "java.lang.String)>(\"none\"); throw $r2;"
+                        + " label1: return; } }",
+                "application public class f.Prep extends java.lang.Object {"
+                        + " f.Header hdr; public void step(f.Lookup,"
+                        + " java.lang.Object) { f.Prep r0; f.Lookup r1;"
+                        + " java.lang.Object r2; f.Missing $r3; f.Header $r4;"
+                        + " r0 := @this: f.Prep; r1 := @parameter0: f.Lookup;"
+                        + " r2 := @parameter1: java.lang.Object; label1:"
+                        + " virtualinvoke r1.<f.Lookup: void find("
+                        + "java.lang.Object)>(r2); label2: return;"
+                        + " label3: $r3 := @caughtexception; $r4 = new f.Header;"
+                        + " specialinvoke $r4.<f.Header: void <init>(int)>(-1);"
+                        + " r0.<f.Prep: f.Header hdr> = $r4; return;"
+                        + " catch f.Missing from label1 to label2 with label3;"
+                        + " }"
+                        + " public void plain(java.lang.Object) { f.Prep r0;"
+                        + " f.Header $r4; r0 := @this: f.Prep;"
+                        + " $r4 = new f.Header; specialinvoke $r4.<f.Header:"
+                        + " void <init>(int)>(1); return; } }");
+        String write = "<f.Header: void <init>(int)>#u3";
+        String handled = "<f.Prep: void step(f.Lookup,java.lang.Object)>#u8";
+        StaticScopeMap.Guards guards = SiteControlDependence.over(
+                java.util.Arrays.asList(write, handled));
+        Object[][] rows = {
+            {"the constructor a handler calls: the throw's deciding arm",
+                "[<f.Lookup: void find(java.lang.Object)>#u3=false]",
+                guards.caughtInto(write).toString()},
+            {"a store in the handler itself, the same",
+                "[<f.Lookup: void find(java.lang.Object)>#u3=false]",
+                guards.caughtInto(handled).toString()},
+            {"the try's own call is no handler's: nothing",
+                "[]", guards.caughtInto(
+                        "<f.Prep: void step(f.Lookup,java.lang.Object)>#u3")
+                        .toString()}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }
