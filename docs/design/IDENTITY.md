@@ -356,8 +356,11 @@ the flip solver:
   this consumer;
 - a STATE read's arms are Writers_W(l): its observed writer plus every attested writer occurrence
   of the same session that is HB-concurrent with the reader (not the same `threadKey`, not an
-  anchor-chain ancestor either way, both chains reaching a `Root`; a `Lost` context is never
-  concurrent), one arm per writer occurrence: the observed writer's at the write the read
+  anchor-chain ancestor either way, both chains reaching a `Root` or meeting at one anchor
+  endpoint -- what lies above the meeting point is shared, so an unknown sender there orders
+  neither: two occurrences one message started are concurrent though that message's own start
+  is in no row (zk-bugs-observer-master: F's OM handler and F's apply, both under the leader's
+  UPTODATE to F); a `Lost` context is never concurrent), one arm per writer occurrence: the observed writer's at the write the read
   observed, any other at its last write of the location; and the writer at version 0, the
   location's INITIAL (`WriteRow#initial`: what it held before every write its log names, a
   constructor's or initializer's store from before the log began, the JVM default, a container's

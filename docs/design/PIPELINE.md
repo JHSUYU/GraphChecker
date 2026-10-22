@@ -866,7 +866,7 @@ are counted, never dropped silently: `concreteAnchors` states how many
   version, and every other the one eligibility rule `Arms#eligible` admits: a write of the same
   session the read could have run right after -- a later version's occurrence HB-concurrent,
   `Arms.concurrent`: not the same thread key, neither an anchor-chain ancestor of the other, both
-  chains reaching a Root, neither Lost (an earlier version's writer, which the read ran after, in
+  chains reaching a Root or meeting at one anchor endpoint, neither Lost (an earlier version's writer, which the read ran after, in
   any relation: a stale read); every write between the two an HB-concurrent occurrence's; none of them under
   construction, a constructor or class initializer anywhere on its frame chain; no version between
   them a read observed and no row states -- or the location's INITIAL by the same test, whose

@@ -2046,6 +2046,48 @@ public class ComposerTest {
         }
     }
 
+    @Test
+    public void twoOccurrencesUnderOneMessageAreConcurrentThoughItsSenderIsUnknown()
+            throws Exception {
+        OccurrenceAddress sender = occurrence("case/l3", "REGION.handler",
+                CausalContext.of("unknown-endpoint", "ZK_QUORUM/test"),
+                frame("LearnerHandler#run#1", 0));
+        Endpoint message = Endpoint.of(sender, "PORT.uptodate",
+                at("send#1", 0), 0);
+        OccurrenceAddress reader = occurrence("case/f1", "REGION.sync",
+                CausalContext.of(message.id(), "ZK_QUORUM/test"),
+                frame("LearnerHandler#run#2", 0));
+        OccurrenceAddress sibling = occurrence("case/f1", "REGION.apply",
+                CausalContext.of(message.id(), "ZK_QUORUM/test"),
+                frame("CommitProcessor#run#1", 0));
+        Endpoint handed = Endpoint.of(reader, "PORT.inform", at("send#2", 0),
+                0);
+        OccurrenceAddress child = occurrence("case/o4", "REGION.observe",
+                CausalContext.of(handed.id(), "ZK_QUORUM/test"),
+                frame("Observer#run#1", 0));
+        Path iteration = folder.newFolder("siblings").toPath();
+        Session session = new Session(iteration, "s0", false);
+        session.occurrence = reader;
+        session.activation(sender, "thread#leader", false);
+        session.activation(reader, message);
+        session.activation(sibling, message);
+        session.activation(child, handed);
+        session.target("true", false, true);
+        session.write();
+        edu.uva.liftlab.graphchecker.smt.Arms arms =
+                new edu.uva.liftlab.graphchecker.smt.Arms(
+                        Corpus.read(iteration, null));
+        Object[][] table = {
+            {"two occurrences one message started, its sender's own start"
+                    + " unknown", sibling, true},
+            {"an occurrence a message of the reader started", child, false},
+        };
+        for (Object[] row : table) {
+            assertEquals((String) row[0], row[2], arms.concurrent(reader,
+                    (OccurrenceAddress) row[1], "s0"));
+        }
+    }
+
     private static JsonObject putCommit(JsonObject state, long generation) {
         return relation("ASSOCIATIVE", "PUT", "java/util/Map", state,
                 integer("J", generation), symbol(

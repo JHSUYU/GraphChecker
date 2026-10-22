@@ -464,11 +464,26 @@ public final class Arms {
             return false;
         }
         if (sameThread(session, reader, writer)) return false;
-        if (!chainKnown(session, reader) || !chainKnown(session, writer)) {
+        if ((!chainKnown(session, reader) || !chainKnown(session, writer))
+                && Collections.disjoint(anchors(reader), anchors(writer))) {
             return false;
         }
         return !ancestor(session, writer, reader)
                 && !ancestor(session, reader, writer);
+    }
+
+    private Set<String> anchors(OccurrenceAddress occurrence) {
+        Set<String> endpoints = new LinkedHashSet<String>();
+        Set<String> seen = new LinkedHashSet<String>();
+        OccurrenceAddress at = occurrence;
+        while (at != null && seen.add(at.id())
+                && at.context().form() == CausalContext.Form.ANCHOR) {
+            String producer = ((CausalContext.Anchor) at.context())
+                    .producerEndpointId();
+            endpoints.add(producer);
+            at = rows.occurrenceOf(producer);
+        }
+        return endpoints;
     }
 
     private boolean chainKnown(String session,
