@@ -1,12 +1,14 @@
-# START HERE: GraphChecker's HBase work (second session handover, 2026-10-20)
+# START HERE: GraphChecker's HBase ad hoc checks (finished 2026-10-21)
 
 You are the next lead (a coding agent that may run up to 5 coding agents). This file is self-contained: where HBase
 stands, what to read, what is left, how to run a case, and where everything is. Repo: `/u/vnr3ne/GraphChecker`, GitHub
-`git@github.com:JHSUYU/GraphChecker.git`. HBase's branch is `system/hbase` (local only, not pushed yet: pushing
-GraphChecker needs the owner's OK). Its integration worktree is `/bigtemp/vnr3ne/wt/gc-hbase-merge`, on `hbase-int`
+`git@github.com:JHSUYU/GraphChecker.git`. HBase's code is the branch `system/hbase`
+(pushed 2026-10-22). Its integration worktree is `/bigtemp/vnr3ne/wt/gc-hbase-merge`, on `hbase-int`
 (= `system/hbase`); the plain worktree is `/bigtemp/vnr3ne/wt/gc-hbase`. The HBase tree is the fork's
 `graphchecker/hbase-checks` (`https://github.com/JHSUYU/hbase.git`, pushed; local `/u/vnr3ne/hbase` branch
-`gc/hbase-checks`). Solr and HDFS are finished: STATE §S and §0, on their own branches.
+`gc/hbase-checks`): the adapter. **From GitHub:** clone the two and check out those branches;
+[../REPRODUCE.md](../REPRODUCE.md) §7 builds the VM image and the tree and runs every case. Solr and HDFS are
+finished: STATE §S and §0, on their own branches.
 
 ## 1. Where HBase stands (final series, 2026-10-20/21)
 
@@ -48,8 +50,8 @@ on a head that reaches every worker (never lift02/03, which cannot reach lift15)
 
 1. This file.
 2. [STATE.md](STATE.md) §H: what is on `system/hbase` and the tree, the results table, and where everything is.
-3. [TODO.md](TODO.md) "HBase": item 1 is the next phase (the owner's exclusive series); the other items are the open engine
-   problems, each with its evidence.
+3. [TODO.md](TODO.md) "HBase": item 1, the owner's final series, is done; the other items are the open engine problems,
+   each with its evidence, parked.
 4. [LESSONS.md](LESSONS.md), all of it, especially §9 HBase.
 5. `docs/checks/HBASE.md` §E: every case's target, workload, selector, scope, runs and state.
 6. [RULES.md](RULES.md) (the owner's rulings, including the HBase ones), [CHECKING.md](CHECKING.md) (trap 24: vacuous UNSAT),

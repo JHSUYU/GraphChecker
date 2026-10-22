@@ -5,9 +5,9 @@ Order:
    them or before a clean final acceptance run.
 2. Solr: the rewrite and its final round SGF9 are done (2026-10-19, section "Solr: after SGF9"); what is left there is
    optional: the cases owed a run on the fixed engine, and the speed items with their evidence.
-3. HBase: the current work (section "HBase", item 1 is the next runs in order); stopped by the owner on 2026-10-19
-   23:10 for a handover to another agent.
-4. ZooKeeper.
+3. HBase is finished (section "HBase": item 1, the final series, is done; the rest are parked engine items). The code
+   is `system/hbase`, the adapter the fork's `graphchecker/hbase-checks`; REPRODUCE §7 runs every case from GitHub.
+4. ZooKeeper is finished on its own branch `system/zookeeper` (2026-10-22; section "ZooKeeper").
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
@@ -548,7 +548,7 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   final8, `sg3f-trees` -> final7, `sg3e-trees` -> final5 (the fork's today). A case.sh `repo=` resolves under GC_TREES;
   the default `/bigtemp/vnr3ne/wt/lucene-solr-checks` is an old directory, never the one to run.
 
-## HBase (`system/hbase`; second session handover 2026-10-20 -- the current plan)
+## HBase (`system/hbase`; finished 2026-10-21)
 
 Read [START-HERE.md](START-HERE.md) and [STATE.md](STATE.md) §H first; every case's state is `docs/checks/HBASE.md` §E;
 the agents' handover notes are [hbase-agents/](hbase-agents/) (`H1-H5.md` first session, `second-session-H*.md` second
@@ -708,8 +708,8 @@ by that very read (its first fetch), so the read was no row and a NoNode read wo
   probes) re-run COMPOSE/PLAN on a run's inputs; `SmtLowering.forSession`'s repair predicate differs from the
   Composer's, so a probe through it is not the Composer's answer.
 - Housekeeping: old snapshots (`/u/vnr3ne/gc-run/hb-*`) and tree sets (`/bigtemp/vnr3ne/wt/hb-*-trees-*`) listed in
-  H1-H4.md (e) can go once nothing reads them; `system/hbase` is not pushed to GitHub (owner's OK needed); the fork's
-  `graphchecker/hbase-checks` is pushed at 985a0dfe91.
+  H1-H4.md (e) can go once nothing reads them; `system/hbase` (pushed 2026-10-22) and the fork's
+  `graphchecker/hbase-checks` (b5d5cc6a20) are on GitHub.
 
 **12. Provenance through a construction-only container field of a copy-on-write object** (hbase-bugs-ns-rsgroup-removal
 NC3-nsrg, worked around in the tree 100878f553, STATUS "the H4 checks' stated guards"). `RSGroupInfoManagerImpl#getRSGroup`
@@ -940,27 +940,12 @@ which no ORDER holds". The cause is not CONFIRM's planning, as H3 read it from t
   exclusive series does). Not built: checking the read's observed writer instead of holding; it cannot confirm a
   read that saw the wrong version, and with stable steps nothing needs it.
 
-## ZooKeeper (`system/zookeeper` = main today)
+## ZooKeeper (finished 2026-10-22 on its own branch)
 
-**1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
-election-offer and 11741, comparing arm counts and refutations with V25. The ZooKeeper tree with the RESPONSE door is
-`gc/zk-unified-hb` `47ddc8b36`.
-
-**2. A quorum adapter.** Every selected ZooKeeper study test is a quorum test. Register each quorum peer as a node;
-open the window once the quorum is up.
-
-**3. Mark the 10 checked points** (`docs/checks/ZOOKEEPER.md`):
-
-```
-01 02 03 04 06 07 10 11 12 13
-```
-
-05 is a dead throw; 08 and 09 have no path.
-
-**4. zk-bugs-container-reuse (#33).** A self-written ClientBase test; STATE re-pairing of the client's node-map lookup
-to the cleanup's delete, the election-offer mechanism.
-
-**5. Run the group of 13.**
+ZooKeeper's checks ran on `system/zookeeper`, built from this branch (`system/hbase` 5b4b6bae9), with the fork's
+`graphchecker/zookeeper-checks` as the tree; both are on GitHub. That branch's START-HERE, STATE §Z, TODO "ZooKeeper",
+REPRODUCE §8 and `results/zookeeper/` hold everything: 5 of its 6 bug checks PASS (ZOOKEEPER-5094 not detected) and
+every study check has its `.smt`.
 
 ## Cross-cutting (engine), when a system needs it
 

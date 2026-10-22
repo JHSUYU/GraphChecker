@@ -12,34 +12,38 @@ Owner 2026-10-20/21: runs under 30 min kept from the concurrent round (F1*); eve
 `GC_TREES=<dir> experiments/hbase/prepare-trees.sh hbase-checks`); **all:** `tools/rounds/run-series.sh <round>
 experiments/hbase/hbase-cases.tsv system/hbase=<snapshot>`. The table below is `final-stats.py` over the run dirs:
 seeding = PREFLIGHT..IMPORT and ZKKEYS (static passes, recording, seed replay); exploration = EXPLORE; compose+solver =
-COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; regions / occurrences = the final closure.
+COMPOSE + SOLVE + DECIDE; other = CONFIRM + EMIT + REPRODUCE; refuted claims = the compose and CONFIRM of the claims
+CONFIRM refuted before the last one (their number in brackets; `stage_metrics.tsv` times only the last claim, so this is
+the wall the stages leave uncovered: 07, 08, 10); regions / occurrences = the final closure. The columns sum to the wall
+but for up to 30 s of stage start-up per case (233 s in all). Of the 15.0 h, exploration takes 39 %, seeding 29 %, the
+refuted claims 16 %, other 9 % and compose+solver 7 %.
 
-| case | run | mode | claim | mechanism | native | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | regions | occurrences | rounds |
-| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| hbase-adhoc-04 | F1B-adhoc-04 | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 839 | 438 | 342 | 5 | 47 | 8 | 68 | 9 |
-| hbase-adhoc-07 | F2S-adhoc-07 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 5250 | 774 | 1221 | 293 | 559 | 19 | 183 | 6 |
-| hbase-adhoc-08 | F2S-adhoc-08 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2897 | 557 | 445 | 70 | 419 | 5 | 68 | 41 |
-| hbase-adhoc-10 | F2S-adhoc-10 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 12638 | 954 | 5189 | 1134 | 630 | 10 | 344 | 19 |
-| hbase-adhoc-11 | F3S-adhoc-11 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2439 | 1470 | 441 | 24 | 488 | 12 | 426 | 1 |
-| hbase-adhoc-12 | F3S-adhoc-12 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 3449 | 743 | 1849 | 298 | 542 | 14 | 509 | 41 |
-| hbase-adhoc-13 | F2S-adhoc-13 | alone | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 4359 | 1146 | 2998 | 128 | 72 | 27 | 458 | 89 |
-| hbase-adhoc-14 | F3S-adhoc-14 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2674 | 1924 | 1 | 24 | 695 | 19 | 935 | 0 |
-| hbase-adhoc-15 | F3S-adhoc-15 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 4671 | 646 | 1972 | 1536 | 495 | 15 | 671 | 26 |
-| hbase-adhoc-19 | F2S-adhoc-19 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1042 | 534 | 475 | 20 | 6 | 17 | 134 | 8 |
-| hbase-adhoc-20 | F2S-adhoc-20 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1056 | 540 | 477 | 26 | 6 | 17 | 134 | 8 |
-| hbase-adhoc-21 | F2T-adhoc-21 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1137 | 599 | 474 | 37 | 17 | 16 | 291 | 38 |
-| hbase-adhoc-22 | F2B-adhoc-22 | alone | SAT_CANDIDATE | STATE_PAIRING_FLIPPED | 10/10 | 946 | 508 | 385 | 12 | 34 | 9 | 123 | 12 |
-| hbase-adhoc-24 | F1T-adhoc-24 | concurrent | SAT_CANDIDATE | STATE_PAIRING_FLIPPED | - | 1489 | 835 | 637 | 4 | 7 | 4 | 9 | 7 |
-| hbase-adhoc-28 | F1T-adhoc-28 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1131 | 709 | 407 | 8 | 4 | 1 | 1 | 3 |
-| hbase-adhoc-31 | F1H-adhoc-31 | concurrent | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 1605 | 622 | 956 | 11 | 7 | 16 | 62 | 24 |
-| hbase-adhoc-34 | F1T-adhoc-34 | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 9/10 | 1016 | 638 | 186 | 5 | 181 | 11 | 25 | 2 |
-| hbase-adhoc-35 | F1U-adhoc-35 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1674 | 627 | 909 | 117 | 14 | 23 | 126 | 24 |
-| hbase-adhoc-37 | F1U-adhoc-37 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 646 | 450 | 170 | 4 | 4 | 1 | 1 | 3 |
-| hbase-bugs-master-active-time | F1B-bugs-master-active-time | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 8/10 | 1135 | 437 | 343 | 5 | 343 | 11 | 64 | 8 |
-| hbase-bugs-backup-lock-reply-lost | F1B-bugs-backup-lock-reply-lost | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 689 | 399 | 186 | 4 | 79 | 2 | 3 | 1 |
-| hbase-bugs-ns-rsgroup-removal | F2B-bugs-ns-rsgroup-removal | alone | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 1337 | 369 | 909 | 10 | 29 | 7 | 40 | 29 |
+| case | run | mode | claim | mechanism | native | wall (s) | seeding (s) | exploration (s) | compose+solver (s) | other (s) | refuted claims (s) | regions | occurrences | rounds |
+| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hbase-adhoc-04 | F1B-adhoc-04 | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 839 | 438 | 342 | 5 | 47 | - | 8 | 68 | 9 |
+| hbase-adhoc-07 | F2S-adhoc-07 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 5250 | 774 | 1221 | 293 | 559 | 2404 (3) | 19 | 183 | 6 |
+| hbase-adhoc-08 | F2S-adhoc-08 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2897 | 557 | 445 | 70 | 419 | 1406 (3) | 5 | 68 | 41 |
+| hbase-adhoc-10 | F2S-adhoc-10 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 12638 | 954 | 5189 | 1134 | 630 | 4732 (3) | 10 | 344 | 19 |
+| hbase-adhoc-11 | F3S-adhoc-11 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2439 | 1470 | 441 | 24 | 488 | - | 12 | 426 | 1 |
+| hbase-adhoc-12 | F3S-adhoc-12 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 3449 | 743 | 1849 | 298 | 542 | - | 14 | 509 | 41 |
+| hbase-adhoc-13 | F2S-adhoc-13 | alone | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 4359 | 1146 | 2998 | 128 | 72 | - | 27 | 458 | 89 |
+| hbase-adhoc-14 | F3S-adhoc-14 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 2674 | 1924 | 1 | 24 | 695 | - | 19 | 935 | 0 |
+| hbase-adhoc-15 | F3S-adhoc-15 | alone | SAT_UNCONFIRMED | STATE_PAIRING_FLIPPED | - | 4671 | 646 | 1972 | 1536 | 495 | - | 15 | 671 | 26 |
+| hbase-adhoc-19 | F2S-adhoc-19 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1042 | 534 | 475 | 20 | 6 | - | 17 | 134 | 8 |
+| hbase-adhoc-20 | F2S-adhoc-20 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1056 | 540 | 477 | 26 | 6 | - | 17 | 134 | 8 |
+| hbase-adhoc-21 | F2T-adhoc-21 | alone | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1137 | 599 | 474 | 37 | 17 | - | 16 | 291 | 38 |
+| hbase-adhoc-22 | F2B-adhoc-22 | alone | SAT_CANDIDATE | STATE_PAIRING_FLIPPED | 10/10 | 946 | 508 | 385 | 12 | 34 | - | 9 | 123 | 12 |
+| hbase-adhoc-24 | F1T-adhoc-24 | concurrent | SAT_CANDIDATE | STATE_PAIRING_FLIPPED | - | 1489 | 835 | 637 | 4 | 7 | - | 4 | 9 | 7 |
+| hbase-adhoc-28 | F1T-adhoc-28 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1131 | 709 | 407 | 8 | 4 | - | 1 | 1 | 3 |
+| hbase-adhoc-31 | F1H-adhoc-31 | concurrent | RUN_DEFECT | NO_SUPPORTED_WITNESS | - | 1605 | 622 | 956 | 11 | 7 | - | 16 | 62 | 24 |
+| hbase-adhoc-34 | F1T-adhoc-34 | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 9/10 | 1016 | 638 | 186 | 5 | 181 | - | 11 | 25 | 2 |
+| hbase-adhoc-35 | F1U-adhoc-35 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 1674 | 627 | 909 | 117 | 14 | - | 23 | 126 | 24 |
+| hbase-adhoc-37 | F1U-adhoc-37 | concurrent | UNSAT_CLOSED | NO_SUPPORTED_WITNESS | - | 646 | 450 | 170 | 4 | 4 | - | 1 | 1 | 3 |
+| hbase-bugs-master-active-time | F1B-bugs-master-active-time | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 8/10 | 1135 | 437 | 343 | 5 | 343 | - | 11 | 64 | 8 |
+| hbase-bugs-backup-lock-reply-lost | F1B-bugs-backup-lock-reply-lost | concurrent | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 689 | 399 | 186 | 4 | 79 | - | 2 | 3 | 1 |
+| hbase-bugs-ns-rsgroup-removal | F2B-bugs-ns-rsgroup-removal | alone | SAT_CANDIDATE | MARKER_FLIPPED | 10/10 | 1337 | 369 | 909 | 10 | 29 | - | 7 | 40 | 29 |
 
-22 of 22 cases; wall 54119 s (15.0 h); seeding 15919, exploration 20972, compose+solver 3775, other 4678 s
+22 of 22 cases; wall 54119 s (15.0 h); seeding 15919, exploration 20972, compose+solver 3775, other 4678, refuted claims 8542 s
 
 ## Reading per case
 
